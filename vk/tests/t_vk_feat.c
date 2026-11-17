@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1297,6 +1297,45 @@ test_dparams(void)
    return 1;
 }
 
+/* shaderImageGatherExtended: 4x4 R8 texture T(x,y) = 16*(4y+x); gather at the texel corner (2,2) -> footprint base (1,1), components
+ * (1,2) (2,2) (2,1) (1,1) + offset. Quadrants 0..2: run-time offset (q&1, q>>1); quadrant 3: textureGatherOffsets {(0,0),(1,0),(0,1),(1,1)}: texel c = base texel (1,1) + offsets[c]. */
+static int
+test_gather(void)
+{
+   if (!g_feat.shaderImageGatherExtended) { printf("{\"test\":\"gather\",\"skipped\":\"shaderImageGatherExtended not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   uint8_t texel[16];
+   for (int i = 0; i < 16; i++) texel[i] = (uint8_t)(16 * i);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8_UNORM, 4, 4, 1, 1, 0);
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0.25f};
+   struct tex x;
+   if (!tex_create(&t, &x, &ici, VK_IMAGE_VIEW_TYPE_2D, 1, texel, sizeof texel, &reg, 1, &si)) return 0;
+   const float s[4] = {1.0f, 1.0f, 0, 0};
+   if (!quad_draw(&t, &x, "gather.frag.spv", s)) return 0;
+   if (!g_fake) {
+      static const int probe[4][2] = {{64, 64}, {192, 64}, {64, 192}, {192, 192}};
+      for (int q = 0; q < 4; q++) {
+         int e[4];
+         for (int c = 0; c < 4; c++) {
+            static const int bx[4] = {1, 2, 2, 1}, by[4] = {2, 2, 1, 1};   /* footprint components */
+            static const int ox[4] = {0, 1, 0, 1}, oy[4] = {0, 0, 1, 1};   /* textureGatherOffsets */
+            int tx = q < 3 ? bx[c] + (q & 1) : 1 + ox[c], ty = q < 3 ? by[c] + (q >> 1) : 1 + oy[c];   /* gatherOffsets: texel c = base (1,1) + offsets[c] */
+            e[c] = 16 * (4 * ty + tx);
+         }
+         const uint8_t *p = pix(&t, probe[q][0], probe[q][1]);
+         CHECK(near(p, e[0], e[1], e[2], e[3], 3), "quadrant %d got %u,%u,%u,%u expected %d,%d,%d,%d", q, p[0], p[1], p[2], p[3], e[0], e[1], e[2], e[3]);
+      }
+      printf("{\"test\":\"gather\",\"ok\":true}\n");
+   } else printf("{\"test\":\"gather\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   tex_destroy(&x);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
 static VkPhysicalDevice g_pd;
@@ -1621,6 +1660,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
+   if (ok && CASE_ON("gather")) ok &= test_gather();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

@@ -180,6 +180,7 @@ main(int argc, char **argv)
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
          offsetof(VkPhysicalDeviceFeatures, shaderClipDistance),       /* t_vk_feat clip */
+         offsetof(VkPhysicalDeviceFeatures, shaderImageGatherExtended), /* t_vk_feat gather */
          offsetof(VkPhysicalDeviceFeatures, shaderInt64),              /* t_vk_feat int64 */
          offsetof(VkPhysicalDeviceFeatures, shaderInt16),              /* t_vk_feat int16 */
          offsetof(VkPhysicalDeviceFeatures, depthBiasClamp),   /* t_vk_draw fx_bias_*_clamp */
