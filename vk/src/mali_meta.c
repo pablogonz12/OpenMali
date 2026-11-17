@@ -10,6 +10,7 @@
 #include "mali_meta.h"
 #include "mali_pipeline_layout_flat.h"
 #include "mali_meta_spv.h"
+#include "mali_preload_spv.h"
 #include "mali_bc.h"
 
 int mali_meta_ref_oob;
@@ -493,6 +494,80 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    out->set_va[0] = set_va;
    out->set_bytes[0] = j->nbind * 32;
    memcpy(out->groups, j->groups, sizeof out->groups);
+   return 0;
+}
+
+/* R4: colour loadOp LOAD. A graphics "preload" draw (full-viewport triangle) re-emits the old contents of the (linear) attachment, read as a
+ * storage buffer, into the tile before the application's draws. Compiled once per process (arch of the installed device). */
+static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre;
+
+int
+mali_meta_preload(struct mali_meta_mem *mem, uint64_t va, uint32_t bytes, uint32_t row_bytes, unsigned flags, struct mali_draw *d)
+{
+   pthread_mutex_lock(&g_lock);
+   if (!g_dev_set) {
+      pthread_mutex_unlock(&g_lock);
+      return -ENODEV;
+   }
+   if (!g_pre.ok) {
+      char err[256] = "";
+      struct mali_lbinding b = { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER };
+      struct mali_compile_layout lay;
+      memset(&lay, 0, sizeof lay);
+      lay.nsets = 1;
+      lay.set[0] = (struct mali_lset){ 1, 1, 0, &b };
+      lay.push_size = 8;
+      struct mali_compile_opts o = { 0 };
+      o.arch = g_dev.arch;
+      o.stage = MALI_STAGE_VERTEX;
+      o.spirv = preload_vert_spv;
+      o.spirv_words = sizeof preload_vert_spv / 4;
+      o.strip_psiz = 1;
+      if (mali_compile(&o, &g_pre.vs, err, sizeof err) < 0) {
+         fprintf(stderr, "mali_meta: preload VS compile failed: %s\n", err);
+         pthread_mutex_unlock(&g_lock);
+         return -EINVAL;
+      }
+      o.stage = MALI_STAGE_FRAGMENT;
+      o.strip_psiz = 0;
+      o.spirv = preload_frag_spv;
+      o.spirv_words = sizeof preload_frag_spv / 4;
+      o.layout = &lay;
+      o.link_vs = &g_pre.vs.layout;
+      if (mali_compile(&o, &g_pre.fs, err, sizeof err) < 0) {
+         fprintf(stderr, "mali_meta: preload FS compile failed: %s\n", err);
+         mali_compiled_free(&g_pre.vs);
+         pthread_mutex_unlock(&g_lock);
+         return -EINVAL;
+      }
+      if (g_dev.upload_shader(g_dev.user, g_pre.vs.bin, g_pre.vs.bin_size, &g_pre.vs_va) < 0 ||
+          g_dev.upload_shader(g_dev.user, g_pre.fs.bin, g_pre.fs.bin_size, &g_pre.fs_va) < 0) {
+         pthread_mutex_unlock(&g_lock);
+         return -ENOMEM;
+      }
+      g_pre.ok = true;
+   }
+   uint64_t set_va;
+   uint32_t *set = mem_alloc(mem, 64, 64, &set_va);
+   pthread_mutex_unlock(&g_lock);
+   if (!set)
+      return -ENOMEM;
+   pack_buffer(set, va, bytes);
+   memset(d, 0, sizeof *d);
+   d->gfx.vs = &g_pre.vs;
+   d->gfx.fs = &g_pre.fs;
+   d->gfx.vs_va = g_pre.vs_va;
+   d->gfx.fs_va = g_pre.fs_va;
+   d->gfx.push_base[0] = 32;
+   d->gfx.push_base[1] = g_dev.arch == 13 ? 24 : 0;
+   d->gfx.depth_func = 7;   /* ALWAYS */
+   uint32_t pc[2] = { row_bytes / 4, flags };
+   memcpy(d->push[1], pc, sizeof pc);
+   d->nsets = 1;
+   d->set_va[0] = set_va;
+   d->set_bytes[0] = 32;
+   d->count = 3;
+   d->instance_count = 1;
    return 0;
 }
 
