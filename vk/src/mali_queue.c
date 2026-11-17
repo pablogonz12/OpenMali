@@ -37,7 +37,31 @@ struct mali_hwctx {
    size_t cur_start;
    struct mali_bo old_tls[8];     /* replaced TLS BOs: freed at teardown (in-flight / current frame may still use them) */
    unsigned n_old_tls;
+   uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
+   struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
+   struct mali_meta_dev md;
+   struct mali_hwctx *below;      /* previously current device (stack of live devices) */
 };
+
+/* mali_cmd.c / mali_meta.c keep process-global bindings to ONE device. dEQP (and apps) create short-lived extra devices
+ * while the main one stays alive: destroying the extra one must re-bind the singletons to the one below it, not unbind them
+ * (that made vkCreateEvent/meta allocations of the surviving device fail with VK_ERROR_OUT_OF_DEVICE_MEMORY). */
+static pthread_mutex_t g_bind_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct mali_hwctx *g_cur;
+
+static void
+bind_hw(struct mali_hwctx *h)
+{
+   if (h) {
+      mali_cmd_set_hw(&h->hw);
+      mali_cmd_set_res(&mali_cmd_res);
+      mali_meta_set_dev(&h->md);
+   } else {
+      mali_cmd_set_hw(NULL);
+      mali_cmd_set_res(NULL);
+      mali_meta_set_dev(NULL);
+   }
+}
 
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
  * executable shader memory ---- */
@@ -73,7 +97,13 @@ meta_upload_shader(void *u, const uint8_t *bin, uint32_t size, uint64_t *va)
    struct mali_hwctx *h = u;
    if (h->n_meta_sh >= 16)
       return -ENOMEM;
+   for (unsigned i = 0; i < h->n_meta_sh; i++)   /* re-bind after another device was destroyed: reuse the identical upload */
+      if (h->meta_sz[i] == size && !memcmp(h->meta_sh[i].cpu, bin, size)) {
+         *va = h->meta_sh[i].gpu_va;
+         return 0;
+      }
    struct mali_bo *bo = &h->meta_sh[h->n_meta_sh];
+   h->meta_sz[h->n_meta_sh] = size;
    if (mali_device_pdev(h->dev)->backend->bo_alloc(h->dev->kdev, size, MALI_BO_EXEC, bo))
       return -ENOMEM;
    h->n_meta_sh++;
@@ -217,9 +247,18 @@ mali_hw_finish(struct mali_device *dev)
       hw_wait(h, h->expected);
    for (unsigned i = 0; i < h->n_old_tls; i++)
       be->bo_free(dev->kdev, &h->old_tls[i]);
-   mali_cmd_set_hw(NULL);
-   mali_cmd_set_res(NULL);
-   mali_meta_set_dev(NULL);
+   pthread_mutex_lock(&g_bind_lock);
+   if (g_cur == h) {
+      g_cur = h->below;
+      bind_hw(g_cur);
+   } else {
+      for (struct mali_hwctx *c = g_cur; c; c = c->below)
+         if (c->below == h) {
+            c->below = h->below;
+            break;
+         }
+   }
+   pthread_mutex_unlock(&g_bind_lock);
    for (unsigned i = 0; i < h->n_meta_sh; i++)
       be->bo_free(dev->kdev, &h->meta_sh[i]);
    if (h->heap_live)
@@ -284,10 +323,13 @@ mali_hw_init(struct mali_device *dev)
    kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
    hw.env.heap_desc_ready = true;
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
-   mali_cmd_set_hw(&hw);
-   mali_cmd_set_res(&mali_cmd_res);
-   struct mali_meta_dev md = {.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};
-   mali_meta_set_dev(&md);
+   h->hw = hw;
+   h->md = (struct mali_meta_dev){.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};
+   pthread_mutex_lock(&g_bind_lock);
+   h->below = g_cur;
+   g_cur = h;
+   bind_hw(h);
+   pthread_mutex_unlock(&g_bind_lock);
    return VK_SUCCESS;
 fail:
    mali_hw_finish(dev);
