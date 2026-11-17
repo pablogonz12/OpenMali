@@ -179,6 +179,10 @@ main(int argc, char **argv)
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
          offsetof(VkPhysicalDeviceFeatures, depthBiasClamp),   /* t_vk_draw fx_bias_*_clamp */
+         offsetof(VkPhysicalDeviceFeatures, drawIndirectFirstInstance), /* t_vk_feat firstinst */
+         offsetof(VkPhysicalDeviceFeatures, fullDrawIndexUint32),       /* t_vk_feat idx32 */
+         offsetof(VkPhysicalDeviceFeatures, samplerAnisotropy),         /* t_vk_feat aniso */
+         offsetof(VkPhysicalDeviceFeatures, imageCubeArray),            /* t_vk_feat cubearray */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
@@ -193,9 +197,10 @@ main(int argc, char **argv)
       for (unsigned i = 0; i < (sizeof(f11) - 16) / 4; i++)
          CHECK(!a[i], "vk11 feature #%u advertised without a test", i);
       const VkBool32 *b = (const VkBool32 *)((const char *)&f12 + 16);
-      const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b);
+      const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b),
+                     mc = (unsigned)((const VkBool32 *)&f12.samplerMirrorClampToEdge - b); /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == tl || i == hq, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == tl || i == hq || i == mc, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d);
