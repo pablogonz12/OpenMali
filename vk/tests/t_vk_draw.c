@@ -888,22 +888,37 @@ test_load(const char *name, int kind)
    if (kind == 2) { AB[0][2] = -.5f; AB[1][0] = 1; AB[1][2] = .5f; }
    uint32_t a = 0, b = 0, ref = 0, got = 0, cref = 0, cgot = 0;
    if (ok) ok = scene_draw(&s, 2, AB, f);               /* reference: both in one pass (the stencil state lives in s) */
-   if (ok) { ref = px_at(&s, 128, 128); cref = count_cov(&s); }
+   static const int PX[6][2] = {{128, 128}, {128, 90}, {128, 170}, {90, 150}, {166, 110}, {128, 40}};
+   uint32_t pref[6] = {0}, pgot[6] = {0}, p1[6] = {0};
+   uint32_t cov1 = 0;
+   if (ok) { ref = px_at(&s, 128, 128); cref = count_cov(&s); for (int i = 0; i < 6; i++) pref[i] = px_at(&s, PX[i][0], PX[i][1]); }
    if (ok) ok = scene_draw(&s, 1, &AB[0], f);
    if (ok) a = px_at(&s, 128, 128);
    if (ok) ok = scene_draw(&s, 1, &AB[1], f);
    if (ok) b = px_at(&s, 128, 128);
    if (ok) ok = scene_draw(&s, 1, &AB[0], f);          /* pass 1: clear, A, store */
+   if (ok) { cov1 = count_cov(&s); for (int i = 0; i < 6; i++) p1[i] = px_at(&s, PX[i][0], PX[i][1]); }
    s.second = 1;
    if (ok) ok = scene_draw(&s, 1, &AB[1], f);          /* pass 2: LOAD colour+depth(+stencil), B */
    s.second = 0;
-   if (ok) { got = px_at(&s, 128, 128); cgot = count_cov(&s); }
+   if (ok) { got = px_at(&s, 128, 128); cgot = count_cov(&s); for (int i = 0; i < 6; i++) pgot[i] = px_at(&s, PX[i][0], PX[i][1]); }
    if (ok) {
       if (g_fake) {
          printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
       } else {
          if (kind != 2) CHECK(a != b, "%s: centre A %08x == B %08x (test is blind)", name, a, b);
          ok = got == ref && cgot == cref;
+         for (int i = 0; i < 6 && !ok; i++) ok = ok;
+         int same = 1;
+         for (int i = 0; i < 6; i++) same &= pgot[i] == pref[i];
+         ok = ok && same;
+         if (!ok) {
+            /* which failure: pass 2 drew nothing (cov == pass 1), preload did not run (B overwrote A where it must be rejected: cov > ref), or B was rejected too much (cov < ref) */
+            const char *why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
+            printf("{\"test\":\"%s\",\"diag\":\"%s\",\"cov1\":%u,\"cov_ref\":%u,\"cov_got\":%u}\n", name, why, cov1, cref, cgot);
+            for (int i = 0; i < 6; i++)
+               printf("{\"test\":\"%s\",\"px\":[%d,%d],\"pass1\":\"%08x\",\"want\":\"%08x\",\"got\":\"%08x\"}\n", name, PX[i][0], PX[i][1], p1[i], pref[i], pgot[i]);
+         }
          CHECK(ok, "%s: two-pass centre %08x cov %u vs one-pass %08x cov %u (A %08x B %08x)", name, got, cgot, ref, cref, a, b);
          printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"cov\":%u,\"ok\":%s}\n", name, got, ref, cgot, ok ? "true" : "false");
       }
