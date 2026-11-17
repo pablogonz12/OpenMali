@@ -16,7 +16,7 @@ Read README.md, ROADMAP.md, vk/R4-GAP.md for status. Main checkout: `~/Documents
 | alias | GPU | class | state |
 |---|---|---|---|
 | cmf | Mali-G615 | v11 | always attached; USB, wireless adb as fallback |
-| poco-x8 | Mali-G925 | v13 | owner's daily phone, attached only some of the time; USB ONLY, never wireless; its farm jobs stay pending |
+| poco-x8 | Mali-G925 | v13 | owner's daily phone; USB, wireless adb as fallback; tested ONLY while on a charger (on battery: untouched, jobs stay pending); owner switch: `farm disable poco-x8` |
 | poco-x4 | Mali-G610 | v10 | always attached, wireless adb only; driver bring-up in progress |
 
 ## Rules for every worker
