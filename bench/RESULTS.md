@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open 20e290c1a (2026-11-17)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 293.0 | 103.4 | 0 | 1.02 | 2.25 | 509.4 | 0.97 | 1.60 | present immediate/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
+| poco-x8 | v13 | ours | 20e290c1a | triangle-3k | 100.1 | 79.6 | 0 | 5.48 | 1.92 | 339.9 | 2.75 | 1.44 | present mailbox/3img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_HF=0+MALI_NOTF=1 | 2026-11-17 |
+
 ### mali-open 23edb3f94-dirty (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -18,6 +25,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 ## cube (GPU-heavy)
+
+### mali-open 20e290c1a (2026-11-17)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 195.1 | 67.2 | 0 | 0.03 | 3.78 | 804.1 | 0.01 | 1.19 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 211.8 | 68.2 | 0 | 0.03 | 3.49 | 800.7 | 0.01 | 1.20 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
 
 ### mali-open 23edb3f94-dirty (2026-11-18)
 
