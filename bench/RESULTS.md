@@ -8,17 +8,15 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| cmf | v11 | bridge | malideck p19 (0.7.1-bridge0.5.5.3-p10-gs2) | triangle-3k | 135.2 | 63.9 | 0 | 1.26 | 4.08 | 274.6 | 0.74 | 2.60 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-17 |
-| cmf | v11 | ours | 3cd6b12b8-dirty | triangle-3k | 72.6 | 45.4 | 0 | 7.96 | 2.82 | 157.9 | 5.50 | 2.89 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-17 |
-| cmf | | ours + bridge | | all | pending | | | | | | | | owner is using the phone:  | |
-| poco-x8 | | ours + bridge | | all | pending | | | | | | | | owner is using the phone:  | |
+| cmf | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
+| poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 ## cube (GPU-heavy)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| cmf | | ours + bridge | | all | pending | | | | | | | | owner is using the phone:  | |
-| poco-x8 | | ours + bridge | | all | pending | | | | | | | | owner is using the phone:  | |
+| cmf | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
+| poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets `default`; `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`; `MALI_HF=0 MALI_NOTF=1`; `MALI_NO_MERGE=1`. Bridge options: none exposed in the guest besides the above.
 Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).
