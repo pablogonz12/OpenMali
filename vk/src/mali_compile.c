@@ -26,7 +26,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 12
+#define MALI_COMPILE_VERSION 14
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -294,8 +294,18 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
 
-   if (stage == MESA_SHADER_VERTEX)
-      NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
+   if (stage == MESA_SHADER_VERTEX) {
+      bool has_clip = false;
+      nir_foreach_shader_out_variable(var, nir) {
+         if (var->data.location == VARYING_SLOT_CLIP_DIST0)
+            has_clip = true;
+         for (unsigned i = 0; i < var->num_members; i++)
+            if (var->members[i].location == VARYING_SLOT_CLIP_DIST0)
+               has_clip = true;
+      }
+      if (has_clip)
+         NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
+   }
    if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
       nir_foreach_shader_out_variable(var, nir)
          if (var->data.location == VARYING_SLOT_PSIZ) {
@@ -344,7 +354,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       if (stage == MESA_SHADER_VERTEX) {
          /* gl_ClipDistance: written as ordinary varyings (VARYING_SLOT_CLIP_DIST0/1); the FS kills where it is < 0 (nir_lower_clip_fs) */
          nir_gather_clip_cull_distance_sizes_from_vars(nir);
-         NIR_PASS(_, nir, nir_merge_clip_cull_distance_vars);
+         if (nir->info.clip_distance_array_size)
+            NIR_PASS(_, nir, nir_merge_clip_cull_distance_vars);
          clip_distances = nir->info.clip_distance_array_size;
          nir_foreach_shader_in_variable(var, nir)
             var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
