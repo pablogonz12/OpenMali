@@ -72,7 +72,7 @@ meta_upload_shader(void *u, const uint8_t *bin, uint32_t size, uint64_t *va)
    return 0;
 }
 
-#define ARENA_BYTES (1u << 20)
+#define ARENA_BYTES (32u << 20)   /* per-frame descriptor arena: ~4.5 KB per draw (two 2 KiB driver sets); 1 MiB capped a frame at ~230 draws */
 #define HEAP_CHUNK (2u << 20)
 
 static void *
@@ -111,6 +111,7 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    int r = be->submit_cs(h->dev->kdev, cs, n);
+   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
    if (r)
       return r;
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
@@ -169,7 +170,7 @@ mali_hw_init(struct mali_device *dev)
    if (be->bo_alloc(dev->kdev, 4096, MALI_BO_EVENT, &h->sync))
       goto fail;
    h->sync_live = true;
-   if (be->heap_create(dev->kdev, HEAP_CHUNK, 1, 4, &h->heap))
+   if (be->heap_create(dev->kdev, HEAP_CHUNK, 4, 64, &h->heap))
       goto fail;
    h->heap_live = true;
    h->ar.bo.cpu = h->arena.cpu;
@@ -190,6 +191,7 @@ mali_hw_init(struct mali_device *dev)
                               .sync_va = h->sync.gpu_va,
                               .core_id_range = pdev->gpu.core_id_range,
                               .tls_threads = pdev->gpu.tls_threads};
+   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    mali_cmd_set_hw(&hw);
    mali_cmd_set_res(&mali_cmd_res);
    struct mali_meta_dev md = {.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};
@@ -243,6 +245,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
+      if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
       if (cr == VK_ERROR_DEVICE_LOST)
          return vk_queue_set_lost(vq, "frame submit failed");
       if (cr != VK_SUCCESS)
@@ -251,8 +254,10 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 
    int fd = -1;
    int r = be->submit_signal(dev->kdev, &fd);
-   if (r != 0)
+   if (r != 0) {
+      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);
+   }
 
    VkResult res = VK_SUCCESS;
    for (uint32_t i = 0; i < submit->signal_count && res == VK_SUCCESS; i++) {

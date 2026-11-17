@@ -401,7 +401,14 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 static bool
 kbase_device_lost(struct mali_kdev *k)
 {
-   return k->lost || (k->queue_live && kb_queue_faulted(&k->queue));
+   bool l = k->lost || (k->queue_live && kb_queue_faulted(&k->queue));
+   if (l && getenv("MALI_PIPE_DBG")) {
+      struct kb_event ev;
+      fprintf(stderr, "mali_vk: device lost (lost=%d faulted=%d)\n", (int)k->lost, (int)(k->queue_live && kb_queue_faulted(&k->queue)));
+      while (kb_event_read(k->ctx, &ev, 0) > 0)
+         fprintf(stderr, "mali_vk: event: %s\n", ev.text);
+   }
+   return l;
 }
 
 /* ---- M9: frame command streams, counter wait, tiler heap ---- */
