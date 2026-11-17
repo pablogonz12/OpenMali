@@ -4,7 +4,7 @@
  * (indexed draws: implemented in M9 rest, v11 INDEX_BUFFER r54 / SIZE r39 from genxml v11, index type PRIMITIVE_FLAGS[10:8])
  *   - colour loadOp LOAD, more than one colour attachment, depth-only render passes (the FBD needs a colour RT)
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
- *   - dynamic descriptor offsets, instance-rate vertex attributes, non-triangle-list topologies (M6 resolver decides) */
+ *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
