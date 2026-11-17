@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1336,6 +1336,106 @@ test_gather(void)
    return 1;
 }
 
+/* fragmentStoresAndAtomics: see fsstore.frag. Checks the SSBO (stores + atomicAdd/atomicMax), and the storage image (copied back). */
+static int
+test_fsstore(void)
+{
+   if (!g_feat.fragmentStoresAndAtomics) { printf("{\"test\":\"fsstore\",\"skipped\":\"fragmentStoresAndAtomics not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { N = 256 * 256 };
+   struct hbuf sb, ob;
+   if (!hbuf_create(&sb, (N + 2) * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   if (!hbuf_create(&ob, N * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(sb.p, 0, (N + 2) * 4);
+   memset(ob.p, 0, N * 4);
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R32_UINT, 256, 256, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory imem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &imem) == VK_SUCCESS, "image memory");
+   CHECK(BindImageMemory(dev, img, imem, 0) == VK_SUCCESS, "bind image");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                               .format = VK_FORMAT_R32_UINT, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "view");
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorBufferInfo bi = {sb.b, 0, VK_WHOLE_SIZE};
+   VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkWriteDescriptorSet w[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi},
+                                {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii}};
+   UpdateDescriptorSets(dev, 2, w, 0, NULL);
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "quad.vert.spv", "fsstore.frag.spv", dsl, 16, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   VkImageMemoryBarrier b1 = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                              .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                              .image = img, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b1);
+   begin_pass(cb, &t, pipe);
+   const float s[4] = {1.0f, 1.0f, 0, 0};
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   VkImageMemoryBarrier b2 = b1;
+   b2.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+   b2.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   b2.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b2);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {256, 256, 1}};
+   CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, ob.b, 1, &reg);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint32_t *d = (const uint32_t *)(const void *)sb.p, *im = (const uint32_t *)(const void *)ob.p;
+      uint32_t cov = 0, badbuf = 0, badimg = 0, maxi = 0;
+      for (uint32_t y = 0; y < 256; y++)
+         for (uint32_t x = 0; x < 256; x++) {
+            uint32_t i = y * 256 + x;
+            int red = pix(&t, (int)x, (int)y)[0] == 255 && pix(&t, (int)x, (int)y)[3] == 255;
+            cov += red;
+            if (red) maxi = i;
+            badbuf += d[2 + i] != (red ? i + 1 : 0);
+            badimg += im[i] != (red ? i + 1 : 0);
+         }
+      CHECK(cov > 60000, "coverage %u", cov);
+      CHECK(d[0] == cov, "atomicAdd counter %u expected %u", d[0], cov);
+      CHECK(d[1] == maxi, "atomicMax %u expected %u", d[1], maxi);
+      CHECK(badbuf == 0, "%u SSBO elements wrong", badbuf);
+      CHECK(badimg == 0, "%u storage-image texels wrong", badimg);
+      printf("{\"test\":\"fsstore\",\"covered\":%u,\"ok\":true}\n", cov);
+   } else printf("{\"test\":\"fsstore\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, imem, NULL);
+   hbuf_destroy(&sb);
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
 static VkPhysicalDevice g_pd;
@@ -1661,6 +1761,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
+   if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

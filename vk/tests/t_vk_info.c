@@ -181,6 +181,7 @@ main(int argc, char **argv)
       static const size_t tested[] = {
          offsetof(VkPhysicalDeviceFeatures, shaderClipDistance),       /* t_vk_feat clip */
          offsetof(VkPhysicalDeviceFeatures, shaderImageGatherExtended), /* t_vk_feat gather */
+         offsetof(VkPhysicalDeviceFeatures, fragmentStoresAndAtomics), /* t_vk_feat fsstore */
          offsetof(VkPhysicalDeviceFeatures, shaderInt64),              /* t_vk_feat int64 */
          offsetof(VkPhysicalDeviceFeatures, shaderInt16),              /* t_vk_feat int16 */
          offsetof(VkPhysicalDeviceFeatures, depthBiasClamp),   /* t_vk_draw fx_bias_*_clamp */
