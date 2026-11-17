@@ -88,6 +88,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
       return;
    }
    if (!mali_cmd_push_frame || cmd->in_render) {
+      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_meta_vk: meta op %s\n", cmd->in_render ? "inside render pass" : "no push_frame");
       fail(cmd, VK_ERROR_FEATURE_NOT_PRESENT);
       mali_meta_list_free(l);
       return;

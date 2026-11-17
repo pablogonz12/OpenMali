@@ -64,6 +64,8 @@ struct mali_gfx_state {
    struct mali_attr attr[MALI_MAX_ATTR];
    bool depth_test, depth_write;
    unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
+   unsigned prim;                         /* Mali draw mode: 1 points, 2 lines, 4 line strip, 8 triangles (default 0 = 8), 10 strip, 12 fan */
+   bool prim_restart;
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
 };
 
