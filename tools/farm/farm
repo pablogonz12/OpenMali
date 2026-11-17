@@ -6,6 +6,7 @@ import argparse, json, os, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import farmlib as L                                    # noqa: E402
+import benchlib as BL                                  # noqa: E402
 
 
 def git(*a):
@@ -223,8 +224,9 @@ def cmd_digest(a):
                     ns = [c for c in worse if b1.get(c) == "NotSupported"]
                     if worse:
                         lines.append(f"    vs main {m['commit'][:7]}: {len(worse)} regressed ({len(ns)} ->NS): {names(worse)}")
-    room = 40 - 4 - len(devs)
-    print("\n".join(lines[:room]) + (f"\n... {len(lines) - room} more lines (older refs)" if len(lines) > room else ""))
+    bl = BL.digest_lines(BL.load_rows(L.state_dir()))          # latest bench per phone always shown (not cut by the room limit)
+    room = 40 - 4 - len(devs) - len(bl)
+    print("\n".join(bl + lines[:room]) + (f"\n... {len(lines) - room} more lines (older refs)" if len(lines) > room else ""))
 
 
 def cmd_diff(a):

@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# Cross builds of Mesa's static libs + our ICD: ./cross/build-cross.sh [glibc|bionic|all]
+# Cross builds of Mesa's static libs + our ICD: ./cross/build-cross.sh [glibc|bionic|glibc-wl|all]
 #   out/a64-glibc/  (guest, Ubuntu arm64 sysroot of droidtest/tools)   out/a64-bionic/ (adb shell, NDK r27d, API 29)
 # Prereq: native build-vk exists (README.md); its host tools mesa_clc, vtn_bindgen2, panfrost_compile are built here.
 set -euo pipefail
@@ -55,6 +55,12 @@ if [ "$what" = glibc ] || [ "$what" = all ]; then
   # the PanVK .so is only the convenient target that pulls in every static library (it is not shipped)
   ninja -C $B src/panfrost/vulkan/libvulkan_panfrost.so
   MESA_BUILD=$B MALI_TARGET=a64-glibc "$V/build.sh"
+fi
+if [ "$what" = glibc-wl ]; then   # (not in "all") the WSI variant (Wayland platform): what the guest benchmarks and games load
+  B=$TP/build-vk-a64-glibc-wl; fixdir $B $INI/a64-glibc.ini
+  [ -f $B/build.ninja ] || meson setup $B $TP/mesa --cross-file $INI/a64-glibc.ini ${COMMON/-Dplatforms=/-Dplatforms=wayland} -Dxmlconfig=enabled
+  ninja -C $B src/panfrost/vulkan/libvulkan_panfrost.so
+  MESA_BUILD=$B MALI_TARGET=a64-glibc-wl "$V/build.sh"
 fi
 if [ "$what" = bionic ] || [ "$what" = all ]; then
   B=$TP/build-vk-a64-bionic; fixdir $B $INI/a64-bionic.ini

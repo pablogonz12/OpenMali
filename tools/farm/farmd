@@ -11,6 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import farmlib as L                                    # noqa: E402
 import gate                                            # noqa: E402
+import benchlib as B                                   # noqa: E402
 import sweeplib as S                                   # noqa: E402
 
 RETRIES = 3
@@ -66,6 +67,8 @@ class Farm:
         self.cfg_mtime = self.devices_mtime()
         self.wake = threading.Event()                  # set when a run/sweep ends: schedule the next one immediately, no poll wait
         self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
+        self.idle_since = {}                           # alias -> when it last stopped doing real (non-sweep) work or became healthy
+        self.last_auto = 0
 
     # ---------- devices
     def devices_mtime(self):
@@ -321,12 +324,14 @@ class Farm:
             if not os.path.lexists(os.path.join(tree, "third_party")) and os.path.isdir(tp):
                 os.symlink(os.path.realpath(tp), os.path.join(tree, "third_party"))
             self.borrow_deqp(tree)
+            var = self.variant(job)                   # bench jobs: the WSI (Wayland) variant a64-glibc-wl, everything else a64-glibc
             need_bionic = job["suite"] == "smoke" and any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values())
             if not job.get("dirty") and not need_bionic:          # build cache per commit: an earlier job of the same commit already built this .so
                 for o in L.list_jobs(True):
                     art = os.path.join(L.state_dir(), "artifacts", (o.get("so_sha256") or "x") + ".so")
-                    if o["id"] != job["id"] and o["commit"] == job["commit"] and not o.get("dirty") and o.get("build") == "ok" and os.path.exists(art):
-                        od = os.path.join(tree, "vk", "out", "a64-glibc")
+                    if o["id"] != job["id"] and o["commit"] == job["commit"] and not o.get("dirty") and o.get("build") == "ok" and os.path.exists(art) \
+                                and self.variant(o) == var:
+                        od = os.path.join(tree, "vk", "out", var)
                         if job["suite"] == "smoke" and not self.tests_archived(o["so_sha256"]):
                             continue                  # the smoke suite runs the t_* binaries: a daily's cached .so alone is not enough, rebuild
                         os.makedirs(od, exist_ok=True)
@@ -334,9 +339,9 @@ class Farm:
                         self.restore_tests(o["so_sha256"], od)
                         self.upd(job["id"], lambda x, o=o: x.update(so_sha256=o["so_sha256"], build="ok", build_s=0, build_cached=o["id"]))
                         return o["so_sha256"], ""
-            env = dict(os.environ, MESA_BUILD=os.path.join(tree, "third_party", "build-vk-a64-glibc"), MALI_TARGET="a64-glibc")
+            env = dict(os.environ, MESA_BUILD=os.path.join(tree, "third_party", "build-vk-" + var), MALI_TARGET=var)
             rc, out = L.sh(["timeout", "-k", "10", str(BUILD_TIMEOUT), "bash", os.path.join(tree, "vk", "build.sh")], BUILD_TIMEOUT + 30, env=env)
-            so = os.path.join(tree, "vk", "out", "a64-glibc", "libvulkan_mali.so")
+            so = os.path.join(tree, "vk", "out", var, "libvulkan_mali.so")
             if rc or not os.path.exists(so):
                 open(os.path.join(L.state_dir(), "logs", job["id"] + "-build.log"), "w").write(out)
                 self.upd(job["id"], lambda x: x.update(build="failed"))
@@ -359,6 +364,10 @@ class Farm:
                 self.upd(job["id"], lambda x: x.update(so_sha256_bionic=sha2))
             self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok", build_s=round(time.time() - t0)))
             return sha, ""
+
+    @staticmethod
+    def variant(job):
+        return B.DEVICE_SUITE_VARIANT if job.get("suite") == "bench" else "a64-glibc"
 
     @staticmethod
     def tests_dir(sha):
@@ -400,6 +409,8 @@ class Farm:
     def missing_deps(self, suite):
         """untracked build inputs live in the main checkout (farm.toml: main_checkout); say clearly what is missing"""
         need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
+        if suite == "bench":
+            need = [("third_party/build-vk-a64-glibc-wl", "Mesa a64-glibc-wl (Wayland WSI) build tree: vk/cross/build-cross.sh glibc-wl")]
         if suite == "smoke" and any(self.shell_route(dv) for dv in self.devs.values()):
             need.append(("third_party/build-vk-a64-bionic", "Mesa a64-bionic build tree (shell-route smoke)"))
         if suite in ("daily", "cases", "sweep"):
@@ -837,8 +848,77 @@ class Farm:
         return {"verdict": "fail" if bad else "pass", "counts": tot, "case_counts": stat, "new_failures": bad, "newly_passing": [],
                 "notes": f"{n} repetitions of {len(cases)} case(s)"}
 
+    def bench_prepare(self, job):
+        """build the guest benchmark harness (bench/mdbench, aarch64) from the job's tree (the farm checkout's copy for commits that predate it)
+        -> path of mdbench-aarch64 | None. Idempotent; runs BEFORE the phone lock is taken."""
+        tree = self.tree(job["id"])
+        src = tree if os.path.isdir(os.path.join(tree, "bench", "mdbench")) else self.repo
+        out = os.path.join(src, "bench", "mdbench", "out", "mdbench-aarch64")
+        if not os.path.exists(out):
+            if not os.path.lexists(os.path.join(src, "third_party")) and os.path.isdir(os.path.join(self.main_tree, "third_party")):
+                os.symlink(os.path.realpath(os.path.join(self.main_tree, "third_party")), os.path.join(src, "third_party"))
+            rc, o = L.sh(["bash", os.path.join(src, "bench", "mdbench", "build.sh"), "aarch64"], 180)
+            if rc or not os.path.exists(out):
+                open(os.path.join(L.state_dir(), "logs", job["id"] + "-mdbench-build.log"), "w").write(o)
+                return None
+        return out
+
+    BENCH_CHUNKS = int(os.environ.get("MALI_FARM_BENCH_CHUNKS", "6"))          # bench2 calls per part, each <= 230 s of measuring + overhead
+
+    def fake_bench_rows(self, job, dev):
+        rows = []
+        for variant, bench, c, g in (("triangle-3k", "triangle", 1.9, 0.0), ("cube-720p", "cube", 0.4, 12.5)):
+            for drv, k in (("ours", 1.0), ("bridge", 1.3)):
+                rows.append({"date": L.now()[:10], "bench": bench, "variant": variant, "class": dev["class"], "driver": drv, "version": "fake", "commit": job["commit"][:9],
+                             "offscreen": {"cpu_ms": round(c * k, 3), "gpu_ms": round(g * k, 3), "fps": 100.0}, "presented": {"cpu_ms": c * k, "gpu_ms": g * k, "fps": 60.0},
+                             "so_sha256": (job.get("so_sha256") or "")[:12] if drv == "ours" else None, "best_settings": "fake"})
+        return rows
+
     def suite_bench(self, job, dev):
-        return {"verdict": "error", "notes": "bench suite is a stub (not implemented yet)"}
+        """tools/bench2 for this ref on this phone: ours (a64-glibc-wl build of the job's commit) vs the bridge, the known-best settings (bench/best.json),
+        rows recorded with ref + commit in <state>/bench/results.jsonl. The phone lock is held by farmd only from here (building was done before it)."""
+        alias = dev["alias"]
+        if self.fake:
+            if "FAKE_FAIL=1" in job["env"].split():
+                return {"verdict": "error", "notes": "fake bench failure"}
+            n = B.append_rows(L.state_dir(), self.fake_bench_rows(job, dev), job, alias)
+            return {"verdict": "pass", "counts": {"rows": n}, "new_failures": [], "newly_passing": [], "notes": "fake bench"}
+        if self.shell_route(dev):
+            return {"verdict": "error", "notes": "bench needs the in-app guest route; this phone is shell-route only"}
+        mdb = self.bench_prepare(job)
+        if not mdb:
+            return {"verdict": "error", "notes": f"mdbench build failed (see logs/{job['id']}-mdbench-build.log)"}
+        so = os.path.join(self.tree(job["id"]), "vk", "out", self.variant(job), "libvulkan_mali.so")
+        wd = os.path.join(L.state_dir(), "work", f"{job['id']}-{alias}-bench")
+        os.makedirs(wd, exist_ok=True)
+        cmd = [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "bench2"), alias, "--out", wd, "--so", so, "--mdb", mdb,
+               "--commit", job["commit"][:9], "--ref", job["ref"], "--budget", "230"]
+        ex = {"QSAFE_HELD": dev["lock"]}
+        out = ""
+        for _ in range(self.BENCH_CHUNKS):
+            rc, out = L.run_watched(cmd, 330, lambda: self.alive(dev), env=self.phone_env(dev, ex))
+            if rc == 125:
+                return {"lost": True}
+            if "CHUNK DONE" not in out:
+                break
+        self.keep_log(job, dev, "bench", out, rc)
+        ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/mdb_icd.so")
+        if not ok_s:
+            shutil.rmtree(wd, ignore_errors=True)
+            return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
+        if "CHUNK DONE" in out or "PENDING:" in out or "stop:" in out:         # budget used up / owner using the phone / gated: resume later from bench/raw in wd
+            self.cool[alias] = time.time() + 300
+            return {"gated": True}
+        jl = os.path.join(wd, "results.jsonl")
+        rows = [json.loads(l) for l in open(jl)] if os.path.exists(jl) else []
+        rows = [r for r in rows if r.get("commit") == job["commit"][:9] and "bench" in r]
+        shutil.rmtree(wd, ignore_errors=True)
+        drivers = {r["driver"] for r in rows}
+        if not rows or drivers != {"ours", "bridge"}:
+            return {"verdict": "error", "counts": {"rows": len(rows)}, "notes": f"bench2 rc={rc}, drivers with rows {sorted(drivers)}: {out.strip()[-200:]}"}
+        B.append_rows(L.state_dir(), rows, job, alias)
+        return {"verdict": "pass", "counts": {"rows": len(rows)}, "new_failures": [], "newly_passing": [],
+                "notes": "; ".join(B.digest_lines(rows))[:300]}
 
     # ---------- one part of a job on one device
     def run_part(self, jid, cls, alias):
@@ -851,6 +931,13 @@ class Farm:
         dev = self.devs[alias]
         if self.is_disabled(dev):
             return
+        j0 = L.read_json(L.job_path(jid))
+        if j0["suite"] == "bench" and not self.fake:        # build + harness BEFORE the phone lock: the lock is held only while measuring
+            try:
+                if self.build(j0)[0]:
+                    self.bench_prepare(j0)
+            except Exception:
+                log(f"{alias}: bench pre-build error " + traceback.format_exc()[-200:])
         lock = L.PhoneLock(dev, self.fake)
         if not lock.acquire():
             log(f"{alias}: qsafe lock busy, {jid}/{cls} stays pending")
@@ -1115,18 +1202,75 @@ class Farm:
             S.save(cls, st)
         return rc in (0, 124, 1) and bool(adv)
 
+    # ---------- auto bench (priority: explicit jobs > auto bench > sweep)
+    def auto_bench_on(self):
+        if self.once and not os.environ.get("MALI_FARM_AUTO_BENCH"):           # --once (tests): only when a test asks for it
+            return False
+        return not os.path.exists(os.path.join(L.state_dir(), "bench", "off"))
+
+    def changed_paths(self, a, b):
+        rc, o = git("diff", "--name-only", f"{a}..{b}", cwd=self.repo)
+        return o.split() if rc == 0 else ["vk/src/"]                           # unknown range (rebased/forgotten commit): assume it matters
+
+    def note_idle(self, att):
+        """idle clock per phone: restarts whenever the phone is not healthy/up or runs a real job (a sweep chunk is preemptible = idle)"""
+        now = time.time()
+        for al in self.devs:
+            t = self.threads.get(al)
+            real = t is not None and t.is_alive() and not t.name.startswith("sweep/")
+            if real or al not in att or self.dstate.get(al, {}).get("status") != "up":
+                self.idle_since[al] = now
+            else:
+                self.idle_since.setdefault(al, now)
+
+    def auto_bench(self, att, jobs):
+        """(a) new main commit touching vk/src or libkbase -> a bench job on every available phone class; (b) a phone idle > 15 min
+        (gate ok) without a bench row for the current main -> a bench job pinned to it. Both marked auto: below explicit jobs."""
+        if not self.auto_bench_on() or time.time() - self.last_auto < (0 if self.fake else 30):
+            return
+        self.last_auto = time.time()
+        tip = self.main_tip()
+        if not tip:
+            return
+        sp = os.path.join(B.bench_dir(L.state_dir()), "auto.json")
+        last = L.read_json(sp).get("last_main") if os.path.exists(sp) else None
+        disabled = {a for a, d in self.devs.items() if self.is_disabled(d)}
+        avail = B.available(self.devs, self.dstate, disabled)
+        cls_avail = {self.devs[a]["class"] for a in avail}
+        new_last, classes = B.plan_trigger(last, tip, self.changed_paths(last, tip) if last and last != tip else [], cls_avail)
+        if new_last != last:
+            L.write_json(sp, {"last_main": new_last})
+        classes = [c for c in classes if not B.queued(jobs, tip, c)]
+        if classes:
+            j = L.new_job("main", tip, False, "bench", classes, "", os.path.basename(self.repo), auto=True)
+            log(f"auto bench: main {tip[:8]} touches the driver: {j['id']} for {','.join(classes)}")
+            return
+        running = {a for a, t in self.threads.items() if t.is_alive() and not t.name.startswith("sweep/")}
+        idle = float(os.environ.get("MALI_FARM_BENCH_IDLE", B.IDLE_SECS))
+        rows = B.load_rows(L.state_dir())
+        for a in B.idle_candidates(time.time(), self.idle_since, self.devs, self.dstate, rows, jobs, tip, disabled, idle, running):
+            j = L.new_job("main", tip, False, "bench", [self.devs[a]["class"]], "", os.path.basename(self.repo), auto=True, pin=a)
+            log(f"auto bench: {a} idle > {idle:.0f}s with no bench row for main {tip[:8]}: {j['id']}")
+            break                                                              # one at a time: the oldest missing first
+
     # ---------- main loop
     def tick(self):
         self.reload_devices()
         jobs = L.list_jobs()
         att = self.watch_devices(jobs)
+        self.note_idle(att)
+        try:
+            self.auto_bench(att, jobs)
+            jobs = L.list_jobs()
+        except Exception:
+            log("auto bench error: " + traceback.format_exc()[-300:])
         if not (self.prebuild_t and self.prebuild_t.is_alive()):     # build the next queued job's driver while the phones are still busy
             nxt = next((j for j in jobs if not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
             if nxt:
                 self.prebuild_t = threading.Thread(target=self.build, args=(nxt,), daemon=True, name="prebuild")
                 self.prebuild_t.start()
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
-        for j in jobs:
+        for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
                 if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls) for t in self.threads.values()):
                     self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="pending"))   # farmd restarted mid-run
@@ -1134,7 +1278,7 @@ class Farm:
                 if p["state"] != "pending":
                     continue
                 for al, d in self.devs.items():
-                    if d["class"] == cls and al in att and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
+                    if d["class"] == cls and al in att and B.pin_ok(j, al) and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
                         t = threading.Thread(target=self.run_part, args=(j["id"], cls, al), name=f"{j['id']}/{cls}/{al}", daemon=False)
                         self.threads[al] = t
                         t.start()

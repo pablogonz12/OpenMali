@@ -8,6 +8,7 @@ sys.path.insert(0, HERE)
 import farmlib as L
 import sweeplib as S  # noqa: E402
 import gate  # noqa: E402
+import benchlib as BL  # noqa: E402
 
 TOML = """quick_root = "/nonexistent"
 [[device]]
@@ -556,6 +557,128 @@ class T(unittest.TestCase):
         _, j2, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--repeat", "2", "--need", "v11", "--env", "FAKE_CASE_NS=1")
         self.farmd()
         self.assertIn("2 NotSupported of 2 (0% pass)", self.farm("results", j2)[1])
+
+    # ---- bench suite, auto triggers, priorities
+    def test_bench_pure_trigger_and_idle_logic(self):
+        self.assertTrue(BL.touches_driver(["README.md", "vk/src/mali_cmd.c"]))
+        self.assertTrue(BL.touches_driver(["libkbase/src/ctx.c"]))
+        self.assertFalse(BL.touches_driver(["tools/farm/farmd", "vk/tests/t_x.c", "vk/deqp/x.tsv", "bench/RESULTS.md"]))
+        self.assertEqual(BL.plan_trigger(None, "b", [], ["v11"]), ("b", []))                       # first sight: record only, no storm
+        self.assertEqual(BL.plan_trigger("a", "a", ["vk/src/x.c"], ["v11"]), ("a", []))
+        self.assertEqual(BL.plan_trigger("a", "b", ["docs/x.md"], ["v11", "v13"]), ("b", []))     # moved but irrelevant
+        self.assertEqual(BL.plan_trigger("a", "b", ["vk/src/x.c"], ["v13", "v11"]), ("b", ["v11", "v13"]))
+        devs = {"cmf": {"class": "v11"}, "poco-x8": {"class": "v13"}, "poco-x4": {"class": "v10", "route": "shell"}, "optout": {"class": "v11", "bench": False}}
+        st = {a: {"status": "up"} for a in devs}
+        st["poco-x8"]["status"] = "absent"
+        self.assertEqual(BL.available(devs, st, set()), ["cmf"])                                    # shell route, opt-out and absent excluded
+        self.assertEqual(BL.available(devs, st, {"cmf"}), [])                                        # owner-disabled
+        rows = []
+        idle = {"cmf": 0}
+        args = dict(devs=devs, dstate=st, rows=rows, jobs=[], tip="T", disabled=set())
+        self.assertEqual(BL.idle_candidates(899, idle, **args), [])                                  # not idle long enough
+        self.assertEqual(BL.idle_candidates(901, idle, **args), ["cmf"])
+        self.assertEqual(BL.idle_candidates(901, idle, running={"cmf"}, **args), [])
+        self.assertEqual(BL.idle_candidates(901, idle, **dict(args, dstate={"cmf": {"status": "cooling"}})), [])   # health gate not ok
+        self.assertEqual(BL.idle_candidates(901, idle, **dict(args, rows=[{"phone": "cmf", "commit_full": "T"}])), [])  # already has a row for main
+        self.assertEqual(len(BL.idle_candidates(901, idle, **dict(args, rows=[{"phone": "cmf", "commit_full": "OLD"}]))), 1)
+        job = {"suite": "bench", "commit": "T", "auto": True, "parts": {"v11": {"state": "pending"}}}
+        self.assertEqual(BL.idle_candidates(901, idle, **dict(args, jobs=[job])), [])                # already queued
+        job["parts"]["v11"]["state"] = "cancelled"
+        self.assertEqual(BL.idle_candidates(901, idle, **dict(args, jobs=[job])), ["cmf"])
+        both = {"cmf": 100, "optout2": 0}
+        devs2 = {"cmf": {"class": "v11"}, "b2": {"class": "v11"}}
+        st2 = {"cmf": {"status": "up"}, "b2": {"status": "up"}}
+        self.assertEqual(BL.idle_candidates(2000, {"cmf": 500, "b2": 100}, devs2, st2, [], [], "T", set()), ["b2", "cmf"])   # longest idle = oldest missing first
+
+    def test_bench_priority_order(self):
+        jobs = [{"id": "auto1", "auto": True, "seq": 1}, {"id": "ex2", "seq": 2}, {"id": "ex3", "seq": 3}, {"id": "auto0", "auto": True, "seq": 0}]
+        self.assertEqual([j["id"] for j in BL.order_jobs(jobs)], ["ex2", "ex3", "auto0", "auto1"])   # explicit > auto, each FIFO
+        self.assertTrue(BL.pin_ok({}, "cmf") and BL.pin_ok({"pin": "cmf"}, "cmf") and not BL.pin_ok({"pin": "cmf"}, "poco-x8"))
+
+    def test_bench_digest_lines(self):
+        def row(ph, c, drv, var, cpu, gpu, ref="main"):
+            return {"phone": ph, "commit_full": c, "ref": ref, "date": "2026-11-17", "driver": drv, "variant": var, "offscreen": {"cpu_ms": cpu, "gpu_ms": gpu}}
+        rows = [row("cmf", "a" * 40, "ours", "triangle-3k", 9.0, 0.0), row("cmf", "b" * 40, "ours", "triangle-3k", 1.91, 0.0), row("cmf", "b" * 40, "bridge", "triangle-3k", 3.2, 0.0),
+                row("cmf", "b" * 40, "ours", "cube-720p", 0.4, 12.34), row("cmf", "b" * 40, "bridge", "cube-720p", 0.5, 11.0)]
+        out = BL.digest_lines(rows)
+        self.assertEqual(len(out), 1)
+        self.assertIn("bbbbbbb", out[0])                                                              # newest commit only
+        self.assertIn("tri CPU ours 1.91 / bridge 3.20 ms", out[0])
+        self.assertIn("cube GPU ours 12.34 / bridge 11.00 ms", out[0])
+
+    def nosweep(self):
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)          # an earlier sweep test leaves it in os.environ: a sweep would loop in these passes
+        self.env.pop("MALI_FARM_SWEEP_LIST", None)
+
+    def test_bench_suite_idle_trigger_runs_once_and_digest(self):
+        self.nosweep()
+        self.attach("dev-a")
+        self.env.update(MALI_FARM_AUTO_BENCH="1", MALI_FARM_BENCH_IDLE="0")
+        self.farmd()
+        jobs = [j for j in L.list_jobs() if j["suite"] == "bench"]
+        self.assertEqual(len(jobs), 1)
+        self.assertTrue(jobs[0].get("auto"))
+        self.assertEqual(jobs[0]["pin"], "dev-a")
+        self.assertEqual(jobs[0]["parts"]["v11"]["state"], "done")
+        self.assertEqual(jobs[0]["parts"]["v11"]["verdict"], "pass")
+        rows = BL.load_rows(self.d + "/state")
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(r["phone"] == "dev-a" and r["ref"] == "main" and len(r["commit_full"]) == 40 for r in rows))
+        self.assertIn("bench dev-a", self.farm("digest")[1])
+        self.assertIn("tri CPU ours 1.90 / bridge 2.47 ms", self.farm("digest")[1])
+        self.farmd()                                                                                   # a row for main exists: nothing more is queued
+        self.assertEqual(len([j for j in L.list_jobs() if j["suite"] == "bench"]), 1)
+
+    def test_bench_suite_explicit_submit(self):
+        self.nosweep()
+        self.attach("dev-a")
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "bench", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.farmd()
+        self.assertEqual(self.farm("wait", jid)[1], "pass")
+        self.assertFalse(L.find_job(jid).get("auto"))
+        rows = BL.load_rows(self.d + "/state")
+        self.assertEqual({r["job"] for r in rows}, {jid})
+        self.assertEqual(L.find_job(jid)["build"], "ok")
+
+    def test_bench_main_commit_touching_driver_queues_every_available_phone(self):
+        self.nosweep()
+        self.attach("dev-a", "dev-b")
+        root = subprocess.run(["git", "-C", HERE, "rev-list", "--max-parents=0", "main"], capture_output=True, text=True).stdout.split()[-1]
+        os.makedirs(self.d + "/state/bench", exist_ok=True)
+        L.write_json(self.d + "/state/bench/auto.json", {"last_main": root})                          # main moved a long way since: touches vk/src
+        self.env.update(MALI_FARM_AUTO_BENCH="1", MALI_FARM_BENCH_IDLE="999999")
+        self.health("poco", level=80, temp_c=30.0, thermal=0, powered=True)
+        self.farmd()
+        jobs = [j for j in L.list_jobs() if j["suite"] == "bench"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(sorted(jobs[0]["parts"]), ["v11", "v13"])
+        self.assertTrue(jobs[0]["auto"] and "pin" not in jobs[0])
+        self.assertEqual(jobs[0]["commit"], subprocess.run(["git", "-C", HERE, "rev-parse", "main"], capture_output=True, text=True).stdout.strip())
+        self.assertEqual({p["state"] for p in jobs[0]["parts"].values()}, {"done"})
+        self.farmd()                                                                                   # same main: no second job
+        self.assertEqual(len([j for j in L.list_jobs() if j["suite"] == "bench"]), 1)
+
+    def test_explicit_job_runs_before_queued_auto_bench(self):
+        self.nosweep()
+        self.attach("dev-a")
+        auto = L.new_job("main", "0" * 40, False, "bench", ["v11"], "", "t", auto=True)               # queued first (older), but auto
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.farmd()                                                                                   # one phone, one job per pass
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
+        self.assertEqual(L.find_job(auto["id"])["parts"]["v11"]["state"], "pending")
+        self.farmd()
+        self.assertEqual(L.find_job(auto["id"])["parts"]["v11"]["state"], "done")
+
+    def test_auto_bench_beats_sweep(self):
+        self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
+        self.attach("dev-a")
+        auto = L.new_job("main", "0" * 40, False, "bench", ["v11"], "", "t", auto=True)
+        self.farmd()
+        self.assertEqual(L.find_job(auto["id"])["parts"]["v11"]["state"], "done")
+        self.assertEqual(S.load("v11")["pos"], 0)                                                      # the sweep did not run over it
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 3)                                                      # queue empty: sweep resumes
 
     # ---- idle sweep (fake phones; list = MALI_FARM_SWEEP_LIST, 3 cases per chunk)
     def sweep_env(self, cases, chunks, **extra):
