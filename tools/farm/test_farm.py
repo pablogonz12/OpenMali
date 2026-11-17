@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Dry-run tests of queue, pending/resume, comparison and JSON logic (no phone, no build). Run: python3 tools/farm/test_farm.py"""
-import hashlib, json, os, subprocess, sys, tempfile, unittest
+import hashlib, json, os, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import farmlib as L  # noqa: E402
+import farmlib as L
+import sweeplib as S  # noqa: E402
 import gate  # noqa: E402
 
 TOML = """quick_root = "/nonexistent"
@@ -546,6 +547,91 @@ class T(unittest.TestCase):
         _, j2, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--repeat", "2", "--need", "v11", "--env", "FAKE_CASE_NS=1")
         self.farmd()
         self.assertIn("2 NotSupported of 2 (0% pass)", self.farm("results", j2)[1])
+
+    # ---- idle sweep (fake phones; list = MALI_FARM_SWEEP_LIST, 3 cases per chunk)
+    def sweep_env(self, cases, chunks, **extra):
+        lst = self.d + "/mustpass.txt"
+        open(lst, "w").write("\n".join(cases) + "\n")
+        self.env.update(MALI_FARM_SWEEP_LIST=lst, MALI_FARM_SWEEP_CHUNK="3", MALI_FARM_SWEEP_MAX_CHUNKS=str(chunks), **extra)
+        os.environ["MALI_FARM_SWEEP_LIST"] = lst
+
+    def test_sweep_walk_resume_crash_skip(self):
+        names = ["dEQP-VK.api.a.one", "dEQP-VK.api.a.CRASHX", "dEQP-VK.api.b.three", "dEQP-VK.api.b.HANGX", "dEQP-VK.pipe.c.NSX",
+                 "dEQP-VK.pipe.c.FAILX", "dEQP-VK.pipe.c.many_things"]
+        self.sweep_env(names, 1)
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 3)                              # one chunk, then the session ends
+        self.farmd()                                                           # resumes where it stopped (no restart)
+        st = S.load("v11")
+        self.assertEqual(st["pos"], 6)
+        self.assertEqual(st["chunks"], 2)
+        self.env["MALI_FARM_SWEEP_MAX_CHUNKS"] = "5"
+        self.farmd()                                                           # crash/hang/fail cases never stalled it: the pass completed
+        passes = S.load("v11")["passes"]
+        self.assertTrue(passes and passes[-1]["pos"] == 7)
+        self.assertEqual(passes[-1]["counts"], {"P": 2, "C": 1, "T": 1, "N": 1, "F": 1, "K": 1})
+        # per-chunk records carry the commit, compact status strings
+        recs = [json.loads(l) for l in open(self.d + "/state/sweep/v11-chunks.jsonl")]
+        self.assertTrue(all(r["commit"] and r["z"] for r in recs))
+        self.assertEqual(S.load("v11")["pos"] < 7 and S.load("v11")["commit"] is not None, True)
+        out = self.farm("sweep", "status")[1]
+        self.assertIn("v11:", out)
+        self.assertLess(len(out.splitlines()), 15)
+        fl = self.farm("sweep", "failures", "--class", "v11", "--group", "api.b")[1]
+        self.assertNotIn("api.a", fl)
+
+    def test_sweep_failures_listing(self):
+        self.sweep_env(["dEQP-VK.api.a.CRASHX", "dEQP-VK.api.a.ok", "dEQP-VK.api.b.FAILX"], 1)
+        self.attach("dev-a")
+        self.farmd()
+        out = self.farm("sweep", "failures", "--class", "v11")[1]
+        self.assertIn("Crash    dEQP-VK.api.a.CRASHX", out)
+        self.assertIn("Fail     dEQP-VK.api.b.FAILX", out)
+        self.assertNotIn("a.ok", out)
+
+    def test_sweep_pauses_on_health_gate_and_never_runs_over_a_queued_job(self):
+        self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
+        self.attach("dev-a")
+        L.write_json(self.d + "/state/fake-health-cmf.json", {"temp_c": 45.0})              # over the 43 C stop: cooling
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 0)
+        self.assertFalse(os.path.exists(self.d + "/state/sweep/v11-chunks.jsonl"))
+        os.unlink(self.d + "/state/fake-health-cmf.json")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")        # a queued real job: it runs, the sweep does not start first
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
+        self.assertEqual(S.load("v11")["pos"], 0)
+        self.farmd()                                                                       # queue empty -> now the phone sweeps
+        self.assertEqual(S.load("v11")["pos"], 3)
+
+    def test_sweep_yields_to_a_submitted_job_mid_chunk(self):
+        self.sweep_env([f"dEQP-VK.api.a.c{i}" for i in range(9)], 50, FAKE_SWEEP_SLOW="20")
+        self.attach("dev-a")
+        p = subprocess.Popen([sys.executable, HERE + "/farmd", "--fake", "--poll", "0.3"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            time.sleep(3)                                                                  # sweeping: a slow chunk is in flight
+            _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            t0 = time.time()
+            self.assertEqual(self.farm("wait", jid, "--timeout", "30")[0], 0)
+            self.assertLess(time.time() - t0, 20)                                          # did not wait for the 20 s chunk
+            self.assertEqual(L.find_job(jid)["parts"]["v11"]["verdict"], "pass")
+            self.assertEqual(S.load("v11")["pos"], 0)                                      # preempted chunk recorded nothing
+        finally:
+            p.terminate()
+            p.wait(10)
+
+    def test_util_and_prebuild_cache(self):
+        self.attach("dev-a")
+        _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.farmd()
+        self.farmd()
+        self.assertTrue(L.find_job(j1).get("so_sha256") == L.find_job(j2).get("so_sha256"))      # same commit: one build
+        out = self.farm("util", "--since", "1d")[1]
+        self.assertLess(len(out.splitlines()), 15)
+        self.assertIn("dev-a", out)
+        self.assertIn("busy", out)
 
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)

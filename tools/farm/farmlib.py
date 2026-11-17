@@ -3,7 +3,7 @@
 Devices are referred to by alias only; serials/addresses/paths come from the devices.toml in the user's config dir."""
 import collections, datetime, fcntl, json, os, re, subprocess, tempfile, time, tomllib
 
-SUITES = ("smoke", "daily", "bench", "cases")
+SUITES = ("smoke", "daily", "bench", "cases")      # + "sweep": internal, never submitted
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 
 
@@ -226,13 +226,16 @@ def run_path(jid, cls):
     return os.path.join(state_dir(), "runs", f"{jid}-{cls}.json")
 
 
-def list_jobs():
+def list_jobs(sweep=False):
+    """all jobs by submission order; the internal idle-sweep jobs (suite "sweep") only with sweep=True"""
     d = os.path.join(state_dir(), "jobs")
     out = []
     for n in sorted(os.listdir(d)):
         if n.endswith(".json"):
             try:
-                out.append(read_json(os.path.join(d, n)))
+                j = read_json(os.path.join(d, n))
+                if sweep or j.get("suite") != "sweep":
+                    out.append(j)
             except (ValueError, OSError):
                 pass
     return sorted(out, key=lambda j: j.get("seq", 0))

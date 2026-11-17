@@ -10,6 +10,7 @@ Exit: 0 done, 73 PHONE BUSY (lock not held), 75 gated by the health gate / owner
 import argparse, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import farmlib as L  # noqa: E402
 import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
@@ -57,6 +58,49 @@ def gated(lock):
         except (ValueError, IndexError):
             pass
     return st != "ok"
+
+
+DIM = f"{V}/dim.state"                      # phone side: original brightness/mode/wakefulness while dimmed (so a killed run can still be undone)
+
+
+def dim():
+    """runs that do not need the display (fbo, hidden): minimum brightness + screen off, original values kept on the phone. Idempotent."""
+    if "dim.state" in adb("shell", f"ls {V} 2>/dev/null", timeout=20)[1]:
+        return
+    b = adb("shell", "settings get system screen_brightness; settings get system screen_brightness_mode; dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'", timeout=30)[1].split()
+    if len(b) < 3:
+        return
+    adb("shell", f"mkdir -p {V}; echo '{b[0]} {b[1]} {b[2].split('=')[-1]}' > {DIM}", timeout=20)
+    adb("shell", "settings put system screen_brightness_mode 0; settings put system screen_brightness 1" + ("; input keyevent 223" if b[2].endswith("Awake") else ""), timeout=30)
+
+
+def undim():
+    o = adb("shell", f"cat {DIM} 2>/dev/null", timeout=20)[1].split()
+    if len(o) < 3:
+        return
+    adb("shell", f"settings put system screen_brightness {o[0]}; settings put system screen_brightness_mode {o[1]}" + ("; input keyevent 224" if o[2] == "Awake" else "") + f"; rm -f {DIM}", timeout=30)
+
+
+def temps(run, n):
+    """per-chunk temperature line (battery + the hottest gpu/cpu thermal zones) -> farm state logs/temps-<lock>.log, so heating can be traced to a chunk"""
+    o = adb("shell", "dumpsys battery | grep -m1 temperature; for z in /sys/class/thermal/thermal_zone*; do echo $(cat $z/type) $(cat $z/temp); done", timeout=30)[1].splitlines()
+    vals = {"batt": None}
+    for l in o:
+        p = l.split()
+        if l.strip().startswith("temperature") and len(p) > 1 and p[-1].isdigit():
+            vals["batt"] = int(p[-1]) / 10
+        elif len(p) == 2 and p[1].lstrip("-").isdigit():
+            k = "gpu" if "gpu" in p[0] else "cpu" if re.search(r"cpu|big|mid|little|soc", p[0]) else None
+            v = int(p[1]) / (1000 if abs(int(p[1])) > 1000 else 1)
+            if k and v > (vals.get(k) or 0):
+                vals[k] = v
+    line = f"{L.now()} {run} chunk{n} " + " ".join(f"{k}={v}" for k, v in vals.items())
+    print("TEMP " + line, flush=True)
+    try:
+        with open(os.path.join(L.state_dir(), "logs", f"temps-{os.environ.get('SHELLROUTE_LOCK', 'phone')}.log"), "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 
 def sha_local(p):
@@ -170,6 +214,7 @@ def daily(a):
                 f.write(f"{c}\t{got[c]}\t\n")
         f.flush()
         print(f"# chunk: done {len(done)}/{len(cases)} [{int(time.time() - t0)}s]", flush=True)
+        temps(a.run, len(done))
     adb("shell", f"rm -f {G}/c.{a.run}.cases {G}/c.{a.run}.qpa {G}/c.{a.run}.out", timeout=20)
     print(f"SO_ON_PHONE {icd}", flush=True)                    # farmd verifies it once more, then removes it
     print("DONE", flush=True)
@@ -215,11 +260,11 @@ def smoke(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("smoke", "daily"))
+    ap.add_argument("mode", choices=("smoke", "daily", "undim"))
     ap.add_argument("--lock", required=True)
-    ap.add_argument("--tree", required=True)
-    ap.add_argument("--sha", required=True)
-    ap.add_argument("--run", required=True)
+    ap.add_argument("--tree", default="")
+    ap.add_argument("--sha", default="")
+    ap.add_argument("--run", default="undim")
     ap.add_argument("--list")
     ap.add_argument("--out")
     ap.add_argument("--chunk", type=int, default=100)
@@ -231,7 +276,16 @@ def main():
     if not SERIAL:
         print("ANDROID_SERIAL not set", file=sys.stderr)
         sys.exit(79)
-    {"smoke": smoke, "daily": daily}[a.mode](a)
+    os.environ["SHELLROUTE_LOCK"] = a.lock
+    if a.mode == "undim":
+        undim()
+        return
+    dim()
+    try:
+        {"smoke": smoke, "daily": daily}[a.mode](a)
+    finally:
+        if not os.environ.get("SHELLROUTE_KEEP_DIM"):            # the idle sweep keeps the screen dark between chunks; farmd undims when it stops
+            undim()
 
 
 if __name__ == "__main__":
