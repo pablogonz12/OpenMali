@@ -19,7 +19,7 @@ DL = "/storage/emulated/0/Download/qdeqp"
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 IDLE = 180   # watchdog: seconds without QPA growth
 STRESS = re.compile(r"object_management\.(alloc_callback_fail|max_|multithreaded)|many")
-OKFOCUS = re.compile(r"com\.mi\.android\.globallauncher|com\.android\.settings|DroidTest|com\.ludashi\.benchmark")
+OKFOCUS = re.compile(r"com\.mi\.android\.globallauncher|com\.nothing\.launcher|com\.android\.settings|DroidTest|com\.ludashi\.benchmark")
 
 
 def norm(s):

@@ -54,3 +54,15 @@ Same method as the A/B above (bench/run-guest.sh poco ours cube, wayland, mailbo
 | 0x332 | 0.88 |
 | 0 + MALI_NOTF=1 | 0.84 |
 Env delivery verified: a temporary stderr log in mali_cs_emit.c printed `hf=0x0 env=0` in the guest, so MALI_HF does reach the driver through run-guest.sh. Stress validation of 0x330 (valrun 1000 loops, t_bc_hw 12/12) was clean, but the 0.33 ms result of the earlier A/B (runs/mdbench/jb2-cube-*) is not reproducible with the current tree (the ICD binary of that A/B was overwritten; fps then 337 vs 295 now). Cause unknown (different binary state or GPU clock/DVFS state). Default left at 0x332; re-test before changing.
+
+## Experiment 2026-11-17 (Job: CMF head flush validation + A/B)
+Validation on the CMF (Mali-G615 MC2/v11), `PHONE=cmf vk/tests/valrun.sh "MALI_HF=330" 1000` (valrun.sh now takes PHONE=cmf|poco): t_vk_draw --loop 1000 rc 0 / 0 fails, t_vk_compute rc 0, t_vk_meta rc 0, 89 s. 0x330 is stress-clean on the CMF.
+MALI_HF reaches the driver process in the mdbench path: `ENVV="MALI_PROF=1"` printed PROF lines in the guest log (run-guest.sh prefixes ENVV to the reaper command; env is inherited). The identical Poco numbers are therefore not an env-transport problem. Raw: runs/mdbench/cmf-hf/ (mission repo).
+cube, CMF, mailbox, wayland, 8 s, warmup 30, one run per guest session (qrestore between), gpu_ms (fps):
+| MALI_HF | run1 | run2 | run3 |
+|---|---|---|---|
+| unset (lib built with the uncommitted 0x330 default) | 1.68 (160) | 2.55 (148) | 2.71 (148) |
+| 0 | 1.47 (124) | 1.60 (166) | 1.63 (167) |
+| 330 | 2.60 (119) | 1.72 (164) | 2.52 (150) |
+| 332 | 1.64 (158) | 2.13 (166) | 1.61 (162) |
+=> NO consistent effect of the head flush on the CMF: the numbers are bimodal (~1.6 vs ~2.5 ms) independent of the setting (0x332 has two 1.6 runs, 0x330 two 2.5 runs), i.e. dominated by GPU clock/session state, not by FLUSH_CACHE2. The "0.5 ms" Poco result and the earlier "MALI_HF=0 saves 0.35 ms" CMF note are not reproducible; the Poco worker reached the same conclusion (87e4d6b). Recommendation: do not claim a gain for 0x330.

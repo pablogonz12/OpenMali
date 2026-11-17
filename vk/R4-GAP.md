@@ -146,3 +146,17 @@ advertise geometryShader only for DXVK startup and fail pipeline creation for GS
 
 ## Poco daily 2026-11-17 (HEAD 4babc2a + GPU-GAP note, ours ICD, qdeqp daily-sample 1381, chunk 300, case-timeout 45)
 283 pass / 126 fail / 971 NotSupported / 0 crash / 1 other (69.0 % of supported), 48 s. Identical to the 36aa680 baseline (283/126/971/0): case-by-case diff of the TSV against `deqp/ours-daily-sample-poco.tsv` = 0 changed cases, so 0 new failures and 0 newly passing. Raw: runs/qdeqp/poco-ours-daily-sample-hfjob.{tsv,csv}.
+
+## CMF daily 2026-11-17 (Mali-G615 MC2 / v11, ours ICD from vk/out/a64-glibc built from a tree with the uncommitted head-flush edit, qdeqp daily-sample 1381, chunk 300)
+282 pass / 127 fail / 971 NotSupported / 0 crash / 1 other (ResourceError) (68.8 % of supported), 49 s. vs Poco (283/126): 1 case differs, `api.image_clearing.core.clear_color_attachment.single_layer.a2r10g10b10_unorm_pack32_64x11_clamp_input_sample_count_4` (Fail on CMF, Pass on Poco; MSAA x4 clear, probably flaky/v11-specific, not triaged). The other 126 fails + 1 other are the same names as the Poco list. Raw: `deqp/ours-daily-sample-cmf.{tsv,csv}`.
+Harness fix: `qdeqp.py` OKFOCUS did not know the CMF launcher (`com.nothing.launcher`) and waited 10 min; added.
+Failing groups by likely cause (counts are CMF fails):
+- **Stencil op combos** (pipeline.monolithic.stencil, 21: all `states.fail_*.pass_*.dfail_*` d32s8/d24s8/s8, comp_less/greater, incl. separate_layouts and nocolor): stencil op state (decrement-wrap/invert/replace combos with depth fail) wrong.
+- **Blend** (pipeline.monolithic.blend, 10: 4-stage min/max/sub/add chains with 1-minus-dst-alpha, cc/ca constant factors, all formats): blend equation/factor encoding (MIN/MAX with factors, constant alpha).
+- **Format reinterpret in blit/copy** (api.copy_and_blit.core, 23: blit_image and image_to_image with ETC2/EAC/BC on one side, e5b9g9r9 dst, 3d blit r4g4b4a4/r8_srgb general_general): compressed formats unsupported/unwired (BC decode is R4-M7), 3D blit.
+- **Clear attachment** (api.image_clearing.core, 12: clear_color_attachment single/multiple layers, partial, d16 depth/stencil clear, sample_count_4): vkCmdClearAttachments via meta path (layers, partial rects, MSAA, d16).
+- **Render-pass input attachments / sub-allocation** (renderpass.suballocation.formats 23 + attachment.1.13 + depth_stencil_write_conditions 2): input attachment reads (`input.*`, use_input_aspect, self_dep) and d16/d24 clear/load; loadOp/storeOp dont_care combos.
+- **Sampler** (pipeline.monolithic.sampler, 9: border_swizzle gather_0 with riba/rgbi/igba on r8g8/r16g16/r32/d32; address_modes clamp_to_border on 2d_array/3d; 1d_array lod.equal_min_3_max_3): border colour + component swizzle (opaque_black) and gather, border/clamp modes, lod clamp.
+- **render_to_image with combined depth/stencil formats** (7: r32_uint_s8_uint, a1r5g5b5_s8_uint, 1d/3d/cube_array mipmap): unsupported/unemulated D/S format pairs on array/mip layers.
+- **api.info.image_format_properties** (3: 1d.linear a8b8g8r8_uint/a2r10g10b10_sint, 3d.linear a2b10g10r10_sint): linear-tiling capability limits reported wrongly.
+- **Misc**: dynamic_offset (2), spec_constant.compute.composite.array.float, vertex_input (1), private_data.buffer_view_storage_r8g8b8a8_unorm, buffer_view.access (1), descriptor_set_layout_lifetime.compute (Other:ResourceError).
