@@ -2,6 +2,7 @@
 #include "mali_private.h"
 #include "mali_queue.h"
 #include "mali_format.h"
+#include "mali_msaa.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -16,7 +17,7 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);   /* MALI_EXPERIMENTAL_MSAA=1 */
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -194,6 +195,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
+      .sampleRateShading = mali_experimental_msaa(),   /* MALI_EXPERIMENTAL_MSAA=1 */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */

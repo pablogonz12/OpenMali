@@ -3,6 +3,7 @@
 #include "mali_format.h"
 
 #include "mali_bc.h"
+#include "mali_msaa.h"
 #include "mali_private.h"
 #include "pan_format.h"
 #include "util/format/u_format.h"
@@ -303,7 +304,8 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
       out->maxArrayLayers = 1;
    } else if (type == VK_IMAGE_TYPE_2D && !(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && !f.compressed &&
               !(usage & VK_IMAGE_USAGE_STORAGE_BIT) && (feat & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
-      out->sampleCounts |= VK_SAMPLE_COUNT_4_BIT;   /* Mali: 1 and 4 (16x is not wired) */
+      if (mali_experimental_msaa())
+         out->sampleCounts |= VK_SAMPLE_COUNT_4_BIT;   /* Mali: 1 and 4 (16x is not wired) */
    }
    return VK_SUCCESS;
 }
