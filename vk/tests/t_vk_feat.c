@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -949,6 +949,98 @@ test_didx(void)
    return 1;
 }
 
+
+/* robustness2 nullDescriptor: a VK_NULL_HANDLE descriptor must read as zero and swallow writes (no fault, no stray write). */
+static VkBool32 g_null;
+struct nd_case { const char *name; VkDescriptorType type; };
+static int
+nulld_one(struct tgt *t, const struct nd_case *c, VkSampler smp)
+{
+   VkDescriptorSetLayoutBinding b[2] = {
+      {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+      {.binding = 1, .descriptorType = c->type, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   int same = c->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, same ? 2 : 1}, {c->type, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                     .poolSizeCount = same ? 1 : 2, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   struct hbuf ob;
+   if (!hbuf_create(&ob, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(ob.p, 0xEE, 4096);
+   VkDescriptorBufferInfo obi = {ob.b, 0, 4096}, nbi = {VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
+   VkDescriptorImageInfo nii = {smp, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL};
+   VkBufferView nbv = VK_NULL_HANDLE;
+   VkWriteDescriptorSet w[2] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 1, .descriptorType = c->type,
+       .pBufferInfo = &nbi, .pImageInfo = &nii, .pTexelBufferView = &nbv}};
+   UpdateDescriptorSets(dev, 2, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   char name[64];
+   snprintf(name, sizeof name, "nulld_%s.comp.spv", c->name);
+   VkShaderModule m = load_spv(name);
+   CHECK(m, "shader %s", name);
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   if (r != VK_SUCCESS) { printf("{\"nulld\":\"%s\",\"fail\":\"pipeline %d\"}\n", c->name, r); g_fail++; return 0; }
+   VkCommandBuffer cb = cb_begin(t);
+   CHECK(cb, "cmdbuf");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, 1, 1, 1);
+   if (!cb_submit(t, cb)) return 0;
+   int ok = 1;
+   if (!g_fake) {
+      uint32_t got = *(uint32_t *)ob.p;
+      ok = got == 5 && *(uint32_t *)(ob.p + 4) == 0xEEEEEEEEu;
+      printf("{\"nulld\":\"%s\",\"got\":%u,\"want\":5,\"ok\":%s}\n", c->name, got, ok ? "true" : "false");
+   }
+   if (!ok) g_fail++;
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   hbuf_destroy(&ob);
+   return ok;
+}
+
+static int
+test_nulld(void)
+{
+   if (!g_null) { printf("{\"test\":\"nulld\",\"skipped\":\"nullDescriptor not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST};
+   VkSampler smp;
+   CHECK(CreateSampler(dev, &si, NULL, &smp) == VK_SUCCESS, "sampler");
+   static const struct nd_case cases[] = {
+      {"ssbow", VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {"ssbo", VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {"ubo", VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
+      {"tex", VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}, {"img", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+      {"tbuf", VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER}, {"stbuf", VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER}};
+   int pass = 0, n = (int)(sizeof cases / sizeof *cases);
+   const char *only = getenv("NULLD_CASE");
+   for (int i = 0; i < n; i++) {
+      if (only && strcmp(only, cases[i].name)) { pass++; continue; }
+      pass += nulld_one(&t, &cases[i], smp);
+   }
+   printf("{\"test\":\"nulld\",\"cases\":%d,\"passed\":%d,\"ok\":%s}\n", n, g_fake ? n : pass, pass == n ? "true" : "false");
+   tgt_destroy(&t);
+   return pass == n;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -986,8 +1078,10 @@ main(int argc, char **argv)
    printf("{\"device\":\"%s\"}\n", g_props.deviceName);
 
    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+   VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &f12};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rb2};
    GetPhysicalDeviceFeatures2(pd, &f2);
+   g_null = rb2.nullDescriptor;
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
@@ -1000,8 +1094,11 @@ main(int argc, char **argv)
       .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
                                            .timelineSemaphore = f12.timelineSemaphore};
-   VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e12, .features = g_feat};
-   VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
+   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e12, .nullDescriptor = rb2.nullDescriptor};
+   VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
+   const char *dexts[] = {"VK_EXT_robustness2"};
+   VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
+                            .enabledExtensionCount = rb2.nullDescriptor ? 1 : 0, .ppEnabledExtensionNames = dexts};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
@@ -1019,6 +1116,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && CASE_ON("nulld")) ok &= test_nulld();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

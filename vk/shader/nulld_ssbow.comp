@@ -1,0 +1,5 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer O { uint o[]; };
+layout(set = 0, binding = 1, std430) buffer W { uint w[]; };
+void main() { w[0] = 7u; o[0] = 5u; }

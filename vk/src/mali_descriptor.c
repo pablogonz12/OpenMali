@@ -351,34 +351,50 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
 {
    if (!g_res) return;
    struct mali_hw_desc hw;
+   /* robustness2 nullDescriptor: a VK_NULL_HANDLE resource writes the hardware Null Descriptor (Type field = 0, i.e. all zero;
+    * Valhall v10+ genxml "Null Descriptor", 8 bytes). Reads then return zero and writes are dropped by the hardware. */
+   struct mali_hw_desc null_hw;
+   memset(&null_hw, 0, sizeof null_hw);
+   uint32_t base = b->slot + idx * b->stride;
    switch (type) {
    case VK_DESCRIPTOR_TYPE_SAMPLER:
-      if (b->imm_off == MALI_NO_IMM_SAMPLER && g_res->sampler(ii->sampler, &hw) == 0)
-         *slot_at(s, b->slot + idx * b->stride) = hw;
+      if (b->imm_off == MALI_NO_IMM_SAMPLER) {
+         if (ii->sampler && g_res->sampler(ii->sampler, &hw) == 0) *slot_at(s, base) = hw;
+         else if (!ii->sampler) *slot_at(s, base) = null_hw;
+      }
       break;
    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
       if (ii->imageView && g_res->image_view(ii->imageView, type, &hw) == 0)
-         *slot_at(s, b->slot + idx * b->stride) = hw;
-      if (b->imm_off == MALI_NO_IMM_SAMPLER && g_res->sampler(ii->sampler, &hw) == 0)
-         *slot_at(s, b->slot + idx * b->stride + 1) = hw;
+         *slot_at(s, base) = hw;
+      else if (!ii->imageView)
+         *slot_at(s, base) = null_hw;
+      if (b->imm_off == MALI_NO_IMM_SAMPLER && ii->sampler && g_res->sampler(ii->sampler, &hw) == 0)
+         *slot_at(s, base + 1) = hw;
       break;
    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-      if (g_res->image_view(ii->imageView, type, &hw) == 0)
-         *slot_at(s, b->slot + idx * b->stride) = hw;
+      if (!ii->imageView)
+         *slot_at(s, base) = null_hw;
+      else if (g_res->image_view(ii->imageView, type, &hw) == 0)
+         *slot_at(s, base) = hw;
       break;
    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-      if (g_res->buffer_view(*bv, &hw) == 0)
-         *slot_at(s, b->slot + idx * b->stride) = hw;
+      if (!*bv)
+         *slot_at(s, base) = null_hw;
+      else if (g_res->buffer_view(*bv, &hw) == 0)
+         *slot_at(s, base) = hw;
       break;
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
       uint64_t va = 0, size = 0;
-      if (bi->buffer && g_res->buffer(bi->buffer, &va, &size) == 0) {
+      if (!bi->buffer) {
+         if (b->stride) *slot_at(s, b->slot + idx) = null_hw;
+         else s->dyn[b->dyn_idx + idx] = (struct mali_dyn_buf){ 0, 0 };
+      } else if (g_res->buffer(bi->buffer, &va, &size) == 0) {
          uint64_t range = bi->range == VK_WHOLE_SIZE ? size - bi->offset : bi->range;
          va += bi->offset;
          if (b->stride) {
@@ -475,5 +491,6 @@ mali_update_descriptor_set_with_template(struct vk_device *dev, VkDescriptorSet 
 void
 mali_dyn_buf_pack(unsigned arch, struct mali_hw_desc *d, const struct mali_dyn_buf *b, uint32_t dyn_offset)
 {
+   if (!b->va) { memset(d, 0, sizeof *d); return; }   /* null dynamic buffer stays a Null Descriptor */
    mali_pack_buffer(arch, d, b->va + dyn_offset, (uint32_t)(b->size));
 }
