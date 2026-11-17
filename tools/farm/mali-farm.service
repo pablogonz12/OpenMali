@@ -1,0 +1,13 @@
+[Unit]
+Description=mali-open phone farm daemon
+
+[Service]
+Type=simple
+# adjust the path to the checkout that holds tools/farm
+ExecStart=%h/Documents/scripts/mali-open/tools/farm/farmd
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

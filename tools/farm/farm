@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""farm: submit / status / wait / results for the mali-open phone farm. State lives in ~/.local/state/mali-farm/."""
+import argparse, json, os, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import farmlib as L                                    # noqa: E402
+
+
+def git(*a):
+    r = subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)), *a], capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit("farm: git " + " ".join(a) + ": " + r.stderr.strip())
+    return r.stdout.strip()
+
+
+def cmd_submit(a):
+    cfg, devs = L.load_devices()
+    commit = git("rev-parse", "--verify", a.ref + "^{commit}")
+    head = git("rev-parse", "HEAD")
+    dirty = bool(git("status", "--porcelain", "--untracked-files=no")) and commit == head   # uncommitted edits are NOT tested
+    classes = sorted({d["class"] for d in devs.values()})
+    need = [c.strip() for c in a.need.split(",") if c.strip()] if a.need else classes
+    for c in need:
+        if c not in classes:
+            print(f"farm: warning: no device of class {c} configured; that part stays pending", file=sys.stderr)
+    job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")))
+    if dirty:
+        print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
+    print(job["id"])
+
+
+def cmd_status(a):
+    _, devs = L.load_devices()
+    ds = L.read_json(os.path.join(L.state_dir(), "devices-state.json")) if os.path.exists(os.path.join(L.state_dir(), "devices-state.json")) else {}
+    for al, d in devs.items():
+        s = ds.get(al, {})
+        print(f"device {al:10} class {d['class']:4} {s.get('status', 'unknown'):8} {s.get('note', '')}")
+    jobs = L.list_jobs()
+    if not a.all:
+        jobs = jobs[-15:]
+    for j in jobs:
+        parts = " ".join(f"{c}:{p['state'] if p['state'] != 'done' else p.get('verdict')}" for c, p in j["parts"].items())
+        print(f"{j['id']}  {j['suite']:5} {L.job_verdict(j):8} {j['ref'][:24]:24} {parts}")
+
+
+def cmd_wait(a):
+    j = L.find_job(a.job)
+    t0 = time.time()
+    while True:
+        j = L.find_job(j["id"])
+        v = L.job_verdict(j)
+        if v != "pending":
+            print(v)
+            return {"pass": 0, "fail": 1}.get(v, 2)
+        if time.time() - t0 > a.timeout:
+            print("timeout: " + " ".join(f"{c}:{p['state']}" for c, p in j["parts"].items()))
+            return 3
+        time.sleep(min(a.poll, max(0.1, a.timeout - (time.time() - t0))))
+
+
+def cmd_results(a):
+    j = L.find_job(a.job)
+    out = {"job": j, "verdict": L.job_verdict(j), "runs": {}}
+    for c in j["parts"]:
+        p = L.run_path(j["id"], c)
+        if os.path.exists(p):
+            out["runs"][c] = L.read_json(p)
+    print(json.dumps(out, indent=1, sort_keys=True))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="farm")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    s = sp.add_parser("submit")
+    s.add_argument("ref")
+    s.add_argument("--suite", choices=L.SUITES, default="smoke")
+    s.add_argument("--need", default="", help="comma list of device classes (default: every configured class)")
+    s.add_argument("--env", default="", help='e.g. "MALI_HF=330 FOO=1"')
+    s.set_defaults(f=cmd_submit)
+    s = sp.add_parser("status")
+    s.add_argument("--all", action="store_true")
+    s.set_defaults(f=cmd_status)
+    s = sp.add_parser("wait")
+    s.add_argument("job")
+    s.add_argument("--timeout", type=float, default=1800)
+    s.add_argument("--poll", type=float, default=5)
+    s.set_defaults(f=cmd_wait)
+    s = sp.add_parser("results")
+    s.add_argument("job")
+    s.set_defaults(f=cmd_results)
+    a = ap.parse_args()
+    sys.exit(a.f(a) or 0)
+
+
+if __name__ == "__main__":
+    main()
