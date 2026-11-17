@@ -33,3 +33,6 @@ Ranking: triangle presented = fps then CPU ms, offscreen = CPU ms; cube presente
   `tools/bench2 <phone> --variant triangle-20k` runs the large one once the driver can (the bridge handles it).
 * CMF timings are bimodal: medians of interleaved runs only. The bridge's presented fps is display-paced (about 120): compare CPU/GPU ms.
 * poco-x8 runs MaliDeck p19 (sessions sometimes die early; p21 fixes it but is not installed). A run that fails is retried only via the cache/rerun.
+
+## poco-x4 (v10, MediaDeck p22 guest) caveat, 2026-11-17
+The `ours` cube rows on poco-x4 (GPU 0.09-0.17 ms, 650-3800 fps vs bridge ~7.3 ms) are NOT valid speed: the sweep winner env `MALI_RING=67108864+MALI_GEOM_SIZE=67108864` makes the cube draw (almost) nothing on v10. The default env of the same sweep gives cube-720p ~104 fps / 7.9 ms GPU (bench/sweeps.jsonl, poco-x4 ours cube-720p), on par with the bridge. Triangle-3k rows are plausible (ours cpu ~4.6 ms vs bridge 0.46 ms). The sweep should reject winners whose GPU ms is far below the default's.

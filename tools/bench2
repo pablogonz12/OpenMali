@@ -111,8 +111,7 @@ class Phone:
         self.tid = L.resolve(self.dev, connect=True)
         if not self.tid:
             return "offline (no adb route)"
-        if self.dev.get("route") == "shell":
-            return "no guest route on this phone (shell route only)"
+        # route=shell phones (poco-x4) run the guest too since MediaDeck p21+ (RT-signal fix); the guest is driven by droiddeckctl over adb
         return self.health()
 
     def acquire_wait(self, secs):
