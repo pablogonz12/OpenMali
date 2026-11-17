@@ -425,7 +425,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
    if (dyn->cb.logic_op_enable || dyn->rs.rasterizer_discard_enable)
       unsupported(cmd, dyn->cb.logic_op_enable ? "logic op" : "rasterizer discard");
-   if (x->blend_en) {
+   if (x->blend_en && !d->gfx.blend_va) {
       uint32_t eq; unsigned cm;
       if (mali_blend_equation(x, &eq, &cm))
          unsupported(cmd, "blend equation (fixed function)");
@@ -709,12 +709,38 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    const uint64_t t_va = t.va;
    const uint32_t t_row = t.row_stride, t_bytes = t.row_stride * t.height;
    f->colour.va = t.va;
+   f->samples = t.samples > 1 ? t.samples : 1;
+   f->colour.surface_stride = t.surface_stride;
    f->colour.rt = t.rt;
    f->colour.row_stride = t.row_stride;
    f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
    f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    if (f->colour.clear)
       memcpy(f->colour.clear_color, ca->clearValue.color.float32, sizeof f->colour.clear_color);
+   if (f->samples == 4) {
+      /* MSAA: resolve with the hardware "Average" writeback into the single-sample image; no resolve = store all samples (Layered) */
+      if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
+         struct mali_cmd_target rt;
+         if (ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT || !ca->resolveImageView || g_res.image_view(ca->resolveImageView, &rt) ||
+             rt.zs_format || rt.samples != 1 || rt.width != t.width || rt.height != t.height || rt.rt != t.rt) {
+            unsupported(cmd, "MSAA colour resolve (AVERAGE into a matching single-sample view only)");
+            return;
+         }
+         f->colour.resolve_va = rt.va;
+         f->colour.resolve_row_stride = rt.row_stride;
+      }
+      if (load) {
+         unsupported(cmd, "MSAA colour loadOp LOAD");
+         return;
+      }
+      if (f->colour.resolve_va && f->colour.store) {
+         unsupported(cmd, "MSAA colour storeOp STORE together with a resolve (hardware writes the average or the samples, not both)");
+         return;
+      }
+   } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
+      unsupported(cmd, "resolve of a single-sampled attachment");
+      return;
+   }
    if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
       const VkRenderingAttachmentInfo *da = ri->pDepthAttachment;
       if (is_load_op(da->loadOp)) {
@@ -726,7 +752,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       f->has_zs = true;
+      if (da->resolveMode != VK_RESOLVE_MODE_NONE || (t.samples > 1) != (f->samples == 4)) {
+         unsupported(cmd, "depth resolve / depth sample count differs from the colour attachment");
+         return;
+      }
       f->zs.va = t.va;
+      f->zs.surface_stride = t.surface_stride;
       f->zs.row_stride = t.row_stride;
       f->zs.zs_format = t.zs_format;
       f->zs.clear = da->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;

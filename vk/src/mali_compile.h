@@ -42,6 +42,7 @@ struct mali_compile_opts {
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
+   int sample_shading;            /* FS: pipeline sampleShadingEnable with minSampleShading * samples > 1 (PanVK: nir->info.fs.uses_sample_shading) */
    int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
 };
@@ -74,7 +75,23 @@ struct mali_compiled {
    uint32_t local_size[3];        /* CS: workgroup size */
    uint32_t allow_merge;          /* CS: COMPUTE_SIZE_WORKGROUP bit 31 (no shared memory, workgroup barrier or subgroup op: HW may merge workgroups) */
    uint32_t cache_hit;            /* 1 if this result came from the disk cache */
+   uint32_t fs_sample_shading;   /* FS runs per sample (info.fs.sample_shading): DCD0 "Evaluate per-sample" */
+   uint32_t fs_blend0_type, fs_blend_src1_type;   /* FS: nir_alu_type of colour output 0 / dual-source output (0 = none) */
 };
+
+/* Blend shader (dual-source blending, or any equation the fixed-function unit cannot do): single RT.
+ * Factors/ops are Vulkan enums. src0/src1_type are the FS's fs_blend0_type / fs_blend_src1_type.
+ * Constants are read from FS FAU words 0..3. out->bin is the code only (16-byte aligned copy needed). */
+struct mali_blend_opts {
+   unsigned arch;                 /* 11 or 13 */
+   unsigned vk_format;            /* VkFormat of the colour attachment */
+   unsigned samples;
+   unsigned rgb_op, alpha_op;     /* VkBlendOp */
+   unsigned rgb_src, rgb_dst, alpha_src, alpha_dst;   /* VkBlendFactor */
+   unsigned color_mask;           /* VkColorComponentFlags */
+   unsigned src0_type, src1_type;
+};
+int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);

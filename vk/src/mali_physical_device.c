@@ -2,6 +2,7 @@
 #include "mali_private.h"
 #include "mali_queue.h"
 #include "mali_format.h"
+#include "mali_msaa.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -16,7 +17,7 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;   /* as on main; 4x draws stay behind MALI_EXPERIMENTAL_MSAA=1 */
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -61,6 +62,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxVertexOutputComponents = 64,
       .maxFragmentInputComponents = 64,
       .maxFragmentOutputAttachments = 4,
+      .maxFragmentDualSrcAttachments = 1,   /* dualSrcBlend: blend shader, attachment 0 */
       .maxFragmentCombinedOutputResources = 4,
       .maxComputeSharedMemorySize = 16384,
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
@@ -197,6 +199,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
+      .sampleRateShading = mali_experimental_msaa(),   /* MALI_EXPERIMENTAL_MSAA=1 */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
@@ -220,6 +223,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
+      .dualSrcBlend = true,        /* t_vk_draw fx_dual_* (blend shader) */
       .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */

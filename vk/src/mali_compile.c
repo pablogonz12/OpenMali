@@ -12,6 +12,10 @@
 #include "nir.h"
 #include "nir_builder.h"
 
+#include "panfrost/lib/pan_blend.h"
+#include "vk_blend.h"
+#include "vk_format.h"
+
 #include "mali_compile.h"
 #include "mali_descriptor_lower.h"
 
@@ -26,7 +30,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 15
+#define MALI_COMPILE_VERSION 17
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -139,7 +143,7 @@ type_size(const struct glsl_type *t, bool bindless)
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances;
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
    char mesa[24];
 };
 
@@ -155,6 +159,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.push_base = push_base;
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
+   k.sample_shading = o->sample_shading != 0;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
@@ -295,6 +300,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
 
+   if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
+      nir->info.fs.uses_sample_shading = true;
    if (stage == MESA_SHADER_VERTEX) {
       bool has_clip = false;
       nir_foreach_shader_out_variable(var, nir) {
@@ -466,6 +473,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       out->fs_can_fpk = info.fs.can_fpk;
       out->fs_sidefx = info.fs.sidefx;
       out->fs_reads_frag_coord = info.fs.reads_frag_coord;
+      out->fs_sample_shading = info.fs.sample_shading;
+      out->fs_blend0_type = info.bifrost.blend[0].type;
+      out->fs_blend_src1_type = info.bifrost.blend_src1_type;
    } else if (stage == MESA_SHADER_VERTEX) {
       out->vs_writes_point_size = info.vs.writes_point_size;
       out->vs_secondary_enable = info.vs.secondary_enable;
@@ -544,4 +554,91 @@ mali_compile_stats(struct mali_compile_stats *s)
    s->hits = g_hits;
    s->misses = g_misses;
    s->stores = g_stores;
+}
+
+/* ---- blend shader ---- */
+nir_shader *pan_blend_create_shader_v11(const struct pan_blend_state *, nir_alu_type, nir_alu_type, unsigned);
+nir_shader *pan_blend_create_shader_v13(const struct pan_blend_state *, nir_alu_type, nir_alu_type, unsigned);
+
+static bool
+lower_load_blend_const(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   if (intr->intrinsic != nir_intrinsic_load_blend_const_color_rgba)
+      return false;
+   b->cursor = nir_before_instr(instr);
+   /* blend constants live in FAU words 0..3 (written by the driver at draw time) */
+   nir_def *c = nir_load_push_constant(b, intr->def.num_components, intr->def.bit_size, nir_imm_int(b, 0));
+   nir_def_rewrite_uses(&intr->def, c);
+   return true;
+}
+
+int
+mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz)
+{
+   if (!o || !out || (o->arch != 11 && o->arch != 13))
+      return fail(err, errsz, "bad blend arguments");
+   pthread_once(&g_once, init_once);
+   unsigned arch = o->arch;
+   const struct pan_model *model = g_model[arch == 13];
+   if (!model)
+      return fail(err, errsz, "no GPU model");
+
+   struct pan_blend_state st = {0};
+   st.rt_count = 1;
+   struct pan_blend_rt_state *rt = &st.rts[0];
+   rt->format = vk_format_to_pipe_format((VkFormat)o->vk_format);
+   rt->nr_samples = o->samples ? o->samples : 1;
+   rt->equation.blend_enable = true;
+   rt->equation.is_float = util_format_is_float(rt->format);
+   rt->equation.rgb_func = vk_blend_op_to_pipe((VkBlendOp)o->rgb_op);
+   rt->equation.rgb_src_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->rgb_src);
+   rt->equation.rgb_dst_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->rgb_dst);
+   rt->equation.alpha_func = vk_blend_op_to_pipe((VkBlendOp)o->alpha_op);
+   rt->equation.alpha_src_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->alpha_src);
+   rt->equation.alpha_dst_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->alpha_dst);
+   rt->equation.color_mask = o->color_mask & 0xf;
+
+   nir_shader *nir = arch == 13 ? pan_blend_create_shader_v13(&st, o->src0_type, o->src1_type, 0)
+                                : pan_blend_create_shader_v11(&st, o->src0_type, o->src1_type, 0);
+   if (!nir)
+      return fail(err, errsz, "pan_blend_create_shader failed");
+   NIR_PASS(_, nir, nir_shader_instructions_pass, lower_load_blend_const, nir_metadata_control_flow, NULL);
+
+   struct pan_compile_inputs in = { .arch = arch, .model = model, .is_blend = true };
+   in.fau.reserved = 4;
+   pan_preprocess_nir(nir, arch);
+   struct pan_shader_info info = {0};
+   pan_postprocess_nir(nir, &in, &info);
+
+   struct util_dynarray bin;
+   util_dynarray_init(&bin, NULL);
+   pan_shader_compile(nir, &in, &bin, &info);
+
+   memset(out, 0, sizeof *out);
+   out->arch = arch;
+   out->stage = MALI_STAGE_FRAGMENT;
+   out->bin_size = util_dynarray_num_elements(&bin, uint8_t);
+   out->bin = malloc(out->bin_size ? out->bin_size : 1);
+   if (!out->bin) {
+      util_dynarray_fini(&bin);
+      ralloc_free(nir);
+      return fail(err, errsz, "out of memory");
+   }
+   memcpy(out->bin, util_dynarray_begin(&bin), out->bin_size);
+   util_dynarray_fini(&bin);
+   out->work_reg_count = info.work_reg_count;
+   out->tls_size = info.tls_size;
+   out->preload = info.preload;
+   out->fau_count = info.fau.count;
+   out->fau_reserved = info.fau.reserved;
+   out->imm = malloc(sizeof *out->imm);
+   ralloc_free(nir);
+   if (!out->imm) {
+      free(out->bin);
+      return fail(err, errsz, "out of memory");
+   }
+   return 0;
 }

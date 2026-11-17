@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* M5: image layout, plane/texture packers, VkImage and VkImageView. See mali_image.h. */
 #include "mali_image.h"
+#include "mali_msaa.h"
 
 #include <errno.h>
 #include <stdlib.h>

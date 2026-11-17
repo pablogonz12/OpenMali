@@ -40,6 +40,7 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
 /* stencil test of the next scene (depth test is off then); values are Vulkan's */
@@ -55,7 +56,9 @@ static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
+static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
+static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
 
 enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
@@ -161,6 +164,9 @@ struct scene {
    VkDeviceMemory timem;
    VkImageView tiv;
    VkSampler smp;
+   VkImage msi;              /* g_msaa: the 4-sample colour image (col is its single-sample resolve target) */
+   VkDeviceMemory msmem;
+   VkImageView msv;
 };
 
 static int
@@ -173,6 +179,7 @@ scene_create(struct scene *s, int depth)
    s->mode = mode;
    s->depth = depth;
    const char *vsn = g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
+   if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
@@ -230,6 +237,23 @@ scene_create(struct scene *s, int depth)
    CHECK(CreateImageView(dev, &vi, NULL, &s->colv) == VK_SUCCESS, "colour view");
 
    VkImageView atts[2] = {s->colv, VK_NULL_HANDLE};
+   if (g_msaa) {
+      VkImageCreateInfo mi = ii;
+      mi.samples = VK_SAMPLE_COUNT_4_BIT;
+      mi.tiling = VK_IMAGE_TILING_OPTIMAL;
+      mi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      CHECK(CreateImage(dev, &mi, NULL, &s->msi) == VK_SUCCESS, "4-sample colour image");
+      GetImageMemoryRequirements(dev, s->msi, &mr);
+      VkMemoryAllocateInfo ma = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                 .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+      CHECK(AllocateMemory(dev, &ma, NULL, &s->msmem) == VK_SUCCESS, "msaa mem");
+      CHECK(BindImageMemory(dev, s->msi, s->msmem, 0) == VK_SUCCESS, "bind msaa");
+      VkImageViewCreateInfo mv = vi;
+      mv.image = s->msi;
+      CHECK(CreateImageView(dev, &mv, NULL, &s->msv) == VK_SUCCESS, "msaa view");
+      atts[0] = s->msv;      /* attachment 0 = MSAA, attachment 1 = the resolve image (colv) */
+      atts[1] = s->colv;
+   }
    if (depth) {
       VkImageCreateInfo di = ii;
       di.format = g_depfmt;
@@ -260,15 +284,27 @@ scene_create(struct scene *s, int depth)
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .stencilLoadOp = g_st.on ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
+   if (g_msaa) {
+      ad[0].samples = VK_SAMPLE_COUNT_4_BIT;
+      ad[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      ad[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      ad[1] = ad[0];
+      ad[1].samples = VK_SAMPLE_COUNT_1_BIT;
+      ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      ad[1].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
    VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkAttachmentReference rref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
    VkAttachmentReference dref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
    VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
-                              .pColorAttachments = &cref, .pDepthStencilAttachment = depth ? &dref : NULL};
-   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = depth ? 2 : 1,
+                              .pColorAttachments = &cref, .pResolveAttachments = g_msaa ? &rref : NULL,
+                              .pDepthStencilAttachment = depth ? &dref : NULL};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = depth || g_msaa ? 2 : 1,
                                  .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp};
    CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp) == VK_SUCCESS, "render pass");
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = s->rp,
-                                  .attachmentCount = depth ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
+                                  .attachmentCount = depth || g_msaa ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
                                   .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &s->fb) == VK_SUCCESS, "framebuffer");
 
@@ -399,7 +435,8 @@ scene_create(struct scene *s, int depth)
                                                 .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                              .rasterizationSamples = g_msaa ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT,
+                                              .sampleShadingEnable = g_msaa == 2, .minSampleShading = g_msaa == 2 ? 1.0f : 0.0f};
    VkPipelineDepthStencilStateCreateInfo dss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                                                 .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
                                                 .depthCompareOp = VK_COMPARE_OP_LESS, .maxDepthBounds = 1.0f};
@@ -474,6 +511,9 @@ scene_destroy(struct scene *s)
    if (s->ib) DestroyBuffer(dev, s->ib, NULL);
    if (s->ibmem) FreeMemory(dev, s->ibmem, NULL);
    if (s->vbmem) FreeMemory(dev, s->vbmem, NULL);
+   if (s->msv) DestroyImageView(dev, s->msv, NULL);
+   if (s->msi) DestroyImage(dev, s->msi, NULL);
+   if (s->msmem) FreeMemory(dev, s->msmem, NULL);
    if (s->colv) DestroyImageView(dev, s->colv, NULL);
    if (s->depv) DestroyImageView(dev, s->depv, NULL);
    if (s->col) DestroyImage(dev, s->col, NULL);
@@ -844,6 +884,59 @@ test_two(int depth)
 }
 
 /* mode cases: expected coverage in px, tolerance %, optional centre/corner probes */
+/* MSAA (MALI_EXPERIMENTAL_MSAA=1): the triangle is rendered into a 4-sample image and resolved (hardware Average writeback) into col.
+ * Pixel checks on the resolved image: the interior keeps the colour, edge pixels have coverage 1/4..3/4 (alpha ~64/128/191), and
+ * the coverage-weighted area is the triangle area. mode 2 additionally enables sampleRateShading (minSampleShading 1.0). */
+static int
+test_msaa(const char *name, int mode)
+{
+   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");   /* 4x pipelines are gated; sample counts are advertised regardless (as on main) */
+   if (!(gate && gate[0] == '1') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name,
+             mode == 2 ? " / sampleRateShading" : "");
+      return 1;
+   }
+   g_msaa = mode;
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   int made = scene_create(&s, 0);
+   g_msaa = 0;
+   if (!made) return 0;
+   float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
+   if (!scene_draw(&s, 1, rot, f)) return 0;
+   int ok = 1;
+   if (!g_fake) {
+      double wsum = 0;
+      unsigned partial = 0, quarter = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            unsigned a = s.px[y * s.pitch + x * 4 + 3];
+            wsum += a / 255.0;
+            if (a > 0 && a < 255) {
+               partial++;
+               int k = (int)(a * 4 / 255.0 + 0.5);
+               if (abs((int)a - k * 255 / 4) <= 10) quarter++;
+            }
+         }
+      double err = fabs(wsum - 8192.0) / 8192.0 * 100.0;
+      CHECK(err <= 1.5, "%s coverage-weighted area %.0f expected 8192 (%.2f%%)", name, wsum, err);
+      const uint8_t *p = s.px + 106 * s.pitch + 128 * 4;   /* centroid: ~equal thirds */
+      CHECK(abs(p[0] - 85) < 12 && abs(p[1] - 85) < 12 && abs(p[2] - 85) < 12 && p[3] == 255, "%s interior %u,%u,%u,%u", name, p[0], p[1], p[2], p[3]);
+      CHECK(partial > 100, "%s only %u edge pixels with partial alpha (resolve did not average samples)", name, partial);
+      CHECK(quarter * 10 >= partial * 9, "%s edge alpha not in quarter steps: %u/%u", name, quarter, partial);
+      const uint8_t *o = s.px + 8 * s.pitch + 8 * 4;   /* outside: cleared transparent */
+      CHECK(o[3] == 0, "%s outside pixel alpha %u", name, o[3]);
+      printf("{\"test\":\"%s\",\"area\":%.0f,\"edge_px\":%u,\"quarter_px\":%u,\"ok\":true}\n", name, wsum, partial, quarter);
+   } else {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
 static int
 test_mode(const char *name, int mode, double expect, double tol)
 {
@@ -918,7 +1011,7 @@ test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx
 }
 
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
-enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY };
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
 struct fxcase {
    const char *name;
    int depth, n;                  /* depth attachment, draws */
@@ -944,6 +1037,10 @@ static void s_dyn_const_half(void) { s_const_half(); g_fx.dyn = 1; }
 static void s_one_dst(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_OP_ADD); }
 static void s_one_src(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_OP_ADD); }
 static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_OP_ADD); }
+/* dualSrcBlend: dual.frag writes o0 = varying colour, o1 = (0.5, 0.5, 0.5, 0.5) */
+static void s_d_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
+static void s_d_inv_src1a(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
+static void s_d_one_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_OP_ADD); }
 static void s_mask_r(void) { g_fx.wmask = 1; }
 static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
 static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
@@ -973,6 +1070,9 @@ static const struct fxcase g_fxcases[] = {
    {"fx_blend_one_srccolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_src},
    {"fx_blend_2srcdst", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_dst_src},
    {"fx_blend_srcalpha", 0, 2, {0.5f, 0.5f}, EXP_SAME, 0, 0, s_src_alpha},
+   {"fx_dual_src1_color", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_src1c},
+   {"fx_dual_inv_src1_alpha", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_inv_src1a},
+   {"fx_dual_one_src1_color", 0, 2, {0.5f, 0.5f}, EXP_X15, 0, 4, s_d_one_src1c},
    {"fx_write_mask_r", 0, 1, {0.5f}, EXP_RONLY, 0, 0, s_mask_r},
    {"fx_bias_off", 1, 1, {1.0f}, EXP_COV, 0, 0, s_bias_off},
    {"fx_bias_on", 1, 1, {1.0f}, EXP_COV, 8192, 0, s_bias_on},
@@ -1029,6 +1129,7 @@ test_fx(void)
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_have_dclip) { printf("{\"test\":\"%s\",\"skipped\":\"VK_EXT_depth_clip_enable not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 4) && !g_feat.dualSrcBlend) { printf("{\"test\":\"%s\",\"skipped\":\"dualSrcBlend not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
       int good = 1;
       int e[4] = {p[0], p[1], p[2], p[3]};
@@ -1039,6 +1140,7 @@ test_fx(void)
       case EXP_HALF: for (int k = 0; k < 3; k++) e[k] /= 2; e[3] = 127; break;
       case EXP_ZERO: e[0] = e[1] = e[2] = e[3] = 0; break;
       case EXP_ADDSQ: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] * e[k] / 255; e[3] = 255; break;
+      case EXP_X15: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] / 2; e[3] = 255; break;
       case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
       }
       if (c->exp != EXP_COV)
@@ -1290,13 +1392,14 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
    GMP(pd, &memprops);
+   g_fbcounts = pp.limits.framebufferColorSampleCounts;
    printf("{\"device\":\"%s\"}\n", pp.deviceName);
 
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
@@ -1355,6 +1458,8 @@ main(int argc, char **argv)
    }
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
+   if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
+   if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

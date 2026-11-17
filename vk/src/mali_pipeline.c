@@ -8,8 +8,10 @@
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "mali_cs_emit.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
+#include "mali_msaa.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -23,7 +25,7 @@ struct mali_pipeline {
    struct mali_device *dev;
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
-   struct mali_compiled vs, fs, cs;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -40,6 +42,7 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->vs);
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
+   mali_compiled_free(&p->blend);
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -114,6 +117,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = fss->pName;
+   /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
+   unsigned samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1;
+   if (samples != 1 && (samples != 4 || !mali_experimental_msaa() || BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES))) {
+      res = VK_ERROR_FEATURE_NOT_PRESENT;
+      goto fail;
+   }
+   o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
    if (mali_compile(&o, &p->fs, err, sizeof err)) {
@@ -122,19 +132,74 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       goto fail;
    }
 
-   /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned */
+   /* dualSrcBlend: SRC1 factors (VkBlendFactor 15..18) on attachment 0 need a blend shader (fixed function cannot read SRC1) */
+   bool has_blend = false;
+   if (st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
+      const struct vk_color_blend_attachment_state *a = &st.cb->attachments[0];
+      const unsigned f[4] = {a->src_color_blend_factor, a->dst_color_blend_factor, a->src_alpha_blend_factor, a->dst_alpha_blend_factor};
+      for (unsigned i = 0; i < 4; i++)
+         if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+            has_blend = true;
+      /* equations fixed function cannot express (MIN/MAX, SRC_ALPHA_SATURATE, unsupported factor pairs) also go through the blend shader */
+      if (!has_blend && a->blend_enable) {
+         struct mali_fixed fx = {.blend_en = true, .src_c = f[0], .dst_c = f[1], .src_a = f[2], .dst_a = f[3],
+                                 .op_c = a->color_blend_op, .op_a = a->alpha_blend_op};
+         uint32_t eq; unsigned cm;
+         if (mali_blend_equation(&fx, &eq, &cm))
+            has_blend = true;
+      }
+      if (has_blend) {
+         if (!st.rp || st.rp->color_attachment_count < 1 || st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+             BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS)) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         struct mali_blend_opts bo = {
+            .arch = arch, .vk_format = st.rp->color_attachment_formats[0],
+            .samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1,
+            .rgb_op = a->color_blend_op, .alpha_op = a->alpha_blend_op,
+            .rgb_src = a->src_color_blend_factor, .rgb_dst = a->dst_color_blend_factor,
+            .alpha_src = a->src_alpha_blend_factor, .alpha_dst = a->dst_alpha_blend_factor,
+            .color_mask = a->write_mask,
+            .src0_type = p->fs.fs_blend0_type, .src1_type = p->fs.fs_blend_src1_type,
+         };
+         bool uses_src1 = false;
+         for (unsigned i = 0; i < 4; i++)
+            if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+               uses_src1 = true;
+         if (!bo.src0_type || (uses_src1 && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         if (mali_compile_blend(&bo, &p->blend, err, sizeof err)) {
+            fprintf(stderr, "mali_vk: blend shader compile failed: %s\n", err);
+            res = VK_ERROR_INVALID_SHADER_NV;
+            goto fail;
+         }
+      }
+   }
+
+   /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned; blend shader after it, 16-aligned */
    size_t fs_off = (p->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
-   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, fs_off + p->fs.bin_size, MALI_BO_EXEC, &p->code)) {
+   size_t bl_off = (fs_off + p->fs.bin_size + 15) & ~(size_t)15;
+   size_t code_sz = has_blend ? bl_off + p->blend.bin_size : fs_off + p->fs.bin_size;
+   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
    }
    p->have_code = true;
    memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
    memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
+   if (has_blend)
+      memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
    struct mali_gfx_state *g = &p->gfx;
+   if (has_blend)
+      g->blend_va = p->code.gpu_va + bl_off;
    g->vs = &p->vs;
    g->fs = &p->fs;
+   g->samples = samples;
+   g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
    g->push_base[0] = 40;
@@ -380,6 +445,8 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    out->va = img->va + mali_image_subresource_offset(pl, level, layer);
    out->row_stride = pl->slice[level].row_stride;
    out->is_zs = zs || st_fmt;
+   out->samples = img->lay.d.samples;
+   out->surface_stride = (uint32_t)pl->slice[level].surface_stride;
    if (want_s) {
       const struct mali_plane_layout *sp = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_STENCIL_BIT);
       if (!sp)
