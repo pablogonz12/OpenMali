@@ -908,16 +908,16 @@ test_load(const char *name, int kind)
       } else {
          if (kind != 2) CHECK(a != b, "%s: centre A %08x == B %08x (test is blind)", name, a, b);
          ok = got == ref && cgot == cref;
-         for (int i = 0; i < 6 && !ok; i++) ok = ok;
          int same = 1;
          for (int i = 0; i < 6; i++) same &= pgot[i] == pref[i];
          ok = ok && same;
          if (!ok) {
             /* which failure: pass 2 drew nothing (cov == pass 1), preload did not run (B overwrote A where it must be rejected: cov > ref), or B was rejected too much (cov < ref) */
             const char *why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
-            printf("{\"test\":\"%s\",\"diag\":\"%s\",\"cov1\":%u,\"cov_ref\":%u,\"cov_got\":%u}\n", name, why, cov1, cref, cgot);
+            char pxs[400]; int n = 0;
             for (int i = 0; i < 6; i++)
-               printf("{\"test\":\"%s\",\"px\":[%d,%d],\"pass1\":\"%08x\",\"want\":\"%08x\",\"got\":\"%08x\"}\n", name, PX[i][0], PX[i][1], p1[i], pref[i], pgot[i]);
+               n += snprintf(pxs + n, sizeof pxs - n, " (%d,%d)%08x/%08x/%08x", PX[i][0], PX[i][1], p1[i], pref[i], pgot[i]);
+            printf("{\"fail\":\"%s: %s; cov pass1 %u ref %u got %u; px pass1/want/got:%s\"}\n", name, why, cov1, cref, cgot, pxs);
          }
          CHECK(ok, "%s: two-pass centre %08x cov %u vs one-pass %08x cov %u (A %08x B %08x)", name, got, cgot, ref, cref, a, b);
          printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"cov\":%u,\"ok\":%s}\n", name, got, ref, cgot, ok ? "true" : "false");
