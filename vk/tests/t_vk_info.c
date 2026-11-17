@@ -203,8 +203,9 @@ main(int argc, char **argv)
       }
       const VkBool32 *a = (const VkBool32 *)((const char *)&f11 + 16);
       const unsigned s16 = (unsigned)((const VkBool32 *)&f11.storageBuffer16BitAccess - a);   /* t_vk_feat int16 */
+      const unsigned sdp = (unsigned)((const VkBool32 *)&f11.shaderDrawParameters - a);   /* t_vk_feat dparams */
       for (unsigned i = 0; i < (sizeof(f11) - 16) / 4; i++)
-         CHECK(!a[i] || i == s16, "vk11 feature #%u advertised without a test", i);
+         CHECK(!a[i] || i == s16 || i == sdp, "vk11 feature #%u advertised without a test", i);
       const VkBool32 *b = (const VkBool32 *)((const char *)&f12 + 16);
       const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b),
                      mc = (unsigned)((const VkBool32 *)&f12.samplerMirrorClampToEdge - b),

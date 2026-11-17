@@ -325,6 +325,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       memcpy(&vfau[3], &ox, 4);
       memcpy(&vfau[4], &oy, 4);
    }
+   if (vs->fau_count >= 9) {   /* shaderDrawParameters sysvals (compile.c lower_sysvals): BaseVertex, BaseInstance, DrawIndex */
+      vfau[6] = d->first_vertex;
+      vfau[7] = d->first_instance;
+      vfau[8] = d->draw_id;
+   }
    kb_draw_fau_imm(ffau, (const uint32_t(*)[2])fs->imm, fs->nimm);
    for (int st = 0; st < 2; st++) {
       const struct mali_compiled *c = st ? fs : vs;

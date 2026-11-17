@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1255,6 +1255,48 @@ test_clip(void)
    return 1;
 }
 
+/* shaderDrawParameters: see dparams.vert. Triangles A0..A2 (columns 0..2, indirect multi-draw), B (column 3), C (column 0, row 1). */
+static int g_dparams;
+static int
+test_dparams(void)
+{
+   if (!g_dparams) { printf("{\"test\":\"dparams\",\"skipped\":\"shaderDrawParameters not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "dparams.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   struct hbuf ib;
+   if (!hbuf_create(&ib, 256, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) return 0;
+   static const uint32_t idx[3] = {0, 1, 2};
+   static const uint32_t di[12] = {3, 1, 4, 1, 3, 1, 5, 3, 3, 1, 6, 5};
+   memcpy(ib.p, idx, sizeof idx);
+   memcpy(ib.p + 16, di, sizeof di);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdBindIndexBuffer(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   CmdDrawIndirect(cb, ib.b, 16, 3, 16);
+   CmdDraw(cb, 3, 1, 9, 100);
+   CmdDrawIndexed(cb, 3, 1, 0, 5, 200);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      static const int cx[5] = {21, 85, 149, 213, 21}, cy[5] = {117, 117, 117, 117, 181};
+      for (int i = 0; i < 5; i++)
+         CHECK(red_at(&t, cx[i], cy[i]), "triangle %d missing at (%d,%d): %u,%u,%u,%u", i, cx[i], cy[i], pix(&t, cx[i], cy[i])[0],
+               pix(&t, cx[i], cy[i])[1], pix(&t, cx[i], cy[i])[2], pix(&t, cx[i], cy[i])[3]);
+      uint32_t cov = coverage(&t);
+      CHECK(abs((int)cov - 5 * 2048) <= 5 * 2048 / 50, "coverage %u expected %u", cov, 5 * 2048);
+      printf("{\"test\":\"dparams\",\"coverage\":%u,\"ok\":true}\n", cov);
+   } else printf("{\"test\":\"dparams\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&ib);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
 static VkPhysicalDevice g_pd;
@@ -1526,6 +1568,7 @@ main(int argc, char **argv)
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
+   g_dparams = f11.shaderDrawParameters;
    g_i16 = f2.features.shaderInt16 && f11.storageBuffer16BitAccess;
    g_i8 = f12.shaderInt8 && f12.storageBuffer8BitAccess;
    g_mirror = f12.samplerMirrorClampToEdge;
@@ -1542,7 +1585,7 @@ main(int argc, char **argv)
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout};
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups};
    e12.pNext = &e13;
-   VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess};
+   VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters};
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e11, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
@@ -1577,6 +1620,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
+   if (ok && CASE_ON("dparams")) ok &= test_dparams();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

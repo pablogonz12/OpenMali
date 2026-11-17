@@ -558,7 +558,7 @@ mali_meta_preload(struct mali_meta_mem *mem, uint64_t va, uint32_t bytes, uint32
    d->gfx.fs = &g_pre.fs;
    d->gfx.vs_va = g_pre.vs_va;
    d->gfx.fs_va = g_pre.fs_va;
-   d->gfx.push_base[0] = 32;
+   d->gfx.push_base[0] = 40;
    d->gfx.push_base[1] = g_dev.arch == 13 ? 24 : 0;
    d->gfx.depth_func = 7;   /* ALWAYS */
    uint32_t pc[2] = { row_bytes / 4, flags };

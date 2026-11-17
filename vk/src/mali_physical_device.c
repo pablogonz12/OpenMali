@@ -196,6 +196,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
+      .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
       .shaderClipDistance = true,                                       /* t_vk_feat clip */
       .shaderInt64 = true,                                              /* t_vk_feat int64 */
       .shaderInt16 = true, .storageBuffer16BitAccess = true,            /* t_vk_feat int16 */

@@ -36,8 +36,8 @@ struct mali_compile_opts {
    const uint32_t *spirv;
    size_t spirv_words;
    const char *entry;             /* NULL = "main" */
-   unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 16, FS 8, CS 8) */
-   unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 32, else 0 */
+   unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 24, FS 8, CS 8) */
+   unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */

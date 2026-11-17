@@ -158,7 +158,7 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
       return;
    }
    if (!cmd->gfx.push_base[0])
-      cmd->gfx.push_base[0] = 32;   /* compile defaults: VS push block at FAU byte 32, FS at 0 */
+      cmd->gfx.push_base[0] = 40;   /* compile defaults: VS push block at FAU byte 40, FS at 0 */
    if (g_res.pipeline_dyn) {
       const struct vk_dynamic_graphics_state *pd;
       if (!g_res.pipeline_dyn(p, &pd))
@@ -193,7 +193,7 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
       }
    }
    if (!cmd->gfx.push_base[0])
-      cmd->gfx.push_base[0] = 32;
+      cmd->gfx.push_base[0] = 40;
    cmd->have_gfx = cmd->gfx.vs && cmd->gfx.fs;
 }
 
@@ -494,6 +494,7 @@ expand_indirect(struct mali_frame *f)
             e.ind = NULL;
             e.ind_count = NULL;
             e.count = c[0];
+            e.draw_id = k;
             e.instance_count = c[1];
             if (d->indexed) {
                e.first_index = c[2];

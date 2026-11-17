@@ -137,7 +137,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->fs = &p->fs;
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
-   g->push_base[0] = 32;
+   g->push_base[0] = 40;
    g->push_base[1] = arch == 13 ? 24 : 0;   /* v13: FAU words 4,5 hold the blend descriptor */
    g->depth_func = VK_COMPARE_OP_ALWAYS;
    if (st.ds) {

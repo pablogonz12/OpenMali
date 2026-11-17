@@ -26,7 +26,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 11
+#define MALI_COMPILE_VERSION 12
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -55,6 +55,9 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
    switch (i->intrinsic) {
    case nir_intrinsic_load_viewport_scale:  off = 0;  break;
    case nir_intrinsic_load_viewport_offset: off = 12; break;
+   case nir_intrinsic_load_first_vertex:    off = 24; break;   /* shaderDrawParameters: BaseVertex / BaseInstance / DrawIndex, written per draw (mali_cs_emit.c) */
+   case nir_intrinsic_load_base_instance:   off = 28; break;
+   case nir_intrinsic_load_draw_id:         off = 32; break;
    case nir_intrinsic_load_base_global_invocation_id:   /* compute stub: no vkCmdDispatchBase, base is 0 */
    case nir_intrinsic_load_base_workgroup_id:
       b->cursor = nir_before_instr(&i->instr);
@@ -70,14 +73,17 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
 
 struct push_ctx { unsigned base; unsigned max_end; };
 
-/* Hardware instance id already includes IDVS instance offset. */
+/* The hardware instance id already includes the IDVS instance offset (= firstInstance). nir_lower_system_values makes
+ * InstanceIndex = instance_id + base_instance and InstanceId = instance_id, so: instance_id := hw_id - base_instance
+ * (InstanceId excludes firstInstance, InstanceIndex = hw_id) and base_instance is the real firstInstance (a sysval). */
 static bool
 lower_base_inst(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
-   if (i->intrinsic != nir_intrinsic_load_base_instance)
+   if (i->intrinsic != nir_intrinsic_load_instance_id)
       return false;
-   b->cursor = nir_before_instr(&i->instr);
-   nir_def_replace(&i->def, nir_imm_int(b, 0));
+   b->cursor = nir_after_instr(&i->instr);
+   nir_def *sub = nir_isub(b, &i->def, nir_load_base_instance(b));
+   nir_def_rewrite_uses_after(&i->def, sub);
    return true;
 }
 
@@ -490,8 +496,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       return fail(err, errsz, "arch must be 11 or 13");
    if (o->stage > MALI_STAGE_COMPUTE)
       return fail(err, errsz, "bad stage");
-   unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 16 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
-   unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 32 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
+   unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
+   unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
 
    char dir[900], hex[65];
    int use_cache = cache_dir(o, dir, sizeof dir);
