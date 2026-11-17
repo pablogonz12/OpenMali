@@ -1152,9 +1152,13 @@ test_zinit(void)
    if (!tgt_create(&t)) return 0;
    struct hbuf bf;
    enum { WG = 64 };
-   if (!hbuf_create(&bf, WG * 64 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
-   memset(bf.p, 0xEE, WG * 64 * 4);
+   enum { DIRTY_WG = 2048 };
+   if (!hbuf_create(&bf, DIRTY_WG * 64 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(bf.p, 0xEE, DIRTY_WG * 64 * 4);
    const VkDescriptorType ty[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   /* first dirty the shared memory of every core (separate dispatch, shader without zero-init) so a missing lowering is caught */
+   if (!run_comp(&t, "zdirty.comp.spv", 1, ty, &bf, DIRTY_WG)) return 0;
+   memset(bf.p, 0xEE, WG * 64 * 4);
    /* every workgroup writes 0xFFFFFFFF into its shared array at the end; later workgroups on the same core must still start from 0 */
    if (!run_comp(&t, "zeroinit.comp.spv", 1, ty, &bf, WG)) return 0;
    if (!g_fake) {

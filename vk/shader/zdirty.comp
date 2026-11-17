@@ -1,0 +1,11 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer O { uint o[]; };
+shared uint sh[64];
+void main() {
+   uint i = gl_LocalInvocationIndex;
+   sh[i] = 0xFFFFFFFFu;
+   barrier();
+   /* read back so the store cannot be eliminated */
+   o[gl_WorkGroupID.x * 64u + i] = sh[(i + 1u) % 64u];
+}
