@@ -109,6 +109,32 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
             gpu->fake ? ", fake backend" : "");
+
+   /* ---- Vulkan 1.1 ---- R4-M1: only what is true. No subgroup operation or stage is advertised yet
+    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16). */
+   memcpy(p->driverUUID, "mali-own-vk\0\0\0\0\0", VK_UUID_SIZE);
+   memcpy(p->deviceUUID, &gpu->gpu_id, sizeof(gpu->gpu_id));
+   p->subgroupSize = 16;
+   p->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
+   p->maxPerSetDescriptors = 1024;
+   p->maxMemoryAllocationSize = 1u << 30;
+
+   /* ---- Vulkan 1.2 ---- driverID has no Mali-open value; PanVK is the nearest sibling (same compiler). */
+   p->driverID = VK_DRIVER_ID_MESA_PANVK;
+   snprintf(p->driverName, sizeof(p->driverName), "mali-own");
+   snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
+   /* conformanceVersion stays 0.0.0.0: we do not claim conformance. */
+   p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
+   p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
+   p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+
+   /* ---- Vulkan 1.3 ---- */
+   p->minSubgroupSize = 16;
+   p->maxSubgroupSize = 16;
+   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
+   p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
+   p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
+   p->maxBufferSize = 1u << 30;
 }
 
 static VkResult
@@ -135,7 +161,17 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_swapchain_mutable_format = true,
       .EXT_image_drm_format_modifier = true, /* LINEAR only */
    };
-   const struct vk_features features = {.timelineSemaphore = true, .textureCompressionBC = true};
+   /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
+    * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
+   const struct vk_features features = {
+      .timelineSemaphore = true,
+      .textureCompressionBC = true,
+      .hostQueryReset = true,
+      .synchronization2 = true,
+      .dynamicRendering = true,
+      .maintenance4 = true,
+      .privateData = true,
+   };
    struct vk_properties properties;
    mali_get_properties(gpu, &properties);
 
