@@ -164,7 +164,7 @@ mali_hw_init(struct mali_device *dev)
    if (be->bo_alloc(dev->kdev, ARENA_BYTES, 0, &h->arena))
       goto fail;
    h->arena_live = true;
-   if (be->bo_alloc(dev->kdev, 4096 + 65536, 0, &h->geo))
+   if (be->bo_alloc(dev->kdev, 4096 + (4u << 20), 0, &h->geo))
       goto fail;
    h->geo_live = true;
    if (be->bo_alloc(dev->kdev, 4096, MALI_BO_EVENT, &h->sync))
