@@ -139,9 +139,13 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
    spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
    vs_entries = vs_entries > MALI_DUMMY_SAMPLER_IDX + 1 ? vs_entries : MALI_DUMMY_SAMPLER_IDX + 1;
+   const unsigned dyn_end = d->ndyn ? MALI_DYN_BUF_START + d->ndyn : 0;
+   if (dyn_end > vs_entries)
+      vs_entries = dyn_end;
+   const unsigned fs_entries = dyn_end > MALI_DUMMY_SAMPLER_IDX + 1 ? dyn_end : MALI_DUMMY_SAMPLER_IDX + 1;
    vsset = A(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &va_vsset);
    vst = A(hw, res_alloc, 64, &o->vst);
-   fsset = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_fsset);
+   fsset = A(hw, fs_entries * KB_DESC_SET_STRIDE, 64, &va_fsset);
    fst = A(hw, res_alloc, 64, &o->fst);
    bl = A(hw, KB_BLEND_SIZE, 16, &o->bl);
    zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
@@ -175,7 +179,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
    /* resource tables: entry 0 = driver set, entries 1.. = bound user descriptor sets (KB_TEX_USER_TABLE) */
    kb_draw_resource(vst, va_vsset, vs_entries * KB_DESC_SET_STRIDE, 1);
-   kb_draw_resource(fst, va_fsset, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
+   for (unsigned i = 0; i < d->ndyn; i++) {
+      memcpy(vsset + (MALI_DYN_BUF_START + i) * KB_DESC_SET_STRIDE, d->dyn_desc[i], 32);
+      memcpy(fsset + (MALI_DYN_BUF_START + i) * KB_DESC_SET_STRIDE, d->dyn_desc[i], 32);
+   }
+   kb_draw_resource(fst, va_fsset, fs_entries * KB_DESC_SET_STRIDE, 1);
    for (unsigned s = 0; s < d->nsets; s++) {
       kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
       kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);

@@ -13,6 +13,7 @@
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
 #include "vk_buffer.h"
+#include "vk_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
@@ -66,6 +67,7 @@ reset_state(struct mali_cmd_buffer *cmd)
    memset(cmd->vb_size, 0, sizeof cmd->vb_size);
    memset(cmd->push, 0, sizeof cmd->push);
    cmd->nsets = 0;
+   cmd->ndyn = 0;
    cmd->occ_va = 0;
    cmd->occ_mode = 0;
    free(cmd->def_ops);
@@ -191,8 +193,8 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
                            const VkDescriptorSet *sets, uint32_t ndyn, const uint32_t *dyn)
 {
    CMD(h);
-   if (ndyn)
-      unsupported(cmd, "dynamic descriptor offsets");
+   VK_FROM_HANDLE(vk_pipeline_layout, pl, layout);
+   uint32_t used = 0;
    for (uint32_t i = 0; i < n; i++) {
       unsigned s = first + i;
       if (s >= MALI_CMD_SETS) {
@@ -200,6 +202,24 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          return;
       }
       struct mali_dset *ds = mali_dset_from_handle(sets[i]);
+      if (ds->layout && ds->layout->dyn_count) {
+         /* dynamic buffers: this set's dyn_start = dynamic descriptors of the lower sets of the pipeline layout (matches mali_pipeline_layout_flatten) */
+         unsigned start = 0;
+         for (unsigned j = 0; j < s && pl && j < pl->set_count; j++)
+            if (pl->set_layouts[j])
+               start += ((const struct mali_dsl *)pl->set_layouts[j])->dyn_count;
+         for (unsigned k = 0; k < ds->layout->dyn_count; k++) {
+            if (start + k >= MALI_MAX_DYN || used >= ndyn) {
+               unsupported(cmd, "dynamic descriptor offsets (count)");
+               return;
+            }
+            struct mali_hw_desc hd;
+            mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], dyn[used++]);
+            memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
+            if (start + k + 1 > cmd->ndyn)
+               cmd->ndyn = start + k + 1;
+         }
+      }
       cmd->set_va[s] = ds->va;
       cmd->set_bytes[s] = ds->bytes;
       if (s + 1 > cmd->nsets)
@@ -281,6 +301,8 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    d->nsets = cmd->nsets;
    memcpy(d->set_va, cmd->set_va, sizeof d->set_va);
    memcpy(d->set_bytes, cmd->set_bytes, sizeof d->set_bytes);
+   d->ndyn = cmd->ndyn;
+   memcpy(d->dyn_desc, cmd->dyn_desc, sizeof d->dyn_desc);
    d->occ_va = cmd->occ_va;
    d->occ_mode = cmd->occ_mode;
    d->count = count;
