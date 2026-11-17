@@ -38,6 +38,7 @@ Read README.md, ROADMAP.md, vk/R4-GAP.md for status. Main checkout: `~/Documents
 - a64 cross build: see `vk/cross`; it must be warning-free.
 - Features are advertised only when a test backs them (`t_vk_info`, `t_dxvk_caps`, `t_vk_feat`, `t_vk_draw`).
 - `tools/skill-lint.sh` checks this skill; `tools/lesson <area> "<text>" <evidence>` appends to LESSONS.md.
+- Offline checks, goldens, rules, sanitizers, host dEQP: `.opencode/skills/mali-open/OFFLINE.md`.
 
 ## Lanes (one worker at a time in the hot files)
 - Exclusive: `vk/src/mali_cmd.c`, `mali_cs_emit.c`, `mali_pipeline.c`. Ask the orchestrator before touching them if another worker holds one.

@@ -4,14 +4,16 @@
 #   ./check.sh [--no-build] [-v] [--bless]
 #     --bless   regenerate vk/tests/golden/*.txt (decoded command streams of t_vk_draw/t_vk_feat/t_vk_meta on both fake GPUs) from the
 #               current driver; review `git diff vk/tests/golden` and commit it with the change that caused it
+#     --deqp-host  also run deqp/host-run.sh (host dEQP-VK vs the ASan fake-backend ICD, ~2 min); skipped with a message if the host deqp-vk
+#               build (third_party/build-vk-x86-host) is absent
 #   MALI_SAN=1 ./check.sh   same cases with ASan+UBSan driver objects (out/native-san; the standalone build-t_*.sh tests are skipped)
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
 SAN=${MALI_SAN:-0}
 if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san; else OUT=$V/out/native; fi
-build=1; verbose=0; bless=0
+build=1; verbose=0; bless=0; deqp_host=0
 for a in "$@"; do
-   case $a in --no-build) build=0 ;; -v) verbose=1 ;; --bless) bless=1 ;; *) echo "usage: check.sh [--no-build] [-v] [--bless]"; exit 2 ;; esac
+   case $a in --no-build) build=0 ;; -v) verbose=1 ;; --bless) bless=1 ;; --deqp-host) deqp_host=1 ;; *) echo "usage: check.sh [--no-build] [-v] [--bless] [--deqp-host]"; exit 2 ;; esac
 done
 if [ "$SAN" = 1 ]; then
    # The test executables are not sanitized; the sanitized driver .so needs the runtime preloaded. Leaks are reported by LSan at exit.
@@ -132,5 +134,16 @@ fi
 
 # no private identifiers (serials, home paths, IPs, emails) in tracked files
 if "$V/../tools/private-lint.sh" >/dev/null; then echo "ok    private-lint"; else echo "FAIL  private-lint"; "$V/../tools/private-lint.sh" | sed 's/^/        /'; fail=1; fi
+
+# opt-in: host dEQP-VK gate (slow; needs the host deqp-vk build, see deqp/README.md)
+if [ $deqp_host = 1 ]; then
+   hd=${DEQP_VK:-$V/../third_party/build-vk-x86-host/external/vulkancts/modules/vulkan/deqp-vk}
+   if [ ! -x "$hd" ]; then echo "skip  host dEQP (--deqp-host): no deqp-vk at ${hd#$V/../} -- build it first, see deqp/README.md"
+   else
+      [ -f "$V/out/native-san/libvulkan_mali.so" ] || (MALI_SAN=1 MALI_TARGET=native-san "$V/build.sh" >/dev/null 2>&1)
+      out=$(timeout 900 "$V/deqp/host-run.sh" 2>&1); rc=$?
+      if [ $rc -eq 0 ]; then echo "ok    host dEQP (no new Crash/Timeout/NotSupported)"; else echo "FAIL  host dEQP gate"; echo "$out" | grep -v '^  v1[13]: ' | tail -25 | sed 's/^/        /'; fail=1; fi
+   fi
+fi
 
 [ $fail = 0 ] && echo OK || { echo FAILED; exit 1; }
