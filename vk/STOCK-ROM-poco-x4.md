@@ -16,3 +16,10 @@ Archived before the planned bootloader unlock and LineageOS flash (wipes the pho
 ## Install findings
 - Host `adb install -r` of p20 works after the owner's Install-via-USB change; `input keyevent` is still denied (rc 255) at that moment.
 - Before that, shell-side `pm install -r` from /data/local/tmp worked without a tap (recipe in quick/README.md).
+
+## Guest session (p21) — still blocked
+- p21 (versionCode 21) installed; the session now reports `GUEST_EARLY_EXIT` after ~126 ms instead of exiting silently.
+- Guest dies before `gamescope` execs (proot, fast path + seccomp, kernel 5.10). With `prootNoSeccomp` it gets further but `getcwd` returns ENOSYS and it dies at the vkbridge self-test. Cause not found.
+- The freedreno ICD line was a red herring (the bridge server reports Mali-G610 and listens); p21 no longer defaults to it on non-Adreno.
+- Guest tests (/dev/mali0, valrun, dEQP) NOT run. Phone reached 44 °C, stopped. Shell route stays 302/107/971/1.
+- Leftover on phone: a gamescope override wrapper (`droiddeckctl override gamescope`) still pending; remove before the next session.
