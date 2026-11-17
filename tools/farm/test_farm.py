@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Dry-run tests of queue, pending/resume, comparison and JSON logic (no phone, no build). Run: python3 tools/farm/test_farm.py"""
-import json, os, subprocess, sys, tempfile, unittest
+import hashlib, json, os, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -23,6 +23,122 @@ lock = "poco"
 baseline = "poco"
 require_charging = true
 """
+
+
+FAKE_ADB = r'''#!/usr/bin/env python3
+# fake adb for the shell route: the "phone" is a directory ($FAKE_ADB_ROOT); deqp-vk / t_vk_* are simulated
+import hashlib, os, re, shutil, sys
+R = os.environ["FAKE_ADB_ROOT"]
+a = sys.argv[1:]
+if a[:1] == ["-s"]:
+    a = a[2:]
+P = lambda p: R + p
+op = a[0]
+if op == "push":
+    os.makedirs(os.path.dirname(P(a[2])), exist_ok=True)
+    if os.environ.get("FAKE_ADB_CORRUPT") == "1" and a[2].endswith(".so"):
+        open(P(a[2]), "w").write("tampered")
+    else:
+        shutil.copy(a[1], P(a[2]))
+elif op == "pull":
+    if os.path.exists(P(a[1])):
+        shutil.copy(P(a[1]), a[2])
+    else:
+        print("error: remote object does not exist"); sys.exit(1)
+elif op == "shell":
+    c = a[1]
+    m = re.match(r"sha256sum (\S+)", c)
+    if m:
+        if os.path.exists(P(m.group(1))):
+            print(hashlib.sha256(open(P(m.group(1)), "rb").read()).hexdigest(), m.group(1))
+    elif c.startswith("ls "):
+        print("\n".join(os.listdir(P(c[3:].strip()))))
+    elif "dumpsys battery" in c:
+        print("  AC powered: true\n  level: 80\n  temperature: 300\nThermal Status: 0")
+    elif "deqp-vk" in c:
+        cf = re.search(r"--deqp-caselist-file=(\S+)", c).group(1)
+        qf = re.search(r"--deqp-log-filename=(\S+)", c).group(1)
+        with open(P(qf), "w") as f:
+            for case in open(P(cf)).read().split():
+                f.write("#beginTestCaseResult %s\n<Result StatusCode=\"Pass\"/>\n#endTestCaseResult\n" % case)
+        print("rc=0")
+    elif "./t_vk_" in c:
+        d = re.match(r"cd (\S+)", c).group(1)
+        n = re.search(r"\./(t_vk_\w+)", c).group(1)
+        open(P(d) + "/" + n + ".log", "w").write('{"pass":true}\n{"pass":true}\n')
+        print("rc=0")
+    else:
+        for m in re.finditer(r"rm -(?:rf|f) ([^;&]+)", c):
+            for p in m.group(1).split():
+                shutil.rmtree(P(p), ignore_errors=True) if os.path.isdir(P(p)) else (os.path.exists(P(p)) and os.unlink(P(p)))
+        for m in re.finditer(r"mkdir -p (\S+)", c):
+            os.makedirs(P(m.group(1)), exist_ok=True)
+'''
+
+
+class ShellRoute(unittest.TestCase):
+    """shellroute.py against a fake adb (the phone is a temp dir): per-run .so path, sha256 on the phone, lock guard, resume"""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        os.makedirs(self.d + "/bin")
+        open(self.d + "/bin/adb", "w").write(FAKE_ADB)
+        os.chmod(self.d + "/bin/adb", 0o755)
+        self.root = self.d + "/phone"
+        for p in ("/data/local/tmp/g/lib/ld-linux-aarch64.so.1", "/data/local/tmp/g/deqp-vk"):
+            os.makedirs(os.path.dirname(self.root + p), exist_ok=True)
+            open(self.root + p, "w").write("x")
+        self.tree = self.d + "/tree"
+        for sub in ("a64-glibc", "a64-bionic"):
+            os.makedirs(f"{self.tree}/vk/out/{sub}")
+            open(f"{self.tree}/vk/out/{sub}/libvulkan_mali.so", "w").write("driver " + sub)
+        os.makedirs(self.tree + "/vk/out/a64-bionic", exist_ok=True)
+        for t in ("t_vk_draw", "t_vk_compute", "t_vk_meta"):
+            open(f"{self.tree}/vk/out/a64-bionic/{t}", "w").write("x")
+        os.makedirs(self.tree + "/vk/shader")
+        open(self.tree + "/vk/shader/a.spv", "w").write("x")
+        open(self.d + "/cases.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(5)) + "\n")
+        self.env = dict(os.environ, PATH=self.d + "/bin:" + os.environ["PATH"], FAKE_ADB_ROOT=self.root, ANDROID_SERIAL="X", QSAFE_HELD="shelltest",
+                        MALI_FARM_STATE=self.d + "/state", MALI_FARM_DEVICES=self.d + "/none.toml")
+
+    def run_sr(self, mode, sha_of, extra=(), env=None):
+        sha = hashlib.sha256(open(f"{self.tree}/vk/out/{sha_of}/libvulkan_mali.so", "rb").read()).hexdigest()
+        r = subprocess.run([sys.executable, "-I", HERE + "/shellroute.py", mode, "--lock", "shelltest", "--tree", self.tree, "--sha", sha, "--run", "r1", *extra],
+                           capture_output=True, text=True, env=dict(self.env, **(env or {})), timeout=60)
+        return r.returncode, r.stdout
+
+    def test_daily_per_run_so_and_resume(self):
+        out = self.d + "/o.tsv"
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/cases.txt", "--out", out, "--chunk", "2"])
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(open(out).read().count("\tPass\t\n"), 5)
+        self.assertTrue(os.path.exists(self.root + "/data/local/tmp/g/icd.r1.so"))      # per-run ICD path, left for farmd's final check
+        self.assertIn("SO_ON_PHONE /data/local/tmp/g/icd.r1.so", o)
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/cases.txt", "--out", out])        # resume: nothing left to run
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(open(out).read().splitlines()), 5)
+
+    def test_daily_foreign_so_is_refused(self):
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/cases.txt", "--out", self.d + "/o2.tsv"], {"FAKE_ADB_CORRUPT": "1"})
+        self.assertEqual(rc, 76)
+        self.assertFalse(os.path.exists(self.d + "/o2.tsv") and open(self.d + "/o2.tsv").read())
+
+    def test_refuses_without_the_phone_lock(self):
+        import fcntl
+        fd = open("/tmp/qsafe-shelltest.lock", "a")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            rc, _ = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/cases.txt", "--out", self.d + "/o3.tsv"], {"QSAFE_HELD": ""})
+            self.assertEqual(rc, 73)
+        finally:
+            fd.close()
+
+    def test_smoke(self):
+        rc, o = self.run_sr("smoke", "a64-bionic")
+        self.assertEqual(rc, 0, o)
+        self.assertIn('"test":"summary","ok":true', o)
+        self.assertIn('"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":2', o)
+        rc, o = self.run_sr("smoke", "a64-bionic", env={"FAKE_ADB_CORRUPT": "1"})
+        self.assertEqual(rc, 77)
 
 
 class T(unittest.TestCase):

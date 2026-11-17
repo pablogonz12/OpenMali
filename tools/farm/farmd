@@ -320,6 +320,16 @@ class Farm:
                 return None, f"build rc={rc} ({'timeout' if rc in (124, 137) else 'see logs/' + job['id'] + '-build.log'})"
             sha = hashlib.sha256(open(so, "rb").read()).hexdigest()
             shutil.copy2(so, os.path.join(L.state_dir(), "artifacts", sha + ".so"))
+            if any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values()) and job["suite"] == "smoke":
+                benv = dict(os.environ, MESA_BUILD=os.path.join(tree, "third_party", "build-vk-a64-bionic"), MALI_TARGET="a64-bionic")
+                rc, out = L.sh(["timeout", "-k", "10", str(BUILD_TIMEOUT), "bash", os.path.join(tree, "vk", "build.sh")], BUILD_TIMEOUT + 30, env=benv)
+                so2 = os.path.join(tree, "vk", "out", "a64-bionic", "libvulkan_mali.so")
+                if rc or not os.path.exists(so2):
+                    open(os.path.join(L.state_dir(), "logs", job["id"] + "-build-bionic.log"), "w").write(out)
+                    self.upd(job["id"], lambda x: x.update(build="failed"))
+                    return None, f"bionic build rc={rc} (see logs/{job['id']}-build-bionic.log)"
+                sha2 = hashlib.sha256(open(so2, "rb").read()).hexdigest()
+                self.upd(job["id"], lambda x: x.update(so_sha256_bionic=sha2))
             self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok", build_s=round(time.time() - t0)))
             return sha, ""
 
@@ -336,6 +346,8 @@ class Farm:
     def missing_deps(self, suite):
         """untracked build inputs live in the main checkout (farm.toml: main_checkout); say clearly what is missing"""
         need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
+        if suite == "smoke" and any(self.shell_route(dv) for dv in self.devs.values()):
+            need.append(("third_party/build-vk-a64-bionic", "Mesa a64-bionic build tree (shell-route smoke)"))
         if suite == "daily":
             need += [("vk/deqp/out/a64-glibc", "dEQP build (vk/deqp/build.sh)"), ("vk/deqp/lists/daily-sample.txt", "dEQP case list")]
         if not self.quick_root or not os.path.isdir(os.path.join(self.quick_root, "scripts", "quick")):
@@ -449,14 +461,36 @@ class Farm:
                 return "stop"
         return ok
 
-    def verify_so(self, job, dev, path):
-        """sha256 of the driver .so ON THE PHONE == the job's so_sha256? -> (ok, got)"""
+    def verify_so(self, job, dev, path, key="so_sha256"):
+        """sha256 of the driver .so ON THE PHONE == the job's so_sha256 (key: so_sha256_bionic for the shell smoke)? -> (ok, got)"""
         if self.fake:
-            return True, job.get("so_sha256")
+            return True, job.get(key)
         rc, o = self.adb(dev, "shell", f"sha256sum {path} 2>/dev/null", timeout=30)
         f = o.split()
         got = f[0] if f else None
-        return got == job.get("so_sha256"), got
+        return got == job.get(key), got
+
+    def shell_route(self, dev):
+        return dev.get("route") == "shell"
+
+    def run_shellroute(self, job, dev, mode, run_id, extra, tmo):
+        """shellroute.py under the phone lock (QSAFE_HELD), killed when the phone goes away or the owner says stop -> (rc, out)"""
+        sha = job.get("so_sha256_bionic" if mode == "smoke" else "so_sha256") or ""
+        cmd = [sys.executable, "-I", os.path.join(HERE, "shellroute.py"), mode, "--lock", dev["lock"], "--tree", self.tree(job["id"]),
+               "--sha", sha, "--run", run_id, "--env", job["env"], *extra]
+        return L.run_watched(cmd, tmo, lambda: self.alive(dev), env=self.phone_env(dev, {"SHELLROUTE_SERIAL": dev["serial"]}))
+
+    def shell_rc(self, rc, out, what):
+        """common handling of shellroute exit codes -> result dict or None (= carry on)"""
+        if rc == 125:
+            return {"lost": True}
+        if rc in (73, 75):
+            return {"gated": True}
+        if rc in (76, 77):
+            return {"verdict": "invalid", "notes": f"driver on the phone was not this job's build ({what} sha256 check): " + out.strip()[-160:]}
+        if rc in (78, 79):
+            return {"verdict": "error", "notes": f"shell route: {out.strip()[-200:]}"} if rc == 78 else {"lost": True}
+        return None
 
     def fake_swap(self, job):
         """test hook FAKE_SO_SWAP=1: the first run of the job finds a foreign .so on the phone"""
@@ -474,21 +508,34 @@ class Farm:
             bad = "FAKE_FAIL=1" in env
             return {"verdict": "fail" if bad else "pass", "counts": {"tests": 3, "failed": 1 if bad else 0},
                     "new_failures": [["t_vk_draw", "rc=1"]] if bad else [], "newly_passing": [], "notes": "fake"}
-        if dev["lock"] not in ("cmf", "poco"):
-            return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
         tree = self.tree(job["id"])
-        self.harness(tree)
-        rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, lambda: self.alive(dev),
-                                env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
-        if rc == 125:
-            return {"lost": True}
-        if rc == 73:                                                   # our own harness refused: the phone lock is not held by this tree
-            return {"gated": True}
-        if rc == 77:
-            return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
-        ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
-        if not ok_s:
-            return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]})"}
+        if self.shell_route(dev):
+            if not job.get("so_sha256_bionic"):
+                return {"verdict": "error", "notes": "no bionic build for the shell route"}
+            run_id = job["id"] + "-" + dev["alias"]
+            rc, out = self.run_shellroute(job, dev, "smoke", run_id, [], 700)
+            bad = self.shell_rc(rc, out, "shellroute")
+            if bad:
+                return bad
+            ok_s, got = self.verify_so(job, dev, f"/data/local/tmp/farm/{run_id}/libvulkan_mali.so", "so_sha256_bionic")
+            self.adb(dev, "shell", f"rm -rf /data/local/tmp/farm/{run_id}")
+            if not ok_s:
+                return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256_bionic'))[:12]})"}
+        else:
+            if dev["lock"] not in ("cmf", "poco"):
+                return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
+            self.harness(tree)
+            rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, lambda: self.alive(dev),
+                                    env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
+            if rc == 125:
+                return {"lost": True}
+            if rc == 73:                                                   # our own harness refused: the phone lock is not held by this tree
+                return {"gated": True}
+            if rc == 77:
+                return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
+            ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
+            if not ok_s:
+                return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]})"}
         recs = []
         for l in out.splitlines():
             if l.startswith("{"):
@@ -537,6 +584,35 @@ class Farm:
                 rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
                 if rc == 125:
                     return {"lost": True}
+        elif self.shell_route(dev):
+            tree = self.tree(job["id"])
+            listf = os.path.join(tree, "vk", "deqp", "lists", "daily-sample.txt")
+            if not os.path.exists(listf):
+                return {"verdict": "error", "notes": "no lists/daily-sample.txt"}
+            run_id = job["id"] + "-" + dev["alias"]
+            out_tsv = os.path.join(L.state_dir(), "work", f"{run_id}.daily.tsv")        # resumes across a pause / farmd restart
+            rc, out = self.run_shellroute(job, dev, "daily", run_id, ["--list", listf, "--out", out_tsv, "--chunk", "100"],
+                                          int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400")))
+            so_phone = f"/data/local/tmp/g/icd.{run_id}.so"
+            if rc not in (75, 124, 125, 73, 76):
+                ok_s, got = self.verify_so(job, dev, so_phone)
+                self.adb(dev, "shell", f"rm -f {so_phone}")
+                if not ok_s and rc in (0, 1):
+                    return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
+            if rc == 76:
+                self.adb(dev, "shell", f"rm -f {so_phone}")
+                if os.path.exists(out_tsv):
+                    os.unlink(out_tsv)                       # results of a run on a foreign driver are discarded
+            bad = self.shell_rc(rc, out, "shellroute")
+            if bad:
+                return bad
+            note = out.strip()[-200:]
+            cur = L.read_tsv(out_tsv) if os.path.exists(out_tsv) else {}
+            if cur:
+                shutil.copy2(out_tsv, os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['alias']}-daily.tsv"))
+            os.path.exists(out_tsv) and os.unlink(out_tsv)
+            if not cur:
+                return {"verdict": "error", "counts": {"total": len(cases)}, "notes": f"shell route produced no results (rc={rc}): {note}"}
         else:
             tree = self.tree(job["id"])
             shim = os.path.join(L.state_dir(), "work", job["id"] + "-shim")        # cwd root for qdeqp: scripts/, tools/, driver/, runs/

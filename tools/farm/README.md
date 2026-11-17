@@ -74,3 +74,10 @@ state/battery/temp, run JSON has battery_pct_/temp_c_ start+end. qdeqp stops wit
 - A daily's verdict counts a case as regressed if it is Pass in the branch's own committed baseline OR in main's baseline; the notes name both commits.
 - `farm bless <job> [--checkout DIR]` copies the job's per-class result tsv over `vk/deqp/ours-daily-sample-<baseline>.tsv` in DIR. Refused unless the job
   ran main's current commit on a clean tree, verdict pass, `so_sha256` confirmed on every part, and it is the full daily (1381 cases).
+
+## Shell route (`route = "shell"` in devices.toml)
+For a phone with no in-app (guest) route, e.g. the Poco X4 GT (class v10): `farm submit <ref> --need v10` runs `tools/farm/shellroute.py` under the phone lock.
+- smoke: bionic ICD + `t_vk_draw/compute/meta --direct` from `vk/out/a64-bionic`, in a per-run dir `/data/local/tmp/farm/<job>-<alias>`.
+- daily: glibc deqp-vk staged once in `/data/local/tmp/g` (see the phone's DEVICE doc), our glibc ICD at the per-run path `g/icd.<job>-<alias>.so`.
+- the sha256 of the job's .so is checked on the phone before every chunk/test and once more by farmd afterwards; a mismatch is `invalid` and re-queued.
+- same lock guard (exit 73), health gate before every chunk (exit 75 = paused, resumes from its TSV) and owner kill switch as the other routes.
