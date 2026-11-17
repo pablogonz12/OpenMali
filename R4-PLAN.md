@@ -60,3 +60,6 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 - NOT DONE (no test, so not advertised): depthBiasClamp, wideLines, drawIndirectFirstInstance, samplerAnisotropy, samplerMirrorClampToEdge, fullDrawIndexUint32, imageCubeArray, storage-image extended formats, bufferDeviceAddress, descriptorIndexing, robustness2.
 - Open draw fails: D16 depth cases, negative_viewport_height.front_ccw_cull_front, scissor.static_scissor_two_clears, concurrent.compute_and_triangle_list (crash).
 - DXVK-required features still false: 38 of 47 (was 41).
+
+## Batch 2 status (R4-B2, worker on main; Poco only; features each = own commit + test)
+- DONE depthBiasClamp: t_vk_draw fx_bias_pos_noclamp (0 px) / fx_bias_pos_clamp / fx_bias_neg_clamp / fx_dyn_bias_pos_clamp (8192 px) pass on Poco. DXVK-required still false: 37 of 47 (check.sh `DXVK_MISSING`, t_dxvk_caps --expect-missing).
