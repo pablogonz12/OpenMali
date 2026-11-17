@@ -321,12 +321,19 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    if (!pl || !img->va || level >= img->lay.d.levels || img->lay.d.tiled)
       return -EINVAL;
    int zs = 0;
+   out->rt = NULL;
    switch (img->vk.format) {
    case VK_FORMAT_R8G8B8A8_UNORM: break;
    case VK_FORMAT_D32_SFLOAT: zs = 1; break;
    case VK_FORMAT_X8_D24_UNORM_PACK32: zs = 2; break;
    case VK_FORMAT_D16_UNORM: zs = 3; break;
-   default: return -EINVAL;
+   default: {
+      bool ok;
+      out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
+      if (!ok)
+         return -EINVAL;
+      break;
+   }
    }
    if (!zs && aspect != VK_IMAGE_ASPECT_COLOR_BIT)
       return -EINVAL;

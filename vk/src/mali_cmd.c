@@ -469,6 +469,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->height = t.height;
    f->has_colour = true;
    f->colour.va = t.va;
+   f->colour.rt = t.rt;
    f->colour.row_stride = t.row_stride;
    f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
    f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
@@ -619,6 +620,7 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    f.area[3] = (int32_t)t.height;
    f.has_colour = true;
    f.colour.va = t.va;
+   f.colour.rt = t.rt;
    f.colour.row_stride = t.row_stride;
    f.colour.clear = true;
    f.colour.store = true;

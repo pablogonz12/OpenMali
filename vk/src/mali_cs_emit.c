@@ -180,7 +180,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
       kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
    }
-   kb_draw_blend_opaque_rgba8(bl);
+   if (f->colour.rt)
+      kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
+   else
+      kb_draw_blend_opaque_rgba8(bl);
 
    /* depth/stencil */
    if (g->depth_test && f->has_zs) {
