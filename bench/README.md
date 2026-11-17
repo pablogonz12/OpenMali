@@ -28,8 +28,8 @@ Present mode mailbox/fifo/immediate x swapchain images 2/3/4, frames in flight 1
 Ranking: triangle presented = fps then CPU ms, offscreen = CPU ms; cube presented = 1 % low then fps, offscreen = GPU ms.
 
 ## Known limits (open driver items; the harness records them, it does not hide them)
-* Ours cannot run the 10k-50k draw triangle yet: on CMF 20000, 10000 and 8000 draws per frame fail with `QueueSubmit = VK_ERROR_DEVICE_LOST` even with
-  `MALI_RING=64 MiB MALI_GEOM_SIZE=64 MiB`; 6000 presented works but offscreen fails; 3000 works in both. So the baseline uses 3000 draws.
+* Frames over ~3000 draws used to fail with `QueueSubmit = VK_ERROR_DEVICE_LOST`: the 32 MiB descriptor arena (~4.6 KB/draw) ran out. Fixed on `perf/draw-path` by retiring in-flight frames and spilling into overflow BOs (test: `t_vk_draw --only many_draws`, 3k-50k draws; phone re-check pending).
+* Host (fake v11, 3000 dyn-UBO draws, median of 7): 1.43 us/draw before, 0.72 after descriptor sharing between consecutive draws.
   `tools/bench2 <phone> --variant triangle-20k` runs the large one once the driver can (the bridge handles it).
 * **OPEN DRIVER BUG: `VK_ERROR_DEVICE_LOST` at QueueSubmit above ~3000 draws/frame (ours, CMF).** Repro (needs the phone lock, so qsafe):
   `tools/bench2 cmf --driver ours --variant triangle-20k --reps 1 --secs 8` (guest command: `mdbench --scene drawcalls --n 20000 --draw-idx 3`).

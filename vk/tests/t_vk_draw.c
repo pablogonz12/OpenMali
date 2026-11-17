@@ -1622,7 +1622,7 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
-   if (ok && CASE_ON("many_draws")) ok &= test_many();
+   if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

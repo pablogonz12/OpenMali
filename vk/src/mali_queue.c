@@ -126,7 +126,7 @@ static int hw_wait(struct mali_hwctx *h, uint64_t target);
 static void hw_retire(struct mali_hwctx *h, unsigned max_left);
 
 static void *
-hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va)
+hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
 {
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    struct mali_bo *cur = h->n_ovf && !h->ovf[h->n_ovf - 1].tag ? &h->ovf[h->n_ovf - 1].bo : NULL;
@@ -150,34 +150,47 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va)
       o = 0;
    }
    h->ovf_off = o + n;
-   memset((char *)cur->cpu + o, 0, n);
+   if (zero)
+      memset((char *)cur->cpu + o, 0, n);
    if (va)
       *va = cur->gpu_va + o;
    return (char *)cur->cpu + o;
 }
 
 static void *
-hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
+hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
 {
    struct mali_hwctx *h = u;
    if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
-      return hw_alloc_ovf(h, n, al, va);
-   void *p = kb_arena_alloc(&h->ar, n, al, va);
-   if (p)
-      return p;
-   /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
-   if (h->nfl) {
+      return hw_alloc_ovf(h, n, al, va, zero);
+   void *p = kb_arena_alloc_nz(&h->ar, n, al, va);
+   if (!p && h->nfl) {
+      /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
       hw_retire(h, 0);
       h->ar.start = h->cur_start;
       if (h->ar.off >= h->cur_start) {   /* failed at the end of the BO: wrap to 0, bounded by this submission's own start */
          h->ar.off = 0;
          h->ar.lapped = 1;
       }
-      p = kb_arena_alloc(&h->ar, n, al, va);
-      if (p)
-         return p;
+      p = kb_arena_alloc_nz(&h->ar, n, al, va);
    }
-   return hw_alloc_ovf(h, n, al, va);
+   if (!p)
+      return hw_alloc_ovf(h, n, al, va, zero);
+   if (zero)
+      memset(p, 0, n);
+   return p;
+}
+
+static void *
+hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
+{
+   return hw_alloc_x(u, n, al, va, true);
+}
+
+static void *
+hw_alloc_nz(void *u, size_t n, size_t al, uint64_t *va)
+{
+   return hw_alloc_x(u, n, al, va, false);
 }
 
 static int
@@ -387,7 +400,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,

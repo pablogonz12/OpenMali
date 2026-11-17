@@ -210,6 +210,8 @@ apply_blend(uint32_t *bl, const struct mali_fixed *fx)
 
 struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
+   uint8_t *vsset, *fsset;   /* CPU views of the two driver sets (template for the next draw with the same state) */
+   uint32_t *bl_cpu;
 };
 
 static void *
@@ -218,8 +220,29 @@ A(const struct mali_hw *hw, size_t n, size_t al, uint64_t *va)
    return hw->alloc(hw->user, n, al, va);
 }
 
+static void *
+Anz(const struct mali_hw *hw, size_t n, size_t al, uint64_t *va)
+{
+   return hw->alloc_nz ? hw->alloc_nz(hw->user, n, al, va) : hw->alloc(hw->user, n, al, va);
+}
+
+/* Draws that differ only in counts / dynamic offsets / push constants / viewport share the pipeline-derived blocks (shader program
+ * descriptors, blend, depth-stencil): `a` is the previous draw of the frame. Everything these blocks are built from is compared. */
+static bool
+same_static(const struct mali_draw *a, const struct mali_draw *b)
+{
+   if (!a || memcmp(&a->gfx, &b->gfx, sizeof a->gfx) || memcmp(&a->fx, &b->fx, sizeof a->fx))
+      return false;
+   if (a->nsets != b->nsets || a->ndyn != b->ndyn || a->first_instance != b->first_instance)
+      return false;
+   if (memcmp(a->vb_va, b->vb_va, sizeof a->vb_va) || memcmp(a->vb_size, b->vb_size, sizeof a->vb_size))
+      return false;
+   return !memcmp(a->set_va, b->set_va, b->nsets * sizeof b->set_va[0]) && !memcmp(a->set_bytes, b->set_bytes, b->nsets * sizeof b->set_bytes[0]);
+}
+
 static int
-build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const struct mali_draw *d, struct ddesc *o)
+build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const struct mali_draw *d, struct ddesc *o,
+                 const struct mali_draw *pd, const struct ddesc *po)
 {
    const struct mali_env *env = &hw->env;
    const struct mali_gfx_state *g = &d->gfx;
@@ -244,30 +267,67 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    unsigned nres = 1 + d->nsets;
    unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
 
-   spd_p = A(hw, KB_SPD_SIZE, 32, &o->spd_p);
-   if (!v13)
-      spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
-   spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
+   const bool s1 = po && same_static(pd, d);
+   const bool s2 = s1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);   /* whole driver sets reusable */
+   const bool s3 = s2 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
+                   !memcmp(pd->push, d->push, sizeof d->push);   /* FAUs reusable */
    vs_entries = vs_entries > MALI_DUMMY_SAMPLER_IDX + 1 ? vs_entries : MALI_DUMMY_SAMPLER_IDX + 1;
    const unsigned dyn_end = d->ndyn ? MALI_DYN_BUF_START + d->ndyn : 0;
    if (dyn_end > vs_entries)
       vs_entries = dyn_end;
    const unsigned fs_entries = dyn_end > MALI_DUMMY_SAMPLER_IDX + 1 ? dyn_end : MALI_DUMMY_SAMPLER_IDX + 1;
-   vsset = A(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &va_vsset);
-   vst = A(hw, res_alloc, 64, &o->vst);
-   fsset = A(hw, fs_entries * KB_DESC_SET_STRIDE, 64, &va_fsset);
-   fst = A(hw, res_alloc, 64, &o->fst);
-   bl = A(hw, KB_BLEND_SIZE, 16, &o->bl);
-   zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
-   vfau = A(hw, FAU_BYTES(vs->fau_count), 64, &va_vfau);
-   ffau = A(hw, FAU_BYTES(fs->fau_count), 64, &va_ffau);
-   if (!spd_p || (!v13 && !spd_v) || !spd_f || !vsset || !vst || !fsset || !fst || !bl || !zsd || !vfau || !ffau)
+   const unsigned vs_used = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);   /* entries the vertex shader can read below the dummy sampler */
+
+   if (s1) {
+      o->spd_p = po->spd_p; o->spd_v = po->spd_v; o->spd_f = po->spd_f;
+      o->bl = po->bl; o->zsd = po->zsd; o->bl_cpu = po->bl_cpu;
+      spd_p = spd_v = spd_f = bl = zsd = NULL;
+   } else {
+      spd_p = A(hw, KB_SPD_SIZE, 32, &o->spd_p);
+      if (!v13)
+         spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
+      spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
+      bl = A(hw, KB_BLEND_SIZE, 64, &o->bl);
+      zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
+      o->bl_cpu = bl;
+   }
+   if (s2) {
+      o->vsset = po->vsset; o->fsset = po->fsset; o->vst = po->vst; o->fst = po->fst;
+      va_vsset = va_fsset = 0;
+      vsset = fsset = NULL;
+      vst = fst = NULL;
+   } else {
+      /* the driver sets are sparse: only the attribute / vertex-buffer entries, the dummy sampler (zero) and the dynamic buffers are
+       * read, so the unread span between them is not touched (it stays whatever the arena held) */
+      vsset = Anz(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &va_vsset);
+      fsset = Anz(hw, fs_entries * KB_DESC_SET_STRIDE, 64, &va_fsset);
+      vst = A(hw, res_alloc, 64, &o->vst);
+      fst = A(hw, res_alloc, 64, &o->fst);
+      o->vsset = vsset;
+      o->fsset = fsset;
+   }
+   if (s3) {
+      o->vfau = po->vfau; o->ffau = po->ffau;
+      vfau = ffau = NULL;
+      va_vfau = va_ffau = 0;
+   } else {
+      vfau = A(hw, FAU_BYTES(vs->fau_count), 64, &va_vfau);
+      ffau = A(hw, FAU_BYTES(fs->fau_count), 64, &va_ffau);
+   }
+   if ((!s1 && (!spd_p || (!v13 && !spd_v) || !spd_f || !bl || !zsd)) || (!s2 && (!vsset || !vst || !fsset || !fst)) || (!s3 && (!vfau || !ffau)))
       return -ENOMEM;
-   o->vfau = kb_draw_fau_ptr(va_vfau, vs->fau_count);
-   o->ffau = kb_draw_fau_ptr(va_ffau, fs->fau_count);
+   if (!s3) {
+      o->vfau = kb_draw_fau_ptr(va_vfau, vs->fau_count);
+      o->ffau = kb_draw_fau_ptr(va_ffau, fs->fau_count);
+   }
+   if (s3)
+      return 0;
+   (void)vs_used;
 
    /* shader programs */
-   if (v13) {
+   if (s1) {
+      /* shared with the previous draw */
+   } else if (v13) {
       kb_v13_spd(spd_p, 3, g->vs_va, vs->work_reg_count, vs->preload, 0);
       kb_v13_spd(spd_f, 2, g->fs_va, fs->work_reg_count, fs->preload, 0);
    } else {
@@ -277,24 +337,33 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_spd(spd_f, 2, g->fs_va, fs->work_reg_count, fs->preload);
    }
 
+   if (s2)
+      goto fau;   /* the previous draw's driver sets and resource tables are reused as they are */
    /* VS driver set: attributes 0..15 (unused ones filled), buffer descriptors from entry 17 (vertex binding b = 17 + b) */
-   for (unsigned i = 0; i < KB_VS_ATTRS; i++) {
-      uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
-      if (i < g->nattr)
-      {
-         kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset, g->attr[i].stride);
-         if (g->attr[i].instance) {
-            /* Attribute Frequency = Instance (word1[7:6]), offset enable off; first_instance shifts the start (panvk) */
-            ((uint32_t *)e)[0] &= ~(1u << 8);
-            ((uint32_t *)e)[1] |= 1u << 6;
-            ((uint32_t *)e)[2] += d->first_instance * g->attr[i].stride;
+   if (s1) {
+      memcpy(vsset, po->vsset, vs_used * KB_DESC_SET_STRIDE);   /* same state: the attribute / buffer entries are identical */
+   } else {
+      memset(vsset, 0, vs_used * KB_DESC_SET_STRIDE);
+      for (unsigned i = 0; i < KB_VS_ATTRS; i++) {
+         uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
+         if (i < g->nattr)
+         {
+            kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset, g->attr[i].stride);
+            if (g->attr[i].instance) {
+               /* Attribute Frequency = Instance (word1[7:6]), offset enable off; first_instance shifts the start (panvk) */
+               ((uint32_t *)e)[0] &= ~(1u << 8);
+               ((uint32_t *)e)[1] |= 1u << 6;
+               ((uint32_t *)e)[2] += d->first_instance * g->attr[i].stride;
+            }
          }
+         else
+            kb_draw_attr_unused(e);
       }
-      else
-         kb_draw_attr_unused(e);
+      for (unsigned b = 0; b < nvb; b++)
+         kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
    }
-   for (unsigned b = 0; b < nvb; b++)
-      kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
+   memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
+   memset(fsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);
    /* resource tables: entry 0 = driver set, entries 1.. = bound user descriptor sets (KB_TEX_USER_TABLE) */
    kb_draw_resource(vst, va_vsset, vs_entries * KB_DESC_SET_STRIDE, 1);
    for (unsigned i = 0; i < d->ndyn; i++) {
@@ -306,6 +375,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
       kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
    }
+   if (s1)
+      goto fau;
    if (f->colour.rt)
       kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
    else
@@ -358,6 +429,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       memcpy(&zsd[7], &d->fx.bias_clamp, 4);
    }
 
+fau:;
    /* FAU: VS = immediates + viewport sysvals (words 0..5) + push block; FS = immediates + push block */
    const float *vp = d->vp;
    kb_draw_fau_imm(vfau, (const uint32_t(*)[2])vs->imm, vs->nimm);
@@ -383,8 +455,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       memcpy((uint8_t *)fau + g->push_base[st], d->push[st], n);
    }
    if (v13) {
-      ffau[4] = bl[2];
-      ffau[5] = bl[3];
+      ffau[4] = o->bl_cpu[2];
+      ffau[5] = o->bl_cpu[3];
    }
    if (g->blend_va && d->fx.blend_en)
       memcpy(ffau, d->fx.bconst, 16);   /* blend shader constants: FAU words 0..3 */
@@ -903,6 +975,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
       if (f->samples == 4 && v13)
          tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
+      const struct mali_draw *pdr = NULL;   /* previous draw (descriptor blocks are shared between draws of equal state) */
       for (unsigned i = 0; i < f->ndraws; i++) {
          const struct mali_draw *dr = &f->draws[i];
          if (dr->gfx.poly_mode == 1) {
@@ -911,8 +984,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
                goto out;
             dr = &mod[i];
          }
-         if ((rc = build_draw_descs(hw, f, dr, &dd[i])))
+         if ((rc = build_draw_descs(hw, f, dr, &dd[i], i ? pdr : NULL, i ? &dd[i - 1] : NULL)))
             goto out;
+         pdr = dr;
       }
    }
    if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))

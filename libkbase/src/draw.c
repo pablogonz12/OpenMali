@@ -8,15 +8,21 @@
 
 int kb_v10;   /* 1 when the GPU is arch 10 (set by the driver): SET_SB_ENTRY scoreboard select, ZSD bit 21 clear. See kbase_cs.h */
 
-void *kb_arena_alloc(struct kb_arena *a, size_t size, size_t align, uint64_t *gpu_va)
+void *kb_arena_alloc_nz(struct kb_arena *a, size_t size, size_t align, uint64_t *gpu_va)
 {
 	size_t o = (a->off + align - 1) & ~(align - 1);
 	if (a->rolling && !a->lapped && o + size > a->bo.size) { o = 0; a->lapped = 1; }   /* wrap onto the oldest job's memory */
 	if (a->rolling && a->lapped ? o + size > a->start : o + size > a->bo.size) return NULL;
 	a->off = o + size;
-	memset((char *)a->bo.cpu + o, 0, size);
 	if (gpu_va) *gpu_va = a->bo.gpu_va + o;
 	return (char *)a->bo.cpu + o;
+}
+
+void *kb_arena_alloc(struct kb_arena *a, size_t size, size_t align, uint64_t *gpu_va)
+{
+	void *p = kb_arena_alloc_nz(a, size, align, gpu_va);
+	if (p) memset(p, 0, size);
+	return p;
 }
 
 void kb_arena_begin(struct kb_arena *a)
