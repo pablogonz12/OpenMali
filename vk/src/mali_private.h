@@ -43,6 +43,7 @@ struct mali_queue {
 
 struct mali_device {
    struct vk_device vk;
+   struct vk_device_dispatch_table cmd_dispatch;   /* primary command buffers: the driver's own Cmd* (secondaries record into the runtime cmd queue) */
 
    struct mali_kdev *kdev;
    struct mali_queue queue;
