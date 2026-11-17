@@ -70,6 +70,17 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
 
 struct push_ctx { unsigned base; unsigned max_end; };
 
+/* Hardware instance id already includes IDVS instance offset. */
+static bool
+lower_base_inst(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_load_base_instance)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def_replace(&i->def, nir_imm_int(b, 0));
+   return true;
+}
+
 static bool
 add_push_base(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
@@ -286,6 +297,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_lower_system_values);
+   if (stage == MESA_SHADER_VERTEX)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
    pan_preprocess_nir(nir, arch);
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);
