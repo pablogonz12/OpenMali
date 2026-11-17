@@ -1,13 +1,56 @@
 #version 450
-// R4 colour loadOp LOAD: re-emits the framebuffer's old contents (linear RGBA8-family image seen as a buffer) into the tile.
+// R4 colour loadOp LOAD: re-emits the framebuffer's old contents (a linear image seen as a buffer) into the tile.
+// push: row_bytes, kind (low byte, see below) | 0x100 = sRGB, bytes per texel.
 layout(set = 0, binding = 0, std430) readonly buffer S { uint d[]; } src;
-layout(push_constant) uniform P { uint row_words; uint flags; } p;   // flags: 1 = memory order is BGRA, 2 = sRGB
+layout(push_constant) uniform P { uint row_bytes; uint flags; uint bpp; uint pad; } p;
 layout(location = 0) out vec4 o;
 float dec(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+float f11(uint v, uint mbits) {   // unsigned small float: 5 exponent bits, mbits mantissa bits
+   uint m = v & ((1u << mbits) - 1u), e = (v >> mbits) & 31u;
+   float fm = float(m) / float(1u << mbits);
+   if (e == 0u) return fm * exp2(-14.0);
+   if (e == 31u) return m != 0u ? uintBitsToFloat(0x7fc00000u) : uintBitsToFloat(0x7f800000u);
+   return (1.0 + fm) * exp2(float(e) - 15.0);
+}
 void main() {
    uvec2 f = uvec2(gl_FragCoord.xy);
-   vec4 c = unpackUnorm4x8(src.d[f.y * p.row_words + f.x]);
-   if ((p.flags & 1u) != 0u) c = c.bgra;
-   if ((p.flags & 2u) != 0u) c.rgb = vec3(dec(c.r), dec(c.g), dec(c.b));
+   uint off = f.y * p.row_bytes + f.x * p.bpp;
+   uint w = src.d[off >> 2];
+   uint sh = (off & 3u) * 8u;
+   uint k = p.flags & 255u;
+   vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
+   if (k <= 1u) {                                     // 0 = UNORM8 (R8/RG8/RGBA8), 1 = BGRA8
+      uint v = w >> sh;
+      if (p.bpp == 1u) v &= 0xffu; else if (p.bpp == 2u) v &= 0xffffu;
+      c = unpackUnorm4x8(v);
+      if (p.bpp < 4u) c.a = 1.0;
+      if (p.bpp < 2u) c.g = 0.0;
+      if (k == 1u) c = c.bgra;
+   } else if (k == 2u) {                              // 16-bit float, 1/2/4 components
+      uint v = (p.bpp == 2u) ? ((w >> sh) & 0xffffu) : w;
+      vec2 a = unpackHalf2x16(v);
+      c = vec4(a.x, p.bpp >= 4u ? a.y : 0.0, 0.0, 1.0);
+      if (p.bpp == 8u) { vec2 b = unpackHalf2x16(src.d[(off >> 2) + 1u]); c.zw = b; }
+      if (p.bpp == 2u) c.y = 0.0;
+   } else if (k == 3u) {                              // B10G11R11_UFLOAT
+      c = vec4(f11(w, 6u), f11(w >> 11, 6u), f11(w >> 22, 5u), 1.0);
+   } else if (k <= 5u) {                              // 4 = A2B10G10R10, 5 = A2R10G10B10
+      vec4 u = vec4(float(w & 1023u), float((w >> 10) & 1023u), float((w >> 20) & 1023u), float(w >> 30)) / vec4(1023.0, 1023.0, 1023.0, 3.0);
+      c = k == 4u ? u : vec4(u.z, u.y, u.x, u.w);
+   } else {
+      uint v = (w >> sh) & 0xffffu;
+      if (k <= 7u) {                                  // 6 = R5G6B5, 7 = B5G6R5
+         c = vec4(float(v >> 11) / 31.0, float((v >> 5) & 63u) / 63.0, float(v & 31u) / 31.0, 1.0);
+         if (k == 7u) c.rgb = c.bgr;
+      } else if (k <= 9u) {                           // 8 = R4G4B4A4, 9 = B4G4R4A4
+         c = vec4(float(v >> 12), float((v >> 8) & 15u), float((v >> 4) & 15u), float(v & 15u)) / 15.0;
+         if (k == 9u) c.rgb = c.bgr;
+      } else {                                        // 10 = R5G5B5A1, 11 = B5G5R5A1
+         c = vec4(float(v >> 11), float((v >> 6) & 31u), float((v >> 1) & 31u), float(v & 1u));
+         c.rgb /= 31.0;
+         if (k == 11u) c.rgb = c.bgr;
+      }
+   }
+   if ((p.flags & 0x100u) != 0u) c.rgb = vec3(dec(c.r), dec(c.g), dec(c.b));
    o = c;
 }

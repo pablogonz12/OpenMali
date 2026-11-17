@@ -25,6 +25,9 @@
 #define H 256
 
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
+static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
+static unsigned g_colbpp = 4;
+static int g_load;   /* two-pass LOAD test: store depth/stencil, and build s->rp2 = the same pass with loadOp LOAD */
 static int g_fail, g_fake, g_loop = 1, g_reset;
 /* R4 fixed-function state of the next scene_create()/scene_draw() (all zero = the old tests' state) */
 static struct {
@@ -62,7 +65,18 @@ static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally 
 
 enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
-#define CASE_ON(n) (!g_only || !strcmp(g_only, n))
+#define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
+/* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
+static int
+case_skipped(const char *n)
+{
+   const char *e = getenv("MALI_SKIP_CASES");
+   size_t l = strlen(n);
+   for (; e && *e; e++)
+      if (!strncmp(e, n, l) && (e[l] == ',' || !e[l]) && (e == getenv("MALI_SKIP_CASES") || e[-1] == ','))
+         return 1;
+   return 0;
+}
 #define CHECK(c, ...)                                                                              \
    do {                                                                                            \
       if (!(c)) {                                                                                  \
@@ -140,7 +154,8 @@ struct scene {
    int depth;
    VkShaderModule vs, fs;
    VkPipelineLayout layout;
-   VkRenderPass rp;
+   VkRenderPass rp, rp2;
+   int second;   /* scene_draw uses rp2 (LOAD) */
    VkPipeline pipe;
    VkImage col, dep;
    VkDeviceMemory colmem, depmem, vbmem;
@@ -212,7 +227,7 @@ scene_create(struct scene *s, int depth)
 
    /* colour image: linear RGBA8, host visible so the test can read it back */
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                           .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1,
+                           .format = g_colfmt, .extent = {W, H, 1}, .mipLevels = 1,
                            .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -232,7 +247,7 @@ scene_create(struct scene *s, int depth)
    s->pitch = (uint32_t)sl.rowPitch;
    s->px += sl.offset;
    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = s->col,
-                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = g_colfmt,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    CHECK(CreateImageView(dev, &vi, NULL, &s->colv) == VK_SUCCESS, "colour view");
 
@@ -276,7 +291,7 @@ scene_create(struct scene *s, int depth)
    }
 
    VkAttachmentDescription ad[2] = {
-      {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+      {.format = g_colfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL},
@@ -302,7 +317,20 @@ scene_create(struct scene *s, int depth)
                               .pDepthStencilAttachment = depth ? &dref : NULL};
    VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = depth || g_msaa ? 2 : 1,
                                  .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp};
+   if (g_load) {
+      ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      if (g_st.on) ad[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+   }
    CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp) == VK_SUCCESS, "render pass");
+   if (g_load) {
+      /* the second pass over the same attachments: LOAD everything the first one stored */
+      ad[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      ad[0].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      ad[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      if (g_st.on) ad[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp2) == VK_SUCCESS, "render pass (LOAD)");
+   }
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = s->rp,
                                   .attachmentCount = depth || g_msaa ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
                                   .layers = 1};
@@ -499,6 +527,7 @@ scene_destroy(struct scene *s)
    if (s->pipe) DestroyPipeline(dev, s->pipe, NULL);
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
    if (s->rp) DestroyRenderPass(dev, s->rp, NULL);
+   if (s->rp2) DestroyRenderPass(dev, s->rp2, NULL);
    for (int i = 0; i < 2; i++) if (s->vb[i]) DestroyBuffer(dev, s->vb[i], NULL);
    if (s->smp) DestroySampler(dev, s->smp, NULL);
    if (s->tiv) DestroyImageView(dev, s->tiv, NULL);
@@ -542,7 +571,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
-   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->rp,
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = s->depth ? 2 : 1, .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
@@ -627,7 +656,7 @@ count_cov(struct scene *s)
    uint32_t n = 0;
    for (int y = 0; y < H; y++)
       for (int x = 0; x < W; x++)
-         n += s->px[y * s->pitch + x * 4 + 3] != 0;
+         n += g_colbpp == 8 ? (s->px[y * s->pitch + x * 8 + 6] | s->px[y * s->pitch + x * 8 + 7]) != 0 : s->px[y * s->pitch + x * 4 + 3] != 0;
    return n;
 }
 
@@ -696,7 +725,7 @@ static uint32_t
 px_at(struct scene *s, int x, int y)
 {
    uint32_t v;
-   memcpy(&v, s->px + y * s->pitch + x * 4, 4);
+   memcpy(&v, s->px + y * s->pitch + x * g_colbpp, 4);
    return v;
 }
 
@@ -832,6 +861,70 @@ test_stencil(VkFormat fmt)
       if (ok) { snprintf(nm, sizeof nm, "stencil_dyn_wmask0%s", sfx); ok = test_st_two(nm, 1, 0); }
    }
    g_depfmt = save;
+   return ok;
+}
+
+/* loadOp LOAD: pass 1 (CLEAR) draws A, pass 2 (LOAD) draws B; the result must equal one pass drawing A then B.
+ * kind: 0 depth (g_depfmt), 1 stencil (D32S8, INCR_AND_CLAMP/EQUAL 0, so B is rejected where A overlaps), 2 colour (g_colfmt, no depth). */
+static int
+test_load(const char *name, int kind)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkFormat save = g_depfmt;
+   if (kind == 1) {
+      g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT;
+      g_st = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
+                               .pass = VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = 0xff, .ref = 0, .clear = 0};
+   }
+   g_load = 1;
+   int ok = scene_create(&s, kind != 2);
+   g_load = 0;
+   g_st = (struct st_state){0};
+   g_depfmt = save;
+   float AB[2][4] = {{1, 0, 0, 0}, {-1, 0, 0, 0}};
+   if (kind == 2) { AB[0][2] = -.5f; AB[1][0] = 1; AB[1][2] = .5f; }
+   uint32_t a = 0, b = 0, ref = 0, got = 0, cref = 0, cgot = 0;
+   if (ok) ok = scene_draw(&s, 2, AB, f);               /* reference: both in one pass (the stencil state lives in s) */
+   static const int PX[6][2] = {{128, 128}, {128, 90}, {128, 170}, {90, 150}, {166, 110}, {128, 40}};
+   uint32_t pref[6] = {0}, pgot[6] = {0}, p1[6] = {0};
+   uint32_t cov1 = 0;
+   if (ok) { ref = px_at(&s, 128, 128); cref = count_cov(&s); for (int i = 0; i < 6; i++) pref[i] = px_at(&s, PX[i][0], PX[i][1]); }
+   if (ok) ok = scene_draw(&s, 1, &AB[0], f);
+   if (ok) a = px_at(&s, 128, 128);
+   if (ok) ok = scene_draw(&s, 1, &AB[1], f);
+   if (ok) b = px_at(&s, 128, 128);
+   if (ok) ok = scene_draw(&s, 1, &AB[0], f);          /* pass 1: clear, A, store */
+   if (ok) { cov1 = count_cov(&s); for (int i = 0; i < 6; i++) p1[i] = px_at(&s, PX[i][0], PX[i][1]); }
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 1, &AB[1], f);          /* pass 2: LOAD colour+depth(+stencil), B */
+   s.second = 0;
+   if (ok) { got = px_at(&s, 128, 128); cgot = count_cov(&s); for (int i = 0; i < 6; i++) pgot[i] = px_at(&s, PX[i][0], PX[i][1]); }
+   if (ok) {
+      if (g_fake) {
+         printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      } else {
+         if (kind != 2) CHECK(a != b, "%s: centre A %08x == B %08x (test is blind)", name, a, b);
+         ok = got == ref && cgot == cref;
+         int same = 1;
+         for (int i = 0; i < 6; i++) same &= pgot[i] == pref[i];
+         ok = ok && same;
+         if (!ok) {
+            /* which failure: pass 2 drew nothing (cov == pass 1), preload did not run (B overwrote A where it must be rejected: cov > ref), or B was rejected too much (cov < ref) */
+            const char *why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
+            char pxs[400]; int n = 0;
+            for (int i = 0; i < 6; i++)
+               n += snprintf(pxs + n, sizeof pxs - n, " (%d,%d)%08x/%08x/%08x", PX[i][0], PX[i][1], p1[i], pref[i], pgot[i]);
+            printf("{\"fail\":\"%s: %s; cov pass1 %u ref %u got %u; px pass1/want/got:%s\"}\n", name, why, cov1, cref, cgot, pxs);
+         }
+         CHECK(ok, "%s: two-pass centre %08x cov %u vs one-pass %08x cov %u (A %08x B %08x)", name, got, cgot, ref, cref, a, b);
+         printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"cov\":%u,\"ok\":%s}\n", name, got, ref, cgot, ok ? "true" : "false");
+      }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
    return ok;
 }
 
@@ -1433,6 +1526,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
+   if (ok && CASE_ON("load_colour_f16")) { g_colfmt = VK_FORMAT_R16G16B16A16_SFLOAT; g_colbpp = 8; ok &= test_load("load_colour_f16", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
+   if (ok && CASE_ON("load_colour_a2b10")) { g_colfmt = VK_FORMAT_A2B10G10R10_UNORM_PACK32; ok &= test_load("load_colour_a2b10", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; }
    if (ok && CASE_ON("depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("depth32s8")) { g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("stencil")) {

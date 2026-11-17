@@ -689,25 +689,46 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    bool load = is_load_op(ca->loadOp);
-   unsigned load_flags = 0;
+   struct mali_preload_src psrc;
+   memset(&psrc, 0, sizeof psrc);
    if (load) {
-      /* R4: LOAD = a preload draw reading the old contents (linear 4-byte RGBA8-family formats only) */
+      /* LOAD = a preload draw reading the old contents (linear image) through a storage buffer; any render-target format */
       int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
+      unsigned kind = 0, bpp = 4, srgb = 0;
       switch (fmt) {
       case VK_FORMAT_R8G8B8A8_UNORM: break;
-      case VK_FORMAT_R8G8B8A8_SRGB: load_flags = 2; break;
-      case VK_FORMAT_B8G8R8A8_UNORM: load_flags = 1; break;
-      case VK_FORMAT_B8G8R8A8_SRGB: load_flags = 3; break;
+      case VK_FORMAT_R8G8B8A8_SRGB: srgb = 1; break;
+      case VK_FORMAT_B8G8R8A8_UNORM: kind = 1; break;
+      case VK_FORMAT_B8G8R8A8_SRGB: kind = 1; srgb = 1; break;
+      case VK_FORMAT_R8_UNORM: bpp = 1; break;
+      case VK_FORMAT_R8_SRGB: bpp = 1; srgb = 1; break;
+      case VK_FORMAT_R8G8_UNORM: bpp = 2; break;
+      case VK_FORMAT_R8G8_SRGB: bpp = 2; srgb = 1; break;
+      case VK_FORMAT_R16_SFLOAT: kind = 2; bpp = 2; break;
+      case VK_FORMAT_R16G16_SFLOAT: kind = 2; bpp = 4; break;
+      case VK_FORMAT_R16G16B16A16_SFLOAT: kind = 2; bpp = 8; break;
+      case VK_FORMAT_B10G11R11_UFLOAT_PACK32: kind = 3; break;
+      case VK_FORMAT_A2B10G10R10_UNORM_PACK32: kind = 4; break;
+      case VK_FORMAT_A2R10G10B10_UNORM_PACK32: kind = 5; break;
+      case VK_FORMAT_R5G6B5_UNORM_PACK16: kind = 6; bpp = 2; break;
+      case VK_FORMAT_B5G6R5_UNORM_PACK16: kind = 7; bpp = 2; break;
+      case VK_FORMAT_R4G4B4A4_UNORM_PACK16: kind = 8; bpp = 2; break;
+      case VK_FORMAT_B4G4R4A4_UNORM_PACK16: kind = 9; bpp = 2; break;
+      case VK_FORMAT_R5G5B5A1_UNORM_PACK16: kind = 10; bpp = 2; break;
+      case VK_FORMAT_B5G5R5A1_UNORM_PACK16: kind = 11; bpp = 2; break;
       default:
          unsupported(cmd, "colour loadOp LOAD of this format");
          return;
       }
+      psrc.arg = kind | (srgb ? 0x100u : 0u);
+      psrc.bpp = bpp;
    }
    f->width = t.width;
    f->height = t.height;
    f->has_colour = true;
-   const uint64_t t_va = t.va;
-   const uint32_t t_row = t.row_stride, t_bytes = t.row_stride * t.height;
+   psrc.va[0] = t.va;
+   psrc.row[0] = t.row_stride;
+   psrc.bytes[0] = t.row_stride * t.height;
    f->colour.va = t.va;
    f->samples = t.samples > 1 ? t.samples : 1;
    f->colour.surface_stride = t.surface_stride;
@@ -743,12 +764,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    }
    if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
       const VkRenderingAttachmentInfo *da = ri->pDepthAttachment;
-      if (is_load_op(da->loadOp)) {
-         unsupported(cmd, "depth loadOp LOAD");
-         return;
-      }
       if (g_res.image_view(da->imageView, &t) || !t.zs_format) {
          unsupported(cmd, "depth attachment view");
+         return;
+      }
+      if (is_load_op(da->loadOp)) {
+         unsupported(cmd, "depth loadOp LOAD");
          return;
       }
       f->has_zs = true;
@@ -766,12 +787,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    }
    if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
       const VkRenderingAttachmentInfo *sa = ri->pStencilAttachment;
-      if (is_load_op(sa->loadOp)) {
-         unsupported(cmd, "stencil loadOp LOAD");
-         return;
-      }
       if (g_res.image_view(sa->imageView, &t) || !t.has_s) {
          unsupported(cmd, "stencil attachment view");
+         return;
+      }
+      if (is_load_op(sa->loadOp)) {
+         unsupported(cmd, "stencil loadOp LOAD");
          return;
       }
       f->has_st = true;
@@ -783,7 +804,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    }
    if (load) {
       struct mali_draw d;
-      if (mali_meta_vk_preload(cmd, t_va, t_bytes, t_row, load_flags, &d)) {
+      if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &psrc, &d)) {
          unsupported(cmd, "colour loadOp LOAD (preload shader)");
          return;
       }
