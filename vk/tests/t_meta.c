@@ -51,7 +51,7 @@ static void t_compile(unsigned arch)
       if (!r) {
          CHECK(c->bin_size > 0 && c->stage == MALI_STAGE_COMPUTE, "arch %u shader %d bin", arch, s);
          if (g_verbose) printf("  arch %u shader %d: %u B, fau %u, push %u\n", arch, s, c->bin_size, c->fau_count, c->push_const_bytes);
-         static const unsigned pmax[] = { 64, 96, 20 };
+         static const unsigned pmax[] = { 64, 128, 20 };
          CHECK(c->push_const_bytes <= pmax[s], "shader %d push use %u > %u", s, c->push_const_bytes, pmax[s]);
       }
    }

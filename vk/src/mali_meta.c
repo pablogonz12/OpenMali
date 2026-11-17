@@ -209,12 +209,14 @@ mali_meta_plan_blit(struct mali_meta_list *l, const struct mali_meta_blit *b)
       return -EINVAL;
    if (b->mode == 2 && (b->nsamples < 1 || b->nsamples > 16))
       return -EINVAL;
-   uint32_t bpp = (b->f32 ? 4 : 1) * b->ncomp;
+   uint32_t bpp = (b->f32 ? 4 : 1) * b->ncomp, sbpp = b->generic ? b->sbs : bpp, dbpp = b->generic ? b->dbs : bpp;
+   if (b->generic && (!b->sbs || !b->dbs || b->cls > 2 || (b->cls && b->mode != 0)))
+      return -EINVAL;
    uint64_t soff, doff;
    struct mali_meta_bind sb, db;
    uint32_t ns = b->mode == 2 ? b->nsamples : 1;
-   uint64_t send = b->src.off + (uint64_t)(ns - 1) * b->sample_stride + (uint64_t)(b->src_h - 1) * b->src.row + (uint64_t)b->src_w * bpp;
-   uint64_t dend = b->dst.off + (uint64_t)(b->clamp[3] - 1) * b->dst.row + (uint64_t)b->clamp[2] * bpp;
+   uint64_t send = b->src.off + (uint64_t)(ns - 1) * b->sample_stride + (uint64_t)(b->src_h - 1) * b->src.row + (uint64_t)b->src_w * sbpp;
+   uint64_t dend = b->dst.off + (uint64_t)(b->clamp[3] - 1) * b->dst.row + (uint64_t)b->clamp[2] * dbpp;
    int r = bind_surf(&b->src, send, &soff, &sb);
    if (r)
       return r;
@@ -238,10 +240,18 @@ mali_meta_plan_blit(struct mali_meta_list *l, const struct mali_meta_blit *b)
    p[18] = b->src_w;
    p[19] = b->src_h;
    p[20] = (b->ncomp - 1) | (b->f32 ? 4u : 0) | (b->swap_rb ? 8u : 0);
+   if (b->generic) {
+      p[20] = 16;
+      p[5] = b->sbs | b->dbs << 8 | b->cls << 16 | (b->ssrgb ? 1u << 20 : 0) | (b->dsrgb ? 1u << 21 : 0);
+      for (int i = 0; i < 4; i++) {
+         p[24 + i] = b->sch[i];
+         p[28 + i] = b->dch[i];
+      }
+   }
    p[21] = (uint32_t)b->mode;
    p[22] = b->nsamples;
    p[23] = (uint32_t)(b->clamp[2] - b->clamp[0]);
-   j->push_bytes = 96;
+   j->push_bytes = 128;
    j->bind[0] = sb;
    j->bind[1] = db;
    j->nbind = 2;
@@ -368,7 +378,7 @@ mem_alloc(struct mali_meta_mem *m, size_t size, size_t align, uint64_t *va)
 
 static const struct { const uint32_t *spv; size_t words; unsigned nbind, push; } g_src[MALI_META_NSHADERS] = {
    [MALI_META_COPY] = { meta_copy_spv, sizeof meta_copy_spv / 4, 2, 64 },
-   [MALI_META_BLIT] = { meta_blit_spv, sizeof meta_blit_spv / 4, 2, 96 },
+   [MALI_META_BLIT] = { meta_blit_spv, sizeof meta_blit_spv / 4, 2, 128 },
    [MALI_META_QCOPY] = { meta_qcopy_spv, sizeof meta_qcopy_spv / 4, 2, 20 },
 };
 
