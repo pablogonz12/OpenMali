@@ -440,11 +440,12 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    bool s3 = si->lay.d.type == VK_IMAGE_TYPE_3D, d3 = di->lay.d.type == VK_IMAGE_TYPE_3D;
    int sdz = so[1].z - so[0].z, ddz = dof[1].z - dof[0].z;
    uint32_t nz = s3 || d3 ? 1 : ss.layerCount;
+   bool zmap = false;   /* 3D -> 3D: per-destination-slice source z mapping (also for a one-slice destination: it samples the centre of the source range) */
    bool zdir = (sdz > 0) == (ddz > 0);
    if (getenv("MALI_META_DBG") && (s3 || d3))
       fprintf(stderr, "mali_meta_vk: 3d blit s3=%d d3=%d sdz=%d ddz=%d layers %u/%u src %d..%d dst %d..%d\n", s3, d3, sdz, ddz, ss.layerCount, ds.layerCount, so[0].z, so[1].z, dof[0].z, dof[1].z);
    if (s3 && d3 && (abs(sdz) == abs(ddz) || (filter == VK_FILTER_NEAREST && !resolve_mode)) && ss.layerCount == 1 && ds.layerCount == 1 && sdz && ddz)
-      nz = (uint32_t)abs(ddz);   /* 3D -> 3D, 1:1 in z (possibly reversed) or nearest-scaled: one job per destination slice */
+      nz = (uint32_t)abs(ddz), zmap = true;   /* 3D -> 3D, 1:1 in z (possibly reversed) or nearest-scaled: one job per destination slice */
    else if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
       return -EINVAL;   /* z scaling / 3D <-> array mixes */
 
@@ -504,7 +505,7 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    }
    for (uint32_t z = 0; z < nz; z++) {
       VkOffset3D zs = { 0, 0, s3 ? (sdz > 0 ? so[0].z : so[0].z + sdz) : 0 }, zd = { 0, 0, d3 ? (ddz > 0 ? dof[0].z : dof[0].z + ddz) : 0 };
-      if (s3 && d3 && nz > 1) {
+      if (zmap) {
          int au = zdir ? (int)z : (int)(nz - 1 - z);
          int sz = (int)(((2ll * au + 1) * abs(sdz)) / (2ll * (int)nz));
          zs.z += sz < abs(sdz) ? sz : abs(sdz) - 1;

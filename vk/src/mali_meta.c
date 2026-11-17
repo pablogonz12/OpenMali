@@ -215,7 +215,7 @@ mali_meta_plan_blit(struct mali_meta_list *l, const struct mali_meta_blit *b)
       return -EINVAL;
    uint64_t soff, doff;
    struct mali_meta_bind sb, db;
-   uint32_t ns = b->mode == 2 ? b->nsamples : 1;
+   uint32_t ns = b->mode == 2 ? b->nsamples : b->mode == 1 && b->zw != 0.0f ? 2 : 1;
    uint64_t send = b->src.off + (uint64_t)(ns - 1) * b->sample_stride + (uint64_t)(b->src_h - 1) * b->src.row + (uint64_t)b->src_w * sbpp;
    uint64_t dend = b->dst.off + (uint64_t)(b->clamp[3] - 1) * b->dst.row + (uint64_t)b->clamp[2] * dbpp;
    int r = bind_surf(&b->src, send, &soff, &sb);
@@ -251,6 +251,8 @@ mali_meta_plan_blit(struct mali_meta_list *l, const struct mali_meta_blit *b)
    }
    p[21] = (uint32_t)b->mode;
    p[22] = b->nsamples;
+   if (b->mode == 1 && b->zw != 0.0f)
+      memcpy(&p[22], &b->zw, 4);
    p[23] = (uint32_t)(b->clamp[2] - b->clamp[0]);
    j->push_bytes = 128;
    j->bind[0] = sb;
@@ -741,9 +743,22 @@ ref_blit(const struct mali_meta_job *j, const struct rb *src, const struct rb *d
             fetch(j, src, x0 + 1, y0, 0, b);
             fetch(j, src, x0, y0 + 1, 0, c);
             fetch(j, src, x0 + 1, y0 + 1, 0, d);
+            float wz, a1[4], b1[4], c1[4], d1[4];
+            memcpy(&wz, &ns, 4);   /* trilinear: the second slice (push[2] bytes on) weighted wz */
+            if (wz != 0) {
+               fetch(j, src, x0, y0, 1, a1);
+               fetch(j, src, x0 + 1, y0, 1, b1);
+               fetch(j, src, x0, y0 + 1, 1, c1);
+               fetch(j, src, x0 + 1, y0 + 1, 1, d1);
+            }
             for (int k = 0; k < 4; k++) {
                float t0 = a[k] * (1 - ax) + b[k] * ax, t1 = c[k] * (1 - ax) + d[k] * ax;
                v[k] = t0 * (1 - ay) + t1 * ay;
+               if (wz != 0) {
+                  t0 = a1[k] * (1 - ax) + b1[k] * ax;
+                  t1 = c1[k] * (1 - ax) + d1[k] * ax;
+                  v[k] = v[k] * (1 - wz) + (t0 * (1 - ay) + t1 * ay) * wz;
+               }
             }
          }
       }

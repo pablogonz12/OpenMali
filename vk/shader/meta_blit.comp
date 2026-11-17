@@ -14,7 +14,7 @@ layout(push_constant) uniform P {
    int sw, sh;                             // source image size (clamp)
    uint fmt;                               // bits 0-1 ncomp-1, bit2 float32 (else unorm8), bit3 swap R<->B (src and dst differ in BGRA-ness)
    uint mode;                              // 0 nearest, 1 linear, 2 resolve (average of nsamples)
-   uint nsamples;
+   uint nsamples;                          // mode 2: sample count; mode 1: float bits of the z weight of a 3D blit (0 = bilinear), second slice at sample_stride
    uint lw;                                // pixels written per row (cx1-cx0)
    // generic path (fmt bit 4): any plain colour format, described per logical channel R,G,B,A:
    // bits 0-7 bit offset in the pixel, 8-13 size, 16-18 type (0 absent, 1 unorm, 2 snorm, 3 uint, 4 sint, 5 float, 6 unsigned 5-bit-exponent float (R11G11B10), 7 shared exponent (E5B9G9R9: mantissa fields; the 5-bit exponent at bit 27 belongs to the pixel, not to a channel))
@@ -195,6 +195,12 @@ void gmain(uint ox, uint oy_) {
       vec4 a = mix(gfetchf(x0, y0, 0u), gfetchf(x0 + 1, y0, 0u), ax);
       vec4 b = mix(gfetchf(x0, y0 + 1, 0u), gfetchf(x0 + 1, y0 + 1, 0u), ax);
       v = mix(a, b, ay);
+      float wz = uintBitsToFloat(p.nsamples);   // trilinear (3D z scaling): second slice at sample_stride, weight wz
+      if (wz != 0.0) {
+         a = mix(gfetchf(x0, y0, 1u), gfetchf(x0 + 1, y0, 1u), ax);
+         b = mix(gfetchf(x0, y0 + 1, 1u), gfetchf(x0 + 1, y0 + 1, 1u), ax);
+         v = mix(v, mix(a, b, ay), wz);
+      }
    }
    uint e5 = 0u;
    bool e5done = false;
@@ -245,6 +251,12 @@ void main() {
          vec4 a = mix(fetch(x0, y0, 0u), fetch(x0 + 1, y0, 0u), ax);
          vec4 b = mix(fetch(x0, y0 + 1, 0u), fetch(x0 + 1, y0 + 1, 0u), ax);
          v = mix(a, b, ay);
+         float wz = uintBitsToFloat(p.nsamples);   // trilinear (3D z scaling): second slice at sample_stride, weight wz
+         if (wz != 0.0) {
+            a = mix(fetch(x0, y0, 1u), fetch(x0 + 1, y0, 1u), ax);
+            b = mix(fetch(x0, y0 + 1, 1u), fetch(x0 + 1, y0 + 1, 1u), ax);
+            v = mix(v, mix(a, b, ay), wz);
+         }
       }
    }
    uint n = ncomp();
