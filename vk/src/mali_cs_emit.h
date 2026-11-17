@@ -63,6 +63,7 @@ struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* p
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
    const struct mali_compiled *vs, *fs;   /* compiled with arch == env.arch */
+   uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
    unsigned nattr;
    struct mali_attr attr[MALI_MAX_ATTR];

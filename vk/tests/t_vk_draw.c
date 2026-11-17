@@ -39,6 +39,7 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
 /* stencil test of the next scene (depth test is off then); values are Vulkan's */
@@ -170,6 +171,7 @@ scene_create(struct scene *s, int depth)
    s->mode = mode;
    s->depth = depth;
    const char *vsn = g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
+   if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
@@ -914,7 +916,7 @@ test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx
 }
 
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
-enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY };
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
 struct fxcase {
    const char *name;
    int depth, n;                  /* depth attachment, draws */
@@ -940,6 +942,10 @@ static void s_dyn_const_half(void) { s_const_half(); g_fx.dyn = 1; }
 static void s_one_dst(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_OP_ADD); }
 static void s_one_src(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_OP_ADD); }
 static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_OP_ADD); }
+/* dualSrcBlend: dual.frag writes o0 = varying colour, o1 = (0.5, 0.5, 0.5, 0.5) */
+static void s_d_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
+static void s_d_inv_src1a(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
+static void s_d_one_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_OP_ADD); }
 static void s_mask_r(void) { g_fx.wmask = 1; }
 static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
 static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
@@ -967,6 +973,9 @@ static const struct fxcase g_fxcases[] = {
    {"fx_blend_one_srccolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_src},
    {"fx_blend_2srcdst", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_dst_src},
    {"fx_blend_srcalpha", 0, 2, {0.5f, 0.5f}, EXP_SAME, 0, 0, s_src_alpha},
+   {"fx_dual_src1_color", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_src1c},
+   {"fx_dual_inv_src1_alpha", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_inv_src1a},
+   {"fx_dual_one_src1_color", 0, 2, {0.5f, 0.5f}, EXP_X15, 0, 4, s_d_one_src1c},
    {"fx_write_mask_r", 0, 1, {0.5f}, EXP_RONLY, 0, 0, s_mask_r},
    {"fx_bias_off", 1, 1, {1.0f}, EXP_COV, 0, 0, s_bias_off},
    {"fx_bias_on", 1, 1, {1.0f}, EXP_COV, 8192, 0, s_bias_on},
@@ -1020,6 +1029,7 @@ test_fx(void)
       if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 4) && !g_feat.dualSrcBlend) { printf("{\"test\":\"%s\",\"skipped\":\"dualSrcBlend not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
       int good = 1;
       int e[4] = {p[0], p[1], p[2], p[3]};
@@ -1030,6 +1040,7 @@ test_fx(void)
       case EXP_HALF: for (int k = 0; k < 3; k++) e[k] /= 2; e[3] = 127; break;
       case EXP_ZERO: e[0] = e[1] = e[2] = e[3] = 0; break;
       case EXP_ADDSQ: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] * e[k] / 255; e[3] = 255; break;
+      case EXP_X15: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] / 2; e[3] = 255; break;
       case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
       }
       if (c->exp != EXP_COV)
@@ -1287,7 +1298,7 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend};
    di.pEnabledFeatures = &en;
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }

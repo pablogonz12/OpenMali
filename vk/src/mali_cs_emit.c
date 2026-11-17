@@ -310,7 +310,14 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
    else
       kb_draw_blend_opaque_rgba8(bl);
-   if (apply_blend(bl, &d->fx))
+   if (g->blend_va && d->fx.blend_en) {
+      /* blend shader (mode 0): word0 = load dest | enable | round-to-FB-precision (no sRGB RT formats are exposed), word3 = shader PC
+       * (16-aligned, same 4G region as the FS) */
+      bl[0] = 1u | (1u << 9) | (1u << 11);
+      bl[1] = 0;
+      bl[2] = 0;
+      bl[3] = (uint32_t)g->blend_va;
+   } else if (apply_blend(bl, &d->fx))
       return -EINVAL;
 
    /* depth/stencil */
@@ -373,6 +380,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       ffau[4] = bl[2];
       ffau[5] = bl[3];
    }
+   if (g->blend_va && d->fx.blend_en)
+      memcpy(ffau, d->fx.bconst, 16);   /* blend shader constants: FAU words 0..3 */
    return 0;
 }
 

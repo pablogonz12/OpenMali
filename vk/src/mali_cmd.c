@@ -400,7 +400,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
    if (dyn->cb.logic_op_enable || dyn->rs.rasterizer_discard_enable)
       unsupported(cmd, dyn->cb.logic_op_enable ? "logic op" : "rasterizer discard");
-   if (x->blend_en) {
+   if (x->blend_en && !d->gfx.blend_va) {
       uint32_t eq; unsigned cm;
       if (mali_blend_equation(x, &eq, &cm))
          unsupported(cmd, "blend equation (fixed function)");

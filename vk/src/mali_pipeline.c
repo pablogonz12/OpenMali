@@ -23,7 +23,7 @@ struct mali_pipeline {
    struct mali_device *dev;
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
-   struct mali_compiled vs, fs, cs;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -40,6 +40,7 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->vs);
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
+   mali_compiled_free(&p->blend);
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -122,17 +123,58 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       goto fail;
    }
 
-   /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned */
+   /* dualSrcBlend: SRC1 factors (VkBlendFactor 15..18) on attachment 0 need a blend shader (fixed function cannot read SRC1) */
+   bool has_blend = false;
+   if (st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
+      const struct vk_color_blend_attachment_state *a = &st.cb->attachments[0];
+      const unsigned f[4] = {a->src_color_blend_factor, a->dst_color_blend_factor, a->src_alpha_blend_factor, a->dst_alpha_blend_factor};
+      for (unsigned i = 0; i < 4; i++)
+         if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+            has_blend = true;
+      if (has_blend) {
+         if (!st.rp || st.rp->color_attachment_count < 1 || st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+             BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS)) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         struct mali_blend_opts bo = {
+            .arch = arch, .vk_format = st.rp->color_attachment_formats[0],
+            .samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1,
+            .rgb_op = a->color_blend_op, .alpha_op = a->alpha_blend_op,
+            .rgb_src = a->src_color_blend_factor, .rgb_dst = a->dst_color_blend_factor,
+            .alpha_src = a->src_alpha_blend_factor, .alpha_dst = a->dst_alpha_blend_factor,
+            .color_mask = a->write_mask,
+            .src0_type = p->fs.fs_blend0_type, .src1_type = p->fs.fs_blend_src1_type,
+         };
+         if (!bo.src0_type || !bo.src1_type) {   /* the FS does not write a second output: SRC1 would read garbage */
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         if (mali_compile_blend(&bo, &p->blend, err, sizeof err)) {
+            fprintf(stderr, "mali_vk: blend shader compile failed: %s\n", err);
+            res = VK_ERROR_INVALID_SHADER_NV;
+            goto fail;
+         }
+      }
+   }
+
+   /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned; blend shader after it, 16-aligned */
    size_t fs_off = (p->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
-   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, fs_off + p->fs.bin_size, MALI_BO_EXEC, &p->code)) {
+   size_t bl_off = (fs_off + p->fs.bin_size + 15) & ~(size_t)15;
+   size_t code_sz = has_blend ? bl_off + p->blend.bin_size : fs_off + p->fs.bin_size;
+   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
    }
    p->have_code = true;
    memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
    memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
+   if (has_blend)
+      memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
    struct mali_gfx_state *g = &p->gfx;
+   if (has_blend)
+      g->blend_va = p->code.gpu_va + bl_off;
    g->vs = &p->vs;
    g->fs = &p->fs;
    g->vs_va = p->code.gpu_va;

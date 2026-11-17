@@ -61,6 +61,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxVertexOutputComponents = 64,
       .maxFragmentInputComponents = 64,
       .maxFragmentOutputAttachments = 4,
+      .maxFragmentDualSrcAttachments = 1,   /* dualSrcBlend: blend shader, attachment 0 */
       .maxFragmentCombinedOutputResources = 4,
       .maxComputeSharedMemorySize = 16384,
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
@@ -214,6 +215,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
+      .dualSrcBlend = true,        /* t_vk_draw fx_dual_* (blend shader) */
       .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */

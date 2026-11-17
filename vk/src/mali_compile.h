@@ -74,7 +74,22 @@ struct mali_compiled {
    uint32_t local_size[3];        /* CS: workgroup size */
    uint32_t allow_merge;          /* CS: COMPUTE_SIZE_WORKGROUP bit 31 (no shared memory, workgroup barrier or subgroup op: HW may merge workgroups) */
    uint32_t cache_hit;            /* 1 if this result came from the disk cache */
+   uint32_t fs_blend0_type, fs_blend_src1_type;   /* FS: nir_alu_type of colour output 0 / dual-source output (0 = none) */
 };
+
+/* Blend shader (dual-source blending, or any equation the fixed-function unit cannot do): single RT.
+ * Factors/ops are Vulkan enums. src0/src1_type are the FS's fs_blend0_type / fs_blend_src1_type.
+ * Constants are read from FS FAU words 0..3. out->bin is the code only (16-byte aligned copy needed). */
+struct mali_blend_opts {
+   unsigned arch;                 /* 11 or 13 */
+   unsigned vk_format;            /* VkFormat of the colour attachment */
+   unsigned samples;
+   unsigned rgb_op, alpha_op;     /* VkBlendOp */
+   unsigned rgb_src, rgb_dst, alpha_src, alpha_dst;   /* VkBlendFactor */
+   unsigned color_mask;           /* VkColorComponentFlags */
+   unsigned src0_type, src1_type;
+};
+int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
