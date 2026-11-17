@@ -179,6 +179,7 @@ main(int argc, char **argv)
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
          offsetof(VkPhysicalDeviceFeatures, depthBiasClamp),   /* t_vk_draw fx_bias_*_clamp */
+         offsetof(VkPhysicalDeviceFeatures, occlusionQueryPrecise),    /* t_vk_draw occlusion */
          offsetof(VkPhysicalDeviceFeatures, drawIndirectFirstInstance), /* t_vk_feat firstinst */
          offsetof(VkPhysicalDeviceFeatures, fullDrawIndexUint32),       /* t_vk_feat idx32 */
          offsetof(VkPhysicalDeviceFeatures, samplerAnisotropy),         /* t_vk_feat aniso */

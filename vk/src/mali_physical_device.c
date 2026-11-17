@@ -191,6 +191,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
+      .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */
    };
    struct vk_properties properties;
