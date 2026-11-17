@@ -98,6 +98,114 @@ struct regs {
 static const struct regs R11 = { 72, 74, 64, 68, 70 };
 static const struct regs R13 = { 80, 82, 88, 84, 86 };
 
+/* ---- R4: fixed-function blend equation (port of panfrost lib/pan_blend.c to_mali_function for Vulkan enums) ---- */
+struct bfn { unsigned a, na, b, nb, c, ic; };
+struct bfac { unsigned c; bool inv; };
+
+static bool
+bfac_of(unsigned vk, struct bfac *o)
+{
+   switch (vk) {
+   case 0: *o = (struct bfac){1, false}; return true;   /* ZERO */
+   case 1: *o = (struct bfac){1, true}; return true;    /* ONE */
+   case 2: case 3: *o = (struct bfac){2, vk == 3}; return true;      /* SRC_COLOR */
+   case 4: case 5: *o = (struct bfac){3, vk == 5}; return true;      /* DST_COLOR */
+   case 6: case 7: *o = (struct bfac){5, vk == 7}; return true;      /* SRC_ALPHA */
+   case 8: case 9: *o = (struct bfac){6, vk == 9}; return true;      /* DST_ALPHA */
+   case 10: case 11: case 12: case 13: *o = (struct bfac){7, vk & 1}; return true;   /* CONSTANT_COLOR / CONSTANT_ALPHA */
+   default: return false;
+   }
+}
+
+static bool
+bfn_of(unsigned op, unsigned sf, unsigned df, struct bfn *f)
+{
+   struct bfac s, d;
+   if (op > 2 || !bfac_of(sf, &s) || !bfac_of(df, &d))
+      return false;
+   memset(f, 0, sizeof *f);
+   bool same_base = sf >= 2 && sf <= 13 && df >= 2 && df <= 13 && ((sf - 2) >> 1) == ((df - 2) >> 1);
+   if (sf == 0) {
+      f->a = 1; f->b = 3; f->nb = op == 1; f->ic = d.inv; f->c = d.c;
+   } else if (sf == 1) {
+      f->a = 2; f->b = 3;
+      if (op == 1) f->nb = 1; else if (op == 2) f->na = 1;
+      f->ic = d.inv; f->c = d.c;
+   } else if (df == 0) {
+      f->a = 1; f->b = 2; f->nb = op == 2; f->ic = s.inv; f->c = s.c;
+   } else if (df == 1) {
+      f->a = 3; f->b = 2;
+      if (op == 1) f->na = 1; else if (op == 2) f->nb = 1;
+      f->ic = s.inv; f->c = s.c;
+   } else if (sf == df) {
+      f->a = 1; f->ic = s.inv; f->c = s.c;
+      if (op == 0) f->b = 1;
+      else { f->b = 0; f->nb = op == 2; }
+   } else if (op == 0 && ((sf == 4 && df == 2) || (sf == 2 && df == 4))) {
+      f->a = 1; f->b = 3; f->c = 4;   /* src*dst + dst*src = dst * (2 src) */
+   } else if (same_base && s.inv != d.inv) {
+      f->a = 3; f->ic = s.inv; f->c = s.c;
+      if (op == 0) f->b = 0;
+      else if (op == 2) { f->b = 1; f->nb = 1; }
+      else { f->b = 1; f->na = 1; }
+   } else {
+      return false;
+   }
+   return true;
+}
+
+static unsigned
+bconst_bits(unsigned vk)
+{
+   return vk >= 10 && vk <= 11 ? 7u : vk >= 12 && vk <= 13 ? 8u : 0u;
+}
+
+int
+mali_blend_equation(const struct mali_fixed *fx, uint32_t *eq, unsigned *cm)
+{
+   struct bfn c, a;
+   if (!fx->blend_en) {
+      *eq = 0x122u | (0x122u << 12);   /* replace: src */
+      *cm = 0;
+      return 0;
+   }
+   if (!bfn_of(fx->op_c, fx->src_c, fx->dst_c, &c) || !bfn_of(fx->op_a, fx->src_a, fx->dst_a, &a))
+      return -1;
+   uint32_t ec = c.a | (c.na << 3) | (c.b << 4) | (c.nb << 7) | (c.c << 8) | (c.ic << 11);
+   uint32_t ea = a.a | (a.na << 3) | (a.b << 4) | (a.nb << 7) | (a.c << 8) | (a.ic << 11);
+   *eq = ec | (ea << 12);
+   *cm = bconst_bits(fx->src_c) | bconst_bits(fx->dst_c) | bconst_bits(fx->src_a) | bconst_bits(fx->dst_a);
+   return 0;
+}
+
+/* Applies the colour attachment 0 fixed-function blend state to a blend descriptor made by kb_draw_blend_opaque_*(). Returns -1 when
+ * the state cannot be expressed (inconsistent constants, unsupported equation). */
+static int
+apply_blend(uint32_t *bl, const struct mali_fixed *fx)
+{
+   uint32_t eq;
+   unsigned cm;
+   if (!fx->set || (!fx->blend_en && fx->wmask == 0xf))
+      return 0;
+   if (mali_blend_equation(fx, &eq, &cm))
+      return -1;
+   float cv = 0.0f;
+   bool first = true;
+   for (unsigned i = 0; i < 4; i++) {
+      if (!(cm & (1u << i)))
+         continue;
+      if (first) { cv = fx->bconst[i]; first = false; }
+      else if (fx->bconst[i] != cv)
+         return -1;   /* the descriptor holds one constant */
+   }
+   if (cv < 0.0f) cv = 0.0f;
+   if (cv > 1.0f) cv = 1.0f;
+   bl[0] = (bl[0] & 0xffffu) | 1u | ((uint32_t)(cv * 65280.0f + 0.5f) << 16);
+   bl[1] = eq | ((uint32_t)(fx->wmask & 0xf) << 28);
+   bl[2] = (bl[2] & ~3u) | 2u;
+   return 0;
+}
+
 struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
 };
@@ -184,6 +292,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
    else
       kb_draw_blend_opaque_rgba8(bl);
+   if (apply_blend(bl, &d->fx))
+      return -EINVAL;
 
    /* depth/stencil */
    if (g->depth_test && f->has_zs) {
@@ -195,6 +305,15 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_v13_zsd_depth(zsd, KB_FUNC_ALWAYS, 0);
    } else {
       kb_draw_zsd_off(zsd);
+   }
+
+   if (d->fx.set) {
+      /* rasteriser depth state: clip (depth cull), clamp to the viewport depth range, bias */
+      zsd[4] &= ~((1u << 22) | (3u << 23) | (1u << 28));
+      zsd[4] |= (d->fx.depth_clip ? 1u << 22 : 0u) | ((d->fx.depth_clamp ? 2u : 1u) << 23) | (d->fx.bias_en ? 1u << 28 : 0u);
+      memcpy(&zsd[5], &d->fx.bias_const, 4);
+      memcpy(&zsd[6], &d->fx.bias_slope, 4);
+      memcpy(&zsd[7], &d->fx.bias_clamp, 4);
    }
 
    /* FAU: VS = immediates + viewport sysvals (words 0..5) + push block; FS = immediates + push block */
@@ -254,10 +373,15 @@ prim_flag_bits(const struct mali_gfx_state *g, uint32_t base, bool v13)
 }
 
 static uint32_t
-prim_size_bits(const struct mali_gfx_state *g)
+prim_size_bits(const struct mali_gfx_state *g, const struct mali_fixed *fx)
 {
    unsigned m = g->prim ? g->prim : 8;
-   return m == 1 || m == 2 || m == 4 ? 0x3f800000u : 0;   /* 1.0f: default point size / line width */
+   if (m != 1 && m != 2 && m != 4)
+      return 0;
+   float w = fx && fx->set && fx->line_width > 0.0f ? fx->line_width : 1.0f;   /* default point size / line width */
+   uint32_t b;
+   memcpy(&b, &w, 4);
+   return b;
 }
 
 /* The per-draw register file (everything but the FAU pointers, which come after the heap prologue like in the references). */
@@ -269,6 +393,16 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    bool v13 = env->arch == 13;
    unsigned pk = (g->depth_test && f->has_zs) ? 0 : 2;
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
+   uint32_t dcd_extra = 0, pf_clear = 0;
+   if (d->fx.set) {
+      dop.front_ccw = d->fx.front_ccw;
+      if (d->fx.blend_en || d->fx.wmask != 0xf)
+         dop.allow_fpk = 0;   /* the draw reads the destination: no forward pixel kill (panvk any_dest_read) */
+      if (g->prim == 0 || g->prim == 8 || g->prim == 10 || g->prim == 12)
+         dcd_extra = (uint32_t)(d->fx.cull & 3u) << 17;
+      if (!d->fx.depth_clip)
+         pf_clear = (1u << 16) | (1u << 17);
+   }
    unsigned vx = d->vp[0] < 0 ? 0 : (unsigned)d->vp[0], vy = d->vp[1] < 0 ? 0 : (unsigned)d->vp[1];
    unsigned vmx = vx + (d->vp[2] > 1 ? (unsigned)d->vp[2] : 1) - 1, vmy = vy + (d->vp[3] > 1 ? (unsigned)d->vp[3] : 1) - 1;
    int32_t sx = d->sc[0] < 0 ? 0 : d->sc[0], sy = d->sc[1] < 0 ? 0 : d->sc[1];
@@ -303,10 +437,10 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
       M48(c, KB_IDVS_BLEND_DESC, o->bl | 1);
       M48(c, KB_IDVS_ZSD, o->zsd);
-      M32(c, KB_IDVS_TILER_FLAGS, prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) | idx_type_bits(d));
-      M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | ((d->occ_mode & 3u) << 14));
+      M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
+      M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
       M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, 1));
-      M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g));
+      M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
       M32(c, KB_IDVS_TILER_FLAGS2, 0);
    } else {
       uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
@@ -334,11 +468,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
       M48(c, KB13_IDVS_ZSD, o->zsd);
       M48(c, KB13_IDVS_BLEND_DESC, o->bl | 1);
-      M32(c, KB13_IDVS_TILER_FLAGS, prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) | env->tf_or | idx_type_bits(d));
-      M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | ((d->occ_mode & 3u) << 14));
+      M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
+      M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
       M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, 1));
       M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, 1, 1, 1, 0, 0));
-      M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g));
+      M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
       M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
    }

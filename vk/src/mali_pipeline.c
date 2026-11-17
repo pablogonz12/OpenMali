@@ -21,6 +21,7 @@
 struct mali_pipeline {
    struct vk_object_base base;
    struct mali_device *dev;
+   struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
    struct mali_compiled vs, fs, cs;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
    bool is_compute;
@@ -171,6 +172,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          g->attr[g->nattr++] = (struct mali_attr){f.hw, a->binding, a->offset, st.vi->bindings[a->binding].stride};
       }
    }
+   vk_dynamic_graphics_state_init(&p->dynamic);
+   vk_dynamic_graphics_state_fill(&p->dynamic, &st);
    vk_free(&dev->vk.alloc, state_mem);
    vk_free(&dev->vk.alloc, all);
    *out = mali_pipeline_to_handle(p);
@@ -304,6 +307,16 @@ res_pipeline(VkPipeline h, struct mali_gfx_state *out)
 }
 
 static int
+res_pipeline_dyn(VkPipeline h, const struct vk_dynamic_graphics_state **out)
+{
+   struct mali_pipeline *p = mali_pipeline_from_handle(h);
+   if (!p || p->is_compute)
+      return -EINVAL;
+   *out = &p->dynamic;
+   return 0;
+}
+
+static int
 res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 {
    struct mali_pipeline *p = mali_pipeline_from_handle(h);
@@ -374,4 +387,4 @@ res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *
    return -ENOTSUP;   /* shader objects: not exposed */
 }
 
-const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute};
+const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute, res_pipeline_dyn};

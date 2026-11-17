@@ -176,8 +176,11 @@ main(int argc, char **argv)
       unsigned mdi_idx = (unsigned)((const VkBool32 *)&f2.features.multiDrawIndirect - c);
       CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
       CHECK(!f2.features.drawIndirectFirstInstance, "drawIndirectFirstInstance has no test yet");
+      /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
+      unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
+      CHECK(f2.features.depthClamp && f2.features.independentBlend, "depthClamp / independentBlend advertised");
       for (unsigned i = 0; i < nc; i++)
-         CHECK(!c[i] || i == bc_idx || i == mdi_idx, "core feature #%u advertised without a test", i);
+         CHECK(!c[i] || i == bc_idx || i == mdi_idx || i == dc_idx || i == ib_idx, "core feature #%u advertised without a test", i);
       const VkBool32 *a = (const VkBool32 *)((const char *)&f11 + 16);
       for (unsigned i = 0; i < (sizeof(f11) - 16) / 4; i++)
          CHECK(!a[i], "vk11 feature #%u advertised without a test", i);
