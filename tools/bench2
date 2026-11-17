@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""bench2: two benchmarks (triangle = CPU-heavy, cube = GPU-heavy), run INSIDE the DroidDeck guest (Linux arm64 glibc under proot, like a game),
+comparing our mali-open ICD with the Mali bridge (the guest's default libvulkan.so.1).
+
+  tools/bench2 <alias|class> [--driver ours|bridge|both] [--bench triangle|cube|all] [--reps 5] [--secs 8] [--sweep] [--dry-run]
+  tools/bench2 --report            regenerate bench/RESULTS.md from bench/results.jsonl
+  tools/bench2 --list              print the planned runs
+
+<alias|class> = farm alias (cmf, poco-x8, poco-x4) or class (v10, v11, v13) from ~/.config/mali-farm/devices.toml.
+Per phone: qsafe lock (/tmp/qsafe-<lock>.lock, non-blocking: busy = pending, never retried in a loop), owner disable switch, health gate
+(battery 20/50 %, 43/38 C), focus rule (launcher/settings only), farm adb routing. Appends one row per (phone, driver, version, benchmark,
+variant) to bench/results.jsonl, then regenerates bench/RESULTS.md. Nothing is installed on the phone (files go to Download/ and /tmp in the guest).
+
+Workloads (bench/mdbench, one binary, Vulkan + Wayland WSI through the guest compositor, started via `reaper SteamLaunch AppId=769`):
+  triangle: scene drawcalls, 20000 draws/frame, ONE triangle per draw, dynamic-UBO descriptor offset per draw (driver CPU overhead dominates)
+  cube    : scene cube + 8 overdraw layers + 24-iteration ALU fragment shader, depth on, 1280x720 (and native screen size)
+  each both presented (wayland) and offscreen (headless, no 120 Hz cap). Headline metrics: CPU ms/frame (record+submit) and GPU ms/frame (timestamps).
+"""
+import argparse, datetime, fcntl, hashlib, json, os, re, statistics, subprocess, sys, time
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools", "farm"))
+import farmlib as L          # noqa: E402
+import gate as G             # noqa: E402
+
+os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.path.expanduser("~/Android/Sdk/platform-tools") + os.pathsep + os.environ.get("PATH", "")
+JSONL = os.path.join(REPO, "bench", "results.jsonl")
+MD = os.path.join(REPO, "bench", "RESULTS.md")
+RAW = os.path.join(REPO, "bench", "raw")
+MDB = os.path.join(REPO, "bench", "mdbench", "out", "mdbench-aarch64")
+DL = "/storage/emulated/0/Download"
+PKG = os.environ.get("DROIDDECK_PACKAGE", "com.ludashi.benchmark")
+
+# variant -> (benchmark, scene args common to presented/offscreen, size args for presented, offscreen size)
+WORK = {
+    "triangle-3k": ("triangle", "--scene drawcalls --n 3000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
+    "triangle-20k": ("triangle", "--scene drawcalls --n 20000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
+    "cube-720p": ("cube", "--scene cube --layers 8 --iters 24", "--size 1280x720 --windowed", "--size 1280x720"),
+    "cube-native": ("cube", "--scene cube --layers 8 --iters 24", "", "--size 1280x720"),
+}
+# env sets swept for our ICD (only knobs the ICD reads; documented in vk/src). Each is a list of K=V.
+OURS_ENV = [[], ["MALI_RING=67108864", "MALI_GEOM_SIZE=67108864"], ["MALI_HF=0", "MALI_NOTF=1"], ["MALI_NO_MERGE=1"]]
+
+
+BEST_ENV = {"triangle": ["MALI_RING=67108864", "MALI_GEOM_SIZE=67108864"], "cube": []}   # ours: updated from sweep results (20k draws do not fit the 1 MiB default ring: DEVICE_LOST)
+OVR = {}
+WAIT = [0]
+
+
+def bridge_ver(md):
+    return f"malideck p{md['versionCode']} ({md['versionName']})"
+
+
+def die(m, rc=2):
+    print("bench2:", m, file=sys.stderr)
+    sys.exit(rc)
+
+
+def sh(cmd, timeout=60, env=None, inp=None):
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env, input=inp)
+        return p.returncode, p.stdout.decode(errors="replace") + p.stderr.decode(errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, "timeout"
+
+
+def git(*a):
+    return sh(["git", "-C", REPO, *a])[1].strip()
+
+
+def sha256(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+class Phone:
+    def __init__(self, dev, cfg):
+        self.dev, self.alias, self.cls = dev, dev["alias"], dev["class"]
+        self.root = cfg.get("quick_root") or die("farm.toml has no quick_root")
+        self.tid = None
+        self.lock = None
+
+    def adb(self, *a, timeout=60):
+        return sh(["timeout", "-k", "3", str(timeout), "adb", "-s", self.tid, *a], timeout + 10)
+
+    def env(self):
+        e = dict(os.environ, ANDROID_SERIAL=self.tid, PYTHONPATH=os.path.join(self.root, "tools"), DROIDDECK_PACKAGE=PKG,
+                 PATH=os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", ""))
+        return e
+
+    def ctl(self, *a, timeout=120):
+        return sh([sys.executable, "-I", os.path.join(self.root, "tools", "droiddeckctl"), *a], timeout, env=self.env())
+
+    def admit(self):
+        """-> None when the phone may be used, else a reason string (the phone then stays pending)"""
+        if L.disabled_dir() and os.path.exists(os.path.join(L.disabled_dir(), self.alias)) or G.disabled(self.dev["lock"], self.alias):
+            return "disabled by owner"
+        self.lock = L.PhoneLock(self.dev)
+        if os.environ.get("QSAFE_HELD") == self.dev["lock"]:           # an ancestor (farmd/qsafe) already holds the lock
+            self.lock = None
+        elif not self.acquire_wait(WAIT[0]):
+            self.lock = None
+            return "PHONE BUSY (qsafe lock held by another worker)"
+        os.environ["QSAFE_HELD"] = self.dev["lock"]
+        self.tid = L.resolve(self.dev, connect=True)
+        if not self.tid:
+            return "offline (no adb route)"
+        if self.dev.get("route") == "shell":
+            return "no guest route on this phone (shell route only)"
+        return self.health()
+
+    def acquire_wait(self, secs):
+        """qsafe-style: ONE blocking flock with a timeout (no retry loop). secs=0: non-blocking"""
+        if not secs:
+            return self.lock.acquire()
+        import signal
+        fd = open(self.lock.path, "a")
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
+        signal.alarm(int(secs))
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except TimeoutError:
+            fd.close()
+            return False
+        finally:
+            signal.alarm(0)
+        self.lock.fd = fd
+        return True
+
+    def health(self):
+        h = G.read_adb(self.tid)
+        st, why = G.check(self.dev["lock"], h, G.thresholds(self.dev.get("serial")))
+        if st != "ok":
+            return f"gated ({st}): {why}"
+        if self.dev.get("require_charging") and not h.get("powered"):
+            return "on battery (require_charging)"
+        self.h = h
+        return None
+
+    def focus_ok(self):
+        for _ in range(3):                                           # an empty answer is an adb hiccup, not a focus
+            rc, o = self.adb("shell", "dumpsys window | grep mCurrentFocus")
+            if o.strip():
+                break
+            time.sleep(4)
+        return bool(re.search(r"nothing.launcher|android.settings|DroidTest|ludashi|Launcher|launcher3|systemui", o)), o.strip()[:100]
+
+    def malideck(self):
+        rc, o = self.adb("shell", f"dumpsys package {PKG} | grep -E 'versionCode|versionName' | head -2")
+        vc = re.search(r"versionCode=(\d+)", o)
+        vn = re.search(r"versionName=(\S+)", o)
+        return {"versionCode": vc and int(vc.group(1)), "versionName": vn and vn.group(1)}
+
+    def gpu_name(self, js):
+        return js["mdbench"]["device"]["name"]
+
+    def push(self, local, name):
+        self.adb("push", local, f"{DL}/{name}", timeout=120)
+        rc, o = self.adb("shell", f"sha256sum {DL}/{name}")
+        got = o.split()[0] if o.split() else ""
+        if got != sha256(local):
+            die(f"{name}: sha256 on the phone differs from the local file")
+
+    def session(self):
+        rc, o = self.ctl("start", "steam", "--wait", "--reuse", timeout=200)
+        return rc == 0
+
+    def restore(self):
+        sh(["bash", os.path.join(self.root, "scripts", "quick", "qrestore"), self.alias], 90, env=self.env())
+
+    def run(self, driver, args, tag, secs):
+        """one mdbench run in the guest -> (json dict | None, note)"""
+        icd = "--icd /tmp/mdb/mdb_icd.so" if driver == "ours" else ""
+        envs = " ".join(args.get("env", []))
+        cmd = (f"mkdir -p /tmp/mdb; cd /tmp/mdb; for x in mdbench reaper mdb_icd.so; do [ -f {DL}/$x ] && cp {DL}/$x /tmp/mdb/$x; done; chmod +x mdbench reaper; "
+               f"{envs} /tmp/mdb/reaper SteamLaunch AppId=769 -- /tmp/mdb/mdbench {args['scene']} {icd} {args['wsi']} --mode {args.get('mode', 'mailbox')} "
+               f"--images {args.get('images', 0)} --frames-in-flight {args.get('fif', 2)} --seconds {secs} --warmup 60 --label {tag}; echo __rc=$?")
+        rc, o = self.ctl("guest", "--timeout", str(int(secs) + 70), "--", "sh", "-c", cmd, timeout=int(secs) + 110)
+        try:
+            d, _ = json.JSONDecoder().raw_decode(o[o.index("{"):])
+            s = d.get("stdout", {})
+            s = s.get("text", s) if isinstance(s, dict) else s
+        except Exception:
+            s = o
+        js = [l for l in str(s).splitlines() if l.startswith('{"mdbench"')]
+        if not js:
+            return None, "no result: " + re.sub(r"\s+", " ", str(s))[-160:]
+        try:
+            r = json.loads(js[-1])
+        except ValueError:
+            return None, "bad json"
+        return (r, "") if r.get("pass") else (None, "pass=false " + js[-1][:260])
+
+
+def metrics(r, driver_kind):
+    m = r["mdbench"]
+    cm = m["cpu_ms"]
+    g = (m.get("gpu_ms") or {})
+    rec = (cm.get("record") or {}).get("mean", 0)
+    sub = (cm.get("submit") or {}).get("mean", 0)
+    return {"fps": m["fps"], "low1": m["fps_1pct_low"], "over50": m["over_50ms"], "frames": m["frames_measured"],
+            "cpu_ms": round(rec + sub, 3), "rec_ms": round(rec, 3), "sub_ms": round(sub, 3), "gpu_ms": g.get("mean") and round(g["mean"], 3),
+            "frame_p50": m["frame_time_ms"]["all"]["p50"], "frame_p99": m["frame_time_ms"]["all"]["p99"],
+            "mode": m["present_mode"], "images": m["swapchain_images"], "size": f"{m['width']}x{m['height']}", "fif": m["config"]["frames_in_flight"],
+            "drv": (m["device"].get("driver_info") or m["device"].get("driver_name") or "")[:60]}
+
+
+def med(v):
+    v = [x for x in v if x is not None]
+    return round(statistics.median(v), 3) if v else None
+
+
+def agg(ms):
+    return {k: med([m[k] for m in ms]) for k in ("fps", "low1", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
+
+
+BASE_PRES = dict(mode="mailbox", images=3, fif=2)
+
+
+def plan(variant, driver, mode, best):
+    """-> list of run configs for one (variant, driver). sweep: present mode x images (+ fif), then env sets; final: the stored best pair"""
+    bench, scene, psize, osize = WORK[variant]
+    base_env = BEST_ENV[bench] if driver == "ours" else []
+    P = lambda env=base_env, **k: {"scene": f"{scene} {psize}", "wsi": "--wsi wayland", "env": env, **{**BASE_PRES, **k}}
+    O = lambda env=base_env: {"scene": f"{scene} {osize}", "wsi": "--wsi headless", "mode": "mailbox", "images": 0, "fif": 2, "env": env, "off": True}
+    if mode == "sweep":
+        out = [P(mode=m, images=i) for m in ("mailbox", "fifo", "immediate") for i in (2, 3, 4)] + [P(fif=1), P(fif=3), O()]
+        if driver == "ours":
+            for env in OURS_ENV:
+                if env != base_env:
+                    out += [O(env), P(env)]
+        return out
+    b = (best or {}).get(variant, {})
+    return [b.get("pres") or P(), b.get("off") or O()]
+
+
+def label(c):
+    return f"{c.get('mode')}/{c.get('images')}img/fif{c.get('fif')}" + (("/" + "+".join(c["env"])) if c.get("env") else "")
+
+
+def cache_path(ph, commit, so_sha, mode):
+    return os.path.join(RAW, f"{ph.alias}-{commit}-{(so_sha or 'x')[:8]}-{mode}.jsonl")
+
+
+def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
+    t_start = time.time()
+    why = ph.admit()
+    if why:
+        print(f"{ph.alias}: PENDING: {why}")
+        return [("pending", ph.alias, why)]
+    ok, foc = ph.focus_ok()
+    if not ok:
+        print(f"{ph.alias}: PENDING: focus rule violated ({foc}); the owner is using the phone")
+        return [("pending", ph.alias, "owner is using the phone: " + foc)]
+    if dry:
+        print(f"{ph.alias}: would run {drivers} {variants} reps={reps} secs={secs} sweep={sweep}")
+        return []
+    if not os.path.exists(MDB):
+        die("build the harness first: bench/mdbench/build.sh aarch64")
+    ph.push(MDB, "mdbench")
+    ph.push(os.path.join(ph.root, "driver", "libkbase", "out", "reaper-aarch64"), "reaper")
+    so_sha = None
+    if "ours" in drivers:
+        ph.push(ours_so, "mdb_icd.so")
+        so_sha = sha256(ours_so)
+    if not ph.session():
+        return [("error", ph.alias, "guest session did not start")]
+    md = ph.malideck()
+    commit = git("rev-parse", "--short=9", "HEAD") + ("-dirty" if git("status", "--porcelain", "--untracked-files=no") else "")
+    date = datetime.date.today().isoformat()
+    os.makedirs(RAW, exist_ok=True)
+    mode = "sweep" if sweep else "final"
+    cp = cache_path(ph, commit, so_sha, mode)
+    cache = {}
+    if os.path.exists(cp):
+        for l in open(cp):
+            e = json.loads(l)
+            cache[e["k"]] = e["m"]
+    bestf = os.path.join(REPO, "bench", "best.json")
+    best_all = json.load(open(bestf)) if os.path.exists(bestf) else {}
+    rows = []
+    incomplete = False
+    for variant in variants:
+        bench = WORK[variant][0]
+        res = {d: {} for d in drivers}
+        plans = {d: plan(variant, d, mode, best_all.get(ph.alias, {}).get(d)) for d in drivers}
+        tasks = [(r, i, d) for r in range(1 if sweep else reps) for i in range(max(len(v) for v in plans.values())) for d in drivers if i < len(plans[d])]   # interleaved
+        for r, i, d in tasks:
+            c = plans[d][i]
+            key = ("off:" if c.get("off") else "pres:") + label(c)
+            ck = f"{d}|{variant}|{key}|{r}"
+            if ck in cache:
+                if cache[ck]:
+                    res[d].setdefault(key, []).append(cache[ck])
+                continue
+            if budget and time.time() - t_start > budget:
+                incomplete = True
+                continue
+            st = ph.health()
+            if st:
+                print(f"{ph.alias}: stop: {st}")
+                return rows + [("pending", ph.alias, st)]
+            r_, note = ph.run(d, c, f"{d}-{variant}-{i}-{r}", max(5, secs // 2) if sweep else secs)
+            m = None
+            if r_ is None:
+                print(f"  {ph.alias} {d} {variant} {key}: FAIL {note[:150]}")
+                ph.restore()
+                ph.session()
+            else:
+                m = metrics(r_, d)
+                m["ver"] = bridge_ver(ph.malideck()) if d == "bridge" else None      # read per run: MaliDeck can be updated under the lock mid-run
+                ph.gpu = r_["mdbench"]["device"]["name"]
+                res[d].setdefault(key, []).append(m)
+                print(f"  {ph.alias} {d:6} {variant:13} {key:60} fps {m['fps']:7.1f} low {m['low1']:6.1f} cpu {m['cpu_ms']:7.3f} gpu {m['gpu_ms']} ms", flush=True)
+            cache[ck] = m
+            with open(cp, "a") as fh:
+                fh.write(json.dumps({"k": ck, "m": m}) + "\n")
+        if incomplete:
+            continue
+        groups = []                       # (driver, version label, res subset): bridge rows are split per installed version, never mixed
+        for d in drivers:
+            if d == "bridge":
+                vers = sorted({m.get("ver") or "unknown" for v in res[d].values() for m in v})
+                for ver in vers:
+                    groups.append((d, ver, {k: [m for m in v if (m.get("ver") or "unknown") == ver] for k, v in res[d].items()}))
+            else:
+                groups.append((d, commit, res[d]))
+        for d, ver, rs in groups:
+            pres = {k: agg(v) for k, v in rs.items() if k.startswith("pres:") and v}
+            off = {k: agg(v) for k, v in rs.items() if k.startswith("off:") and v}
+            if not pres or not off:
+                rows.append(("error", ph.alias, f"{d} {ver} {variant}: no complete result (config fails on this driver)"))
+                continue
+            # a non-default env set must win by more than 5 % (single sweep runs are noisy, and some knobs are unvalidated)
+            envpart = lambda k: (re.search(r"fif\d(?:/(.*))?$", k).group(1) or "")
+            pen = lambda k: 1.0 if (d != "ours" or envpart(k) == "+".join(BEST_ENV[bench])) else 1.05
+            pk = (lambda k: (-pres[k]["fps"] / pen(k), pres[k]["cpu_ms"] * pen(k))) if bench == "triangle" else (lambda k: (-pres[k]["low1"] / pen(k), -pres[k]["fps"]))
+            ok_ = (lambda k: off[k]["cpu_ms"] * pen(k)) if bench == "triangle" else (lambda k: (off[k]["gpu_ms"] or 1e9) * pen(k))
+            bp, bo = min(pres, key=pk), min(off, key=ok_)
+            ps = {label(c): c for c in plan(variant, d, "sweep", None)}
+            if sweep:
+                best_all.setdefault(ph.alias, {}).setdefault(d, {})[variant] = {"pres": ps[bp[5:]], "off": ps[bo[4:]]}
+                json.dump(best_all, open(bestf, "w"), indent=1, sort_keys=True)
+                with open(os.path.join(REPO, "bench", "sweeps.jsonl"), "a") as fh:
+                    fh.write(json.dumps({"date": date, "phone": ph.alias, "driver": d, "variant": variant, "commit": commit, "pres": pres, "off": off, "best": [bp, bo]}) + "\n")
+                print(f"{ph.alias} {d} {variant}: sweep winner presented {bp[5:]}; offscreen {bo[4:]}")
+                continue
+            row = {"date": date, "bench": bench, "variant": variant, "phone": ph.alias, "class": ph.cls, "gpu": getattr(ph, "gpu", None), "driver": d,
+                   "version": ver,
+                   "so_sha256": so_sha[:12] if d == "ours" else None, "reps": reps, "secs": secs,
+                   "presented": dict(pres[bp], cfg=bp[5:]), "offscreen": dict(off[bo], cfg=bo[4:]),
+                   "best_settings": f"present {bp[5:]}; offscreen {bo[4:]}", "battery_c": ph.h.get("temp_c")}
+            rows.append(("row", row))
+            with open(JSONL, "a") as fh:
+                fh.write(json.dumps(row) + "\n")
+            print(f"{ph.alias} {d} {variant}: row written, {row['best_settings']}")
+    if incomplete:
+        print(f"{ph.alias}: CHUNK DONE (time budget {budget}s); run the same command again to continue (results are cached in bench/raw)")
+        return rows + [("chunk", ph.alias, "incomplete")]
+    return rows
+
+
+def f(v, p=1):
+    return "n/a" if v is None else f"{v:.{p}f}"
+
+
+def report():
+    rows = [json.loads(l) for l in open(JSONL)] if os.path.exists(JSONL) else []
+    pend = json.load(open(os.path.join(REPO, "bench", "pending.json"))) if os.path.exists(os.path.join(REPO, "bench", "pending.json")) else {}
+    out = ["# bench2 results (triangle + cube, in the DroidDeck guest)", "",
+           "Generated by `tools/bench2 --report` from `bench/results.jsonl` (do not edit by hand). Both benchmarks run INSIDE the guest (Linux arm64 glibc under proot) "
+           "through the Wayland/gamescope path like a game; `ours` = mali-open ICD loaded with `--icd`, `bridge` = the guest's default libvulkan (Mali bridge, MaliDeck version in the row). "
+           "Values are medians of interleaved runs. Presented = wayland (120 Hz cap), offscreen = headless (no cap): compare drivers on **CPU ms** (record+submit) and **GPU ms** (timestamps), not on capped fps.", "",
+           "Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 10k+, see bench/README.md, Known limits), one triangle each, a dynamic-UBO descriptor offset per draw. **cube** = rotating cube + 8 overdraw layers + 24-iteration ALU fragment shader, depth on; `720p` fixed 1280x720, `native` = compositor size (presented), offscreen always 1280x720.", ""]
+    for bench, title in (("triangle", "triangle (CPU-heavy)"), ("cube", "cube (GPU-heavy)")):
+        out += [f"## {title}", "",
+                "| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for r in sorted((x for x in rows if x["bench"] == bench), key=lambda x: (x["variant"], x["phone"], x["driver"], x["date"], x["version"])):
+            p, o = r["presented"], r["offscreen"]
+            out.append(f"| {r['phone']} | {r['class']} | {r['driver']} | {r['version']} | {r['variant']} | {f(p['fps'])} | {f(p['low1'])} | {f(p['over50'], 0)} | {f(p['cpu_ms'], 2)} | {f(p['gpu_ms'], 2)} | "
+                       f"{f(o['fps'])} | {f(o['cpu_ms'], 2)} | {f(o['gpu_ms'], 2)} | {r['best_settings']} | {r['date']} |")
+        for ph, why in sorted(pend.items()):
+            out.append(f"| {ph} | | ours + bridge | | all | pending | | | | | | | | {why} | |")
+        out.append("")
+    out += ["Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets "
+            + "; ".join("`" + (" ".join(e) or "default") + "`" for e in OURS_ENV) + ". Bridge options: none exposed in the guest besides the above.",
+            "Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).", ""]
+    open(MD, "w").write("\n".join(out))
+    print("wrote", MD)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("target", nargs="?")
+    ap.add_argument("--driver", default="both", choices=["ours", "bridge", "both"])
+    ap.add_argument("--bench", default="all", choices=["triangle", "cube", "all"])
+    ap.add_argument("--variant", help="one variant: " + ", ".join(WORK))
+    ap.add_argument("--reps", type=int, default=5)
+    ap.add_argument("--secs", type=int, default=8)
+    ap.add_argument("--sweep", action="store_true", help="one short run per settings combination (finds the best settings; the rows record them)")
+    ap.add_argument("--so", default=os.path.join(REPO, "vk", "out", "a64-glibc-wl", "libvulkan_mali.so"))
+    ap.add_argument("--ours-env", default=None, help="env for our ICD in a non-sweep run (default: the per-benchmark known-best, see BEST_ENV)")
+    ap.add_argument("--tri-n", type=int, default=0, help="override the triangle draw count (default 20000)")
+    ap.add_argument("--budget", type=int, default=230, help="seconds per call before it stops and asks to be rerun (resumes from bench/raw; rule: chunks <= 4 min)")
+    ap.add_argument("--wait", type=int, default=0, help="wait up to N s for the phone lock (one blocking flock, like qsafe); default: busy = pending")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--report", action="store_true")
+    ap.add_argument("--list", action="store_true")
+    a = ap.parse_args()
+    WAIT[0] = a.wait
+    if a.tri_n:
+        WORK["triangle-3k"] = ("triangle", f"--scene drawcalls --n {a.tri_n} --max-draws 50000 --draw-idx 3", "", "--size 1280x720")
+    if a.ours_env is not None:
+        OVR["env"] = a.ours_env.split()
+    if a.report:
+        return report()
+    if a.list:
+        for k, v in WORK.items():
+            print(k, v)
+        return
+    if not a.target:
+        ap.error("target (alias or class) required")
+    cfg, devs = L.load_devices()
+    sel = [d for al, d in devs.items() if a.target in (al, d["class"])]
+    if not sel:
+        die(f"no device {a.target} (aliases {list(devs)})")
+    drivers = ["ours", "bridge"] if a.driver == "both" else [a.driver]
+    variants = [a.variant] if a.variant else [k for k, v in WORK.items() if a.bench in ("all", v[0]) and k != "triangle-20k"]
+    qcfg = L.load_config()
+    pend = {}
+    for dev in sel:
+        ph = Phone(dev, qcfg)
+        try:
+            out = bench_phone(ph, drivers, variants, a.reps, a.secs, a.sweep, a.so, a.dry_run, a.budget)
+        finally:
+            if ph.lock:
+                ph.lock.release()
+        for o in out:
+            if o[0] in ("pending", "error"):
+                pend[o[1]] = o[2]
+    p = os.path.join(REPO, "bench", "pending.json")
+    old = json.load(open(p)) if os.path.exists(p) else {}
+    for dev in sel:
+        old.pop(dev["alias"], None)
+    old.update(pend)
+    if not a.dry_run:
+        json.dump(old, open(p, "w"), indent=1, sort_keys=True)
+        report()
+
+
+if __name__ == "__main__":
+    main()

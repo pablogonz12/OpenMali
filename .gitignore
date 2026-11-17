@@ -12,3 +12,5 @@ vk/package/dist/
 *.zip
 __pycache__/
 *.pyc
+bench/raw/
+bench/mdbench/out/

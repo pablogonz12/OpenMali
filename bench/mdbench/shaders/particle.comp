@@ -1,0 +1,17 @@
+#version 450
+layout(local_size_x=64) in;
+layout(set=0,binding=0) buffer B { vec4 p[]; } b;
+layout(push_constant) uniform P { vec4 p0; vec4 p1; } pc;   // p0.z = iterations, p0.x = time, p0.w = count
+void main(){
+  uint i = gl_GlobalInvocationID.x;
+  if (float(i) >= pc.p0.w) return;
+  vec4 v = b.p[i];
+  float t = pc.p0.x * 0.001;
+  int n = int(pc.p0.z);
+  for (int k = 0; k < n; k++) {
+    float a = 0.02 + 0.001 * float(k & 3) + t * 0.0;
+    v.xy = mat2(cos(a), -sin(a), sin(a), cos(a)) * v.xy;
+    v.z = fract(v.z + 0.003);
+  }
+  b.p[i] = v;
+}
