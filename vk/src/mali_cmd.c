@@ -343,6 +343,35 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
 
+/* Indirect draws need a GPU-side indirect path: not implemented. Without these entrypoints the weak dispatch slot was NULL (segfault). */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, uint32_t n, uint32_t stride)
+{
+   CMD(h);
+   unsupported(cmd, "CmdDrawIndirect");
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndexedIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, uint32_t n, uint32_t stride)
+{
+   CMD(h);
+   unsupported(cmd, "CmdDrawIndexedIndirect");
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndirectCount(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t max, uint32_t stride)
+{
+   CMD(h);
+   unsupported(cmd, "CmdDrawIndirectCount");
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndexedIndirectCount(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t max, uint32_t stride)
+{
+   CMD(h);
+   unsupported(cmd, "CmdDrawIndexedIndirectCount");
+}
+
 #define push_frame mali_cmd_push_frame
 
 /* ---- compute (M11): every dispatch is its own frame record, executed in order with the render passes ---- */
