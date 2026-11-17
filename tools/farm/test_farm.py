@@ -124,6 +124,14 @@ class ShellRoute(unittest.TestCase):
         self.assertEqual(rc, 76)
         self.assertFalse(os.path.exists(self.d + "/o2.tsv") and open(self.d + "/o2.tsv").read())
 
+    def test_parse_notes_keeps_deqp_failure_messages(self):
+        sys.path.insert(0, HERE)
+        import shellroute
+        qpa = ("#beginTestCaseResult a.b.ok\n<Result StatusCode=\"Pass\">Passed</Result>\n#endTestCaseResult\n"
+               "#beginTestCaseResult a.b.bad\n<Result StatusCode=\"Fail\">Image comparison\n failed at (3,4)</Result>\n#endTestCaseResult\n"
+               "#beginTestCaseResult a.b.ns\n<Result StatusCode=\"NotSupported\">not here</Result>\n#endTestCaseResult\n")
+        self.assertEqual(shellroute.parse_notes(qpa), {"a.b.bad": "Image comparison failed at (3,4)", "a.b.ns": "not here"})
+
     def test_cpu_busy_pct_ignores_idle_phone_with_high_loadavg(self):
         sys.path.insert(0, HERE)
         import shellroute

@@ -147,6 +147,17 @@ def parse_qpa(text):
     return res, begun
 
 
+def parse_notes(text):
+    """QPA -> {case: first line of the <Result> text} for every case that did not pass (dEQP's own failure message, e.g. "Image comparison failed")"""
+    out, begun = {}, None
+    for m in re.finditer(r"#beginTestCaseResult (\S+)|<Result StatusCode=\"(\w+)\">(.*?)</Result>", text, re.S):
+        if m.group(1):
+            begun = m.group(1)
+        elif begun and m.group(2) not in PASSLIKE:
+            out[begun] = " ".join(m.group(3).split())[:200]
+    return out
+
+
 def push_so(src, sha, dst):
     rc, o = adb("push", src, dst, timeout=180)
     if rc != 0:
@@ -214,6 +225,10 @@ def daily(a):
             continue
         fails = 0
         res, unfinished = parse_qpa(text)
+        notes = parse_notes(text)
+        if notes:                                              # dEQP failure messages: the tsv has no room, keep them next to the farm logs
+            with open(os.path.join(L.state_dir(), "logs", f"{a.run}-notes.tsv"), "a") as nf:
+                nf.writelines(f"{c}\t{n}\n" for c, n in notes.items() if c in batch)
         got = {}
         for c, s in res:
             if c in batch and c not in got:
