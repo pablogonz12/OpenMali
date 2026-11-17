@@ -515,7 +515,8 @@ class Farm:
             if rc == 75:
                 return {"gated": True}
             rd = os.path.join(shim, "runs", "qdeqp")
-            tsv = next((os.path.join(rd, n) for n in sorted(os.listdir(rd)) if n.endswith("-ours-daily-sample.tsv")), None) if os.path.isdir(rd) else None
+            tsvs = [os.path.join(rd, n) for n in os.listdir(rd) if n.endswith("-ours-daily-sample.tsv")] if os.path.isdir(rd) else []
+            tsv = max(tsvs, key=os.path.getsize) if tsvs else None          # a run resumed after a farmd restart can leave a stale empty one
             cur = L.read_tsv(tsv) if tsv else {}
             if tsv:
                 shutil.copy2(tsv, os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['alias']}-daily.tsv"))
