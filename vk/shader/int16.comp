@@ -1,0 +1,18 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_16bit_storage : require
+// R4-B2 shaderInt16 + storageBuffer16BitAccess: 16-bit loads/stores and wrapping 16-bit arithmetic.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer A { int16_t a[]; };
+layout(set = 0, binding = 1, std430) buffer O { uint o[]; };
+void main() {
+   uint i = gl_LocalInvocationIndex;
+   int16_t x = a[i], y = a[i + 64u];
+   o[i * 6u + 0u] = uint(uint16_t(x * y));
+   o[i * 6u + 1u] = uint(int(x >> int16_t(3)));
+   o[i * 6u + 2u] = uint(uint16_t(x) >> uint16_t(3));
+   o[i * 6u + 3u] = uint(int(x / int16_t(7)));
+   o[i * 6u + 4u] = uint(int(x));                 // sign extension
+   o[i * 6u + 5u] = uint(int(max(x, y)));
+   a[128u + i] = x * int16_t(3) + y;                // 16-bit store
+}

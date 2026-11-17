@@ -196,6 +196,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
+      .shaderInt16 = true, .storageBuffer16BitAccess = true,            /* t_vk_feat int16 */
+      .shaderInt8 = true, .storageBuffer8BitAccess = true,              /* t_vk_feat int8 */
       .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .nullDescriptor = true,      /* t_vk_feat nulld */

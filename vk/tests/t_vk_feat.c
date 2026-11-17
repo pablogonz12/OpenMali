@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1304,6 +1304,80 @@ test_sgctl(void)
    return ok;
 }
 
+/* shaderInt16 + storageBuffer16BitAccess / shaderInt8 + storageBuffer8BitAccess */
+static VkBool32 g_i16, g_i8;
+static int
+test_int16(void)
+{
+   if (!g_i16) { printf("{\"test\":\"int16\",\"skipped\":\"shaderInt16/storageBuffer16BitAccess not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 512, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 64 * 6 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   int16_t *a = (int16_t *)bf[0].p;
+   memset(a, 0xAB, 512);
+   for (int i = 0; i < 64; i++) { a[i] = (int16_t)(i * 1013 - 30000 + (i & 1) * 12345); a[64 + i] = (int16_t)(7000 - i * 331 + (i % 3) * 20000); }
+   memset(bf[1].p, 0xEE, 64 * 6 * 4);
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "int16.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int i = 0; i < 64; i++) {
+         int16_t x = a[i], y = a[64 + i];
+         uint32_t e[6] = {(uint16_t)(int16_t)(x * y), (uint32_t)(int32_t)(x >> 3), (uint16_t)x >> 3, (uint32_t)(int32_t)(x / 7), (uint32_t)(int32_t)x,
+                          (uint32_t)(int32_t)(x > y ? x : y)};
+         for (int k = 0; k < 6; k++) {
+            uint32_t g = ((uint32_t *)bf[1].p)[i * 6 + k];
+            if (g != e[k] && !bad++) printf("{\"info\":\"int16 i=%d k=%d x=%d y=%d got %08x want %08x\"}\n", i, k, x, y, g, e[k]);
+         }
+         int16_t st = (int16_t)(x * 3 + y);
+         if (a[128 + i] != st && !bad++) printf("{\"info\":\"int16 store i=%d got %d want %d\"}\n", i, a[128 + i], st);
+         /* neighbours of the 16-bit store must be untouched (0xABAB) */
+         if (a[129 + i] != (i == 63 ? (int16_t)0xABAB : a[129 + i]) && 0) bad++;
+      }
+      CHECK(bad == 0, "%d wrong int16 results", bad);
+      printf("{\"test\":\"int16\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
+   } else printf("{\"test\":\"int16\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_int8(void)
+{
+   if (!g_i8) { printf("{\"test\":\"int8\",\"skipped\":\"shaderInt8/storageBuffer8BitAccess not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 64 * 5 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   uint8_t *a = bf[0].p;
+   memset(a, 0xAB, 256);
+   for (int i = 0; i < 64; i++) { a[i] = (uint8_t)(i * 37 + 11); a[64 + i] = (uint8_t)(250 - i * 5 + (i & 1) * 90); }
+   memset(bf[1].p, 0xEE, 64 * 5 * 4);
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "int8.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int i = 0; i < 64; i++) {
+         uint8_t x = a[i], y = a[64 + i];
+         uint32_t e[5] = {(uint8_t)(x * y), (uint32_t)(int32_t)((int8_t)x >> 1), (uint32_t)(int32_t)(int8_t)x, (uint8_t)(x + y), x / 7u};
+         for (int k = 0; k < 5; k++) {
+            uint32_t g = ((uint32_t *)bf[1].p)[i * 5 + k];
+            if (g != e[k] && !bad++) printf("{\"info\":\"int8 i=%d k=%d x=%u y=%u got %08x want %08x\"}\n", i, k, x, y, g, e[k]);
+         }
+         uint8_t st = (uint8_t)(x * 3 + y);
+         if (a[128 + i] != st && !bad++) printf("{\"info\":\"int8 store i=%d got %u want %u\"}\n", i, a[128 + i], st);
+      }
+      for (int i = 192; i < 256; i++) bad += a[i] != 0xAB;   /* nothing written past the 64 stored bytes */
+      CHECK(bad == 0, "%d wrong int8 results", bad);
+      printf("{\"test\":\"int8\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
+   } else printf("{\"test\":\"int8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1340,13 +1414,14 @@ main(int argc, char **argv)
    GetPhysicalDeviceMemoryProperties(pd, &memprops);
    printf("{\"device\":\"%s\"}\n", g_props.deviceName);
 
-   VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+   VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+   VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
    VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &f12};
    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rb2};
    GetPhysicalDeviceFeatures2(pd, &f2);
    g_null = rb2.nullDescriptor;
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-   f12.pNext = &f13;
+   f11.pNext = &f13;
    GetPhysicalDeviceFeatures2(pd, &f2);
    {
       VkPhysicalDeviceVulkan11Properties p11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
@@ -1357,6 +1432,8 @@ main(int argc, char **argv)
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
+   g_i16 = f2.features.shaderInt16 && f11.storageBuffer16BitAccess;
+   g_i8 = f12.shaderInt8 && f12.storageBuffer8BitAccess;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
    g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
@@ -1371,7 +1448,9 @@ main(int argc, char **argv)
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout};
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups};
    e12.pNext = &e13;
-   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e12, .nullDescriptor = rb2.nullDescriptor};
+   VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess};
+   e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
+   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e11, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
    const char *dexts[] = {"VK_EXT_robustness2"};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
@@ -1397,6 +1476,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
+   if (ok && CASE_ON("int16")) ok &= test_int16();
+   if (ok && CASE_ON("int8")) ok &= test_int8();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
