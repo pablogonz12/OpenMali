@@ -69,10 +69,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .subPixelPrecisionBits = 4,
       .subTexelPrecisionBits = 4,
       .mipmapPrecisionBits = 4,
-      .maxDrawIndexedIndexValue = (1u << 24) - 1,
+      .maxDrawIndexedIndexValue = 0xffffffffu,
       .maxDrawIndirectCount = 1,
       .maxSamplerLodBias = 2.0f,
-      .maxSamplerAnisotropy = 1.0f,
+      .maxSamplerAnisotropy = 16.0f,
       .maxViewports = 1,
       .maxViewportDimensions = {4096, 4096},
       .viewportBoundsRange = {-8192.0f, 8191.0f},
@@ -173,6 +173,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .privateData = true,
       .multiDrawIndirect = true,
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
+      .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .samplerMirrorClampToEdge = true,
+      .imageCubeArray = true,      /* t_vk_feat (all five) */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */
    };

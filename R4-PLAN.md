@@ -63,3 +63,6 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 
 ## Batch 2 status (R4-B2, worker on main; Poco only; features each = own commit + test)
 - DONE depthBiasClamp: t_vk_draw fx_bias_pos_noclamp (0 px) / fx_bias_pos_clamp / fx_bias_neg_clamp / fx_dyn_bias_pos_clamp (8192 px) pass on Poco. DXVK-required still false: 37 of 47 (check.sh `DXVK_MISSING`, t_dxvk_caps --expect-missing).
+
+### Batch 2 status (cont.)
+- drawIndirectFirstInstance, fullDrawIndexUint32 (+maxDrawIndexedIndexValue), samplerAnisotropy (max 16), samplerMirrorClampToEdge, imageCubeArray: advertised, each backed by `t_vk_feat --only firstinst|idx32|aniso|mirror|cubearray` (pass on Poco). DXVK_MISSING now 33 of 47.
