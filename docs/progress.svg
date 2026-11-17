@@ -1,0 +1,225 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="710" viewBox="0 0 800 710" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-labelledby="t d">
+<title id="t">mali-open driver progress: 70 percent</title><desc id="d">71 of 116 checklist items done, 20 partial. Details in docs/progress.md.</desc>
+<rect x="0.5" y="0.5" width="799" height="709" rx="10" fill="#0d1117" stroke="#30363d"/>
+<text x="24" y="44" font-size="24" fill="#e6edf3" font-weight="bold" text-anchor="start">mali-open driver progress</text>
+<text x="776" y="44" font-size="30" fill="#3fb950" font-weight="bold" text-anchor="end">70 %</text>
+<text x="776" y="62" font-size="11" fill="#9da7b3" font-weight="normal" text-anchor="end">of tracked items, not of the whole driver</text>
+<text x="24" y="68" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="start">71 of 116 items done, 20 partial (counted as half)</text>
+<text x="24" y="88" font-size="12" fill="#9da7b3">inputs last changed 1a1f346 2026-11-17</text>
+<rect x="24" y="96" width="16" height="16" rx="4" fill="#2ea043"><title>done and tested</title></rect>
+<text x="46" y="110" font-size="12" fill="#9da7b3" font-weight="normal" text-anchor="start">done and tested</text>
+<rect x="180" y="96" width="16" height="16" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>partial or experimental</title></rect>
+<text x="202" y="110" font-size="12" fill="#9da7b3" font-weight="normal" text-anchor="start">partial or experimental</text>
+<rect x="400" y="96" width="16" height="16" rx="4" fill="#30363d"><title>not yet</title></rect>
+<text x="422" y="110" font-size="12" fill="#9da7b3" font-weight="normal" text-anchor="start">not yet</text>
+<line x1="24" y1="124" x2="776" y2="124" stroke="#30363d"/>
+<text x="24" y="148" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">GPU generations (bring-up ladder)</text>
+<text x="776" y="148" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">14/24 (+9 partial)</text>
+<text x="24" y="177" font-size="14" fill="#e6edf3" font-weight="normal" text-anchor="start">Mali-G610 (v10)</text>
+<rect x="214" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: GPU id and uAPI probe</title></rect>
+<rect x="239" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: Submit and fences</title></rect>
+<rect x="264" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: ICD enumerates, creates a device</title></rect>
+<rect x="289" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: Graphics draw</title></rect>
+<rect x="314" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: Compute</title></rect>
+<rect x="339" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: Copy, blit, clear, queries</title></rect>
+<rect x="364" y="162" width="20" height="20" rx="4" fill="#30363d"><title>Mali-G610: Present through WSI</title></rect>
+<rect x="389" y="162" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G610: dEQP-VK daily sample runs</title></rect>
+<text x="776" y="177" font-size="13" fill="#9da7b3" font-weight="normal" text-anchor="end">0/8</text>
+<text x="24" y="206" font-size="14" fill="#e6edf3" font-weight="normal" text-anchor="start">Mali-G615 (v11)</text>
+<rect x="214" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: GPU id and uAPI probe</title></rect>
+<rect x="239" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: Submit and fences</title></rect>
+<rect x="264" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: ICD enumerates, creates a device</title></rect>
+<rect x="289" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: Graphics draw</title></rect>
+<rect x="314" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: Compute</title></rect>
+<rect x="339" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: Copy, blit, clear, queries</title></rect>
+<rect x="364" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: Present through WSI</title></rect>
+<rect x="389" y="191" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G615: dEQP-VK daily sample runs</title></rect>
+<text x="776" y="206" font-size="13" fill="#9da7b3" font-weight="normal" text-anchor="end">8/8</text>
+<text x="24" y="235" font-size="14" fill="#e6edf3" font-weight="normal" text-anchor="start">Mali-G925 (v13)</text>
+<rect x="214" y="220" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G925: GPU id and uAPI probe</title></rect>
+<rect x="239" y="220" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G925: Submit and fences</title></rect>
+<rect x="264" y="220" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G925: ICD enumerates, creates a device</title></rect>
+<rect x="289" y="220" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G925: Graphics draw</title></rect>
+<rect x="314" y="220" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G925: Compute</title></rect>
+<rect x="339" y="220" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G925: Copy, blit, clear, queries</title></rect>
+<rect x="364" y="220" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Mali-G925: Present through WSI</title></rect>
+<rect x="389" y="220" width="20" height="20" rx="4" fill="#2ea043"><title>Mali-G925: dEQP-VK daily sample runs</title></rect>
+<text x="776" y="235" font-size="13" fill="#9da7b3" font-weight="normal" text-anchor="end">6/8</text>
+<line x1="24" y1="243" x2="776" y2="243" stroke="#30363d"/>
+<text x="24" y="267" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">Vulkan core features DXVK needs</text>
+<text x="776" y="267" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">41/47 (+3 partial)</text>
+<rect x="24" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.depthBiasClamp</title></rect>
+<rect x="49" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.depthClamp</title></rect>
+<rect x="74" y="281" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>core.dualSrcBlend</title></rect>
+<rect x="99" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.fillModeNonSolid</title></rect>
+<rect x="124" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.fragmentStoresAndAtomics</title></rect>
+<rect x="149" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.fullDrawIndexUint32</title></rect>
+<rect x="174" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.imageCubeArray</title></rect>
+<rect x="199" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.independentBlend</title></rect>
+<rect x="224" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.multiDrawIndirect</title></rect>
+<rect x="249" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.multiViewport</title></rect>
+<rect x="274" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.occlusionQueryPrecise</title></rect>
+<rect x="299" y="281" width="20" height="20" rx="4" fill="#30363d"><title>core.robustBufferAccess</title></rect>
+<rect x="324" y="281" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>core.sampleRateShading</title></rect>
+<rect x="349" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.samplerAnisotropy</title></rect>
+<rect x="374" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.shaderClipDistance</title></rect>
+<rect x="399" y="281" width="20" height="20" rx="4" fill="#30363d"><title>core.shaderCullDistance</title></rect>
+<rect x="424" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.shaderImageGatherExtended</title></rect>
+<rect x="449" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.shaderInt16</title></rect>
+<rect x="474" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.shaderInt64</title></rect>
+<rect x="499" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.shaderSampledImageArrayDynamicIndexing</title></rect>
+<rect x="524" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>core.textureCompressionBC</title></rect>
+<rect x="549" y="281" width="20" height="20" rx="4" fill="#30363d"><title>core.geometryShader</title></rect>
+<rect x="574" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>11.shaderDrawParameters</title></rect>
+<rect x="599" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>11.storageBuffer16BitAccess</title></rect>
+<rect x="624" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>12.bufferDeviceAddress</title></rect>
+<rect x="649" y="281" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>12.descriptorIndexing</title></rect>
+<rect x="674" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>12.shaderSampledImageArrayNonUniformIndexing</title></rect>
+<rect x="699" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>12.descriptorBindingSampledImageUpdateAfterBind</title></rect>
+<rect x="724" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>12.descriptorBindingUpdateUnusedWhilePending</title></rect>
+<rect x="749" y="281" width="20" height="20" rx="4" fill="#2ea043"><title>12.descriptorBindingPartiallyBound</title></rect>
+<rect x="24" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.runtimeDescriptorArray</title></rect>
+<rect x="49" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.storageBuffer8BitAccess</title></rect>
+<rect x="74" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.hostQueryReset</title></rect>
+<rect x="99" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.samplerMirrorClampToEdge</title></rect>
+<rect x="124" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.scalarBlockLayout</title></rect>
+<rect x="149" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.shaderInt8</title></rect>
+<rect x="174" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.timelineSemaphore</title></rect>
+<rect x="199" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.uniformBufferStandardLayout</title></rect>
+<rect x="224" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>12.vulkanMemoryModel</title></rect>
+<rect x="249" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.inlineUniformBlock</title></rect>
+<rect x="274" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.computeFullSubgroups</title></rect>
+<rect x="299" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.dynamicRendering</title></rect>
+<rect x="324" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.maintenance4</title></rect>
+<rect x="349" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.shaderDemoteToHelperInvocation</title></rect>
+<rect x="374" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.shaderZeroInitializeWorkgroupMemory</title></rect>
+<rect x="399" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.subgroupSizeControl</title></rect>
+<rect x="424" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.synchronization2</title></rect>
+<line x1="24" y1="329" x2="776" y2="329" stroke="#30363d"/>
+<text x="24" y="353" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">Extensions DXVK needs</text>
+<text x="776" y="353" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">1/13 (+1 partial)</text>
+<rect x="24" y="367" width="20" height="20" rx="4" fill="#2ea043"><title>VK_KHR_swapchain</title></rect>
+<rect x="49" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_depth_clip_enable</title></rect>
+<rect x="74" y="367" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>VK_EXT_robustness2</title></rect>
+<rect x="99" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_maintenance5</title></rect>
+<rect x="124" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_maintenance6</title></rect>
+<rect x="149" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_load_store_op_none</title></rect>
+<rect x="174" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_extended_dynamic_state3</title></rect>
+<rect x="199" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_vertex_attribute_divisor</title></rect>
+<rect x="224" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_memory_budget</title></rect>
+<rect x="249" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_calibrated_timestamps</title></rect>
+<rect x="274" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_custom_border_color</title></rect>
+<rect x="299" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_graphics_pipeline_library</title></rect>
+<rect x="324" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_pipeline_library</title></rect>
+<line x1="24" y1="390" x2="776" y2="390" stroke="#30363d"/>
+<text x="24" y="414" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">dEQP-VK daily sample (cases the driver supports)</text>
+<text x="24" y="443" font-size="14" fill="#e6edf3" font-weight="normal" text-anchor="start">Mali-G610 (v10)</text>
+<rect x="254" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="272" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="290" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="308" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="326" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="344" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="362" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="380" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="398" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="416" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="434" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="452" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="470" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="488" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="506" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="524" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="542" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="560" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="578" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<rect x="596" y="428" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G610 (v10): no dEQP result on main</title></rect>
+<text x="622" y="443" font-size="13" fill="#9da7b3" font-weight="normal" text-anchor="start">no data</text>
+<text x="24" y="459" font-size="11" fill="#9da7b3" font-weight="normal" text-anchor="start">not on main yet</text>
+<text x="24" y="487" font-size="14" fill="#e6edf3" font-weight="normal" text-anchor="start">Mali-G615 (v11)</text>
+<rect x="254" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="272" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="290" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="308" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="326" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="344" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="362" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="380" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="398" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="416" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="434" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="452" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="470" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="488" y="472" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="506" y="472" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="524" y="472" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="542" y="472" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="560" y="472" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="578" y="472" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<rect x="596" y="472" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G615 (v11): 69 % of supported cases pass</title></rect>
+<text x="622" y="487" font-size="14" fill="#e6edf3" font-weight="bold" text-anchor="start">69 %</text>
+<text x="24" y="503" font-size="11" fill="#9da7b3" font-weight="normal" text-anchor="start">282 pass, 127 fail, 971 not supported</text>
+<text x="24" y="531" font-size="14" fill="#e6edf3" font-weight="normal" text-anchor="start">Mali-G925 (v13)</text>
+<rect x="254" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="272" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="290" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="308" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="326" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="344" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="362" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="380" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="398" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="416" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="434" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="452" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="470" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="488" y="516" width="15" height="20" rx="4" fill="#2ea043"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="506" y="516" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="524" y="516" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="542" y="516" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="560" y="516" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="578" y="516" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<rect x="596" y="516" width="15" height="20" rx="4" fill="#30363d"><title>Mali-G925 (v13): 69 % of supported cases pass</title></rect>
+<text x="622" y="531" font-size="14" fill="#e6edf3" font-weight="bold" text-anchor="start">69 %</text>
+<text x="24" y="547" font-size="11" fill="#9da7b3" font-weight="normal" text-anchor="start">283 pass, 126 fail, 971 not supported</text>
+<line x1="24" y1="552" x2="776" y2="552" stroke="#30363d"/>
+<text x="24" y="576" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">Pipeline pieces</text>
+<text x="776" y="576" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">13/23 (+5 partial)</text>
+<rect x="24" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Indexed draws (16 and 32 bit)</title></rect>
+<rect x="49" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Depth test and depth formats</title></rect>
+<rect x="74" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Stencil</title></rect>
+<rect x="99" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Blending (fixed function, constants, write masks)</title></rect>
+<rect x="124" y="590" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>Dual-source blending</title></rect>
+<rect x="149" y="590" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>MSAA 4x and resolve</title></rect>
+<rect x="174" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Textures and samplers</title></rect>
+<rect x="199" y="590" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>BC1-BC7 decode (offline; hardware wiring pending)</title></rect>
+<rect x="224" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Uniform buffers and push constants</title></rect>
+<rect x="249" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Descriptor updates and indexing</title></rect>
+<rect x="274" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Compute and indirect dispatch</title></rect>
+<rect x="299" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Copy, blit, clear, resolve (meta ops)</title></rect>
+<rect x="324" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Queries (occlusion, timestamp)</title></rect>
+<rect x="349" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Render passes and dynamic rendering</title></rect>
+<rect x="374" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Timeline semaphores and sync2</title></rect>
+<rect x="399" y="590" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>WSI and presentation (Wayland)</title></rect>
+<rect x="424" y="590" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>multiViewport (viewport 0 only without geometry shaders)</title></rect>
+<rect x="449" y="590" width="20" height="20" rx="4" fill="#2ea043"><title>Shader compiler path and disk cache</title></rect>
+<rect x="474" y="590" width="20" height="20" rx="4" fill="#30363d"><title>Render target compression (AFBC)</title></rect>
+<rect x="499" y="590" width="20" height="20" rx="4" fill="#30363d"><title>Robust buffer access (robustness2 bounds clamping)</title></rect>
+<rect x="524" y="590" width="20" height="20" rx="4" fill="#30363d"><title>Geometry and tessellation shaders (emulated)</title></rect>
+<rect x="549" y="590" width="20" height="20" rx="4" fill="#30363d"><title>Transform feedback (emulated)</title></rect>
+<rect x="574" y="590" width="20" height="20" rx="4" fill="#30363d"><title>Graphics pipeline library</title></rect>
+<line x1="24" y1="613" x2="776" y2="613" stroke="#30363d"/>
+<text x="24" y="637" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">Roadmap milestones</text>
+<text x="776" y="637" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">2/9 (+2 partial)</text>
+<rect x="24" y="651" width="20" height="20" rx="4" fill="#2ea043"><title>R1: Standalone libkbase on both phones: hand-built command stream, dma-heap import, fences, 10k submits, injected fault decoded</title></rect>
+<rect x="49" y="651" width="20" height="20" rx="4" fill="#2ea043"><title>R2: Compiled-shader triangle through a zero-copy present at refresh rate</title></rect>
+<rect x="74" y="651" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>R3: Own Vulkan ICD: vkcube and dEQP-VK api/pipeline/renderpass at 95 % or more on v11 and v13</title></rect>
+<rect x="99" y="651" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>R4: Vulkan 1.3 and the DXVK feature set. A DXVK title reaches a menu</title></rect>
+<rect x="124" y="651" width="20" height="20" rx="4" fill="#30363d"><title>R5: Emulated geometry, tessellation and transform feedback. Target title matches oracle screenshots</title></rect>
+<rect x="149" y="651" width="20" height="20" rx="4" fill="#30363d"><title>R6: Target title on the G615 phone at least as good as the bridge, with fewer frames over 50 ms. Steam UI at least as good on both phones</title></rect>
+<rect x="174" y="651" width="20" height="20" rx="4" fill="#30363d"><title>R7: vkd3d-proton title in gameplay, 2 h soak, 10-title matrix</title></rect>
+<rect x="199" y="651" width="20" height="20" rx="4" fill="#30363d"><title>A DXVK title reaches a menu</title></rect>
+<rect x="224" y="651" width="20" height="20" rx="4" fill="#30363d"><title>Steam UI runs on mali-open</title></rect>
+<line x1="24" y1="674" x2="776" y2="674" stroke="#30363d"/>
+<text x="24" y="692" font-size="11" fill="#9da7b3" font-weight="normal" text-anchor="start">Software checks run offline on a fake GPU; phone results come from the maintainer&#x27;s own devices.</text>
+</svg>
