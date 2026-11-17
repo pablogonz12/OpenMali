@@ -338,6 +338,13 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 continue
             # a non-default env set must win by more than 5 % (single sweep runs are noisy, and some knobs are unvalidated)
             envpart = lambda k: (re.search(r"fif\d(?:/(.*))?$", k).group(1) or "")
+            # plausibility: an env candidate whose GPU time is under half of the default-env config's is not doing the work (cube with
+            # MALI_RING/GEOM reported 0.18 ms for a 11 ms workload), so it is dropped from the ranking
+            basegpu = sorted(m["gpu_ms"] for k, m in off.items() if d == "ours" and envpart(k) == "+".join(BEST_ENV[bench]) and m.get("gpu_ms"))
+            if basegpu:
+                floor = basegpu[len(basegpu) // 2] * 0.5
+                off = {k: m for k, m in off.items() if envpart(k) == "+".join(BEST_ENV[bench]) or (m.get("gpu_ms") or 0) >= floor}
+                pres = {k: m for k, m in pres.items() if envpart(k) == "+".join(BEST_ENV[bench]) or (m.get("gpu_ms") or 0) >= floor}
             pen = lambda k: 1.0 if (d != "ours" or envpart(k) == "+".join(BEST_ENV[bench])) else 1.05
             pk = (lambda k: (-pres[k]["fps"] / pen(k), pres[k]["cpu_ms"] * pen(k))) if bench == "triangle" else (lambda k: (-pres[k]["low1"] / pen(k), -pres[k]["fps"]))
             ok_ = (lambda k: off[k]["cpu_ms"] * pen(k)) if bench == "triangle" else (lambda k: (off[k]["gpu_ms"] or 1e9) * pen(k))
@@ -356,8 +363,10 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                    "presented": dict(pres[bp], cfg=bp[5:]), "offscreen": dict(off[bo], cfg=bo[4:]),
                    "best_settings": f"present {bp[5:]}; offscreen {bo[4:]}", "battery_c": ph.h.get("temp_c")}
             rows.append(("row", row))
-            with open(JSONL, "a") as fh:
-                fh.write(json.dumps(row) + "\n")
+            old = [json.loads(l) for l in open(JSONL)] if os.path.exists(JSONL) else []
+            old = [o for o in old if (o["phone"], o["driver"], o["variant"], o["version"]) != (row["phone"], row["driver"], row["variant"], row["version"])]
+            with open(JSONL, "w") as fh:                  # one row per (phone, driver, version, variant): a re-run replaces it
+                fh.write("".join(json.dumps(o) + "\n" for o in old + [row]))
             print(f"{ph.alias} {d} {variant}: row written, {row['best_settings']}")
     if incomplete:
         print(f"{ph.alias}: CHUNK DONE (time budget {budget}s); run the same command again to continue (results are cached in bench/raw)")

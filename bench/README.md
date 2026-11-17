@@ -31,6 +31,9 @@ Ranking: triangle presented = fps then CPU ms, offscreen = CPU ms; cube presente
 * Ours cannot run the 10k-50k draw triangle yet: on CMF 20000, 10000 and 8000 draws per frame fail with `QueueSubmit = VK_ERROR_DEVICE_LOST` even with
   `MALI_RING=64 MiB MALI_GEOM_SIZE=64 MiB`; 6000 presented works but offscreen fails; 3000 works in both. So the baseline uses 3000 draws.
   `tools/bench2 <phone> --variant triangle-20k` runs the large one once the driver can (the bridge handles it).
+* **OPEN DRIVER BUG: `VK_ERROR_DEVICE_LOST` at QueueSubmit above ~3000 draws/frame (ours, CMF).** Repro (needs the phone lock, so qsafe):
+  `tools/bench2 cmf --driver ours --variant triangle-20k --reps 1 --secs 8` (guest command: `mdbench --scene drawcalls --n 20000 --draw-idx 3`).
+  Bisect: n=3000 ok presented+offscreen; 4000 fails offscreen; 6000 fails offscreen; 8000+ fails both. Bigger `MALI_RING`/`MALI_GEOM_SIZE` do not help.
 * CMF timings are bimodal: medians of interleaved runs only. The bridge's presented fps is display-paced (about 120): compare CPU/GPU ms.
 * poco-x8 runs MaliDeck p19 (sessions sometimes die early; p21 fixes it but is not installed). A run that fails is retried only via the cache/rerun.
 

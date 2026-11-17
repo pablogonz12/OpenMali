@@ -1,6 +1,25 @@
 {
  "cmf": {
   "bridge": {
+   "cube-720p": {
+    "off": {
+     "env": [],
+     "fif": 2,
+     "images": 0,
+     "mode": "mailbox",
+     "off": true,
+     "scene": "--scene cube --layers 8 --iters 24 --size 1280x720",
+     "wsi": "--wsi headless"
+    },
+    "pres": {
+     "env": [],
+     "fif": 2,
+     "images": 2,
+     "mode": "mailbox",
+     "scene": "--scene cube --layers 8 --iters 24 --size 1280x720 --windowed",
+     "wsi": "--wsi wayland"
+    }
+   },
    "triangle-3k": {
     "off": {
      "env": [],
@@ -13,15 +32,40 @@
     },
     "pres": {
      "env": [],
-     "fif": 3,
-     "images": 3,
-     "mode": "mailbox",
+     "fif": 2,
+     "images": 4,
+     "mode": "fifo",
      "scene": "--scene drawcalls --n 3000 --max-draws 50000 --draw-idx 3 ",
      "wsi": "--wsi wayland"
     }
    }
   },
   "ours": {
+   "cube-720p": {
+    "off": {
+     "env": [
+      "MALI_RING=67108864",
+      "MALI_GEOM_SIZE=67108864"
+     ],
+     "fif": 2,
+     "images": 0,
+     "mode": "mailbox",
+     "off": true,
+     "scene": "--scene cube --layers 8 --iters 24 --size 1280x720",
+     "wsi": "--wsi headless"
+    },
+    "pres": {
+     "env": [
+      "MALI_RING=67108864",
+      "MALI_GEOM_SIZE=67108864"
+     ],
+     "fif": 2,
+     "images": 3,
+     "mode": "mailbox",
+     "scene": "--scene cube --layers 8 --iters 24 --size 1280x720 --windowed",
+     "wsi": "--wsi wayland"
+    }
+   },
    "triangle-3k": {
     "off": {
      "env": [
@@ -42,7 +86,7 @@
      ],
      "fif": 2,
      "images": 4,
-     "mode": "mailbox",
+     "mode": "immediate",
      "scene": "--scene drawcalls --n 3000 --max-draws 50000 --draw-idx 3 ",
      "wsi": "--wsi wayland"
     }
