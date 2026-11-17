@@ -56,7 +56,7 @@ mali_GetDeviceBufferMemoryRequirements(VkDevice _dev, const VkDeviceBufferMemory
    const struct mali_physical_device *pd = mali_device_pdev(dev);
    r->memoryRequirements.size = align_up(info->pCreateInfo->size, MALI_BUF_ALIGN);
    r->memoryRequirements.alignment = MALI_BUF_ALIGN;
-   r->memoryRequirements.memoryTypeBits = (1u << pd->memory.memoryTypeCount) - 1;
+   r->memoryRequirements.memoryTypeBits = ((1u << pd->memory.memoryTypeCount) - 1) & 3u;   /* COHERENT_LOCAL types only (SSBO atomics) */
    vk_foreach_struct(st, e, r->pNext) {
       if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
          VkMemoryDedicatedRequirements *dr = e;

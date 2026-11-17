@@ -12,7 +12,7 @@
 #include "vk_alloc.h"
 #include "vk_util.h"
 
-#define MALI_MEM_TYPE_COUNT 2
+#define MALI_MEM_TYPE_COUNT 3 /* 2 = like 0 but without COHERENT_LOCAL: offered only for images that are not storage images */
 #define MALI_MAX_ALLOCS 4096
 #define MALI_LINE 64 /* nonCoherentAtomSize */
 
@@ -50,7 +50,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    const bool cached = pAllocateInfo->memoryTypeIndex == 1;
-   const uint32_t flags = cached ? MALI_BO_CACHED : 0;
+   const uint32_t flags = cached ? MALI_BO_CACHED : pAllocateInfo->memoryTypeIndex == 2 ? MALI_BO_NOCOH : 0;
    const VkImportMemoryFdInfoKHR *imp =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
    int r;

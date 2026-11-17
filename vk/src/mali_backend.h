@@ -35,6 +35,7 @@ struct mali_kdev;
 
 #define MALI_BO_EVENT  (1u << 2) /* CSF event memory (CQS words the CS updates; kernel-visible, uncached) */
 #define MALI_BO_HOSTLAZY (1u << 8) /* device memory the CPU has not mapped yet: no CPU<->device MEM_SYNC until bo_host_touch */
+#define MALI_BO_NOCOH  (1u << 10) /* no COHERENT_LOCAL (images that are not storage images); no per-submit MEM_SYNC either */
 #define MALI_BO_HOT    (1u << 9) /* rewritten by the CPU every frame (arena): MEM_SYNC at every CS submit */
 #define MALI_BO_EXEC   (1u << 3) /* GPU-executable (shader binaries) */
 
