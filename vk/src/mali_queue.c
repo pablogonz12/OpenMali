@@ -168,7 +168,7 @@ hw_tls(void *u, size_t size, uint64_t *va)
 }
 
 static int
-hw_submit(void *u, const uint64_t *cs, unsigned n)
+hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
 {
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
@@ -185,16 +185,24 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
       return r;
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
     * (CS SYNC_ADD64 on the event word) before the next one is built. */
-   h->expected++;
+   h->expected += nframes;
    if (!getenv("MALI_SYNC_SUBMIT")) {
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
       h->nfl++;
       return 0;
    }
+   double w0 = prof_now();
    int wr = hw_wait(h, h->expected);
+   if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
+}
+
+static int
+hw_submit(void *u, const uint64_t *cs, unsigned n)
+{
+   return hw_submit_multi(u, cs, n, 1);
 }
 
 void
@@ -259,7 +267,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .tls = hw_tls, .drain = hw_drain};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,

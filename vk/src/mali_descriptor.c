@@ -87,8 +87,13 @@ mem_free(struct vk_device *dev, void *p, size_t size)
 static bool
 type_ok(VkDescriptorType t)
 {
-   return t <= VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+   return t <= VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT || t == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
 }
+
+/* inlineUniformBlock: descriptorCount is a byte size (multiple of 4, <= MALI_MAX_INLINE_BYTES). The binding is one UBO descriptor
+ * (slot) pointing at the data stored in the following slots of the set memory. */
+#define MALI_MAX_INLINE_BYTES 256u
+static inline uint32_t inline_slots(uint32_t bytes) { return (bytes + MALI_DESC_SLOT_SIZE - 1) / MALI_DESC_SLOT_SIZE; }
 
 static void
 dsl_destroy(struct vk_device *dev, struct vk_descriptor_set_layout *l)
@@ -131,6 +136,16 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
       b->type = src->descriptorType;
       b->count = src->descriptorCount;
       b->stride = mali_desc_stride(b->type);
+      if (b->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+         if (src->descriptorCount > MALI_MAX_INLINE_BYTES || (src->descriptorCount & 3)) {
+            dsl_destroy(dev, &d->vk);
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+         }
+         b->type = MALI_DT_UNIFORM_BUFFER;
+         b->inline_bytes = src->descriptorCount;
+         b->count = 1;
+         b->stride = 1 + inline_slots(src->descriptorCount);
+      }
       b->imm_off = MALI_NO_IMM_SAMPLER;
       if (b->stride) {
          b->slot = d->slot_count;
@@ -173,6 +188,8 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
    for (uint32_t i = 0; i < ci->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *b = &ci->pBindings[i];
       if (!type_ok(b->descriptorType)) ok = false;
+      else if (b->descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+         ok &= b->descriptorCount <= MALI_MAX_INLINE_BYTES && !(b->descriptorCount & 3);
       else slots += (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
    }
    s->supported = ok && slots < (1u << 20);
@@ -187,9 +204,12 @@ mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescri
    for (uint32_t i = 0; i < ci->poolSizeCount; i++) {
       const VkDescriptorPoolSize *p = &ci->pPoolSizes[i];
       if (!type_ok(p->type)) return VK_ERROR_FEATURE_NOT_PRESENT;
-      slots += (uint64_t)MAX2(mali_desc_stride(p->type), 0u) * p->descriptorCount;
+      if (p->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) slots += inline_slots(p->descriptorCount);
+      else slots += (uint64_t)MAX2(mali_desc_stride(p->type), 0u) * p->descriptorCount;
    }
-   slots += 0;
+   const VkDescriptorPoolInlineUniformBlockCreateInfo *pib =
+      vk_find_struct_const(ci->pNext, DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO);
+   if (pib) slots += pib->maxInlineUniformBlockBindings * 2ull;   /* descriptor slot + alignment slack per binding */
    uint64_t bytes = slots * MALI_DESC_SLOT_SIZE;
    if (bytes > (1u << 30)) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    struct mali_dpool *p = vk_object_zalloc(dev, NULL, sizeof *p, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
@@ -295,6 +315,13 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
    s->arch = p->arch;
    memset(s->cpu, 0, bytes);
    write_immutable(s);
+   for (uint32_t n = 0; n < l->nbindings; n++) {
+      const struct mali_lbinding *b = &l->b[n];
+      if (b->type == MALI_DT_NONE || !b->inline_bytes) continue;
+      struct mali_hw_desc hw;
+      mali_pack_buffer(p->arch, &hw, s->va + (uint64_t)(b->slot + 1) * MALI_DESC_SLOT_SIZE, b->inline_bytes);
+      memcpy(s->cpu + (size_t)b->slot * MALI_DESC_SLOT_SIZE, &hw, sizeof hw);
+   }
    s->next = *link;
    *link = s;
    p->nsets++;
@@ -415,6 +442,14 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
 {
    const struct mali_dsl *l = s->layout;
    uint32_t binding = w->dstBinding, elem = w->dstArrayElement;
+   if (w->descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+      const VkWriteDescriptorSetInlineUniformBlock *ib = vk_find_struct_const(w->pNext, WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
+      if (!ib || binding >= l->nbindings || !l->b[binding].inline_bytes) return;
+      const struct mali_lbinding *b = &l->b[binding];
+      if (elem > b->inline_bytes || w->descriptorCount > b->inline_bytes - elem) return;
+      memcpy(s->cpu + (size_t)(b->slot + 1) * MALI_DESC_SLOT_SIZE + elem, ib->pData, w->descriptorCount);
+      return;
+   }
    for (uint32_t i = 0; i < w->descriptorCount; i++) {
       /* spec: writes spill into the following bindings */
       while (binding < l->nbindings && elem >= l->b[binding].count && l->b[binding].type != MALI_DT_NONE) {
@@ -435,6 +470,14 @@ void
 mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src)
 {
    const struct mali_lbinding *sb = &src->layout->b[c->srcBinding], *db = &dst->layout->b[c->dstBinding];
+   if (sb->inline_bytes || db->inline_bytes) {   /* inline block: dstArrayElement/srcArrayElement are byte offsets, descriptorCount bytes */
+      if (!sb->inline_bytes || !db->inline_bytes || c->srcArrayElement > sb->inline_bytes || c->dstArrayElement > db->inline_bytes ||
+          c->descriptorCount > sb->inline_bytes - c->srcArrayElement || c->descriptorCount > db->inline_bytes - c->dstArrayElement)
+         return;
+      memmove(dst->cpu + (size_t)(db->slot + 1) * MALI_DESC_SLOT_SIZE + c->dstArrayElement,
+              src->cpu + (size_t)(sb->slot + 1) * MALI_DESC_SLOT_SIZE + c->srcArrayElement, c->descriptorCount);
+      return;
+   }
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
       uint32_t se = c->srcArrayElement + i, de = c->dstArrayElement + i;
       if (se >= sb->count || de >= db->count) return;
@@ -460,6 +503,14 @@ mali_dset_update_template(struct mali_dset *s, const struct vk_descriptor_update
 {
    for (uint32_t e = 0; e < t->entry_count; e++) {
       const struct vk_descriptor_template_entry *en = &t->entries[e];
+      if (en->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+         VkWriteDescriptorSetInlineUniformBlock ib = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK,
+                                                       .dataSize = en->array_count, .pData = (const char *)data + en->offset };
+         VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &ib, .dstBinding = en->binding,
+                                    .dstArrayElement = en->array_element, .descriptorCount = en->array_count, .descriptorType = en->type };
+         mali_dset_write(s, &w);
+         continue;
+      }
       VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = en->binding,
                                  .dstArrayElement = en->array_element, .descriptorCount = 1, .descriptorType = en->type };
       for (uint32_t i = 0; i < en->array_count; i++) {

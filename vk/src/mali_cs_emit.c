@@ -849,9 +849,15 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
 
    /* head: flush stale descriptor lines, WAIT for it (async), then registers */
    E(&c, kb_cs_nop());
-   M32(&c, R->flush_id, 0);
-   E(&c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
-   E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   {
+      static int hf = -1;
+      if (hf < 0) { const char *e = getenv("MALI_HF"); hf = e ? (int)strtol(e, NULL, 16) : 0x332; }
+      if (hf) {
+         M32(&c, R->flush_id, 0);
+         E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
+      }
+      E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   }
    if (geometry) {
       for (unsigned i = 0; i < f->ndraws; i++) {
          const struct mali_draw *d = mod && f->draws[i].gfx.poly_mode == 1 ? &mod[i] : &f->draws[i];
@@ -873,7 +879,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_COMPLETED));
    }
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
-   if (geometry) {
+   if (geometry && !getenv("MALI_NOTF")) {
       M32(&c, R->flush_id, 0);
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));

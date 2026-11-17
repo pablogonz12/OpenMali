@@ -33,6 +33,7 @@ struct mali_lbinding {
    uint32_t stride;    /* 32-byte descriptors per array element: combined image sampler 2 (texture, sampler), else 1; dynamic 0 */
    uint32_t dyn_idx;   /* dynamic buffers: index of element 0 among the set's dynamic buffers */
    uint32_t imm_off;   /* index of the first immutable sampler, MALI_NO_IMM_SAMPLER if none */
+   uint32_t inline_bytes; /* inline uniform block: data size in bytes (type = UNIFORM_BUFFER, count 1, stride 1 + data slots); else 0 */
 };
 
 struct mali_lset {

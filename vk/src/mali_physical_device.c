@@ -149,6 +149,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->maxBufferSize = 1u << 30;
+   p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
+   p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
 }
 
 static VkResult
@@ -205,6 +207,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderInt16 = true, .storageBuffer16BitAccess = true,            /* t_vk_feat int16 */
       .shaderInt8 = true, .storageBuffer8BitAccess = true,              /* t_vk_feat int8 */
       .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
+      .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */

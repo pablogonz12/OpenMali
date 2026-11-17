@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "kbase.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
 #include "mali_image.h"
@@ -849,26 +850,66 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk);
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   uint64_t *all = NULL;
+   unsigned nall = 0, capall = 0, counted = 0;
+   VkResult res = VK_SUCCESS;
+   if (g_hw.job_begin)
+      g_hw.job_begin(g_hw.user);   /* once per command buffer: all its frames form one submission */
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
       bool ind = false;
       for (unsigned k = 0; k < fr.ndraws; k++)
          ind |= fr.draws[k].ind != NULL;
-      if (ind && g_hw.drain)
-         g_hw.drain(g_hw.user);   /* indirect args are read by the CPU: earlier frames must have retired */
-      if (ind && expand_indirect(&fr))
-         return VK_ERROR_OUT_OF_HOST_MEMORY;
-      int rc = mali_frame_submit(&g_hw, &fr);
+      if (ind && g_hw.drain) {
+         /* indirect args are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
+         if (nall) {
+            kb_wmb();
+            if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
+               res = VK_ERROR_DEVICE_LOST;
+               break;
+            }
+            nall = counted = 0;
+         }
+         g_hw.drain(g_hw.user);
+      }
+      if (ind && expand_indirect(&fr)) {
+         res = VK_ERROR_OUT_OF_HOST_MEMORY;
+         break;
+      }
+      uint64_t *cs = NULL;
+      unsigned n = 0;
+      int rc = mali_frame_build(&g_hw, &fr, &cs, &n);
       if (ind)
          free(fr.draws);
-      if (rc == -ENOMEM)
-         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-      if (rc == -ENOTSUP || rc == -EINVAL)
-         return VK_ERROR_FEATURE_NOT_PRESENT;
       if (rc) {
-         if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame %u/%u submit failed: %d (draws %u ops %u)\n", i, cmd->nframes, rc, cmd->frames[i].ndraws, cmd->frames[i].nops);
-         return VK_ERROR_DEVICE_LOST;
+         if (rc == -ENOMEM)
+            res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+         else if (rc == -ENOTSUP || rc == -EINVAL)
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+         else {
+            if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame %u/%u submit failed: %d (draws %u ops %u)\n", i, cmd->nframes, rc, cmd->frames[i].ndraws, cmd->frames[i].nops);
+            res = VK_ERROR_DEVICE_LOST;
+         }
+         break;
       }
+      if (nall + n > capall) {
+         capall = (nall + n) * 2;
+         all = realloc(all, capall * sizeof *all);
+         if (!all) { free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+      }
+      memcpy(all + nall, cs, n * sizeof *all);
+      nall += n;
+      counted++;
+      free(cs);
    }
-   return VK_SUCCESS;
+   if (res == VK_SUCCESS && nall) {
+      kb_wmb();
+      int rc = g_hw.submit_multi(g_hw.user, all, nall, counted);
+      if (rc)
+         res = VK_ERROR_DEVICE_LOST;
+   } else if (res != VK_SUCCESS && counted) {
+      /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
+   }
+   free(all);
+   return res;
 }
