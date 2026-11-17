@@ -94,6 +94,9 @@ def cmd_wait(a):
         time.sleep(min(a.poll, max(0.1, a.timeout - (time.time() - t0))))
 
 
+SUITE_CASES = 1381                                  # lists/daily-sample.txt
+
+
 def cmd_results(a):
     j = L.find_job(a.job)
     out = {"job": j, "verdict": L.job_verdict(j), "runs": {}}
@@ -102,6 +105,51 @@ def cmd_results(a):
         if os.path.exists(p):
             out["runs"][c] = L.read_json(p)
     print(json.dumps(out, indent=1, sort_keys=True))
+
+
+def cmd_bless(a):
+    """write the job's per-class daily result tsv over the committed baselines (vk/deqp/ours-daily-sample-<baseline>.tsv) in a checkout"""
+    cfg, devs = L.load_devices()
+    j = L.find_job(a.job)
+    why = []
+    main = git("rev-parse", "--verify", "main^{commit}")
+    if j["commit"] != main:
+        why.append(f"job commit {j['commit'][:8]} is not main's current commit {main[:8]}")
+    if j.get("dirty"):
+        why.append("job was run on a dirty tree")
+    if j["suite"] != "daily":
+        why.append(f"suite is {j['suite']}, not the full daily")
+    if L.job_verdict(j) != "pass":
+        why.append(f"verdict is {L.job_verdict(j)}, not pass")
+    files = {}
+    for c, p in j["parts"].items():
+        run = L.read_json(L.run_path(j["id"], c)) if os.path.exists(L.run_path(j["id"], c)) else {}
+        if run.get("verdict") != "pass" or p.get("state") != "done":
+            why.append(f"part {c} not a finished pass")
+        if not run.get("so_sha256") or run.get("so_sha256") != j.get("so_sha256"):
+            why.append(f"part {c}: so_sha256 integrity not confirmed")
+        d = devs.get(run.get("device") or p.get("device"))
+        src = os.path.join(L.state_dir(), "logs", f"{j['id']}-{run.get('device') or p.get('device')}-daily.tsv")
+        if not d or not os.path.exists(src):
+            why.append(f"part {c}: no result tsv ({os.path.basename(src)})")
+            continue
+        n = len(L.read_tsv(src))
+        if n != SUITE_CASES:
+            why.append(f"part {c}: {n} cases, expected {SUITE_CASES} (full daily)")
+        files[d["baseline"]] = src
+    if why:
+        print("farm bless: refused:\n  " + "\n  ".join(why), file=sys.stderr)
+        return 2
+    co = os.path.abspath(a.checkout)
+    for b, src in sorted(files.items()):
+        dst = os.path.join(co, "vk", "deqp", f"ours-daily-sample-{b}.tsv")
+        if not os.path.isdir(os.path.dirname(dst)):
+            raise SystemExit(f"farm bless: {dst} not in a checkout")
+        lines = open(src).read().splitlines(keepends=True)          # same format as the baselines: case<TAB>status<TAB>
+        if len(lines) != SUITE_CASES or any(l.count("\t") != 2 or not l.endswith("\t\n") for l in lines):
+            raise SystemExit(f"farm bless: {src} is not in baseline format")
+        open(dst, "w").writelines(lines)
+        print(f"blessed {dst}: {len(lines)} lines, {sum(1 for x in lines if x.split(chr(9))[1] == 'Pass')} Pass")
 
 
 def main():
@@ -131,6 +179,10 @@ def main():
     s = sp.add_parser("results")
     s.add_argument("job")
     s.set_defaults(f=cmd_results)
+    s = sp.add_parser("bless", help="write a main daily job's result tsvs over the committed baselines in a checkout")
+    s.add_argument("job")
+    s.add_argument("--checkout", default=".", help="checkout whose vk/deqp/ours-daily-sample-*.tsv are overwritten (default: cwd)")
+    s.set_defaults(f=cmd_bless)
     a = ap.parse_args()
     sys.exit(a.f(a) or 0)
 

@@ -330,6 +330,36 @@ class T(unittest.TestCase):
         self.assertIn(" + main ", run["notes"])
         self.assertIn("2 cases Pass only on main", run["notes"])
 
+    def test_bless(self):
+        repo = os.path.dirname(os.path.dirname(HERE))
+        self.attach("dev-a", "dev-b")
+        _, bad, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11,v13")      # not main's tip -> refused (unless HEAD == main)
+        _, jid, _ = self.farm("submit", "main", "--suite", "daily", "--need", "v11,v13")
+        _, smoke, _ = self.farm("submit", "main", "--suite", "smoke", "--need", "v11")
+        for _ in range(3):
+            self.farmd()
+        co = self.d + "/co"
+        os.makedirs(co + "/vk/deqp")
+        _, devs = L.load_devices()
+        for al in ("dev-a", "dev-b"):                                    # what farmd keeps of each daily run
+            src = open(os.path.join(repo, "vk/deqp/ours-daily-sample-%s.tsv" % devs[al]["baseline"])).read()
+            open(os.path.join(self.d, "state/logs", f"{jid}-{al}-daily.tsv"), "w").write(src.replace("\tPass\t", "\tFail\t", 1))
+        rc, _, err = self.farm("bless", smoke, "--checkout", co)
+        self.assertEqual(rc, 2)
+        self.assertIn("not the full daily", err)
+        rc, _, err = self.farm("bless", jid, "--checkout", co)
+        self.assertEqual(rc, 0, err)
+        for b in ("cmf", "poco"):
+            p = f"{co}/vk/deqp/ours-daily-sample-{b}.tsv"
+            if os.path.exists(p):
+                self.assertEqual(len(open(p).read().splitlines()), 1381)
+        j = L.find_job(jid)
+        j["parts"]["v13"]["verdict"] = "fail"                             # a failing part -> refused
+        L.write_json(L.job_path(jid), j)
+        rc, _, err = self.farm("bless", jid, "--checkout", co)
+        self.assertEqual(rc, 2)
+        self.assertIn("verdict is", err)
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 

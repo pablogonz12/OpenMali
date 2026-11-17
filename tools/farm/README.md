@@ -69,3 +69,8 @@ state/battery/temp, run JSON has battery_pct_/temp_c_ start+end. qdeqp stops wit
   (`QSAFE_HELD=<lock>`); `QSAFE_LOCK_OVERRIDE=1` for emergencies only.
 - `ns_to_fail` lists baseline-NotSupported cases that now Fail; `known-flaky.txt` cases are ignored by the verdict but reported.
 - Phones are identified by `getprop ro.serialno` on any transport; devices.toml is re-read on change; the stored `:5555` route follows the phone's IP.
+
+## Baselines and bless
+- A daily's verdict counts a case as regressed if it is Pass in the branch's own committed baseline OR in main's baseline; the notes name both commits.
+- `farm bless <job> [--checkout DIR]` copies the job's per-class result tsv over `vk/deqp/ours-daily-sample-<baseline>.tsv` in DIR. Refused unless the job
+  ran main's current commit on a clean tree, verdict pass, `so_sha256` confirmed on every part, and it is the full daily (1381 cases).
