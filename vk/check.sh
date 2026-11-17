@@ -2,13 +2,21 @@
 # SPDX-License-Identifier: MIT
 # Offline check of the ICD (no GPU, no phone). Prints one line per case and "OK" or "FAILED".
 #   ./check.sh [--no-build] [-v]
+#   MALI_SAN=1 ./check.sh   same cases with ASan+UBSan driver objects (out/native-san; the standalone build-t_*.sh tests are skipped)
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
-OUT=$V/out/native
+SAN=${MALI_SAN:-0}
+if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san; else OUT=$V/out/native; fi
 build=1; verbose=0
 for a in "$@"; do
    case $a in --no-build) build=0 ;; -v) verbose=1 ;; *) echo "usage: check.sh [--no-build] [-v]"; exit 2 ;; esac
 done
+if [ "$SAN" = 1 ]; then
+   # The test executables are not sanitized; the sanitized driver .so needs the runtime preloaded. Leaks are reported by LSan at exit.
+   export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
+   export ASAN_OPTIONS=detect_leaks=${MALI_SAN_LEAKS:-0}:abort_on_error=0:halt_on_error=1
+   export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+fi
 if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
 fail=0
@@ -60,6 +68,13 @@ for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
+
+# Standalone offline tests (each builds itself against the Mesa tree, then runs; they exit non-zero on failure).
+if [ "$SAN" = 1 ]; then
+   echo "skip  build-t_*.sh tests (not sanitized)"
+else
+   for t in bc cmd compile desc image meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+fi
 
 # Exported symbols: the three loader entry points and nothing else.
 syms=$(nm -D --defined-only "$OUT/libvulkan_mali.so" | awk '{print $3}' | grep -v '^$' | sort | tr '\n' ' ')
