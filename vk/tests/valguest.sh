@@ -5,17 +5,18 @@ D=/storage/emulated/0/Download; T=/tmp/val; rm -rf $T; mkdir -p $T/s
 cp $D/val_libvulkan_mali.so $T/libvulkan_mali.so
 for t in t_vk_draw t_vk_compute t_vk_meta; do cp $D/val_$t $T/$t; chmod +x $T/$t; done
 for f in $D/val_*.spv; do b=$(basename $f); cp $f $T/s/${b#val_}; done
-cd $T; ok=1
+cd $T; ok=1; RAN=""
 for e in $(cat $D/val_env.txt 2>/dev/null); do export $e; done
 LOOP=$(cat $D/val_loop.txt 2>/dev/null || echo 20)
 ONLY=$(cat $D/val_only.txt 2>/dev/null | tr ',' ' ')
-DRAW=" triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture "
+DRAW=" triangle rot two depth load_depth load_depth16 load_stencil load_colour_f16 load_colour_a2b10 depth16 depth32s8 stencil poly idx16 idx32 mdi scissor viewport multivp clearatt fx msaa_resolve4 msaa_sample_shading ring occlusion pushfs ubo descupd texture "
 META=" buf fill img copyimg blit clearc cleard resolve event ts "
 for c in "t_vk_draw --loop $LOOP" "t_vk_compute --loop 5" "t_vk_meta"; do
   set -- $c; n=$1; shift
   sp="--spv-dir $T/s"; [ $n = t_vk_meta ] && sp=""
   if [ -z "$ONLY" ]; then CASES="-"; else CASES=""; K=$META; [ $n = t_vk_draw ] && K=$DRAW
-    for o in $ONLY; do case "$K" in *" $o "*) CASES="$CASES $o";; esac; done; [ -n "$CASES" ] || continue; fi
+    for o in $ONLY; do m=0; case "$K" in *" $o "*) m=1;; esac; case "$n:$o" in t_vk_draw:fx_*) m=1;; esac   # fx_<name>: one t_vk_draw fx case
+      [ $m = 1 ] && CASES="$CASES $o" && RAN="$RAN $o"; done; [ -n "$CASES" ] || continue; fi
   : >$T/$n.log; rc=0
   for o in $CASES; do OA=""; [ $o = - ] || OA="--only $o"
     timeout 120 $T/$n --direct $T/libvulkan_mali.so $sp "$@" $OA >>$T/$n.log 2>&1 || rc=$?
@@ -25,4 +26,6 @@ for c in "t_vk_draw --loop $LOOP" "t_vk_compute --loop 5" "t_vk_meta"; do
   grep '"fail"' $T/$n.log | head -3 | sed 's/\\/\\\\/g; s/"/\\"/g; s/^\(.*\)$/{"line":"\1"}/'
   tail -200 $T/$n.log | sed 's/\\/\\\\/g; s/"/\\"/g; s/^\(.*\)$/{"log":"'$n'","line":"\1"}/'
 done
+# an --only name no binary knows must not pass silently (a missing name in DRAW/META once gave a vacuous farm pass)
+for o in $ONLY; do case " $RAN " in *" $o "*) ;; *) ok=0; echo "{\"fail\":\"valguest: unknown --only case $o (not in DRAW/META)\"}";; esac; done
 echo "{\"test\":\"summary\",\"ok\":$([ $ok = 1 ] && echo true || echo false)}"
