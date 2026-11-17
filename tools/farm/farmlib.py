@@ -50,25 +50,72 @@ def adb_live():
     return live
 
 
+def wireless_routes(dev):
+    out = []
+    for k in ("wireless", "address"):
+        w = dev.get(k)
+        out += [] if not w else ([w] if isinstance(w, str) else list(w))
+    return out
+
+
 def resolve(dev, connect=False):
-    """alias -> live transport id: USB serial first; unless the device is `transport = "usb"` (usb ONLY: never mDNS, ip:port or
-    connect) also the mDNS entry containing the serial / the configured ip:port, then (connect=True) `adb connect <wireless>`.
-    None when the phone is not reachable."""
+    """alias -> live transport id. Order: USB serial, mDNS entry containing the serial, each configured wireless ip:port that is
+    already listed, then (connect=True) `adb connect <route>` for each route. `transport = "usb"` devices: USB ONLY, never
+    mDNS/ip:port/connect. None when the phone is not reachable."""
     usb_only = dev.get("transport", "usb+wireless") == "usb"
-    w = None if usb_only else dev.get("wireless")
+    routes = [] if usb_only else wireless_routes(dev)
 
     def pick():
         live = {i: s for i, s in adb_live().items() if s == "device"}
-        if dev["serial"] in live:
+        if dev["serial"] in live and dev.get("transport") != "wireless":
             return dev["serial"]
         if usb_only:
             return None
-        return next((i for i in live if dev["serial"] in i or (w and i == w)), None)
+        t = next((i for i in live if dev["serial"] in i and i != dev["serial"]), None)
+        return t or next((r for r in routes if r in live), None)
     t = pick()
-    if t or not (connect and w):
+    if t or not connect:
         return t
-    sh(["adb", "connect", w], 20)
-    return pick()
+    for r in routes:
+        sh(["adb", "connect", r], 20)
+        t = pick()
+        if t:
+            return t
+    return None
+
+
+def run_watched(cmd, timeout, alive, grace=45, poll=5, **kw):
+    """like sh() but kills the whole process group and returns rc 125 if alive() stays False for `grace` seconds (phone unplugged:
+    never hang on a dead transport). rc 124 = timeout."""
+    import signal
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, **kw)
+    out = []
+    import threading
+    th = threading.Thread(target=lambda: out.append(p.stdout.read()), daemon=True)
+    th.start()
+    t0, lost = time.time(), None
+    rc = None
+    while rc is None:
+        try:
+            rc = p.wait(poll)
+        except subprocess.TimeoutExpired:
+            if time.time() - t0 > timeout:
+                rc = 124
+            elif alive():
+                lost = None
+            else:
+                lost = lost or time.time()
+                if time.time() - lost > grace:
+                    rc = 125
+            if rc in (124, 125):
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                p.wait()
+    th.join(5)
+    txt = (out[0] if out else b"").decode(errors="replace")
+    return rc, txt + ("\nDEVICE-LOST" if rc == 125 else "\nTIMEOUT" if rc == 124 else "")
 
 
 def now():

@@ -114,7 +114,7 @@ class Farm:
     def ensure_wireless(self, dev):
         """only for devices whose transport allows wireless, only while reachable over USB and idle: make sure wireless debugging is on
         and record how to get back (mDNS name, ip:port; optionally a fixed `tcpip_port` fallback). Never for transport = "usb"."""
-        if self.fake or dev.get("transport", "usb+wireless") == "usb" or self.tid.get(dev["alias"]) != dev["serial"]:
+        if self.fake or dev.get("transport", "usb+wireless") != "usb+wireless" or self.tid.get(dev["alias"]) != dev["serial"]:
             return
         w = {}
         rc, o = self.adb(dev, "shell", "settings get global adb_wifi_enabled; getprop service.adb.tcp.port; "
@@ -341,6 +341,14 @@ class Farm:
                     os.unlink(tmp)
         return None, None
 
+    def alive(self, dev):
+        if self.fake:
+            return dev["alias"] in self.attached()
+        t = L.resolve(dev)
+        if t:
+            self.tid[dev["alias"]] = t
+        return bool(t)
+
     def suite_smoke(self, job, dev):
         env = job["env"]
         if self.fake:
@@ -351,7 +359,10 @@ class Farm:
             return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
         tree = self.tree(job["id"])
         self.harness(tree)
-        rc, out = L.sh(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, env=self.phone_env(dev, {"PHONE": dev["lock"]}))
+        rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, lambda: self.alive(dev),
+                                env=self.phone_env(dev, {"PHONE": dev["lock"]}))
+        if rc == 125:
+            return {"lost": True}
         recs = []
         for l in out.splitlines():
             if l.startswith("{"):
@@ -397,9 +408,10 @@ class Farm:
             if not os.path.exists(listf):
                 return {"verdict": "error", "notes": "no lists/daily-sample.txt"}
             tmo = int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400"))
-            rc, out = L.sh(["timeout", "-k", "20", str(tmo), sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"),
-                            dev["lock"], listf, "--chunk", "300"], tmo + 60, cwd=shim,
-                          env=self.phone_env(dev, {"QDEQP_ENV": job["env"]}))
+            rc, out = L.run_watched([sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"), dev["lock"], listf, "--chunk", "300"],
+                                    tmo, lambda: self.alive(dev), cwd=shim, env=self.phone_env(dev, {"QDEQP_ENV": job["env"]}))
+            if rc == 125:
+                return {"lost": True}
             note = out.strip()[-200:]
             if rc == 75:
                 return {"gated": True}
@@ -450,7 +462,7 @@ class Farm:
             else:
                 job = L.read_json(L.job_path(jid))
                 res = getattr(self, "suite_" + job["suite"])(job, dev)
-                if self.fake is False and alias not in self.attached() and res["verdict"] != "pass":
+                if res.get("lost") or (self.fake is False and alias not in self.attached() and res["verdict"] != "pass"):
                     res = None                                  # phone vanished mid-run: do not blame the commit, retry later
         except Exception:
             res = {"verdict": "error", "notes": "farmd exception: " + traceback.format_exc()[-300:]}

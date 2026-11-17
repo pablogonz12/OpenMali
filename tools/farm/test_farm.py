@@ -171,6 +171,28 @@ class T(unittest.TestCase):
         L.adb_live = lambda: {"SERIAL-B": "device", "adb-SERIAL-B-x._adb-tls-connect._tcp": "device"}
         self.assertEqual(L.resolve(both), "SERIAL-B")               # USB preferred
 
+    def test_two_wireless_routes_and_wireless_only(self):
+        calls = []
+        L.sh = lambda cmd, timeout, **kw: calls.append(cmd) or (0, "")
+        L.adb_live = lambda: {"192.168.3.111:5555": "device"}
+        cmf = {"serial": "S1", "wireless": ["10.9.9.9:5555", "192.168.3.111:5555"]}
+        self.assertEqual(L.resolve(cmf), "192.168.3.111:5555")              # second route already listed
+        L.adb_live = lambda: {"S1": "device", "10.0.0.1:5555": "device"}
+        x4 = {"serial": "S1", "transport": "wireless", "address": "10.0.0.1:5555"}
+        self.assertEqual(L.resolve(x4), "10.0.0.1:5555")                    # wireless-only ignores USB
+        L.adb_live = lambda: {}
+        self.assertIsNone(L.resolve(cmf, connect=True))
+        self.assertEqual([c[-1] for c in calls if "connect" in c], ["10.9.9.9:5555", "192.168.3.111:5555"])
+
+    def test_device_loss_returns_to_pending(self):
+        import time
+        t0 = time.time()
+        rc, out = L.run_watched(["sleep", "60"], 100, lambda: False, grace=1, poll=0.5)
+        self.assertEqual(rc, 125)
+        self.assertLess(time.time() - t0, 10)
+        rc, out = L.run_watched(["echo", "hi"], 100, lambda: True)
+        self.assertEqual((rc, out.strip()), (0, "hi"))
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 
