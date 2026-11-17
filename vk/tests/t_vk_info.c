@@ -122,7 +122,8 @@ main(int argc, char **argv)
    eq("subgroupSize", p11.subgroupSize, sg.subgroupSize);
    CHECK(p11.subgroupSize == 16 && p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16, "subgroup 16");
    CHECK(p13.maxComputeWorkgroupSubgroups * p13.maxSubgroupSize <= L->maxComputeWorkGroupInvocations, "wg subgroups");
-   CHECK(p11.subgroupSupportedOperations == 0 && p11.subgroupSupportedStages == 0, "no subgroup ops until R4-M4");
+   /* subgroup ops: compute only, backed by t_vk_feat subgroup; a stage or op may be added only with its own test */
+   CHECK(p11.subgroupSupportedStages == VK_SHADER_STAGE_COMPUTE_BIT && !(p11.subgroupSupportedOperations & ~0xffu & ~0u) && !(p11.subgroupSupportedOperations & ~(0xffu)), "subgroup ops == tested set");
    eq("maxPerSetDescriptors", p11.maxPerSetDescriptors, m3.maxPerSetDescriptors);
    eq("maxMemoryAllocationSize", p11.maxMemoryAllocationSize, m3.maxMemoryAllocationSize);
    CHECK(m3.maxPerSetDescriptors >= 1024 && m3.maxMemoryAllocationSize >= (1u << 30), "maintenance3 minimums");
