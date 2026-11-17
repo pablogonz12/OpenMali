@@ -160,3 +160,25 @@ Failing groups by likely cause (counts are CMF fails):
 - **render_to_image with combined depth/stencil formats** (7: r32_uint_s8_uint, a1r5g5b5_s8_uint, 1d/3d/cube_array mipmap): unsupported/unemulated D/S format pairs on array/mip layers.
 - **api.info.image_format_properties** (3: 1d.linear a8b8g8r8_uint/a2r10g10b10_sint, 3d.linear a2b10g10r10_sint): linear-tiling capability limits reported wrongly.
 - **Misc**: dynamic_offset (2), spec_constant.compute.composite.array.float, vertex_input (1), private_data.buffer_view_storage_r8g8b8a8_unorm, buffer_view.access (1), descriptor_set_layout_lifetime.compute (Other:ResourceError).
+
+## texelFetch with push-constant lod returns zeros (CMF, investigation 2026-11-17: OFFLINE ONLY, hardware run blocked)
+Hardware verification NOT done: the CMF dropped off USB (adb lists only the wireless entry, `qpreflight cmf` = "not listed") right after the probe was rebuilt; nothing below is confirmed on the device.
+Added (no vk/src change): `shader/bc_probe.comp` kind 13 = `texelFetch(tex, ivec2, int(p.level))` (dynamic lod; regenerated `tests/t_bc_probe_spv.h`), `tests/t_txf_cc.c` + `tests/build-t_txf_cc.sh` (offline `mali_compile` of a probe SPIR-V; `BIFROST_MESA_DEBUG=shaders out/native/t_txf_cc 11 x.spv` dumps the Valhall disassembly + promoted immediates).
+Run on the CMF when it is back: `BC_ICD=<bionic libvulkan_mali.so> BC_RGBA=1 BC_KIND=13 BC_DUMP=1 ./t_bc_hw` (bionic build: `aarch64-linux-android29-clang -include tests/t_bc_hw_direct.h tests/t_bc_hw.c -ldl -lm`), compare with BC_KIND=11 (constant lod).
+Finding (disassembly, v11): the compiled code is correct in both cases. Constant lod 0 -> `TEX_FETCH.2d @r0:r1:r2:r3, @r2:r3, [handle:0]` (lod folded into the narrow descriptor word, no extra SR). Dynamic lod -> `min(level,255)`, `MKVEC.v2i8` x2 packs <0,0,0,lod> into one register and the fetch becomes `TEX_FETCH.2d.texel_offset @r0..r3, @r4:r5:r6, [handle:0]` (x, y, offset+lod word). Handle word and promoted immediates are identical to the constant case (0x0800003f = dummy sampler/texture handle), so the shader-side data is right. The only structural difference is the wide `texel_offset` source register (`pan_nir_lower_tex.c:938-960`, `va_collect_tex_srcs`: v11+ puts a *constant* txf lod in the narrow word `narrow_offset |= lod << 24`; a non-constant lod forces `is_narrow = false` and the SR u8vec4 path).
+Root cause (hypothesis, ranked, unverified): (1) the texel_offset SR path for TEX_FETCH misbehaves on v11 (the SR layout/lod placement differs from the v9/v10 layout it was written for); constant lod, which avoids the SR, works; textureLod (TEX, explicit lod, no texel_offset) works. (2) The dummy sampler is an all-zero descriptor (lod clamp [0,0] + zero fields); fetch ignores it for constant lod but the explicit-lod SR path may consult it.
+Proposed fix (to test first; patch in the vendored Mesa `third_party/mesa/src/panfrost/compiler/pan_nir_lower_tex.c`, NOT applied): keep a dynamic txf lod in the narrow word instead of the SR on arch >= 11:
+```
+-      if (tex->op == nir_texop_txf && srcs.lod) {
+-         comps[3] = nir_get_scalar(srcs.lod, 0);
+-         if (arch >= 11 && nir_scalar_is_const(comps[3])) {
++      nir_def *dyn_lod_narrow = NULL;
++      if (tex->op == nir_texop_txf && srcs.lod) {
++         comps[3] = nir_get_scalar(srcs.lod, 0);
++         if (arch >= 11 && narrow != NULL && !nir_scalar_is_const(comps[3])) {
++            dyn_lod_narrow = nir_ishl_imm(b, nir_umin_imm(b, comps[3].def, UINT8_MAX), 24);
++            comps[3].def = NULL;                    /* lod no longer in the SR offset */
++         } else if (arch >= 11 && nir_scalar_is_const(comps[3])) {
+ ...  (and when building tex_h in va_lower_tex:  tex_h = nir_vec2(b, tex_h, dyn ? nir_ior_imm(b, dyn, narrow) : nir_imm_int(b, narrow));
+```
+(`narrow` must become a nir_def or carry the dynamic part through `va_collect_tex_srcs`; ~10 lines.) If hardware shows (2) instead, the fix is in the driver: fill the dummy sampler entry (`MALI_DUMMY_SAMPLER_IDX`, mali_descriptor.c / mali_sampler.c) with a valid default sampler (nearest, lod clamp [0,15], normalised/unnormalised coords as the other samplers) rather than zeros.

@@ -11,6 +11,7 @@ void main() {
    if (p.kind == 10u) { o[p.obase + i] = uvec2(0x12345678u + i, 0u); return; }   // bisect: pure SSBO write
    vec4 v;
    if (p.kind == 11u) v = texelFetch(tex, ivec2(int(i % p.w), int(i / p.w)), 0);   // constant lod
+   else if (p.kind == 13u) v = texelFetch(tex, ivec2(int(i % p.w), int(i / p.w)), int(p.level));   // dynamic (push-constant) lod: zeros on the CMF
    else if (p.kind == 12u) v = textureLod(tex, (vec2(i % p.w, i / p.w) + 0.5) / vec2(p.w, p.h), float(p.level));
    else v = textureLod(tex, (vec2(i % p.w, i / p.w) + 0.5) / vec2(p.w, p.h), float(p.level));   // dynamic-lod texelFetch returns 0 on the CMF (bisected 2026-11-17), use nearest textureLod
    uvec2 r;
