@@ -825,7 +825,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
        * while firmware owns grown chunks: the second frame that needed heap growth (>~600 draws) TRANSLATION_FAULTed on v11. */
       if (!env->heap_desc_ready)
          kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
-      uint64_t geom = (env->geo_va + 4096) | ((v13 ? (4u << 20) : 65536u) >> 12);
+      uint64_t geom = (env->geo_va + 4096) | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
       if (v13)
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
