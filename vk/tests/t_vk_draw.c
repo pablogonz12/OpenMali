@@ -725,6 +725,10 @@ static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z 
 static void s_bias_on(void) { g_fx.bias = 1; g_fx.bias_c = -1e5f; }
 static void s_dyn_bias(void) { s_bias_on(); g_fx.dyn = 1; }
 static void s_clamp(void) { g_fx.clamp = 1; }
+static void s_bias_pos(void) { g_fx.bias = 1; g_fx.bias_c = 1e7f; }   /* z 0.5 + huge bias: fails LESS against the 1.0 clear */
+static void s_bias_pos_clamp(void) { s_bias_pos(); g_fx.bias_clamp = 0.25f; }   /* clamped to +0.25: z 0.75 passes */
+static void s_bias_neg_clamp(void) { g_fx.bias = 1; g_fx.bias_c = -1e7f; g_fx.bias_clamp = -0.25f; }   /* z 1.0 - 0.25 passes */
+static void s_dyn_bias_pos_clamp(void) { s_bias_pos_clamp(); g_fx.dyn = 1; }
 
 static const struct fxcase g_fxcases[] = {
    {"fx_cull_none", 0, 1, {0.5f}, EXP_COV, 8192, 0, s_none},
@@ -746,6 +750,10 @@ static const struct fxcase g_fxcases[] = {
    {"fx_bias_off", 1, 1, {1.0f}, EXP_COV, 0, 0, s_bias_off},
    {"fx_bias_on", 1, 1, {1.0f}, EXP_COV, 8192, 0, s_bias_on},
    {"fx_dyn_bias", 1, 1, {1.0f}, EXP_COV, 8192, 0, s_dyn_bias},
+   {"fx_bias_pos_noclamp", 1, 1, {0.5f}, EXP_COV, 0, 0, s_bias_pos},
+   {"fx_bias_pos_clamp", 1, 1, {0.5f}, EXP_COV, 8192, 2, s_bias_pos_clamp},
+   {"fx_bias_neg_clamp", 1, 1, {1.0f}, EXP_COV, 8192, 2, s_bias_neg_clamp},
+   {"fx_dyn_bias_pos_clamp", 1, 1, {0.5f}, EXP_COV, 8192, 2, s_dyn_bias_pos_clamp},
    {"fx_clip_off_range", 0, 1, {1.5f}, EXP_COV, 0, 0, s_none},
    {"fx_depth_clamp", 0, 1, {1.5f}, EXP_COV, 8192, 1, s_clamp},
 };
@@ -790,6 +798,7 @@ test_fx(void)
       const struct fxcase *c = &g_fxcases[i];
       if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
       int good = 1;
       int e[4] = {p[0], p[1], p[2], p[3]};

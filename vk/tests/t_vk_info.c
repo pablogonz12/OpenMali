@@ -12,6 +12,7 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -175,12 +176,19 @@ main(int argc, char **argv)
       /* multiDrawIndirect: backed by t_vk_draw --only mdi (drawCount 2, pixel-checked on the Poco) */
       unsigned mdi_idx = (unsigned)((const VkBool32 *)&f2.features.multiDrawIndirect - c);
       CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
-      CHECK(!f2.features.drawIndirectFirstInstance, "drawIndirectFirstInstance has no test yet");
+      /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
+      static const size_t tested[] = {
+         offsetof(VkPhysicalDeviceFeatures, depthBiasClamp),   /* t_vk_draw fx_bias_*_clamp */
+      };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
       CHECK(f2.features.depthClamp && f2.features.independentBlend, "depthClamp / independentBlend advertised");
       for (unsigned i = 0; i < nc; i++)
-         CHECK(!c[i] || i == bc_idx || i == mdi_idx || i == dc_idx || i == ib_idx, "core feature #%u advertised without a test", i);
+      {
+         int listed = i == bc_idx || i == mdi_idx || i == dc_idx || i == ib_idx;
+         for (unsigned k = 0; k < sizeof tested / sizeof *tested; k++) listed |= tested[k] == i * 4u;
+         CHECK(!c[i] || listed, "core feature #%u advertised without a test", i);
+      }
       const VkBool32 *a = (const VkBool32 *)((const char *)&f11 + 16);
       for (unsigned i = 0; i < (sizeof(f11) - 16) / 4; i++)
          CHECK(!a[i], "vk11 feature #%u advertised without a test", i);
