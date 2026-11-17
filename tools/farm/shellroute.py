@@ -7,13 +7,16 @@ Called by farmd under the phone lock (QSAFE_HELD=<lock>); the transport comes fr
 Integrity: the job's .so (S = its sha256) goes to a per-run path on the phone and is verified ON THE PHONE before every chunk/test.
 Exit: 0 done, 73 PHONE BUSY (lock not held), 75 gated by the health gate / owner (resume later), 76/77 .so on the phone is not the job's build
 (daily/smoke), 78 phone not staged, 79 phone unreachable. The daily resumes from the TSV (case<TAB>status<TAB>, same as qdeqp)."""
-import argparse, glob, hashlib, os, re, subprocess, sys, tempfile, time
+import argparse, json, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import farmlib as L  # noqa: E402
 import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
+ONLY_DRAW = "triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
+ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 SERIAL = os.environ.get("ANDROID_SERIAL", "")
 
@@ -57,6 +60,49 @@ def gated(lock):
         except (ValueError, IndexError):
             pass
     return st != "ok"
+
+
+DIM = f"{V}/dim.state"                      # phone side: original brightness/mode/wakefulness while dimmed (so a killed run can still be undone)
+
+
+def dim():
+    """runs that do not need the display (fbo, hidden): minimum brightness + screen off, original values kept on the phone. Idempotent."""
+    if "dim.state" in adb("shell", f"ls {V} 2>/dev/null", timeout=20)[1]:
+        return
+    b = adb("shell", "settings get system screen_brightness; settings get system screen_brightness_mode; dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'", timeout=30)[1].split()
+    if len(b) < 3:
+        return
+    adb("shell", f"mkdir -p {V}; echo '{b[0]} {b[1]} {b[2].split('=')[-1]}' > {DIM}", timeout=20)
+    adb("shell", "settings put system screen_brightness_mode 0; settings put system screen_brightness 1" + ("; input keyevent 223" if b[2].endswith("Awake") else ""), timeout=30)
+
+
+def undim():
+    o = adb("shell", f"cat {DIM} 2>/dev/null", timeout=20)[1].split()
+    if len(o) < 3:
+        return
+    adb("shell", f"settings put system screen_brightness {o[0]}; settings put system screen_brightness_mode {o[1]}" + ("; input keyevent 224" if o[2] == "Awake" else "") + f"; rm -f {DIM}", timeout=30)
+
+
+def temps(run, n):
+    """per-chunk temperature line (battery + the hottest gpu/cpu thermal zones) -> farm state logs/temps-<lock>.log, so heating can be traced to a chunk"""
+    o = adb("shell", "dumpsys battery | grep -m1 temperature; for z in /sys/class/thermal/thermal_zone*; do echo $(cat $z/type) $(cat $z/temp); done", timeout=30)[1].splitlines()
+    vals = {"batt": None}
+    for l in o:
+        p = l.split()
+        if l.strip().startswith("temperature") and len(p) > 1 and p[-1].isdigit():
+            vals["batt"] = int(p[-1]) / 10
+        elif len(p) == 2 and p[1].lstrip("-").isdigit():
+            k = "gpu" if "gpu" in p[0] else "cpu" if re.search(r"cpu|big|mid|little|soc", p[0]) else None
+            v = int(p[1]) / (1000 if abs(int(p[1])) > 1000 else 1)
+            if k and v > (vals.get(k) or 0):
+                vals[k] = v
+    line = f"{L.now()} {run} chunk{n} " + " ".join(f"{k}={v}" for k, v in vals.items())
+    print("TEMP " + line, flush=True)
+    try:
+        with open(os.path.join(L.state_dir(), "logs", f"temps-{os.environ.get('SHELLROUTE_LOCK', 'phone')}.log"), "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 
 def sha_local(p):
@@ -170,6 +216,7 @@ def daily(a):
                 f.write(f"{c}\t{got[c]}\t\n")
         f.flush()
         print(f"# chunk: done {len(done)}/{len(cases)} [{int(time.time() - t0)}s]", flush=True)
+        temps(a.run, len(done))
     adb("shell", f"rm -f {G}/c.{a.run}.cases {G}/c.{a.run}.qpa {G}/c.{a.run}.out", timeout=20)
     print(f"SO_ON_PHONE {icd}", flush=True)                    # farmd verifies it once more, then removes it
     print("DONE", flush=True)
@@ -190,7 +237,15 @@ def smoke(a):
         adb("push", sp, f"{d}/s/{os.path.basename(sp)}", timeout=60)
     envs = " ".join(a.env.split())
     ok, tmp = True, tempfile.mkdtemp(prefix="shellroute-")
+    runs = []
     for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", "")):
+        if not a.only:
+            runs.append((n, extra, ""))
+            continue
+        for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
+            if c in (ONLY_DRAW if n == "t_vk_draw" else ONLY_META):
+                runs.append((n, f"{extra} --only {c}", c))
+    for n, extra, oc in runs:
         if gated(a.lock):
             sys.exit(75)
         if sha_phone(f"{d}/libvulkan_mali.so") != a.sha:
@@ -206,6 +261,8 @@ def smoke(a):
         adb("pull", f"{d}/{n}.log", lp, timeout=60)
         log = open(lp, errors="replace").read() if os.path.exists(lp) else ""
         fl = [x for x in log.splitlines() if '"fail"' in x]
+        for x in log.splitlines()[-200:]:                            # kept by farmd (farm log)
+            print(json.dumps({"log": n + (":" + oc if oc else ""), "line": x[:400]}), flush=True)
         r = int(m.group(1))
         ok = ok and r == 0
         print('{"test":"%s","rc":%d,"fail_lines":%d,"pass_lines":%d}' % (n, r, len(fl), log.count('"pass":true')), flush=True)
@@ -215,12 +272,13 @@ def smoke(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("smoke", "daily"))
+    ap.add_argument("mode", choices=("smoke", "daily", "undim"))
     ap.add_argument("--lock", required=True)
-    ap.add_argument("--tree", required=True)
-    ap.add_argument("--sha", required=True)
-    ap.add_argument("--run", required=True)
+    ap.add_argument("--tree", default="")
+    ap.add_argument("--sha", default="")
+    ap.add_argument("--run", default="undim")
     ap.add_argument("--list")
+    ap.add_argument("--only", default="")
     ap.add_argument("--out")
     ap.add_argument("--chunk", type=int, default=100)
     ap.add_argument("--wall", type=int, default=250)
@@ -231,7 +289,16 @@ def main():
     if not SERIAL:
         print("ANDROID_SERIAL not set", file=sys.stderr)
         sys.exit(79)
-    {"smoke": smoke, "daily": daily}[a.mode](a)
+    os.environ["SHELLROUTE_LOCK"] = a.lock
+    if a.mode == "undim":
+        undim()
+        return
+    dim()
+    try:
+        {"smoke": smoke, "daily": daily}[a.mode](a)
+    finally:
+        if not os.environ.get("SHELLROUTE_KEEP_DIM"):            # the idle sweep keeps the screen dark between chunks; farmd undims when it stops
+            undim()
 
 
 if __name__ == "__main__":

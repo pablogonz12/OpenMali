@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """farm: submit / status / wait / results for the mali-open phone farm. State lives in ~/.local/state/mali-farm/."""
 import sys; sys.dont_write_bytecode = True
-import argparse, json, os, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import farmlib as L                                    # noqa: E402
@@ -25,10 +25,12 @@ def cmd_submit(a):
     for c in need:
         if c not in classes:
             print(f"farm: warning: no device of class {c} configured; that part stays pending", file=sys.stderr)
+    if a.only and a.suite != "smoke":
+        raise SystemExit("farm: --only is for --suite smoke")
     if a.suite == "cases" and not a.case:
         raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
     job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
-                    cases=a.case, repeat=a.repeat)
+                    cases=a.case, repeat=a.repeat, only=a.only)
     if dirty:
         print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
     print(job["id"])
@@ -272,6 +274,151 @@ def cmd_case(a):
         print("no stored daily log has a case matching that")
 
 
+def parse_since(v):
+    import datetime as dt
+    now = dt.datetime.now().astimezone()
+    if not v or v == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    m = re.fullmatch(r"(\d+)([hd])", v)
+    if m:
+        return time.time() - int(m.group(1)) * (3600 if m.group(2) == "h" else 86400)
+    return dt.datetime.fromisoformat(v).astimezone().timestamp()
+
+
+def util_data(since, now, devs, jobs):
+    """per phone: seconds per category in [start, now] from the farm's own records (runs/*.json, jobs, alerts GATE lines, sweep chunks)"""
+    import datetime as dt
+    ts = lambda s: dt.datetime.fromisoformat(s).timestamp()
+    sd = L.state_dir()
+    runs = [L.read_json(os.path.join(sd, "runs", f)) for f in os.listdir(os.path.join(sd, "runs")) if f.endswith(".json")]
+    jobs_by = {j["id"]: j for j in jobs}
+    ev = {}                                                       # alias -> [(t, state)]
+    try:
+        for l in open(os.path.join(sd, "alerts.log")):
+            m = re.match(r"(\S+) GATE (\S+) (\S+)->(\S+)", l)
+            if m:
+                ev.setdefault(m.group(2), []).append((ts(m.group(1)), m.group(4)))
+    except OSError:
+        pass
+    busy, builds, sweep, demand = {}, {}, {}, {}
+    firsts = [since]
+    for r in runs:
+        if not r.get("started") or not r.get("device"):
+            continue
+        s = ts(r["started"])
+        if s + (r.get("wall_s") or 0) < since:
+            continue
+        b = jobs_by.get(r["job"], {}).get("build_s") or 0
+        busy.setdefault(r["device"], []).append((s, s + r["wall_s"]))
+        builds.setdefault(r["device"], []).append((s, min(s + b, s + r["wall_s"])))
+        firsts.append(s)
+        j = jobs_by.get(r["job"])
+        if j:
+            demand.setdefault(r["class"], []).append((ts(j["created"]), s))
+    for al in devs:
+        p = os.path.join(sd, "sweep", devs[al]["class"] + "-chunks.jsonl")
+        if os.path.exists(p):
+            for l in open(p):
+                c = json.loads(l)
+                if c.get("dev") == al and ts(c["t"]) >= since:
+                    sweep.setdefault(al, []).append((ts(c["t"]) - c.get("wall_s", 0), ts(c["t"])))
+    for j in jobs:
+        for cls, p in j["parts"].items():
+            if p["state"] == "pending":
+                demand.setdefault(cls, []).append((ts(j["created"]), now))
+    start = min(firsts[1:] or [since])
+    start = max(since, start)
+    return start, busy, builds, sweep, demand, ev
+
+
+def cmd_util(a):
+    now = time.time()
+    _, devs = L.load_devices()
+    jobs = L.list_jobs()
+    since = parse_since(a.since)
+    start, busy, builds, sweep, demand, ev = util_data(since, now, devs, jobs)
+    n = max(int(now - start), 1)
+    print(f"util since {time.strftime('%m-%d %H:%M', time.localtime(start))} ({n // 3600}h{n % 3600 // 60:02d}m window; busy = a job part holds the phone, build = its driver build under the lock)")
+    for al, d in devs.items():
+        cat = bytearray(n)                                    # 0 no work, 1 queue gap, 2.. gate states, 250 sweep, 251 busy
+        names = {}
+        fill = lambda iv, code: [cat.__setitem__(slice(max(int(x - start), 0), max(min(int(y - start), n), 0)), bytes([code]) * max(min(int(y - start), n) - max(int(x - start), 0), 0)) for x, y in iv]
+        fill(demand.get(d["class"], []), 1)
+        evs = ev.get(d["lock"], ev.get(al, []))
+        for i, (t, st) in enumerate(evs):
+            if st != "ok":
+                names.setdefault(st, 2 + len(names))
+                fill([(t, evs[i + 1][0] if i + 1 < len(evs) else now)], names[st])
+        fill(sweep.get(al, []), 250)
+        fill(busy.get(al, []), 251)
+        pct = lambda k: 100 * sum(1 for c in cat if c == k) / n
+        tot_busy = pct(251)
+        bs = sum(max(y - x, 0) for x, y in builds.get(al, [])) / n * 100
+        idle = [("no work queued", pct(0)), ("queue gap (build/poll/other class/lock held by a worker)", pct(1))] + [(f"gated: {st}", pct(code)) for st, code in names.items()]
+        idle = sorted(((p, k) for k, p in idle if p >= 0.5), reverse=True)
+        print(f"{al:9} {d['class']:4} busy {tot_busy:4.0f}% (build {bs:.0f}%) sweep {pct(250):.0f}% | idle: " + ", ".join(f"{k} {p:.0f}%" for p, k in idle[:4]))
+    temps = [l for l in open(os.path.join(L.state_dir(), "logs", "temps-poco-x4.log"))][-1:] if os.path.exists(os.path.join(L.state_dir(), "logs", "temps-poco-x4.log")) else []
+    if temps:
+        print("last shell-route chunk temps: " + temps[0].strip()[-90:])
+
+
+def cmd_sweep(a):
+    import sweeplib as S
+    _, devs = L.load_devices()
+    classes = sorted({d["class"] for d in devs.values()})
+    off = os.path.join(L.state_dir(), "sweep", "off")
+    if a.what in ("on", "off"):
+        os.makedirs(os.path.dirname(off), exist_ok=True)
+        if a.what == "off":
+            open(off, "w").close()
+        elif os.path.exists(off):
+            os.unlink(off)
+        print(f"idle sweep {a.what}")
+        return
+    if a.what == "failures":
+        if not a.cls:
+            raise SystemExit("farm: sweep failures needs --class <class>")
+        rows, cap = S.fails(a.cls, a.group or "")
+        for r in rows[:cap]:
+            print(f"{S.NAME.get(r[1], r[1]):8} {r[0]}")
+        print(f"({len(rows)} matching non-Pass/non-NS case(s) in the current pass of {a.cls}" + (f"; first {cap} shown)" if len(rows) > cap else ")"))
+        return
+    print(f"idle sweep {'OFF' if os.path.exists(off) else 'on'}; list = full dEQP-VK mustpass")
+    for cls in classes:
+        st = S.load(cls)
+        if not st.get("n"):
+            print(f"{cls}: not started")
+            continue
+        c = st["counts"]
+        eta = ""
+        p = os.path.join(S.sdir(), cls + "-chunks.jsonl")
+        if os.path.exists(p):
+            ls = [json.loads(l) for l in open(p).readlines()[-20:]]
+            sec, k = sum(x.get("wall_s", 0) for x in ls), sum(x["n"] for x in ls)
+            if sec and k:
+                eta = f", ~{(st['n'] - st['pos']) / (k / sec) / 3600:.0f}h left at {k / sec:.1f} cases/s"
+        print(f"{cls}: {100 * st['pos'] / st['n']:.1f}% of {st['n']} on {st['commit'][:7]} (since {st['started'][5:16]}{eta}); "
+              + " ".join(f"{S.NAME[k]} {c.get(k, 0)}" for k in "PFNCTK" if c.get(k)) + (f"; {len(st['passes'])} pass(es) done" if st["passes"] else ""))
+        for g, n, tot in S.top_groups(cls, 3):
+            print(f"    {g}: {n} of {tot} not Pass/NS")
+
+
+def cmd_log(a):
+    import glob, gzip, re as _re
+    j = L.find_job(a.job)
+    fs = sorted(glob.glob(os.path.join(L.state_dir(), "logs", j["id"] + "-*-smoke.log*")))
+    if a.cls:
+        fs = [x for x in fs if f"-{a.cls}-smoke" in x]
+    if not fs:
+        raise SystemExit(f"farm: no kept test output for {j['id']}" + (f" class {a.cls}" if a.cls else "") + " (smoke jobs run since this feature only)")
+    for p in fs:
+        lines = (gzip.open(p, "rt") if p.endswith(".gz") else open(p)).read().splitlines()
+        if a.grep:
+            lines = [x for x in lines if _re.search(a.grep, x)]
+        print(f"== {os.path.basename(p)} ({len(lines)} line(s){', last ' + str(a.tail) if len(lines) > a.tail else ''})")
+        print("\n".join(lines[-a.tail:]))
+
+
 def cmd_bless(a):
     """write the job's per-class daily result tsv over the committed baselines (vk/deqp/ours-daily-sample-<baseline>.tsv) in a checkout"""
     cfg, devs = L.load_devices()
@@ -325,6 +472,7 @@ def main():
     s.add_argument("--suite", choices=L.SUITES, default="smoke")
     s.add_argument("--need", default="", help="comma list of device classes (default: every configured class)")
     s.add_argument("--env", default="", help='e.g. "MALI_HF=330 FOO=1"')
+    s.add_argument("--only", default="", help="(--suite smoke) comma list of test cases passed to the test binaries as --only (draw: triangle two depth ...; compute/meta: buf fill img ...)")
     s.add_argument("--case", action="append", default=[], help="(--suite cases) a dEQP case to run; repeatable")
     s.add_argument("--repeat", type=int, default=1, help="(--suite cases) repetitions of the case list")
     s.set_defaults(f=cmd_submit)
@@ -361,6 +509,20 @@ def main():
     s = sp.add_parser("case", help="status of matching cases across all stored daily logs, newest last")
     s.add_argument("substring")
     s.set_defaults(f=cmd_case)
+    s = sp.add_parser("log", help="kept test output (last 200 lines per test) of a smoke job part")
+    s.add_argument("job")
+    s.add_argument("--class", dest="cls", default="")
+    s.add_argument("--grep", default="")
+    s.add_argument("--tail", type=int, default=40)
+    s.set_defaults(f=cmd_log)
+    s = sp.add_parser("util", help="per-phone busy % and where the idle time went (from the farm's own records)")
+    s.add_argument("--since", default="today", help="today | 6h | 2d | ISO time")
+    s.set_defaults(f=cmd_util)
+    s = sp.add_parser("sweep", help="idle sweep of the full dEQP-VK list: status | failures --class C [--group G] | on | off")
+    s.add_argument("what", choices=("status", "failures", "on", "off"))
+    s.add_argument("--class", dest="cls", default="")
+    s.add_argument("--group", default="")
+    s.set_defaults(f=cmd_sweep)
     s = sp.add_parser("bless", help="write a main daily job's result tsvs over the committed baselines in a checkout")
     s.add_argument("job")
     s.add_argument("--checkout", default=".", help="checkout whose vk/deqp/ours-daily-sample-*.tsv are overwritten (default: cwd)")
