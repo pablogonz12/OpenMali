@@ -13,6 +13,7 @@ import farmlib as L                                    # noqa: E402
 import gate                                            # noqa: E402
 import benchlib as B                                   # noqa: E402
 import sweeplib as S                                   # noqa: E402
+import menulib as M                                    # noqa: E402
 
 RETRIES = 3
 RECOVER_EVERY = 45            # s between adb recovery attempts while a wanted device is missing
@@ -35,6 +36,15 @@ def alert(msg):
 
 
 L.PhoneLock.on_stale = staticmethod(alert)
+
+
+class NoLock:
+    """the menu suite: menubench takes the qsafe lock itself (flock on /tmp/qsafe-<lock>.lock, not re-entrant), so farmd must not hold it"""
+    def acquire(self):
+        return True
+
+    def release(self):
+        pass
 
 
 def git(*a, cwd=HERE, timeout=120):
@@ -69,6 +79,7 @@ class Farm:
         self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
         self.idle_since = {}                           # alias -> when it last stopped doing real (non-sweep) work or became healthy
         self.last_auto = 0
+        self.menu_next = {}                            # alias -> next time to probe its MediaDeck versionCode
 
     # ---------- devices
     def devices_mtime(self):
@@ -296,6 +307,8 @@ class Farm:
 
     def build(self, job):
         """build once per job; -> (sha256 | None, note). Archives libvulkan_mali.so by sha256."""
+        if job["suite"] == "menu":
+            return "menu", ""                                  # nothing to build: the menu runs on the Mali bridge
         with self.bl:
             lk = self.build_locks.setdefault(job["id"], threading.Lock())
         with lk:
@@ -863,7 +876,9 @@ class Farm:
         st = B.bench_dir(L.state_dir())
         mark = os.path.join(st, ".published")
         rp = B.results_path(L.state_dir())
-        if not os.path.exists(rp) or (not force and os.path.exists(mark) and os.path.getmtime(mark) >= os.path.getmtime(rp)):
+        mp = M.menu_path(L.state_dir())
+        newest = max([os.path.getmtime(x) for x in (rp, mp) if os.path.exists(x)] or [0])
+        if not newest or (not force and os.path.exists(mark) and os.path.getmtime(mark) >= newest):
             return None
         remote = os.environ.get("MALI_FARM_PUBLISH_REMOTE") or git("remote", "get-url", "origin", cwd=self.repo)[1].strip()
         res = B.publish(L.state_dir(), remote, log=log)
@@ -945,6 +960,70 @@ class Farm:
         return {"verdict": "pass", "counts": {"rows": len(rows)}, "new_failures": [], "newly_passing": [],
                 "notes": "; ".join(B.digest_lines(rows))[:300]}
 
+    # ---------- Steam menu benchmark (MediaDeck scripts/quick/menubench; runs on the Mali bridge, keyed by MediaDeck versionCode)
+    MENU_CHUNKS = int(os.environ.get("MALI_FARM_MENU_CHUNKS", "8"))              # menubench calls per part (each <= ~230 s budget, exit 75 = more reps)
+
+    def menubench_path(self):
+        p = os.environ.get("MALI_FARM_MENUBENCH") or self.fc.get("menubench") or ""
+        p = os.path.expanduser(p)
+        return p if p and os.access(p, os.X_OK) else None
+
+    def menu_probe(self, dev):
+        """-> (installed MediaDeck versionCode | None, owner in use?, why). Read-only adb. Fake mode: <state>/fake-menu/<alias>.vc (default 22), .inuse = reason"""
+        alias = dev["alias"]
+        if self.fake:
+            d = os.path.join(L.state_dir(), "fake-menu")
+            vf, uf = os.path.join(d, alias + ".vc"), os.path.join(d, alias + ".inuse")
+            vc = int(open(vf).read().strip()) if os.path.exists(vf) else 22
+            return vc, os.path.exists(uf), (open(uf).read().strip() or "fake in use") if os.path.exists(uf) else "idle"
+        pkg = os.environ.get("DROIDDECK_PACKAGE", M.PKG_DEFAULT)
+        _, pw = self.adb(dev, "shell", "dumpsys power | grep -m1 mWakefulness=")
+        _, act = self.adb(dev, "shell", "dumpsys activity activities | grep -m2 -E 'topResumedActivity|mResumedActivity'")
+        _, pk = self.adb(dev, "shell", f"dumpsys package {pkg} | grep -m1 versionCode")
+        use, why = M.owner_in_use(pw, act, pkg)
+        return M.installed_vc(pk), use, why
+
+    def suite_menu(self, job, dev):
+        """menubench <alias> --profile both --reps 3 (it takes the qsafe lock, honours the health gate, resumes its plan on exit 75), then one row per
+        MediaDeck versionCode and profile from results/menubench.jsonl into <state>/bench/menu.jsonl. Skipped (stays pending) while the owner uses the phone."""
+        alias = dev["alias"]
+        if "FAKE_FAIL=1" in job["env"].split():
+            return {"verdict": "error", "notes": "fake menu failure"}
+        mb = self.menubench_path()
+        if not mb:
+            return {"verdict": "error", "notes": "menubench not found: set `menubench = \"/path/to/MediaDeck/scripts/quick/menubench\"` in ~/.config/mali-farm/farm.toml"}
+        vc, use, why = self.menu_probe(dev)
+        if use:
+            self.cool[alias] = time.time() + (0 if self.fake else 900)
+            log(f"{alias}: owner is using the phone ({why}); {job['id']} menu stays pending")
+            return {"gated": True}
+        results = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(mb)))), "results", "menubench.jsonl")
+        since = job["created"]
+        base = [mb, alias, "--profile", "both", "--reps", "3", "--lockwait", "30"]
+        out, rc, new = "", 0, False
+        for _ in range(self.MENU_CHUNKS):
+            env = self.phone_env(dev)
+            env.pop("QSAFE_HELD", None)                          # farmd does not hold the lock here: menubench flocks it itself
+            rc, out = L.run_watched(base + (["--new"] if new else []), 330, lambda: self.alive(dev), env=env)
+            if rc == 125:
+                return {"lost": True}
+            if rc == 77 and not new:                            # the owner installed another build mid-plan: start over on the new one
+                new = True
+                continue
+            if rc != 75:
+                break
+        self.keep_log(job, dev, "menu", out, rc)
+        if rc in (75, 124, 125, 126) or "PHONE BUSY" in out:   # more reps pending / lock busy / gated / chunk timeout: resume later (menubench keeps its plan)
+            self.cool[alias] = time.time() + (0 if self.fake else 300)
+            return {"gated": True}
+        rows = M.aggregate(M.load_rows(results), alias, dev["class"], job["id"], since)
+        if rc != 0 or not rows:
+            return {"verdict": "error", "counts": {"rows": len(rows)}, "notes": f"menubench rc={rc}: {out.strip()[-200:]}"}
+        M.append_rows(L.state_dir(), rows)
+        bad = [r for r in rows if not r["valid"]]
+        return {"verdict": "fail" if bad else "pass", "counts": {"rows": len(rows), "invalid": len(bad)}, "new_failures": [f"{r['profile']} vc {r['version_code']}: {r.get('invalid_reason')}" for r in bad],
+                "newly_passing": [], "notes": "; ".join(M.digest_lines(rows))[:300]}
+
     # ---------- one part of a job on one device
     def run_part(self, jid, cls, alias):
         try:
@@ -963,7 +1042,8 @@ class Farm:
                     self.bench_prepare(j0)
             except Exception:
                 log(f"{alias}: bench pre-build error " + traceback.format_exc()[-200:])
-        lock = L.PhoneLock(dev, self.fake)
+        menu = j0["suite"] == "menu"
+        lock = NoLock() if menu else L.PhoneLock(dev, self.fake)
         if not lock.acquire():
             if time.time() >= self.cool.get(alias, 0):           # one line per backoff, not a spin: finishing this part wakes the scheduler at once
                 log(f"{alias}: qsafe lock busy, {jid}/{cls} stays pending")
@@ -987,7 +1067,7 @@ class Farm:
                 log(f"{alias}: {why}; {jid}/{cls} stays pending")
                 self.cool[alias] = time.time() + 120      # the finally below runs qrestore
                 return
-            touched = True
+            touched = not menu                                  # menubench restores the phone itself
             self.upd(jid, lambda x: x["parts"][cls].update(state="running", device=alias))
             sha, why = self.build(job)
             if sha is None:
@@ -1280,6 +1360,37 @@ class Farm:
             log(f"auto bench: {a} idle > {idle:.0f}s with no bench row for main {tip[:8]}: {j['id']}")
             break                                                              # one at a time: the oldest missing first
 
+    def auto_menu(self, att, jobs):
+        """a phone idle > 15 min (health gate ok, owner not using it) whose installed MediaDeck versionCode differs from the last one a menu run
+        was queued for -> one auto menu job pinned to it (below explicit jobs, same level as the auto bench). Once per version: the version is
+        recorded when queued, so an error is not retried automatically (resubmit by hand: farm submit --suite menu)."""
+        if not self.auto_bench_on() or os.path.exists(os.path.join(L.state_dir(), "bench", "menu-off")):
+            return
+        if self.once and not os.environ.get("MALI_FARM_AUTO_MENU"):
+            return
+        if not self.menubench_path():
+            return
+        sp = os.path.join(B.bench_dir(L.state_dir()), "menu-auto.json")
+        seen = L.read_json(sp) if os.path.exists(sp) else {}
+        disabled = {a for a, d in self.devs.items() if self.is_disabled(d)}
+        running = {a for a, t in self.threads.items() if t.is_alive() and not t.name.startswith("sweep/")}
+        idle = float(os.environ.get("MALI_FARM_BENCH_IDLE", B.IDLE_SECS))
+        tip = self.main_tip()
+        for a in sorted(M.available(self.devs, self.dstate, disabled), key=lambda x: self.idle_since.get(x, 0)):
+            if a in running or self.dstate.get(a, {}).get("status") != "up" or time.time() - self.idle_since.get(a, time.time()) < idle:
+                continue
+            if M.queued(jobs, a) or time.time() < self.menu_next.get(a, 0):
+                continue
+            self.menu_next[a] = time.time() + (0 if self.fake else 600)          # adb probe at most every 10 min per phone
+            vc, use, why = self.menu_probe(self.devs[a])
+            if use or not M.should_queue(vc, seen.get(a), False):
+                continue
+            j = L.new_job("main", tip or "0" * 40, False, "menu", [self.devs[a]["class"]], "", os.path.basename(self.repo), auto=True, pin=a)
+            log(f"auto menu: {a} has MediaDeck vc {vc} (last queued {seen.get(a)}): {j['id']}")
+            seen[a] = vc
+            L.write_json(sp, seen)
+            break                                                              # one at a time
+
     # ---------- main loop
     def tick(self):
         self.reload_devices()
@@ -1289,15 +1400,17 @@ class Farm:
         try:
             self.auto_bench(att, jobs)
             jobs = L.list_jobs()
+            self.auto_menu(att, jobs)
+            jobs = L.list_jobs()
         except Exception:
-            log("auto bench error: " + traceback.format_exc()[-300:])
+            log("auto bench/menu error: " + traceback.format_exc()[-300:])
         if (not self.fake or os.environ.get("MALI_FARM_PUBLISH_REMOTE")) and not (getattr(self, "pub_t", None) and self.pub_t.is_alive()) \
                 and time.time() - getattr(self, "last_pub", 0) > (0 if self.fake else 60):
             self.last_pub = time.time()
             self.pub_t = threading.Thread(target=lambda: self.publish_bench(), daemon=True, name="publish")      # not in self.threads: never blocks a phone
             self.pub_t.start()
         if not (self.prebuild_t and self.prebuild_t.is_alive()):     # build the next queued job's driver while the phones are still busy
-            nxt = next((j for j in jobs if not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
+            nxt = next((j for j in jobs if j["suite"] != "menu" and not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
             if nxt:
                 self.prebuild_t = threading.Thread(target=self.build, args=(nxt,), daemon=True, name="prebuild")
                 self.prebuild_t.start()

@@ -9,6 +9,7 @@ import farmlib as L
 import sweeplib as S  # noqa: E402
 import gate  # noqa: E402
 import benchlib as BL  # noqa: E402
+import menulib as ML  # noqa: E402
 
 TOML = """quick_root = "/nonexistent"
 [[device]]
@@ -25,6 +26,40 @@ lock = "poco"
 baseline = "poco"
 require_charging = true
 """
+
+
+FAKE_MENUBENCH = r'''#!/usr/bin/env python3
+# fake MediaDeck scripts/quick/menubench: same layout (results/menubench.jsonl two levels above scripts/), same exit codes
+import json, os, sys, time
+root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+mode = open(os.path.join(root, "mode")).read().strip() if os.path.exists(os.path.join(root, "mode")) else "ok"
+vc = int(open(os.path.join(root, "vc")).read()) if os.path.exists(os.path.join(root, "vc")) else 22
+open(os.path.join(root, "calls"), "a").write(" ".join(sys.argv[1:]) + " held=" + os.environ.get("QSAFE_HELD", "-") + "\n")
+alias = sys.argv[1]
+if mode == "busy":
+    print("PHONE BUSY (qsafe lock held): not retrying in a loop; run again later")
+    sys.exit(125)
+profs = ["default", "uncapped"]
+state = os.path.join(root, "state")
+done = int(open(state).read()) if os.path.exists(state) else 0
+todo = [(r, p) for r in (1, 2, 3) for p in profs][done:]
+if mode == "chunks":
+    todo = todo[:3]                      # one chunk = 3 reps, then exit 75 like the real budget stop
+os.makedirs(os.path.join(root, "results"), exist_ok=True)
+for rep, p in todo:
+    bad = mode == "selfcheck" and p == "uncapped"
+    fps = 118.0 + rep if p == "default" else 180.0 + rep
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "alias": alias, "class": "v11", "profile": p, "rep": rep, "version_code": vc,
+           "app_version": "1.0.0-p%d" % vc, "bridge_version": "0.5.5.4", "panel_hz": 120 if p == "uncapped" else 60,
+           "render": {"avg_fps": fps, "median_fps": None if p == "default" else fps - 1, "low1_fps": fps / 2, "p99_ms": 20.0 + rep},
+           "ok": not bad, "selfcheck": ["no gpu-process found in the guest"] if bad else [], "status": "FAILED after retries" if bad else "ok"}
+    open(os.path.join(root, "results", "menubench.jsonl"), "a").write(json.dumps(rec) + "\n")
+    done += 1
+open(state, "w").write(str(done))
+if done < 6:
+    sys.exit(75)
+os.unlink(state)
+'''
 
 
 FAKE_ADB = r'''#!/usr/bin/env python3
@@ -842,6 +877,140 @@ class T(unittest.TestCase):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 
 
+    # ---------- Steam menu suite (fake menubench, no phone)
+    def fake_menubench(self, mode="ok", vc=22):
+        root = self.d + "/MediaDeck"
+        os.makedirs(root + "/scripts/quick", exist_ok=True)
+        mb = root + "/scripts/quick/menubench"
+        open(mb, "w").write(FAKE_MENUBENCH)
+        os.chmod(mb, 0o755)
+        open(root + "/mode", "w").write(mode)
+        open(root + "/vc", "w").write(str(vc))
+        self.env["MALI_FARM_MENUBENCH"] = mb
+        return root
+
+    def menu_rows(self):
+        return ML.load_rows(ML.menu_path(self.d + "/state"))
+
+    def test_menu_explicit_submit_rows_per_version_and_profile_and_digest(self):
+        self.nosweep()
+        root = self.fake_menubench("chunks")
+        self.attach("dev-a")
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.farmd()
+        self.assertEqual(self.farm("wait", jid)[1], "pass")
+        j = L.find_job(jid)
+        self.assertFalse(j.get("auto"))
+        rows = self.menu_rows()
+        self.assertEqual(sorted((r["phone"], r["version_code"], r["profile"]) for r in rows), [("dev-a", 22, "default"), ("dev-a", 22, "uncapped")])
+        d = [r for r in rows if r["profile"] == "default"][0]
+        self.assertEqual((d["valid"], d["selfcheck_ok"], d["reps_ok"], d["avg_fps"], d["median_fps"], d["low1_fps"], d["p99_ms"], d["panel_hz"]), (True, True, 3, 120.0, None, 60.0, 22.0, 60))
+        calls = open(root + "/calls").read().splitlines()
+        self.assertEqual(len(calls), 2)                                                                  # exit 75 once: resumed with the same command
+        self.assertIn("dev-a --profile both --reps 3 --lockwait 30 held=-", calls[0])                    # menubench locks itself: farmd must not claim the lock
+        out = self.farm("digest")[1]
+        self.assertIn("menu  dev-a    vc 22: default avg 120.0", out)
+        self.assertIn("uncapped avg 182.0 med 181.0", out)
+        self.assertIn("@120 Hz", out)
+
+    def test_menu_invalid_row_never_replaces_valid(self):
+        self.nosweep()
+        root = self.fake_menubench("ok")
+        self.attach("dev-a")
+        self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farmd()
+        good = {r["profile"]: r for r in self.menu_rows()}
+        self.assertTrue(good["uncapped"]["valid"])
+        open(root + "/mode", "w").write("selfcheck")                                                    # same version again: uncapped self-check fails
+        rc, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farmd()
+        self.assertEqual(self.farm("wait", jid)[1], "fail")                                              # the job says so ...
+        now = {r["profile"]: r for r in self.menu_rows()}
+        self.assertEqual(now["uncapped"]["avg_fps"], good["uncapped"]["avg_fps"])                        # ... but the valid row stays
+        self.assertTrue(now["uncapped"]["valid"])
+        self.assertEqual(now["default"]["job"], jid)                                                     # the valid default row was refreshed
+        open(root + "/vc", "w").write("23")                                                              # a new version with no valid row: stored as invalid
+        self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farmd()
+        inv = [r for r in self.menu_rows() if r["version_code"] == 23 and r["profile"] == "uncapped"][0]
+        self.assertFalse(inv["valid"])
+        self.assertFalse(inv["selfcheck_ok"])
+        self.assertIn("no gpu-process", inv["invalid_reason"])
+        self.assertIn("INVALID", self.farm("digest")[1])
+
+    def test_menu_skipped_while_owner_uses_phone_then_runs(self):
+        self.nosweep()
+        root = self.fake_menubench("ok")
+        self.attach("dev-a")
+        os.makedirs(self.d + "/state/fake-menu")
+        open(self.d + "/state/fake-menu/dev-a.inuse", "w").write("screen on, foreground com.android.chrome")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "pending")
+        self.assertFalse(os.path.exists(root + "/calls"))                                                # menubench never started
+        os.unlink(self.d + "/state/fake-menu/dev-a.inuse")
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
+
+    def test_menu_busy_lock_keeps_pending(self):
+        self.nosweep()
+        self.fake_menubench("busy")
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "pending")
+        self.assertEqual(self.menu_rows(), [])
+
+    def test_menu_auto_trigger_once_per_version_and_priority(self):
+        self.nosweep()
+        root = self.fake_menubench("ok")
+        self.attach("dev-a")
+        self.env.update(MALI_FARM_AUTO_MENU="1", MALI_FARM_AUTO_BENCH="1", MALI_FARM_BENCH_IDLE="0")
+        self.farmd()
+        menus = [j for j in L.list_jobs() if j["suite"] == "menu"]
+        self.assertEqual(len(menus), 1)
+        self.assertTrue(menus[0]["auto"] and menus[0]["pin"] == "dev-a")
+        self.assertEqual(menus[0]["parts"]["v11"]["state"], "done")
+        self.assertEqual(len(self.menu_rows()), 2)
+        self.farmd()                                                                                     # same version: not again
+        self.assertEqual(len([j for j in L.list_jobs() if j["suite"] == "menu"]), 1)
+        open(self.d + "/state/fake-menu/dev-a.vc", "w").write("23") if os.path.isdir(self.d + "/state/fake-menu") else (os.makedirs(self.d + "/state/fake-menu"), open(self.d + "/state/fake-menu/dev-a.vc", "w").write("23"))
+        open(root + "/vc", "w").write("23")
+        self.farmd()                                                                                     # new installed version: one more run
+        menus = [j for j in L.list_jobs() if j["suite"] == "menu"]
+        self.assertEqual(len(menus), 2)
+        self.assertEqual({r["version_code"] for r in self.menu_rows()}, {22, 23})
+        self.farmd()
+        self.assertEqual(len([j for j in L.list_jobs() if j["suite"] == "menu"]), 2)
+
+    def test_menu_auto_trigger_not_while_owner_uses_phone(self):
+        self.nosweep()
+        self.fake_menubench("ok")
+        self.attach("dev-a")
+        os.makedirs(self.d + "/state/fake-menu")
+        open(self.d + "/state/fake-menu/dev-a.inuse", "w").write("x")
+        self.env.update(MALI_FARM_AUTO_MENU="1", MALI_FARM_BENCH_IDLE="0")
+        self.farmd()
+        self.assertEqual([j for j in L.list_jobs() if j["suite"] == "menu"], [])
+
+    def test_explicit_job_runs_before_auto_menu(self):
+        self.nosweep()
+        self.fake_menubench("ok")
+        L.new_job("main", "0" * 40, False, "menu", ["v11"], "", "x", auto=True, pin="dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        order = [j["suite"] for j in BL.order_jobs(L.list_jobs())]
+        self.assertEqual(order, ["smoke", "menu"])
+
+    def test_menu_without_menubench_configured_is_an_error_with_a_hint(self):
+        self.nosweep()
+        self.env["MALI_FARM_MENUBENCH"] = ""
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farmd()
+        self.assertEqual(self.farm("wait", jid)[1], "error")
+
+
 class SweepBackoffUnit(unittest.TestCase):
     def test_backoff_1_to_30_min_and_alert_after_5(self):
         import importlib.machinery, importlib.util, types
@@ -1029,6 +1198,104 @@ class GateTemp(unittest.TestCase):
             self.assertIsNone(gate.device_address("cmf"))
         finally:
             del os.environ["MALI_FARM_DEVICES"]
+
+
+class MenuUnit(unittest.TestCase):
+    PW_ON, PW_OFF = "  mWakefulness=Awake\n", "  mWakefulness=Asleep\n"
+    FG = "  topResumedActivity=ActivityRecord{1a2b u0 %s/.MainActivity t42}\n"
+
+    def test_owner_in_use_detection(self):
+        pkg = "com.ludashi.benchmark"
+        self.assertEqual(ML.owner_in_use(self.PW_OFF, self.FG % "com.android.chrome", pkg)[0], False)         # screen off: free whatever is resumed
+        self.assertEqual(ML.owner_in_use(self.PW_ON, self.FG % pkg, pkg)[0], False)                            # MediaDeck in front: ours
+        use, why = ML.owner_in_use(self.PW_ON, self.FG % "com.android.chrome", pkg)
+        self.assertTrue(use)
+        self.assertIn("com.android.chrome", why)
+        self.assertTrue(ML.owner_in_use(self.PW_ON, self.FG % "com.nothing.launcher", pkg)[0])                 # home screen = owner
+        self.assertTrue(ML.owner_in_use("", self.FG % pkg, pkg)[0])                                             # unreadable: never run blind
+        self.assertTrue(ML.owner_in_use(self.PW_ON, "", pkg)[0])
+        self.assertEqual(ML.foreground_pkg("  mResumedActivity: ActivityRecord{9 u0 org.x.app/org.x.app.Main t1}"), "org.x.app")
+
+    def test_trigger_rule(self):
+        self.assertTrue(ML.should_queue(23, 22, False))
+        self.assertTrue(ML.should_queue(22, None, False))
+        self.assertFalse(ML.should_queue(22, 22, False))
+        self.assertFalse(ML.should_queue(None, 22, False))
+        self.assertFalse(ML.should_queue(23, 22, True))
+
+    def rec(self, p, vc=22, ok=True, ts="2026-11-18T10:00:00+01:00", fps=100.0, chk=()):
+        return {"ts": ts, "alias": "cmf", "profile": p, "version_code": vc, "app_version": "v%d" % vc, "ok": ok and not chk, "selfcheck": list(chk), "status": "ok",
+                "panel_hz": 120, "render": {"avg_fps": fps, "median_fps": fps, "low1_fps": 40.0, "p99_ms": 20.0}}
+
+    def test_aggregate_medians_validity_and_since(self):
+        recs = [self.rec("default", fps=100), self.rec("default", fps=120), self.rec("default", fps=300), self.rec("default", chk=["x"]),
+                self.rec("uncapped", chk=["no gpu"]), self.rec("uncapped", chk=["no gpu"]), self.rec("default", vc=21, ts="2026-11-17T10:00:00+01:00")]
+        rows = ML.aggregate(recs, "cmf", "v11", "J", since="2026-11-18T09:00:00+01:00")
+        self.assertEqual([(r["version_code"], r["profile"], r["valid"]) for r in rows], [(22, "default", True), (22, "uncapped", False)])
+        d = rows[0]
+        self.assertEqual((d["avg_fps"], d["reps_ok"], d["reps_failed"], d["selfcheck_ok"]), (120.0, 3, 1, False))
+        self.assertEqual(rows[1]["avg_fps"], None)
+        self.assertEqual(rows[1]["invalid_reason"], "no gpu")
+        self.assertEqual(len(ML.aggregate(recs, "cmf", "v11", "J")), 3)                                       # no since: the old version is included
+        self.assertEqual(ML.aggregate(recs, "other", "v11", "J"), [])
+
+    def test_merge_rows_invalid_keeps_valid(self):
+        ok = {"phone": "cmf", "version_code": 22, "profile": "default", "valid": True, "avg_fps": 1}
+        bad = dict(ok, valid=False, avg_fps=None)
+        self.assertEqual(ML.merge_rows([ok], [bad]), [ok])
+        self.assertEqual(ML.merge_rows([bad], [ok]), [ok])
+        self.assertEqual(ML.merge_rows([ok], [dict(ok, avg_fps=2)])[0]["avg_fps"], 2)
+        self.assertEqual(len(ML.merge_rows([ok], [dict(bad, version_code=23)])), 2)
+
+    def test_results_md_section_newest_version_first(self):
+        def r(ph, vc, p, d):
+            return {"bench": "menu", "phone": ph, "class": "v11", "version_code": vc, "app_version": "1.0.0-p%d" % vc, "profile": p, "valid": True, "selfcheck_ok": True,
+                    "avg_fps": 99.0, "median_fps": 98.0, "low1_fps": 50.0, "p99_ms": 12.345, "panel_hz": 120, "reps_ok": 3, "reps_failed": 0, "date": d}
+        rows = [r("cmf", 22, "default", "2026-11-17"), r("cmf", 22, "uncapped", "2026-11-17"), r("cmf", 23, "default", "2026-11-18"), dict(r("poco-x8", 23, "uncapped", "2026-11-18"), valid=False, selfcheck_ok=False, invalid_reason="no gpu")]
+        md = "\n".join(ML.report_lines(rows))
+        self.assertIn("## Steam menu", md)
+        self.assertLess(md.index("### MediaDeck vc 23"), md.index("### MediaDeck vc 22"))
+        self.assertIn("| cmf | v11 | default | 99.0 | 98.0 | 50.0 | 12.35 | 120 | 3/0 | passed | 2026-11-18 |", md)
+        self.assertIn("INVALID: no gpu", md)
+        self.assertIn("No menu run yet", "\n".join(ML.report_lines([])))
+
+    def test_bench2_report_has_steam_menu_section(self):
+        import importlib.machinery, importlib.util
+        tmp = tempfile.mkdtemp()
+        ld = importlib.machinery.SourceFileLoader("bench2menu", os.path.join(os.path.dirname(HERE), "bench2"))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("bench2menu", ld))
+        ld.exec_module(m)
+        m.JSONL, m.MD, m.PENDING, m.MENU = tmp + "/r.jsonl", tmp + "/R.md", tmp + "/p.json", tmp + "/menu.jsonl"
+        with open(m.MENU, "w") as f:
+            f.write(json.dumps({"bench": "menu", "phone": "cmf", "class": "v11", "version_code": 22, "app_version": "p22", "profile": "default", "valid": True, "avg_fps": 99.0, "date": "2026-11-18"}) + "\n")
+        m.report()
+        md = open(m.MD).read()
+        self.assertIn("## triangle (CPU-heavy)", md)
+        self.assertIn("## Steam menu", md)
+        self.assertLess(md.index("## cube (GPU-heavy)"), md.index("## Steam menu"))
+
+    def test_publish_menu_rows_with_their_own_block_and_message(self):
+        tmp = tempfile.mkdtemp()
+        origin = tmp + "/origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
+        work = tmp + "/work"
+        subprocess.run(["git", "clone", "-q", origin, work], check=True, capture_output=True)
+        g = lambda *a: subprocess.run(["git", "-C", work, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True, text=True).stdout.strip()
+        open(work + "/README", "w").write("x")
+        g("add", "-A"); g("commit", "-qm", "seed"); g("push", "-q", "origin", "HEAD:main")
+        state = tmp + "/state"
+        row = {"bench": "menu", "phone": "cmf", "class": "v11", "version_code": 22, "app_version": "p22", "profile": "default", "valid": True, "avg_fps": 99.0, "date": "2026-11-18"}
+        ML.append_rows(state, [row, dict(row, profile="uncapped")])
+        rep = [sys.executable, "-c", "import json;n=len(open('bench/menu.jsonl').read().split('\\n'));open('bench/RESULTS.md','w').write('t %d' % n)"]
+        r = BL.publish(state, origin, report_cmd=rep, log=lambda m: None)
+        self.assertEqual((r["status"], r["n"]), ("pushed", 2), r)
+        g("pull", "-q", "origin", "main")
+        self.assertEqual(g("log", "-1", "--format=%s"), "bench: Steam menu rows cmf for MediaDeck vc22")
+        self.assertEqual(len(ML.load_rows(work + "/bench/menu.jsonl")), 2)
+        self.assertFalse(os.path.exists(work + "/bench/results.jsonl"))
+        self.assertEqual(BL.publish(state, origin, report_cmd=rep, log=lambda m: None)["status"], "nothing")
+        ML.append_rows(state, [dict(row, valid=False, avg_fps=None)])                                          # an invalid re-run: nothing new to publish
+        self.assertEqual(BL.publish(state, origin, report_cmd=rep, log=lambda m: None)["status"], "nothing")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 Devices are referred to by alias only; serials/addresses/paths come from the devices.toml in the user's config dir."""
 import collections, datetime, fcntl, json, os, re, subprocess, tempfile, time, tomllib
 
-SUITES = ("smoke", "daily", "bench", "cases")      # + "sweep": internal, never submitted
+SUITES = ("smoke", "daily", "bench", "cases", "menu")      # + "sweep": internal, never submitted
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 
 

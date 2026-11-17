@@ -5,6 +5,7 @@ Policy: explicit jobs > auto bench > idle sweep. Auto bench jobs are queued (a) 
 (vk/src, libkbase) for every phone that is available, (b) for a phone that has been idle > IDLE_SECS with its health gate ok and no
 bench row for the current main. Rows live in <state>/bench/results.jsonl (one per phone/driver/variant, with ref + commit + job)."""
 import json, os, re, subprocess, time
+import menulib as M
 
 IDLE_SECS = 900                                  # a phone idle this long (gate ok) runs the oldest missing bench
 RELEVANT = re.compile(r"^(vk/src/|libkbase/)")   # a main commit touching these changes the driver's performance
@@ -139,6 +140,10 @@ def digest_lines(rows):
     return out
 
 
+def menu_digest_lines(state):
+    return M.digest_lines(M.load_rows(M.menu_path(state)))
+
+
 # ---------- publishing: farm rows -> bench/results.jsonl + bench/RESULTS.md on origin/main, from a clone the farm owns
 PUB_RETRIES = 5
 
@@ -178,7 +183,8 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
     "bench: <phones> rows for <short commit>" and push to `remote` <branch>. Never touches any other checkout. A rejected push
     (somebody ff-merged meanwhile) is retried from a fresh fetch. -> {"status": "pushed|nothing|error", "n": rows changed, "msg": ...}"""
     rows = [r for r in load_rows(state) if publishable(r)]
-    if not rows:
+    mrows = [r for r in M.load_rows(M.menu_path(state)) if M.publishable(r)]
+    if not rows and not mrows:
         return {"status": "nothing", "n": 0, "msg": "no publishable rows in the farm state"}
     clone = clone or os.path.join(bench_dir(state), "publish-clone")
     if not os.path.isdir(os.path.join(clone, ".git")):
@@ -196,24 +202,40 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
         old = [json.loads(l) for l in open(jl) if l.strip()] if os.path.exists(jl) else []
         new = merge_rows(old, rows)
         changed = [r for r in new if r not in old]
-        if not changed:
+        ml = os.path.join(clone, "bench", "menu.jsonl")                       # Steam menu rows: own file, same push
+        mold = M.load_rows(ml)
+        mnew = M.merge_rows(mold, mrows)
+        mchanged = [r for r in mnew if r not in mold]
+        if not changed and not mchanged:
             return {"status": "nothing", "n": 0, "msg": "already published"}
         os.makedirs(os.path.dirname(jl), exist_ok=True)
-        with open(jl, "w") as f:
-            f.write("".join(json.dumps(r) + "\n" for r in new))
+        if changed:
+            with open(jl, "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in new))
+        if mchanged:
+            with open(ml, "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in mnew))
         rep = report_cmd or ["python3", "-I", os.path.join(clone, "tools", "bench2"), "--report"]
         r = subprocess.run(rep, cwd=clone, capture_output=True, text=True, timeout=120)
         if r.returncode:
             return {"status": "error", "n": 0, "msg": "report failed: " + (r.stdout + r.stderr).strip()[-200:]}
-        phones = ",".join(sorted({r["phone"] for r in changed}))
-        short = (changed[-1].get("commit_full") or changed[-1].get("commit") or "?")[:9]
-        _git(clone, "add", "bench/results.jsonl", "bench/RESULTS.md")
-        rc, o = _git(clone, "commit", "-q", "-m", f"bench: {phones} rows for {short}")
+        if changed:
+            phones = ",".join(sorted({r["phone"] for r in changed}))
+            short = (changed[-1].get("commit_full") or changed[-1].get("commit") or "?")[:9]
+            subject = f"bench: {phones} rows for {short}"
+        else:                                                                   # menu-only: keyed by MediaDeck version, not by mali-open commit
+            phones = ",".join(sorted({r["phone"] for r in mchanged}))
+            short = "vc" + ",".join(str(v) for v in sorted({r["version_code"] for r in mchanged}))
+            subject = f"bench: Steam menu rows {phones} for MediaDeck {short}"
+        for f in ("bench/results.jsonl", "bench/menu.jsonl", "bench/RESULTS.md"):
+            if os.path.exists(os.path.join(clone, f)):                          # one pathspec per call: a missing file must not abort the add
+                _git(clone, "add", f)
+        rc, o = _git(clone, "commit", "-q", "-m", subject)
         if rc:
             return {"status": "error", "n": 0, "msg": "commit: " + o[-200:]}
         rc, o = _git(clone, "push", "-q", "origin", f"HEAD:{branch}")
         if rc == 0:
-            return {"status": "pushed", "n": len(changed), "msg": f"{phones} @ {short}"}
+            return {"status": "pushed", "n": len(changed) + len(mchanged), "msg": f"{phones} @ {short}"}
         msg = o[-200:]
         log(f"publish: push rejected (attempt {attempt + 1}/{retries}), refetching: {msg[-80:]}")
         time.sleep(0 if retries <= 1 else min(2 * attempt, 6))

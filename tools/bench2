@@ -23,10 +23,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "tools", "farm"))
 import farmlib as L          # noqa: E402
 import gate as G             # noqa: E402
+import menulib as ML         # noqa: E402
 
 os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.path.expanduser("~/Android/Sdk/platform-tools") + os.pathsep + os.environ.get("PATH", "")
 JSONL = os.path.join(REPO, "bench", "results.jsonl")
 MD = os.path.join(REPO, "bench", "RESULTS.md")
+MENU = os.path.join(REPO, "bench", "menu.jsonl")     # Steam menu rows (farm menu suite), rendered as a section of RESULTS.md
 RAW = os.path.join(REPO, "bench", "raw")
 PENDING = os.path.join(REPO, "bench", "pending.json")
 COMMIT, REF = [None], [None]          # --commit / --ref overrides (farm bench jobs test a ref in a scratch worktree)
@@ -442,6 +444,7 @@ def report():
         for ph, why in sorted(pend.items()):
             out.append(f"| {ph} | | ours + bridge | | all | pending | | | | | | | | {why} | |")
         out.append("")
+    out += ML.report_lines([r for r in ML.load_rows(MENU) if ML.publishable(r)])
     out += ["Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets "
             + "; ".join("`" + (" ".join(e) or "default") + "`" for e in OURS_ENV) + ". Bridge options: none exposed in the guest besides the above.",
             "Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).", ""]
