@@ -32,6 +32,7 @@ static struct {
    VkCullModeFlags cull;
    int cw;                      /* VK_FRONT_FACE_CLOCKWISE instead of COUNTER_CLOCKWISE */
    int clamp, bias;
+   int dclip;                   /* VK_EXT_depth_clip_enable: 0 = not chained, 1 = depthClipEnable FALSE, 2 = TRUE */
    float bias_c, bias_s, bias_clamp;
    int blend;
    VkBlendFactor sf, df;
@@ -52,6 +53,8 @@ struct st_state {
 };
 static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
+static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
+static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static const char *g_only, *g_spv = "shader";
 
 enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
@@ -416,6 +419,7 @@ scene_create(struct scene *s, int depth)
       rs.cullMode = g_fx.dyn ? VK_CULL_MODE_NONE : g_fx.cull;
       rs.frontFace = (g_fx.cw != 0) != (g_fx.dyn != 0) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
       rs.depthClampEnable = g_fx.clamp;
+      if (g_fx.dclip) { g_dce.depthClipEnable = g_fx.dclip == 2; rs.pNext = &g_dce; }
       rs.depthBiasEnable = g_fx.bias;
       if (!g_fx.dyn) { rs.depthBiasConstantFactor = g_fx.bias_c; rs.depthBiasSlopeFactor = g_fx.bias_s; rs.depthBiasClamp = g_fx.bias_clamp; }
       cba.blendEnable = g_fx.blend;
@@ -946,6 +950,8 @@ static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z 
 static void s_bias_on(void) { g_fx.bias = 1; g_fx.bias_c = -1e5f; }
 static void s_dyn_bias(void) { s_bias_on(); g_fx.dyn = 1; }
 static void s_clamp(void) { g_fx.clamp = 1; }
+static void s_clamp_noclip(void) { g_fx.clamp = 1; g_fx.dclip = 1; }   /* clamp + depthClipEnable FALSE: same as plain clamp */
+static void s_clamp_clip(void) { g_fx.clamp = 1; g_fx.dclip = 2; }     /* clamp + depthClipEnable TRUE: z 1.5 is clipped */
 static void s_bias_pos(void) { g_fx.bias = 1; g_fx.bias_c = 1e7f; }   /* z 0.5 + huge bias: fails LESS against the 1.0 clear */
 static void s_bias_pos_clamp(void) { s_bias_pos(); g_fx.bias_clamp = 0.25f; }   /* clamped to +0.25: z 0.75 passes */
 static void s_bias_neg_clamp(void) { g_fx.bias = 1; g_fx.bias_c = -1e7f; g_fx.bias_clamp = -0.25f; }   /* z 1.0 - 0.25 passes */
@@ -977,6 +983,8 @@ static const struct fxcase g_fxcases[] = {
    {"fx_dyn_bias_pos_clamp", 1, 1, {0.5f}, EXP_COV, 8192, 2, s_dyn_bias_pos_clamp},
    {"fx_clip_off_range", 0, 1, {1.5f}, EXP_COV, 0, 0, s_none},
    {"fx_depth_clamp", 0, 1, {1.5f}, EXP_COV, 8192, 1, s_clamp},
+   {"fx_dclip_clamp_noclip", 0, 1, {1.5f}, EXP_COV, 8192, 5, s_clamp_noclip},   /* needs VK_EXT_depth_clip_enable */
+   {"fx_dclip_clamp_clip", 0, 1, {1.5f}, EXP_COV, 0, 5, s_clamp_clip},
 };
 
 static int
@@ -1019,6 +1027,7 @@ test_fx(void)
       const struct fxcase *c = &g_fxcases[i];
       if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 4) && !g_have_dclip) { printf("{\"test\":\"%s\",\"skipped\":\"VK_EXT_depth_clip_enable not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
       int good = 1;
@@ -1289,6 +1298,28 @@ main(int argc, char **argv)
    GPF(pd, &g_feat);
    VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport};
    di.pEnabledFeatures = &en;
+   /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
+   VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+   const char *dce_ext[] = {"VK_EXT_depth_clip_enable"};
+   {
+      PFN_vkGetPhysicalDeviceFeatures2 GPF2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
+      PFN_vkEnumerateDeviceExtensionProperties EDE = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
+      uint32_t ne = 0;
+      EDE(pd, NULL, &ne, NULL);
+      VkExtensionProperties eps[128];
+      if (ne > 128) ne = 128;
+      EDE(pd, NULL, &ne, eps);
+      int has = 0;
+      for (uint32_t i = 0; i < ne; i++) has |= !strcmp(eps[i].extensionName, dce_ext[0]);
+      VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dce_f};
+      GPF2(pd, &f2);
+      if (has && dce_f.depthClipEnable) {
+         g_have_dclip = 1;
+         di.pNext = &dce_f;
+         di.enabledExtensionCount = 1;
+         di.ppEnabledExtensionNames = dce_ext;
+      }
+   }
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
