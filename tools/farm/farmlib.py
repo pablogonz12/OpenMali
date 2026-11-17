@@ -99,7 +99,7 @@ def list_jobs():
                 out.append(read_json(os.path.join(d, n)))
             except (ValueError, OSError):
                 pass
-    return out
+    return sorted(out, key=lambda j: j.get("seq", 0))
 
 
 def find_job(jid):
@@ -130,7 +130,7 @@ def new_job(ref, commit, dirty, suite, need, env, repo_name):
         n += 1
         jid = f"{base}-{n}"
     job = {"id": jid, "ref": ref, "commit": commit, "dirty": dirty, "suite": suite, "env": env, "repo": repo_name,
-           "created": now(), "so_sha256": None, "build": None,
+           "created": now(), "seq": time.time_ns(), "so_sha256": None, "build": None,
            "parts": {c: {"state": "pending", "attempts": 0, "device": None} for c in need}}
     write_json(job_path(jid), job)
     return job

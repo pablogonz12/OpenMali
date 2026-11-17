@@ -187,6 +187,14 @@ class Farm:
             self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok", build_s=round(time.time() - t0)))
             return sha, ""
 
+    def harness(self, tree):
+        """older commits predate the transport/env hooks of valrun.sh and qdeqp.py: install the farm checkout's copy of those two
+        harness scripts into the scratch tree when the hook is missing (the code under test is untouched)"""
+        for rel, hook in (("vk/tests/valrun.sh", "ADB_SERIAL_"), ("vk/deqp/qdeqp.py", "QDEQP_ENV")):
+            dst, src = os.path.join(tree, rel), os.path.join(os.path.dirname(os.path.dirname(HERE)), rel)
+            if os.path.exists(dst) and hook not in open(dst).read() and os.path.exists(src):
+                shutil.copy2(src, dst)
+
     def missing_deps(self, suite):
         """untracked build inputs live in the main checkout (farm.toml: main_checkout); say clearly what is missing"""
         need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
@@ -278,6 +286,7 @@ class Farm:
         if dev["lock"] not in ("cmf", "poco"):
             return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
         tree = self.tree(job["id"])
+        self.harness(tree)
         rc, out = L.sh(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, env=self.phone_env(dev, {"PHONE": dev["lock"]}))
         recs = []
         for l in out.splitlines():
@@ -319,6 +328,7 @@ class Farm:
             for n, tgt in (("scripts", os.path.join(self.quick_root, "scripts")), ("tools", os.path.join(self.quick_root, "tools")), ("driver", tree)):
                 if not os.path.lexists(os.path.join(shim, n)):
                     os.symlink(tgt, os.path.join(shim, n))
+            self.harness(tree)
             listf = os.path.join(tree, "vk", "deqp", "lists", "daily-sample.txt")
             if not os.path.exists(listf):
                 return {"verdict": "error", "notes": "no lists/daily-sample.txt"}
