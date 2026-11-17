@@ -497,71 +497,95 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    return 0;
 }
 
-/* R4: colour loadOp LOAD. A graphics "preload" draw (full-viewport triangle) re-emits the old contents of the (linear) attachment, read as a
- * storage buffer, into the tile before the application's draws. Compiled once per process (arch of the installed device). */
-static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre;
+/* R4: loadOp LOAD. A graphics "preload" draw (full-viewport triangle) re-emits the old contents of the (linear) attachment(s), read as storage
+ * buffers, into the tile before the application's draws: colour through a colour output.
+ * One compiled FS per kind, compiled once per process (arch of the installed device). */
+static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[MALI_PRELOAD_KINDS];   /* only MALI_PRELOAD_COLOUR is used so far */
+static struct { bool ok; struct mali_compiled vs; uint64_t vs_va; } g_pre_vs;
 
+static int
+preload_compile(unsigned kind)
+{
+   char err[256] = "";
+   struct mali_lbinding b[2] = { { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER, 0 }, { MALI_DT_STORAGE_BUFFER, 1, 1, 1, 0, MALI_NO_IMM_SAMPLER, 0 } };
+   struct mali_compile_layout lay;
+   memset(&lay, 0, sizeof lay);
+   lay.nsets = 1;
+   unsigned nb = 1;
+   lay.set[0] = (struct mali_lset){ nb, nb, 0, b };
+   lay.push_size = 16;
+   struct mali_compile_opts o = { 0 };
+   o.arch = g_dev.arch;
+   if (!g_pre_vs.ok) {
+      o.stage = MALI_STAGE_VERTEX;
+      o.spirv = preload_vert_spv;
+      o.spirv_words = sizeof preload_vert_spv / 4;
+      o.strip_psiz = 1;
+      if (mali_compile(&o, &g_pre_vs.vs, err, sizeof err) < 0) {
+         fprintf(stderr, "mali_meta: preload VS compile failed: %s\n", err);
+         return -EINVAL;
+      }
+      if (g_dev.upload_shader(g_dev.user, g_pre_vs.vs.bin, g_pre_vs.vs.bin_size, &g_pre_vs.vs_va) < 0)
+         return -ENOMEM;
+      g_pre_vs.ok = true;
+   }
+   const uint32_t *spv = preload_frag_spv;
+   size_t words = sizeof preload_frag_spv;
+   memset(&o, 0, sizeof o);
+   o.arch = g_dev.arch;
+   o.stage = MALI_STAGE_FRAGMENT;
+   o.spirv = spv;
+   o.spirv_words = words / 4;
+   o.layout = &lay;
+   o.link_vs = &g_pre_vs.vs.layout;
+   if (mali_compile(&o, &g_pre[kind].fs, err, sizeof err) < 0) {
+      fprintf(stderr, "mali_meta: preload FS (kind %u) compile failed: %s\n", kind, err);
+      return -EINVAL;
+   }
+   if (g_dev.upload_shader(g_dev.user, g_pre[kind].fs.bin, g_pre[kind].fs.bin_size, &g_pre[kind].fs_va) < 0)
+      return -ENOMEM;
+   g_pre[kind].ok = true;
+   return 0;
+}
+
+/* va0/bytes0/row0: colour, depth, or stencil plane; va1/bytes1/row1: the stencil plane of MALI_PRELOAD_ZS. push words: row bytes (0), row
+ * bytes (1) or kind flags, per-kind extra (see shaders). */
 int
-mali_meta_preload(struct mali_meta_mem *mem, uint64_t va, uint32_t bytes, uint32_t row_bytes, unsigned flags, struct mali_draw *d)
+mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d)
 {
    pthread_mutex_lock(&g_lock);
    if (!g_dev_set) {
       pthread_mutex_unlock(&g_lock);
       return -ENODEV;
    }
-   if (!g_pre.ok) {
-      char err[256] = "";
-      struct mali_lbinding b = { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER };
-      struct mali_compile_layout lay;
-      memset(&lay, 0, sizeof lay);
-      lay.nsets = 1;
-      lay.set[0] = (struct mali_lset){ 1, 1, 0, &b };
-      lay.push_size = 8;
-      struct mali_compile_opts o = { 0 };
-      o.arch = g_dev.arch;
-      o.stage = MALI_STAGE_VERTEX;
-      o.spirv = preload_vert_spv;
-      o.spirv_words = sizeof preload_vert_spv / 4;
-      o.strip_psiz = 1;
-      if (mali_compile(&o, &g_pre.vs, err, sizeof err) < 0) {
-         fprintf(stderr, "mali_meta: preload VS compile failed: %s\n", err);
+   if (!g_pre[kind].ok) {
+      int r = preload_compile(kind);
+      if (r) {
          pthread_mutex_unlock(&g_lock);
-         return -EINVAL;
+         return r;
       }
-      o.stage = MALI_STAGE_FRAGMENT;
-      o.strip_psiz = 0;
-      o.spirv = preload_frag_spv;
-      o.spirv_words = sizeof preload_frag_spv / 4;
-      o.layout = &lay;
-      o.link_vs = &g_pre.vs.layout;
-      if (mali_compile(&o, &g_pre.fs, err, sizeof err) < 0) {
-         fprintf(stderr, "mali_meta: preload FS compile failed: %s\n", err);
-         mali_compiled_free(&g_pre.vs);
-         pthread_mutex_unlock(&g_lock);
-         return -EINVAL;
-      }
-      if (g_dev.upload_shader(g_dev.user, g_pre.vs.bin, g_pre.vs.bin_size, &g_pre.vs_va) < 0 ||
-          g_dev.upload_shader(g_dev.user, g_pre.fs.bin, g_pre.fs.bin_size, &g_pre.fs_va) < 0) {
-         pthread_mutex_unlock(&g_lock);
-         return -ENOMEM;
-      }
-      g_pre.ok = true;
    }
    uint64_t set_va;
    uint32_t *set = mem_alloc(mem, 64, 64, &set_va);
    pthread_mutex_unlock(&g_lock);
    if (!set)
       return -ENOMEM;
-   pack_buffer(set, va, bytes);
+   pack_buffer(set, src->va[0], src->bytes[0]);
    memset(d, 0, sizeof *d);
-   d->gfx.vs = &g_pre.vs;
-   d->gfx.fs = &g_pre.fs;
-   d->gfx.vs_va = g_pre.vs_va;
-   d->gfx.fs_va = g_pre.fs_va;
+   d->gfx.vs = &g_pre_vs.vs;
+   d->gfx.fs = &g_pre[kind].fs;
+   d->gfx.vs_va = g_pre_vs.vs_va;
+   d->gfx.fs_va = g_pre[kind].fs_va;
    d->gfx.push_base[0] = 40;
    d->gfx.push_base[1] = g_dev.arch == 13 ? 24 : 0;
    d->gfx.depth_func = 7;   /* ALWAYS */
-   uint32_t pc[2] = { row_bytes / 4, flags };
+   uint32_t pc[4] = { src->row[0], src->row[1], src->arg, src->bpp };
+   if (kind == MALI_PRELOAD_COLOUR) {
+      pc[0] = src->row[0];
+      pc[1] = src->arg;
+      pc[2] = src->bpp;
+      pc[3] = 0;
+   }
    memcpy(d->push[1], pc, sizeof pc);
    d->nsets = 1;
    d->set_va[0] = set_va;
