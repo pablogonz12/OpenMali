@@ -50,6 +50,10 @@ struct kb_fb_params {
 	 * Color Buffer Allocation (>>10 units) and the four raw clear words. */
 	unsigned rt_internal, rt_wb, rt_swizzle, rt_alloc;
 	uint32_t rt_clear[4];
+	/* MSAA (all 0 = single-sampled, as before). samples_log2: 0 or 2 (4x). sample_pattern: enum mali_sample_pattern (2 = rotated 4x).
+	 * rt_msaa / zs_msaa: RT writeback / ZS "MSAA" mode (0 single, 1 average = resolve into rt_gpu_va, 3 layered = store all samples
+	 * as consecutive surface_stride planes). tile_log2: Effective Tile Size override (0 = 10, 32x32; 4x needs 8 = 16x16). */
+	unsigned samples_log2, sample_pattern, rt_msaa, zs_msaa, tile_log2;
 	unsigned arch;                /* GPU arch major (kb_props()->arch); 0 = assume 11. Layouts below are v11 only: other values
 	                               * (e.g. 13 on Mali-G925) still pack the v11 layout but warn once on stderr. */
 };

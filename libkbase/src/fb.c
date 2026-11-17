@@ -67,9 +67,10 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 10, 0, 16, p->width - 1);                         /* Bound Max X (inclusive) */
 	put(f, 10, 16, 16, p->height - 1);                       /* Bound Max Y (inclusive) */
 	/* word 11 */
-	put(f, 11, 0, 3, 0);                                     /* Sample Count log2: 1 sample */
+	put(f, 11, 0, 3, p->samples_log2);                       /* Sample Count log2 */
+	put(f, 11, 3, 3, p->sample_pattern);                     /* Sample Pattern (0 single, 2 rotated 4x) */
 	put(f, 11, 6, 3, 2);                                     /* Tie-break rule: MINUS_180_IN_0_OUT (Mesa default) */
-	put(f, 11, 9, 4, 10);                                    /* Effective Tile Size log2(1024 px) = 32x32, as PanVK (matches hierarchy mask 0xfe, smallest bin 32) */
+	put(f, 11, 9, 4, p->tile_log2 ? p->tile_log2 : 10);                                    /* Effective Tile Size log2(1024 px) = 32x32, as PanVK (matches hierarchy mask 0xfe, smallest bin 32) */
 	put(f, 11, 14, 1, 1);                                    /* First provoking vertex (PanVK sets it, also in the tiler context) */
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
 	put(f, 11, 19, 4, 0);                                    /* Render Target Count - 1 */
@@ -103,7 +104,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */
 		put(x, 10, 27, 5, ((uint64_t)zs_row * p->height) >> 32);   /* Surface Stride hi */
-		put(x, 11, 0, 32, (uint32_t)((uint64_t)zs_row * p->height));   /* Surface Stride */
+		put(x, 11, 0, 32, (uint32_t)((uint64_t)zs_row * p->height));   /* (per-sample plane; MSAA samples are consecutive) */   /* Surface Stride */
 	}
 	/* word 13: Z clear = 0. Words 14..15: Tiler Context pointer (0 = none). Words 16..17: VRS (0). */
 	put(f, 14, 0, 32, (uint32_t)p->tiler_va);
@@ -116,7 +117,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(r, 1, 0, 1, 1);                                      /* Write Enable */
 	put(r, 1, 3, 5, p->rt_internal ? p->rt_wb : 19);                                    /* Writeback colour format R8G8B8A8 */
 	put(r, 1, 8, 4, p->block_format ? 1 : 2);                /* Block format: 2 linear, 1 tiled u-interleaved */
-	put(r, 1, 12, 2, 0);                                     /* MSAA: single */
+	put(r, 1, 12, 2, p->rt_msaa);                            /* MSAA: 0 single, 1 average (resolve), 3 layered */
 	put(r, 1, 16, 12, p->rt_internal ? p->rt_swizzle : (0 | 1 << 3 | 2 << 6 | 3 << 9));         /* Swizzle RGBA identity (R=0 G=1 B=2 A=3) */
 	put(r, 1, 31, 1, !p->no_clean_tile_write);               /* Clean Tile Write Enable (default on) */
 	put(r, 8, 0, 32, (uint32_t)p->rt_gpu_va);                /* RT Buffer base */

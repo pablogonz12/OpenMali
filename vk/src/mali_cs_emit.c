@@ -528,6 +528,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       if (!d->fx.depth_clip)
          pf_clear = (1u << 16) | (1u << 17);
    }
+   if (g->samples == 4) {
+      dcd_extra |= 1u << 19;                                  /* Multisample Enable */
+      if (g->per_sample || g->blend_va)
+         dcd_extra |= 1u << 11;                               /* Evaluate per-sample (sampleRateShading; a blend shader reads per sample) */
+   }
    unsigned vx = d->vp[0] < 0 ? 0 : (unsigned)d->vp[0], vy = d->vp[1] < 0 ? 0 : (unsigned)d->vp[1];
    unsigned vmx = vx + (d->vp[2] > 1 ? (unsigned)d->vp[2] : 1) - 1, vmy = vy + (d->vp[3] > 1 ? (unsigned)d->vp[3] : 1) - 1;
    int32_t sx = d->sc[0] < 0 ? 0 : d->sc[0], sy = d->sc[1] < 0 ? 0 : d->sc[1];
@@ -881,6 +886,10 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
          kb_draw_tiler_ctx(tctx, f->width, f->height, env->hmask, env->geo_va, geom);
+      if (f->samples == 4)
+         tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
+      if (f->samples == 4 && v13)
+         tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
       for (unsigned i = 0; i < f->ndraws; i++) {
          const struct mali_draw *dr = &f->draws[i];
          if (dr->gfx.poly_mode == 1) {

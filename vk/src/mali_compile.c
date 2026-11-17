@@ -30,7 +30,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 16
+#define MALI_COMPILE_VERSION 17
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -143,7 +143,7 @@ type_size(const struct glsl_type *t, bool bindless)
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances;
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
    char mesa[24];
 };
 
@@ -159,6 +159,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.push_base = push_base;
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
+   k.sample_shading = o->sample_shading != 0;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
@@ -299,6 +300,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
 
+   if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
+      nir->info.fs.uses_sample_shading = true;
    if (stage == MESA_SHADER_VERTEX) {
       bool has_clip = false;
       nir_foreach_shader_out_variable(var, nir) {
@@ -470,6 +473,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       out->fs_can_fpk = info.fs.can_fpk;
       out->fs_sidefx = info.fs.sidefx;
       out->fs_reads_frag_coord = info.fs.reads_frag_coord;
+      out->fs_sample_shading = info.fs.sample_shading;
       out->fs_blend0_type = info.bifrost.blend[0].type;
       out->fs_blend_src1_type = info.bifrost.blend_src1_type;
    } else if (stage == MESA_SHADER_VERTEX) {

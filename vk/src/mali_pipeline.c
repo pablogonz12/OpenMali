@@ -10,6 +10,7 @@
 #include "mali_cmd.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
+#include "mali_msaa.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -115,6 +116,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = fss->pName;
+   /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
+   unsigned samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1;
+   if (samples != 1 && (samples != 4 || !mali_experimental_msaa() || BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES))) {
+      res = VK_ERROR_FEATURE_NOT_PRESENT;
+      goto fail;
+   }
+   o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
    if (mali_compile(&o, &p->fs, err, sizeof err)) {
@@ -177,6 +185,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       g->blend_va = p->code.gpu_va + bl_off;
    g->vs = &p->vs;
    g->fs = &p->fs;
+   g->samples = samples;
+   g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
    g->push_base[0] = 40;
@@ -422,6 +432,8 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    out->va = img->va + mali_image_subresource_offset(pl, level, layer);
    out->row_stride = pl->slice[level].row_stride;
    out->is_zs = zs || st_fmt;
+   out->samples = img->lay.d.samples;
+   out->surface_stride = (uint32_t)pl->slice[level].surface_stride;
    if (want_s) {
       const struct mali_plane_layout *sp = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_STENCIL_BIT);
       if (!sp)

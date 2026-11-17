@@ -42,6 +42,7 @@ struct mali_compile_opts {
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
+   int sample_shading;            /* FS: pipeline sampleShadingEnable with minSampleShading * samples > 1 (PanVK: nir->info.fs.uses_sample_shading) */
    int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
 };
@@ -74,6 +75,7 @@ struct mali_compiled {
    uint32_t local_size[3];        /* CS: workgroup size */
    uint32_t allow_merge;          /* CS: COMPUTE_SIZE_WORKGROUP bit 31 (no shared memory, workgroup barrier or subgroup op: HW may merge workgroups) */
    uint32_t cache_hit;            /* 1 if this result came from the disk cache */
+   uint32_t fs_sample_shading;   /* FS runs per sample (info.fs.sample_shading): DCD0 "Evaluate per-sample" */
    uint32_t fs_blend0_type, fs_blend_src1_type;   /* FS: nir_alu_type of colour output 0 / dual-source output (0 = none) */
 };
 

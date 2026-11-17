@@ -63,6 +63,8 @@ struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* p
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
    const struct mali_compiled *vs, *fs;   /* compiled with arch == env.arch */
+   unsigned samples;                      /* rasterizationSamples: 1 or 4 */
+   bool per_sample;                       /* sampleRateShading: the fragment shader runs per sample (DCD0 evaluate-per-sample) */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
    unsigned nattr;
@@ -164,12 +166,16 @@ struct mali_att {
    float clear_color[4];
    float clear_depth;
    uint8_t clear_stencil;                 /* stencil attachment (struct mali_frame.st): S Clear value */
+   uint32_t surface_stride;               /* MSAA (frame.samples 4): bytes per sample plane of the multisampled image (samples consecutive) */
+   uint64_t resolve_va;                   /* colour, MSAA: single-sample resolve target (hardware "Average" writeback); 0 = store the samples (Layered) */
+   uint32_t resolve_row_stride;
 };
 
 struct mali_frame {
    unsigned width, height;                /* framebuffer size (attachment extent) */
    int32_t area[4];                       /* render area x, y, w, h */
    bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
+   unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
    struct mali_att colour, zs, st;
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;

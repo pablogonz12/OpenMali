@@ -169,6 +169,24 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    }
    p.tiler_va = tiler_ctx_va;
    p.sample_locations_va = sample_locations_va;
+   bool msaa = f->samples == 4;
+   if (msaa) {
+      /* PanVK pan_desc.c: sample count 4 (log2 2), Rotated 4x pattern (2), tile size / 4 (same tile-buffer bytes), sample locations
+       * pointer = table + pattern * 256 (pan_sample_positions_offset). */
+      p.samples_log2 = 2;
+      p.sample_pattern = 2;
+      p.tile_log2 = 8;
+      p.sample_locations_va = sample_locations_va + 2 * 256;
+      if (f->colour.resolve_va) {
+         p.rt_gpu_va = f->colour.resolve_va;      /* Average: RT base is the single-sample resolve image */
+         p.row_stride = f->colour.resolve_row_stride;
+         p.rt_msaa = 1;
+      } else {
+         p.rt_msaa = 3;                           /* Layered: all samples stored, surface stride = one sample plane */
+         p.surface_stride = f->colour.surface_stride;
+      }
+      p.zs_msaa = 3;
+   }
    if (f->has_zs) {
       p.zs_format = (enum kb_zs_format)f->zs.zs_format;
       p.zs_gpu_va = f->zs.va;
@@ -192,7 +210,8 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       unsigned al = ((1u << env->tile_log2) * (f->colour.rt ? f->colour.rt->alloc : 4u)) >> 10;
       if (!al)
          al = 1;
-      w[11] = (w[11] & ~((0xfu << 9) | (0xffu << 24))) | ((env->tile_log2 & 0xfu) << 9) | (al << 24);
+      unsigned tl = env->tile_log2 - (msaa ? 2 : 0);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */
+      w[11] = (w[11] & ~((0xfu << 9) | (0xffu << 24))) | ((tl & 0xfu) << 9) | (al << 24);
    }
    return 0;
 }
