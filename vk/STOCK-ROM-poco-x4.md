@@ -17,9 +17,9 @@ Archived before the planned bootloader unlock and LineageOS flash (wipes the pho
 - Host `adb install -r` of p20 works after the owner's Install-via-USB change; `input keyevent` is still denied (rc 255) at that moment.
 - Before that, shell-side `pm install -r` from /data/local/tmp worked without a tap (recipe in quick/README.md).
 
-## Guest session (p21) — still blocked
-- p21 (versionCode 21) installed; the session now reports `GUEST_EARLY_EXIT` after ~126 ms instead of exiting silently.
-- Guest dies before `gamescope` execs (proot, fast path + seccomp, kernel 5.10). With `prootNoSeccomp` it gets further but `getcwd` returns ENOSYS and it dies at the vkbridge self-test. Cause not found.
-- The freedreno ICD line was a red herring (the bridge server reports Mali-G610 and listens); p21 no longer defaults to it on non-Adreno.
-- Guest tests (/dev/mali0, valrun, dEQP) NOT run. Phone reached 44 °C, stopped. Shell route stays 302/107/971/1.
-- Leftover on phone: a gamescope override wrapper (`droiddeckctl override gamescope`) still pending; remove before the next session.
+## Guest session (p21) — root cause found, session stays up
+- Cause: a system-wide stack-sampling trace (Traceur, `traced_perf` running) makes Android send Bionic's profiling signal (RT 36, `libc: sh: received profiling signal with si_value: 1` for every new process, even adb-shell `sh`/`cut`). glibc guest processes have no handler and die: session.log shows `droiddeck-session: line 301: ... Real-time signal 2  gamescope` (proot `-v 3` changed timing enough to see it). proot's status 0 is real: vpid 1 died, proot exits 0.
+- Fix (p21): guest starts under `/bin/sh -c "trap '' 36; exec ..."`. Result: session stays up (STARTING_STEAM running for 50 s), `vkbridge PASS ... Mali-G610 MC6, Vulkan 1.1.177`, zero RT-signal deaths. Not a kernel/proot limitation.
+- Sandbox `/dev/mali0`: `crw-rw-rw- 1000 1003 10,113`, openable from the guest (exit 0).
+- NOT run: valrun smoke and guest dEQP (the guest route uses the bridge; the feat/v10 glibc ICD still has to be pushed). Shell route stays 302/107/971/1.
+- Leftover: none (override consumed, env cleared, prefs removed, app force-stopped, screen off).
