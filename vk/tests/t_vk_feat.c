@@ -1087,6 +1087,7 @@ test_nulld(void)
       pass += nulld_one(&t, &cases[i], smp);
    }
    printf("{\"test\":\"nulld\",\"cases\":%d,\"passed\":%d,\"ok\":%s}\n", n, g_fake ? n : pass, pass == n ? "true" : "false");
+   DestroySampler(dev, smp, NULL);   /* was leaked: the 152-byte LeakSanitizer finding */
    tgt_destroy(&t);
    return pass == n;
 }
