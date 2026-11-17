@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mali_pipeline_layout_flat.h"
 
 #include "kbase.h"
 #include "kbase_cs.h"
@@ -137,9 +138,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    if (!v13)
       spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
    spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
+   vs_entries = vs_entries > MALI_DUMMY_SAMPLER_IDX + 1 ? vs_entries : MALI_DUMMY_SAMPLER_IDX + 1;
    vsset = A(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &va_vsset);
    vst = A(hw, res_alloc, 64, &o->vst);
-   fsset = A(hw, KB_DESC_SET_STRIDE, 64, &va_fsset);
+   fsset = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_fsset);
    fst = A(hw, res_alloc, 64, &o->fst);
    bl = A(hw, KB_BLEND_SIZE, 16, &o->bl);
    zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
@@ -173,7 +175,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
    /* resource tables: entry 0 = driver set, entries 1.. = bound user descriptor sets (KB_TEX_USER_TABLE) */
    kb_draw_resource(vst, va_vsset, vs_entries * KB_DESC_SET_STRIDE, 1);
-   kb_draw_resource(fst, va_fsset, KB_DESC_SET_STRIDE, 1);
+   kb_draw_resource(fst, va_fsset, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
    for (unsigned s = 0; s < d->nsets; s++) {
       kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
       kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
@@ -385,7 +387,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    unsigned nres = 1 + d->nsets, res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
 
    spd = A(hw, KB_SPD_SIZE, 32, &va_spd);
-   set = A(hw, KB_DESC_SET_STRIDE, 64, &va_set);
+   set = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_set);   /* entry MALI_DUMMY_SAMPLER_IDX (all zero) serves texelFetch */
    uint32_t *srt = A(hw, res_alloc, 64, &va_srt);
    fau = A(hw, FAU_BYTES(cs->fau_count), 64, &va_fau);
    tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
@@ -443,7 +445,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       tsd[3] = (uint32_t)(va_tls >> 40) | (1u << 28);
    }
 
-   kb_draw_resource(srt, va_set, KB_DESC_SET_STRIDE, 1);
+   kb_draw_resource(srt, va_set, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
    for (unsigned s = 0; s < d->nsets; s++)
       kb_draw_resource(srt + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
    kb_draw_fau_imm(fau, (const uint32_t(*)[2])cs->imm, cs->nimm);
