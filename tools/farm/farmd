@@ -848,6 +848,30 @@ class Farm:
         return {"verdict": "fail" if bad else "pass", "counts": tot, "case_counts": stat, "new_failures": bad, "newly_passing": [],
                 "notes": f"{n} repetitions of {len(cases)} case(s)"}
 
+    def best_file(self, job):
+        """the farm's persistent best-settings file (bench2 re-sweeps stale entries into it); seeded from the job tree's bench/best.json"""
+        p = os.path.join(B.bench_dir(L.state_dir()), "best.json")
+        if not os.path.exists(p):
+            tree = self.tree(job["id"])
+            src = os.path.join(tree if os.path.isdir(tree) else self.repo, "bench", "best.json")
+            if os.path.exists(src):
+                shutil.copy(src, p)
+        return p
+
+    def publish_bench(self, force=False):
+        """farm rows -> origin main (own clone, pull --rebase semantics via fetch+reset+re-merge, retry on reject). Idempotent; runs in a thread, at most one"""
+        st = B.bench_dir(L.state_dir())
+        mark = os.path.join(st, ".published")
+        rp = B.results_path(L.state_dir())
+        if not os.path.exists(rp) or (not force and os.path.exists(mark) and os.path.getmtime(mark) >= os.path.getmtime(rp)):
+            return None
+        remote = os.environ.get("MALI_FARM_PUBLISH_REMOTE") or git("remote", "get-url", "origin", cwd=self.repo)[1].strip()
+        res = B.publish(L.state_dir(), remote, log=log)
+        if res["status"] in ("pushed", "nothing"):
+            open(mark, "w").write(L.now())
+        log(f"bench publish: {res['status']} {res['n']} rows: {res['msg']}")
+        return res
+
     def bench_prepare(self, job):
         """build the guest benchmark harness (bench/mdbench, aarch64) from the job's tree (the farm checkout's copy for commits that predate it)
         -> path of mdbench-aarch64 | None. Idempotent; runs BEFORE the phone lock is taken."""
@@ -863,7 +887,7 @@ class Farm:
                 return None
         return out
 
-    BENCH_CHUNKS = int(os.environ.get("MALI_FARM_BENCH_CHUNKS", "6"))          # bench2 calls per part, each <= 230 s of measuring + overhead
+    BENCH_CHUNKS = int(os.environ.get("MALI_FARM_BENCH_CHUNKS", "12"))          # bench2 calls per part, each <= 230 s of measuring + overhead
 
     def fake_bench_rows(self, job, dev):
         rows = []
@@ -892,7 +916,8 @@ class Farm:
         wd = os.path.join(L.state_dir(), "work", f"{job['id']}-{alias}-bench")
         os.makedirs(wd, exist_ok=True)
         cmd = [sys.executable, "-I", os.path.join(os.path.dirname(HERE), "bench2"), alias, "--out", wd, "--so", so, "--mdb", mdb,
-               "--commit", job["commit"][:9], "--ref", job["ref"], "--budget", "230"]
+               "--commit", job["commit"][:9], "--ref", job["ref"], "--budget", "230",
+               "--best", self.best_file(job)]
         ex = {"QSAFE_HELD": dev["lock"]}
         out = ""
         for _ in range(self.BENCH_CHUNKS):
@@ -1266,6 +1291,11 @@ class Farm:
             jobs = L.list_jobs()
         except Exception:
             log("auto bench error: " + traceback.format_exc()[-300:])
+        if (not self.fake or os.environ.get("MALI_FARM_PUBLISH_REMOTE")) and not (getattr(self, "pub_t", None) and self.pub_t.is_alive()) \
+                and time.time() - getattr(self, "last_pub", 0) > (0 if self.fake else 60):
+            self.last_pub = time.time()
+            self.pub_t = threading.Thread(target=lambda: self.publish_bench(), daemon=True, name="publish")      # not in self.threads: never blocks a phone
+            self.pub_t.start()
         if not (self.prebuild_t and self.prebuild_t.is_alive()):     # build the next queued job's driver while the phones are still busy
             nxt = next((j for j in jobs if not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
             if nxt:

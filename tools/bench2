@@ -220,6 +220,9 @@ def agg(ms):
 
 
 BASE_PRES = dict(mode="mailbox", images=3, fif=2)
+BESTF = [None]                          # --best FILE overrides bench/best.json (the farm keeps its own, persistent across jobs)
+BEST_MAX_AGE_DAYS = 7
+LEGACY_BEST_DATE = "2026-11-17"         # entries stored before dates were recorded: treated as swept on this day
 
 
 def plan(variant, driver, mode, best):
@@ -240,6 +243,22 @@ def plan(variant, driver, mode, best):
     if driver == "ours":          # stored winners are re-validated here (farm path too): a non-base env on cube was an invalid winner (0.18 ms GPU), so it is never replayed
         cfg = [dict(c, env=base_env) if c.get("env") != base_env and bench == "cube" else c for c in cfg]
     return cfg
+
+
+def sweep_sig(variant, driver):
+    """fingerprint of the sweep's candidate list (present modes, image counts, fif, ours env sets): a new knob changes it -> stored best is stale"""
+    return hashlib.sha1("|".join(label(c) for c in plan(variant, driver, "sweep", None)).encode()).hexdigest()[:12]
+
+
+def best_stale(best_all, alias, driver, variant, today=None):
+    """-> reason string if the stored best for (phone, driver, variant) must be re-swept, else None"""
+    e = (best_all.get(alias, {}).get(driver, {}) or {}).get(variant)
+    if not e:
+        return "no stored best"
+    if e.get("sig") and e["sig"] != sweep_sig(variant, driver):
+        return "a new knob/candidate appeared since the sweep"
+    age = ((today or datetime.date.today()) - datetime.date.fromisoformat(e.get("date") or LEGACY_BEST_DATE)).days
+    return f"stored best is {age} days old" if age > BEST_MAX_AGE_DAYS else None
 
 
 def label(c):
@@ -277,6 +296,15 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
     commit = COMMIT[0] or (git("rev-parse", "--short=9", "HEAD") + ("-dirty" if git("status", "--porcelain", "--untracked-files=no") else ""))
     date = datetime.date.today().isoformat()
     os.makedirs(RAW, exist_ok=True)
+    bestf0 = BESTF[0] or os.path.join(REPO, "bench", "best.json")
+    if not sweep:                      # the farm replays stored settings; re-sweep the stale ones first (7 days, or a changed candidate list)
+        b0 = json.load(open(bestf0)) if os.path.exists(bestf0) else {}
+        stale = [v for v in variants if any(best_stale(b0, ph.alias, d, v) for d in drivers)]
+        if stale:
+            print(f"{ph.alias}: re-sweeping {stale} first ({'; '.join(sorted({w for v in stale for d in drivers if (w := best_stale(b0, ph.alias, d, v))}))})", flush=True)
+            sub = bench_phone(ph, drivers, stale, reps, secs, True, ours_so, dry, budget)
+            if any(r[0] in ("chunk", "pending", "error") for r in sub):
+                return sub
     mode = "sweep" if sweep else "final"
     cp = cache_path(ph, commit, so_sha, mode)
     cache = {}
@@ -284,7 +312,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         for l in open(cp):
             e = json.loads(l)
             cache[e["k"]] = e["m"]
-    bestf = os.path.join(REPO, "bench", "best.json")
+    bestf = BESTF[0] or os.path.join(REPO, "bench", "best.json")
     best_all = json.load(open(bestf)) if os.path.exists(bestf) else {}
     rows = []
     incomplete = False
@@ -354,7 +382,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
             bp, bo = min(pres, key=pk), min(off, key=ok_)
             ps = {label(c): c for c in plan(variant, d, "sweep", None)}
             if sweep:
-                best_all.setdefault(ph.alias, {}).setdefault(d, {})[variant] = {"pres": ps[bp[5:]], "off": ps[bo[4:]]}
+                best_all.setdefault(ph.alias, {}).setdefault(d, {})[variant] = {"pres": ps[bp[5:]], "off": ps[bo[4:]], "date": date, "sig": sweep_sig(variant, d)}
                 json.dump(best_all, open(bestf, "w"), indent=1, sort_keys=True)
                 with open(os.path.join(REPO, "bench", "sweeps.jsonl"), "a") as fh:
                     fh.write(json.dumps({"date": date, "phone": ph.alias, "driver": d, "variant": variant, "commit": commit, "pres": pres, "off": off, "best": [bp, bo]}) + "\n")
@@ -390,13 +418,27 @@ def report():
            "Values are medians of interleaved runs. Presented = wayland (120 Hz cap), offscreen = headless (no cap): compare drivers on **CPU ms** (record+submit) and **GPU ms** (timestamps), not on capped fps.", "",
            "Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 10k+, see bench/README.md, Known limits), one triangle each, a dynamic-UBO descriptor offset per draw. **cube** = rotating cube + 8 overdraw layers + 24-iteration ALU fragment shader, depth on; `720p` fixed 1280x720, `native` = compositor size (presented), offscreen always 1280x720.", ""]
     for bench, title in (("triangle", "triangle (CPU-heavy)"), ("cube", "cube (GPU-heavy)")):
-        out += [f"## {title}", "",
-                "| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
-                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-        for r in sorted((x for x in rows if x["bench"] == bench), key=lambda x: (x["variant"], x["phone"], x["driver"], x["date"], x["version"])):
-            p, o = r["presented"], r["offscreen"]
-            out.append(f"| {r['phone']} | {r['class']} | {r['driver']} | {r['version']} | {r['variant']} | {f(p['fps'])} | {f(p['low1'])} | {f(p['over50'], 0)} | {f(p['cpu_ms'], 2)} | {f(p['gpu_ms'], 2)} | "
-                       f"{f(o['fps'])} | {f(o['cpu_ms'], 2)} | {f(o['gpu_ms'], 2)} | {r['best_settings']} | {r['date']} |")
+        out += [f"## {title}", ""]
+        brows = [x for x in rows if x["bench"] == bench]
+        order = []                                        # one block per mali-open version (the main commit), newest first = last seen in the file first
+        for x in brows:
+            c = x.get("commit") or x["version"]
+            if c in order:
+                order.remove(c)
+            order.append(c)
+        for c in reversed(order):
+            blk = [x for x in brows if (x.get("commit") or x["version"]) == c]
+            out += [f"### mali-open {c} ({max(x['date'] for x in blk)})", "",
+                    "| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            for r in sorted(blk, key=lambda x: (x["variant"], x["phone"], x["driver"], x["date"], x["version"])):
+                p, o = r["presented"], r["offscreen"]
+                out.append(f"| {r['phone']} | {r['class']} | {r['driver']} | {r['version']} | {r['variant']} | {f(p['fps'])} | {f(p['low1'])} | {f(p['over50'], 0)} | {f(p['cpu_ms'], 2)} | {f(p['gpu_ms'], 2)} | "
+                           f"{f(o['fps'])} | {f(o['cpu_ms'], 2)} | {f(o['gpu_ms'], 2)} | {r['best_settings']} | {r['date']} |")
+            out.append("")
+        if pend:
+            out += ["| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for ph, why in sorted(pend.items()):
             out.append(f"| {ph} | | ours + bridge | | all | pending | | | | | | | | {why} | |")
         out.append("")
@@ -422,6 +464,7 @@ def main():
     ap.add_argument("--budget", type=int, default=230, help="seconds per call before it stops and asks to be rerun (resumes from bench/raw; rule: chunks <= 4 min)")
     ap.add_argument("--wait", type=int, default=0, help="wait up to N s for the phone lock (one blocking flock, like qsafe); default: busy = pending")
     ap.add_argument("--out", help="write results.jsonl/pending.json/raw/ under DIR instead of bench/ (the farm bench suite; no RESULTS.md regeneration)")
+    ap.add_argument("--best", help="best-settings file (default bench/best.json; the farm keeps its own)")
     ap.add_argument("--mdb", help="mdbench-aarch64 binary (default bench/mdbench/out/mdbench-aarch64)")
     ap.add_argument("--commit", help="commit label recorded in the rows (default: HEAD of this checkout)")
     ap.add_argument("--ref", default=None, help="ref name recorded in the rows (farm: the submitted ref)")
@@ -437,6 +480,8 @@ def main():
     if a.mdb:
         MDB = a.mdb
     COMMIT[0], REF[0] = a.commit, a.ref
+    if a.best:
+        BESTF[0] = a.best
     if a.tri_n:
         WORK["triangle-3k"] = ("triangle", f"--scene drawcalls --n {a.tri_n} --max-draws 50000 --draw-idx 3", "", "--size 1280x720")
     if a.ours_env is not None:

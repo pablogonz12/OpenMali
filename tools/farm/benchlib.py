@@ -4,7 +4,7 @@
 Policy: explicit jobs > auto bench > idle sweep. Auto bench jobs are queued (a) when main gets a commit that touches the driver
 (vk/src, libkbase) for every phone that is available, (b) for a phone that has been idle > IDLE_SECS with its health gate ok and no
 bench row for the current main. Rows live in <state>/bench/results.jsonl (one per phone/driver/variant, with ref + commit + job)."""
-import json, os, re
+import json, os, re, subprocess, time
 
 IDLE_SECS = 900                                  # a phone idle this long (gate ok) runs the oldest missing bench
 RELEVANT = re.compile(r"^(vk/src/|libkbase/)")   # a main commit touching these changes the driver's performance
@@ -137,3 +137,84 @@ def digest_lines(rows):
             seg.append(f"{tag} ours {v[0]} / bridge {v[1]} ms")
         out.append(f"bench {ph:8} {str(e['ref'])[:12]}@{e['commit'][:7]} {e.get('date') or ''}: " + "; ".join(seg))
     return out
+
+
+# ---------- publishing: farm rows -> bench/results.jsonl + bench/RESULTS.md on origin/main, from a clone the farm owns
+PUB_RETRIES = 5
+
+
+def row_key(r):
+    """one published row per phone, driver, version, variant and mali-open commit (so every version keeps its own block)"""
+    return (r.get("phone"), r.get("driver"), r.get("version"), r.get("variant"), r.get("commit_full") or r.get("commit"))
+
+
+def publishable(r):
+    """fake rows and implausible ones (ours cube under 2 ms GPU = no real work, the invalid-winner symptom) are never published"""
+    if r.get("version") == "fake" or "presented" not in r or "offscreen" not in r:
+        return False
+    if r.get("bench") == "cube" and r.get("driver") == "ours":
+        g = (r["offscreen"] or {}).get("gpu_ms")
+        return g is None or g >= 2.0
+    return True
+
+
+def merge_rows(existing, new):
+    """-> merged list: later rows replace earlier ones with the same key (and move to the end = newest); relative order otherwise kept"""
+    d = {}
+    for r in existing + [x for x in new if publishable(x)]:
+        k = row_key(r)
+        d.pop(k, None)
+        d[k] = r
+    return list(d.values())
+
+
+def _git(clone, *a, timeout=120):
+    r = subprocess.run(["git", "-C", clone, *a], capture_output=True, text=True, timeout=timeout)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cmd=None, branch="main"):
+    """merge <state>/bench/results.jsonl into bench/results.jsonl of a clone owned by the farm, regenerate RESULTS.md, commit
+    "bench: <phones> rows for <short commit>" and push to `remote` <branch>. Never touches any other checkout. A rejected push
+    (somebody ff-merged meanwhile) is retried from a fresh fetch. -> {"status": "pushed|nothing|error", "n": rows changed, "msg": ...}"""
+    rows = [r for r in load_rows(state) if publishable(r)]
+    if not rows:
+        return {"status": "nothing", "n": 0, "msg": "no publishable rows in the farm state"}
+    clone = clone or os.path.join(bench_dir(state), "publish-clone")
+    if not os.path.isdir(os.path.join(clone, ".git")):
+        os.makedirs(os.path.dirname(clone), exist_ok=True)
+        r = subprocess.run(["git", "clone", "-q", "--branch", branch, remote, clone], capture_output=True, text=True, timeout=300)
+        if r.returncode:
+            return {"status": "error", "n": 0, "msg": "clone failed: " + r.stderr.strip()[-200:]}
+    msg = ""
+    for attempt in range(retries):
+        for step in (("fetch", "-q", "origin", branch), ("checkout", "-q", "-B", branch, "origin/" + branch), ("reset", "-q", "--hard", "origin/" + branch)):
+            rc, o = _git(clone, *step)
+            if rc:
+                return {"status": "error", "n": 0, "msg": f"git {step[0]}: {o[-200:]}"}
+        jl = os.path.join(clone, "bench", "results.jsonl")
+        old = [json.loads(l) for l in open(jl) if l.strip()] if os.path.exists(jl) else []
+        new = merge_rows(old, rows)
+        changed = [r for r in new if r not in old]
+        if not changed:
+            return {"status": "nothing", "n": 0, "msg": "already published"}
+        os.makedirs(os.path.dirname(jl), exist_ok=True)
+        with open(jl, "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in new))
+        rep = report_cmd or ["python3", "-I", os.path.join(clone, "tools", "bench2"), "--report"]
+        r = subprocess.run(rep, cwd=clone, capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            return {"status": "error", "n": 0, "msg": "report failed: " + (r.stdout + r.stderr).strip()[-200:]}
+        phones = ",".join(sorted({r["phone"] for r in changed}))
+        short = (changed[-1].get("commit_full") or changed[-1].get("commit") or "?")[:9]
+        _git(clone, "add", "bench/results.jsonl", "bench/RESULTS.md")
+        rc, o = _git(clone, "commit", "-q", "-m", f"bench: {phones} rows for {short}")
+        if rc:
+            return {"status": "error", "n": 0, "msg": "commit: " + o[-200:]}
+        rc, o = _git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+        if rc == 0:
+            return {"status": "pushed", "n": len(changed), "msg": f"{phones} @ {short}"}
+        msg = o[-200:]
+        log(f"publish: push rejected (attempt {attempt + 1}/{retries}), refetching: {msg[-80:]}")
+        time.sleep(0 if retries <= 1 else min(2 * attempt, 6))
+    return {"status": "error", "n": 0, "msg": "push rejected " + str(retries) + " times: " + msg}

@@ -182,6 +182,16 @@ def counts_str(run):
     return f"{c.get('tests', 0) - c.get('failed', 0)}/{c.get('tests', 0)} tests"
 
 
+def cmd_bench(a):
+    if a.what != "publish":
+        raise SystemExit("farm bench: publish")
+    remote = os.environ.get("MALI_FARM_PUBLISH_REMOTE") or git("remote", "get-url", "origin")
+    res = BL.publish(L.state_dir(), remote, log=lambda m: print(m, file=sys.stderr))
+    print(f"bench publish: {res['status']} ({res['n']} rows) {res['msg']}")
+    if res["status"] == "error":
+        raise SystemExit(1)
+
+
 def cmd_digest(a):
     _, devs = L.load_devices()
     print_devices(devs)
@@ -501,6 +511,9 @@ def main():
     s.add_argument("job", nargs="+")
     s.add_argument("--running", action="store_true")
     s.set_defaults(f=cmd_cancel)
+    s = sp.add_parser("bench", help="`bench publish`: merge the farm's bench rows into bench/results.jsonl + RESULTS.md on origin main now (farmd also does it by itself)")
+    s.add_argument("what", choices=["publish"])
+    s.set_defaults(f=cmd_bench)
     s = sp.add_parser("digest", help="one screen: devices, queue, latest result per ref/class and its difference vs main's latest daily")
     s.set_defaults(f=cmd_digest)
     s = sp.add_parser("diff", help="case-level status changes between two jobs")

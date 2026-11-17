@@ -889,5 +889,104 @@ class StaleLockUnit(unittest.TestCase):
         lk.release()
 
 
+class PublishUnit(unittest.TestCase):
+    """bench publishing into a temp origin: own clone, no collision with ff-merging workers, results-only commits never trigger a bench"""
+    def git(self, d, *a):
+        r = subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", *a], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def row(self, phone, drv, commit, variant="triangle-3k", bench="triangle", gpu=3.0, ver=None):
+        return {"date": "2026-11-18", "bench": bench, "variant": variant, "phone": phone, "class": "v11", "driver": drv, "version": ver or (commit if drv == "ours" else "malideck p22"),
+                "commit": commit[:9], "commit_full": commit, "job": "j", "ref": "main", "best_settings": "x",
+                "presented": {"fps": 60, "low1": 50, "over50": 0, "cpu_ms": 1, "gpu_ms": gpu}, "offscreen": {"fps": 90, "cpu_ms": 1, "gpu_ms": gpu}}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.origin = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        self.work = os.path.join(self.tmp, "work")
+        subprocess.run(["git", "clone", "-q", self.origin, self.work], check=True, capture_output=True)
+        os.makedirs(os.path.join(self.work, "bench"))
+        open(os.path.join(self.work, "bench", "results.jsonl"), "w").close()
+        open(os.path.join(self.work, "README"), "w").write("x")
+        self.git(self.work, "add", "-A")
+        self.git(self.work, "commit", "-qm", "seed")
+        self.git(self.work, "push", "-q", "origin", "HEAD:main")
+        self.state = os.path.join(self.tmp, "state")
+        os.makedirs(os.path.join(self.state, "bench"))
+        self.rep = [sys.executable, "-c", "import json;n=len(open('bench/results.jsonl').read().split());open('bench/RESULTS.md','w').write('table %d' % n)"]
+
+    def put(self, *rows):
+        with open(BL.results_path(self.state), "a") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+
+    def pub(self, **k):
+        return BL.publish(self.state, self.origin, report_cmd=self.rep, log=lambda m: None, **k)
+
+    def test_publish_commit_message_rows_and_idempotence(self):
+        c1 = "a" * 40
+        self.put(self.row("cmf", "ours", c1), self.row("cmf", "bridge", c1), self.row("cmf", "ours", c1, "cube-720p", "cube", gpu=0.2))    # last one is implausible
+        r = self.pub()
+        self.assertEqual((r["status"], r["n"]), ("pushed", 2), r)
+        self.git(self.work, "pull", "-q", "origin", "main")
+        self.assertEqual(self.git(self.work, "log", "-1", "--format=%s"), "bench: cmf rows for " + c1[:9])
+        self.assertEqual(len(open(os.path.join(self.work, "bench", "results.jsonl")).read().splitlines()), 2)
+        self.assertTrue(os.path.exists(os.path.join(self.work, "bench", "RESULTS.md")))
+        self.assertEqual(self.pub()["status"], "nothing")                                            # idempotent: no empty commit
+        c2 = "b" * 40                                                                                # a newer version keeps the older rows (one block per version)
+        self.put(self.row("cmf", "ours", c2), self.row("poco-x4", "ours", c2))
+        self.assertEqual(self.pub()["status"], "pushed")
+        self.git(self.work, "pull", "-q", "origin", "main")
+        keys = {(r["phone"], r["driver"], r["commit"]) for r in map(json.loads, open(os.path.join(self.work, "bench", "results.jsonl")))}
+        self.assertEqual(len(keys), 4)
+        self.assertIn(("cmf", "ours", c1[:9]), keys)
+        self.assertEqual(self.git(self.work, "log", "-1", "--format=%s"), "bench: cmf,poco-x4 rows for " + c2[:9])
+
+    def test_rejected_push_is_retried_and_other_checkouts_untouched(self):
+        self.put(self.row("cmf", "ours", "c" * 40))
+        # a worker ff-merges into origin right between our fetch and our push (pre-push hook of the farm's clone)
+        clone = os.path.join(self.state, "bench", "publish-clone")
+        subprocess.run(["git", "clone", "-q", self.origin, clone], check=True, capture_output=True)
+        flag = os.path.join(self.tmp, "flag")
+        hook = os.path.join(clone, ".git", "hooks", "pre-push")
+        open(hook, "w").write(f"#!/bin/sh\n[ -e {flag} ] && exit 0\ntouch {flag}\ncd {self.work} && echo more >> README && git -c user.name=t -c user.email=t@t commit -qam worker && git push -q origin HEAD:main\nexit 0\n")
+        os.chmod(hook, 0o755)
+        before = open(os.path.join(self.work, "README")).read()
+        r = self.pub()
+        self.assertEqual(r["status"], "pushed", r)
+        self.assertTrue(os.path.exists(flag))                                                        # the first push really was rejected
+        subs = self.git(self.origin, "log", "--format=%s", "main").splitlines()
+        self.assertEqual(subs[0], "bench: cmf rows for " + "c" * 9)
+        self.assertIn("worker", subs)                                                                # the worker's commit survived (rebased onto, never overwritten)
+        self.assertNotEqual(before, "")
+        self.assertEqual(self.git(self.work, "status", "--porcelain"), "")                          # the workers' checkout was never touched
+
+    def test_results_only_commit_does_not_trigger_a_bench(self):
+        self.assertEqual(BL.plan_trigger("a", "b", ["bench/results.jsonl", "bench/RESULTS.md", "bench/best.json"], ["v11", "v13"]), ("b", []))
+        self.assertFalse(BL.touches_driver(["bench/results.jsonl", "bench/RESULTS.md"]))
+
+    def test_stale_best_rules(self):
+        import datetime, importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("bench2mod", os.path.join(os.path.dirname(HERE), "bench2"))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("bench2mod", ld))
+        ld.exec_module(m)
+        d = datetime.date(2026, 11, 20)
+        fresh = {"cmf": {"ours": {"cube-720p": {"date": "2026-11-18", "sig": m.sweep_sig("cube-720p", "ours")}}}}
+        self.assertIsNone(m.best_stale(fresh, "cmf", "ours", "cube-720p", d))
+        self.assertIn("days old", m.best_stale(fresh, "cmf", "ours", "cube-720p", datetime.date(2026, 11, 26)))     # > 7 days
+        self.assertIn("no stored best", m.best_stale(fresh, "cmf", "ours", "triangle-3k", d))
+        fresh["cmf"]["ours"]["cube-720p"]["sig"] = "000000000000"                                      # a new knob/candidate changes the fingerprint
+        self.assertIn("new knob", m.best_stale(fresh, "cmf", "ours", "cube-720p", d))
+        old = m.OURS_ENV[:]
+        m.OURS_ENV.append(["MALI_NEW_KNOB=1"])
+        self.assertNotEqual(m.sweep_sig("cube-720p", "ours"), "x")
+        sig_new = m.sweep_sig("cube-720p", "ours")
+        m.OURS_ENV[:] = old
+        self.assertNotEqual(sig_new, m.sweep_sig("cube-720p", "ours"))
+        cfg = m.plan("cube-720p", "ours", "final", {"pres": {"env": ["MALI_RING=1"], "mode": "mailbox"}, "off": {"env": [], "off": True}})
+        self.assertEqual(cfg[0]["env"], [])                                                            # cube never replays a non-base env for ours
+
+
 if __name__ == "__main__":
     unittest.main()
