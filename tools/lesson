@@ -9,7 +9,7 @@ area=$1; text=$2; ev=$3
 [ ${#text} -le 160 ] || { echo "lesson: text is ${#text} chars (max 160)" >&2; exit 2; }
 [[ $text != *$'\n'* && $ev != *$'\n'* ]] || { echo "lesson: no newlines" >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
-main=$(git -C "$here" worktree list --porcelain | awk '/^worktree /{print substr($0,10); exit}')
+main=$(git -C "$here" worktree list --porcelain | awk '/^worktree / && !d {print substr($0,10); d=1}')
 [ -n "$main" ] || { echo "lesson: cannot find the main checkout" >&2; exit 1; }
 line="$(date +%F) [$area] $text ($ev)"
 # Same lint as tools/skill-lint.sh, on the new line only.
