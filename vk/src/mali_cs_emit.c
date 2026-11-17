@@ -726,9 +726,15 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    memset(&c, 0, sizeof c);
    E(&c, kb_cs_nop());
    if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
-   M32(&c, R->flush_id, 0);
-   E(&c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
-   E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   {
+      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x332); 0 = none */
+      int hf = e ? (int)strtol(e, NULL, 16) : 0x332;
+      if (hf) {
+         M32(&c, R->flush_id, 0);
+         E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
+      }
+      E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   }
    M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, 1 + d->nsets));
    M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
    M48(&c, CR_SPD, va_spd);
