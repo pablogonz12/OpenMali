@@ -122,3 +122,25 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    vk_device_finish(&dev->vk);
    vk_free(&alloc, dev);
 }
+
+/* R4-M1: core 1.2/1.3 entrypoints the runtime does not provide. The features behind them are not
+ * advertised (bufferDeviceAddressCaptureReplay, sparse), so they report "nothing". */
+VKAPI_ATTR uint64_t VKAPI_CALL
+mali_GetBufferOpaqueCaptureAddress(VkDevice device, const VkBufferDeviceAddressInfo *pInfo)
+{
+   return 0;
+}
+
+VKAPI_ATTR uint64_t VKAPI_CALL
+mali_GetDeviceMemoryOpaqueCaptureAddress(VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
+{
+   return 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetDeviceImageSparseMemoryRequirements(VkDevice device, const VkDeviceImageMemoryRequirements *pInfo,
+                                            uint32_t *pSparseMemoryRequirementCount,
+                                            VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   *pSparseMemoryRequirementCount = 0;
+}
