@@ -1,0 +1,35 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+#extension GL_KHR_shader_subgroup_clustered : require
+#extension GL_KHR_shader_subgroup_quad : require
+// R4-B2 subgroup operations: 16 results per invocation, host recomputes every one (local_size 64 = 4 full subgroups of 16).
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer O { uint o[]; };
+void main() {
+   uint i = gl_LocalInvocationIndex;
+   uint sid = gl_SubgroupInvocationID;
+   uint r[16];
+   r[0] = gl_SubgroupSize;
+   r[1] = sid;
+   r[2] = subgroupAdd(i);
+   r[3] = subgroupBallot(sid < 5u).x;
+   r[4] = subgroupBroadcastFirst(i);
+   r[5] = subgroupShuffle(i, (sid + 3u) & 15u);
+   r[6] = (subgroupAny(sid == 7u) ? 1u : 0u) | (subgroupAll(sid < 16u) ? 2u : 0u) | (subgroupAll(sid != 7u) ? 4u : 0u);
+   r[7] = subgroupInclusiveAdd(1u) * 256u + subgroupExclusiveAdd(1u);
+   r[8] = subgroupMax(i);
+   r[9] = subgroupShuffleDown(i, 1u) * 256u + subgroupShuffleXor(i, 1u);
+   r[10] = subgroupElect() ? 1u : 0u;
+   r[11] = subgroupQuadSwapHorizontal(i);
+   r[12] = subgroupClusteredAdd(i, 4u);
+   r[13] = 0u;
+   if (sid < 8u) r[13] = subgroupAdd(1u);          // divergent: only the 8 active lanes
+   r[14] = subgroupBroadcast(i, 5u);
+   r[15] = subgroupShuffleUp(i, 2u);
+   for (uint k = 0u; k < 16u; k++) o[i * 16u + k] = r[k];
+}

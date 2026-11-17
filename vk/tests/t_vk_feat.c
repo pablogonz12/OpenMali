@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1211,6 +1211,65 @@ test_demote(void)
    return 1;
 }
 
+/* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
+static VkPhysicalDeviceVulkan11Properties g_p11;
+static int
+test_subgroup(void)
+{
+   const VkSubgroupFeatureFlags need = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
+      VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT |
+      VK_SUBGROUP_FEATURE_CLUSTERED_BIT | VK_SUBGROUP_FEATURE_QUAD_BIT;
+   if ((g_p11.subgroupSupportedOperations & need) != need || !(g_p11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
+      printf("{\"test\":\"subgroup\",\"skipped\":\"subgroup operations not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   CHECK(g_p11.subgroupSize == 16, "subgroupSize %u", g_p11.subgroupSize);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf;
+   if (!hbuf_create(&bf, 64 * 16 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(bf.p, 0xEE, 64 * 16 * 4);
+   const VkDescriptorType ty[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "subgroup.comp.spv", 1, ty, &bf, 1)) return 0;
+   if (!g_fake) {
+      static const char *nm[16] = {"size", "sid", "add", "ballot", "bcastfirst", "shuffle", "vote", "incl/excl", "max", "down/xor", "elect", "quad", "clustered", "divergent", "bcast5", "up2"};
+      int bad[16] = {0}, tot = 0;
+      for (uint32_t i = 0; i < 64; i++) {
+         uint32_t sid = i & 15, base = i & ~15u;
+         uint32_t e[16];
+         e[0] = 16; e[1] = sid;
+         e[2] = 16 * base + 120;
+         e[3] = 0x1f;
+         e[4] = base;
+         e[5] = base + ((sid + 3) & 15);
+         e[6] = 1 | 2 | 0;
+         e[7] = (sid + 1) * 256 + sid;
+         e[8] = base + 15;
+         e[9] = (sid + 1 < 16 ? i + 1 : i) * 256 + (i ^ 1);   /* ShuffleDown out of range is undefined: only check the in-range lanes */
+         e[10] = sid == 0;
+         e[11] = i ^ 1;
+         e[12] = 4 * (i & ~3u) + 6;
+         e[13] = sid < 8 ? 8 : 0;
+         e[14] = base + 5;
+         e[15] = sid >= 2 ? i - 2 : 0;
+         for (int k = 0; k < 16; k++) {
+            uint32_t got = ((uint32_t *)bf.p)[i * 16 + k];
+            if (k == 9 && sid == 15) got = (got & 0xff) | (e[9] & ~0xffu);
+            if (k == 15 && sid < 2) continue;   /* ShuffleUp out of range: undefined */
+            if (got != e[k]) { if (!bad[k]++) printf("{\"info\":\"%s first bad i=%u got %08x want %08x\"}\n", nm[k], i, got, e[k]); }
+         }
+         tot++;
+      }
+      int nb = 0;
+      for (int k = 0; k < 16; k++) nb += bad[k];
+      CHECK(nb == 0, "%d wrong subgroup results (of %d invocations)", nb, tot);
+      printf("{\"test\":\"subgroup\",\"invocations\":%d,\"bad\":%d,\"ok\":true}\n", tot, nb);
+   } else printf("{\"test\":\"subgroup\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   hbuf_destroy(&bf);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1255,6 +1314,12 @@ main(int argc, char **argv)
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    f12.pNext = &f13;
    GetPhysicalDeviceFeatures2(pd, &f2);
+   {
+      VkPhysicalDeviceVulkan11Properties p11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+      VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p11};
+      ((PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2"))(pd, &p2);
+      g_p11 = p11;
+   }
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation;
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
@@ -1297,6 +1362,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
+   if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("demote")) ok &= test_demote();
 
    DeviceWaitIdle(dev);
