@@ -30,7 +30,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 18
+#define MALI_COMPILE_VERSION 19
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -388,6 +388,18 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          in.varying_layout = &vl;
          vs_layout = &vl;
       } else {
+         /* nir_shader_gather_info is never run here, so info.outputs_written is empty and pan_nir_lower_fs_outputs only adds the colour
+          * bits. Record gl_FragDepth / stencil-export writes before that pass turns them into zs_emit_pan (which nothing gathers):
+          * the compiler derives fs.writes_depth/writes_stencil (and can_early_z/can_fpk) from these bits. Without them the draw is
+          * emitted with fixed-function depth and early ZS, and the shader's depth/stencil never reaches the tile buffer. */
+         nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+            nir_foreach_instr(ins, blk) {
+               if (ins->type != nir_instr_type_intrinsic || nir_instr_as_intrinsic(ins)->intrinsic != nir_intrinsic_store_output)
+                  continue;
+               unsigned loc = nir_intrinsic_io_semantics(nir_instr_as_intrinsic(ins)).location;
+               if (loc == FRAG_RESULT_DEPTH || loc == FRAG_RESULT_STENCIL)
+                  nir->info.outputs_written |= BITFIELD64_BIT(loc);
+            }
          NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, 0);
          if (o->link_vs && o->link_vs->size == sizeof vl) {
             memcpy(&vl, o->link_vs->data, sizeof vl);
