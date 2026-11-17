@@ -44,3 +44,13 @@ NOT applied: dropping the head flush (MALI_HF=0 / MALI_CHF=0): the head FLUSH_CA
 NOT adopted yet: stress validation (t_vk_draw --loop 1000, t_vk_compute, t_vk_meta, t_bc_hw with MALI_HF=330) could not run: the Poco dropped off USB (adb empty) at this point.
 Resume: `vk/tests/valrun.sh "MALI_HF=330" 1000` (valguest.sh/valrun.sh push + run draw/compute/meta); if clean, change the default hf in mali_cs_emit.c (graphics line ~883) from 0x332 to 0x330, re-run mdbench cube/drawcalls/overdraw/tex.
 No PanVK job-stream capture / AFBC / FBD experiments done.
+
+## Re-check 2026-11-17 (head flush A/B NOT reproduced; 0x330 default NOT adopted)
+Same method as the A/B above (bench/run-guest.sh poco ours cube, wayland, mailbox, warmup 60, `ENVV="MALI_HF=<x>"`, a64-glibc-wl ICD, HEAD source + only the default changed), 3 runs x 8 s each, ~44 C:
+| MALI_HF | cube gpu_ms |
+|---|---|
+| 0 | 0.80 |
+| 0x330 | 0.88 |
+| 0x332 | 0.88 |
+| 0 + MALI_NOTF=1 | 0.84 |
+Env delivery verified: a temporary stderr log in mali_cs_emit.c printed `hf=0x0 env=0` in the guest, so MALI_HF does reach the driver through run-guest.sh. Stress validation of 0x330 (valrun 1000 loops, t_bc_hw 12/12) was clean, but the 0.33 ms result of the earlier A/B (runs/mdbench/jb2-cube-*) is not reproducible with the current tree (the ICD binary of that A/B was overwritten; fps then 337 vs 295 now). Cause unknown (different binary state or GPU clock/DVFS state). Default left at 0x332; re-test before changing.
