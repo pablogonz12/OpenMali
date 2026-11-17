@@ -192,6 +192,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, imageCubeArray),
          offsetof(VkPhysicalDeviceFeatures, shaderSampledImageArrayDynamicIndexing), /* t_vk_feat didx */
          offsetof(VkPhysicalDeviceFeatures, fillModeNonSolid),         /* t_vk_draw --only poly */
+         offsetof(VkPhysicalDeviceFeatures, multiViewport),            /* t_vk_draw --only multivp */
          offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
       };

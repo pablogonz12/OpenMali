@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|clearatt|ring|pushfs|ubo|descupd|texture]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -43,7 +43,7 @@ static struct {
 static VkPhysicalDeviceFeatures g_feat;
 static const char *g_only, *g_spv = "shader";
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
 #define CHECK(c, ...)                                                                              \
@@ -379,7 +379,7 @@ scene_create(struct scene *s, int depth)
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-                                            .viewportCount = 1, .scissorCount = 1};
+                                            .viewportCount = s->mode == MODE_MVP ? 4 : 1, .scissorCount = s->mode == MODE_MVP ? 4 : 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                 .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
@@ -478,15 +478,28 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
    VkRect2D sc = {{0, 0}, {W, H}};
    if (s->mode == MODE_SCISSOR) sc.extent.width = W / 2;   /* left half only */
-   if (s->mode == MODE_VPORT) vp = (VkViewport){0, 0, W / 2, H, 0.0f, 1.0f};   /* NDC quad maps into the left half */
+   if (s->mode == MODE_VPORT || s->mode == MODE_MVP) vp = (VkViewport){0, 0, W / 2, H, 0.0f, 1.0f};   /* NDC quad maps into the left half */
    if (s->mode == MODE_CLEARATT) {
       VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0,
                               .clearValue = {.color = {{0, 0, 1, 1}}}};
       VkClearRect cr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 0, .layerCount = 1};
       CmdClearAttachments(cb, 1, &ca, 1, &cr);
    }
-   CmdSetViewport(cb, 0, 1, &vp);
-   CmdSetScissor(cb, 0, 1, &sc);
+   if (s->mode == MODE_MVP) {
+      /* multiViewport: 4 viewports/scissors; only index 0 is reachable without a geometry shader, so 1..3 are junk that must be ignored.
+       * Set in two calls (first 2..3, then 0..1) to cover firstViewport != 0. */
+      VkViewport vj[2] = {{0, 0, 3, 3, 0.0f, 1.0f}, {W / 2, 0, W / 2, H, 0.0f, 1.0f}};
+      VkRect2D sj[2] = {{{0, 0}, {1, 1}}, {{0, 0}, {W, H}}};
+      VkViewport v01[2] = {vp, {0, 0, 5, 5, 0.0f, 1.0f}};
+      VkRect2D s01[2] = {sc, {{0, 0}, {2, 2}}};
+      CmdSetViewport(cb, 2, 2, vj);
+      CmdSetScissor(cb, 2, 2, sj);
+      CmdSetViewport(cb, 0, 2, v01);
+      CmdSetScissor(cb, 0, 2, s01);
+   } else {
+      CmdSetViewport(cb, 0, 1, &vp);
+      CmdSetScissor(cb, 0, 1, &sc);
+   }
    if (g_fx.on && g_fx.dyn) {
       CmdSetCullMode(cb, g_fx.cull);
       CmdSetFrontFace(cb, g_fx.cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
@@ -497,7 +510,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkDeviceSize offs[2] = {0, 0};
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
-   if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
+   if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
    if (s->mode == MODE_TEX || s->mode == MODE_UBO)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
@@ -513,7 +526,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdDrawIndexedIndirect(cb, s->ib, 64, 2, 20);   /* multiDrawIndirect: drawCount 2 */
       else if (s->mode >= MODE_PUSHFS)
          CmdDrawIndexed(cb, 6, 1, 0, 7, 0);
-      else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT)
+      else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
       else
          CmdDraw(cb, 3, 1, 0, 0);
@@ -677,7 +690,7 @@ test_mode(const char *name, int mode, double expect, double tol)
             uint32_t cov = count_cov(&s);
             double err = fabs((double)cov - expect) / expect * 100.0;
             CHECK(err <= tol, "%s iteration %d coverage %u expect %.0f (%.2f%%)", name, i, cov, expect, err);
-            if (mode == MODE_SCISSOR || mode == MODE_VPORT) {   /* nothing right of the half line */
+            if (mode == MODE_SCISSOR || mode == MODE_VPORT || mode == MODE_MVP) {   /* nothing right of the half line */
                uint32_t right = 0;
                for (int y = 0; y < H; y++) for (int x = W / 2; x < W; x++) right += s.px[y * s.pitch + x * 4 + 3] != 0;
                CHECK(right == 0, "%u px right of the half line", right);
@@ -1097,7 +1110,7 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport};
    di.pEnabledFeatures = &en;
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
@@ -1120,6 +1133,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);
    if (ok && CASE_ON("scissor")) ok &= test_mode("scissor", MODE_SCISSOR, 8192.0, 0.5);
    if (ok && CASE_ON("viewport")) ok &= test_mode("viewport", MODE_VPORT, 8192.0, 0.5);
+   if (ok && CASE_ON("multivp")) {
+      if (g_feat.multiViewport) ok &= test_mode("multivp", MODE_MVP, 8192.0, 0.5);
+      else printf("{\"test\":\"multivp\",\"skipped\":\"multiViewport not advertised\",\"ok\":true}\n");
+   }
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("ring")) ok &= test_ring();
