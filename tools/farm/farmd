@@ -435,6 +435,8 @@ class Farm:
                                 env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
         if rc == 125:
             return {"lost": True}
+        if rc == 73:                                                   # our own harness refused: the phone lock is not held by this tree
+            return {"gated": True}
         if rc == 77:
             return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
         ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
@@ -502,6 +504,8 @@ class Farm:
                                     tmo, lambda: self.alive(dev), cwd=shim, env=self.phone_env(dev, {"QDEQP_ENV": job["env"], "QDEQP_RUN": run_id, "QDEQP_SO_SHA256": job.get("so_sha256") or ""}))
             if rc == 125:
                 return {"lost": True}
+            if rc == 73:
+                return {"gated": True}
             if rc != 75 and rc != 124:                                   # driver on the phone must still be this job's build
                 ok_s, got = (rc != 76) and self.verify_so(job, dev, so_phone) or (False, "changed mid-run")
                 self.adb(dev, "shell", f"rm -f {so_phone}")
