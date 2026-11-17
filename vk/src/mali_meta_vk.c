@@ -6,6 +6,7 @@
  * Only linear images are handled (the default, R3-PLAN.md M5): tiled -> VK_ERROR_FEATURE_NOT_PRESENT on the command buffer (sticky,
  * like every unsupported command of mali_cmd.c). */
 #include <errno.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +82,7 @@ static void
 emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
 {
    if (plan_err) {
+      if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: plan error %d\n", plan_err);
       fail(cmd, plan_err == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_ERROR_FEATURE_NOT_PRESENT);
       mali_meta_list_free(l);
       return;
@@ -123,8 +125,10 @@ buf_surf(struct mali_meta_surf *s, struct vk_buffer *b, uint64_t off)
 static bool
 img_surf(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresourceLayers sub, VkOffset3D o, const struct mali_plane_layout **pl)
 {
-   if (img->lay.d.tiled || !img->va)
+   if (img->lay.d.tiled || !img->va) {
+      if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: img_surf rejects tiled=%d va=%d fmt=%d\n", (int)img->lay.d.tiled, img->va != 0, (int)img->vk.format);
       return false;
+   }
    const struct mali_plane_layout *p = mali_image_plane_for_aspect(&img->lay, sub.aspectMask);
    if (!p)
       return false;
@@ -329,6 +333,45 @@ blit_class(int pipe, unsigned *n, bool *f32, bool *bgra)
    return true;
 }
 
+/* Generic pixel class (any plain colour format up to 128 bit): channel descriptors of mali_meta_blit. False for packed floats (B10G11R11, E5B9G9R9),
+ * depth/stencil, compressed and multi-planar formats. */
+struct gdesc { uint32_t ch[4], bs, cls; bool srgb; };
+
+static bool
+blit_gclass(int pipe, struct gdesc *g)
+{
+   const struct util_format_description *d = util_format_description(pipe);
+   if (!d || d->layout != UTIL_FORMAT_LAYOUT_PLAIN || (d->colorspace != UTIL_FORMAT_COLORSPACE_RGB && d->colorspace != UTIL_FORMAT_COLORSPACE_SRGB) ||
+       d->block.width != 1 || d->block.height != 1 || d->block.bits > 128 || d->block.bits % 8)
+      return false;
+   memset(g, 0, sizeof *g);
+   g->bs = d->block.bits / 8;
+   g->srgb = d->colorspace == UTIL_FORMAT_COLORSPACE_SRGB;
+   bool ui = false, si = false;
+   for (unsigned c = 0; c < 4; c++) {
+      unsigned s = d->swizzle[c];
+      if (s > PIPE_SWIZZLE_W)
+         continue;
+      const struct util_format_channel_description *ch = &d->channel[s];
+      unsigned t;
+      switch (ch->type) {
+      case UTIL_FORMAT_TYPE_UNSIGNED: t = ch->normalized ? 1 : 3; ui |= t == 3; break;
+      case UTIL_FORMAT_TYPE_SIGNED: t = ch->normalized ? 2 : 4; si |= t == 4; break;
+      case UTIL_FORMAT_TYPE_FLOAT: if (ch->size != 16 && ch->size != 32) return false; t = 5; break;
+      default: return false;
+      }
+      if (ch->size < 1 || ch->size > 32 || ch->shift > 127 || ch->shift < 0)
+         return false;
+      g->ch[c] = (uint32_t)ch->shift | ch->size << 8 | t << 16;
+   }
+   /* integer formats must be integer in every present channel */
+   bool pure = d->channel[0].pure_integer;
+   if (pure != (ui || si))
+      return false;
+   g->cls = si ? 2 : ui ? 1 : 0;
+   return true;
+}
+
 static int
 blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mali_image *di, const VkImageBlit2 *g, VkFilter filter, bool resolve_mode,
          const VkImageResolve2 *rg)
@@ -358,8 +401,6 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    uint32_t nz = s3 || d3 ? 1 : ss.layerCount;
    if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
       return -EINVAL;   /* z scaling / 3D <-> array mixes */
-   if (sp->pipe != dp->pipe && sp->bs != dp->bs)
-      return -EINVAL;
 
    struct mali_meta_blit b;
    memset(&b, 0, sizeof b);
@@ -379,9 +420,11 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    bool same_pix = sp->pipe == dp->pipe;
    bool plain = b.s[0] == b.d[0] && b.s[1] == b.d[1] && b.s[2] == b.d[2] && b.s[3] == b.d[3];   /* 1:1, no mirror */
    bool cls = blit_class(sp->pipe, &sn, &sf, &sbgra) && blit_class(dp->pipe, &dn, &df, &dbgra) && sn == dn && sf == df;
-   if (resolve_mode && (!cls || !same_pix || si->lay.d.samples < 2))
+   struct gdesc gs, gd;
+   bool gen = !cls && blit_gclass(sp->pipe, &gs) && blit_gclass(dp->pipe, &gd) && gs.cls == gd.cls && !(gs.cls && resolve_mode);
+   if (resolve_mode && ((!cls && !gen) || !same_pix || si->lay.d.samples < 2))
       return -EINVAL;
-   if (!resolve_mode && !cls) {
+   if (!resolve_mode && !cls && !gen) {
       /* Unsupported pixel class (sRGB, 16 bit, integer, depth): only the identical-format 1:1 nearest case, as a rectangle copy. */
       if (!same_pix || !plain || s3 != d3 || ss.layerCount != ds.layerCount)
          return -EINVAL;
@@ -391,10 +434,22 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
       uint32_t w = (uint32_t)(b.s[2] > b.s[0] ? b.s[2] - b.s[0] : b.s[0] - b.s[2]), hh = (uint32_t)(b.s[3] > b.s[1] ? b.s[3] - b.s[1] : b.s[1] - b.s[3]);
       return mali_meta_plan_copy(l, &d, &s, sp->bs, w, hh, s3 ? 1 : ss.layerCount);
    }
-   b.ncomp = sn;
-   b.f32 = sf;
-   b.swap_rb = sbgra != dbgra;
-   b.mode = resolve_mode ? 2 : (filter == VK_FILTER_LINEAR ? 1 : 0);
+   if (gen) {
+      b.generic = true;
+      b.ncomp = 4;
+      memcpy(b.sch, gs.ch, sizeof b.sch);
+      memcpy(b.dch, gd.ch, sizeof b.dch);
+      b.sbs = gs.bs;
+      b.dbs = gd.bs;
+      b.cls = gs.cls;
+      b.ssrgb = gs.srgb;
+      b.dsrgb = gd.srgb;
+   } else {
+      b.ncomp = sn;
+      b.f32 = sf;
+      b.swap_rb = sbgra != dbgra;
+   }
+   b.mode = resolve_mode ? 2 : (filter == VK_FILTER_LINEAR && !(gen && gs.cls) ? 1 : 0);
    if (resolve_mode) {
       b.nsamples = si->lay.d.samples;
       b.sample_stride = (uint32_t)si->lay.plane[0].slice[ss.mipLevel].surface_stride;

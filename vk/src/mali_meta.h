@@ -25,7 +25,7 @@ extern "C" {
 /* BC decode shaders (mali_bc.h, 4 of them) follow the three built-in ones: id = MALI_META_BC_FIRST + enum mali_bc_shader. */
 enum mali_meta_shader { MALI_META_COPY = 0, MALI_META_BLIT = 1, MALI_META_QCOPY = 2, MALI_META_BC_FIRST = 3, MALI_META_NSHADERS = 7 };
 
-#define MALI_META_PUSH_WORDS 24
+#define MALI_META_PUSH_WORDS 32
 
 struct mali_meta_bind { uint64_t va; uint32_t size; };
 
@@ -72,6 +72,10 @@ struct mali_meta_blit {
    bool f32, swap_rb;
    int mode;                        /* 0 nearest, 1 linear, 2 resolve */
    uint32_t nsamples, sample_stride;
+   /* generic path (any plain colour format): per logical channel R,G,B,A  off | size<<8 | type<<16, type 0 absent 1 unorm 2 snorm 3 uint 4 sint 5 float;
+    * sbs/dbs bytes per pixel; cls 0 float-ish (unorm/snorm/float), 1 uint, 2 sint (nearest only); sRGB decode/encode of RGB. */
+   bool generic, ssrgb, dsrgb;
+   uint32_t sch[4], dch[4], sbs, dbs, cls;
 };
 int mali_meta_plan_blit(struct mali_meta_list *l, const struct mali_meta_blit *b);
 
