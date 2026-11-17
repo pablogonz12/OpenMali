@@ -400,8 +400,15 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    struct mali_meta_surf s, d;
    const struct mali_plane_layout *sp, *dp;
    VkOffset3D zero = { 0, 0, 0 };
-   if (si->bc || di->bc)
-      return -EINVAL;   /* blit from/to BC images: not done (would have to read the shadow) */
+   if (di->bc)
+      return -EINVAL;   /* blit to BC images is not valid */
+   struct mali_image ssh;
+   if (si->bc) {   /* blit from a BC image: read the decoded shadow (same allocation, the shadow layout and format) */
+      ssh = *si;
+      ssh.lay = si->sh_lay;
+      ssh.lay.size = si->lay.size;
+      si = &ssh;
+   }
    if (!img_surf(&s, si, ss, zero, &sp) || !img_surf(&d, di, ds, zero, &dp))
       return -EINVAL;
    uint32_t sw = lvl(si->lay.d.extent.width, ss.mipLevel), sh = lvl(si->lay.d.extent.height, ss.mipLevel);
