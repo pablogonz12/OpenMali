@@ -11,11 +11,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import farmlib as L                                    # noqa: E402
 import gate                                            # noqa: E402
+import sweeplib as S                                   # noqa: E402
 
 RETRIES = 3
 RECOVER_EVERY = 45            # s between adb recovery attempts while a wanted device is missing
 DOWN_AFTER = int(os.environ.get("MALI_FARM_DOWN_AFTER", "600"))
 BUILD_TIMEOUT = 300
+SWEEP_WALL = int(os.environ.get("MALI_FARM_SWEEP_WALL", "300"))      # s per idle-sweep chunk (a few minutes)
+SWEEP_CHUNK = int(os.environ.get("MALI_FARM_SWEEP_CHUNK", "1500"))   # cases per idle-sweep chunk (the wall cap cuts it short if slower)
 os.environ["PATH"] = os.path.expanduser("~/Android/Sdk/platform-tools") + os.pathsep + os.environ.get("PATH", "")
 
 
@@ -56,6 +59,8 @@ class Farm:
         self.last_health, self.last_wl = {}, {}
         self.stop_reason, self.last_pw, self.last_mdns = {}, {}, {}
         self.cfg_mtime = self.devices_mtime()
+        self.wake = threading.Event()                  # set when a run/sweep ends: schedule the next one immediately, no poll wait
+        self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
 
     # ---------- devices
     def devices_mtime(self):
@@ -311,6 +316,16 @@ class Farm:
             if not os.path.lexists(os.path.join(tree, "third_party")) and os.path.isdir(tp):
                 os.symlink(os.path.realpath(tp), os.path.join(tree, "third_party"))
             self.borrow_deqp(tree)
+            need_bionic = job["suite"] == "smoke" and any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values())
+            if not job.get("dirty") and not need_bionic:          # build cache per commit: an earlier job of the same commit already built this .so
+                for o in L.list_jobs(True):
+                    art = os.path.join(L.state_dir(), "artifacts", (o.get("so_sha256") or "x") + ".so")
+                    if o["id"] != job["id"] and o["commit"] == job["commit"] and not o.get("dirty") and o.get("build") == "ok" and os.path.exists(art):
+                        od = os.path.join(tree, "vk", "out", "a64-glibc")
+                        os.makedirs(od, exist_ok=True)
+                        shutil.copy2(art, os.path.join(od, "libvulkan_mali.so"))
+                        self.upd(job["id"], lambda x, o=o: x.update(so_sha256=o["so_sha256"], build="ok", build_s=0, build_cached=o["id"]))
+                        return o["so_sha256"], ""
             env = dict(os.environ, MESA_BUILD=os.path.join(tree, "third_party", "build-vk-a64-glibc"), MALI_TARGET="a64-glibc")
             rc, out = L.sh(["timeout", "-k", "10", str(BUILD_TIMEOUT), "bash", os.path.join(tree, "vk", "build.sh")], BUILD_TIMEOUT + 30, env=env)
             so = os.path.join(tree, "vk", "out", "a64-glibc", "libvulkan_mali.so")
@@ -351,7 +366,7 @@ class Farm:
         need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
         if suite == "smoke" and any(self.shell_route(dv) for dv in self.devs.values()):
             need.append(("third_party/build-vk-a64-bionic", "Mesa a64-bionic build tree (shell-route smoke)"))
-        if suite in ("daily", "cases"):
+        if suite in ("daily", "cases", "sweep"):
             need += [("vk/deqp/out/a64-glibc", "dEQP build (vk/deqp/build.sh)"), ("vk/deqp/lists/daily-sample.txt", "dEQP case list")]
         if not self.quick_root or not os.path.isdir(os.path.join(self.quick_root, "scripts", "quick")):
             return "missing dependency: quick_root with scripts/quick (set quick_root in ~/.config/mali-farm/farm.toml)"
@@ -415,6 +430,8 @@ class Farm:
     def qrestore(self, dev):
         if self.fake:
             return
+        if self.shell_route(dev):                                       # a killed shell-route run may have left the screen dimmed
+            L.sh([sys.executable, "-I", os.path.join(HERE, "shellroute.py"), "undim", "--lock", dev["lock"]], 60, env=self.phone_env(dev, {"SHELLROUTE_SERIAL": dev["serial"]}))
         L.sh([os.path.join(self.quick_root, "scripts", "quick", "qrestore"), dev["lock"]], 90, env=self.phone_env(dev))
 
     # ---------- suites -> dict(verdict, counts, new_failures, newly_passing, notes, extra)
@@ -449,6 +466,9 @@ class Farm:
         al = dev["alias"]
         if self.is_disabled(dev):
             self.stop_reason[al] = "disabled by owner"
+            return "stop"
+        if al in self.sweep_run and self.real_pending(dev["class"]):         # idle sweep yields to any real job
+            self.stop_reason[al] = "preempted"
             return "stop"
         rj = getattr(self, "running_job", {}).get(al)
         if rj and os.path.exists(os.path.join(L.state_dir(), "cancel", rj)):         # `farm cancel --running`
@@ -485,7 +505,10 @@ class Farm:
         sha = job.get("so_sha256_bionic" if mode == "smoke" else "so_sha256") or ""
         cmd = [sys.executable, "-I", os.path.join(HERE, "shellroute.py"), mode, "--lock", dev["lock"], "--tree", self.tree(job["id"]),
                "--sha", sha, "--run", run_id, "--env", job["env"], *extra]
-        return L.run_watched(cmd, tmo, lambda: self.alive(dev), env=self.phone_env(dev, {"SHELLROUTE_SERIAL": dev["serial"]}))
+        ex = {"SHELLROUTE_SERIAL": dev["serial"]}
+        if run_id.startswith("sweep-"):
+            ex["SHELLROUTE_KEEP_DIM"] = "1"
+        return L.run_watched(cmd, tmo, lambda: self.alive(dev), env=self.phone_env(dev, ex))
 
     def shell_rc(self, rc, out, what):
         """common handling of shellroute exit codes -> result dict or None (= carry on)"""
@@ -506,12 +529,36 @@ class Farm:
             open(flag, "w").close()
             return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (fake)"}
 
+    def keep_log(self, job, dev, part, out, rc):
+        """last 200 lines of each test's output of this job part -> <state>/logs/<job>-<class>-<part>.log (.gz above 64 KB); read with `farm log`"""
+        lines = []
+        for l in out.splitlines():
+            try:
+                o = json.loads(l) if l.startswith("{") else None
+            except ValueError:
+                o = None
+            lines.append(f"[{o['log']}] {o['line']}" if o and "log" in o and "line" in o else l)
+        per, keep = {}, []
+        for l in lines:                                          # last 200 lines per test tag, original order
+            per.setdefault(l.split("]")[0] if l.startswith("[") else "", []).append(l)
+        for k, v in per.items():
+            keep += v[-200:]
+        txt = "\n".join(keep) + f"\n[farm] rc={rc}\n"
+        p = os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['class']}-{part}.log")
+        if len(txt) > 65536:
+            import gzip
+            with gzip.open(p + ".gz", "wt") as f:
+                f.write(txt)
+        else:
+            open(p, "w").write(txt)
+
     def suite_smoke(self, job, dev):
         env = job["env"]
         sw = self.fake_swap(job) if self.fake else None
         if sw:
             return sw
         if self.fake:
+            self.keep_log(job, dev, "smoke", "\n".join(json.dumps({"log": "t_vk_draw", "line": f"fake line {i}" + (" only=" + job["only"] if job.get("only") else "")}) for i in range(300)), 0)
             bad = "FAKE_FAIL=1" in env
             return {"verdict": "fail" if bad else "pass", "counts": {"tests": 3, "failed": 1 if bad else 0},
                     "new_failures": [["t_vk_draw", "rc=1"]] if bad else [], "newly_passing": [], "notes": "fake"}
@@ -520,7 +567,7 @@ class Farm:
             if not job.get("so_sha256_bionic"):
                 return {"verdict": "error", "notes": "no bionic build for the shell route"}
             run_id = job["id"] + "-" + dev["alias"]
-            rc, out = self.run_shellroute(job, dev, "smoke", run_id, [], 700)
+            rc, out = self.run_shellroute(job, dev, "smoke", run_id, ["--only", job["only"]] if job.get("only") else [], 700)
             bad = self.shell_rc(rc, out, "shellroute")
             if bad:
                 return bad
@@ -532,7 +579,7 @@ class Farm:
             if dev["lock"] not in ("cmf", "poco"):
                 return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
             self.harness(tree)
-            rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, lambda: self.alive(dev),
+            rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20", job.get("only") or ""], 340, lambda: self.alive(dev),
                                     env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
             if rc == 125:
                 return {"lost": True}
@@ -550,6 +597,7 @@ class Farm:
                     recs.append(json.loads(l))
                 except ValueError:
                     pass
+        self.keep_log(job, dev, "smoke", out, rc)
         summ = next((r for r in reversed(recs) if r.get("test") == "summary"), None)
         tests = [r for r in recs if "rc" in r]
         failed = [[r["test"], f"rc={r['rc']} fail_lines={r.get('fail_lines')}"] for r in tests if r["rc"] != 0 or r.get("fail_lines")]
@@ -671,60 +719,80 @@ class Farm:
         return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
                 "notes": f"{bref}; qdeqp rc={rc}{extra}; {note if verdict != 'pass' else ''}".strip()}
 
+    def fake_status(self, job, c):
+        if "FAKE_CASE_NS=1" in job["env"].split():
+            return "NotSupported"
+        for k, s in (("CRASHX", "Crash"), ("HANGX", "ResourceHog"), ("FAILX", "Fail"), ("NSX", "NotSupported")):
+            if k in c:
+                return s
+        return "Pass"
+
+    def exec_list(self, job, dev, cases, rid, wd, tmo, tag, chunk=300, verify_always=False):
+        """run `cases` once on the phone with this job's build (own per-run .so path, sha256 checked on the phone, farmd lock held by the caller)
+        -> (rc, out, {case: (status, note)}, so_ok | None, sha_on_phone). Partial results of a stopped run are returned too."""
+        if self.fake:
+            if os.environ.get("FAKE_SWEEP_SLOW") and tag.startswith("sw"):          # test hook: a slow chunk that a real job can preempt
+                rc, out = L.run_watched(["sleep", os.environ["FAKE_SWEEP_SLOW"]], 60, lambda: self.alive(dev), poll=0.2)
+                if rc == 125:
+                    return rc, out, {}, True, None
+            return 0, "", {c: (self.fake_status(job, c), "") for c in cases}, True, None
+        tree = self.tree(job["id"])
+        self.harness(tree)
+        shell = self.shell_route(dev)
+        os.makedirs(os.path.join(wd, "runs"), exist_ok=True)
+        if not shell:
+            for nm, tgt in (("scripts", os.path.join(self.quick_root, "scripts")), ("tools", os.path.join(self.quick_root, "tools")), ("driver", tree)):
+                if not os.path.lexists(os.path.join(wd, nm)):
+                    os.symlink(tgt, os.path.join(wd, nm))
+        lf = os.path.join(wd, f"{tag}.txt")
+        open(lf, "w").write("\n".join(cases) + "\n")
+        if shell:
+            tsv = os.path.join(wd, f"{tag}.tsv")
+            rc, out = self.run_shellroute(job, dev, "daily", rid, ["--list", lf, "--out", tsv, "--chunk", str(min(chunk, 100))], tmo)
+            so_phone = f"/data/local/tmp/g/icd.{rid}.so"
+        else:
+            rc, out = L.run_watched([sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"), dev["lock"], lf, "--chunk", str(chunk)], tmo,
+                                    lambda: self.alive(dev), cwd=wd, env=self.phone_env(dev, {"QDEQP_ENV": job["env"], "QDEQP_RUN": rid,
+                                                                                              "QDEQP_SO_SHA256": job.get("so_sha256") or ""}))
+            so_phone = f"/storage/emulated/0/Download/qdeqp/libvulkan_mali.{rid}.so"
+            rd = os.path.join(wd, "runs", "qdeqp")
+            ts = [os.path.join(rd, x) for x in os.listdir(rd) if x.endswith(f"-ours-{tag}.tsv")] if os.path.isdir(rd) else []
+            tsv = max(ts, key=os.path.getsize) if ts else ""
+        sok, sgot = None, None
+        if rc in (0, 1) or verify_always:
+            sok, sgot = self.verify_so(job, dev, so_phone)
+            if rc in (76, 77) or sgot is None and rc not in (0, 1):
+                sok = None if sgot is None else sok
+        self.adb(dev, "shell", f"rm -f {so_phone}")
+        got = {}
+        if tsv and os.path.exists(tsv):
+            for l in open(tsv):
+                p = l.rstrip("\n").split("\t")
+                if len(p) >= 2:
+                    got[p[0]] = (p[1], p[2] if len(p) > 2 else "")
+        return rc, out, got, sok, sgot
+
     def suite_cases(self, job, dev):
         """only job["cases"], job["repeat"] times (one dEQP run per repetition, each with its own per-run .so path + sha256 check) -> per-case status counts"""
         cases, n = job["cases"], int(job.get("repeat") or 1)
         stat = {c: {} for c in cases}
-        if self.fake:
-            if "FAKE_SLOW=1" in job["env"].split():                  # test hook: a long run the owner can cancel
-                rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
-                if rc == 125:
-                    return {"lost": True}
-            for _ in range(n):
-                for c in cases:
-                    s = "NotSupported" if "FAKE_CASE_NS=1" in job["env"].split() else "Pass"
-                    stat[c][s] = stat[c].get(s, 0) + 1
-        else:
-            tree = self.tree(job["id"])
-            self.harness(tree)
-            shell = self.shell_route(dev)
-            wd = os.path.join(L.state_dir(), "work", f"{job['id']}-{dev['alias']}-cases")
-            os.makedirs(os.path.join(wd, "runs"), exist_ok=True)
-            if not shell:
-                for nm, tgt in (("scripts", os.path.join(self.quick_root, "scripts")), ("tools", os.path.join(self.quick_root, "tools")), ("driver", tree)):
-                    if not os.path.lexists(os.path.join(wd, nm)):
-                        os.symlink(tgt, os.path.join(wd, nm))
-            for i in range(n):
-                lf = os.path.join(wd, f"rep{i}.txt")
-                open(lf, "w").write("\n".join(cases) + "\n")
-                rid = f"{job['id']}-{dev['alias']}-r{i}"
-                if shell:
-                    tsv = os.path.join(wd, f"rep{i}.tsv")
-                    rc, out = self.run_shellroute(job, dev, "daily", rid, ["--list", lf, "--out", tsv, "--chunk", "100"], 900)
-                    so_phone = f"/data/local/tmp/g/icd.{rid}.so"
-                else:
-                    rc, out = L.run_watched([sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"), dev["lock"], lf, "--chunk", "300"], 900,
-                                            lambda: self.alive(dev), cwd=wd, env=self.phone_env(dev, {"QDEQP_ENV": job["env"], "QDEQP_RUN": rid,
-                                                                                                      "QDEQP_SO_SHA256": job.get("so_sha256") or ""}))
-                    so_phone = f"/storage/emulated/0/Download/qdeqp/libvulkan_mali.{rid}.so"
-                    rd = os.path.join(wd, "runs", "qdeqp")
-                    ts = [os.path.join(rd, x) for x in os.listdir(rd) if x.endswith(f"-ours-rep{i}.tsv")] if os.path.isdir(rd) else []
-                    tsv = max(ts, key=os.path.getsize) if ts else ""
-                bad = self.shell_rc(rc, out, "run")
-                if bad:
-                    if bad.get("verdict") == "invalid":
-                        self.adb(dev, "shell", f"rm -f {so_phone}")
-                    return bad
-                if rc in (0, 1):
-                    ok_s, got = self.verify_so(job, dev, so_phone)
-                    self.adb(dev, "shell", f"rm -f {so_phone}")
-                    if not ok_s:
-                        return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]}); result discarded"}
-                cur = L.read_tsv(tsv) if tsv and os.path.exists(tsv) else {}
-                for c in cases:
-                    s = cur.get(c, "Missing")
-                    stat[c][s] = stat[c].get(s, 0) + 1
-            shutil.rmtree(wd, ignore_errors=True)
+        if self.fake and "FAKE_SLOW=1" in job["env"].split():                  # test hook: a long run the owner can cancel
+            rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
+            if rc == 125:
+                return {"lost": True}
+        wd = os.path.join(L.state_dir(), "work", f"{job['id']}-{dev['alias']}-cases")
+        for i in range(n):
+            rid = f"{job['id']}-{dev['alias']}-r{i}"
+            rc, out, got, sok, sgot = self.exec_list(job, dev, cases, rid, wd, 900, f"rep{i}")
+            bad = self.shell_rc(rc, out, "run")
+            if bad:
+                return bad
+            if sok is False:
+                return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(sgot)[:12]}); result discarded"}
+            for c in cases:
+                s = got.get(c, ("Missing", ""))[0]
+                stat[c][s] = stat[c].get(s, 0) + 1
+        shutil.rmtree(wd, ignore_errors=True)
         tot = {}
         for c in cases:
             for s, k in stat[c].items():
@@ -738,6 +806,12 @@ class Farm:
 
     # ---------- one part of a job on one device
     def run_part(self, jid, cls, alias):
+        try:
+            self._run_part(jid, cls, alias)
+        finally:
+            self.wake.set()
+
+    def _run_part(self, jid, cls, alias):
         dev = self.devs[alias]
         if self.is_disabled(dev):
             return
@@ -838,11 +912,166 @@ class Farm:
         if L.job_verdict(j) != "pending":
             self.cleanup_tree(jid)
 
+    # ---------- idle sweep (full dEQP-VK list on phones with nothing queued)
+    def real_pending(self, cls):
+        return any(c == cls and p["state"] == "pending" for j in L.list_jobs() for c, p in j["parts"].items())
+
+    def sweep_on(self, dev):
+        if self.once and not os.environ.get("MALI_FARM_SWEEP_LIST"):       # --once (tests): only sweeps a test list, never the real mustpass
+            return False
+        return not os.path.exists(os.path.join(L.state_dir(), "sweep", "off")) and dev.get("sweep", True) is not False
+
+    def case_list(self):
+        files = S.listfiles(self.main_tree)
+        if not files:
+            return None
+        if self._cl is None or self._cl.files != files:
+            self._cl = S.CaseList(files)
+        return self._cl
+
+    def main_tip(self):
+        rc, o = git("rev-parse", "main", cwd=self.repo)
+        if rc:
+            rc, o = git("rev-parse", "HEAD", cwd=self.repo)
+        return o.strip()
+
+    def sweep_job(self, commit):
+        for j in L.list_jobs(True):
+            if j["suite"] == "sweep" and j["commit"] == commit:
+                return j
+        return L.new_job("main", commit, False, "sweep", [], "", os.path.basename(self.repo))
+
+    def sweep_gc(self):
+        used = {S.load(c).get("commit") for c in {d["class"] for d in self.devs.values()}}
+        for j in L.list_jobs(True):
+            if j["suite"] == "sweep" and j["commit"] not in used and os.path.isdir(self.tree(j["id"])) and not self.sweep_run:
+                self.cleanup_tree(j["id"])
+
+    def run_sweep(self, alias):
+        dev = self.devs[alias]
+        cls = dev["class"]
+        self.sweeping[cls] = alias
+        touched = False
+        try:
+            left = int(os.environ.get("MALI_FARM_SWEEP_MAX_CHUNKS", "0")) if self.fake else 0       # test hook: bounded session
+            while not (self.is_disabled(dev) or self.real_pending(cls) or not self.sweep_on(dev) or (not self.fake and alias not in self.attached())):
+                r = self.sweep_chunk(dev)
+                touched = touched or r is not None
+                left -= 1
+                if self.fake and os.environ.get("MALI_FARM_SWEEP_MAX_CHUNKS") and left <= 0:
+                    break
+                if not r:
+                    break
+        except Exception:
+            log(f"{alias}: sweep error " + traceback.format_exc()[-300:])
+            self.cool[alias] = time.time() + 120
+        finally:
+            self.sweeping.pop(cls, None)
+            self.sweep_run.discard(alias)
+            if touched and not self.is_disabled(dev):
+                lk = L.PhoneLock(dev, self.fake)
+                if lk.acquire():
+                    try:
+                        self.qrestore(dev)
+                    finally:
+                        lk.release()
+            self.wake.set()
+
+    def sweep_chunk(self, dev):
+        """one chunk of the walk -> True (continue), False (stop this sweep session), None (stopped before touching the phone)"""
+        alias, cls = dev["alias"], dev["class"]
+        cl = self.case_list()
+        if not cl or not cl.n:
+            self.cool[alias] = time.time() + 600
+            log(f"{alias}: sweep: no dEQP-VK mustpass list under the main checkout; not sweeping")
+            return None
+        st = S.load(cls)
+        tip = self.main_tip()
+        rc, mv = git("rev-list", "--count", f"{st['commit']}..{tip}", cwd=self.repo) if st.get("commit") else (1, "0")
+        moved = int(mv.strip() or 0) if rc == 0 else 0
+        if not st.get("commit") or st["pos"] >= st["n"] or st["n"] != cl.n or moved > S.RESTART_AFTER_COMMITS:
+            why = "finished" if st.get("commit") and st["pos"] >= st["n"] else f"main moved {moved} commits" if moved > S.RESTART_AFTER_COMMITS else "list changed" if st.get("commit") else ""
+            S.start_pass(cls, st, tip, cl.n, why)
+            S.save(cls, st)
+            log(f"{alias}: sweep {cls}: new pass on {tip[:8]} ({cl.n} cases){' after: ' + why if why else ''}")
+            self.sweep_gc()
+        job = self.sweep_job(st["commit"])
+        sha, why = self.build(job)                          # before the phone lock: the phone stays free for real jobs meanwhile
+        if sha is None:
+            log(f"{alias}: sweep build failed: {why}")
+            self.cool[alias] = time.time() + 900
+            return None
+        job = L.read_json(L.job_path(job["id"]))
+        names = cl.slice(st["pos"], SWEEP_CHUNK)
+        run_names = [c for c in names if not S.STRESS.search(c)]
+        lock = L.PhoneLock(dev, self.fake)
+        if not lock.acquire():
+            self.cool[alias] = time.time() + 30
+            return None
+        touched, rc, got, sok, sgot, h0 = False, 0, {}, True, None, {}
+        t0 = time.time()
+        wd = os.path.join(L.state_dir(), "work", f"sweep-{cls}")
+        try:
+            gs, gwhy, h0 = self.gate_check(dev)
+            if gs != "ok":
+                self.set_dstate(alias, gs, gwhy, batt=h0.get("level"), temp_c=h0.get("temp_c"), thermal=h0.get("thermal"))
+                log(f"{alias}: sweep paused by the health gate ({gs}: {gwhy})")
+                return None
+            ok, pwhy = self.preflight(dev)
+            if not ok:
+                self.cool[alias] = time.time() + 120
+                return None
+            touched = True
+            self.stop_reason.pop(alias, None)
+            self.sweep_run.add(alias)
+            shutil.rmtree(wd, ignore_errors=True)
+            rc, out, got, sok, sgot = self.exec_list(job, dev, run_names, f"sweep-{cls}", wd, SWEEP_WALL, f"sw{st['pos']}", verify_always=True)
+        finally:
+            self.sweep_run.discard(alias)
+            shutil.rmtree(wd, ignore_errors=True)
+            lock.release()
+        why_stop = self.stop_reason.pop(alias, None)
+        if why_stop and why_stop != "preempted":
+            self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", why_stop)
+            log(f"{alias}: sweep stopped ({why_stop})")
+        if sok is False or rc in (76, 77):
+            alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
+            self.cool[alias] = time.time() + 60
+            return False
+        adv = []                                            # contiguous finished prefix of the chunk; stress cases are skipped (K)
+        for c in names:
+            if S.STRESS.search(c):
+                adv.append((c, "K"))
+            elif c in got:
+                adv.append((c, S.code_of(*got[c])))
+            else:
+                break
+        if rc in (0, 1, 124) and not any(k != "K" for _, k in adv):            # ran to its end yet nothing parsed: never stall on one case
+            st["stall"] = st.get("stall", 0) + 1
+            if st["stall"] >= 2 and names:
+                adv, st["stall"] = [(names[0], "T")], 0
+                log(f"{alias}: sweep skips {names[0]} (no result twice)")
+        else:
+            st["stall"] = 0
+        if adv:
+            h1 = self.health(dev) if (self.fake or alias in self.attached()) else {}
+            S.record(cls, st, st["pos"], [c for c, _ in adv], [k for _, k in adv],
+                     {"dev": alias, "so": sha[:12], "wall_s": round(time.time() - t0, 1), "rc": rc, "temp_c0": h0.get("temp_c"), "temp_c1": h1.get("temp_c")})
+            log(f"{alias}: sweep {cls} {st['pos']}/{st['n']} ({len(adv)} cases in {time.time() - t0:.0f}s)")
+        else:
+            S.save(cls, st)
+        return rc in (0, 124, 1) and bool(adv)
+
     # ---------- main loop
     def tick(self):
         self.reload_devices()
         jobs = L.list_jobs()
         att = self.watch_devices(jobs)
+        if not (self.prebuild_t and self.prebuild_t.is_alive()):     # build the next queued job's driver while the phones are still busy
+            nxt = next((j for j in jobs if not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
+            if nxt:
+                self.prebuild_t = threading.Thread(target=self.build, args=(nxt,), daemon=True, name="prebuild")
+                self.prebuild_t.start()
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
         for j in jobs:
             for cls, p in j["parts"].items():
@@ -857,6 +1086,14 @@ class Farm:
                         self.threads[al] = t
                         t.start()
                         break
+        for al, d in self.devs.items():                                  # nothing queued for this class + phone free: idle sweep
+            cls = d["class"]
+            if (al in att and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and cls not in self.sweeping
+                    and time.time() >= self.cool.get(al, 0) and self.sweep_on(d) and not self.real_pending(cls)):
+                t = threading.Thread(target=self.run_sweep, args=(al,), name=f"sweep/{cls}/{al}", daemon=False)
+                self.threads[al] = t
+                self.sweeping[cls] = al
+                t.start()
 
     def loop(self):
         while True:
@@ -868,14 +1105,15 @@ class Farm:
                 for t in list(self.threads.values()):
                     t.join()
                 return
-            time.sleep(self.poll)
+            self.wake.wait(self.poll)
+            self.wake.clear()
 
 
 def main():
     ap = argparse.ArgumentParser(prog="farmd")
     ap.add_argument("--once", action="store_true", help="one scheduling pass, wait for started runs, exit")
     ap.add_argument("--fake", action="store_true")
-    ap.add_argument("--poll", type=float, default=15)
+    ap.add_argument("--poll", type=float, default=4)
     a = ap.parse_args()
     Farm(a.fake or os.environ.get("MALI_FARM_FAKE") == "1", a.once, a.poll).loop()
 
