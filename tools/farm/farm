@@ -37,13 +37,46 @@ def cmd_status(a):
     for al, d in devs.items():
         s = ds.get(al, {})
         h = f"batt {s['batt']}% {s['temp_c']}C thermal {s['thermal']}" if s.get("batt") is not None else ""
-        print(f"device {al:10} class {d['class']:4} {s.get('status', 'unknown'):8} {h} {s.get('note', '')}")
+        st = s.get("status", "unknown")
+        if os.path.exists(os.path.join(L.state_dir(), "disabled", al)) or os.path.exists(os.path.join(L.state_dir(), "disabled", d["lock"])):
+            st, h = "disabled", "disabled by owner"
+        elif st == "on_battery":
+            h = "on battery: paused"
+        print(f"device {al:10} class {d['class']:4} {st:8} {h} {s.get('note', '') if st not in ('disabled', 'on_battery') else ''}")
     jobs = L.list_jobs()
     if not a.all:
         jobs = jobs[-15:]
     for j in jobs:
         parts = " ".join(f"{c}:{p['state'] if p['state'] != 'done' else p.get('verdict')}" for c, p in j["parts"].items())
         print(f"{j['id']}  {j['suite']:5} {L.job_verdict(j):8} {j['ref'][:24]:24} {parts}")
+
+
+def cmd_disable(a):
+    """owner kill switch: flag file <state>/disabled/<alias>. --adb-off also turns wireless adb off on the phone (if reachable)."""
+    _, devs = L.load_devices()
+    d = devs.get(a.device)
+    if not d:
+        raise SystemExit(f"farm: unknown device {a.device}; known: {', '.join(devs)}")
+    open(os.path.join(L.disabled_dir(), a.device), "a").close()
+    print(f"{a.device}: disabled (jobs stay pending; farm and qsafe will not touch it)")
+    if a.adb_off and os.environ.get("MALI_FARM_FAKE") != "1":
+        t = L.resolve(d)
+        if t:
+            L.sh(["adb", "-s", t, "shell", "settings put global adb_wifi_enabled 0"], 20)
+            if t == d["serial"]:
+                L.sh(["adb", "-s", t, "usb"], 20)                     # close the tcpip listener
+            else:
+                L.sh(["adb", "-s", t, "usb"], 10)
+        for r in L.wireless_routes(d):
+            L.sh(["adb", "disconnect", r], 10)
+        print(f"{a.device}: wireless adb turned off" if t else f"{a.device}: not reachable, adb left as is")
+
+
+def cmd_enable(a):
+    p = os.path.join(L.state_dir(), "disabled", a.device)
+    if os.path.exists(p):
+        os.unlink(p)
+    print(f"{a.device}: enabled")
 
 
 def cmd_wait(a):
@@ -83,6 +116,13 @@ def main():
     s = sp.add_parser("status")
     s.add_argument("--all", action="store_true")
     s.set_defaults(f=cmd_status)
+    s = sp.add_parser("disable", help="owner kill switch: never touch this phone (flag file)")
+    s.add_argument("device")
+    s.add_argument("--adb-off", action="store_true", help="also turn wireless adb off on it and disconnect its routes")
+    s.set_defaults(f=cmd_disable)
+    s = sp.add_parser("enable")
+    s.add_argument("device")
+    s.set_defaults(f=cmd_enable)
     s = sp.add_parser("wait")
     s.add_argument("job")
     s.add_argument("--timeout", type=float, default=1800)

@@ -33,20 +33,27 @@ else `adb connect <wireless>`; it passes it to valrun/qdeqp/qrestore as `ADB_SER
     serial = "ADB_SERIAL"
     lock = "cmf"                 # qsafe lock name (valrun.sh knows cmf|poco)
     baseline = "cmf"             # vk/deqp/ours-daily-sample-<baseline>.tsv
-    wireless = "HOST:5555"       # optional, used by recovery
+    wireless = ["HOST:5555"]     # optional extra routes (farmd adds ip:5555 itself)
 
 Tests without hardware: `python3 tools/farm/test_farm.py` (fake mode: `farmd --fake`, attached = aliases in `<state>/fake-attached`).
 
 ## Transport policy, wireless adb, health gates
 
-Per device `transport = "usb"` (USB only: never mDNS/ip:port/`adb connect`, never enables wireless debugging; for the owner's daily phone)
-or `"usb+wireless"` (default: USB first, then the `adb-<serial>-*._adb-tls-connect._tcp` mDNS entry, then `adb connect <wireless>`).
-For wireless-capable phones farmd, while the phone is on USB and idle, makes sure `settings put global adb_wifi_enabled 1` and records
-mDNS name / address in `devices-state.json`. Optional `tcpip_port = 5555` also pins `adb tcpip 5555` (fixed port, restarts adbd once).
-Findings: Wireless Debugging (TLS, Android 11+) needs no cable after pairing but uses a RANDOM port per toggle (the mDNS name is the
-stable handle), switches itself off when the phone leaves the paired Wi-Fi, and is not reliably back after a reboot. `adb tcpip 5555`
-has a fixed port but is lost on reboot (and on some builds when USB is re-plugged). Neither survives a reboot without a cable, so the
-farm re-arms both whenever USB reappears.
+Per device `transport`: `"usb+wireless"` (default: USB first, then the `adb-<serial>-*._adb-tls-connect._tcp` mDNS entry, then every
+`wireless`/`address` route `ip:5555`, then `adb connect`), `"wireless"` (ignores USB) or `"usb"` (USB only, never connect).
+Route setup, once and idempotent: when a `usb+wireless` phone is on USB and idle, farmd runs `adb tcpip 5555` (only if not already set),
+reads the wlan0 IP, `adb connect`s it and stores `<ip>:5555` in the device's `wireless` list in devices.toml (`farmlib.store_route`).
+It never touches `adb_wifi_enabled`; pairing Wireless Debugging itself is the owner's job. `adb tcpip` is lost on reboot until USB returns.
+
+Charger-only phones: `require_charging = true` in devices.toml. Jobs run only while `dumpsys battery` shows AC/USB/Wireless/Dock powered.
+On battery the farm does nothing on that phone (no pushes/tests/wake-ups, jobs stay pending, `farm status` shows `on battery: paused`).
+Checked before each job, between dEQP chunks and every ~10 s during a run; charger removed mid-job = clean stop, part back to
+pending (attempts not counted), lock released.
+
+Owner kill switch: `farm disable <device> [--adb-off]`, `farm enable <device>`; or just `touch <state>/disabled/<alias|lock>`
+(`~/.local/state/mali-farm/disabled/`). A disabled device is never touched by farm or qsafe (jobs stay pending, `farm status` shows
+`disabled by owner`; a running job is stopped). `--adb-off` additionally, if reachable: `settings put global adb_wifi_enabled 0`,
+`adb usb` (close the tcp listener) and `adb disconnect` of its routes.
 
 Health gates (farmd before each job and between dEQP chunks; quick.py/qsafe for agents; shared state `gate-<lock>.json`, shared module
 `gate.py` == `scripts/quick/mgate.py`): battery < 20 % => `charging` until >= 50 %; battery temp >= 43 C or Android thermal status >=

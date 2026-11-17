@@ -101,7 +101,9 @@ def run_watched(cmd, timeout, alive, grace=45, poll=5, **kw):
         except subprocess.TimeoutExpired:
             if time.time() - t0 > timeout:
                 rc = 124
-            elif alive():
+            elif (st := alive()) == "stop":
+                rc = 125
+            elif st:
                 lost = None
             else:
                 lost = lost or time.time()
@@ -116,6 +118,41 @@ def run_watched(cmd, timeout, alive, grace=45, poll=5, **kw):
     th.join(5)
     txt = (out[0] if out else b"").decode(errors="replace")
     return rc, txt + ("\nDEVICE-LOST" if rc == 125 else "\nTIMEOUT" if rc == 124 else "")
+
+
+def store_route(alias, addr, path=None):
+    """idempotently add `addr` to the `wireless` list of device `alias` in devices.toml (text edit: comments/other entries untouched).
+    -> True if the file changed."""
+    path = path or devices_path()
+    lines = open(path).read().split("\n")
+    start = next((i for i, l in enumerate(lines) if re.match(r'\s*alias\s*=\s*"%s"' % re.escape(alias), l)), None)
+    if start is None:
+        return False
+    b0 = max((i for i in range(start + 1) if lines[i].lstrip().startswith("[[")), default=0)
+    b1 = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[[")), len(lines))
+    for i in range(b0, b1):
+        m = re.match(r'(\s*wireless\s*=\s*)(.*?)(\s*#.*)?$', lines[i])
+        if m:
+            if addr in m.group(2):
+                return False
+            v = m.group(2).strip()
+            new = v[:-1].rstrip() + (", " if v[:-1].strip() not in ("[", "") else "") + f'"{addr}"]' if v.startswith("[") else f'["{v.strip(chr(34))}", "{addr}"]'
+            lines[i] = m.group(1) + new + (m.group(3) or "")
+            break
+    else:
+        last = max(i for i in range(b0, b1) if lines[i].strip())
+        lines.insert(last + 1, f'wireless = ["{addr}"]   # added by farmd (adb tcpip route)')
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines))
+    os.replace(tmp, path)
+    return True
+
+
+def disabled_dir():
+    d = os.path.join(state_dir(), "disabled")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def now():

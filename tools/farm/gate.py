@@ -2,7 +2,7 @@
 """Phone health gates (battery + thermal) shared by farmd and the hand-driven quick.py/qsafe path.
 Single source: tools/farm/gate.py; a copy is installed as scripts/quick/mgate.py (keep identical). Python 3.11+, stdlib only.
 
-States: ok -> charging (battery < batt_stop %) -> ok again only at >= batt_resume %
+States: on_battery (require_charging devices only: nothing runs unless on a charger), ok -> charging (battery < batt_stop %) -> ok again only at >= batt_resume %
         ok -> cooling  (battery temp >= temp_stop C, or Android thermal status >= thermal_stop) -> ok again only at
         temp <= temp_resume C and status <= thermal_resume (charging has priority). Hysteresis state is a shared file per
         phone, so the farm and agents see the same state. Each state change appends one line to alerts.log.
@@ -11,8 +11,10 @@ Defaults (override per device in devices.toml: batt_stop, batt_resume, temp_stop
 CLI (used by qsafe): python3 -I gate.py check <lockname> <adb-transport> [serial-for-config]  -> exit 0 ok, 3 gated, prints one line."""
 import json, os, re, subprocess, sys, time, tomllib
 
-DEFAULTS = {"batt_stop": 20, "batt_resume": 50, "temp_stop": 43.0, "temp_resume": 38.0, "thermal_stop": 3, "thermal_resume": 1}
-HEALTH_CMD = "dumpsys battery | grep -E '^ *(level|temperature):'; dumpsys thermalservice | grep -m1 'Thermal Status'"
+DEFAULTS = {"batt_stop": 20, "batt_resume": 50, "temp_stop": 43.0, "temp_resume": 38.0, "thermal_stop": 3, "thermal_resume": 1,
+            "require_charging": False}
+HEALTH_CMD = ("dumpsys battery | grep -E '^ *(level|temperature|AC powered|USB powered|Wireless powered|Dock powered):'; "
+              "dumpsys thermalservice | grep -m1 'Thermal Status'")
 
 
 def state_dir():
@@ -21,7 +23,7 @@ def state_dir():
 
 def parse(text):
     """-> {'level': %, 'temp_c': C, 'thermal': int} (None for what is missing)"""
-    h = {"level": None, "temp_c": None, "thermal": None}
+    h = {"level": None, "temp_c": None, "thermal": None, "powered": None}
     for l in text.splitlines():
         m = re.match(r"\s*level:\s*(\d+)", l)
         if m:
@@ -29,6 +31,9 @@ def parse(text):
         m = re.match(r"\s*temperature:\s*(-?\d+)", l)
         if m:
             h["temp_c"] = int(m.group(1)) / 10
+        m = re.match(r"\s*(AC|USB|Wireless|Dock) powered:\s*(true|false)", l)
+        if m:
+            h["powered"] = bool(h["powered"]) or m.group(2) == "true"
         m = re.search(r"Thermal Status:\s*(\d+)", l)
         if m:
             h["thermal"] = int(m.group(1))
@@ -43,6 +48,7 @@ def thresholds(serial=None):
         for d in tomllib.load(open(p, "rb")).get("device", []):
             if serial and d.get("serial") == serial:
                 th.update({k: d[k] for k in DEFAULTS if k in d})
+                th["_alias"] = d.get("alias")
     except (OSError, ValueError):
         pass
     return th
@@ -50,6 +56,10 @@ def thresholds(serial=None):
 
 def next_state(prev, h, th):
     """pure: (state, reason). Unreadable values never gate (the job itself will fail loudly if the phone is gone)."""
+    if th.get("require_charging") and h.get("powered") is not True:      # owner's daily phone: only while on a charger
+        return "on_battery", "on battery: paused (require_charging)"
+    if prev == "on_battery":
+        prev = "ok"
     lvl, t, ts = h.get("level"), h.get("temp_c"), h.get("thermal")
     hot = (t is not None and t >= th["temp_stop"]) or (ts is not None and ts >= th["thermal_stop"])
     cool = (t is None or t <= th["temp_resume"]) and (ts is None or ts <= th["thermal_resume"])
@@ -67,6 +77,20 @@ def next_state(prev, h, th):
     if hot:
         return "cooling", f"temp {t}C thermal {ts} (stop at >= {th['temp_stop']}C or status >= {th['thermal_stop']})"
     return "ok", ""
+
+
+def disabled(key, alias=None):
+    """owner kill switch: file <state>/disabled/<name> where name is the phone's lock name or its devices.toml alias"""
+    d = os.path.join(state_dir(), "disabled")
+    names = {key, alias}
+    p = os.environ.get("MALI_FARM_DEVICES") or os.path.expanduser("~/.config/mali-farm/devices.toml")
+    try:
+        for dev in tomllib.load(open(p, "rb")).get("device", []):
+            if dev.get("lock", dev.get("alias")) == key or dev.get("alias") == key:
+                names |= {dev.get("alias"), dev.get("lock")}
+    except (OSError, ValueError):
+        pass
+    return any(n and os.path.exists(os.path.join(d, n)) for n in names)
 
 
 def alert(msg):
@@ -97,12 +121,15 @@ def read_adb(transport, timeout=20):
         p = subprocess.run(["adb", "-s", transport, "shell", HEALTH_CMD], capture_output=True, timeout=timeout)
         return parse(p.stdout.decode(errors="replace"))
     except (subprocess.TimeoutExpired, OSError):
-        return {"level": None, "temp_c": None, "thermal": None}
+        return {"level": None, "temp_c": None, "thermal": None, "powered": None}
 
 
 if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "check":
         key, tr = sys.argv[2], sys.argv[3]
+        if disabled(key):                                   # before any adb traffic
+            print("PHONE DISABLED by owner (farm enable <device> to lift)")
+            sys.exit(3)
         h = read_adb(tr)
         st, why = check(key, h, thresholds(sys.argv[4] if len(sys.argv) > 4 else None))
         if st != "ok":

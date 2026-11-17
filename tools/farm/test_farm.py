@@ -21,6 +21,7 @@ class = "v13"
 serial = "SERIAL-B"
 lock = "poco"
 baseline = "poco"
+require_charging = true
 """
 
 
@@ -157,16 +158,22 @@ class T(unittest.TestCase):
         self.assertEqual(gate.next_state("charging", dict(ok, level=50, temp_c=44.0), th)[0], "cooling")
         self.assertEqual(gate.next_state("ok", dict(ok, level=None, temp_c=None, thermal=None), th)[0], "ok")
         self.assertEqual(gate.parse("  level: 74\n  temperature: 281\nCapacity level: 3\nThermal Status: 2\n"),
-                         {"level": 74, "temp_c": 28.1, "thermal": 2})
+                         {"level": 74, "temp_c": 28.1, "thermal": 2, "powered": None})
+        self.assertTrue(gate.parse("  AC powered: false\n  USB powered: true\n")["powered"])
+        self.assertFalse(gate.parse("  AC powered: false\n  USB powered: false\n")["powered"])
+        rc = dict(th, require_charging=True)
+        self.assertEqual(gate.next_state("ok", dict(ok, powered=False), rc)[0], "on_battery")
+        self.assertEqual(gate.next_state("on_battery", dict(ok, powered=True), rc)[0], "ok")
+        self.assertEqual(gate.next_state("ok", dict(ok), th)[0], "ok")      # not required: power ignored
 
     def test_usb_only_never_wireless(self):
         calls = []
-        L.adb_live = lambda: {"adb-SERIAL-B-x._adb-tls-connect._tcp": "device", "10.0.0.5:5555": "device"}
+        L.adb_live = lambda: {"adb-SERIAL-B-x._adb-tls-connect._tcp": "device", "203.0.113.5:5555": "device"}
         L.sh = lambda cmd, timeout, **kw: calls.append(cmd) or (0, "")
-        usb = {"serial": "SERIAL-B", "transport": "usb", "wireless": "10.0.0.5:5555"}
+        usb = {"serial": "SERIAL-B", "transport": "usb", "wireless": "203.0.113.5:5555"}
         self.assertIsNone(L.resolve(usb, connect=True))
         self.assertEqual(calls, [])                                 # no `adb connect`
-        both = {"serial": "SERIAL-B", "wireless": "10.0.0.5:5555"}
+        both = {"serial": "SERIAL-B", "wireless": "203.0.113.5:5555"}
         self.assertEqual(L.resolve(both), "adb-SERIAL-B-x._adb-tls-connect._tcp")
         L.adb_live = lambda: {"SERIAL-B": "device", "adb-SERIAL-B-x._adb-tls-connect._tcp": "device"}
         self.assertEqual(L.resolve(both), "SERIAL-B")               # USB preferred
@@ -174,15 +181,15 @@ class T(unittest.TestCase):
     def test_two_wireless_routes_and_wireless_only(self):
         calls = []
         L.sh = lambda cmd, timeout, **kw: calls.append(cmd) or (0, "")
-        L.adb_live = lambda: {"192.168.3.111:5555": "device"}
-        cmf = {"serial": "S1", "wireless": ["10.9.9.9:5555", "192.168.3.111:5555"]}
-        self.assertEqual(L.resolve(cmf), "192.168.3.111:5555")              # second route already listed
-        L.adb_live = lambda: {"S1": "device", "10.0.0.1:5555": "device"}
-        x4 = {"serial": "S1", "transport": "wireless", "address": "10.0.0.1:5555"}
-        self.assertEqual(L.resolve(x4), "10.0.0.1:5555")                    # wireless-only ignores USB
+        L.adb_live = lambda: {"198.51.100.7:5555": "device"}
+        cmf = {"serial": "S1", "wireless": ["203.0.113.9:5555", "198.51.100.7:5555"]}
+        self.assertEqual(L.resolve(cmf), "198.51.100.7:5555")              # second route already listed
+        L.adb_live = lambda: {"S1": "device", "203.0.113.1:5555": "device"}
+        x4 = {"serial": "S1", "transport": "wireless", "address": "203.0.113.1:5555"}
+        self.assertEqual(L.resolve(x4), "203.0.113.1:5555")                    # wireless-only ignores USB
         L.adb_live = lambda: {}
         self.assertIsNone(L.resolve(cmf, connect=True))
-        self.assertEqual([c[-1] for c in calls if "connect" in c], ["10.9.9.9:5555", "192.168.3.111:5555"])
+        self.assertEqual([c[-1] for c in calls if "connect" in c], ["203.0.113.9:5555", "198.51.100.7:5555"])
 
     def test_device_loss_returns_to_pending(self):
         import time
@@ -192,6 +199,57 @@ class T(unittest.TestCase):
         self.assertLess(time.time() - t0, 10)
         rc, out = L.run_watched(["echo", "hi"], 100, lambda: True)
         self.assertEqual((rc, out.strip()), (0, "hi"))
+
+    def health(self, lock, **kw):
+        L.write_json(self.d + "/state/fake-health-" + lock + ".json", kw)
+
+    def test_on_battery_pending_then_charger_runs(self):
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
+        self.attach("dev-b")
+        self.health("poco", powered=False)
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v13"]["state"], "pending")     # on battery: nothing runs
+        self.assertIn("on battery: paused", self.farm("status")[1])
+        self.health("poco", powered=True)
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v13"]["state"], "done")
+
+    def test_unplug_mid_job_back_to_pending_lock_released(self):
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v13", "--env", "FAKE_UNPLUG=1")
+        self.attach("dev-b")
+        self.farmd()
+        p = L.find_job(jid)["parts"]["v13"]
+        self.assertEqual((p["state"], p["attempts"]), ("pending", 0))               # clean stop, no retry counted
+        lk = L.PhoneLock({"alias": "dev-b", "lock": "poco"}, True)
+        self.assertTrue(lk.acquire())                                               # lock was released
+        lk.release()
+        self.assertIn("on battery: paused", self.farm("status")[1])
+
+    def test_disabled_untouched_enable_runs(self):
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.attach("dev-a")
+        self.assertEqual(self.farm("disable", "dev-a")[0], 0)
+        self.assertTrue(os.path.exists(self.d + "/state/disabled/dev-a"))
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "pending")
+        self.assertIn("disabled by owner", self.farm("status")[1])
+        self.assertEqual(self.farm("enable", "dev-a")[1], "dev-a: enabled")
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
+        os.makedirs(self.d + "/state/disabled", exist_ok=True)                      # a plain touch (by lock name) works too
+        open(self.d + "/state/disabled/cmf", "w").close()
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.farmd()
+        self.assertEqual(L.find_job(j2)["parts"]["v11"]["state"], "pending")
+
+    def test_store_route_idempotent(self):
+        p = self.d + "/devices.toml"
+        self.assertTrue(L.store_route("dev-b", "198.51.100.8:5555", p))
+        self.assertFalse(L.store_route("dev-b", "198.51.100.8:5555", p))
+        self.assertTrue(L.store_route("dev-b", "198.51.100.9:5555", p))
+        _, devs = L.load_devices()
+        self.assertEqual(L.wireless_routes(devs["dev-b"]), ["198.51.100.8:5555", "198.51.100.9:5555"])
+        self.assertEqual(L.wireless_routes(devs["dev-a"]), [])
 
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)

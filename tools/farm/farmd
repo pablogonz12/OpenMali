@@ -54,6 +54,7 @@ class Farm:
         self.last_try = {}
         self.cool = {}
         self.last_health, self.last_wl = {}, {}
+        self.stop_reason, self.last_pw = {}, {}
 
     # ---------- devices
     def adb(self, dev, *a, timeout=20):
@@ -93,13 +94,17 @@ class Farm:
         L.write_json(self.st_path, self.dstate)
 
     # ---------- health gates
+    def is_disabled(self, dev):
+        """owner kill switch: <state>/disabled/<alias|lock> exists (farm disable, or a plain touch)"""
+        return any(os.path.exists(os.path.join(L.state_dir(), "disabled", n)) for n in (dev["alias"], dev["lock"]))
+
     def thresholds(self, dev):
         return dict(gate.DEFAULTS, **{k: dev[k] for k in gate.DEFAULTS if k in dev})
 
     def health(self, dev):
         if self.fake:
             p = os.path.join(L.state_dir(), f"fake-health-{dev['lock']}.json")
-            h = {"level": 80, "temp_c": 30.0, "thermal": 0}
+            h = {"level": 80, "temp_c": 30.0, "thermal": 0, "powered": True}
             if os.path.exists(p):
                 h.update(L.read_json(p))
             return h
@@ -112,30 +117,36 @@ class Farm:
         return st, why, h
 
     def ensure_wireless(self, dev):
-        """only for devices whose transport allows wireless, only while reachable over USB and idle: make sure wireless debugging is on
-        and record how to get back (mDNS name, ip:port; optionally a fixed `tcpip_port` fallback). Never for transport = "usb"."""
-        if self.fake or dev.get("transport", "usb+wireless") != "usb+wireless" or self.tid.get(dev["alias"]) != dev["serial"]:
+        """one-time, idempotent route setup while the phone is on USB and idle: `adb tcpip 5555` (only if not already set), read the
+        wlan0 IP, `adb connect`, store <ip>:5555 in devices.toml. Wireless-debugging pairing is the owner's. Never for transport = "usb"."""
+        if self.fake or dev.get("transport", "usb+wireless") != "usb+wireless" or self.tid.get(dev["alias"]) != dev["serial"] or self.is_disabled(dev):
             return
-        w = {}
-        rc, o = self.adb(dev, "shell", "settings get global adb_wifi_enabled; getprop service.adb.tcp.port; "
-                         "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*'")
-        f = o.split("\n")
-        if f and f[0].strip() != "1":
-            self.adb(dev, "shell", "settings put global adb_wifi_enabled 1")
-        ip = next((l.split()[1] for l in f if l.startswith("inet ")), None)
-        rc, m = L.sh(["adb", "mdns", "services"], 15)
-        for l in m.splitlines():
-            if dev["serial"] in l and "_adb-tls-connect" in l:
-                w["mdns"] = l.split()[0]
-                w["addr"] = l.split()[-1]
-        port = dev.get("tcpip_port")
-        if port and ip:
-            if len(f) < 2 or f[1].strip() != str(port):
-                self.adb(dev, "tcpip", str(port), timeout=20)          # restarts adbd: only here, idle, and opt-in
-            w["tcpip_addr"] = f"{ip}:{port}"
-            dev.setdefault("wireless", w["tcpip_addr"])
-        if w:
-            self.set_dstate(dev["alias"], self.dstate.get(dev["alias"], {}).get("status", "up"), self.dstate.get(dev["alias"], {}).get("note", ""), wireless=w)
+        lock = L.PhoneLock(dev, self.fake)
+        if not lock.acquire():
+            return
+        try:
+            rc, o = self.adb(dev, "shell", "getprop service.adb.tcp.port; ip -4 addr show wlan0 | grep -o 'inet [0-9.]*'")
+            f = o.split("\n")
+            ip = next((l.split()[1] for l in f if l.startswith("inet ")), None)
+            if not ip:
+                return
+            addr = f"{ip}:5555"
+            if f[0].strip() != "5555":
+                self.adb(dev, "tcpip", "5555", timeout=20)
+            if addr not in L.wireless_routes(dev):
+                L.sh(["adb", "connect", addr], 20)
+                if L.store_route(dev["alias"], addr):
+                    dev["wireless"] = L.wireless_routes(dev) + [addr] if "wireless" not in dev else L.wireless_routes({"wireless": dev["wireless"]}) + [addr]
+                    log(f"{dev['alias']}: stored wireless route {addr}")
+            w = {"tcpip_addr": addr}
+            rc, m = L.sh(["adb", "mdns", "services"], 15)
+            for l in m.splitlines():
+                if dev["serial"] in l and "_adb-tls-connect" in l:
+                    w["mdns"] = l.split()[0]
+            cur = self.dstate.get(dev["alias"], {})
+            self.set_dstate(dev["alias"], cur.get("status", "up"), cur.get("note", ""), wireless=w)
+        finally:
+            lock.release()
 
     def recover(self, alias, step):
         """one escalating recovery step; NEVER kill-server"""
@@ -160,6 +171,13 @@ class Farm:
         wanted = {c for j in jobs for c, p in j["parts"].items() if p["state"] in ("pending", "running")}
         for al, d in self.devs.items():
             st = self.dstate.get(al, {})
+            if self.is_disabled(d):                      # never touched: no health reads, recovery, wireless setup or scheduling
+                if st.get("status") != "disabled":
+                    log(f"device {al} disabled by owner")
+                self.set_dstate(al, "disabled", "disabled by owner")
+                continue
+            if st.get("status") == "disabled":
+                self.last_health[al] = 0
             if al in att:
                 busy = al in self.threads
                 if not busy and time.time() - self.last_health.get(al, 0) >= (0 if self.fake else 60):
@@ -176,7 +194,7 @@ class Farm:
                     if st.get("status") != "up":
                         log(f"device {al} is up")
                     self.set_dstate(al, "up", batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"))
-                elif st.get("status") not in ("up", "charging", "cooling"):
+                elif st.get("status") not in ("up", "charging", "cooling", "on_battery"):
                     self.set_dstate(al, "up")
                 continue
             if d["class"] not in wanted:                 # nobody needs it: absence is normal (the owner's daily phone)
@@ -253,9 +271,11 @@ class Farm:
     def harness(self, tree):
         """older commits predate the transport/env hooks of valrun.sh and qdeqp.py: install the farm checkout's copy of those two
         harness scripts into the scratch tree when the hook is missing (the code under test is untouched)"""
-        for rel, hook in (("vk/tests/valrun.sh", "ADB_SERIAL_"), ("vk/deqp/qdeqp.py", "health_gate")):
-            dst, src = os.path.join(tree, rel), os.path.join(os.path.dirname(os.path.dirname(HERE)), rel)
-            if os.path.exists(dst) and hook not in open(dst).read() and os.path.exists(src):
+        base = os.path.dirname(os.path.dirname(HERE))
+        for rel, hook in (("vk/tests/valrun.sh", "dev-serial"), ("vk/deqp/qdeqp.py", "health_gate"), ("tools/dev-serial", "ADB_SERIAL")):
+            dst, src = os.path.join(tree, rel), os.path.join(base, rel)
+            if os.path.exists(src) and (not os.path.exists(dst) or hook not in open(dst).read()):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
 
     def missing_deps(self, suite):
@@ -342,12 +362,24 @@ class Farm:
         return None, None
 
     def alive(self, dev):
+        """for run_watched: True = fine, False = unreachable (grace period), "stop" = owner policy: stop now, job back to pending"""
+        al = dev["alias"]
+        if self.is_disabled(dev):
+            self.stop_reason[al] = "disabled by owner"
+            return "stop"
         if self.fake:
-            return dev["alias"] in self.attached()
-        t = L.resolve(dev)
-        if t:
-            self.tid[dev["alias"]] = t
-        return bool(t)
+            ok = al in self.attached()
+        else:
+            t = L.resolve(dev)
+            if t:
+                self.tid[al] = t
+            ok = bool(t)
+        if ok and self.thresholds(dev).get("require_charging") and time.time() - self.last_pw.get(al, 0) >= (0 if self.fake else 10):
+            self.last_pw[al] = time.time()
+            if self.health(dev).get("powered") is not True:
+                self.stop_reason[al] = "on battery: paused"
+                return "stop"
+        return ok
 
     def suite_smoke(self, job, dev):
         env = job["env"]
@@ -396,6 +428,11 @@ class Farm:
             for c in fixes:
                 cur[c] = "Pass"
             rc, note = 0, "fake"
+            if "FAKE_UNPLUG=1" in env.split():                   # test hook: charger removed during the run
+                L.write_json(os.path.join(L.state_dir(), f"fake-health-{dev['lock']}.json"), {"powered": False})
+                rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
+                if rc == 125:
+                    return {"lost": True}
         else:
             tree = self.tree(job["id"])
             shim = os.path.join(L.state_dir(), "work", job["id"] + "-shim")        # cwd root for qdeqp: scripts/, tools/, driver/, runs/
@@ -437,13 +474,16 @@ class Farm:
     # ---------- one part of a job on one device
     def run_part(self, jid, cls, alias):
         dev = self.devs[alias]
+        if self.is_disabled(dev):
+            return
         lock = L.PhoneLock(dev, self.fake)
         if not lock.acquire():
             log(f"{alias}: qsafe lock busy, {jid}/{cls} stays pending")
             return
         t0, started = time.time(), L.now()
         job = L.read_json(L.job_path(jid))
-        res, h0 = None, {}
+        res, h0, touched = None, {}, False
+        self.stop_reason.pop(alias, None)
         try:
             gs, gwhy, h0 = self.gate_check(dev)
             if gs != "ok":
@@ -455,6 +495,7 @@ class Farm:
                 log(f"{alias}: {why}; {jid}/{cls} stays pending")
                 self.cool[alias] = time.time() + 120      # the finally below runs qrestore
                 return
+            touched = True
             self.upd(jid, lambda x: x["parts"][cls].update(state="running", device=alias))
             sha, why = self.build(job)
             if sha is None:
@@ -468,13 +509,22 @@ class Farm:
             res = {"verdict": "error", "notes": "farmd exception: " + traceback.format_exc()[-300:]}
         finally:
             try:
-                self.qrestore(dev)
+                if touched and not self.is_disabled(dev):          # a gated/on-battery/disabled phone is not woken or touched
+                    self.qrestore(dev)
             finally:
                 lock.release()
         job = L.read_json(L.job_path(jid))
         if res is not None and res.get("gated"):
+            if self.is_disabled(dev) or self.thresholds(dev).get("require_charging") and self.health(dev).get("powered") is not True:
+                self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", "disabled by owner" if self.is_disabled(dev) else "on battery: paused")
             self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))      # partial results kept: qdeqp resumes from its TSV
             log(f"{alias}: {jid}/{cls} paused by the health gate; back to pending")
+            return
+        why_stop = self.stop_reason.pop(alias, None)
+        if res is None and why_stop:                            # owner policy (charger removed / disabled): clean stop, no blame, no retry count
+            self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))
+            self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", why_stop)
+            log(f"{alias}: {jid}/{cls} stopped ({why_stop}); back to pending, lock released")
             return
         if res is None:
             def back(x):
