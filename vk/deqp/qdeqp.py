@@ -14,7 +14,7 @@ if not os.path.isdir(os.path.join(ROOT, "scripts", "quick")):   # driver/ may be
 sys.path.insert(0, os.path.join(ROOT, "scripts", "quick"))
 import quick                      # noqa: E402  (Phone, ENVV, helpers; its main() is not run on import)
 
-BUILD = os.path.join(QD, "out", "a64-glibc")
+BUILD = os.environ.get("QDEQP_BUILD", os.path.join(QD, "out", "a64-glibc"))   # QDEQP_BUILD: deqp-vk build dir (worktrees share one)
 DL = "/storage/emulated/0/Download/qdeqp"
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 IDLE = 180   # watchdog: seconds without QPA growth
@@ -62,7 +62,7 @@ def stage_binaries(p, icd):
         p.res["pushed_binaries"] = True
     os.unlink(tar)
     if icd == "ours":
-        so = os.path.join(ROOT, "driver", "vk", "out", "a64-glibc", "libvulkan_mali.so")
+        so = os.environ.get("QDEQP_ICD") or os.path.join(ROOT, "driver", "vk", "out", "a64-glibc", "libvulkan_mali.so")   # QDEQP_ICD: ICD of another worktree
         p.adb("push", so, f"{DL}/libvulkan_mali.so", timeout=120)
     return h
 
@@ -108,6 +108,8 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
     p.adb("pull", qpa, local_q, timeout=120)
     txt = open(local_q, errors="replace").read() if os.path.exists(local_q) else ""
     if os.path.exists(local_q):
+        if os.environ.get("QDEQP_KEEPQPA"):   # keep the raw QPA for triage
+            import shutil; shutil.copy(local_q, os.environ["QDEQP_KEEPQPA"])
         os.unlink(local_q)
     fin, unf = parse_qpa(txt)
     return fin, unf, out[-300:], "__HOG" in out
