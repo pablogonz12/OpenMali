@@ -1,0 +1,95 @@
+# mali-open
+
+An open Vulkan driver for Arm Mali GPUs on Android phones, written from scratch in C11. It runs in userspace on top of the vendor's
+`mali_kbase` kernel driver (`/dev/mali0`), so it needs no root and no kernel changes. It is a Vulkan ICD
+(`libvulkan_mali.so`) for the Linux guest in which games run.
+
+**Status: pre-release (0.1.0).** It draws, computes, presents and passes part of dEQP-VK. It is not conformant, and the limits are listed below.
+
+## GPUs
+
+| GPU | Arch | kbase uAPI | State |
+|---|---|---|---|
+| Mali-G615 | Valhall v11 (CSF) | 1.21 | Developed and verified on hardware |
+| Mali-G925 | Arm 5th gen v13 (CSF) | 1.30 | Runs on hardware (draw, compute, dEQP sample). Fewer hours of testing |
+
+Only CSF-based Mali (v10+) is in scope. Bifrost and Midgard JM GPUs are not supported. libkbase refuses uAPI versions it has not been checked against.
+
+## Why
+
+Mali phones usually have no usable system Vulkan driver for desktop-style workloads. The alternative is a bridge, which forwards calls to
+Android and adds round trips and copies. A driver that talks to kbase directly can use async submit, cached memory, zero-copy
+presentation and the extensions DXVK and vkd3d-proton need. The aim is plug-and-play for Mali users through MaliDeck: import a zip, select the driver.
+
+## Architecture
+
+1. `libkbase/` is the lower layer. It has no Mesa dependency and uses the kbase ioctls, memory (BOs), contexts, CSF queues, tiler heap, fences and fault decoding.
+   It is selected through a per-GPU version table.
+2. `vk/` is the Vulkan front end (`vk/src/mali_*.c`): instance, device, memory, buffers, images, descriptors, pipelines, command
+   buffers, meta operations, queries, events, WSI.
+3. `mali_backend.h` separates the front end from the kernel. There are two backends: `kbase` (real) and `fake` (offline tests).
+4. Per-arch code (v11, v13) is compiled twice. Differences are `#if PAN_ARCH >= 13` sites.
+5. The shader compiler is not ours. Mesa 26.3.0 is linked as a library, unmodified: `spirv_to_nir`, NIR, the Bifrost/Valhall backend
+   and the `vk_*` runtime and WSI. Our own NIR passes sit in `mali_compile.c` and `mali_descriptor_lower.c`.
+6. Mesa's Panfrost texture, format and blend helpers are linked too (`pan_format`, `pan_texture`, `pan_blend` and similar).
+7. PanVK is an oracle only. We run it for comparison, and no file from `src/panfrost/vulkan` is copied. `check.sh` asserts that no `panvk` symbol is exported.
+8. The libkbase uAPI header is written by us from public documentation and observed behaviour. No Arm DDK source and no blob disassembly are used.
+9. Binary 1.3 device (`api_version 1.3`), with features advertised only when a test backs them.
+10. The build reads compile flags and the library list from a pinned Mesa build tree (`vk/build.sh`).
+
+## Status
+
+Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DXVK feature set), `ROADMAP.md` (overview).
+
+| Area | State |
+|---|---|
+| Instance, device, memory, sync, queue | Done, on hardware |
+| Buffers, images, samplers, descriptors, pipeline layout | Done, byte-exact against libkbase golden descriptors |
+| Compiler path (SPIR-V to Bifrost/Valhall binary, disk cache) | Done |
+| Graphics draw path (indexed, textured, UBO, push constants, scissor/viewport) | Done on v11 and v13 hardware |
+| Compute, indirect dispatch | Done on v11 and v13 hardware |
+| Meta ops (copy, blit, clear, resolve), queries, events | Wired, hardware-tested on v11; partial elsewhere |
+| WSI (Wayland, swapchain, dma-heap images) | Passed on v11; v13 pending |
+| BC1-BC7 texture decode (compute emulation) | Offline done; hardware wiring pending |
+| DXVK-required features | 8 of 47 still false (`check.sh`, `DXVK_MISSING=8`) |
+| MSAA, dualSrcBlend, sampleRateShading, multiViewport, inlineUniformBlock, geometry/tessellation | Not done |
+
+**dEQP-VK** (see `vk/deqp/TRIAGE.md`; daily sample of 1381 cases, G925 phone):
+
+| Driver | Pass | Fail | NotSupported | Crash |
+|---|---|---|---|---|
+| PanVK oracle | 642 | 18 | 721 | 0 |
+| mali-open (latest recheck) | 272 | 136 | 971 | 0 (plus 2 other) |
+
+The oracle passes 97.3 % of the cases it supports. We pass about 67 % of ours on this sample. The earlier 26.8 % figure (782 cases, `api.*` only) is superseded, but the sample is
+still a subset, not the full CTS. No R3 gate run (95 %) has been done.
+
+## Build and test
+
+```
+vk/build.sh                      # native x86-64 build against third_party/build-vk (one-time Mesa setup in vk/README.md)
+vk/cross/build-cross.sh all      # aarch64 glibc and bionic cross builds
+vk/check.sh                      # offline check with the fake backend, no GPU
+libkbase/check.sh                # libkbase offline tests
+```
+
+`MALI_BACKEND=fake MALI_FAKE_GPU=v11|v13` runs everything that does not touch hardware (loader, caps, compile, descriptors, command-stream bytes versus golden).
+Hardware runs use two small harnesses on a rooted-free phone: a direct run (a bionic test binary that loads the ICD without a loader and issues
+Vulkan calls: `t_icd --direct`, `t_vk_draw`, `t_vk_feat`, ...) and a guest run (the glibc build through the Khronos loader, plus dEQP-VK via `vk/deqp/qdeqp.py`).
+Those scripts are specific to the maintainer's lab and are not part of this tree.
+The Mesa sources, Mesa build trees and the CTS are not committed: `third_party/MESA-SOURCE.txt` pins the Mesa tag and commit.
+
+## Shipping in MaliDeck
+
+`vk/package/build-zip.sh` builds an importable zip (`libvulkan_panfrost.so` is our library under the name the importer accepts,
+plus `meta.json`, `icd.json`, `LICENSE`, `NOTICE-MESA.txt`). Variants: `a64-glibc`, `a64-glibc-wl` (Wayland WSI). `--bundle` also writes a
+driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/package/README.md`. Note: on a phone that has a vkBridge, the app uses the bridge and ignores the imported driver.
+
+## Limitations
+
+- Not conformant: dEQP numbers above are a sample, 136 sample cases fail.
+- v13 coverage is thinner than v11. A geometry-buffer size regression broke v13 draws and was fixed, so recheck draws on every change.
+- No MSAA path, no geometry or tessellation shaders, no GPL, no robustness2 bounds clamping.
+- Firmware support is a fixed list (uAPI 1.21 and 1.30). Other versions are refused on purpose.
+- Games were not yet run end to end through DXVK. That is the R4 gate.
+- The licence of the project itself is not yet decided: see `LICENSE-NOTES.md`.
