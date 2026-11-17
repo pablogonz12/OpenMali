@@ -80,7 +80,14 @@ mali_ops_build(const struct mali_env *env, const struct mali_op *ops, unsigned n
          break;
       }
    }
-   flush(&b, R);
+   /* Frames that only store timestamps / availability words need no cache maintenance: nothing was read or written through the
+    * caches except those words, which the clean flush at the head of the queue-submit tail (kbase_submit_signal) makes visible. */
+   bool light = !getenv("MALI_OPS_FLUSH");
+   for (unsigned i = 0; i < nops; i++)
+      if (ops[i].kind != MALI_OP_TIMESTAMP && ops[i].kind != MALI_OP_AVAIL)
+         light = false;
+   if (!light)
+      flush(&b, R);
    E(&b, kb_cs_move48(R->addr, env->sync_va));
    E(&b, kb_cs_move48(R->val, 1));
    E(&b, kb_cs_sync_add64(R->addr, R->val, KB_CS_SCOPE_SYSTEM));
