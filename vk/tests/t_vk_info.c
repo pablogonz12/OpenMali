@@ -215,9 +215,10 @@ main(int argc, char **argv)
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
-                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d);   /* t_vk_feat demote */
+                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d),
+                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d);   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == sgc || i == cfs, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */

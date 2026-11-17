@@ -144,6 +144,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    /* ---- Vulkan 1.3 ---- */
    p->minSubgroupSize = 16;
    p->maxSubgroupSize = 16;
+   p->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* min == max == 16: the only size; t_vk_feat sgctl */
    p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
@@ -195,6 +196,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
+      .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */

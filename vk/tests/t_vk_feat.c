@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -27,6 +27,7 @@ static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
 static VkBool32 g_mirror, g_bda, g_didx;
+static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 
@@ -729,8 +730,10 @@ storfmt_one(struct tgt *t, const struct sfmt *f)
    snprintf(name, sizeof name, "stor_%s.comp.spv", f->q);
    VkShaderModule m = load_spv(name);
    CHECK(m, "shader %s", name);
+   VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
    VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
-      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_sgctl ? &rss : NULL,
+                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
    VkPipeline pipe;
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
    DestroyShaderModule(dev, m, NULL);
@@ -828,8 +831,10 @@ test_bda(void)
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
    VkShaderModule m = load_spv("bda.comp.spv");
    CHECK(m, "shader");
+   VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
    VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
-      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_sgctl ? &rss : NULL,
+                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
    VkPipeline pipe;
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
    DestroyShaderModule(dev, m, NULL);
@@ -990,8 +995,10 @@ nulld_one(struct tgt *t, const struct nd_case *c, VkSampler smp)
    snprintf(name, sizeof name, "nulld_%s.comp.spv", c->name);
    VkShaderModule m = load_spv(name);
    CHECK(m, "shader %s", name);
+   VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
    VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
-      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_sgctl ? &rss : NULL,
+                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
    VkPipeline pipe;
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
    DestroyShaderModule(dev, m, NULL);
@@ -1044,7 +1051,7 @@ test_nulld(void)
 
 /* R4-B2 cheap shader-capability features: scalarBlockLayout, uniformBufferStandardLayout, shaderZeroInitializeWorkgroupMemory.
  * run_comp: one compute dispatch over a set whose bindings 0..n-1 are the given buffers/types. */
-static VkBool32 g_scalar, g_ubostd, g_zinit, g_demote;
+static VkBool32 g_scalar, g_ubostd, g_zinit, g_demote, g_sgctl_feat, g_fullsg_feat;
 static int
 run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, struct hbuf *bufs, uint32_t gx)
 {
@@ -1075,8 +1082,10 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
    VkShaderModule m = load_spv(spv);
    CHECK(m, "shader %s", spv);
+   VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
    VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
-      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_sgctl ? &rss : NULL,
+                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
    VkPipeline pipe;
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
    DestroyShaderModule(dev, m, NULL);
@@ -1213,8 +1222,10 @@ test_demote(void)
 
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
+static VkPhysicalDevice g_pd;
+static PFN_vkGetPhysicalDeviceProperties2 g_gp2;
 static int
-test_subgroup(void)
+test_subgroup_one(void)
 {
    const VkSubgroupFeatureFlags need = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
       VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT |
@@ -1270,6 +1281,29 @@ test_subgroup(void)
    return 1;
 }
 
+static int
+test_subgroup(void)
+{
+   return test_subgroup_one();
+}
+
+/* subgroupSizeControl + computeFullSubgroups: the same 64-invocation subgroup shader, compiled with a required size of 16 and
+ * REQUIRE_FULL_SUBGROUPS; every result of the 4 full subgroups must still match. Also checks the advertised limits. */
+static int
+test_sgctl(void)
+{
+   if (!g_sgctl_feat || !g_fullsg_feat) { printf("{\"test\":\"sgctl\",\"skipped\":\"subgroupSizeControl/computeFullSubgroups not advertised\",\"ok\":true}\n"); return 1; }
+   VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+   VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+   g_gp2(g_pd, &p2);
+   CHECK(p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16 && (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT), "limits min %u max %u stages %x", p13.minSubgroupSize, p13.maxSubgroupSize, p13.requiredSubgroupSizeStages);
+   g_sgctl = 1;
+   int ok = test_subgroup_one();
+   g_sgctl = 0;
+   if (ok) printf("{\"test\":\"sgctl\",\"ok\":true}\n");
+   return ok;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1320,7 +1354,8 @@ main(int argc, char **argv)
       ((PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2"))(pd, &p2);
       g_p11 = p11;
    }
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation;
+   g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
@@ -1334,7 +1369,7 @@ main(int argc, char **argv)
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups};
    e12.pNext = &e13;
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e12, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
@@ -1363,6 +1398,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
+   if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
 
    DeviceWaitIdle(dev);
