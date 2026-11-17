@@ -69,11 +69,14 @@ mali_GetDeviceBufferMemoryRequirements(VkDevice _dev, const VkDeviceBufferMemory
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_BindBufferMemory2(VkDevice _dev, uint32_t n, const VkBindBufferMemoryInfo *b)
 {
+   VK_FROM_HANDLE(mali_device, dev, _dev);
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_buffer, buf, b[i].buffer);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);
       buf->mem = mem;
       buf->mem_off = b[i].memoryOffset;
+      if ((buf->vk.usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) && mali_device_pdev(dev)->backend->bo_host_touch)
+         mali_device_pdev(dev)->backend->bo_host_touch(NULL, &mem->bo);
       buf->vk.device_address = mem->bo.gpu_va + b[i].memoryOffset;
    }
    return VK_SUCCESS;

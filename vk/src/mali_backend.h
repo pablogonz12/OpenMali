@@ -34,6 +34,8 @@ struct mali_kdev;
 #define MALI_BO_EXPORT (1u << 1) /* dma-heap backed, can be exported as a dma-buf fd */
 
 #define MALI_BO_EVENT  (1u << 2) /* CSF event memory (CQS words the CS updates; kernel-visible, uncached) */
+#define MALI_BO_HOSTLAZY (1u << 8) /* device memory the CPU has not mapped yet: no CPU<->device MEM_SYNC until bo_host_touch */
+#define MALI_BO_HOT    (1u << 9) /* rewritten by the CPU every frame (arena): MEM_SYNC at every CS submit */
 #define MALI_BO_EXEC   (1u << 3) /* GPU-executable (shader binaries) */
 
 /* M9: tiler heap (kb_tiler_heap) as the CS needs it. */
@@ -83,6 +85,8 @@ struct mali_backend_ops {
    /* M9: append a finished frame command stream to the queue. Longer than the 4 KiB ring: it is split into 256-instruction
     * pieces (64-byte multiples), each waiting for ring space (the CS is a linear stream; registers persist across pieces).
     * arch 13: MEM_SYNC of the BOs allocated through bo_alloc first when COHERENT_LOCAL BOs are enabled. 0 or -errno. */
+   void (*host_sync)(struct mali_kdev *kdev);   /* CPU -> device MEM_SYNC of every BO (call once per queue submit) */
+   void (*bo_host_touch)(struct mali_kdev *kdev, struct mali_bo *bo);
    int (*submit_cs)(struct mali_kdev *kdev, const uint64_t *cs, unsigned ninstr);
    /* Wait until *counter_cpu >= target (a CQS word the CS increments). 0, -ETIMEDOUT, -EIO (GPU fault). */
    int (*wait_counter)(struct mali_kdev *kdev, const volatile uint64_t *counter_cpu, uint64_t target, int timeout_ms);

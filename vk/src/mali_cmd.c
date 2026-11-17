@@ -854,6 +854,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       bool ind = false;
       for (unsigned k = 0; k < fr.ndraws; k++)
          ind |= fr.draws[k].ind != NULL;
+      if (ind && g_hw.drain)
+         g_hw.drain(g_hw.user);   /* indirect args are read by the CPU: earlier frames must have retired */
       if (ind && expand_indirect(&fr))
          return VK_ERROR_OUT_OF_HOST_MEMORY;
       int rc = mali_frame_submit(&g_hw, &fr);

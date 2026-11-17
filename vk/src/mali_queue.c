@@ -3,6 +3,9 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include <time.h>
+static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static double prof_acc[6]; static unsigned prof_n;
 
 #include <errno.h>
 #include <stdio.h>
@@ -116,6 +119,15 @@ hw_retire(struct mali_hwctx *h, unsigned max_left)
 }
 
 static void
+hw_drain(void *u)
+{
+   struct mali_hwctx *h = u;
+   if (h->nfl)
+      hw_wait(h, h->fl[h->nfl - 1].expected);
+   hw_retire(h, 0);
+}
+
+static void
 hw_job_begin(void *u)
 {
    struct mali_hwctx *h = u;
@@ -161,7 +173,13 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
+   double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
+   if (getenv("MALI_PROF")) {
+      static double acc; static unsigned cnt;
+      acc += prof_now() - q0;
+      if (++cnt % 200 == 0) fprintf(stderr, "PROF/hw_submit submit_cs avg %.3f ms (n=%u instr)\n", acc / cnt, n);
+   }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
    if (r)
       return r;
@@ -224,7 +242,7 @@ mali_hw_init(struct mali_device *dev)
    dev->hw = h;
    const char *t = getenv("MALI_FRAME_TIMEOUT_MS");
    h->wait_ms = t ? (unsigned)strtoul(t, NULL, 0) : 10000;
-   if (be->bo_alloc(dev->kdev, ARENA_BYTES, 0, &h->arena))
+   if (be->bo_alloc(dev->kdev, ARENA_BYTES, MALI_BO_HOT, &h->arena))
       goto fail;
    h->arena_live = true;
    if (be->bo_alloc(dev->kdev, 4096 + 65536, 0, &h->geo))
@@ -241,7 +259,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .tls = hw_tls};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .tls = hw_tls, .drain = hw_drain};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,
@@ -299,6 +317,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
    if (vk_queue_submit_has_bind(submit))
       return vk_error(vq, VK_ERROR_FEATURE_NOT_PRESENT); /* sparse: not supported */
 
+   double p0 = prof_now();
    /* Every wait is a CPU wait for now (this queue is the only producer, external sync_files are the
     * rare case); the GPU-side wait is M8 work. */
    for (uint32_t i = 0; i < submit->wait_count; i++) {
@@ -308,6 +327,9 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          return r;
    }
 
+   double p1 = prof_now();
+   if (submit->command_buffer_count && be->host_sync)
+      be->host_sync(dev->kdev);
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
@@ -318,6 +340,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          return vk_error(vq, cr);
    }
 
+   double p2 = prof_now();
    int fd = -1;
    int r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
@@ -331,6 +354,13 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       res = vk_sync_import_sync_file(&dev->vk, s, fd);
    }
    close(fd);
+   if (getenv("MALI_PROF")) {
+      double p3 = prof_now();
+      prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
+      if (++prof_n % 200 == 0) {
+         fprintf(stderr, "PROF/submit(avg ms of %u): waits %.3f cmd_submit %.3f signal+import %.3f\n", prof_n, prof_acc[0] / prof_n, prof_acc[1] / prof_n, prof_acc[2] / prof_n);
+      }
+   }
    return res;
 }
 

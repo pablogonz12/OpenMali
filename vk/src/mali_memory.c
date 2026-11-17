@@ -67,7 +67,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    } else {
       const bool export = mem->vk.export_handle_types != 0;
       r = be->bo_alloc(dev->kdev, pAllocateInfo->allocationSize,
-                       flags | (export ? MALI_BO_EXPORT : 0), &mem->bo);
+                       flags | (export ? MALI_BO_EXPORT : MALI_BO_HOSTLAZY), &mem->bo);
    }
    if (r != 0) {
       vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
@@ -106,6 +106,8 @@ mali_MapMemory(VkDevice _device, VkDeviceMemory _mem, VkDeviceSize offset, VkDev
    if (mem->mapped || offset >= mem->vk.size)
       return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
    mem->mapped = true;
+   if (mali_device_pdev(dev)->backend->bo_host_touch)
+      mali_device_pdev(dev)->backend->bo_host_touch(dev->kdev, &mem->bo);
    *ppData = (char *)mem->bo.cpu + offset;
    return VK_SUCCESS;
 }

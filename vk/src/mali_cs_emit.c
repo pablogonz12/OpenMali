@@ -10,6 +10,8 @@
  *   - FAU pointers are written as two MOVE32 (a MOVE48 would drop the entry count in bits 63:56)
  * A shadow-register cache emits MOVEs only for changed registers (the CS ring is only 4 KiB). It is valid because each frame's CS
  * starts empty and every register is (re)written by the first draw. */
+#include <stdio.h>
+#include <time.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -901,10 +903,20 @@ mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f)
 
    if (!hw || !hw->alloc || !hw->submit)
       return -ENODEV;
+   struct timespec pt0, pt1, pt2;
+   clock_gettime(CLOCK_MONOTONIC, &pt0);
    if (hw->job_begin)
       hw->job_begin(hw->user);
+   clock_gettime(CLOCK_MONOTONIC, &pt1);
    if ((rc = mali_frame_build(hw, f, &cs, &n)))
       return rc;
+   clock_gettime(CLOCK_MONOTONIC, &pt2);
+   if (getenv("MALI_PROF")) {
+      static double a, b; static unsigned c;
+      a += (pt1.tv_sec - pt0.tv_sec) * 1e3 + (pt1.tv_nsec - pt0.tv_nsec) / 1e6;
+      b += (pt2.tv_sec - pt1.tv_sec) * 1e3 + (pt2.tv_nsec - pt1.tv_nsec) / 1e6;
+      if (++c % 200 == 0) fprintf(stderr, "PROF/frame job_begin %.3f build %.3f ms (ndraws %u nops %u)\n", a / c, b / c, f->ndraws, f->nops);
+   }
    kb_wmb();
    rc = hw->submit(hw->user, cs, n);
    free(cs);

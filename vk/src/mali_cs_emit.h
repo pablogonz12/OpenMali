@@ -52,6 +52,7 @@ struct mali_hw {
    void (*job_begin)(void *user);
    int (*submit)(void *user, const uint64_t *cs, unsigned ninstr);
    void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
+   void (*drain)(void *user);   /* wait until every submitted frame has retired */
    struct mali_env env;
 };
 

@@ -220,8 +220,17 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    }
    *out = (struct mali_bo){.gpu_va = bo->gpu_va, .cpu = bo->cpu, .size = size, .flags = flags,
                            .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
+   bo->host_lazy = (flags & MALI_BO_HOSTLAZY) != 0;
+   bo->hot = (flags & MALI_BO_HOT) != 0;
    track_bo(k, bo, true);
    return 0;
+}
+
+static void
+kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
+{
+   if (b && b->priv)
+      ((struct kb_bo *)b->priv)->host_lazy = false;
 }
 
 static int
@@ -362,6 +371,7 @@ out:
 }
 
 static void mem_sync_all(struct mali_kdev *k, unsigned op);
+static void mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only);
 static int
 kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
@@ -418,12 +428,26 @@ kbase_device_lost(struct mali_kdev *k)
 static void
 mem_sync_all(struct mali_kdev *k, unsigned op)
 {
+   mem_sync_bos(k, op, false);
+}
+
+static void
+mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
+{
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
    if (!(kb_bo_extra_flags & 0x800))
       return;
    pthread_mutex_lock(&k->bo_lock);
+   static unsigned prof_calls;
+   if (getenv("MALI_PROF") && ++prof_calls == 600) {
+      unsigned n = 0;
+      for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x\n", k->bos[i]->size, k->bos[i]->flags); }
+      fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
+   }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
+      if (b->host_lazy || (hot_only && !b->hot))
+         continue;
       struct {
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
@@ -431,6 +455,12 @@ mem_sync_all(struct mali_kdev *k, unsigned op)
       ioctl(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
    }
    pthread_mutex_unlock(&k->bo_lock);
+}
+
+static void
+kbase_host_sync(struct mali_kdev *k)
+{
+   mem_sync_bos(k, 1, false);
 }
 
 static int
@@ -443,7 +473,7 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
       r = -EIO;
       goto out;
    }
-   mem_sync_all(k, 1);
+   mem_sync_bos(k, 1, true);   /* the other BOs were synced by host_sync at the start of the queue submit */
    for (unsigned i = 0; i < n && !r; i += CS_PIECE) {
       unsigned m = n - i < CS_PIECE ? n - i : CS_PIECE;
       if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63)))
@@ -528,6 +558,8 @@ const struct mali_backend_ops mali_backend_kbase = {
    .submit_signal = kbase_submit_signal,
    .fence_wait = kbase_fence_wait,
    .device_lost = kbase_device_lost,
+   .host_sync = kbase_host_sync,
+   .bo_host_touch = kbase_bo_host_touch,
    .submit_cs = kbase_submit_cs,
    .wait_counter = kbase_wait_counter,
    .heap_create = kbase_heap_create,

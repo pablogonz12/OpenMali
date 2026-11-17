@@ -87,6 +87,8 @@ struct kb_bo {
 	int dmabuf_fd;   /* -1 for native allocations; a dup owned by the BO for imports */
 	void *kmap;      /* kbase mapping that creates the GPU VA of an import. NEVER dereference (SIGBUS). */
 	bool same_va;
+	bool hot;        /* driver-level: CPU rewrites it every frame (synced on every CS submit, others once per queue submit) */
+	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
 };
 
 int kb_bo_alloc(struct kb_ctx *ctx, size_t size, uint32_t flags, struct kb_bo *out);
