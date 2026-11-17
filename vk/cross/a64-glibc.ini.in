@@ -1,0 +1,13 @@
+[binaries]
+c = '@DROIDTEST@/tools/cc-aarch64-glibc'
+cpp = '@CROSS@/cxx-aarch64-glibc'
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+pkg-config = '@CROSS@/pkgconf-a64'
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'armv8'
+endian = 'little'
+[properties]
+needs_exe_wrapper = true

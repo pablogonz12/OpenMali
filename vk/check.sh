@@ -81,4 +81,7 @@ else
    echo "skip  vulkaninfo (not installed)"
 fi
 
+# no private identifiers (serials, home paths, IPs, emails) in tracked files
+if "$V/../tools/private-lint.sh" >/dev/null; then echo "ok    private-lint"; else echo "FAIL  private-lint"; "$V/../tools/private-lint.sh" | sed 's/^/        /'; fail=1; fi
+
 [ $fail = 0 ] && echo OK || { echo FAILED; exit 1; }

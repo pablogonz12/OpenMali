@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Host: push build + run t_vk_leak on the Poco via qdrv. Usage: leakrun.sh "<t_vk_leak args>"
 set -e; export PATH=$PATH:$HOME/Android/Sdk/platform-tools
-V=$(cd "$(dirname "$0")/.." && pwd); S=<serial>; DL=/storage/emulated/0/Download
+V=$(cd "$(dirname "$0")/.." && pwd); S=$("$V/../tools/dev-serial" poco); DL=/storage/emulated/0/Download
 for f in libvulkan_mali.so t_vk_leak; do timeout 100 adb -s $S push $V/out/a64-glibc/$f $DL/leak_$f >/dev/null; done
 timeout 100 adb -s $S push $V/shader/comp.comp.spv $DL/leak_comp.spv >/dev/null
 echo "$1" >$HOME/.cache/mali-tmp/leak_args.txt; adb -s $S push $HOME/.cache/mali-tmp/leak_args.txt $DL/leak_args.txt >/dev/null

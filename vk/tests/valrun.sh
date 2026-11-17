@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Host: validation on a phone (default poco). Usage: [PHONE=cmf|poco] valrun.sh "<ENV=.. ENV2=..>" [loop]
 set -e; export PATH=$PATH:$HOME/Android/Sdk/platform-tools
-V=$(cd "$(dirname "$0")/.." && pwd); case ${PHONE:-poco} in cmf) S=<serial>; PH=cmf;; *) S=<serial>; PH=poco;; esac; DL=/storage/emulated/0/Download
+V=$(cd "$(dirname "$0")/.." && pwd); PH=${PHONE:-poco}; case $PH in cmf|poco) ;; *) PH=poco;; esac; S=$("$V/../tools/dev-serial" "$PH"); DL=/storage/emulated/0/Download
 timeout 100 adb -s $S push $V/out/a64-glibc/libvulkan_mali.so $DL/val_libvulkan_mali.so >/dev/null
 for t in t_vk_draw t_vk_compute t_vk_meta; do timeout 100 adb -s $S push $V/out/a64-glibc/$t $DL/val_$t >/dev/null; done
 for f in $V/shader/*.spv; do timeout 100 adb -s $S push $f $DL/val_$(basename $f) >/dev/null; done

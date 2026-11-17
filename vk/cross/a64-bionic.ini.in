@@ -1,0 +1,13 @@
+[binaries]
+c = '@CROSS@/ndk-c'
+cpp = '@CROSS@/ndk-cxx'
+ar = '@DROIDTEST@/tools/ndk/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+strip = '@DROIDTEST@/tools/ndk/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+pkg-config = 'false'
+[host_machine]
+system = 'android'
+cpu_family = 'aarch64'
+cpu = 'armv8'
+endian = 'little'
+[properties]
+needs_exe_wrapper = true

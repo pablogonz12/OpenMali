@@ -5,6 +5,10 @@
 # Prereq: native build-vk exists (README.md); its host tools mesa_clc, vtn_bindgen2, panfrost_compile are built here.
 set -euo pipefail
 V=$(cd "$(dirname "$0")/.." && pwd); TP=$V/../third_party; X=$V/cross
+DT=${MALI_DROIDTEST:-$HOME/Projects/mali-gaming/droidtest}
+# meson machine files are generated from the .ini.in templates so no absolute path is committed
+mkdir -p "$TP/cross-ini"
+for t in a64-glibc a64-bionic; do sed "s#@CROSS@#$X#g; s#@DROIDTEST@#$DT#g" "$X/$t.ini.in" >"$TP/cross-ini/$t.ini"; done
 export PATH=$TP/venv/bin:$TP/build-vk/src/compiler/clc:$TP/build-vk/src/compiler/spirv:$TP/build-vk/src/panfrost/clc:$PATH
 ninja -C "$TP/build-vk" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2 src/panfrost/clc/panfrost_compile
 COMMON="-Dbuildtype=release -Dgallium-drivers= -Dvulkan-drivers=panfrost -Dtools= -Dglx=disabled -Dplatforms= -Degl=disabled
@@ -16,7 +20,7 @@ LIBS="src/vulkan/runtime/libvulkan_lite_runtime.a src/vulkan/runtime/libvulkan_r
 what=${1:-all}
 if [ "$what" = glibc ] || [ "$what" = all ]; then
   B=$TP/build-vk-a64-glibc
-  [ -f $B/build.ninja ] || meson setup $B $TP/mesa --cross-file $X/a64-glibc.ini $COMMON -Dxmlconfig=enabled
+  [ -f $B/build.ninja ] || meson setup $B $TP/mesa --cross-file $TP/cross-ini/a64-glibc.ini $COMMON -Dxmlconfig=enabled
   # the PanVK .so is only the convenient target that pulls in every static library (it is not shipped)
   ninja -C $B src/panfrost/vulkan/libvulkan_panfrost.so
   MESA_BUILD=$B MALI_TARGET=a64-glibc "$V/build.sh"
@@ -25,7 +29,7 @@ if [ "$what" = bionic ] || [ "$what" = all ]; then
   B=$TP/build-vk-a64-bionic
   # libdrm comes from Mesa's own wrap (needs network once); the NDK lacks cutils/native_handle.h, pthread_cancel
   # and sync_wait: cross/shim + cross/ndk-c force-include them, Mesa itself stays unmodified (0 patches).
-  [ -f $B/build.ninja ] || meson setup $B $TP/mesa --cross-file $X/a64-bionic.ini --wrap-mode=default \
+  [ -f $B/build.ninja ] || meson setup $B $TP/mesa --cross-file $TP/cross-ini/a64-bionic.ini --wrap-mode=default \
      -Dallow-fallback-for=libdrm $COMMON -Dxmlconfig=disabled -Dzstd=disabled -Dandroid-libbacktrace=disabled \
      -Dandroid-libperfetto=disabled -Dandroid-strict=false
   # the .so link of PanVK fails (liblog, libdrm): all static libs are built by then, which is all we need

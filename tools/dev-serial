@@ -1,0 +1,16 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# tools/dev-serial <alias>   print the adb transport of a phone from ~/.config/mali-farm/devices.toml
+# ADB_SERIAL in the environment wins. An alias matches exactly, else by prefix (poco -> poco-x8).
+set -euo pipefail
+[ -n "${ADB_SERIAL:-}" ] && { printf '%s\n' "$ADB_SERIAL"; exit 0; }
+a=${1:-}; [ -n "$a" ] || { echo "usage: dev-serial <alias>  (or set ADB_SERIAL)" >&2; exit 2; }
+dev=${MALI_FARM_DEVICES:-$HOME/.config/mali-farm/devices.toml}
+[ -f "$dev" ] || { echo "dev-serial: $dev missing and ADB_SERIAL not set" >&2; exit 1; }
+awk -v want="$a" '
+  function val(l,  v) { v=l; sub(/^[^=]*=[ \t]*"?/,"",v); sub(/"?[ \t]*(#.*)?$/,"",v); return v }
+  /^\[\[/ { if (al!="" && se!="") { if (al==want) {exact=se} else if (index(al,want)==1 && pre=="") {pre=se} } al=""; se=""; next }
+  /^[ \t]*alias[ \t]*=/  { al=val($0) }
+  /^[ \t]*serial[ \t]*=/ { se=val($0) }
+  END { if (al!="" && se!="") { if (al==want) exact=se; else if (index(al,want)==1 && pre=="") pre=se }
+        if (exact!="") print exact; else if (pre!="") print pre; else exit 1 }' "$dev" || { echo "dev-serial: no device '$a' in $dev" >&2; exit 1; }
