@@ -110,6 +110,8 @@ VKAPI_ATTR void VKAPI_CALL mali_CmdBindDescriptorSets(VkCommandBuffer, VkPipelin
                                                       const VkDescriptorSet *, uint32_t, const uint32_t *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBindVertexBuffers(VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *, const VkDeviceSize *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBindIndexBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType);
+VKAPI_ATTR void VKAPI_CALL mali_CmdBindDescriptorSets2KHR(VkCommandBuffer, const VkBindDescriptorSetsInfoKHR *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdPushConstants2KHR(VkCommandBuffer, const VkPushConstantsInfoKHR *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdPushConstants(VkCommandBuffer, VkPipelineLayout, VkShaderStageFlags, uint32_t, uint32_t,
                                                  const void *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
