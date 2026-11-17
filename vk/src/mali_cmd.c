@@ -81,7 +81,9 @@ mali_cmd_create(struct vk_command_pool *pool, VkCommandBufferLevel level, struct
    struct mali_cmd_buffer *cmd = vk_zalloc(&pool->alloc, sizeof *cmd, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
-   VkResult r = vk_command_buffer_init(pool, &cmd->vk, &mali_cmd_ops, level);
+   struct vk_command_buffer_init_params ip = { .pool = pool, .level = level, .ops = &mali_cmd_ops,
+                                               .needs_cmd_queue = level == VK_COMMAND_BUFFER_LEVEL_SECONDARY };
+   VkResult r = vk_command_buffer_init_with_params(&cmd->vk, &ip);
    if (r != VK_SUCCESS) {
       vk_free(&pool->alloc, cmd);
       return r;
