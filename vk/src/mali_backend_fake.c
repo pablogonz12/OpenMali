@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #endif
 #include "mali_backend.h"
+#include <time.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -437,6 +438,16 @@ fake_heap_destroy(struct mali_kdev *k, struct mali_heap *heap)
 {
 }
 
+/* The fake GPU counter is CLOCK_MONOTONIC_RAW in ns (ts_hz stays 0: period 1.0). */
+static int
+fake_gpu_timestamp(struct mali_kdev *k, uint64_t *ticks)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+   *ticks = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+   return 0;
+}
+
 const struct mali_backend_ops mali_backend_fake = {
    .name = "fake",
    .probe = fake_probe,
@@ -450,6 +461,7 @@ const struct mali_backend_ops mali_backend_fake = {
    .submit_signal = fake_submit_signal,
    .fence_wait = fake_fence_wait,
    .device_lost = fake_device_lost,
+   .gpu_timestamp = fake_gpu_timestamp,
    .submit_cs = fake_submit_cs,
    .wait_counter = fake_wait_counter,
    .heap_create = fake_heap_create,

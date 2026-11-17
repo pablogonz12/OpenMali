@@ -546,6 +546,12 @@ kbase_heap_destroy(struct mali_kdev *k, struct mali_heap *heap)
    heap->priv = NULL;
 }
 
+static int
+kbase_gpu_timestamp(struct mali_kdev *k, uint64_t *ticks)
+{
+   return kb_gpu_timestamp(k->ctx, ticks);
+}
+
 const struct mali_backend_ops mali_backend_kbase = {
    .name = "kbase",
    .probe = kbase_probe,
@@ -559,6 +565,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .submit_signal = kbase_submit_signal,
    .fence_wait = kbase_fence_wait,
    .device_lost = kbase_device_lost,
+   .gpu_timestamp = kbase_gpu_timestamp,
    .host_sync = kbase_host_sync,
    .bo_host_touch = kbase_bo_host_touch,
    .submit_cs = kbase_submit_cs,

@@ -276,6 +276,17 @@ void kb_leaks(const struct kb_ctx *c, struct kb_leaks *o)
 	o->kcpu_queues = c->kcpu_id >= 0;
 }
 
+int kb_gpu_timestamp(struct kb_ctx *ctx, uint64_t *ticks)
+{
+	union kbase_ioctl_get_cpu_gpu_timeinfo a;
+	memset(&a, 0, sizeof a);
+	a.in.request_flags = KBASE_TIMEINFO_TIMESTAMP_FLAG;
+	if (kb_ioctl(ctx, KBASE_IOCTL_GET_CPU_GPU_TIMEINFO, &a))
+		return -errno;
+	*ticks = a.out.timestamp;
+	return 0;
+}
+
 uint64_t kb_timestamp_hz(struct kb_ctx *ctx)
 {
 	union kbase_ioctl_get_cpu_gpu_timeinfo a, b;

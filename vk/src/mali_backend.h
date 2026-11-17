@@ -81,6 +81,8 @@ struct mali_backend_ops {
     * forever. Safe to call from several threads. */
    int (*fence_wait)(struct mali_kdev *kdev, int fence_fd, int timeout_ms);
    bool (*device_lost)(struct mali_kdev *kdev);
+   /* VK_KHR_calibrated_timestamps: current GPU timestamp counter in ticks (period = gpu.ts_hz). 0 or -errno. */
+   int (*gpu_timestamp)(struct mali_kdev *kdev, uint64_t *ticks);
 
    /* M9: append a finished frame command stream to the queue. Longer than the 4 KiB ring: it is split into 256-instruction
     * pieces (64-byte multiples), each waiting for ring space (the CS is a linear stream; registers persist across pieces).

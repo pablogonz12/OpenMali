@@ -75,6 +75,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       return errno_to_vk(dev, r);
    }
 
+   p_atomic_add(&pdev->mem_used, mem->vk.size);
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
 }
@@ -87,6 +88,7 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
+   p_atomic_add(&mali_device_pdev(dev)->mem_used, -(int64_t)mem->vk.size);
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
    p_atomic_dec(&dev->mem_count);

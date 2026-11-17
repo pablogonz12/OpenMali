@@ -28,6 +28,7 @@ struct mali_physical_device {
    const struct mali_backend_ops *backend;
    struct mali_gpu_info gpu;
    VkPhysicalDeviceMemoryProperties memory;
+   uint64_t mem_used;   /* bytes of live VkDeviceMemory over all devices (atomic; VK_EXT_memory_budget) */
 
    /* M4: binary fences/semaphores on kbase fences + the runtime's emulated timeline on top. */
    struct vk_sync_timeline_type timeline_type;
