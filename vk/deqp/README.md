@@ -22,3 +22,11 @@
   extra flags `--deqp-surface-type=fbo --deqp-watchdog=enable`). Treat those 137 as "harness unresolved", not as a PanVK result, until fixed.
 - **Ours** (`ours-smoke-poco.csv`, api.smoke 6 cases): 2 pass (create_sampler, create_shader), 4 Crash (draw cases), as expected this early.
 - Not done: CMF baseline (`baseline-v11.txt`), two-run 5k determinism check, resume-after-kill test (resume proven by rerun), bionic variant.
+
+## Host dEQP against the fake backend (`host-run.sh`)
+Separate, slower gate (not in check.sh). Host x86-64 `deqp-vk` from `third_party/cts-src` in `third_party/build-vk-x86-host`
+(`cmake -G Ninja` with `third_party/venv/bin` on PATH, clang, headless, `-DCMAKE_DISABLE_FIND_PACKAGE_Wayland=ON -DCMAKE_DISABLE_FIND_PACKAGE_X11=ON`,
+CXX flags `-include cstdint -Wno-error -Wno-missing-template-arg-list-after-template-kw`; ~30 min at `nice -n 15 ninja -j3`).
+`./host-run.sh` runs `lists/daily-sample.txt` (1381 cases) on fake GPUs v11 and v13 through the ASan+UBSan driver (`MALI_SAN=1 MALI_TARGET=native-san ./build.sh`),
+in batches of 100 under a 300 s timeout (the case in flight at a crash/timeout is recorded and the run resumes after it), and compares only
+Crash/Timeout/NotSupported against `host-baseline.tsv`, printing NEW ones by name (exit 1). `--bless` rewrites the baseline. ~2 min for both GPUs.
