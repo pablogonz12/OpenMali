@@ -190,6 +190,16 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       return -ENOMEM;
    size = (size + 4095) & ~(size_t)4095;
 
+   /* MALI_INT_NOCOH=1 (experiment): driver-internal BOs (arena, descriptors, CS, heaps: no HOSTLAZY/EXPORT, i.e. not VkDeviceMemory) without COHERENT_LOCAL.
+    * Only VkDeviceMemory (SSBO atomics from the app) needs the cross-core coherency; internal data is written by the CPU (WC) and read by the GPU. */
+   static int int_nocoh = -1;
+   if (int_nocoh < 0) {
+      const char *ie = getenv("MALI_INT_NOCOH");
+      int_nocoh = ie && ie[0] == '1';
+   }
+   if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED)))
+      flags |= MALI_BO_NOCOH;
+
    int r;
    if (flags & MALI_BO_EXPORT) {
       /* dma-heap buffer imported into the GPU: the heap decides cacheability (system = cached,
