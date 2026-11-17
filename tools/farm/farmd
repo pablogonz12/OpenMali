@@ -56,6 +56,7 @@ class Farm:
         self.dstate = L.read_json(self.st_path) if os.path.exists(self.st_path) else {}
         self.last_try = {}
         self.cool = {}
+        self.sweep_bad = {}                            # alias -> consecutive failed sweep chunks (session churn guard)
         self.last_health, self.last_wl = {}, {}
         self.stop_reason, self.last_pw, self.last_mdns = {}, {}, {}
         self.cfg_mtime = self.devices_mtime()
@@ -1069,6 +1070,15 @@ class Farm:
             alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
             self.cool[alias] = time.time() + 60
             return False
+        if rc not in (0, 1, 124):                           # guest/gate abort (e.g. 75 thermal, 125 session failed): every retry restarts the Steam session on the owner's phone
+            n = self.sweep_bad[alias] = self.sweep_bad.get(alias, 0) + 1
+            wait = min(1800, 60 * 2 ** (n - 1))             # backoff 1,2,4,.. min, capped at 30 min
+            self.cool[alias] = max(self.cool.get(alias, 0), time.time() + wait)
+            log(f"{alias}: sweep chunk rc={rc} ({n} in a row): backing off {wait}s")
+            if n == 5:
+                alert(f"SWEEP-CHURN {alias}: {n} sweep chunks in a row ended rc={rc}; sessions restart with backoff up to 30 min")
+        else:
+            self.sweep_bad[alias] = 0
         adv = []                                            # contiguous finished prefix of the chunk; stress cases are skipped (K)
         for c in names:
             if S.STRESS.search(c):
