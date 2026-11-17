@@ -182,7 +182,8 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, drawIndirectFirstInstance), /* t_vk_feat firstinst */
          offsetof(VkPhysicalDeviceFeatures, fullDrawIndexUint32),       /* t_vk_feat idx32 */
          offsetof(VkPhysicalDeviceFeatures, samplerAnisotropy),         /* t_vk_feat aniso */
-         offsetof(VkPhysicalDeviceFeatures, imageCubeArray),            /* t_vk_feat cubearray */
+         offsetof(VkPhysicalDeviceFeatures, imageCubeArray),
+         offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);

@@ -66,3 +66,4 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 
 ### Batch 2 status (cont.)
 - drawIndirectFirstInstance, fullDrawIndexUint32 (+maxDrawIndexedIndexValue), samplerAnisotropy (max 16), samplerMirrorClampToEdge, imageCubeArray: advertised, each backed by `t_vk_feat --only firstinst|idx32|aniso|mirror|cubearray` (pass on Poco). DXVK_MISSING now 33 of 47.
+- wideLines: lineWidthRange 1..8 (granularity 0.125), `t_vk_feat --only wide` passes on Poco (width 1 -> 1 row, width 5 -> 5 rows). DXVK_MISSING stays 33 (wideLines not in the DXVK list).
