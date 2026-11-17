@@ -6,6 +6,7 @@
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, instance-rate vertex attributes, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -635,8 +636,10 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          return VK_ERROR_OUT_OF_DEVICE_MEMORY;
       if (rc == -ENOTSUP || rc == -EINVAL)
          return VK_ERROR_FEATURE_NOT_PRESENT;
-      if (rc)
+      if (rc) {
+         if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame %u/%u submit failed: %d (draws %u ops %u)\n", i, cmd->nframes, rc, cmd->frames[i].ndraws, cmd->frames[i].nops);
          return VK_ERROR_DEVICE_LOST;
+      }
    }
    return VK_SUCCESS;
 }
