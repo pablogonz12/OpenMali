@@ -37,6 +37,7 @@ static struct {
    VkBlendOp op;
    uint32_t wmask;
    float bc[4];
+   int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
 static VkPhysicalDeviceFeatures g_feat;
@@ -380,7 +381,7 @@ scene_create(struct scene *s, int depth)
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                             .viewportCount = 1, .scissorCount = 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+                                                .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
@@ -693,6 +694,34 @@ test_mode(const char *name, int mode, double expect, double tol)
    return ok;
 }
 
+
+/* fillModeNonSolid: polygonMode LINE / POINT. Filled coverage of the quad modes is 16384 (idx) / 8192 (triangle); LINE must leave the
+ * interior empty and cover only the edges (lo..hi pixels, triangle perimeter ~ 440 + diagonal for the quad), POINT only the vertices. */
+static int
+test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx, int cy)
+{
+   struct scene s = {.mode = mode};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   if (g_fake) { printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name); return 1; }
+   if (!g_feat.fillModeNonSolid) { printf("{\"test\":\"%s\",\"skipped\":\"fillModeNonSolid not advertised\",\"ok\":true}\n", name); return 1; }
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&g_fx, 0, sizeof g_fx);
+   g_fx.poly = poly;
+   if (!scene_create(&s, 0)) return 0;
+   s.mode = mode;
+   float rot[1][4] = {{1, 0, 0, 0}};
+   int ok = scene_draw(&s, 1, rot, f);
+   uint32_t cov = ok ? count_cov(&s) : 0;
+   const uint8_t *c = s.px + cy * s.pitch + cx * 4;
+   int good = ok && cov >= lo && cov <= hi && c[3] == 0;
+   if (!good) { printf("{\"fail\":\"%s: coverage %u expected %u..%u, interior alpha %u (want 0)\"}\n", name, cov, lo, hi, c[3]); g_fail++; }
+   else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
+   memset(&g_fx, 0, sizeof g_fx);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return good;
+}
 
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
 enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY };
@@ -1068,7 +1097,7 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .depthBiasClamp = g_feat.depthBiasClamp};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp};
    di.pEnabledFeatures = &en;
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
@@ -1079,6 +1108,13 @@ main(int argc, char **argv)
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
+   if (ok && CASE_ON("poly")) {
+      ok &= test_poly("poly_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
+      ok &= test_poly("poly_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
+      ok &= test_poly("poly_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
+      ok &= test_poly("poly_line_idx32", MODE_IDX32, 1, 250, 2500, 100, 130);
+      ok &= test_poly("poly_line_mdi", MODE_MDI, 1, 250, 5000, 100, 130);
+   }
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
    if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);

@@ -208,6 +208,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
+      .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */
    };

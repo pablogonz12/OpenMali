@@ -65,6 +65,7 @@ struct mali_cmd_buffer {
    uint32_t dyn_desc[MALI_MAX_DYN][8];
    uint64_t ib_va;       /* bound index buffer, offset applied (0 = none) */
    uint32_t ib_bytes;
+   const uint8_t *ib_cpu;   /* CPU view of ib_va (NULL = unmapped) */
    unsigned ib_size;     /* bytes per index */
    const struct mali_compiled *cs;   /* bound compute pipeline */
    uint64_t cs_va;

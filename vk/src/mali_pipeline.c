@@ -158,6 +158,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          goto fail;
       }
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
+      /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */
+      if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_POINT) {
+         g->poly_mode = 2; g->prim = 1; g->prim_restart = false;
+      } else if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_LINE) {
+         g->poly_mode = 1; g->poly_prim = g->prim; g->prim = 2;
+      }
    }
    if (st.vi) {
       uint32_t v = st.vi->attributes_valid;

@@ -260,6 +260,9 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
    }
 }
 
+static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
+
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindIndexBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkIndexType t)
 {
@@ -267,6 +270,7 @@ mali_CmdBindIndexBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkIndex
    struct vk_buffer *buf = vk_buffer_from_handle(b);
    if (!buf) {
       cmd->ib_va = 0;
+      cmd->ib_cpu = NULL;
       cmd->ib_bytes = 0;
       cmd->ib_size = 0;
       return;
@@ -277,6 +281,7 @@ mali_CmdBindIndexBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkIndex
    }
    cmd->ib_va = vk_buffer_address(buf, off);
    cmd->ib_bytes = (uint32_t)(buf->size - off);
+   cmd->ib_cpu = buffer_cpu(b, off, 0);
    cmd->ib_size = t == VK_INDEX_TYPE_UINT32 ? 4 : t == VK_INDEX_TYPE_UINT16 ? 2 : 1;
 }
 
@@ -365,6 +370,14 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    }
    if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE))
       d->gfx.prim_restart = dyn->ia.primitive_restart_enable;
+   /* fillModeNonSolid (pipeline polygonMode): the topology above is the API one (dyn->set also covers static state); map triangles */
+   if (d->gfx.poly_mode && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+      if (d->gfx.prim >= 8) {
+         if (d->gfx.poly_mode == 1) { d->gfx.poly_prim = d->gfx.prim; d->gfx.prim = 2; }
+         else d->gfx.prim = 1;
+      } else
+         d->gfx.poly_mode = 0;   /* non-triangle topology: polygonMode does not apply */
+   }
    /* colour attachment 0 blend */
    const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
    x->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cb->blend_enable;
@@ -414,6 +427,7 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    snapshot_draw(cmd, &d, icount, inst, (uint32_t)voff, first_inst);
    d.indexed = true;
    d.index_va = cmd->ib_va;
+   d.index_cpu = cmd->ib_cpu;
    d.index_bytes = cmd->ib_bytes;
    d.index_size = cmd->ib_size;
    d.first_index = first;
@@ -460,6 +474,7 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
    d.indexed = indexed;
    if (indexed) {
       d.index_va = cmd->ib_va;
+      d.index_cpu = cmd->ib_cpu;
       d.index_bytes = cmd->ib_bytes;
       d.index_size = cmd->ib_size;
    }

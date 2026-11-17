@@ -68,6 +68,8 @@ struct mali_gfx_state {
    unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
    unsigned prim;                         /* Mali draw mode: 1 points, 2 lines, 4 line strip, 8 triangles (default 0 = 8), 10 strip, 12 fan */
    bool prim_restart;
+   unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 */
+   unsigned poly_prim;                    /* LINE: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
 };
 
@@ -107,6 +109,7 @@ struct mali_draw {
    uint32_t dyn_desc[MALI_MAX_DYN][8];
    bool indexed;                          /* vkCmdDrawIndexed: index_va/index_size/first_index/vertex_offset used (count = indexCount) */
    uint64_t index_va;                     /* bound index buffer VA with offset applied */
+   const uint8_t *index_cpu;              /* CPU view of index_va (NULL without a mapping); read at frame build for polygonMode LINE */
    uint32_t index_bytes;                  /* bytes from index_va to the buffer end */
    unsigned index_size;                   /* 1, 2 or 4 */
    uint32_t first_index;

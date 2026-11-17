@@ -363,6 +363,86 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    return 0;
 }
 
+/* fillModeNonSolid, polygonMode LINE: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges. Indices
+ * (u32, vertex numbers as the original draw would fetch them, so vertexOffset/firstVertex stay in the draw) are generated here from the
+ * CPU view of the bound index buffer (the same submit-time read the indirect draws use). Strips and fans share edges: each edge once.
+ * Limits: cullMode and gl_FrontFacing are not honoured in line mode. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
+static int
+poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw *o)
+{
+   const unsigned prim = d->gfx.poly_prim;
+   const uint32_t n = d->count;
+   uint32_t restart = d->index_size == 4 ? 0xffffffffu : d->index_size == 2 ? 0xffffu : 0xffu;
+   if (d->indexed && (!d->index_cpu || (uint64_t)(d->first_index + n) * d->index_size > d->index_bytes))
+      return -EINVAL;
+   /* vertex numbers of the draw */
+   uint32_t *v = malloc((size_t)(n ? n : 1) * sizeof *v);
+   if (!v)
+      return -ENOMEM;
+   for (uint32_t i = 0; i < n; i++) {
+      uint32_t k = d->first_index + i;
+      v[i] = !d->indexed ? i : d->index_size == 4 ? ((const uint32_t *)(const void *)d->index_cpu)[k] :
+             d->index_size == 2 ? ((const uint16_t *)(const void *)d->index_cpu)[k] : d->index_cpu[k];
+   }
+   /* worst case 6 indices per triangle */
+   size_t cap = (size_t)(n ? n : 1) * 6;
+   uint32_t *out = malloc(cap * sizeof *out);
+   if (!out) {
+      free(v);
+      return -ENOMEM;
+   }
+   size_t ni = 0;
+#define EDGE(a, b) do { out[ni++] = (a); out[ni++] = (b); } while (0)
+   if (prim == 8) {
+      for (uint32_t t = 0; t + 2 < n; t += 3) {
+         EDGE(v[t], v[t + 1]); EDGE(v[t + 1], v[t + 2]); EDGE(v[t + 2], v[t]);
+      }
+   } else {
+      /* strip / fan, split at restart indices */
+      bool rs = d->gfx.prim_restart && d->indexed;
+      uint32_t s = 0;
+      while (s < n) {
+         uint32_t e = s;
+         while (e < n && !(rs && v[e] == restart))
+            e++;
+         uint32_t m = e - s;   /* vertices in this segment */
+         if (m >= 3) {
+            const uint32_t *w = v + s;
+            EDGE(w[0], w[1]);
+            for (uint32_t t = 0; t + 2 < m; t++) {
+               if (prim == 10) { EDGE(w[t + 1], w[t + 2]); EDGE(w[t], w[t + 2]); }
+               else { EDGE(w[t + 1], w[t + 2]); EDGE(w[0], w[t + 2]); }
+            }
+         }
+         s = e + 1;
+      }
+   }
+#undef EDGE
+   free(v);
+   *o = *d;
+   o->gfx.prim = 2;
+   o->gfx.prim_restart = false;
+   o->indexed = true;
+   o->index_size = 4;
+   o->first_index = 0;
+   o->count = (uint32_t)ni;
+   o->index_bytes = (uint32_t)(ni * 4);
+   if (!ni) {
+      out[0] = out[1] = 0;   /* nothing to draw: one degenerate (zero-length) line keeps the draw well-formed */
+      ni = 2;
+      o->count = 2;
+      o->index_bytes = 8;
+   }
+   uint32_t *dst = A(hw, ni * 4, 64, &o->index_va);
+   if (!dst) {
+      free(out);
+      return -ENOMEM;
+   }
+   memcpy(dst, out, ni * 4);
+   free(out);
+   return 0;
+}
+
 /* v11 IDVS SR (genxml v11.xml "IDVS SR"): not in libkbase's header. */
 #define KB_IDVS_INDEX_BUFFER_SIZE 39
 #define KB_IDVS_INDEX_BUFFER 54
@@ -400,6 +480,8 @@ prim_size_bits(const struct mali_gfx_state *g, const struct mali_fixed *fx)
    if (m != 1 && m != 2 && m != 4)
       return 0;
    float w = fx && fx->set && fx->line_width > 0.0f ? fx->line_width : 1.0f;   /* default point size / line width */
+   if (g->poly_mode == 2)
+      w = 1.0f;   /* polygonMode POINT: the VS point size is not read (stripped), size 1 */
    uint32_t b;
    memcpy(&b, &w, 4);
    return b;
@@ -711,6 +793,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    const struct regs *R = v13 ? &R13 : &R11;
    struct cs c;
    struct ddesc *dd = NULL;
+   struct mali_draw *mod = NULL;   /* polygonMode LINE draws rewritten to line lists */
    int rc = 0;
    uint64_t va_smp = 0, va_tctx = 0, va_fbd = 0, va_tsd = 0;
 
@@ -747,9 +830,17 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
          kb_draw_tiler_ctx(tctx, f->width, f->height, env->hmask, env->geo_va, geom);
-      for (unsigned i = 0; i < f->ndraws; i++)
-         if ((rc = build_draw_descs(hw, f, &f->draws[i], &dd[i])))
+      for (unsigned i = 0; i < f->ndraws; i++) {
+         const struct mali_draw *dr = &f->draws[i];
+         if (dr->gfx.poly_mode == 1) {
+            if (!mod && !(mod = calloc(f->ndraws, sizeof *mod))) { rc = -ENOMEM; goto out; }
+            if ((rc = poly_lines(hw, dr, &mod[i])))
+               goto out;
+            dr = &mod[i];
+         }
+         if ((rc = build_draw_descs(hw, f, dr, &dd[i])))
             goto out;
+      }
    }
    if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))
       goto out;
@@ -761,7 +852,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    if (geometry) {
       for (unsigned i = 0; i < f->ndraws; i++) {
-         const struct mali_draw *d = &f->draws[i];
+         const struct mali_draw *d = mod && f->draws[i].gfx.poly_mode == 1 ? &mod[i] : &f->draws[i];
          emit_draw_regs(&c, env, f, d, &dd[i], va_tsd, va_tctx);
          if (i == 0) {
             M48(&c, R->heap, env->heap_ctx_va);
@@ -791,6 +882,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    rc = c.err;
 out:
    free(dd);
+   free(mod);
    if (rc) {
       free(c.v);
       return rc;
