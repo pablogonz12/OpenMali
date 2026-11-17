@@ -72,6 +72,7 @@ struct mali_compiled {
    struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */
    struct mali_varying_blob layout;        /* VS: pass to the FS compile (link_vs) */
    uint32_t local_size[3];        /* CS: workgroup size */
+   uint32_t allow_merge;          /* CS: COMPUTE_SIZE_WORKGROUP bit 31 (no shared memory, workgroup barrier or subgroup op: HW may merge workgroups) */
    uint32_t cache_hit;            /* 1 if this result came from the disk cache */
 };
 

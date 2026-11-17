@@ -26,7 +26,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 14
+#define MALI_COMPILE_VERSION 15
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -401,6 +401,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    struct pan_shader_info info = {0};
    pan_postprocess_nir(nir, &in, &info);
+   bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
    in.fau.reserved = fau_reserved;
    in.fau.promote_immediates = true;
@@ -424,6 +425,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    if (stage == MESA_SHADER_COMPUTE)
       for (int i = 0; i < 3; i++) out->local_size[i] = nir->info.workgroup_size[i];
+   out->allow_merge = can_merge;
    out->work_reg_count = info.work_reg_count;
    out->tls_size = info.tls_size;
    out->wls_size = info.wls_size;

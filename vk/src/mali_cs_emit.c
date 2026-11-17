@@ -734,7 +734,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    M48(&c, CR_SPD, va_spd);
    M48(&c, CR_TSD, va_tsd);
    M32(&c, CR_GAO, 0);
-   M32(&c, CR_WG_SIZE, (cs->local_size[0] - 1) | ((cs->local_size[1] - 1) << 10) | ((cs->local_size[2] - 1) << 20));
+   M32(&c, CR_WG_SIZE, (cs->local_size[0] - 1) | ((cs->local_size[1] - 1) << 10) | ((cs->local_size[2] - 1) << 20) | (cs->allow_merge ? 1u << 31 : 0));
    M32(&c, CR_JOB_OFFSET, 0);
    M32(&c, CR_JOB_OFFSET + 1, 0);
    M32(&c, CR_JOB_OFFSET + 2, 0);
@@ -760,7 +760,30 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
    E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
    E(&c, kb_cs_req_res(KB_CS_RES_COMPUTE));
-   E(&c, run_compute_instr(1, 0));
+   {
+      /* task axis/increment as panvk calculate_task_axis_and_increment: spread workgroups over cores, ~T threads per task */
+      unsigned inc = 1, axis = 0;
+      const char *te = getenv("MALI_TASK_THREADS");
+      unsigned T = te ? (unsigned)atoi(te) : (env->tls_threads ? env->tls_threads / 4 : 0);
+      if (!d->indirect_va && T) {
+         unsigned wgc[3] = { d->groups[0], d->groups[1], d->groups[2] };
+         unsigned tpw = cs->local_size[0] * cs->local_size[1] * cs->local_size[2];
+         unsigned total = wgc[0] * wgc[1] * wgc[2], cores = env->core_id_range ? env->core_id_range : 1;
+         if (total && tpw) {
+            unsigned per_core = (total + cores - 1) / cores, w = T / tpw;
+            w = w < 1 ? 1 : w > per_core ? per_core : w;
+            inc = w;
+            for (unsigned i = 0; i < 2; i++) {
+               if (inc <= wgc[i])
+                  break;
+               axis++;
+               inc /= wgc[i];
+            }
+            if (!inc) inc = 1;
+         }
+      }
+      E(&c, run_compute_instr(inc, axis));
+   }
    E(&c, kb_cs_wait(1u << env->slot));
    E(&c, kb_cs_req_res(0));
    {
