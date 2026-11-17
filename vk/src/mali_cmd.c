@@ -594,7 +594,7 @@ expand_indirect(struct mali_frame *f)
 
 /* ---- compute (M11): every dispatch is its own frame record, executed in order with the render passes ---- */
 /* VK_KHR_load_store_op_none: LOAD_OP_NONE means "contents preserved", which for our tiled path is the same work as LOAD (preload draw for
- * colour; depth/stencil LOAD is not supported yet and NONE is rejected the same way). STORE_OP_NONE leaves the memory untouched: for
+ * colour, depth and stencil; MSAA and D24 depth/stencil LOAD are rejected, and NONE the same way). STORE_OP_NONE leaves the memory untouched: for
  * depth/stencil that is "not stored" (the ==STORE tests below), colour is always stored by the FBD. */
 static inline bool
 is_load_op(VkAttachmentLoadOp op)
