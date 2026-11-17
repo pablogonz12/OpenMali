@@ -75,6 +75,7 @@ kbase_probe(struct mali_gpu_info *out)
    out->core_count = __builtin_popcountll(p->shader_present);
    out->core_id_range = p->shader_present ? 64 - __builtin_clzll(p->shader_present) : 1;
    out->tls_threads = p->max_threads ? p->max_threads : 2048;
+   out->ts_hz = kb_timestamp_hz(ctx);
    out->uapi_major = major;
    out->uapi_minor = minor;
 
