@@ -93,10 +93,14 @@ for g in v11 v13; do
    golden vk_feat $g --spv-dir "$V/shader"
    golden vk_meta $g
 done
-# The rules must have teeth: a 4 MiB geometry buffer (the v13 Poco bug) has to be caught.
-out=$(MALI_GEOM_SIZE=4194304 MALI_FAKE_DUMP="$GDIR/geom.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" 2>&1 >/dev/null; rm -f "$GDIR/geom.jsonl.x")
+# The rules must have teeth: each one is made to fire on a deliberately damaged dump / fault-injected backend.
+out=$(MALI_GEOM_SIZE=4194304 MALI_FAKE_DUMP="$GDIR/geom.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" 2>&1 >/dev/null)
 out=$(GOLDEN_ARCH=13 python3 -I "$V/tests/golden.py" "$GDIR/geom.jsonl" "$GDIR/geom.txt" 2>&1)
-if grep -q "R-GEOM" <<<"$out"; then echo "ok    rule self-test (R-GEOM catches 4 MiB)"; else echo "FAIL  rule self-test: R-GEOM did not fire on MALI_GEOM_SIZE=4194304"; fail=1; fi
+if grep -q "R-GEOM" <<<"$out"; then echo "ok    rule self-test R-GEOM fires (4 MiB geometry buffer)"; else echo "FAIL  rule self-test: R-GEOM did not fire on MALI_GEOM_SIZE=4194304"; fail=1; fi
+out=$(MALI_FAKE_BADFLAGS=1 MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" 2>&1)
+if grep -q "RULE VIOLATION" <<<"$out"; then echo "ok    rule self-test R-FLAGS fires (EVENT|CACHED BO rejected)"; else echo "FAIL  rule self-test: R-FLAGS did not fire with MALI_FAKE_BADFLAGS=1"; fail=1; fi
+out=$(python3 -I "$V/tests/selftest.py" "$GDIR/vk_draw-v11.jsonl" "$GDIR/vk_draw-v13.jsonl" "$GDIR" 2>&1 | grep -v '^warn:'); echo "$out"
+grep -q '^FAIL' <<<"$out" && fail=1
 rm -f "$GDIR/geom.jsonl"
 
 # Standalone offline tests (each builds itself against the Mesa tree, then runs; they exit non-zero on failure).

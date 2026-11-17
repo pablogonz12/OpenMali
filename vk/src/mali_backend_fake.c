@@ -246,6 +246,8 @@ fake_map(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct mali_b
 static int
 fake_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
 {
+   if (getenv("MALI_FAKE_BADFLAGS"))   /* self-test of the flag rules: every BO asks for a combination the kernel would silently downgrade */
+      flags |= MALI_BO_EVENT | MALI_BO_CACHED;
    const char *rule = fake_flag_rule(size, flags);
    if (rule) {
       fprintf(stderr, "mali-fake RULE VIOLATION: bo_alloc(size %zu, flags 0x%x): %s\n", size, flags, rule);

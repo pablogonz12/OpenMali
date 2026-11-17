@@ -197,7 +197,7 @@ def check_tiler(c, lo):
         c.dev.heap_page[r['id']] = page
 
 
-def process(path, outpath):
+def process(path, outpath, hook=None):
     devs, viol, out = {}, [], []
     warn = set()
     arch = None
@@ -218,6 +218,7 @@ def process(path, outpath):
             d, n = devs[e['dev']], e['n']
             if arch is None: arch = int(os.environ.get('GOLDEN_ARCH', '11'))
             kicks += 1
+            if hook: hook(d, e)
             q = struct.unpack('<%dQ' % (len(e['hex']) // 16), bytes.fromhex(e['hex']))
             evs = []
             ds.interp(q, d.mem, evs, 0, {})
