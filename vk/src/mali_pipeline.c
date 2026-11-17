@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "mali_cs_emit.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
 #include "mali_msaa.h"
@@ -139,6 +140,14 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       for (unsigned i = 0; i < 4; i++)
          if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
             has_blend = true;
+      /* equations fixed function cannot express (MIN/MAX, SRC_ALPHA_SATURATE, unsupported factor pairs) also go through the blend shader */
+      if (!has_blend && a->blend_enable) {
+         struct mali_fixed fx = {.blend_en = true, .src_c = f[0], .dst_c = f[1], .src_a = f[2], .dst_a = f[3],
+                                 .op_c = a->color_blend_op, .op_a = a->alpha_blend_op};
+         uint32_t eq; unsigned cm;
+         if (mali_blend_equation(&fx, &eq, &cm))
+            has_blend = true;
+      }
       if (has_blend) {
          if (!st.rp || st.rp->color_attachment_count < 1 || st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
              BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS)) {
@@ -154,7 +163,11 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
             .color_mask = a->write_mask,
             .src0_type = p->fs.fs_blend0_type, .src1_type = p->fs.fs_blend_src1_type,
          };
-         if (!bo.src0_type || !bo.src1_type) {   /* the FS does not write a second output: SRC1 would read garbage */
+         bool uses_src1 = false;
+         for (unsigned i = 0; i < 4; i++)
+            if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+               uses_src1 = true;
+         if (!bo.src0_type || (uses_src1 && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
             res = VK_ERROR_FEATURE_NOT_PRESENT;
             goto fail;
          }

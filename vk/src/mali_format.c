@@ -3,6 +3,7 @@
 #include "mali_format.h"
 
 #include "mali_bc.h"
+#include "mali_cs_emit.h"
 #include "mali_msaa.h"
 #include "mali_private.h"
 #include "pan_format.h"
@@ -161,7 +162,9 @@ mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *o)
    /* Render target info from the blendable table (writeback + internal + dithered tile-buffer pixel format). */
    if (e->bind & PAN_BIND_RENDER_TARGET) {
       o->rt = true;
-      if (bt[p].internal) {
+      bool rt_ok;
+      mali_rtfmt_lookup(f, &rt_ok);   /* COLOR_ATTACHMENT_BLEND only where the render path can really draw to the format (no R8G8B8, A1R5G5B5 yet) */
+      if (bt[p].internal && rt_ok) {
          o->blendable = true;
          o->rt_internal = bt[p].internal;
          o->rt_writeback = bt[p].writeback;
