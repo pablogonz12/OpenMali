@@ -77,3 +77,18 @@ MALI_BO_EXPORT) unless type 1. Either could slow GPU write-back of a linear 720p
 Next A/B (needs phone): same ICD, cube, interleaved, medians: `ENVV="MALI_BO_COHERENT_LOCAL=0"` vs default (cube has no SSBO atomics, so it is safe to test);
 then WSI heap system vs system-uncached. If (a) wins: allocate COHERENT_LOCAL only for buffer-capable memory (dedicated image allocs / a separate memory type) instead of all BOs.
 Build for the test: `MESA_BUILD=$PWD/../third_party/build-vk-a64-glibc-wl MALI_TARGET=a64-glibc-wl vk/build.sh` (perf/gpu-gap 8619a6f, libvulkan_mali.so sha256 9422ff68436213f0...).
+
+## 2026-11-17 offline dump of the 720p cube frame (fake backend v11, `MALI_FAKE_DUMP`, `libkbase/tools/decode_stream.py show`, FBD decoded by hand against v11.xml)
+Command: `MALI_BACKEND=fake MALI_FAKE_GPU=v11 MALI_FAKE_DUMP=f.dump mdbench-native --scene cube --wsi headless --size 1280x720 --frames 2 --icd out/native/libvulkan_mali.so`.
+Frame = FLUSH_CACHE2(0x233)+WAIT, RUN_IDVS (cube), RUN_FRAGMENT, FINISH_FRAGMENT, FLUSH_CACHE2(0x11)+WAIT, SYNC_ADD64. What we emit (v11):
+- FBD 1280x720, tile = 32x32 (w11 bits 9..12 = 10), colour alloc 4 (4 B x 1024 px), tiler hierarchy mask 0xfe, 1 RT, no pre/post frame DCD (loadOp CLEAR: clear in FBD).
+- RT: RGBA8, block format LINEAR (2), row 5120, Clean Tile Write on. ZS ext: D32F, block LINEAR, Clean Tile Write on, Z Write Enable OFF (mdbench storeOp DONT_CARE).
+- RSD: early Z (pixel_kill/zs_update 0), FPK allowed. Texture: 1024x1024 RGBA8 4 MiB, linear (MALI_IMAGE_TILED unset), sampled per pixel by the lit cube.
+Hypotheses ranked (per-pixel GPU cost; all unproven until the phone session):
+1. BO memory attributes: COHERENT_LOCAL on every non-exec BO. CMF A/B (cube, 10 s, mailbox, interleaved): MALI_BO_COHERENT_LOCAL=0 gpu_ms p50 0.79-0.88 vs 1.03-1.15 default, fps 305-338 vs 155-175 (fps gain mostly CPU: mem_sync_bos issues one MEM_SYNC ioctl per BO per submit). A type-2 image-only non-coherent heap (commit 2a2edda) did NOT help (164 fps = default): so the cost is in buffers/arena/other BOs, not RT/depth.
+2. Linear 1024^2 texture (no u-interleave): MALI_IMAGE_TILED=1 exists (unverified on hw). Knob ready.
+3. ZS Clean Tile Write with Z write off: MALI_ZS_CTW=0 (new, only when depth is not stored). Earlier try: no gain.
+4. Linear RT/depth instead of AFBC: needs WSI modifiers; large work; not a knob.
+5. Tile size / hierarchy mask: 32x32 + 0xfe as PanVK; no change planned.
+6. Frame head/tail FLUSH_CACHE2: refuted (HF A/B).
+Session plan (one phone session, interleaved, ENVV): A default | B MALI_BO_COHERENT_LOCAL=0 | E MALI_IMAGE_TILED=1 | F MALI_ZS_CTW=0 | C MALI_WSI_HEAP=cached.
