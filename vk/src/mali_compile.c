@@ -70,6 +70,17 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
 
 struct push_ctx { unsigned base; unsigned max_end; };
 
+/* Hardware instance id already includes IDVS instance offset. */
+static bool
+lower_base_inst(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_load_base_instance)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def_replace(&i->def, nir_imm_int(b, 0));
+   return true;
+}
+
 static bool
 add_push_base(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
@@ -121,7 +132,7 @@ type_size(const struct glsl_type *t, bool bindless)
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled;
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz;
    char mesa[24];
 };
 
@@ -135,6 +146,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.stage = o->stage;
    k.fau_reserved = fau_reserved;
    k.push_base = push_base;
+   k.strip_psiz = o->strip_psiz != 0;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
@@ -275,7 +287,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
 
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
+   if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
+      nir_foreach_shader_out_variable(var, nir)
+         if (var->data.location == VARYING_SLOT_PSIZ) {
+            var->data.mode = nir_var_shader_temp;
+            var->data.location = 0;
+         }
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out);
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_entrypoints(nir);
@@ -286,6 +304,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_lower_system_values);
+   if (stage == MESA_SHADER_VERTEX)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
    pan_preprocess_nir(nir, arch);
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);

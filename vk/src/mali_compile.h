@@ -41,6 +41,7 @@ struct mali_compile_opts {
    int push_base_set;             /* 0: use the default above */
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
+   int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
 };
 

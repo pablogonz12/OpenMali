@@ -69,7 +69,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 11, 14, 1, 1);                                    /* First provoking vertex (PanVK sets it, also in the tiler context) */
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
 	put(f, 11, 19, 4, 0);                                    /* Render Target Count - 1 */
-	put(f, 11, 24, 8, 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
+	put(f, 11, 24, 8, p->rt_internal && p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
 	put(f, 12, 29, 1, 1);                                    /* Empty Tile Write Enable (PanVK sets bits 31:28 of word 12) */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
 	put(f, 12, 16, 2, !zs ? 1 : p->zs_format == KB_ZS_D32F ? 2 : p->zs_format == KB_ZS_D24X8 ? 1 : 0);
@@ -95,12 +95,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	/* RGB Render Target */
 	put(r, 0, 0, 4, 0);                                      /* Writeback Mode: compat */
 	put(r, 0, 4, 12, 0);                                     /* Internal Buffer Offset >> 4 */
-	put(r, 0, 26, 6, 1);                                     /* Internal Format: R8G8B8A8 */
+	put(r, 0, 26, 6, p->rt_internal ? p->rt_internal : 1);                                  /* Internal Format: R8G8B8A8 */
 	put(r, 1, 0, 1, 1);                                      /* Write Enable */
-	put(r, 1, 3, 5, 19);                                     /* Writeback colour format R8G8B8A8 */
+	put(r, 1, 3, 5, p->rt_internal ? p->rt_wb : 19);                                    /* Writeback colour format R8G8B8A8 */
 	put(r, 1, 8, 4, p->block_format ? 1 : 2);                /* Block format: 2 linear, 1 tiled u-interleaved */
 	put(r, 1, 12, 2, 0);                                     /* MSAA: single */
-	put(r, 1, 16, 12, 0 | 1 << 3 | 2 << 6 | 3 << 9);         /* Swizzle RGBA identity (R=0 G=1 B=2 A=3) */
+	put(r, 1, 16, 12, p->rt_internal ? p->rt_swizzle : (0 | 1 << 3 | 2 << 6 | 3 << 9));         /* Swizzle RGBA identity (R=0 G=1 B=2 A=3) */
 	put(r, 1, 31, 1, !p->no_clean_tile_write);               /* Clean Tile Write Enable (default on) */
 	put(r, 8, 0, 32, (uint32_t)p->rt_gpu_va);                /* RT Buffer base */
 	put(r, 9, 0, 32, (uint32_t)(p->rt_gpu_va >> 32));
@@ -108,6 +108,6 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(r, 11, 0, 32, p->surface_stride ? p->surface_stride : p->row_stride * p->height); /* Surface stride */
 	uint32_t c = kb_fb_clear_word(p->clear_r, p->clear_g, p->clear_b, p->clear_a);
 	for (unsigned i = 0; i < 4; i++)
-		put(r, 12 + i, 0, 32, c);                        /* Clear colour: word replicated */
+		put(r, 12 + i, 0, 32, p->rt_internal ? p->rt_clear[i] : c);                        /* Clear colour: word replicated */
 	return 0;
 }

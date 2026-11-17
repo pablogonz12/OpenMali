@@ -176,6 +176,17 @@ for arch in (11, 13):
         if len(qa) != len(qb):
             fails.append('%s: RUN count ours %d ref %d' % (name, len(qa), len(qb)))
         for (ta, da), (tb, db) in zip(qa, qb):
+            # 794a571: our driver set (SRT entry 0) is larger than the reference (MALI_DUMMY_SAMPLER_IDX+1 entries, zeroed dummy
+            # sampler for texelFetch). Compare the size field masked and the common prefix of the set only.
+            for k in list(da):
+                if '.SRT_' not in k or k not in db:
+                    continue
+                if k.endswith('.blk') and len(da[k]) > 1 and len(db[k]) > 1:
+                    da[k] = (da[k][0], da[k][1] & ~0xffffffff) + da[k][2:]
+                    db[k] = (db[k][0], db[k][1] & ~0xffffffff) + db[k][2:]
+                elif k.endswith('.set0') and isinstance(da[k], tuple) and isinstance(db[k], tuple):
+                    n = min(len(da[k]), len(db[k]))
+                    da[k], db[k] = da[k][:n], db[k][:n]
             for k in sorted(set(da) | set(db)):
                 if da.get(k) != db.get(k):
                     x, y = da.get(k), db.get(k)

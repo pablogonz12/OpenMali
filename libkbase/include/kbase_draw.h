@@ -69,6 +69,8 @@ void kb_draw_resource(uint32_t *d, uint64_t va, uint64_t size_bytes, int contain
 /* Blend (16 B, 64-aligned) for RT 0, plain overwrite, fixed-function path in "opaque" mode, enable | round to FB precision,
  * conversion memory format RGBA8_TB, all four channels written. Bit-identical to panvk's descriptor for an RGBA8 UNORM target. */
 void kb_draw_blend_opaque_rgba8(uint32_t *d);
+/* Same for another blendable render target: conversion pixel format word (index << 12 | component order [| sRGB bit 20]), components 1..4. */
+void kb_draw_blend_opaque_fmt(uint32_t *d, uint32_t pixfmt, unsigned ncomp);
 /* Depth/stencil (32 B): depth and stencil disabled (compare Always, no writes). */
 void kb_draw_zsd_off(uint32_t *d);
 

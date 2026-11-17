@@ -88,6 +88,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
       return;
    }
    if (!mali_cmd_push_frame || cmd->in_render) {
+      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_meta_vk: meta op %s\n", cmd->in_render ? "inside render pass" : "no push_frame");
       fail(cmd, VK_ERROR_FEATURE_NOT_PRESENT);
       mali_meta_list_free(l);
       return;
@@ -399,8 +400,15 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    struct mali_meta_surf s, d;
    const struct mali_plane_layout *sp, *dp;
    VkOffset3D zero = { 0, 0, 0 };
-   if (si->bc || di->bc)
-      return -EINVAL;   /* blit from/to BC images: not done (would have to read the shadow) */
+   if (di->bc)
+      return -EINVAL;   /* blit to BC images is not valid */
+   struct mali_image ssh;
+   if (si->bc) {   /* blit from a BC image: read the decoded shadow (same allocation, the shadow layout and format) */
+      ssh = *si;
+      ssh.lay = si->sh_lay;
+      ssh.lay.size = si->lay.size;
+      si = &ssh;
+   }
    if (!img_surf(&s, si, ss, zero, &sp) || !img_surf(&d, di, ds, zero, &dp))
       return -EINVAL;
    uint32_t sw = lvl(si->lay.d.extent.width, ss.mipLevel), sh = lvl(si->lay.d.extent.height, ss.mipLevel);
@@ -409,8 +417,10 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    int sdz = so[1].z - so[0].z, ddz = dof[1].z - dof[0].z;
    uint32_t nz = s3 || d3 ? 1 : ss.layerCount;
    bool zdir = (sdz > 0) == (ddz > 0);
-   if (s3 && d3 && abs(sdz) == abs(ddz) && ss.layerCount == 1 && ds.layerCount == 1)
-      nz = (uint32_t)abs(ddz);   /* 3D -> 3D, 1:1 in z (possibly reversed): one job per slice */
+   if (getenv("MALI_META_DBG") && (s3 || d3))
+      fprintf(stderr, "mali_meta_vk: 3d blit s3=%d d3=%d sdz=%d ddz=%d layers %u/%u src %d..%d dst %d..%d\n", s3, d3, sdz, ddz, ss.layerCount, ds.layerCount, so[0].z, so[1].z, dof[0].z, dof[1].z);
+   if (s3 && d3 && (abs(sdz) == abs(ddz) || (filter == VK_FILTER_NEAREST && !resolve_mode)) && ss.layerCount == 1 && ds.layerCount == 1 && sdz && ddz)
+      nz = (uint32_t)abs(ddz);   /* 3D -> 3D, 1:1 in z (possibly reversed) or nearest-scaled: one job per destination slice */
    else if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
       return -EINVAL;   /* z scaling / 3D <-> array mixes */
 
@@ -471,7 +481,9 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    for (uint32_t z = 0; z < nz; z++) {
       VkOffset3D zs = { 0, 0, s3 ? (sdz > 0 ? so[0].z : so[0].z + sdz) : 0 }, zd = { 0, 0, d3 ? (ddz > 0 ? dof[0].z : dof[0].z + ddz) : 0 };
       if (s3 && d3 && nz > 1) {
-         zs.z += zdir ? (int)z : (int)(nz - 1 - z);
+         int au = zdir ? (int)z : (int)(nz - 1 - z);
+         int sz = (int)(((2ll * au + 1) * abs(sdz)) / (2ll * (int)nz));
+         zs.z += sz < abs(sdz) ? sz : abs(sdz) - 1;
          zd.z += (int)z;
       }
       VkImageSubresourceLayers s1 = ss, d1 = ds;

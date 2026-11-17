@@ -1,0 +1,328 @@
+/* SPDX-License-Identifier: MIT */
+/* R4-M1 test: Vulkan 1.3 device report, honest. Loader-free (dlopen the ICD).
+ *   t_vk_info --direct <icd.so> [--dump]
+ * Checks: apiVersion 1.3; vulkaninfo-style dump (--dump); Vulkan11/12/13 feature+property structs agree
+ * with the individual pNext structs; every advertised feature is probed (privateData, maintenance4,
+ * hostQueryReset, synchronization2, dynamicRendering proc, timelineSemaphore, BC); every feature NOT in
+ * the allow-list is false; limits >= spec minimum and <= PanVK-on-same-GPU ceiling; queue/format
+ * consistency; vkGetDeviceProcAddr non-NULL for all core 1.0-1.3 device entrypoints.
+ * Exit 0 = pass. */
+#define _DEFAULT_SOURCE
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int g_fail, g_dump;
+#define CHECK(c, ...)                                                                              \
+   do {                                                                                            \
+      if (!(c)) {                                                                                  \
+         printf("FAIL %s:%d %s: ", __FILE__, __LINE__, #c);                                       \
+         printf(__VA_ARGS__);                                                                      \
+         printf("\n");                                                                             \
+         g_fail = 1;                                                                               \
+      }                                                                                            \
+   } while (0)
+
+static PFN_vkGetInstanceProcAddr gipa;
+static PFN_vkGetDeviceProcAddr gdpa;
+
+/* All core 1.0..1.3 device-level entrypoints that a loader/DXVK may fetch. */
+static const char *const core_dev[] = {
+   "vkGetDeviceQueue2", "vkBindBufferMemory2", "vkBindImageMemory2", "vkGetBufferMemoryRequirements2",
+   "vkGetImageMemoryRequirements2", "vkGetImageSparseMemoryRequirements2", "vkTrimCommandPool",
+   "vkCreateDescriptorUpdateTemplate", "vkDestroyDescriptorUpdateTemplate",
+   "vkUpdateDescriptorSetWithTemplate", "vkGetDescriptorSetLayoutSupport", "vkCreateSamplerYcbcrConversion",
+   "vkDestroySamplerYcbcrConversion", "vkGetDeviceGroupPeerMemoryFeatures", "vkCmdSetDeviceMask",
+   "vkCmdDispatchBase", "vkCreateRenderPass2", "vkCmdBeginRenderPass2", "vkCmdNextSubpass2",
+   "vkCmdEndRenderPass2", "vkCmdDrawIndirectCount", "vkCmdDrawIndexedIndirectCount",
+   "vkResetQueryPool", "vkGetSemaphoreCounterValue", "vkWaitSemaphores", "vkSignalSemaphore",
+   "vkGetBufferDeviceAddress", "vkGetBufferOpaqueCaptureAddress", "vkGetDeviceMemoryOpaqueCaptureAddress",
+   "vkCreatePrivateDataSlot", "vkDestroyPrivateDataSlot", "vkSetPrivateData", "vkGetPrivateData",
+   "vkCmdSetEvent2", "vkCmdResetEvent2", "vkCmdWaitEvents2", "vkCmdPipelineBarrier2", "vkCmdWriteTimestamp2",
+   "vkQueueSubmit2", "vkCmdCopyBuffer2", "vkCmdCopyImage2", "vkCmdCopyBufferToImage2",
+   "vkCmdCopyImageToBuffer2", "vkCmdBlitImage2", "vkCmdResolveImage2", "vkCmdBeginRendering",
+   "vkCmdEndRendering", "vkCmdSetCullMode", "vkCmdSetFrontFace", "vkCmdSetPrimitiveTopology",
+   "vkCmdSetViewportWithCount", "vkCmdSetScissorWithCount", "vkCmdBindVertexBuffers2",
+   "vkCmdSetDepthTestEnable", "vkCmdSetDepthWriteEnable", "vkCmdSetDepthCompareOp",
+   "vkCmdSetDepthBoundsTestEnable", "vkCmdSetStencilTestEnable", "vkCmdSetStencilOp",
+   "vkCmdSetRasterizerDiscardEnable", "vkCmdSetDepthBiasEnable", "vkCmdSetPrimitiveRestartEnable",
+   "vkGetDeviceBufferMemoryRequirements", "vkGetDeviceImageMemoryRequirements",
+   "vkGetDeviceImageSparseMemoryRequirements",
+   /* 1.0 */
+   "vkCreateGraphicsPipelines", "vkCreateComputePipelines", "vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect",
+   "vkCmdDispatchIndirect", "vkQueueBindSparse", "vkCmdBeginQuery", "vkCmdEndQuery",
+};
+
+static const char *g_icd;
+static VkInstance inst;
+
+static void
+eq(const char *name, uint64_t a, uint64_t b)
+{
+   CHECK(a == b, "%s: aggregate %llu != individual %llu", name, (unsigned long long)a, (unsigned long long)b);
+}
+
+int
+main(int argc, char **argv)
+{
+   for (int i = 1; i < argc; i++) {
+      if (!strcmp(argv[i], "--direct") && i + 1 < argc) g_icd = argv[++i];
+      else if (!strcmp(argv[i], "--dump")) g_dump = 1;
+   }
+   if (!g_icd) { printf("usage: t_vk_info --direct <icd.so> [--dump]\n"); return 2; }
+   void *lib = dlopen(g_icd, RTLD_NOW | RTLD_LOCAL);
+   if (!lib) { printf("dlopen: %s\n", dlerror()); return 1; }
+   gipa = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vk_icdGetInstanceProcAddr");
+   CHECK(gipa, "no vk_icdGetInstanceProcAddr");
+   if (!gipa) return 1;
+
+#define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
+   PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   PFN_vkEnumerateInstanceVersion EIV = (PFN_vkEnumerateInstanceVersion)gipa(NULL, "vkEnumerateInstanceVersion");
+   uint32_t iv = 0;
+   CHECK(EIV && EIV(&iv) == VK_SUCCESS && iv >= VK_API_VERSION_1_3, "instance version %x", iv);
+
+   VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
+   VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+   CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "CreateInstance 1.3");
+   if (!inst) return 1;
+   I(EnumeratePhysicalDevices); I(GetPhysicalDeviceProperties2); I(GetPhysicalDeviceFeatures2);
+   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2);
+   I(CreateDevice); I(DestroyInstance);
+
+   uint32_t n = 1;
+   VkPhysicalDevice pd;
+   CHECK(EnumeratePhysicalDevices(inst, &n, &pd) == VK_SUCCESS && n == 1, "enumerate n=%u", n);
+
+   /* ---- properties ---- */
+   VkPhysicalDeviceVulkan11Properties p11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+   VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, .pNext = &p11};
+   VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, .pNext = &p12};
+   VkPhysicalDeviceSubgroupProperties sg = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, .pNext = &p13};
+   VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES, .pNext = &sg};
+   VkPhysicalDeviceMaintenance4Properties m4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES, .pNext = &m3};
+   VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, .pNext = &m4};
+   VkPhysicalDeviceIDProperties idp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES, .pNext = &drv};
+   VkPhysicalDeviceTimelineSemaphoreProperties tsp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES, .pNext = &idp};
+   VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &tsp};
+   GetPhysicalDeviceProperties2(pd, &pr);
+   const VkPhysicalDeviceLimits *L = &pr.properties.limits;
+
+   CHECK(VK_API_VERSION_MAJOR(pr.properties.apiVersion) == 1 && VK_API_VERSION_MINOR(pr.properties.apiVersion) == 3,
+         "apiVersion %x", pr.properties.apiVersion);
+   CHECK(pr.properties.vendorID == 0x13b5, "vendor");
+   eq("driverID", p12.driverID, drv.driverID);
+   CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
+   CHECK(!memcmp(p11.driverUUID, idp.driverUUID, VK_UUID_SIZE) && !memcmp(p11.deviceUUID, idp.deviceUUID, VK_UUID_SIZE), "UUID mismatch 1.1 vs ID struct");
+   eq("subgroupSize", p11.subgroupSize, sg.subgroupSize);
+   CHECK(p11.subgroupSize == 16 && p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16, "subgroup 16");
+   CHECK(p13.maxComputeWorkgroupSubgroups * p13.maxSubgroupSize <= L->maxComputeWorkGroupInvocations, "wg subgroups");
+   CHECK(p11.subgroupSupportedOperations == 0 && p11.subgroupSupportedStages == 0, "no subgroup ops until R4-M4");
+   eq("maxPerSetDescriptors", p11.maxPerSetDescriptors, m3.maxPerSetDescriptors);
+   eq("maxMemoryAllocationSize", p11.maxMemoryAllocationSize, m3.maxMemoryAllocationSize);
+   CHECK(m3.maxPerSetDescriptors >= 1024 && m3.maxMemoryAllocationSize >= (1u << 30), "maintenance3 minimums");
+   eq("maxBufferSize", p13.maxBufferSize, m4.maxBufferSize);
+   CHECK(m4.maxBufferSize >= (1u << 30), "maxBufferSize");
+   CHECK(tsp.maxTimelineSemaphoreValueDifference == p12.maxTimelineSemaphoreValueDifference &&
+         tsp.maxTimelineSemaphoreValueDifference >= (1ull << 31) - 1, "timeline diff");
+   /* spec minimums (1.0 required-limits table) and PanVK-on-Poco ceilings (R4-ORACLE) */
+   CHECK(L->maxImageDimension2D >= 4096 && L->maxFramebufferWidth >= 4096 && L->maxColorAttachments >= 4, "image minimums");
+   CHECK(L->maxPushConstantsSize >= 128 && L->maxPushConstantsSize <= 256, "push constants");
+   CHECK(L->maxUniformBufferRange >= 16384 && L->maxUniformBufferRange <= 1048576, "ubo range");
+   CHECK(L->maxBoundDescriptorSets >= 4 && L->maxBoundDescriptorSets <= 7, "bound sets");
+   CHECK(L->maxComputeWorkGroupInvocations >= 128 && L->maxComputeWorkGroupInvocations <= 1024, "wg invocations");
+   CHECK(L->maxComputeSharedMemorySize >= 16384 && L->maxComputeSharedMemorySize <= 32768, "shared mem");
+   CHECK(L->maxSamplerAnisotropy <= 16.0f && L->maxViewports >= 1 && L->maxViewports <= 16, "aniso/viewports");
+   CHECK(L->maxFragmentOutputAttachments <= 8 && L->maxVertexInputAttributes >= 16 && L->maxVertexInputBindings >= 16, "vertex/frag");
+   CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
+   CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
+   CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
+   CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
+   CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
+   CHECK(p13.maxInlineUniformBlockSize == 0, "inline UBO not advertised");
+
+   /* ---- features ---- */
+   VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+   VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
+   VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &f12};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13};
+   GetPhysicalDeviceFeatures2(pd, &f2);
+   VkPhysicalDeviceTimelineSemaphoreFeatures ftl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+   VkPhysicalDeviceHostQueryResetFeatures fhq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES, .pNext = &ftl};
+   VkPhysicalDeviceSynchronization2Features fs2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES, .pNext = &fhq};
+   VkPhysicalDeviceDynamicRenderingFeatures fdr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, .pNext = &fs2};
+   VkPhysicalDeviceMaintenance4Features fm4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES, .pNext = &fdr};
+   VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
+   VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
+   GetPhysicalDeviceFeatures2(pd, &g2);
+   eq("timelineSemaphore", f12.timelineSemaphore, ftl.timelineSemaphore);
+   eq("hostQueryReset", f12.hostQueryReset, fhq.hostQueryReset);
+   eq("synchronization2", f13.synchronization2, fs2.synchronization2);
+   eq("dynamicRendering", f13.dynamicRendering, fdr.dynamicRendering);
+   eq("maintenance4", f13.maintenance4, fm4.maintenance4);
+   eq("privateData", f13.privateData, fpd.privateData);
+   CHECK(f2.features.textureCompressionBC == g2.features.textureCompressionBC && f2.features.textureCompressionBC, "BC");
+
+   /* Allow-list: any VkBool32 in the core structs that is true and not listed fails. */
+   {
+      const VkBool32 *c = (const VkBool32 *)&f2.features;
+      const unsigned nc = sizeof(f2.features) / 4;
+      unsigned bc_idx = (unsigned)((const VkBool32 *)&f2.features.textureCompressionBC - c);
+      for (unsigned i = 0; i < nc; i++)
+         CHECK(!c[i] || i == bc_idx, "core feature #%u advertised without a test", i);
+      const VkBool32 *a = (const VkBool32 *)((const char *)&f11 + 16);
+      for (unsigned i = 0; i < (sizeof(f11) - 16) / 4; i++)
+         CHECK(!a[i], "vk11 feature #%u advertised without a test", i);
+      const VkBool32 *b = (const VkBool32 *)((const char *)&f12 + 16);
+      const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b);
+      for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
+         CHECK(!b[i] || i == tl || i == hq, "vk12 feature #%u advertised without a test", i);
+      const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
+      const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
+                     m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d);
+      for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi, "vk13 feature #%u advertised without a test", i);
+   }
+
+   /* ---- queue + format consistency ---- */
+   uint32_t qn = 0;
+   GetPhysicalDeviceQueueFamilyProperties2(pd, &qn, NULL);
+   CHECK(qn >= 1, "queue families");
+   VkQueueFamilyProperties2 qp[4] = {0};
+   for (int i = 0; i < 4; i++) qp[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+   if (qn > 4) qn = 4;
+   GetPhysicalDeviceQueueFamilyProperties2(pd, &qn, qp);
+   CHECK(qp[0].queueFamilyProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT, "gfx queue");
+   CHECK(qp[0].queueFamilyProperties.timestampValidBits == 64, "timestampValidBits");
+   {
+      VkFormatProperties2 fp = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+      GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_R8G8B8A8_UNORM, &fp);
+      CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "RGBA8 sampled");
+      CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "RGBA8 color");
+      GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
+      CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
+      CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
+   }
+
+   /* ---- device + probes ---- */
+   VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
+                                  .pQueuePriorities = (float[]){1.0f}};
+   VkPhysicalDeviceVulkan13Features en13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+      .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE, .maintenance4 = VK_TRUE, .privateData = VK_TRUE};
+   VkPhysicalDeviceVulkan12Features en12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &en13,
+      .timelineSemaphore = VK_TRUE, .hostQueryReset = VK_TRUE};
+   const char *ext[] = {"VK_KHR_swapchain"};
+   VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &(VkPhysicalDeviceFeatures2){
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &en12,
+      .features.textureCompressionBC = VK_TRUE},
+      .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = 1, .ppEnabledExtensionNames = ext};
+   VkDevice dev = NULL;
+   VkResult r = CreateDevice(pd, &dci, NULL, &dev);
+   CHECK(r == VK_SUCCESS, "CreateDevice with advertised features: %d", r);
+   if (!dev) return 1;
+   gdpa = (PFN_vkGetDeviceProcAddr)gipa(inst, "vkGetDeviceProcAddr");
+   for (unsigned i = 0; i < sizeof(core_dev) / sizeof(core_dev[0]); i++)
+      CHECK(gdpa(dev, core_dev[i]) != NULL, "vkGetDeviceProcAddr(%s) is NULL", core_dev[i]);
+   CHECK(gipa(inst, "vkGetPhysicalDeviceFeatures2") && gipa(inst, "vkGetPhysicalDeviceToolProperties"), "instance procs");
+
+   /* An unadvertised feature must be rejected at device create (spec: VK_ERROR_FEATURE_NOT_PRESENT). */
+   {
+      VkPhysicalDeviceFeatures bad = {.geometryShader = VK_TRUE};
+      VkDeviceCreateInfo d2 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .pEnabledFeatures = &bad};
+      VkDevice d = NULL;
+      CHECK(CreateDevice(pd, &d2, NULL, &d) == VK_ERROR_FEATURE_NOT_PRESENT, "geometryShader must be rejected");
+   }
+
+#define D(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)
+   D(GetDeviceQueue2); D(CreatePrivateDataSlot); D(DestroyPrivateDataSlot); D(SetPrivateData); D(GetPrivateData);
+   D(GetDeviceBufferMemoryRequirements); D(CreateQueryPool); D(DestroyQueryPool); D(ResetQueryPool);
+   D(GetQueryPoolResults); D(CreateFence); D(DestroyFence); D(WaitForFences); D(QueueSubmit2);
+   D(CreateCommandPool); D(DestroyCommandPool); D(AllocateCommandBuffers); D(BeginCommandBuffer);
+   D(EndCommandBuffer); D(CmdPipelineBarrier2); D(DestroyDevice); D(CreateSemaphore); D(DestroySemaphore);
+   D(GetSemaphoreCounterValue); D(WaitSemaphores);
+
+   VkQueue q = NULL;
+   GetDeviceQueue2(dev, &(VkDeviceQueueInfo2){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2, .queueFamilyIndex = 0, .queueIndex = 0}, &q);
+   CHECK(q != NULL, "GetDeviceQueue2");
+
+   /* privateData */
+   {
+      VkPrivateDataSlot slot;
+      CHECK(CreatePrivateDataSlot(dev, &(VkPrivateDataSlotCreateInfo){.sType = VK_STRUCTURE_TYPE_PRIVATE_DATA_SLOT_CREATE_INFO}, NULL, &slot) == VK_SUCCESS, "CreatePrivateDataSlot");
+      VkFence f;
+      CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &f);
+      uint64_t v = 1;
+      CHECK(SetPrivateData(dev, VK_OBJECT_TYPE_FENCE, (uint64_t)f, slot, 0xabcdef12345ull) == VK_SUCCESS, "SetPrivateData");
+      GetPrivateData(dev, VK_OBJECT_TYPE_FENCE, (uint64_t)f, slot, &v);
+      CHECK(v == 0xabcdef12345ull, "GetPrivateData roundtrip %llx", (unsigned long long)v);
+      DestroyFence(dev, f, NULL);
+      DestroyPrivateDataSlot(dev, slot, NULL);
+   }
+   /* maintenance4: requirements without creating the buffer */
+   {
+      VkDeviceBufferMemoryRequirements req = {.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS,
+         .pCreateInfo = &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT}};
+      VkMemoryRequirements2 mr = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+      GetDeviceBufferMemoryRequirements(dev, &req, &mr);
+      CHECK(mr.memoryRequirements.size >= 4096 && mr.memoryRequirements.memoryTypeBits, "maintenance4 buffer reqs size=%llu bits=%x",
+            (unsigned long long)mr.memoryRequirements.size, mr.memoryRequirements.memoryTypeBits);
+   }
+   /* hostQueryReset */
+   {
+      VkQueryPool qpool;
+      CHECK(CreateQueryPool(dev, &(VkQueryPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 4}, NULL, &qpool) == VK_SUCCESS, "CreateQueryPool");
+      ResetQueryPool(dev, qpool, 0, 4);
+      uint64_t res[4 * 2];
+      VkResult rr = GetQueryPoolResults(dev, qpool, 0, 4, sizeof(res), res, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+      CHECK(rr == VK_NOT_READY || rr == VK_SUCCESS, "results after host reset: %d", rr);
+      for (int i = 0; i < 4; i++) CHECK(res[i * 2 + 1] == 0, "query %d available after reset", i);
+      DestroyQueryPool(dev, qpool, NULL);
+   }
+   /* synchronization2: submit2 + barrier2 + fence, and timeline signal via submit2 */
+   {
+      VkCommandPool cp;
+      VkCommandBuffer cb;
+      CHECK(CreateCommandPool(dev, &(VkCommandPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = 0}, NULL, &cp) == VK_SUCCESS, "pool");
+      AllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1}, &cb);
+      BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO});
+      CmdPipelineBarrier2(cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+         .pMemoryBarriers = &(VkMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT}});
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "End");
+      VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+      VkSemaphore tl;
+      CHECK(CreateSemaphore(dev, &(VkSemaphoreCreateInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci}, NULL, &tl) == VK_SUCCESS, "timeline");
+      VkFence f;
+      CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &f);
+      VkCommandBufferSubmitInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
+      VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = tl, .value = 5, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+      VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi,
+                          .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &sig};
+      CHECK(QueueSubmit2(q, 1, &si, f) == VK_SUCCESS, "QueueSubmit2");
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10ull * 1000000000ull) == VK_SUCCESS, "fence wait");
+      uint64_t val = 0, want = 5;
+      CHECK(WaitSemaphores(dev, &(VkSemaphoreWaitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &tl, .pValues = &want}, 10ull * 1000000000ull) == VK_SUCCESS, "timeline wait 5");
+      GetSemaphoreCounterValue(dev, tl, &val);
+      CHECK(val >= 5, "timeline value %llu", (unsigned long long)val);
+      DestroyFence(dev, f, NULL);
+      DestroySemaphore(dev, tl, NULL);
+      DestroyCommandPool(dev, cp, NULL);
+   }
+   DestroyDevice(dev, NULL);
+
+   if (g_dump) {
+      printf("apiVersion=%u.%u.%u device=%s driver=%s (%s) subgroupSize=%u maxImageDimension2D=%u maxColorAttachments=%u\n",
+             VK_API_VERSION_MAJOR(pr.properties.apiVersion), VK_API_VERSION_MINOR(pr.properties.apiVersion),
+             VK_API_VERSION_PATCH(pr.properties.apiVersion), pr.properties.deviceName, drv.driverName, drv.driverInfo,
+             p11.subgroupSize, L->maxImageDimension2D, L->maxColorAttachments);
+   }
+   PFN_vkDestroyInstance di = DestroyInstance;
+   di(inst, NULL);
+   printf("{\"test\":\"t_vk_info\",\"pass\":%s}\n", g_fail ? "false" : "true");
+   return g_fail;
+}

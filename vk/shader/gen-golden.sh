@@ -5,6 +5,6 @@
 set -e; D=$(cd "$(dirname "$0")" && pwd); K=$D/../../compiler-spike; T=$(mktemp -d); export GEN_ARCH=13
 cd "$K"
 SPIKE_FAU_RESERVED=16 SPIKE_PUSH_BASE=32 ./spike 13 vert $D/rot.vert.spv $T/vs.bin 2>/dev/null > $T/vs.txt
-./spike 13 frag $D/var.frag.spv $T/fs.bin 2>/dev/null > $T/fs.txt
+SPIKE_FAU_RESERVED=16 SPIKE_PUSH_BASE=24 ./spike 13 frag $D/var.frag.spv $T/fs.bin 2>/dev/null > $T/fs.txt
 python3 -I gen_header.py $D/golden_compiled_v13.h crot_vs:$T/vs.txt:$T/vs.bin crot_fs:$T/fs.txt:$T/fs.bin
 sed -i 's#gen-shaders.sh#vk/shader/gen-golden.sh#' $D/golden_compiled_v13.h; sed -i 's/crot_/crot13_/g; s/CROT_/CROT13_/g' $D/golden_compiled_v13.h; rm -rf $T

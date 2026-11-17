@@ -8,11 +8,14 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "mali_cmd.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
+#include "mali_image.h"
+#include "mali_queue.h"
 #include "vk_buffer.h"
 #include "vk_pipeline_layout.h"
 #include "vk_alloc.h"
@@ -45,7 +48,8 @@ mali_cmd_set_hw(const struct mali_hw *hw)
 static void
 unsupported(struct mali_cmd_buffer *cmd, const char *what)
 {
-   (void)what;
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
@@ -84,7 +88,9 @@ mali_cmd_create(struct vk_command_pool *pool, VkCommandBufferLevel level, struct
    struct mali_cmd_buffer *cmd = vk_zalloc(&pool->alloc, sizeof *cmd, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
-   VkResult r = vk_command_buffer_init(pool, &cmd->vk, &mali_cmd_ops, level);
+   struct vk_command_buffer_init_params ip = { .pool = pool, .level = level, .ops = &mali_cmd_ops,
+                                               .needs_cmd_queue = level == VK_COMMAND_BUFFER_LEVEL_SECONDARY };
+   VkResult r = vk_command_buffer_init_with_params(&cmd->vk, &ip);
    if (r != VK_SUCCESS) {
       vk_free(&pool->alloc, cmd);
       return r;
@@ -362,6 +368,124 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
 
+/* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
+ * earlier write to the buffer has retired) and expanded into plain draws (expand_indirect). */
+static const uint8_t *
+buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
+{
+   struct mali_buffer *mb = mali_buffer_from_handle(b);
+   if (!mb || !mb->mem || !mb->mem->bo.cpu || off + need > mb->vk.size)
+      return NULL;
+   return (const uint8_t *)mb->mem->bo.cpu + mb->mem_off + off;
+}
+
+static void
+record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t n, uint32_t stride)
+{
+   CMD(h);
+   struct mali_draw d;
+   if (!cmd->in_render || !cmd->have_gfx || (indexed && !cmd->ib_va)) {
+      unsupported(cmd, "indirect draw outside a rendering, without a pipeline or index buffer");
+      return;
+   }
+   uint32_t sz = indexed ? 20 : 16;
+   if (!stride)
+      stride = sz;
+   if (!n)
+      return;
+   const uint8_t *p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   const uint32_t *cp = NULL;
+   if (cb && !(cp = (const uint32_t *)buffer_cpu(cb, coff, 4))) {
+      unsupported(cmd, "indirect count buffer");
+      return;
+   }
+   if (!p) {
+      unsupported(cmd, "indirect buffer (no CPU mapping)");
+      return;
+   }
+   snapshot_draw(cmd, &d, 0, 0, 0, 0);
+   d.indexed = indexed;
+   if (indexed) {
+      d.index_va = cmd->ib_va;
+      d.index_bytes = cmd->ib_bytes;
+      d.index_size = cmd->ib_size;
+   }
+   d.ind = p;
+   d.ind_count = cp;
+   d.ind_n = n;
+   d.ind_stride = stride;
+   if (mali_frame_add_draw(&cmd->cur, &d))
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, uint32_t n, uint32_t stride)
+{
+   record_indirect(h, false, b, off, VK_NULL_HANDLE, 0, n, stride);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndexedIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, uint32_t n, uint32_t stride)
+{
+   record_indirect(h, true, b, off, VK_NULL_HANDLE, 0, n, stride);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndirectCount(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t max, uint32_t stride)
+{
+   record_indirect(h, false, b, off, cb, coff, max, stride);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDrawIndexedIndirectCount(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t max, uint32_t stride)
+{
+   record_indirect(h, true, b, off, cb, coff, max, stride);
+}
+
+/* Replace the indirect draws of `f` by the plain draws their commands describe. Returns 0, or -ENOMEM. The result owns f->draws. */
+static int
+expand_indirect(struct mali_frame *f)
+{
+   struct mali_frame o = *f;
+   o.draws = NULL;
+   o.ndraws = o.cap = 0;
+   for (unsigned i = 0; i < f->ndraws; i++) {
+      const struct mali_draw *d = &f->draws[i];
+      int rc = 0;
+      if (!d->ind) {
+         rc = mali_frame_add_draw(&o, d);
+      } else {
+         uint32_t n = d->ind_n;
+         if (d->ind_count && *d->ind_count < n)
+            n = *d->ind_count;
+         for (uint32_t k = 0; k < n && !rc; k++) {
+            struct mali_draw e = *d;
+            const uint32_t *c = (const uint32_t *)(const void *)(d->ind + (size_t)k * d->ind_stride);
+            e.ind = NULL;
+            e.ind_count = NULL;
+            e.count = c[0];
+            e.instance_count = c[1];
+            if (d->indexed) {
+               e.first_index = c[2];
+               e.first_vertex = c[3];
+               e.first_instance = c[4];
+            } else {
+               e.first_vertex = c[2];
+               e.first_instance = c[3];
+            }
+            if (e.count && e.instance_count)
+               rc = mali_frame_add_draw(&o, &e);
+         }
+      }
+      if (rc) {
+         free(o.draws);
+         return rc;
+      }
+   }
+   *f = o;
+   return 0;
+}
+
 #define push_frame mali_cmd_push_frame
 
 /* ---- compute (M11): every dispatch is its own frame record, executed in order with the render passes ---- */
@@ -459,6 +583,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->height = t.height;
    f->has_colour = true;
    f->colour.va = t.va;
+   f->colour.rt = t.rt;
    f->colour.row_stride = t.row_stride;
    f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
    f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
@@ -609,6 +734,7 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    f.area[3] = (int32_t)t.height;
    f.has_colour = true;
    f.colour.va = t.va;
+   f.colour.rt = t.rt;
    f.colour.row_stride = t.row_stride;
    f.colour.clear = true;
    f.colour.store = true;
@@ -631,7 +757,15 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
    for (unsigned i = 0; i < cmd->nframes; i++) {
-      int rc = mali_frame_submit(&g_hw, &cmd->frames[i]);
+      struct mali_frame fr = cmd->frames[i];
+      bool ind = false;
+      for (unsigned k = 0; k < fr.ndraws; k++)
+         ind |= fr.draws[k].ind != NULL;
+      if (ind && expand_indirect(&fr))
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      int rc = mali_frame_submit(&g_hw, &fr);
+      if (ind)
+         free(fr.draws);
       if (rc == -ENOMEM)
          return VK_ERROR_OUT_OF_DEVICE_MEMORY;
       if (rc == -ENOTSUP || rc == -EINVAL)
