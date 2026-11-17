@@ -30,7 +30,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 17
+#define MALI_COMPILE_VERSION 18
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -469,6 +469,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       out->fs_can_discard = info.fs.can_discard;
       out->fs_writes_depth = info.fs.writes_depth;
       out->fs_writes_stencil = info.fs.writes_stencil;
+      out->fs_writes_colour = (info.outputs_written >> 4 /* FRAG_RESULT_DATA0 */) & 0xff ? 1 : 0;
       out->fs_early_fragment_tests = info.fs.early_fragment_tests;
       out->fs_can_early_z = info.fs.can_early_z;
       out->fs_can_fpk = info.fs.can_fpk;

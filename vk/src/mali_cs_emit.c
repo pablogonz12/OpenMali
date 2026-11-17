@@ -524,6 +524,8 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    bool v13 = env->arch == 13;
    unsigned pk = ((g->depth_test && f->has_zs) || (f->has_st && d->fx.set && d->fx.st_test)) ? 0 : 2;
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
+   /* a Z/S-only fragment shader (gl_FragDepth / stencil export, no colour output): no render target is written (panvk rt_written = 0: DCD render-target and write masks, blend count) */
+   const bool nort = g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil) && !g->fs->fs_writes_colour;
    if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
       dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
       dop.zs_update = 3;
@@ -568,7 +570,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M48(c, KB_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 (no hardware evidence) */
       M32(c, KB_IDVS_INSTANCE_OFFSET, d->first_instance);
-      M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, 1, 1, 1));
+      M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, nort ? 0 : 1, 1, 1));
       M48(c, KB_IDVS_TILER_CTX, va_tctx);
       M32(c, KB_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
@@ -576,11 +578,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_HIGH_DEPTH_CLAMP, maxz);
       M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
       M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
-      M48(c, KB_IDVS_BLEND_DESC, o->bl | 1);
+      M48(c, KB_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
       M48(c, KB_IDVS_ZSD, o->zsd);
       M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
       M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, 1));
+      M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
       M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
       M32(c, KB_IDVS_TILER_FLAGS2, 0);
    } else {
@@ -608,11 +610,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_INDEX_BUFFER_SIZE, d->indexed ? d->index_bytes : 0);
       M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
       M48(c, KB13_IDVS_ZSD, o->zsd);
-      M48(c, KB13_IDVS_BLEND_DESC, o->bl | 1);
+      M48(c, KB13_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
       M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
       M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, 1));
-      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, 1, 1, 1, 0, 0));
+      M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
+      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, 0, 0));
       M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
       M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
