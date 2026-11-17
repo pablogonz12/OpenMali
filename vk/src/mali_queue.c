@@ -110,6 +110,7 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
 {
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
    int r = be->submit_cs(h->dev->kdev, cs, n);
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
    if (r)
@@ -117,7 +118,9 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
     * (CS SYNC_ADD64 on the event word) before the next one is built. */
    h->expected++;
-   return be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, h->expected, h->wait_ms);
+   int wr = be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, h->expected, h->wait_ms);
+   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
+   return wr;
 }
 
 void
