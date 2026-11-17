@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int g_fail;
 #define CHECK(c, ...)                                                                              \
@@ -150,6 +151,54 @@ main(int argc, char **argv)
    VkDevice dev = NULL;
    VkResult r = CreateDevice(pd, &dci, NULL, &dev);
    CHECK(r == VK_SUCCESS, "device with the supported subset: %d", r);
+   if (dev) {
+      PFN_vkGetDeviceProcAddr gdpa = (PFN_vkGetDeviceProcAddr)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkGetDeviceProcAddr");
+      int has_budget = 0, has_cal = 0;
+      for (unsigned i = 0; i < nhave; i++) {
+         has_budget |= !strcmp(have_ext[i], "VK_EXT_memory_budget");
+         has_cal |= !strcmp(have_ext[i], "VK_KHR_calibrated_timestamps");
+      }
+      if (has_budget) {
+         /* budget/usage must follow vkAllocateMemory / vkFreeMemory */
+         PFN_vkGetPhysicalDeviceMemoryProperties2 gmp = (PFN_vkGetPhysicalDeviceMemoryProperties2)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkGetPhysicalDeviceMemoryProperties2");
+         PFN_vkAllocateMemory am = (PFN_vkAllocateMemory)gdpa(dev, "vkAllocateMemory");
+         PFN_vkFreeMemory fm = (PFN_vkFreeMemory)gdpa(dev, "vkFreeMemory");
+         VkPhysicalDeviceMemoryBudgetPropertiesEXT b0 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT}, b1 = b0, b2 = b0;
+         VkPhysicalDeviceMemoryProperties2 m = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &b0};
+         gmp(pd, &m);
+         CHECK(b0.heapBudget[0] >= b0.heapUsage[0] && b0.heapBudget[0] > 0, "budget %llu usage %llu", (unsigned long long)b0.heapBudget[0], (unsigned long long)b0.heapUsage[0]);
+         VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = 4u << 20, .memoryTypeIndex = 0};
+         VkDeviceMemory mem = VK_NULL_HANDLE;
+         CHECK(am(dev, &ai, NULL, &mem) == VK_SUCCESS, "alloc 4 MiB");
+         m.pNext = &b1; gmp(pd, &m);
+         CHECK(b1.heapUsage[0] >= b0.heapUsage[0] + (4u << 20), "usage after alloc %llu vs %llu", (unsigned long long)b1.heapUsage[0], (unsigned long long)b0.heapUsage[0]);
+         fm(dev, mem, NULL);
+         m.pNext = &b2; gmp(pd, &m);
+         CHECK(b2.heapUsage[0] == b0.heapUsage[0], "usage after free %llu vs %llu", (unsigned long long)b2.heapUsage[0], (unsigned long long)b0.heapUsage[0]);
+      }
+      if (has_cal) {
+         PFN_vkGetCalibratedTimestampsKHR gct = (PFN_vkGetCalibratedTimestampsKHR)gdpa(dev, "vkGetCalibratedTimestampsKHR");
+         PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR gtd = (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR");
+         VkTimeDomainKHR doms[8];
+         uint32_t nd = 8;
+         int dev_dom = 0, raw_dom = 0;
+         CHECK(gtd(pd, &nd, doms) == VK_SUCCESS, "time domains");
+         for (uint32_t i = 0; i < nd; i++) dev_dom |= doms[i] == VK_TIME_DOMAIN_DEVICE_KHR, raw_dom |= doms[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
+         CHECK(dev_dom && raw_dom, "device and CLOCK_MONOTONIC_RAW domains listed");
+         VkCalibratedTimestampInfoKHR ti[2] = {{.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_DEVICE_KHR},
+                                               {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR}};
+         uint64_t t1[2] = {0}, t2[2] = {0}, dev1 = 0, dev2 = 0;
+         struct timespec ts;
+         VkResult c1 = gct(dev, 2, ti, t1, &dev1);
+         clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+         uint64_t host = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+         VkResult c2 = gct(dev, 2, ti, t2, &dev2);
+         CHECK(c1 == VK_SUCCESS && c2 == VK_SUCCESS, "GetCalibratedTimestamps %d %d", c1, c2);
+         CHECK(t1[0] != 0 && t2[0] >= t1[0], "device time not advancing: %llu -> %llu", (unsigned long long)t1[0], (unsigned long long)t2[0]);
+         CHECK(t1[1] <= host && host <= t2[1], "raw domain %llu .. host %llu .. %llu", (unsigned long long)t1[1], (unsigned long long)host, (unsigned long long)t2[1]);
+         CHECK(dev1 < 1000000000ull && dev2 < 1000000000ull, "max deviation %llu ns", (unsigned long long)dev1);
+      }
+   }
    if (dev) ((PFN_vkDestroyDevice)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkDestroyDevice"))(dev, NULL);
 
    /* Full DXVK request: must be refused while anything is missing. */

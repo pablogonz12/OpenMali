@@ -182,6 +182,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_depth_clip_enable = true,         /* t_dxvk_caps; pixels: t_vk_draw fx_dclip_* */
       .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
+      .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
+      .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
@@ -337,6 +339,17 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
 
    pMemoryProperties->memoryProperties = pdev->memory;
+   /* VK_EXT_memory_budget: one heap; the budget is the heap, usage what this process still holds allocated */
+   vk_foreach_struct(stype, ext, pMemoryProperties->pNext) {
+      if (stype != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
+         continue;
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT *b = ext;
+      memset(b->heapBudget, 0, sizeof b->heapBudget);
+      memset(b->heapUsage, 0, sizeof b->heapUsage);
+      uint64_t used = p_atomic_read(&pdev->mem_used);
+      b->heapUsage[0] = used;
+      b->heapBudget[0] = pdev->memory.memoryHeaps[0].size > used ? pdev->memory.memoryHeaps[0].size : used;
+   }
 }
 
 /* Format, image-format and sparse-image-format properties: mali_format.c (M5). */

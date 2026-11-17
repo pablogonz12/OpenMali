@@ -18,6 +18,14 @@ mali_arch_entrypoints(const struct mali_physical_device *pdev)
           pdev->gpu.arch_major == 10 ? &mali_v10_device_entrypoints : &mali_v11_device_entrypoints;
 }
 
+static VkResult
+mali_get_timestamp(struct vk_device *vk, uint64_t *timestamp)
+{
+   struct mali_device *dev = container_of(vk, struct mali_device, vk);
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   return be->gpu_timestamp && be->gpu_timestamp(dev->kdev, timestamp) == 0 ? VK_SUCCESS : VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
                   const VkAllocationCallbacks *pAllocator, VkDevice *pDevice)
@@ -71,6 +79,8 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
 
    dev->vk.command_dispatch_table = &dev->cmd_dispatch;   /* after vk_device_init (it zeroes the struct) */
    dev->vk.command_buffer_ops = &mali_cmd_ops;
+   dev->vk.get_timestamp = mali_get_timestamp;                       /* VK_KHR_calibrated_timestamps: runtime does the rest */
+   dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
    result = mali_hw_init(dev);
    if (result != VK_SUCCESS) {
       pdev->backend->device_destroy(dev->kdev);

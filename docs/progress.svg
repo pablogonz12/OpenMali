@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="710" viewBox="0 0 800 710" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-labelledby="t d">
-<title id="t">mali-open driver progress: 72 percent</title><desc id="d">74 of 116 checklist items done, 20 partial. Details in docs/progress.md.</desc>
+<title id="t">mali-open driver progress: 74 percent</title><desc id="d">76 of 116 checklist items done, 20 partial. Details in docs/progress.md.</desc>
 <rect x="0.5" y="0.5" width="799" height="709" rx="10" fill="#0d1117" stroke="#30363d"/>
 <text x="24" y="44" font-size="24" fill="#e6edf3" font-weight="bold" text-anchor="start">mali-open driver progress</text>
-<text x="776" y="44" font-size="30" fill="#3fb950" font-weight="bold" text-anchor="end">72 %</text>
+<text x="776" y="44" font-size="30" fill="#3fb950" font-weight="bold" text-anchor="end">74 %</text>
 <text x="776" y="62" font-size="11" fill="#9da7b3" font-weight="normal" text-anchor="end">of tracked items, not of the whole driver</text>
-<text x="24" y="68" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="start">74 of 116 items done, 20 partial (counted as half)</text>
-<text x="24" y="88" font-size="12" fill="#9da7b3">inputs last changed bb6b1b5 2026-11-17</text>
+<text x="24" y="68" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="start">76 of 116 items done, 20 partial (counted as half)</text>
+<text x="24" y="88" font-size="12" fill="#9da7b3">inputs last changed c9cca28 2026-11-17</text>
 <rect x="24" y="96" width="16" height="16" rx="4" fill="#2ea043"><title>done and tested</title></rect>
 <text x="46" y="110" font-size="12" fill="#9da7b3" font-weight="normal" text-anchor="start">done and tested</text>
 <rect x="180" y="96" width="16" height="16" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>partial or experimental</title></rect>
@@ -97,7 +97,7 @@
 <rect x="424" y="306" width="20" height="20" rx="4" fill="#2ea043"><title>13.synchronization2</title></rect>
 <line x1="24" y1="329" x2="776" y2="329" stroke="#30363d"/>
 <text x="24" y="353" font-size="16" fill="#e6edf3" font-weight="bold" text-anchor="start">Extensions DXVK needs</text>
-<text x="776" y="353" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">4/13 (+1 partial)</text>
+<text x="776" y="353" font-size="14" fill="#9da7b3" font-weight="normal" text-anchor="end">6/13 (+1 partial)</text>
 <rect x="24" y="367" width="20" height="20" rx="4" fill="#2ea043"><title>VK_KHR_swapchain</title></rect>
 <rect x="49" y="367" width="20" height="20" rx="4" fill="#2ea043"><title>VK_EXT_depth_clip_enable</title></rect>
 <rect x="74" y="367" width="20" height="20" rx="4" fill="#a5e8b4" stroke="#2ea043" stroke-width="2"><title>VK_EXT_robustness2</title></rect>
@@ -106,8 +106,8 @@
 <rect x="149" y="367" width="20" height="20" rx="4" fill="#2ea043"><title>VK_KHR_load_store_op_none</title></rect>
 <rect x="174" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_extended_dynamic_state3</title></rect>
 <rect x="199" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_vertex_attribute_divisor</title></rect>
-<rect x="224" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_memory_budget</title></rect>
-<rect x="249" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_calibrated_timestamps</title></rect>
+<rect x="224" y="367" width="20" height="20" rx="4" fill="#2ea043"><title>VK_EXT_memory_budget</title></rect>
+<rect x="249" y="367" width="20" height="20" rx="4" fill="#2ea043"><title>VK_KHR_calibrated_timestamps</title></rect>
 <rect x="274" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_custom_border_color</title></rect>
 <rect x="299" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_EXT_graphics_pipeline_library</title></rect>
 <rect x="324" y="367" width="20" height="20" rx="4" fill="#30363d"><title>VK_KHR_pipeline_library</title></rect>

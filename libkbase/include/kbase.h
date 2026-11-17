@@ -143,6 +143,8 @@ enum kb_kick { KB_KICK_IOCTL = 0, KB_KICK_DOORBELL = 1 };
 
 /* GPU timestamp counter frequency in Hz, measured against CLOCK_MONOTONIC_RAW (GET_CPU_GPU_TIMEINFO); 0 if unavailable. */
 uint64_t kb_timestamp_hz(struct kb_ctx *ctx);
+/* One GET_CPU_GPU_TIMEINFO call: GPU timestamp counter (ticks); 0 or -errno. */
+int kb_gpu_timestamp(struct kb_ctx *ctx, uint64_t *ticks);
 int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct kb_queue *q);
 /* Append instructions (padded with NOPs to 64 bytes), advance CS_INSERT, then kick. -EAGAIN if the ring is full. */
 int kb_queue_submit(struct kb_queue *q, const uint64_t *ins, size_t n, enum kb_kick how);
