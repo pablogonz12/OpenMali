@@ -169,6 +169,10 @@ hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
    if (h->nfl) {
       hw_retire(h, 0);
       h->ar.start = h->cur_start;
+      if (h->ar.off >= h->cur_start) {   /* failed at the end of the BO: wrap to 0, bounded by this submission's own start */
+         h->ar.off = 0;
+         h->ar.lapped = 1;
+      }
       p = kb_arena_alloc(&h->ar, n, al, va);
       if (p)
          return p;

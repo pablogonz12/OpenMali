@@ -57,6 +57,8 @@ struct st_state {
 };
 static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
+static double g_t_rec, g_t_sub;   /* scene_draw: record / QueueSubmit microseconds, summed */
+static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
@@ -208,7 +210,7 @@ scene_create(struct scene *s, int depth)
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
    if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD) {
       VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+         .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
       VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                              .bindingCount = 1, .pBindings = &lb};
       CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &s->dsl) == VK_SUCCESS, "dsl");
@@ -403,7 +405,7 @@ scene_create(struct scene *s, int depth)
       for (int i = 0; i < 2; i++) {
          VkDescriptorBufferInfo bi2 = {s->ubo[i], 0, 16};
          VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->dset[i], .dstBinding = 0,
-                                   .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
+                                   .descriptorCount = 1, .descriptorType = g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
          UpdateDescriptorSets(dev, 1, &w, 0, NULL);
       }
    }
@@ -559,6 +561,7 @@ static int
 scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
 {
    VkCommandBuffer cb = s->cb;
+   double t_rec0 = now_us();
    if (!cb || !g_reset) {
       VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s->pool,
                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
@@ -617,7 +620,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
-   if (s->mode == MODE_TEX || s->mode == MODE_UBO)
+   if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
       if (s->mode == MODE_PUSHFS) {
@@ -625,6 +628,10 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
       } else {
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[i]);
+      }
+      if (g_dyn) {
+         uint32_t off = (uint32_t)(i % 3) * 256;   /* three colour blocks, 256 B apart */
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 1, &off);
       }
       if (s->mode == MODE_DESCUPD)
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[i & 1], 0, NULL);
@@ -639,8 +646,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    }
    CmdEndRenderPass(cb);
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   g_t_rec += now_us() - t_rec0;
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   double t_sub0 = now_us();
    VkResult r = QueueSubmit(queue, 1, &si, fence);
+   g_t_sub += now_us() - t_sub0;
    CHECK(r == VK_SUCCESS, "submit = %d", r);
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    CHECK(r == VK_SUCCESS, "wait = %d", r);
@@ -724,8 +734,15 @@ test_triangle(void)
 static int
 test_many(void)
 {
-   static const int counts[] = {3000, 10000, 50000};
-   struct scene s = {.mode = MODE_TRI};
+   int counts[] = {3000, 10000, 50000};
+   if (getenv("MALI_MANY_COUNTS")) {   /* e.g. "3000": only the 3k frame (host profiling) */
+      memset(counts, 0, sizeof counts);
+      counts[0] = atoi(getenv("MALI_MANY_COUNTS"));
+   }
+   const int nrep = getenv("MALI_MANY_REPS") ? atoi(getenv("MALI_MANY_REPS")) : 3;
+   /* MALI_MANY_DYN=0: plain push-constant triangles; default: dynamic-UBO offset + DrawIndexed per draw (the bench2 triangle shape) */
+   g_dyn = !getenv("MALI_MANY_DYN") || atoi(getenv("MALI_MANY_DYN"));
+   struct scene s = {.mode = g_dyn ? MODE_UBO : MODE_TRI};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
@@ -733,13 +750,16 @@ test_many(void)
    float (*rot)[4] = malloc(50000 * sizeof *rot);
    for (int i = 0; i < 50000; i++) memcpy(rot[i], ID, sizeof rot[i]);
    int ok = 1;
-   for (unsigned c = 0; ok && c < sizeof counts / sizeof *counts; c++) {
+   for (unsigned c = 0; ok && c < sizeof counts / sizeof *counts && counts[c]; c++) {
+      g_t_rec = g_t_sub = 0;
       double t0 = now_us();
-      for (int rep = 0; ok && rep < 3; rep++)
+      for (int rep = 0; ok && rep < nrep; rep++)
          ok &= scene_draw(&s, counts[c], (const float (*)[4])rot, f);
-      printf("{\"test\":\"many_draws\",\"draws\":%d,\"us_per_draw\":%.3f,\"ok\":%s}\n", counts[c], (now_us() - t0) / 3 / counts[c], ok ? "true" : "false");
+      printf("{\"test\":\"many_draws\",\"draws\":%d,\"dyn_ubo\":%d,\"us_per_draw\":%.3f,\"record_us\":%.3f,\"submit_us\":%.3f,\"ok\":%s}\n", counts[c], g_dyn,
+             (now_us() - t0) / nrep / counts[c], g_t_rec / nrep / counts[c], g_t_sub / nrep / counts[c], ok ? "true" : "false");
    }
-   if (ok) ok = report("many_draws", &s, 8192.0, 1.0, 1);
+   if (ok && !g_dyn) ok = report("many_draws", &s, 8192.0, 1.0, 1);
+   g_dyn = 0;
    free(rot);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
