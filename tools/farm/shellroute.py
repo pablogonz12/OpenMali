@@ -43,6 +43,17 @@ def require_lock(lock):
         sys.exit(73)
 
 
+def cpu_busy_pct(text):
+    """two `cpu ...` lines of /proc/stat (1 s apart) -> busy % over the interval, None if unparsable"""
+    rows = [l.split() for l in text.splitlines() if l.startswith("cpu ")]
+    try:
+        a, b = ([int(x) for x in r[1:9]] for r in rows[:2])
+        tot, idle = sum(b) - sum(a), (b[3] + b[4]) - (a[3] + a[4])
+        return None if tot <= 0 else 100.0 * (tot - idle) / tot
+    except (ValueError, IndexError):
+        return None
+
+
 def gated(lock):
     """True = stop (health gate or owner switch). Same single-source gate as the rest of the farm."""
     if gate.disabled(lock):
@@ -55,8 +66,11 @@ def gated(lock):
         la = adb("shell", "cat /proc/loadavg", timeout=20)[1].split()
         try:
             if float(la[0]) > float(os.environ.get("SHELLROUTE_MAX_LOAD", "8")):
-                print(f"gated (busy): phone load average {la[0]} (another app is using the CPU/GPU)", flush=True)
-                return True
+                # a high load average alone is not proof: HyperOS (poco-x4) idles at load 12 with 500 % CPU idle (D-state threads)
+                busy = cpu_busy_pct(adb("shell", "head -1 /proc/stat; sleep 1; head -1 /proc/stat", timeout=20)[1])
+                if busy is None or busy >= float(os.environ.get("SHELLROUTE_MAX_CPU", "50")):
+                    print(f"gated (busy): phone load average {la[0]} (another app is using the CPU/GPU)", flush=True)
+                    return True
         except (ValueError, IndexError):
             pass
     return st != "ok"

@@ -123,6 +123,15 @@ class ShellRoute(unittest.TestCase):
         self.assertEqual(rc, 76)
         self.assertFalse(os.path.exists(self.d + "/o2.tsv") and open(self.d + "/o2.tsv").read())
 
+    def test_cpu_busy_pct_ignores_idle_phone_with_high_loadavg(self):
+        sys.path.insert(0, HERE)
+        import shellroute
+        idle = "cpu  1000 0 500 8000 100 0 0 0\ncpu  1000 0 500 8800 100 0 0 0"      # 800 idle ticks of 800: 0 % busy (poco-x4 at load 12)
+        busy = "cpu  1000 0 500 8000 100 0 0 0\ncpu  1700 0 600 8100 100 0 0 0"
+        self.assertEqual(shellroute.cpu_busy_pct(idle), 0.0)
+        self.assertAlmostEqual(shellroute.cpu_busy_pct(busy), 88.89, 1)
+        self.assertIsNone(shellroute.cpu_busy_pct("garbage"))
+
     def test_refuses_without_the_phone_lock(self):
         import fcntl
         fd = open("/tmp/qsafe-shelltest.lock", "a")
