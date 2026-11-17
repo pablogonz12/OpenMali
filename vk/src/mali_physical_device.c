@@ -99,7 +99,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .timestampPeriod = 1.0f,
       .discreteQueuePriorities = 2,
       .pointSizeRange = {1.0f, 1.0f},
-      .lineWidthRange = {1.0f, 1.0f},
+      .lineWidthRange = {1.0f, 8.0f},
+      .lineWidthGranularity = 0.125f,
       .standardSampleLocations = true,
       .optimalBufferCopyOffsetAlignment = 1,
       .optimalBufferCopyRowPitchAlignment = 1,
@@ -173,7 +174,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .privateData = true,
       .multiDrawIndirect = true,
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
-      .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .samplerMirrorClampToEdge = true,
+      .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */

@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -27,6 +27,8 @@ static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
 static VkBool32 g_mirror;
+static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+static float g_lw = 1.0f;
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
 #define CHECK(c, ...)                                                                              \
@@ -220,11 +222,11 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = f, .pName = "main"}};
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+                                                 .topology = g_topo};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
-                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
@@ -605,6 +607,51 @@ test_cubearray(void)
    return 1;
 }
 
+/* wideLines: horizontal line list, width 5 -> about 5 rows covered at x=128, and width 1 -> about 1 */
+static int
+line_rows(float w)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return -1;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+   g_lw = w;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   int ok = make_pipe(&t, "line.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   g_lw = 1.0f;
+   if (!ok) return -1;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 2, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return -1;
+   int rows = 0;
+   if (!g_fake)
+      for (int y = 0; y < H; y++) rows += pix(&t, 128, y)[3] != 0;
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return rows;
+}
+
+static int
+test_wide(void)
+{
+   if (!g_feat.wideLines) { printf("{\"test\":\"wide\",\"skipped\":\"wideLines not advertised\",\"ok\":true}\n"); return 1; }
+   int r1 = line_rows(1.0f), r5 = line_rows(5.0f);
+   if (r1 < 0 || r5 < 0) return 0;
+   if (!g_fake) {
+      CHECK(r1 >= 1 && r1 <= 2, "width 1 covers %d rows", r1);
+      CHECK(r5 >= 4 && r5 <= 6, "width 5 covers %d rows", r5);
+      printf("{\"test\":\"wide\",\"rows1\":%d,\"rows5\":%d,\"ok\":true}\n", r1, r5);
+   } else {
+      printf("{\"test\":\"wide\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -666,6 +713,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
+   if (ok && CASE_ON("wide")) ok &= test_wide();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
