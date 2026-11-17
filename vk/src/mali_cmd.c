@@ -548,17 +548,30 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    const VkRenderingAttachmentInfo *ca = &ri->pColorAttachments[0];
-   if (ca->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
-      unsupported(cmd, "colour loadOp LOAD");
-      return;
-   }
    if (g_res.image_view(ca->imageView, &t) || t.zs_format) {
       unsupported(cmd, "colour attachment view");
       return;
    }
+   bool load = ca->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+   unsigned load_flags = 0;
+   if (load) {
+      /* R4: LOAD = a preload draw reading the old contents (linear 4-byte RGBA8-family formats only) */
+      int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
+      switch (fmt) {
+      case VK_FORMAT_R8G8B8A8_UNORM: break;
+      case VK_FORMAT_R8G8B8A8_SRGB: load_flags = 2; break;
+      case VK_FORMAT_B8G8R8A8_UNORM: load_flags = 1; break;
+      case VK_FORMAT_B8G8R8A8_SRGB: load_flags = 3; break;
+      default:
+         unsupported(cmd, "colour loadOp LOAD of this format");
+         return;
+      }
+   }
    f->width = t.width;
    f->height = t.height;
    f->has_colour = true;
+   const uint64_t t_va = t.va;
+   const uint32_t t_row = t.row_stride, t_bytes = t.row_stride * t.height;
    f->colour.va = t.va;
    f->colour.rt = t.rt;
    f->colour.row_stride = t.row_stride;
@@ -583,6 +596,17 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->zs.clear = da->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->zs.clear_depth = da->clearValue.depthStencil.depth;
       f->zs.store = da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   }
+   if (load) {
+      struct mali_draw d;
+      if (mali_meta_vk_preload(cmd, t_va, t_bytes, t_row, load_flags, &d)) {
+         unsupported(cmd, "colour loadOp LOAD (preload shader)");
+         return;
+      }
+      for (int i = 0; i < 4; i++) d.sc[i] = f->area[i];
+      d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
+      if (mali_frame_add_draw(f, &d))
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
    cmd->in_render = true;
 }

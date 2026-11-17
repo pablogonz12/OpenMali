@@ -57,6 +57,14 @@ mem_of(const void *cmd)
    return r;
 }
 
+/* R4: colour loadOp LOAD (see mali_meta_preload). */
+int
+mali_meta_vk_preload(struct mali_cmd_buffer *cmd, uint64_t va, uint32_t bytes, uint32_t row_bytes, unsigned flags, struct mali_draw *d)
+{
+   struct mali_meta_mem *m = mem_of(cmd);
+   return m ? mali_meta_preload(m, va, bytes, row_bytes, flags, d) : -ENOMEM;
+}
+
 /* Wiring: call from the command buffer reset and destroy paths (after the work was waited for). */
 void
 mali_meta_cmd_forget(const void *cmd)
