@@ -1,0 +1,2 @@
+# known-flaky dEQP cases: ignored by the verdict (still listed as flaky_ignored). Format: <case>  # evidence (x/N pass, build, date)
+# host_stage_with_fill_buffer_method is NOT here: 5/5 Pass alone on main, 0/3 on the feat/msaa build (deterministic regression).

@@ -60,3 +60,12 @@ Health gates (farmd before each job and between dEQP chunks; quick.py/qsafe for 
 SEVERE => `cooling` until <= 38 C and status <= LIGHT. Per-device override in devices.toml: `batt_stop batt_resume temp_stop temp_resume
 thermal_stop thermal_resume`. A gated device keeps its jobs pending, writes one alerts.log line per state change, `farm status` shows
 state/battery/temp, run JSON has battery_pct_/temp_c_ start+end. qdeqp stops with rc 75 and resumes from its TSV.
+
+## Result integrity
+- The driver `.so` is verified by sha256 ON THE PHONE against the job's `so_sha256` before every dEQP chunk (qdeqp, `QDEQP_SO_SHA256`),
+  after valrun's push and after each run; a mismatch makes the run `invalid` (kept as `runs/<job>-<class>.invalid-N.json`, alert line, re-queued).
+- Each dEQP run uses its own on-phone ICD paths (`QDEQP_RUN`), so concurrent runs cannot swap each other's driver.
+- Device tests (qdeqp, qdrv, qdirect, valrun) refuse (exit 73, PHONE BUSY) unless they hold `/tmp/qsafe-<lock>.lock` or run under the holder
+  (`QSAFE_HELD=<lock>`); `QSAFE_LOCK_OVERRIDE=1` for emergencies only.
+- `ns_to_fail` lists baseline-NotSupported cases that now Fail; `known-flaky.txt` cases are ignored by the verdict but reported.
+- Phones are identified by `getprop ro.serialno` on any transport; devices.toml is re-read on change; the stored `:5555` route follows the phone's IP.
