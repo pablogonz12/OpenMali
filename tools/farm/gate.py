@@ -14,7 +14,7 @@ import json, os, re, subprocess, sys, time, tomllib
 DEFAULTS = {"batt_stop": 20, "batt_resume": 50, "temp_stop": 43.0, "temp_resume": 38.0, "thermal_stop": 3, "thermal_resume": 1,
             "require_charging": False}
 HEALTH_CMD = ("dumpsys battery | grep -E '^ *(level|temperature|AC powered|USB powered|Wireless powered|Dock powered):'; "
-              "dumpsys thermalservice | grep -m1 'Thermal Status'")
+              "dumpsys thermalservice | grep -E 'Thermal Status:|^Cached temperatures|^Current temperatures from HAL|mName=(BATTERY|SKIN),'")
 
 
 def state_dir():
@@ -22,22 +22,49 @@ def state_dir():
 
 
 def parse(text):
-    """-> {'level': %, 'temp_c': C, 'thermal': int} (None for what is missing)"""
+    """-> {'level': %, 'temp_c': C, 'thermal': int} (None for what is missing)
+    temp_c = the HIGHEST of `dumpsys battery` temperature and the BATTERY/SKIN sensors under "Current temperatures from HAL".
+    The "Cached temperatures" block of dumpsys thermalservice (also what `cmd thermalservice` shows) is ignored: on the Poco X4 it
+    stayed frozen (BATTERY 33.1 C for 3+ minutes while the real value moved 35.2 -> 34.1 and another reading said 47 C): stale, never trusted.
+    CPU/GPU die sensors are not used (they idle above 43 C by design)."""
     h = {"level": None, "temp_c": None, "thermal": None, "powered": None}
+    sect = None
+    temps = []
     for l in text.splitlines():
+        if l.startswith("Cached temperatures"):
+            sect = "cached"
+        elif l.startswith("Current temperatures from HAL"):
+            sect = "hal"
+        m = re.search(r"Temperature\{mValue=(-?[\d.]+),.*mName=(BATTERY|SKIN),", l)
+        if m and sect == "hal":
+            temps.append(float(m.group(1)))
         m = re.match(r"\s*level:\s*(\d+)", l)
         if m:
             h["level"] = int(m.group(1))
         m = re.match(r"\s*temperature:\s*(-?\d+)", l)
         if m:
-            h["temp_c"] = int(m.group(1)) / 10
+            temps.append(int(m.group(1)) / 10)
         m = re.match(r"\s*(AC|USB|Wireless|Dock) powered:\s*(true|false)", l)
         if m:
             h["powered"] = bool(h["powered"]) or m.group(2) == "true"
         m = re.search(r"Thermal Status:\s*(\d+)", l)
         if m:
             h["thermal"] = int(m.group(1))
+    h["temp_c"] = max(temps) if temps else None
     return h
+
+
+def device_address(alias_or_serial):
+    """plain-tcpip address ('ip:port') of a phone from devices.toml (matches alias, lock or serial); None if it has none.
+    quick.py uses it when the adb transport of a wireless-only phone is not its serial (qrestore failed with 'adb missing' without it)."""
+    p = os.environ.get("MALI_FARM_DEVICES") or os.path.expanduser("~/.config/mali-farm/devices.toml")
+    try:
+        for d in tomllib.load(open(p, "rb")).get("device", []):
+            if alias_or_serial in (d.get("alias"), d.get("lock"), d.get("serial")) and d.get("address"):
+                return d["address"]
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def thresholds(serial=None):

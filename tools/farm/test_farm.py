@@ -988,5 +988,40 @@ class PublishUnit(unittest.TestCase):
         self.assertEqual(cfg[0]["env"], [])                                                            # cube never replays a non-base env for ours
 
 
+class GateTemp(unittest.TestCase):
+    """Poco X4: dumpsys battery 35.2 C, thermalservice 'Cached temperatures' BATTERY frozen at 33.1 (stale), HAL current BATTERY 35.2 / SKIN 37.6"""
+    DUMP = ("  level: 97\n  temperature: 352\nThermal Status: 0\nCached temperatures:\n"
+            "\tTemperature{mValue=33.1, mType=2, mName=BATTERY, mStatus=0}\n\tTemperature{mValue=38.975, mType=3, mName=SKIN, mStatus=0}\n"
+            "Current temperatures from HAL:\n\tTemperature{mValue=35.2, mType=2, mName=BATTERY, mStatus=0}\n"
+            "\tTemperature{mValue=%s, mType=3, mName=SKIN, mStatus=0}\n")
+
+    def test_highest_of_battery_and_skin(self):
+        self.assertEqual(gate.parse(self.DUMP % "37.6")["temp_c"], 37.6)
+        self.assertEqual(gate.parse(self.DUMP % "43.4")["temp_c"], 43.4)       # skin hotter than the battery: it gates
+        th = dict(gate.DEFAULTS)
+        self.assertEqual(gate.next_state("ok", gate.parse(self.DUMP % "43.0"), th)[0], "cooling")
+        self.assertEqual(gate.next_state("ok", gate.parse(self.DUMP % "42.9"), th)[0], "ok")        # worked right up to 43
+
+    def test_stale_cache_is_ignored(self):
+        t = "  temperature: 300\nCached temperatures:\n\tTemperature{mValue=47.7, mType=2, mName=BATTERY, mStatus=0}\n"
+        self.assertEqual(gate.parse(t)["temp_c"], 30.0)
+        self.assertEqual(gate.parse("  temperature: 470\nCurrent temperatures from HAL:\n\tTemperature{mValue=33.1, mType=2, mName=BATTERY, mStatus=0}\n")["temp_c"], 47.0)
+
+    def test_die_sensors_not_used(self):
+        t = "  temperature: 350\nCurrent temperatures from HAL:\n\tTemperature{mValue=70.0, mType=1, mName=GPU, mStatus=0}\n"
+        self.assertEqual(gate.parse(t)["temp_c"], 35.0)
+
+    def test_device_address(self):
+        d = tempfile.mkdtemp()
+        open(d + "/d.toml", "w").write('[[device]]\nalias = "poco-x4"\nserial = "SER1"\nlock = "poco-x4"\naddress = "192.0.2.5:5555"\n[[device]]\nalias = "cmf"\nserial = "SER2"\n')
+        os.environ["MALI_FARM_DEVICES"] = d + "/d.toml"
+        try:
+            self.assertEqual(gate.device_address("poco-x4"), "192.0.2.5:5555")
+            self.assertEqual(gate.device_address("SER1"), "192.0.2.5:5555")
+            self.assertIsNone(gate.device_address("cmf"))
+        finally:
+            del os.environ["MALI_FARM_DEVICES"]
+
+
 if __name__ == "__main__":
     unittest.main()
