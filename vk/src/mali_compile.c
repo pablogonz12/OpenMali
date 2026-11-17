@@ -26,7 +26,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 8
+#define MALI_COMPILE_VERSION 11
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -132,7 +132,7 @@ type_size(const struct glsl_type *t, bool bindless)
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz;
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances;
    char mesa[24];
 };
 
@@ -147,6 +147,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.fau_reserved = fau_reserved;
    k.push_base = push_base;
    k.strip_psiz = o->strip_psiz != 0;
+   k.clip_distances = o->clip_distances;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
@@ -287,6 +288,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
 
+   if (stage == MESA_SHADER_VERTEX)
+      NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
    if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
       nir_foreach_shader_out_variable(var, nir)
          if (var->data.location == VARYING_SLOT_PSIZ) {
@@ -318,6 +321,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    struct pan_varying_layout vl;
    memset(&vl, 0, sizeof vl);
    const struct pan_varying_layout *vs_layout = NULL;
+   unsigned clip_distances = 0;
 
    if (stage == MESA_SHADER_COMPUTE) {
       NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared, glsl_get_natural_size_align_bytes);
@@ -332,12 +336,19 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global, nir_address_format_64bit_global);
    } else {
       if (stage == MESA_SHADER_VERTEX) {
+         /* gl_ClipDistance: written as ordinary varyings (VARYING_SLOT_CLIP_DIST0/1); the FS kills where it is < 0 (nir_lower_clip_fs) */
+         nir_gather_clip_cull_distance_sizes_from_vars(nir);
+         NIR_PASS(_, nir, nir_merge_clip_cull_distance_vars);
+         clip_distances = nir->info.clip_distance_array_size;
          nir_foreach_shader_in_variable(var, nir)
             var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
          nir_assign_io_var_locations(nir, nir_var_shader_out);
       } else {
          nir_assign_io_var_locations(nir, nir_var_shader_in);
          nir_assign_io_var_locations(nir, nir_var_shader_out);
+         /* after the location assignment: the pass emits load_interpolated_input intrinsics with the var's driver_location as base */
+         if (o->clip_distances)
+            NIR_PASS(_, nir, nir_lower_clip_fs, (1u << o->clip_distances) - 1, true, true);
       }
       NIR_PASS(_, nir, nir_lower_var_copies);
       NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees, nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
@@ -442,6 +453,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       out->vs_secondary_work_reg_count = info.vs.secondary_work_reg_count;
       out->vs_secondary_preload = info.vs.secondary_preload;
       out->generic_size_B = vl.generic_size_B;
+      out->vs_clip_distances = clip_distances;
       out->layout.size = sizeof vl;
       memcpy(out->layout.data, &vl, sizeof vl);
    }

@@ -115,6 +115,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv_words = m->size / 4;
    o.entry = fss->pName;
    o.link_vs = &p->vs.layout;
+   o.clip_distances = p->vs.vs_clip_distances;
    if (mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;

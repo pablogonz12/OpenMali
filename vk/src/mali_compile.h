@@ -41,6 +41,7 @@ struct mali_compile_opts {
    int push_base_set;             /* 0: use the default above */
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
+   unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
    int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
 };
@@ -65,6 +66,7 @@ struct mali_compiled {
    /* VS */
    uint32_t vs_writes_point_size, vs_secondary_enable, vs_secondary_offset, vs_secondary_work_reg_count;
    uint64_t vs_secondary_preload;
+   uint32_t vs_clip_distances;    /* VS: gl_ClipDistance array size (0 = none) */
    uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
    uint32_t nvarying;
    struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */

@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1220,6 +1220,41 @@ test_demote(void)
    return 1;
 }
 
+/* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+static int
+test_clip(void)
+{
+   if (!g_feat.shaderClipDistance) { printf("{\"test\":\"clip\",\"skipped\":\"shaderClipDistance not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "clip.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - 128) <= 2 || abs(y - 192) <= 2) continue;
+            int in = x >= 128 && y >= 192;
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            bad += in ? !near(p, 255, 0, 0, 255, 2) : p[3] != 0;
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (in %u,%u,%u,%u  x<128 %u,%u,%u,%u  y<192 %u,%u,%u,%u)", bad, n, pix(&t, 200, 220)[0], pix(&t, 200, 220)[1], pix(&t, 200, 220)[2], pix(&t, 200, 220)[3], pix(&t, 60, 220)[0], pix(&t, 60, 220)[1], pix(&t, 60, 220)[2], pix(&t, 60, 220)[3], pix(&t, 200, 100)[0], pix(&t, 200, 100)[1], pix(&t, 200, 100)[2], pix(&t, 200, 100)[3]);
+      printf("{\"test\":\"clip\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"clip\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
 static VkPhysicalDevice g_pd;
@@ -1541,6 +1576,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
+   if (ok && CASE_ON("clip")) ok &= test_clip();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
