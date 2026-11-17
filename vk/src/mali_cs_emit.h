@@ -70,7 +70,29 @@ struct mali_gfx_state {
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
 };
 
+/* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply
+ * (no culling, CCW front, depth clip on, no bias, line width 1, opaque, write mask 0xf). Values are Vulkan enums. */
+struct mali_fixed {
+   bool set;
+   uint8_t cull;                          /* 1 = cull front faces, 2 = cull back faces */
+   bool front_ccw;
+   bool depth_clamp, depth_clip;
+   bool bias_en;
+   float bias_const, bias_slope, bias_clamp;
+   float line_width;
+   bool blend_en;
+   uint8_t wmask;                         /* VK_COLOR_COMPONENT_* (R=1 G=2 B=4 A=8) */
+   uint8_t src_c, dst_c, src_a, dst_a;    /* VkBlendFactor */
+   uint8_t op_c, op_a;                    /* VkBlendOp (ADD 0, SUBTRACT 1, REVERSE_SUBTRACT 2) */
+   float bconst[4];
+};
+
+/* Mali fixed-function blend equation (word 1 bits 0..23) for the factors/ops in f; also reports the constant channel mask used
+ * (bit 0..2 colour, 3 alpha). 0 = ok, -1 = not expressible in fixed function (min/max, SRC_ALPHA_SATURATE, dual source, odd pairs). */
+int mali_blend_equation(const struct mali_fixed *f, uint32_t *eq, unsigned *const_mask);
+
 struct mali_draw {
+   struct mali_fixed fx;
    struct mali_gfx_state gfx;
    uint64_t vb_va[MALI_MAX_VB];           /* bound vertex buffers (offset applied) */
    uint32_t vb_size[MALI_MAX_VB];
