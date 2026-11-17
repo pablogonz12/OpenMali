@@ -666,7 +666,7 @@ struct st_case {
 };
 
 static int
-test_st_cov(const struct st_case *c)
+test_st_cov(const struct st_case *c, uint32_t *covout)
 {
    struct scene s = {.mode = MODE_TRI};
    VkFence f;
@@ -684,6 +684,7 @@ test_st_cov(const struct st_case *c)
          printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", c->name);
       } else {
          uint32_t cov = count_cov(&s);
+         if (covout) { *covout = cov; scene_destroy(&s); DestroyFence(dev, f, NULL); return 1; }
          ok = c->expect == 0 ? cov == 0 : fabs((double)cov - c->expect) / c->expect * 100.0 <= 2.5;
          CHECK(ok, "%s coverage %u expected %.0f", c->name, cov, c->expect);
          printf("{\"test\":\"%s\",\"coverage\":%u,\"ok\":%s}\n", c->name, cov, ok ? "true" : "false");
@@ -755,7 +756,7 @@ test_stencil(VkFormat fmt)
       struct st_case c = cases[i];
       snprintf(nm, sizeof nm, "%s%s", c.name, fmt == VK_FORMAT_S8_UINT ? "_s8" : fmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? "_d32s8" : "_d24s8");
       c.name = nm;
-      ok = test_st_cov(&c);
+      ok = test_st_cov(&c, NULL);
    }
    /* back faces use the back state: front NEVER / back ALWAYS shows the triangle for exactly one winding */
    if (ok) {
@@ -768,18 +769,13 @@ test_stencil(VkFormat fmt)
       snprintf(nm0, sizeof nm0, "stencil_face_ccw%s", sfx);
       snprintf(nm1, sizeof nm1, "stencil_face_cw%s", sfx);
       r0.name = nm0; r1.name = nm1;
-      /* which winding is the back face depends on the vertex order; accept either assignment but not both/neither */
-      if (g_fake) {
-         ok = test_st_cov(&r0);
-      } else {
-         int f0 = g_fail;
-         int a = test_st_cov(&r0), b = test_st_cov(&r1);
-         if (!a && !b) {   /* neither matched the 0/8192 guess: try the opposite assignment */
-            g_fail = f0;
-            r0.expect = 8192; r1.expect = 0;
-            a = test_st_cov(&r0); b = test_st_cov(&r1);
-         }
-         ok = a && b;
+      /* which winding is the back face depends on the vertex order: exactly one of the two must show the triangle */
+      uint32_t c0 = 0, c1 = 0;
+      ok = test_st_cov(&r0, &c0) && test_st_cov(&r1, &c1);
+      if (ok && !g_fake) {
+         ok = (c0 == 0 && c1 > 8192 * 0.975 && c1 < 8192 * 1.025) || (c1 == 0 && c0 > 8192 * 0.975 && c0 < 8192 * 1.025);
+         CHECK(ok, "%s: front-NEVER/back-ALWAYS coverage ccw %u cw %u (want one 0, one ~8192)", nm0, c0, c1);
+         printf("{\"test\":\"stencil_face%s\",\"cov_ccw\":%u,\"cov_cw\":%u,\"ok\":%s}\n", sfx, c0, c1, ok ? "true" : "false");
       }
    }
    if (ok) {
