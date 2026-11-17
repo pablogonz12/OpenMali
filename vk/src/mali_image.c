@@ -310,8 +310,6 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
-   if (ci->samples != VK_SAMPLE_COUNT_1_BIT && !mali_experimental_msaa())
-      return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
    struct mali_image *img = vk_image_create(&dev->vk, ci, alloc, sizeof *img);
    if (!img) return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
    if (image_layout(dev_arch(dev), ci, &lay, &bc, &img->sh_lay, &is_bc) != 0) {

@@ -886,7 +886,8 @@ test_two(int depth)
 static int
 test_msaa(const char *name, int mode)
 {
-   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
+   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");   /* 4x pipelines are gated; sample counts are advertised regardless (as on main) */
+   if (!(gate && gate[0] == '1') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
       printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name,
              mode == 2 ? " / sampleRateShading" : "");
       return 1;

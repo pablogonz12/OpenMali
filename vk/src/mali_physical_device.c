@@ -17,7 +17,7 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);   /* MALI_EXPERIMENTAL_MSAA=1 */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;   /* as on main; 4x draws stay behind MALI_EXPERIMENTAL_MSAA=1 */
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,

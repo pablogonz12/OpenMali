@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
-/* MSAA (4x) and sampleRateShading are experimental until verified on hardware: everything user-visible is gated on
- * MALI_EXPERIMENTAL_MSAA=1 (sample-count advertisement, image creation with samples 4, the sampleRateShading feature). */
+/* 4x MSAA draws and sampleRateShading are experimental until verified on hardware: gated on MALI_EXPERIMENTAL_MSAA=1 (the sampleRateShading feature,
+ * 4x pipeline creation). Sample-count advertisement and 4x image creation are NOT gated: main already had them and dEQP cases rely on them. */
 #ifndef MALI_MSAA_H
 #define MALI_MSAA_H
 
