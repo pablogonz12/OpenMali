@@ -32,8 +32,9 @@ def parse_qpa(text):
 
 
 def serial(alias):
-    d = os.path.expanduser("~/Documents/scripts/mali-open/tools/dev-serial")
-    return subprocess.run([d, alias], capture_output=True, text=True).stdout.strip()
+    # live adb transport (wireless phones are listed under an mDNS name), resolved like qsafe does
+    q = os.path.expanduser("~/Projects/mali-gaming/scripts/quick/quick.py")
+    return subprocess.run(["python3", "-I", q, "serial", alias], capture_output=True, text=True, env=ENV).stdout.strip()
 
 
 def run_chunk(alias, ser, cases, wall):
