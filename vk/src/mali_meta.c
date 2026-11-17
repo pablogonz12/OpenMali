@@ -602,7 +602,7 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
       /* depth/stencil only: colour write mask 0; Z through the depth test (ALWAYS + write), S through a REPLACE-always stencil state */
       d->fx.set = true;
       d->fx.front_ccw = true;
-      d->fx.depth_clip = true;
+      d->fx.depth_clip = false;   /* panvk: depth_cull_enable = false for the ZS preload */
       d->fx.wmask = 0;
       d->fx.src_c = d->fx.src_a = 1;
       d->gfx.depth_test = (kind == MALI_PRELOAD_Z || kind == MALI_PRELOAD_ZS);
