@@ -21,6 +21,7 @@
 #ifndef KBASE_CS_H
 #define KBASE_CS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define KB_CS_OP_NOP        0
@@ -71,8 +72,20 @@ static inline uint64_t kb_cs_sync_set64(unsigned addr_reg, unsigned data_reg, un
 #define KB_CS_SB_SEL_ENDPOINT 0
 #define KB_CS_SB_SEL_OTHER    1
 #define KB_CS_SB_SEL_DEFERRED 2
+/* v10 (Mali-G610/G710/G510/G310, Mesa genxml v10.xml): no SET_STATE_IMM32. Scoreboards are selected with SET_SB_ENTRY (op 23:
+ * 3:0 endpoint entry, 7:4 other entry, 8 entries in total), and endpoint/other cannot be set apart: "other" is pinned to the
+ * load/store slot (cs_builder.h cs_select_endpoint_sb). kb_v10 is set once per process by the driver when the GPU is arch 10.
+ * On v10 SB_SEL_OTHER / SB_SEL_DEFERRED become NOPs (only diagnostic MALI_CV knobs use them). */
+#define KB_CS_OP_SET_SB_ENTRY 23
+extern int kb_v10;
 static inline uint64_t kb_cs_set_state_imm32(unsigned state, uint32_t value)
-{ return kb_cs_raw(KB_CS_OP_SET_STATE_IMM32, ((uint64_t)(state & 0xff) << 32) | value); }
+{
+	if (kb_v10) {
+		if (state != KB_CS_SB_SEL_ENDPOINT) return kb_cs_raw(0, 0);   /* NOP */
+		return kb_cs_raw(KB_CS_OP_SET_SB_ENTRY, (value & 0xf) | ((uint64_t)KB_CS_SLOT_LS << 4));
+	}
+	return kb_cs_raw(KB_CS_OP_SET_STATE_IMM32, ((uint64_t)(state & 0xff) << 32) | value);
+}
 static inline uint64_t kb_cs_run_fragment(unsigned tile_order)
 { return kb_cs_raw(KB_CS_OP_RUN_FRAGMENT, (uint64_t)(tile_order & 0xf) << 4); }
 static inline uint64_t kb_cs_finish_fragment(unsigned wait_mask, unsigned signal_slot)
