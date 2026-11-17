@@ -283,6 +283,22 @@ def read_tsv(path):
     return rows
 
 
+def merge_baselines(branch, ref):
+    """branch/ref: (tsv dict, commit8) or None. A case is Pass if it is Pass in either; otherwise the branch's status (else ref's).
+    -> (merged dict, text naming the commit each came from and how many cases only the reference passes)"""
+    if not branch or not ref:
+        one = branch or ref
+        return one[0], f"baseline {'branch' if branch else 'main'} {one[1]}"
+    merged = dict(ref[0])
+    merged.update(branch[0])
+    only_ref = 0
+    for c, s in ref[0].items():
+        if s == "Pass" and branch[0].get(c) != "Pass":
+            merged[c] = "Pass"
+            only_ref += 1
+    return merged, f"baseline branch {branch[1]} + main {ref[1]} ({only_ref} cases Pass only on main)"
+
+
 def load_flaky():
     """known-flaky cases (tools/farm/known-flaky.txt: `case  # evidence`): not counted as new failures, still reported as flaky_ignored"""
     try:

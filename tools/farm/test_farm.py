@@ -318,6 +318,18 @@ class T(unittest.TestCase):
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
 
+    def test_verdict_uses_main_baseline_too(self):
+        # branch baseline is stale for 2 cases main passes; they fail in the run -> must be regressions, not silently "pass"
+        self.attach("dev-a")
+        rc, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_STALE_BRANCH=2")
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertEqual(run["verdict"], "fail")
+        self.assertEqual(len(run["new_failures"]), 2)
+        self.assertIn("baseline branch ", run["notes"])
+        self.assertIn(" + main ", run["notes"])
+        self.assertIn("2 cases Pass only on main", run["notes"])
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 

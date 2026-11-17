@@ -404,17 +404,30 @@ class Farm:
 
     # ---------- suites -> dict(verdict, counts, new_failures, newly_passing, notes, extra)
     def baseline(self, job, dev):
+        """-> (merged baseline | None, text). A case counts as Pass if it is Pass in the BRANCH's own committed baseline OR in the
+        REFERENCE baseline (main's tip: the newest blessed one), so a branch that predates a fix cannot hide a regression."""
         rel = f"vk/deqp/ours-daily-sample-{dev['baseline']}.tsv"
-        for ref in (job["commit"], "main"):
+        got = {}
+        for kind, ref in (("branch", job["commit"]), ("ref", "main")):
             rc, out = git("show", f"{ref}:{rel}", cwd=self.repo)
             if rc == 0:
                 tmp = os.path.join(L.state_dir(), "work", f".base-{os.getpid()}-{threading.get_ident()}.tsv")
                 open(tmp, "w").write(out)
                 try:
-                    return L.read_tsv(tmp), ref
+                    got[kind] = (L.read_tsv(tmp), git("rev-parse", "--short=8", ref, cwd=self.repo)[1].strip())
                 finally:
                     os.unlink(tmp)
-        return None, None
+        if not got:
+            return None, None
+        if self.fake:                                   # test hook: the branch baseline is stale for N cases main passes
+            n = int(next((t.split("=")[1] for t in job["env"].split() if t.startswith("FAKE_STALE_BRANCH=")), 0))
+            if n and "branch" in got and "ref" in got:
+                b = dict(got["branch"][0])
+                for c in [c for c in sorted(b) if b[c] == "Pass"][:n]:
+                    b[c] = "Fail"
+                got["branch"] = (b, got["branch"][1])
+        merged, text = L.merge_baselines(got.get("branch"), got.get("ref"))
+        return merged, text
 
     def alive(self, dev):
         """for run_watched: True = fine, False = unreachable (grace period), "stop" = owner policy: stop now, job back to pending"""
@@ -495,6 +508,7 @@ class Farm:
 
     def suite_daily(self, job, dev):
         base, bref = self.baseline(job, dev)
+        stale = int(next((t.split("=")[1] for t in job["env"].split() if t.startswith("FAKE_STALE_BRANCH=")), 0)) if self.fake else 0
         if base is None:
             return {"verdict": "error", "notes": "no baseline TSV for this device in the commit or main"}
         cases = sorted(base)
@@ -512,6 +526,9 @@ class Farm:
             for c in fixes:
                 cur[c] = "Pass"
             rc, note = 0, "fake"
+            if stale:                                            # the stale-branch cases fail in the run (main passes them)
+                for c in [c for c in cases if base[c] == "Pass"][:stale]:
+                    cur[c] = "Fail"
             n2f = int(next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_NS2F=")), 0))
             for c in [c for c in cases if base[c] == "NotSupported"][:n2f]:
                 cur[c] = "Fail"
@@ -568,7 +585,7 @@ class Farm:
             verdict = "error" if not nf else "fail"
         extra = (f"; {len(n2f)} NotSupported->Fail" if n2f else "") + (f"; {len(ignored)} known-flaky ignored" if ignored else "")
         return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
-                "notes": f"baseline from {bref}; qdeqp rc={rc}{extra}; {note if verdict != 'pass' else ''}".strip()}
+                "notes": f"{bref}; qdeqp rc={rc}{extra}; {note if verdict != 'pass' else ''}".strip()}
 
     def suite_bench(self, job, dev):
         return {"verdict": "error", "notes": "bench suite is a stub (not implemented yet)"}
