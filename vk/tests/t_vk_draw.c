@@ -65,7 +65,18 @@ static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally 
 
 enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
-#define CASE_ON(n) (!g_only || !strcmp(g_only, n))
+#define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
+/* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
+static int
+case_skipped(const char *n)
+{
+   const char *e = getenv("MALI_SKIP_CASES");
+   size_t l = strlen(n);
+   for (; e && *e; e++)
+      if (!strncmp(e, n, l) && (e[l] == ',' || !e[l]) && (e == getenv("MALI_SKIP_CASES") || e[-1] == ','))
+         return 1;
+   return 0;
+}
 #define CHECK(c, ...)                                                                              \
    do {                                                                                            \
       if (!(c)) {                                                                                  \

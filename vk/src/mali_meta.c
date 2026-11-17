@@ -521,7 +521,6 @@ preload_compile(unsigned kind)
       o.spirv = preload_vert_spv;
       o.spirv_words = sizeof preload_vert_spv / 4;
       o.strip_psiz = 1;
-      o.layout = &lay;
       if (mali_compile(&o, &g_pre_vs.vs, err, sizeof err) < 0) {
          fprintf(stderr, "mali_meta: preload VS compile failed: %s\n", err);
          return -EINVAL;
