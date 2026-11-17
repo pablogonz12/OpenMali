@@ -325,6 +325,17 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_zsd_off(zsd);
    }
 
+   /* stencil test (genxml Depth/stencil words 0..2, identical on v11 and v13; panvk build_zsd) */
+   if (f->has_st && d->fx.set && d->fx.st_test) {
+      static const uint8_t sop[8] = { 0 /* KEEP */, 2 /* ZERO */, 1 /* REPLACE */, 6 /* INCR_SAT */, 7 /* DECR_SAT */, 3 /* INVERT */, 4 /* INCR_WRAP */, 5 /* DECR_WRAP */ };
+      const struct mali_st_face *fc = &d->fx.st_f, *bc = &d->fx.st_b;
+      zsd[0] |= (1u << 31) | ((uint32_t)(fc->cmp & 7) << 4) | ((uint32_t)sop[fc->fail & 7] << 7) | ((uint32_t)sop[fc->dfail & 7] << 10) |
+                ((uint32_t)sop[fc->pass & 7] << 13) | ((uint32_t)(bc->cmp & 7) << 16) | ((uint32_t)sop[bc->fail & 7] << 19) |
+                ((uint32_t)sop[bc->dfail & 7] << 22) | ((uint32_t)sop[bc->pass & 7] << 25);
+      zsd[1] = (uint32_t)fc->wmask | ((uint32_t)bc->wmask << 8) | ((uint32_t)fc->vmask << 16) | ((uint32_t)bc->vmask << 24);
+      zsd[2] = (uint32_t)fc->ref | ((uint32_t)bc->ref << 8);
+   }
+
    if (d->fx.set) {
       /* rasteriser depth state: clip (depth cull), clamp to the viewport depth range, bias */
       zsd[4] &= ~((1u << 22) | (3u << 23) | (1u << 28));
@@ -496,7 +507,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
 {
    const struct mali_gfx_state *g = &d->gfx;
    bool v13 = env->arch == 13;
-   unsigned pk = (g->depth_test && f->has_zs) ? 0 : 2;
+   unsigned pk = ((g->depth_test && f->has_zs) || (f->has_st && d->fx.set && d->fx.st_test)) ? 0 : 2;
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
    uint32_t dcd_extra = 0, pf_clear = 0;
    if (d->fx.set) {
@@ -593,7 +604,7 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
 
    E(c, kb_cs_req_res(KB_CS_RES_FRAGMENT));
    E(c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, slot));
-   M48(c, 40, kb_fb_pointer_ex(va_fbd, 1, f->has_zs));
+   M48(c, 40, kb_fb_pointer_ex(va_fbd, 1, f->has_zs || f->has_st));
    M32(c, 42, kb_fb_bbox_min(x0, y0));
    M32(c, 43, kb_fb_bbox_max(x1, y1));
    if (geometry)

@@ -77,6 +77,9 @@ struct mali_gfx_state {
 
 /* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply
  * (no culling, CCW front, depth clip on, no bias, line width 1, opaque, write mask 0xf). Values are Vulkan enums. */
+/* one stencil face: VkCompareOp / VkStencilOp values, masks, reference */
+struct mali_st_face { uint8_t cmp, fail, dfail, pass, wmask, vmask, ref; };
+
 struct mali_fixed {
    bool set;
    uint8_t cull;                          /* 1 = cull front faces, 2 = cull back faces */
@@ -90,6 +93,9 @@ struct mali_fixed {
    uint8_t src_c, dst_c, src_a, dst_a;    /* VkBlendFactor */
    uint8_t op_c, op_a;                    /* VkBlendOp (ADD 0, SUBTRACT 1, REVERSE_SUBTRACT 2) */
    float bconst[4];
+   /* stencil (Vulkan values; applied only when the frame has a stencil attachment) */
+   bool st_test;
+   struct mali_st_face st_f, st_b;
 };
 
 /* Mali fixed-function blend equation (word 1 bits 0..23) for the factors/ops in f; also reports the constant channel mask used
@@ -156,13 +162,14 @@ struct mali_att {
    bool store;                            /* storeOp STORE; colour: always stored (no FBD knob yet); depth: false = Z write enable off */
    float clear_color[4];
    float clear_depth;
+   uint8_t clear_stencil;                 /* stencil attachment (struct mali_frame.st): S Clear value */
 };
 
 struct mali_frame {
    unsigned width, height;                /* framebuffer size (attachment extent) */
    int32_t area[4];                       /* render area x, y, w, h */
-   bool has_colour, has_zs;
-   struct mali_att colour, zs;
+   bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
+   struct mali_att colour, zs, st;
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
