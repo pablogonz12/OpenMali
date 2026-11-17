@@ -453,6 +453,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
    if (!(kb_bo_extra_flags & 0x800))
       return;
+   static int skip_ex = -1;   /* MALI_MEMSYNC_EX=0 (experiment): skip EXEC/EVENT BOs: they never get COHERENT_LOCAL, so the per-submit sync does nothing for them */
+   if (skip_ex < 0) { const char *x = getenv("MALI_MEMSYNC_EX"); skip_ex = x && x[0] == '0'; }
    pthread_mutex_lock(&k->bo_lock);
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
@@ -462,7 +464,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot))
+      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot) || (skip_ex && (b->flags & (KB_BO_GPU_EX | KB_BO_CSF_EVENT))))
          continue;
       struct {
          uint64_t handle, user_addr, size;

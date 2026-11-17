@@ -92,3 +92,8 @@ Hypotheses ranked (per-pixel GPU cost; all unproven until the phone session):
 5. Tile size / hierarchy mask: 32x32 + 0xfe as PanVK; no change planned.
 6. Frame head/tail FLUSH_CACHE2: refuted (HF A/B).
 Session plan (one phone session, interleaved, ENVV): A default | B MALI_BO_COHERENT_LOCAL=0 | E MALI_IMAGE_TILED=1 | F MALI_ZS_CTW=0 | C MALI_WSI_HEAP=cached.
+
+## 2026-11-17 BO-class audit (COHERENT_LOCAL), CMF cube 720p, interleaved, n=1 per variant (not yet 5 pairs)
+Classes: internal arena/pool/geo/meta (G, MALI_INT_NOCOH) no gain; non-storage images (D) no gain; non-storage buffers on type 2 (H) no gain (136 vs 131 fps);
+skipping per-submit MEM_SYNC for EXEC/EVENT BOs (J, MALI_MEMSYNC_EX=0) 180 vs 141 fps; J+G (K) 186 fps; MALI_BO_COHERENT_LOCAL=0 (B) 284 fps.
+=> the per-submit MEM_SYNC loop (CPU) explains part of B; the rest sits in libkbase-internal BOs (heaps, ring) still coherent. Defaults unchanged.
