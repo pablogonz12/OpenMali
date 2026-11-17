@@ -175,5 +175,16 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
+   /* nonuniformEXT() indices: the hardware takes one resource handle per warp, so divergent handles become a waterfall loop
+    * (same set of types as PanVK; runs after the UBO/SSBO IO lowering). */
+   const enum nir_lower_non_uniform_access_type types =
+      nir_lower_non_uniform_ubo_access | nir_lower_non_uniform_ssbo_access | nir_lower_non_uniform_texture_access |
+      nir_lower_non_uniform_texture_query | nir_lower_non_uniform_image_access | nir_lower_non_uniform_image_query |
+      nir_lower_non_uniform_get_ssbo_size | nir_lower_non_uniform_texture_offset_access;
+   if (nir_has_non_uniform_access(nir, types)) {
+      NIR_PASS(_, nir, nir_opt_non_uniform_access);
+      struct nir_lower_non_uniform_access_options opts = { .types = types };
+      NIR_PASS(_, nir, nir_lower_non_uniform_access, &opts);
+   }
    return true;
 }

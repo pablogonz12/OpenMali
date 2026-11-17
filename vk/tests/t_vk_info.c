@@ -183,6 +183,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, fullDrawIndexUint32),       /* t_vk_feat idx32 */
          offsetof(VkPhysicalDeviceFeatures, samplerAnisotropy),         /* t_vk_feat aniso */
          offsetof(VkPhysicalDeviceFeatures, imageCubeArray),
+         offsetof(VkPhysicalDeviceFeatures, shaderSampledImageArrayDynamicIndexing), /* t_vk_feat didx */
          offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
       };
@@ -201,9 +202,12 @@ main(int argc, char **argv)
       const VkBool32 *b = (const VkBool32 *)((const char *)&f12 + 16);
       const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b),
                      mc = (unsigned)((const VkBool32 *)&f12.samplerMirrorClampToEdge - b),
-                     bda = (unsigned)((const VkBool32 *)&f12.bufferDeviceAddress - b); /* t_vk_feat bda */ /* t_vk_feat mirror */
+                     bda = (unsigned)((const VkBool32 *)&f12.bufferDeviceAddress - b),
+                     di0 = (unsigned)((const VkBool32 *)&f12.runtimeDescriptorArray - b), di1 = (unsigned)((const VkBool32 *)&f12.shaderSampledImageArrayNonUniformIndexing - b),
+                     di2 = (unsigned)((const VkBool32 *)&f12.descriptorBindingPartiallyBound - b), di3 = (unsigned)((const VkBool32 *)&f12.descriptorBindingSampledImageUpdateAfterBind - b),
+                     di4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUpdateUnusedWhilePending - b); /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda || i == di0 || i == di1 || i == di2 || i == di3 || i == di4, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d);

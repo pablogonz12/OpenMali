@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -26,7 +26,7 @@ static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
-static VkBool32 g_mirror, g_bda;
+static VkBool32 g_mirror, g_bda, g_didx;
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 
@@ -856,6 +856,99 @@ test_bda(void)
    return 1;
 }
 
+/* descriptor indexing (sampled images): a PARTIALLY_BOUND | UPDATE_AFTER_BIND | UPDATE_UNUSED_WHILE_PENDING array of 8 sampled
+ * images with only 0..3 (and 5) bound, indexed non-uniformly (per pixel of a 2x2 quad) through a runtime array in the shader.
+ * Slot 2 is rewritten AFTER the descriptor set was bound in the command buffer and before submit. */
+static int
+test_didx(void)
+{
+   if (!g_didx) { printf("{\"test\":\"didx\",\"skipped\":\"descriptor indexing not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   static const uint8_t col[6][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}, {0, 255, 255, 255}, {255, 0, 255, 255}};
+   struct tex x[6];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+   for (int i = 0; i < 6; i++)
+      if (!tex_create(&t, &x[i], &ici, VK_IMAGE_VIEW_TYPE_2D, 1, col[i], 4, &reg, 1, &si)) return 0;
+
+   VkDescriptorBindingFlags bf[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+                                        VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT,
+                                     VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bfi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = 2, .pBindingFlags = bf};
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 8, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi,
+                                          .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                                     .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii[5];
+   for (int i = 0; i < 4; i++) ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   ii[4] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[5].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};   /* slot 5 */
+   VkDescriptorImageInfo smpi = {x[0].smp, VK_NULL_HANDLE, 0};
+   VkWriteDescriptorSet w[3] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .dstArrayElement = 0, .descriptorCount = 4,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .dstArrayElement = 5, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &ii[4]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &smpi}};
+   UpdateDescriptorSets(dev, 3, w, 0, NULL);
+
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "quad.vert.spv", "didx.frag.spv", dsl, 16, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+   const float sc[4] = {1, 1, 0, 0};
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, sc);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   /* update after bind: slot 2 (blue) -> image 4 (cyan), while the set is bound in a recorded, not yet submitted command buffer */
+   VkDescriptorImageInfo upd = {VK_NULL_HANDLE, x[4].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   VkWriteDescriptorSet wu = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .dstArrayElement = 2, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &upd};
+   UpdateDescriptorSets(dev, 1, &wu, 0, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      static const int expect[4] = {0, 1, 4, 3};   /* index = (x&1) + 2*(y&1) */
+      int bad = 0;
+      for (int y = 8; y < 24; y++)
+         for (int xx = 8; xx < 24; xx++) {
+            int e = expect[(xx & 1) + 2 * (y & 1)];
+            if (!near(pix(&t, xx, y), col[e][0], col[e][1], col[e][2], 255, 2)) bad++;
+         }
+      if (bad) for (int k = 0; k < 4; k++) printf("{\"quad\":%d,\"rgba\":[%u,%u,%u,%u]}\n", k, pix(&t, 8 + (k & 1), 8 + (k >> 1))[0], pix(&t, 8 + (k & 1), 8 + (k >> 1))[1], pix(&t, 8 + (k & 1), 8 + (k >> 1))[2], pix(&t, 8 + (k & 1), 8 + (k >> 1))[3]);
+      CHECK(bad == 0, "%d of 256 probed pixels have the wrong colour (first: %u,%u,%u,%u)", bad, pix(&t, 8, 8)[0], pix(&t, 8, 8)[1], pix(&t, 8, 8)[2], pix(&t, 8, 8)[3]);
+      const uint8_t *q = pix(&t, 200, 201);
+      CHECK(near(q, col[expect[(200 & 1) + 2 * (201 & 1)]][0], col[expect[(200 & 1) + 2 * (201 & 1)]][1], col[expect[(200 & 1) + 2 * (201 & 1)]][2], 255, 2), "far pixel wrong");
+      printf("{\"test\":\"didx\",\"bad\":%d,\"ok\":true}\n", bad);
+   } else {
+      printf("{\"test\":\"didx\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 6; i++) tex_destroy(&x[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -898,10 +991,14 @@ main(int argc, char **argv)
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
+   g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
+            f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    /* enable exactly what is advertised (everything advertised is under test somewhere) */
-   VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress,
+   VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress, .runtimeDescriptorArray = f12.runtimeDescriptorArray,
+      .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
+      .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
                                            .timelineSemaphore = f12.timelineSemaphore};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e12, .features = g_feat};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
@@ -921,6 +1018,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("bda")) ok &= test_bda();
+   if (ok && CASE_ON("didx")) ok &= test_didx();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

@@ -106,6 +106,12 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .optimalBufferCopyRowPitchAlignment = 1,
       .nonCoherentAtomSize = 64,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
+      /* descriptor indexing: only sampled images and samplers have update-after-bind (t_vk_feat didx); everything else reports 0 */
+      .maxUpdateAfterBindDescriptorsInAllPools = 1024, .shaderSampledImageArrayNonUniformIndexingNative = false,
+      .quadDivergentImplicitLod = false,
+      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
+      .maxPerStageUpdateAfterBindResources = 32, .maxDescriptorSetUpdateAfterBindSamplers = 96,
+      .maxDescriptorSetUpdateAfterBindSampledImages = 96,
    };
 
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
@@ -173,6 +179,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .maintenance4 = true,
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
+      .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */
+      .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
+      .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .samplerMirrorClampToEdge = true,
