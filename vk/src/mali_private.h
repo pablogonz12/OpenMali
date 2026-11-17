@@ -43,6 +43,7 @@ struct mali_queue {
 
 struct mali_device {
    struct vk_device vk;
+   struct vk_device_dispatch_table cmd_dispatch;   /* primary command buffers: the driver's own Cmd* (secondaries record into the runtime cmd queue) */
 
    struct mali_kdev *kdev;
    struct mali_queue queue;
@@ -63,7 +64,7 @@ VK_DEFINE_HANDLE_CASTS(mali_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
 /* Instance-level API version. The instance level is implemented by the common runtime, so it can
  * be ahead of the device apiVersion, which starts at 1.0 and is raised per milestone. */
 #define MALI_INSTANCE_API_VERSION VK_MAKE_API_VERSION(0, 1, 3, VK_HEADER_VERSION)
-#define MALI_DEVICE_API_VERSION   VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
+#define MALI_DEVICE_API_VERSION   VK_MAKE_API_VERSION(0, 1, 3, VK_HEADER_VERSION)
 
 VkResult mali_enumerate_physical_devices(struct vk_instance *vk_instance);
 /* M5/M7 seams (mali_resources.c): installs the descriptor/image resolvers and the BO-backed GPU pools. Idempotent. */

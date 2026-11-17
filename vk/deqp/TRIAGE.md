@@ -41,3 +41,32 @@ NotSupported matches PanVK (copy_and_blit.core: 590 vs 591 of 695/887 seen), i.e
 
 ## Not done
 Remaining 599 sample cases (resume: `qdeqp poco lists/daily-sample.txt --icd ours --chunk 300 --limit N --case-timeout 45`); CMF; stress list.
+
+## Crash triage (Poco, ours ICD) — daily-sample 1381 cases
+
+Root cause of 105 copy_and_blit crashes: stale pushed a64-glibc lib (Nov 16) predating mali_meta_vk.c -> CmdCopyBufferToImage2 NULL. Rebuilt; remaining failures were a too-limited blit.
+Fixes (vk repo): 2b544c1 generic blit shader (any plain colour fmt, 128 B push), d20eb5c R11G11B10/E5B9G9R9 src + 3D 1:1, 598c87b 3D nearest z scale, 5eeac40 secondary cmd buffers (cmd queue + enqueue dispatch), 4b348b2 lower load_base_instance (vertex_input crashes), + shader_out initializer lowering.
+Before: 38 pass / 3 fail / 108 crash / 632 NS (782 run). After: 194 pass / 119 fail / 1057 NS / 10 crash (before last 3 fixes: ~2 crashes remain).
+copy_and_blit.core: 887 total, 118 pass, 37 fail, 0 crash. image_clearing.core: 113 total, 28 pass, 13 fail.
+Remaining: BC/ETC/EAC blit sources (~25), E5B9G9R9 dst, 3d r4g4b4a4 linear / r8_srgb nearest, image_clearing 13 fails, pipeline.monolithic depth/blend/stencil/sampler fails, vertex_input divisor (FEATURE_NOT_PRESENT), SEGV timestamp.draw_indirect_stage_out_of_render_pass (uninvestigated).
+Notes: adb needs PATH=$PATH:~/Android/Sdk/platform-tools; glibc cross build needs symlink ~/Documents/scripts/droidtest -> ~/Projects/mali-gaming/droidtest; qsafe fixed.
+
+## Round 2 (Poco, ours ICD, daily-sample 1381)
+True numbers after round 1 fixes: 195 pass / 126 fail / 1057 NS / 1 crash / 2 other. After round 2: **221 pass / 101 fail / 1057 NS / 0 crash / 2 other**.
+- Test regressions explained: t_cmd (24 fails) came from 794a571 (driver set grew to MALI_DUMMY_SAMPLER_IDX+1 entries, so SRT size/set0 differ from the libkbase reference): cmp_cmd.py now masks the size and compares the common prefix. t_compile v13 FS golden was stale (fau reserved 16, push base 24 since the blend-words change): gen-golden.sh fixed and golden regenerated. Commit d7bab6e. check.sh, t_meta, t_bc, t_cmd, t_compile all pass.
+- Cluster A, non-triangle topologies (7efec14): point/line list+strip, triangle strip/fan; draw mode in the tiler flags, FP16 point size + extended FIFO for points that write PointSize, VS compiled with PSIZ stripped for non-point topologies, primitive size/line width 1.0. depth.*line_list/point_list cases now pass.
+- Cluster B, BC blit sources (9892715): blit from a BC image reads the decoded shadow; 19/19 BC-source blit_image samples pass. ETC2/EAC sources (7 in sample) still fail (no decode emulation).
+- Crash timestamp.draw_indirect_stage_out_of_render_pass (9337154): vkCmdDrawIndirect* had no entrypoint, NULL dispatch. Now fails the command buffer cleanly (FEATURE_NOT_PRESENT); indirect draws are not implemented.
+- Remaining Fails (101), by cause: render targets other than RGBA8_UNORM ("colour attachment view": ~30: packed/16 bit/int/float/sRGB formats, image_clearing, blend.format, renderpass.suballocation); D24S8/D32S8/S8 attachments and stencil; colour loadOp LOAD (~8); CmdClearAttachments after a draw (~27, needs a quad draw); instance-rate vertex attributes + vertex input ~7; dynamic descriptor offsets (2); ETC2/EAC sources (7); E5B9G9R9 dst; sampler border_swizzle (6); pipeline state mali_pipeline.c:79 (7: VS-only / module-less).
+
+## Round 3 (Poco, daily-sample 1381)
+Before 221 pass / 101 fail / 0 crash -> after 225 / 97 / 0 crash.
+- f526458: blendable colour render targets beyond RGBA8 (R8, RG8, BGRA8, sRGB, 565/4444/5551, 10-10-10-2, 16F, 11F) via rt_tab in mali_render.c. Few cases flip because most still hit other limits.
+- Still out of scope: int, snorm, unorm16, 32-bit and other RAW formats (need shader-side blend lowering).
+- Blend state is not mapped from the pipeline (always opaque replace): blend.format.* cases fail with "Image mismatch".
+- Indirect draws (cc68908): DrawIndirect/DrawIndexedIndirect (+Count) are expanded at submit from the CPU mapping. multiDrawIndirect and VK_KHR_draw_indirect_count are not advertised, so the dEQP indirect suite is mostly NotSupported. The draw_indirect timestamp case went Crash -> Pass.
+- Still failing: colour loadOp LOAD, CmdClearAttachments after a draw, partial clears, D24S8/stencil, 4-sample images, b4g4r4a4 clear mismatch (cause unknown), suballocation a2b10g10r10 clear/draw.
+
+## R4-M1 (Poco, device now reports Vulkan 1.3, daily-sample 1381, full run in one pass)
+Round 3 baseline 225 pass / 97 fail / 1057 NS / 0 crash -> **270 pass / 134 fail / 975 NS / 0 crash / 2 other**. Per-case diff vs the saved round 3 TSV: **0 regressions** (no Pass lost), 45 NotSupported -> Pass, 37 NotSupported -> Fail.
+The 82 flipped cases were gated off by the 1.0 device (sync2, dynamic rendering, maintenance4, hostQueryReset, privateData, BC-copy variants) and are now exercised; the 37 new fails are real gaps that were hidden (e.g. `api.object_management.private_data.buffer_view_storage_*`: privateData itself is probed by t_vk_info, the failure is the storage texel buffer view; linear 1D/3D image_format_properties; d24_unorm_s8 separate-layouts depth; copy_and_blit 2d_to_3d with BC/ETC2/EAC pairs). Tracking them as the R4-M1 follow-up list. `ours-daily-sample-poco.{tsv,csv}` replaced with this run.

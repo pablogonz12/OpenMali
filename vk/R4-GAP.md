@@ -115,3 +115,16 @@ Features advertised (optimal tiling only): SAMPLED, FILTER_LINEAR, BLIT_SRC, TRA
   from Mesa; PASS = max diff <= 1 (8-bit) / 2 half ulps, sRGB <= 2. Exit 77 = BC not advertised. Passes on Intel Xe2 (native sanity check of the golden: 0 failed). Pending: run on Mali after wiring.
 
 (2026-11-17) CMF: all 12 BC formats PASS on hardware (t_bc_hw); see R4-PLAN.md R4-M7 status. Open: texelFetch with dynamic lod returns 0 in compute on CMF.
+
+## R4-M0: PanVK oracle vs our driver (Poco, Mali-G925, vulkaninfo on the guest)
+Oracle capture: `R4-ORACLE/vulkaninfo-panvk-poco.txt` (PanVK-kbase, Mesa 26.3.0-devel, apiVersion 1.4.363, 187 device extensions). Ours: apiVersion 1.0.363 (MALI_DEVICE_API_VERSION), 12 device extensions (swapchain, mutable_format, timeline_semaphore, external memory/fence/semaphore fd, dma_buf, drm_format_modifier, descriptor_update_template).
+| item | ours | PanVK |
+|---|---|---|
+| maxImageDimension2D / 3D / ArrayLayers | 4096 / 256 / 256 | 65536 / 65536 / 1 (as reported by PanVK) |
+| maxColorAttachments, maxBoundDescriptorSets | 4, 4 | 8, 7 |
+| maxPushConstantsSize, maxComputeSharedMemory | 128, 16 KiB | 256, 32 KiB |
+| maxDrawIndirectCount, maxMemoryAllocationCount | 1, 4096 | 4294967295 |
+| timestampPeriod | 1 | 76.9231 ns |
+| core features true | textureCompressionBC only | almost all: robustBufferAccess, fullDrawIndexUint32, imageCubeArray, independentBlend, geometry/tessellation, sampleRateShading, dualSrcBlend, logicOp, multiDrawIndirect, drawIndirectFirstInstance, depthClamp, depthBiasClamp, fillModeNonSolid, wideLines, largePoints, ETC2, occlusionQueryPrecise, pipelineStatisticsQuery, shaderInt64/Int16, samplerAnisotropy (not shaderFloat64) |
+| format entries in the full dump | 12 | 38 |
+Gaps that matter for dEQP, in order: (1) API version 1.0 vs 1.4 (no Vulkan 1.1-1.4 core, no dynamic rendering exposed, no sync2/maintenance*): CTS runs only the 1.0 subset; (2) feature bits all false: tests gate on them, so raising a bit means implementing it; (3) timestampPeriod 1 is not the real GPU timer period; (4) the format list is a small subset (render targets only RGBA8 until R4-M? work); (5) 1D/array/image limits are conservative. Our limits are deliberate (what is implemented), not a bug list.

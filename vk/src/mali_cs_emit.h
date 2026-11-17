@@ -65,6 +65,8 @@ struct mali_gfx_state {
    struct mali_attr attr[MALI_MAX_ATTR];
    bool depth_test, depth_write;
    unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
+   unsigned prim;                         /* Mali draw mode: 1 points, 2 lines, 4 line strip, 8 triangles (default 0 = 8), 10 strip, 12 fan */
+   bool prim_restart;
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
 };
 
@@ -87,6 +89,9 @@ struct mali_draw {
    uint32_t first_index;
    uint32_t count, instance_count, first_vertex, first_instance;
    uint64_t occ_va;                       /* M13: occlusion counter address (8-aligned, 0 = none); sets OQ register + DCD flags_0 mode */
+   const uint8_t *ind;                    /* indirect draw: CPU view of the VkDraw*IndirectCommand array (expanded at submit, mali_cmd.c) */
+   const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
+   uint32_t ind_n, ind_stride;
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
@@ -104,7 +109,18 @@ struct mali_dispatch {
 
 struct mali_op;
 
+/* A blendable non-RGBA8 colour render target (mali_render.c table). NULL in mali_att = R8G8B8A8_UNORM. */
+struct mali_rtfmt {
+   int vk_format;
+   uint8_t internal, wb, ncomp, alloc, is_float;   /* FBD Internal Format, writeback format, components, colour allocation (>>10), 16F/11F clear */
+   uint16_t swizzle;                               /* RT swizzle (12 bits) */
+   uint32_t blend_pixfmt;                          /* blend conversion format word */
+};
+const struct mali_rtfmt *mali_rtfmt_lookup(int vk_format, bool *supported);
+void mali_rtfmt_clear_words(const struct mali_rtfmt *rt, const float c[4], uint32_t w[4]);
+
 struct mali_att {
+   const struct mali_rtfmt *rt;           /* colour only */
    uint64_t va;                           /* 64-byte aligned */
    uint32_t row_stride;                   /* bytes, multiple of 16 */
    int zs_format;                         /* depth only: 1 D32F, 2 D24X8, 3 D16 (enum kb_zs_format); colour is RGBA8 */

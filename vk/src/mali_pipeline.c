@@ -98,6 +98,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
    const struct vk_shader_module *m = find_module(vss);
    o.stage = MALI_STAGE_VERTEX;
+   o.strip_psiz = ci->pInputAssemblyState && ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = vss->pName;
@@ -108,6 +109,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    m = find_module(fss);
    o.stage = MALI_STAGE_FRAGMENT;
+   o.strip_psiz = 0;
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = fss->pName;
@@ -141,9 +143,19 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       g->depth_write = st.ds->depth.write_enable;
       g->depth_func = st.ds->depth.compare_op;
    }
-   if (ci->pInputAssemblyState && ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
-      res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: only triangle lists supported\n");
-      goto fail;
+   if (ci->pInputAssemblyState) {
+      switch (ci->pInputAssemblyState->topology) {
+      case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: g->prim = 1; break;
+      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: g->prim = 2; break;
+      case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: g->prim = 4; break;
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: g->prim = 8; break;
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: g->prim = 10; break;
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN: g->prim = 12; break;
+      default:
+         res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported topology %d\n", ci->pInputAssemblyState->topology);
+         goto fail;
+      }
+      g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
    }
    if (st.vi) {
       uint32_t v = st.vi->attributes_valid;
@@ -313,12 +325,19 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    if (!pl || !img->va || level >= img->lay.d.levels || img->lay.d.tiled)
       return -EINVAL;
    int zs = 0;
+   out->rt = NULL;
    switch (img->vk.format) {
    case VK_FORMAT_R8G8B8A8_UNORM: break;
    case VK_FORMAT_D32_SFLOAT: zs = 1; break;
    case VK_FORMAT_X8_D24_UNORM_PACK32: zs = 2; break;
    case VK_FORMAT_D16_UNORM: zs = 3; break;
-   default: return -EINVAL;
+   default: {
+      bool ok;
+      out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
+      if (!ok)
+         return -EINVAL;
+      break;
+   }
    }
    if (!zs && aspect != VK_IMAGE_ASPECT_COLOR_BIT)
       return -EINVAL;

@@ -196,7 +196,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
       kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
    }
-   kb_draw_blend_opaque_rgba8(bl);
+   if (f->colour.rt)
+      kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
+   else
+      kb_draw_blend_opaque_rgba8(bl);
 
    /* depth/stencil */
    if (g->depth_test && f->has_zs) {
@@ -249,6 +252,30 @@ idx_type_bits(const struct mali_draw *d)
    return (d->index_size == 1 ? 1u : d->index_size == 2 ? 2u : 3u) << 8;
 }
 
+/* Tiler flags: draw mode (bits 3:0), point size array FP16 (v11, bits 12:11), extended FIFO (bits 23:22 = 2) when the VS writes the
+ * point size of a point list, primitive restart (19). `base` = the triangle flags. */
+static uint32_t
+prim_flag_bits(const struct mali_gfx_state *g, uint32_t base, bool v13)
+{
+   unsigned m = g->prim ? g->prim : 8;
+   uint32_t f = (base & ~0xfu) | m;
+   if (m == 1 && g->vs->vs_writes_point_size) {
+      if (!v13)
+         f |= 2u << 11;
+      f = (f & ~(3u << 22)) | (2u << 22);
+   }
+   if (g->prim_restart && (m == 4 || m == 10 || m == 12))
+      f |= 1u << 19;
+   return f;
+}
+
+static uint32_t
+prim_size_bits(const struct mali_gfx_state *g)
+{
+   unsigned m = g->prim ? g->prim : 8;
+   return m == 1 || m == 2 || m == 4 ? 0x3f800000u : 0;   /* 1.0f: default point size / line width */
+}
+
 /* The per-draw register file (everything but the FAU pointers, which come after the heap prologue like in the references). */
 static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
@@ -292,10 +319,10 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
       M48(c, KB_IDVS_BLEND_DESC, o->bl | 1);
       M48(c, KB_IDVS_ZSD, o->zsd);
-      M32(c, KB_IDVS_TILER_FLAGS, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable) | idx_type_bits(d));
+      M32(c, KB_IDVS_TILER_FLAGS, prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) | idx_type_bits(d));
       M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | ((d->occ_mode & 3u) << 14));
       M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, 1));
-      M32(c, KB_IDVS_PRIMITIVE_SIZE, 0);
+      M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g));
       M32(c, KB_IDVS_TILER_FLAGS2, 0);
    } else {
       uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
@@ -323,11 +350,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
       M48(c, KB13_IDVS_ZSD, o->zsd);
       M48(c, KB13_IDVS_BLEND_DESC, o->bl | 1);
-      M32(c, KB13_IDVS_TILER_FLAGS, kb_v13_prim_flags_triangles() | env->tf_or | idx_type_bits(d));
+      M32(c, KB13_IDVS_TILER_FLAGS, prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) | env->tf_or | idx_type_bits(d));
       M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | ((d->occ_mode & 3u) << 14));
       M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, 1));
       M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, 1, 1, 1, 0, 0));
-      M32(c, KB13_IDVS_LINE_WIDTH, 0);
+      M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g));
       M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
    }

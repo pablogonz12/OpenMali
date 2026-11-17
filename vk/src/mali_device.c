@@ -7,6 +7,8 @@
 #include "mali_cmd.h"
 #include "mali_queue.h"
 #include "vk_alloc.h"
+#include "vk_cmd_enqueue_entrypoints.h"
+#include "vk_common_entrypoints.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
@@ -24,10 +26,20 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
    /* Per-arch entry points (files compiled once per PAN_ARCH, from M6 on) win over the
     * arch-independent ones; the runtime adds its vk_common_* defaults last. */
    struct vk_device_dispatch_table dispatch_table;
+   /* Secondary command buffers: every Cmd* of the main table becomes vk_cmd_enqueue_unless_primary_Cmd* (records into the runtime queue for
+    * secondaries, calls the primary dispatch table below otherwise); vkCmdExecuteCommands replays the queue into the primary. */
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table, &vk_cmd_enqueue_unless_primary_device_entrypoints, true);
+   vk_device_dispatch_table_from_entrypoints(
+      &dev->cmd_dispatch,
+      pdev->gpu.arch_major >= 12 ? &mali_v13_device_entrypoints : &mali_v11_device_entrypoints,
+      true);
+   vk_device_dispatch_table_from_entrypoints(&dev->cmd_dispatch, &mali_device_entrypoints, false);
+   vk_device_dispatch_table_from_entrypoints(&dev->cmd_dispatch, &wsi_device_entrypoints, false);
+   vk_device_dispatch_table_from_entrypoints(&dev->cmd_dispatch, &vk_common_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(
       &dispatch_table,
       pdev->gpu.arch_major >= 12 ? &mali_v13_device_entrypoints : &mali_v11_device_entrypoints,
-      true);
+      false);
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &mali_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);
 
@@ -49,6 +61,7 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
       return result;
    }
 
+   dev->vk.command_dispatch_table = &dev->cmd_dispatch;   /* after vk_device_init (it zeroes the struct) */
    dev->vk.command_buffer_ops = &mali_cmd_ops;
    result = mali_hw_init(dev);
    if (result != VK_SUCCESS) {
@@ -108,4 +121,26 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    mali_queue_device_finish(dev);
    vk_device_finish(&dev->vk);
    vk_free(&alloc, dev);
+}
+
+/* R4-M1: core 1.2/1.3 entrypoints the runtime does not provide. The features behind them are not
+ * advertised (bufferDeviceAddressCaptureReplay, sparse), so they report "nothing". */
+VKAPI_ATTR uint64_t VKAPI_CALL
+mali_GetBufferOpaqueCaptureAddress(VkDevice device, const VkBufferDeviceAddressInfo *pInfo)
+{
+   return 0;
+}
+
+VKAPI_ATTR uint64_t VKAPI_CALL
+mali_GetDeviceMemoryOpaqueCaptureAddress(VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
+{
+   return 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetDeviceImageSparseMemoryRequirements(VkDevice device, const VkDeviceImageMemoryRequirements *pInfo,
+                                            uint32_t *pSparseMemoryRequirementCount,
+                                            VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   *pSparseMemoryRequirementCount = 0;
 }
