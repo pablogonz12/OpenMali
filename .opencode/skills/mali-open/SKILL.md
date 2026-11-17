@@ -15,9 +15,9 @@ Read README.md, ROADMAP.md, vk/R4-GAP.md for status. Main checkout: `~/Documents
 ## Devices (aliases only; serials live in ~/.config/mali-farm/devices.toml, never in the repo)
 | alias | GPU | class | state |
 |---|---|---|---|
-| cmf | Mali-G615 | v11 | always attached |
-| poco-x8 | Mali-G925 | v13 | attached only some of the time; its farm jobs stay pending |
-| poco-x4 | Mali-G610 | v10 | not supported yet |
+| cmf | Mali-G615 | v11 | always attached; USB, wireless adb as fallback |
+| poco-x8 | Mali-G925 | v13 | owner's daily phone, attached only some of the time; USB ONLY, never wireless; its farm jobs stay pending |
+| poco-x4 | Mali-G610 | v10 | always attached, wireless adb only; driver bring-up in progress |
 
 ## Rules for every worker
 1. No build lock: `vk/build.sh` writes only to your worktree's `vk/out`.
@@ -28,7 +28,9 @@ Read README.md, ROADMAP.md, vk/R4-GAP.md for status. Main checkout: `~/Documents
 5. Loops run in chunks of at most 4 min, results appended to a file, resume from it. Two chunk timeouts in a row: stop and report.
 6. Offline first; hardware only for the final check. Write status docs before the last hardware step.
 7. 0 fps in the Steam menu is not a freeze: judge by load, memory, responsiveness.
-8. Final report at most 150 words. Record a lesson with `tools/lesson` when you learn something non-obvious.
+8. Battery below 20 %: stop testing that phone until it is back at 50 %. Thermal limit (battery 43 C or thermal status SEVERE): stop and
+   let it cool to 38 C. The farm and qsafe enforce both; never bypass them.
+9. Final report at most 150 words. Record a lesson with `tools/lesson` when you learn something non-obvious.
 
 ## Commands (from vk/)
 - `./build.sh` -> `out/native/{libvulkan_mali.so,mali_icd.json,t_*}`; `./check.sh [--no-build] [-v]` offline gate, prints OK or FAILED.
