@@ -241,7 +241,7 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    if (getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_vk: compute local %ux%ux%u tls %u wls %u fau %u bin %u\n", p->cs.local_size[0], p->cs.local_size[1],
               p->cs.local_size[2], p->cs.tls_size, p->cs.wls_size, p->cs.fau_count, (unsigned)p->cs.bin_size);
-   if (p->cs.local_size[0] * p->cs.local_size[1] * p->cs.local_size[2] > 1024 || p->cs.tls_size) {
+   if (p->cs.local_size[0] * p->cs.local_size[1] * p->cs.local_size[2] > 1024) {   /* tls_size > 0 (register spill, e.g. int64 divide) is supported by the compute emit (mali_cs_emit.c) */
       res = VK_ERROR_FEATURE_NOT_PRESENT;
       goto fail;
    }

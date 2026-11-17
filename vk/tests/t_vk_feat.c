@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1378,6 +1378,64 @@ test_int8(void)
    return 1;
 }
 
+static int64_t
+smod64(int64_t n, int64_t d)
+{
+   int64_t r = n % d;
+   return (r != 0 && ((r ^ d) < 0)) ? r + d : r;
+}
+
+static int
+test_int64(void)
+{
+   if (!g_feat.shaderInt64) { printf("{\"test\":\"int64\",\"skipped\":\"shaderInt64 not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 128 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 64 * 8 * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   uint64_t *a = (uint64_t *)bf[0].p;
+   uint64_t seed = 0x9E3779B97F4A7C15ull;
+   for (int i = 0; i < 128; i++) {
+      seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+      a[i] = seed;
+      if (i % 5 == 0) a[i] >>= (i % 40);        /* some small values too */
+      if (i % 7 == 0) a[i] = ~a[i];
+   }
+   memset(bf[1].p, 0xEE, 64 * 8 * 8);
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "int64.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (uint32_t i = 0; i < 64; i++) {
+         uint64_t x = a[i], y = a[64 + i];
+         int64_t sx = (int64_t)x;
+         uint64_t e[8] = {x + y, x * y, (x << (i & 63)) ^ (y >> ((i * 7) & 63)), (x ^ y) - 1, (uint64_t)(sx >> (i & 31)), x < y ? 1 : 2,
+                          (uint64_t)(sx < (int64_t)y) + (x & y) + (x | 3), x * 3 + y * 5};
+         for (int k = 0; k < 8; k++) {
+            uint64_t g = ((uint64_t *)bf[1].p)[i * 8 + k];
+            if (g != e[k] && !bad++) printf("{\"info\":\"int64 i=%u k=%d x=%llx y=%llx got %llx want %llx\"}\n", i, k, (unsigned long long)x, (unsigned long long)y, (unsigned long long)g, (unsigned long long)e[k]);
+         }
+      }
+      int bad_k[4] = {0};
+      if (!run_comp(&t, "int64div.comp.spv", 2, ty, bf, 1)) return 0;
+      for (uint32_t i = 0; i < 64; i++) {
+         uint64_t x = a[i], y = a[64 + i] | 1;
+         int64_t sx = (int64_t)x, sy = (int64_t)y;
+         uint64_t e[4] = {x / y, x % y, (uint64_t)(sy == -1 ? -sx : sx / sy), (uint64_t)(sy == -1 ? 0 : smod64(sx, sy))};   /* GLSL % on signed = OpSMod (sign of the divisor) */
+         for (int k = 0; k < 4; k++) {
+            uint64_t g = ((uint64_t *)bf[1].p)[i * 4 + k];
+            if (g != e[k]) bad_k[k]++; if (g != e[k] && !bad++) printf("{\"info\":\"int64div i=%u k=%d x=%llx y=%llx got %llx want %llx\"}\n", i, k, (unsigned long long)x, (unsigned long long)y, (unsigned long long)g, (unsigned long long)e[k]);
+         }
+      }
+      printf("{\"info\":\"int64div bad per op %d %d %d %d\"}\n", bad_k[0], bad_k[1], bad_k[2], bad_k[3]);
+      CHECK(bad == 0, "%d wrong int64 results", bad);
+      printf("{\"test\":\"int64\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
+   } else printf("{\"test\":\"int64\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1477,6 +1535,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("int16")) ok &= test_int16();
+   if (ok && CASE_ON("int64")) ok &= test_int64();
    if (ok && CASE_ON("int8")) ok &= test_int8();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();

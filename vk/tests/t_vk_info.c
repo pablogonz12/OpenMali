@@ -179,6 +179,7 @@ main(int argc, char **argv)
       CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
+         offsetof(VkPhysicalDeviceFeatures, shaderInt64),              /* t_vk_feat int64 */
          offsetof(VkPhysicalDeviceFeatures, shaderInt16),              /* t_vk_feat int16 */
          offsetof(VkPhysicalDeviceFeatures, depthBiasClamp),   /* t_vk_draw fx_bias_*_clamp */
          offsetof(VkPhysicalDeviceFeatures, occlusionQueryPrecise),    /* t_vk_draw occlusion */

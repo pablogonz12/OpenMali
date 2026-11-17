@@ -1,0 +1,15 @@
+#version 450
+#extension GL_ARB_gpu_shader_int64 : require
+// R4-B2 shaderInt64, divide/modulo: expands to a big integer routine that needs thread-local storage (register spill).
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer A { uint64_t a[]; };
+layout(set = 0, binding = 1, std430) buffer O { uint64_t o[]; };
+void main() {
+   uint i = gl_LocalInvocationIndex;
+   uint64_t x = a[i], y = a[i + 64u];
+   int64_t sx = int64_t(x), sy = int64_t(y | 1ul);
+   o[i * 4u + 0u] = x / (y | 1ul);
+   o[i * 4u + 1u] = x % (y | 1ul);
+   o[i * 4u + 2u] = uint64_t(sx / sy);
+   o[i * 4u + 3u] = uint64_t(sx % sy);
+}
