@@ -19,18 +19,27 @@ The probe was run with the secure dma-heaps (`*prot*`, `*svp*`, `*wfd*`, `*regio
 - Texture features word0 0xc1fe039e (same mask family as CMF/X8).
 - CSF firmware file `/vendor/firmware/mali_csffw.bin` exists; the version string is not readable without root (sysfs `core_mask`, `gpuinfo` are permission-denied for shell).
 
-## uAPI differences found (all handled in libkbase, caps row 1.18)
-- **No MEM_ALLOC_EX (nr 59)**: ENOTTY. The legacy MEM_ALLOC (nr 5) works; kernel adds SAME_VA (0x2000) and honours COHERENT_LOCAL, drops COHERENT_SYSTEM.
-- **QUEUE_GROUP_CREATE is nr 42, 32 bytes** (upstream CREATE_1_6), nr 58 gives ENOTTY. Found with an ioctl size scan.
-- DMA_BUF export/import sync_file ioctls: ENOTTY. KCPU fence signal -> sync_file works. dma-buf import (UMM) works for `system`, `system-uncached`, `mtk_mm-uncached`.
+## Version differences (kbase r32p1 / uAPI 1.18) - recorded in the libkbase caps table (`{1,18}` row in `libkbase/src/ctx.c`) or keyed on arch 10
+- **No MEM_ALLOC_EX (nr 59)**: ENOTTY. Legacy MEM_ALLOC (nr 5) works; `caps.mem_alloc_ex = false`. Kernel adds SAME_VA (0x2000), honours COHERENT_LOCAL, drops COHERENT_SYSTEM.
+- **QUEUE_GROUP_CREATE is nr 42, 32 bytes** (upstream CREATE_1_6): `caps.group_create_1_6 = true`. nr 58 gives ENOTTY (found with an ioctl size scan).
+- DMA_BUF export/import sync_file ioctls: ENOTTY (kernel 5.10), so `clear_poll` cannot pass here. KCPU fence signal -> sync_file works. dma-buf import (UMM) works for `system`, `system-uncached`, `mtk_mm-uncached`.
+- Tiler heap init, CS queue register/bind/kick, KCPU fence, CQS wait all work with the 1.21 layouts (no ENOTTY, hardware results correct).
+- **Arch 10 (not uAPI)**: no SET_STATE_IMM32; scoreboards are selected with SET_SB_ENTRY. `kb_v10` is now set by `kb_open` from the GPU arch, so every test and the driver emit it. ZSD word 4 bit 21 cleared.
 - No /dev/sw_sync, /dev/udmabuf, /dev/ion. `/dev/dri/card0` exists, no renderD128.
 
-## Ladder (libkbase tests, hand-built, v10 packers)
+## Root cause of the first fault
+t_clear/t_triangle faulted with `CS_INVALID_INSTRUCTION` (0x49) at CS offset 0x40 (sideband = ring VA + 0x40): instruction 8 was `SET_STATE_IMM32` (op 28), which does not exist on v10. The vk driver set `kb_v10`, the hand-built tests did not. The fatal event was consumed by the fence wait, hence the empty drain; `kb_last_fatal()` now keeps it.
+
+## Ladder (Poco X4 GT, bionic builds, `/data/local/tmp`)
 | rung | result |
 |---|---|
-| t_submit (open, props, BO alloc, queue/group create, NOP/MOVE/STORE/SYNC, 100 submits, fault decode, teardown) | **pass**, after the two uAPI fixes above. Kick latency p50 146 us. |
-| t_clear (256x256 RGBA clear, FBD + RUN_FRAGMENT) | **fails**: fence returns EIO, queue faults at CS offset 0x40 of 0x80; no notification was read within 300 ms |
-| t_triangle | fails: queue faults at CS offset 0x128 of 0x240 (same class) |
-| t_uniform / t_depth / t_texture | not run (depend on the fragment path) |
-
-Next: capture the fault (non-fatal CS_FAULT/exception code via the event queue with a longer wait or `--event-thread`), then diff the v10 FBD/SB handling against the v11 hand-built one (V10-BRINGUP.md items 1-2).
+| t_submit | pass |
+| t_clear (red/grey/asym, 256^2 and 1280x720, 200-clear loop) | pass; only `clear_poll` fails (no dma-buf sync_file ioctl, kernel) |
+| t_triangle (flat, varying; hmask 0xfe; 8192/8192 px) | pass |
+| t_uniform (scale/offset/colour, two draws) | pass |
+| t_depth (D32, D24, clear value) | pass |
+| t_texture (checker) | pass |
+| ICD `t_vk_draw --loop 20`, `t_vk_compute --loop 5`, `t_vk_meta` (`--direct`, bionic ICD) | pass, device "Mali-G610 MC6 (mali-own)" |
+| `t_vk_info`, `t_dxvk_caps` | pass (6/47 DXVK features, 11/13 extensions missing, same harness output as other phones) |
+| dEQP daily sample | not run: qdeqp/valrun need the Steam/Linux guest (DroidDeck); not installed on this phone |
+| app-sandbox access to /dev/mali0 | not tested: no guest app installed. Needs DroidDeck (or any app that opens /dev/mali0) installed over adb; device node is 0666 with label gpu_device, so untrusted_app access is expected to work as on the other phones |

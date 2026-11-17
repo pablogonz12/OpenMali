@@ -63,9 +63,9 @@ int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct
 		r = kb_ioctl(ctx, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_112, &gc112);
 		if (r == 0) { gc.out.group_handle = gc112.out.group_handle; gc.out.group_uid = gc112.out.group_uid; }
 	}
-	if (r == -ENOTTY || !ctx->caps.group_create_112b)
+	if (!ctx->caps.group_create_1_6 && (r == -ENOTTY || !ctx->caps.group_create_112b))
 		r = kb_ioctl(ctx, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc);
-	if (r == -ENOTTY) {
+	if (ctx->caps.group_create_1_6) {
 		union kbase_ioctl_cs_queue_group_create_1_6 g16;
 		memset(&g16, 0, sizeof g16);
 		g16.in.tiler_mask = gc.in.tiler_mask; g16.in.fragment_mask = gc.in.fragment_mask; g16.in.compute_mask = gc.in.compute_mask;

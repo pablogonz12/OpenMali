@@ -29,3 +29,6 @@ Status: compiles (native, a64-glibc, a64-bionic objects, -Werror) and passes eve
 1. MSAA `Multiple` value (above). 2. Whether the MediaTek kbase accepts our CSF queue setup (v10 firmware iterators: 8 SBs).
 3. COHERENT_LOCAL default. 4. Settled by the probe (vk/DEVICE-poco-x4.md): gpu_id 0xA8670000, shader_present 0x130013 (MC6, non-contiguous, core_id_range 21), uAPI 1.18 (r32p1).
 5. `libkbase/tests/*` hand-built references are v11/v13 only; no v10 reference capture exists. 6. G710/G510 model.
+
+## Hardware status (see DEVICE-poco-x4.md)
+Ladder through t_vk_draw/compute/meta passes on the Poco X4 GT; items 1-4 above are settled by hardware (MSAA `Multiple` and COHERENT_LOCAL are still only exercised by the single-sample tests).
