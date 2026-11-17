@@ -97,3 +97,23 @@ Session plan (one phone session, interleaved, ENVV): A default | B MALI_BO_COHER
 Classes: internal arena/pool/geo/meta (G, MALI_INT_NOCOH) no gain; non-storage images (D) no gain; non-storage buffers on type 2 (H) no gain (136 vs 131 fps);
 skipping per-submit MEM_SYNC for EXEC/EVENT BOs (J, MALI_MEMSYNC_EX=0) 180 vs 141 fps; J+G (K) 186 fps; MALI_BO_COHERENT_LOCAL=0 (B) 284 fps.
 => the per-submit MEM_SYNC loop (CPU) explains part of B; the rest sits in libkbase-internal BOs (heaps, ring) still coherent. Defaults unchanged.
+
+## 2026-11-17/18 culprit isolated: per-submit MEM_SYNC of internal BOs (CPU), not GPU time
+Bisect from the fast side on CMF (mdbench cube 720p mailbox, RUNS=3 in one session, medians; ICD 83553d36/d3d5aed3 + env; `MALI_BO_COHERENT_LOCAL=0` plus `MALI_COH_ON=<class>`):
+| variant | fps | gpu p50 ms | cpu submit ms | frame p50 ms |
+|---|---|---|---|---|
+| A default (global coherent) | 170 | 1.15 | 1.19 | 5.18 |
+| B =0 (nothing coherent) | 321 | 1.06 | 0.14 | 2.17 |
+| ring coherent | 332 | 1.03 | 0.14 | 2.11 |
+| hot arena coherent | 313 | 1.05 | 0.15 | 2.19 |
+| VkDeviceMemory (lazy) coherent | 329 | 1.03 | 0.14 | 2.10 |
+| internal pool/meta/geo coherent (int) | 239 | 1.15 | 0.41 | 3.39 |
+GPU time is unchanged; the win is CPU: mem_sync_bos issued one MEM_SYNC ioctl per internal BO per submit (and those BOs are CPU-write-combined, nothing reads them coherently). New v11 default: only VkDeviceMemory keeps COHERENT_LOCAL (SSBO atomics), images/non-storage buffers (type 2) and all internal BOs do not, no per-submit sync. v10/v13 unchanged (NOCOH stripped there). Override: MALI_BO_COHERENT_LOCAL=1 (old) / =0, MALI_COH_ON=ring,hot,int,lazy,wsi.
+tools/bench2 on CMF, 5 interleaved pairs, old ICD 193a1e9c (main) vs new bfc42e94 (6cee585), median fps / sub ms:
+| variant | old | new |
+|---|---|---|
+| cube-720p presented | 44.9 / 1.80 | 48.1 / 0.57 |
+| cube-720p offscreen | 58.5 / 1.13 | 58.2 / 0.60 |
+| triangle-3k presented | 55.3 / 8.12 | 64.5 / 7.23 |
+| triangle-3k offscreen | 104.4 / 6.49 | 107.8 / 6.37 |
+(the bench2 cube is GPU-bound at 17 ms: unchanged GPU ms.)
