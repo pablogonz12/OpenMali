@@ -8,6 +8,9 @@
 #include <string.h>
 #include <time.h>
 
+/* mali_wsi.c is not linked into this host test: same value as there (DRM_FORMAT_MOD_LINEAR) */
+const uint64_t mali_wsi_modifier = 0;
+
 static int g_fail, g_verbose;
 #define CHECK(c, ...) do { if (!(c)) { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
