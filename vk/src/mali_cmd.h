@@ -25,6 +25,7 @@ struct mali_cmd_target {
    uint64_t va;
    uint32_t row_stride;
    unsigned width, height;
+   const struct mali_rtfmt *rt;   /* colour: NULL = R8G8B8A8_UNORM */
    int zs_format;   /* 0 = colour (RGBA8), else enum kb_zs_format */
    bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */
 };

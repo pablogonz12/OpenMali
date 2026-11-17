@@ -39,6 +39,10 @@ struct kb_fb_params {
 	uint32_t zs_row_stride;       /* bytes, multiple of 16; 0 = width * bytes per pixel rounded up to 16 */
 	float clear_depth;            /* FBD "Z Clear" */
 	unsigned zs_no_store;         /* 1: Z Write Enable off (depth only used inside the frame, nothing written back) */
+	/* non-RGBA8 colour target (0 = RGBA8 as before): Internal Format, writeback colour format, 12-bit RT swizzle (0 = identity),
+	 * Color Buffer Allocation (>>10 units) and the four raw clear words. */
+	unsigned rt_internal, rt_wb, rt_swizzle, rt_alloc;
+	uint32_t rt_clear[4];
 	unsigned arch;                /* GPU arch major (kb_props()->arch); 0 = assume 11. Layouts below are v11 only: other values
 	                               * (e.g. 13 on Mali-G925) still pack the v11 layout but warn once on stderr. */
 };

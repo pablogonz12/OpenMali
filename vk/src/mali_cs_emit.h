@@ -103,7 +103,18 @@ struct mali_dispatch {
 
 struct mali_op;
 
+/* A blendable non-RGBA8 colour render target (mali_render.c table). NULL in mali_att = R8G8B8A8_UNORM. */
+struct mali_rtfmt {
+   int vk_format;
+   uint8_t internal, wb, ncomp, alloc, is_float;   /* FBD Internal Format, writeback format, components, colour allocation (>>10), 16F/11F clear */
+   uint16_t swizzle;                               /* RT swizzle (12 bits) */
+   uint32_t blend_pixfmt;                          /* blend conversion format word */
+};
+const struct mali_rtfmt *mali_rtfmt_lookup(int vk_format, bool *supported);
+void mali_rtfmt_clear_words(const struct mali_rtfmt *rt, const float c[4], uint32_t w[4]);
+
 struct mali_att {
+   const struct mali_rtfmt *rt;           /* colour only */
    uint64_t va;                           /* 64-byte aligned */
    uint32_t row_stride;                   /* bytes, multiple of 16 */
    int zs_format;                         /* depth only: 1 D32F, 2 D24X8, 3 D16 (enum kb_zs_format); colour is RGBA8 */

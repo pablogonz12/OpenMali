@@ -133,6 +133,13 @@ void kb_draw_blend_opaque_rgba8(uint32_t *d)
 	d[3] = KB_PIXFMT_RGBA8_TB;                               /* conversion memory format: the dithered/blendable format, not the pipe format */
 }
 
+void kb_draw_blend_opaque_fmt(uint32_t *d, uint32_t pixfmt, unsigned ncomp)
+{
+	kb_draw_blend_opaque_rgba8(d);
+	d[2] = 1u | ((ncomp - 1u) << 3);
+	d[3] = pixfmt;
+}
+
 void kb_draw_zsd_off(uint32_t *d)
 {
 	memset(d, 0, KB_ZSD_SIZE);
