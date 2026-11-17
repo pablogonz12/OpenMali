@@ -43,6 +43,9 @@ struct mali_hwctx {
     * submission that used them has retired (tag = retire counter value, 0 = not yet submitted) */
    struct { struct mali_bo bo; uint64_t tag; } ovf[MALI_MAX_OVF];
    unsigned n_ovf;
+   struct mali_bo ovf_pool[MALI_MAX_OVF];   /* retired overflow BOs kept for the next big frame (mapping and kbase alloc are slow) */
+   unsigned n_pool;
+   size_t pool_bytes;
    size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
@@ -142,7 +145,16 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
          sz = (n + al + (1u << 20) - 1) & ~((size_t)(1u << 20) - 1);
       if (sz > (512u << 20))
          sz = n + al > (512u << 20) ? n + al : (512u << 20);
-      if (be->bo_alloc(h->dev->kdev, sz, MALI_BO_HOT, &h->ovf[h->n_ovf].bo))
+      unsigned best = h->n_pool;
+      for (unsigned i = 0; i < h->n_pool; i++)
+         if (h->ovf_pool[i].size >= sz && h->ovf_pool[i].size <= 2 * sz && (best == h->n_pool || h->ovf_pool[i].size < h->ovf_pool[best].size))
+            best = i;
+      if (best < h->n_pool) {
+         h->ovf[h->n_ovf].bo = h->ovf_pool[best];
+         h->pool_bytes -= h->ovf_pool[best].size;
+         h->ovf_pool[best] = h->ovf_pool[--h->n_pool];
+         sz = h->ovf[h->n_ovf].bo.size;
+      } else if (be->bo_alloc(h->dev->kdev, sz, MALI_BO_HOT, &h->ovf[h->n_ovf].bo))
          return NULL;
       h->ovf[h->n_ovf].tag = 0;
       cur = &h->ovf[h->n_ovf++].bo;
@@ -206,9 +218,13 @@ hw_ovf_reap(struct mali_hwctx *h, uint64_t counter)
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    unsigned w = 0;
    for (unsigned i = 0; i < h->n_ovf; i++) {
-      if (h->ovf[i].tag && h->ovf[i].tag <= counter)
-         be->bo_free(h->dev->kdev, &h->ovf[i].bo);
-      else
+      if (h->ovf[i].tag && h->ovf[i].tag <= counter) {
+         if (h->n_pool < MALI_MAX_OVF && h->pool_bytes + h->ovf[i].bo.size <= (256u << 20)) {
+            h->ovf_pool[h->n_pool++] = h->ovf[i].bo;
+            h->pool_bytes += h->ovf[i].bo.size;
+         } else
+            be->bo_free(h->dev->kdev, &h->ovf[i].bo);
+      } else
          h->ovf[w++] = h->ovf[i];
    }
    h->n_ovf = w;
@@ -306,6 +322,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    for (unsigned i = 0; i < h->n_ovf; i++)
       if (!h->ovf[i].tag)
          h->ovf[i].tag = h->expected;
+   h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
    if (!getenv("MALI_SYNC_SUBMIT")) {
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
@@ -340,6 +357,9 @@ mali_hw_finish(struct mali_device *dev)
    for (unsigned i = 0; i < h->n_ovf; i++)
       be->bo_free(dev->kdev, &h->ovf[i].bo);
    h->n_ovf = 0;
+   for (unsigned i = 0; i < h->n_pool; i++)
+      be->bo_free(dev->kdev, &h->ovf_pool[i]);
+   h->n_pool = 0;
    pthread_mutex_lock(&g_bind_lock);
    if (g_cur == h) {
       g_cur = h->below;

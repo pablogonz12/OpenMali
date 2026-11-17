@@ -196,7 +196,7 @@ class Phone:
             r = json.loads(js[-1])
         except ValueError:
             return None, "bad json"
-        return (r, "") if r.get("pass") else (None, "pass=false " + js[-1][:260])
+        return (r, "") if r.get("pass") else (None, "pass=false " + js[-1][:int(os.environ.get("BENCH2_NOTE", 260))])
 
 
 def metrics(r, driver_kind):
@@ -209,7 +209,8 @@ def metrics(r, driver_kind):
             "cpu_ms": round(rec + sub, 3), "rec_ms": round(rec, 3), "sub_ms": round(sub, 3), "gpu_ms": g.get("mean") and round(g["mean"], 3),
             "frame_p50": m["frame_time_ms"]["all"]["p50"], "frame_p99": m["frame_time_ms"]["all"]["p99"],
             "mode": m["present_mode"], "images": m["swapchain_images"], "size": f"{m['width']}x{m['height']}", "fif": m["config"]["frames_in_flight"],
-            "drv": (m["device"].get("driver_info") or m["device"].get("driver_name") or "")[:60]}
+            "drv": (m["device"].get("driver_info") or m["device"].get("driver_name") or "")[:60],
+            "cksum": (m.get("readback") or {}).get("checksum")}
 
 
 def med(v):
@@ -341,7 +342,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
             r_, note = ph.run(d, c, f"{d}-{variant}-{i}-{r}", max(5, secs // 2) if sweep else secs)
             m = None
             if r_ is None:
-                print(f"  {ph.alias} {d} {variant} {key}: FAIL {note[:150]}")
+                print(f"  {ph.alias} {d} {variant} {key}: FAIL {note[:int(os.environ.get("BENCH2_NOTE", 150))]}")
                 ph.restore()
                 ph.session()
             else:
