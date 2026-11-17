@@ -20,7 +20,7 @@ CMDS=$(ninja -t commands src/panfrost/vulkan/libvulkan_panfrost.so)
 CCLINE=$(grep -m1 -- 'panvk_instance\.c$' <<<"$CMDS")
 LDLINE=$(tail -1 <<<"$CMDS")
 CC=$(sed -E 's# -MD -MQ [^ ]+ -MF [^ ]+##; s# -o [^ ]+ -c [^ ]+$##; s# -I[^ ]*src/panfrost/vulkan[^ ]*##g' <<<"$CCLINE")
-LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|-l[A-Za-z0-9_+.-]+|-pthread)$' | tr '\n' ' ')
+LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[A-Za-z0-9_+.-]+|-pthread)$' | tr '\n' ' ')
 CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 
 ICD="mali_instance mali_physical_device mali_device mali_memory mali_sync mali_queue mali_backend_fake mali_backend_kbase
