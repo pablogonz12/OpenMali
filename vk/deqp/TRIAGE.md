@@ -1,30 +1,32 @@
 # dEQP-VK triage, our ICD vs PanVK-kbase (Poco G925/v13, glibc guest) — 2026-11-17
 
-Status: PARTIAL. Our ICD sample run (`lists/daily-sample.txt`, 1381 cases = every 20th of r3-daily + ≥1 per 4-level group, stress cases removed)
-got only through ~78 cases before hanging; the run was cancelled when the phone stalled. Numbers are updated below after each chunk.
+Status: PARTIAL. Sample list `lists/daily-sample.txt` = 1381 cases (every 20th of r3-daily + ≥1 per 4-level group, stress cases removed). Ours ran 782 of them;
+stopped after two consecutive 240 s call caps (rule 8).
 
 ## Baselines (PanVK, same list, `runs/qdeqp/poco-panvk-daily-sample.csv`)
 1381 cases: 642 pass, 18 fail, 721 NotSupported, 0 crash → 97.3 % of supported (46.5 % of total). All 18 fails are in `api.copy_and_blit.core`
 (oracle bugs / format combos; not ours to fix). api.object_management stress group (137 cases): the "137 crashes" were a harness artefact, see below.
 
-## Ours (`runs/qdeqp/poco-ours-daily-sample.tsv`, first ~78 cases, api.* only)
-38 Pass, 35 NotSupported, 3 Fail, 1 Other:ResourceError, 1 Crash (asm_triangle) + a hang on `api.command_buffers.submit_twice_secondary`
-(process never ends, no QPA growth).
+## Ours (`ours-daily-sample-poco.{csv,tsv}`, first 782 of 1381 sample cases; api.* only, pipeline/renderpass not reached)
+782 done: 38 Pass, 3 Fail, 632 NotSupported, 108 Crash, 1 Other:ResourceError → 38/142 = 26.8 % of supported (PanVK full sample: 97.3 %).
+NotSupported matches PanVK (copy_and_blit.core: 590 vs 591 of 695/887 seen), i.e. no feature-gate gap there. Not yet run: remaining 599 cases
+(pipeline.monolithic 5426-case group, renderpass.*, image_clearing, buffer).
 
-## Failure clusters (ranked by cases seen; sample too small, ranking is provisional)
-1. **Any draw / graphics-pipeline case crashes or hangs** (api.smoke.asm_triangle*, command_buffers.submit_twice_secondary; all of pipeline.* and
-   renderpass.* are expected to follow). Root cause guess: missing/incorrect draw path (CmdDraw → tiler job, FBD, queue submit with graphics) — a bug/not
-   implemented, not a feature flag. Fix location: `driver/vk/` CmdDraw/ render pass / queue submit; get an oracle CS trace to compare. Reproduce
-   alone: `qdeqp poco <list with that case> --icd ours`.
-2. **`VK_ERROR_OUT_OF_DEVICE_MEMORY` from vkCreateComputePipelines** in `api.descriptor_set.descriptor_set_layout_lifetime.compute` (1 case, ResourceError
-   aborts the *whole* deqp process). Root cause guess: pipeline/shader BO allocation not freed or too large per compile (leak in `mali_compile` result
-   BO, or pipeline destroy not releasing). Fix location: pipeline create/destroy in driver/vk (kbase mem alloc/free pairing).
-3. **api.buffer_view.access.{uniform,storage}_texel_buffer.{r8_unorm,r16g16b16a16_uint}** Fail (2 cases). Root cause guess: texel buffer descriptor
-   encoding / format table (tex descriptor for buffers) bug. Fix location: M5/M7 descriptor bytes for buffer views (`vk/tests/build-t_image.sh` golden covers images, probably not buffer views).
-4. **api.info.unsupported_image_usage.optimal.input_attachment_bc1_rgba_unorm_block** Fail (1 case; likely a family of block-compressed
-   formats). Root cause: ours advertises INPUT_ATTACHMENT usage on a BC format (or image-create doesn't reject it). Fix location: format feature table /
-   vkGetPhysicalDeviceImageFormatProperties.
-5. NotSupported 35/78 (45 %) — similar to PanVK's 52 % NS on this list, so not a gap in itself; compare per group once more data exists.
+## Failure clusters (ranked by case count)
+1. **api.copy_and_blit.core: 105 Crash of 695 seen** (every case PanVK passes, 278 of 887 in total ⇒ ≈ all of them). Process dies while running
+   the case (copy/blit/resolve use transfer cmds, blit/resolve go through meta draws or compute). Root cause guess: not-implemented transfer path
+   (vkCmdCopyImage*/BlitImage/CopyBufferToImage → `vk_meta` or CS-based copy; probably unimplemented entrypoint or null dispatch/pipeline) — a bug/missing code,
+   not a feature flag (NS count equals PanVK). Fix location: driver/vk cmd-buffer transfer entrypoints / vk_meta hookup; reproduce with one case
+   `dEQP-VK.api.copy_and_blit.core.*` via qdeqp.
+2. **Draw/hang cases**: api.smoke.asm_triangle (+_no_opname), command_buffers.submit_twice_secondary (hang, watchdog), command_buffers.recording_to_invalid
+   (3 cases). Root cause guess: graphics draw submit/FBD path incomplete (see M8/M9). pipeline.* and renderpass.* are expected to be ~100 % crash.
+   Fix location: CmdDraw / render pass begin-end / queue submit of tiler+fragment jobs.
+3. **api.buffer_view.access.{uniform,storage}_texel_buffer.{r8_unorm,r16g16b16a16_uint}**: 2 Fail. Root cause guess: texel-buffer descriptor encoding
+   (M5/M7 buffer-view descriptor bytes; golden tests cover images only). Fix location: buffer view descriptor build.
+4. **api.info.unsupported_image_usage.optimal.input_attachment_bc1_rgba_unorm_block**: 1 Fail of 12. Root cause guess: INPUT_ATTACHMENT usage accepted
+   for BC formats in vkGetPhysicalDeviceImageFormatProperties / vkCreateImage. Fix location: format-feature table / image-format-properties limits.
+5. **VK_ERROR_OUT_OF_DEVICE_MEMORY in vkCreateComputePipelines** (api.descriptor_set.descriptor_set_layout_lifetime.compute, 1 case; a ResourceError aborts the
+   whole deqp run). Root cause guess: shader/pipeline BO leak or oversize allocation per compile. Fix location: pipeline create/destroy, kbase mem alloc/free pairing.
 
 ## Harness findings (qdeqp.py, fixed)
 * The "137 PanVK object_management crashes" were not PanVK: the QPA log was buffered, so when heavy cases (alloc_callback_fail, max_concurrent,
@@ -33,7 +35,9 @@ got only through ~78 cases before hanging; the run was cancelled when the phone 
   session restarted); `calm()` wait (load <8, >2 GB free) before each chunk/retry; stress cases (alloc_callback_fail / max_ / multithreaded / many) are
   excluded by default and written to `lists/stress.txt` (`--stress 1` to run). Verified: 40 of those cases pass on PanVK in one chunk (127 s).
 * Ours: a case that dies while running is recorded Crash immediately (no retry); deqp-wide abort on ResourceError is retried alone.
-* Hang cost: each hang costs ~3 min until the watchdog fires; run ours with small chunks (≤300) and `--case-timeout 45`.
+* deqp executes in tree order, not caselist order: the crashed case is the QPA's unfinished case (`unf`), earlier code blamed the first list entry and wasted 2 retries/crash (fixed). `calm()` ignores load <40 (phone idles at ~20 with Steam up). ~5 s per crash now; 300 cases ≈ 130 s (fewer when crash-heavy).
+* `scripts/quick/qsafe` bug (not mine): lock path uses `$1` after `shift 2` ⇒ always `PHONE BUSY`; use `$lock=/tmp/qsafe-$P.lock` saved before shift.
+* `driver` is now a symlink to ~/Documents/scripts/mali-open: qdeqp falls back to cwd for ROOT.
 
 ## Not done
-Ours over pipeline.* / renderpass.* (expected 0 pass until draw works); full 1381-case ours run; CMF.
+Remaining 599 sample cases (resume: `qdeqp poco lists/daily-sample.txt --icd ours --chunk 300 --limit N --case-timeout 45`); CMF; stress list.
