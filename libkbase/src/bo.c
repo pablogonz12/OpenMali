@@ -34,6 +34,8 @@ int kb_bo_alloc(struct kb_ctx *ctx, size_t size, uint32_t flags, struct kb_bo *o
 	if (flags & KB_BO_GPU_UNCACHED) f |= BASE_MEM_UNCACHED_GPU;
 	if (kb_bo_extra_flags && !(flags & (KB_BO_GPU_EX | KB_BO_CSF_EVENT | KB_BO_NOCOH)))
 		f |= kb_bo_extra_flags;
+	if ((flags & KB_BO_COH) && !(flags & (KB_BO_GPU_EX | KB_BO_CSF_EVENT | KB_BO_NOCOH)))
+		f |= 0x800;
 	if (!(flags & KB_BO_GPU_EX))
 		f |= BASE_MEM_SAME_VA; /* the kernel forces it for non-executable regions on 64-bit clients anyway */
 

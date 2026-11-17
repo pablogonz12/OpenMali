@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer C: CSF queue group (one group, one queue) and notification decoding. */
 #define _GNU_SOURCE
+#include <stdlib.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -25,7 +26,9 @@ int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct
 	const struct kb_gpu_props *p = &ctx->props;
 
 	/* Ring buffer: GPU RD|WR, uncached (write-combined) CPU mapping. */
-	int r = kb_bo_alloc(ctx, q->ring_size, KB_BO_GPU_RD | KB_BO_GPU_WR, &q->ring);
+	const char *coh = getenv("MALI_COH_ON");   /* per-class bisect: coherent ring only when listed (needs MALI_BO_COHERENT_LOCAL=0) */
+	const char *ns = getenv("MALI_RING_NOCOH");   /* ring without COHERENT_LOCAL while the global flag is on */
+	int r = kb_bo_alloc(ctx, q->ring_size, KB_BO_GPU_RD | KB_BO_GPU_WR | ((coh && strstr(coh, "ring")) ? KB_BO_COH : 0) | ((ns && ns[0] == '1') ? KB_BO_NOCOH : 0), &q->ring);
 	if (r)
 		return r;
 	memset(q->ring.cpu, 0, q->ring_size);

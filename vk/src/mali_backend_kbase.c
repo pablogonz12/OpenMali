@@ -17,7 +17,10 @@
 #include "kbase_cs.h"
 #include "kbase_uapi.h"
 
-extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
+extern uint64_t kb_bo_extra_flags;
+static const char *k_coh_default;   /* default MALI_COH_ON classes of this GPU */
+static bool k_strip_nocoh;   /* arch 10/13 keep COHERENT_LOCAL on every BO (the v13 note: the tiler bins nothing without it) unless MALI_BO_COHERENT_LOCAL is set */
+static bool k_coh_any;   /* MALI_COH_ON: some BO asked for COHERENT_LOCAL by class, so MEM_SYNC is still needed */ /* libkbase bo.c: OR'd into plain GPU allocations */
 
 struct mali_kdev {
    struct kb_ctx *ctx;
@@ -118,8 +121,13 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    /* M11: v11 compute needs it: without it SSBO atomics are done in each core's L1 and updates from different cores are lost
     * (CMF, 2 cores: atomicAdd count ~half). So it is the default on arch 11; MALI_BO_COHERENT_LOCAL=0/1 overrides on any arch. */
    const char *cl = getenv("MALI_BO_COHERENT_LOCAL");
-   if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
+   /* Per-class default on arch 11 (CMF A/B, 2026-11-17, GPU-GAP.md): internal BOs (pool/meta/geo) coherent + MEM_SYNC'd every submit cost ~1 ms of CPU
+    * submit time per frame (cube 170 -> 320 fps) and nothing reads them coherently: only VkDeviceMemory (SSBO atomics from the app) keeps
+    * COHERENT_LOCAL (class "lazy"). MALI_BO_COHERENT_LOCAL=1 restores the old global behaviour, =0 turns every class off, MALI_COH_ON=ring,hot,int,lazy,wsi picks classes. */
+   if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
+   k_strip_nocoh = !cl && (gpu->arch_major == 10 || gpu->arch_major == 13);
+   k_coh_default = (!cl && !getenv("MALI_COH_ON") && gpu->arch_major == 11) ? "lazy" : NULL;
    const char *fi = getenv("MALI_FAULT_INJECT");
    k->fault_at = fi ? strtoul(fi, NULL, 10) : 0;
    pthread_mutex_init(&k->submit_lock, NULL);
@@ -200,6 +208,18 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED)))
       flags |= MALI_BO_NOCOH;
 
+   /* MALI_COH_ON=ring,hot,int,lazy,wsi (experiment, with MALI_BO_COHERENT_LOCAL=0): COHERENT_LOCAL back on for the listed BO classes only. */
+   uint32_t cohf = 0;
+   {
+      static const char *cl = (const char *)-1;
+      if (cl == (const char *)-1) { cl = getenv("MALI_COH_ON"); if (!cl) cl = k_coh_default; }
+      if (cl) {
+         const char *cls = (flags & MALI_BO_EXPORT) ? "wsi" : (flags & MALI_BO_HOSTLAZY) ? "lazy" : (flags & MALI_BO_HOT) ? "hot" : "int";
+         if (strstr(cl, cls) && !(flags & (MALI_BO_EVENT | MALI_BO_EXEC))) { cohf = KB_BO_COH; k_coh_any = true; }
+      }
+   }
+   if (k_strip_nocoh)
+      flags &= ~MALI_BO_NOCOH;
    int r;
    if (flags & MALI_BO_EXPORT) {
       /* dma-heap buffer imported into the GPU: the heap decides cacheability (system = cached,
@@ -222,7 +242,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       r = kb_bo_alloc(k->ctx, size, KB_BO_GPU_RD | KB_BO_GPU_EX, bo);
    } else {
       r = kb_bo_alloc(k->ctx, size,
-                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) | ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0), bo);
+                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) | ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0) | cohf, bo);
    }
    if (r != 0) {
       free(bo);
@@ -451,7 +471,7 @@ static void
 mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
 {
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
-   if (!(kb_bo_extra_flags & 0x800))
+   if (!(kb_bo_extra_flags & 0x800) && !k_coh_any)
       return;
    static int skip_ex = -1;   /* MALI_MEMSYNC_EX=0 (experiment): skip EXEC/EVENT BOs: they never get COHERENT_LOCAL, so the per-submit sync does nothing for them */
    if (skip_ex < 0) { const char *x = getenv("MALI_MEMSYNC_EX"); skip_ex = x && x[0] == '0'; }
@@ -464,7 +484,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot) || (skip_ex && (b->flags & (KB_BO_GPU_EX | KB_BO_CSF_EVENT))))
+      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (!(kb_bo_extra_flags & 0x800) && !(b->flags & KB_BO_COH)) || (hot_only && !b->hot) || (skip_ex && (b->flags & (KB_BO_GPU_EX | KB_BO_CSF_EVENT))))
          continue;
       struct {
          uint64_t handle, user_addr, size;
