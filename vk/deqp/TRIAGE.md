@@ -58,3 +58,11 @@ True numbers after round 1 fixes: 195 pass / 126 fail / 1057 NS / 1 crash / 2 ot
 - Cluster B, BC blit sources (9892715): blit from a BC image reads the decoded shadow; 19/19 BC-source blit_image samples pass. ETC2/EAC sources (7 in sample) still fail (no decode emulation).
 - Crash timestamp.draw_indirect_stage_out_of_render_pass (9337154): vkCmdDrawIndirect* had no entrypoint, NULL dispatch. Now fails the command buffer cleanly (FEATURE_NOT_PRESENT); indirect draws are not implemented.
 - Remaining Fails (101), by cause: render targets other than RGBA8_UNORM ("colour attachment view": ~30: packed/16 bit/int/float/sRGB formats, image_clearing, blend.format, renderpass.suballocation); D24S8/D32S8/S8 attachments and stencil; colour loadOp LOAD (~8); CmdClearAttachments after a draw (~27, needs a quad draw); instance-rate vertex attributes + vertex input ~7; dynamic descriptor offsets (2); ETC2/EAC sources (7); E5B9G9R9 dst; sampler border_swizzle (6); pipeline state mali_pipeline.c:79 (7: VS-only / module-less).
+
+## Round 3 (Poco, daily-sample 1381)
+Before 221 pass / 101 fail / 0 crash -> after 225 / 97 / 0 crash.
+- f526458: blendable colour render targets beyond RGBA8 (R8, RG8, BGRA8, sRGB, 565/4444/5551, 10-10-10-2, 16F, 11F) via rt_tab in mali_render.c. Few cases flip because most still hit other limits.
+- Still out of scope: int, snorm, unorm16, 32-bit and other RAW formats (need shader-side blend lowering).
+- Blend state is not mapped from the pipeline (always opaque replace): blend.format.* cases fail with "Image mismatch".
+- Indirect draws (cc68908): DrawIndirect/DrawIndexedIndirect (+Count) are expanded at submit from the CPU mapping. multiDrawIndirect and VK_KHR_draw_indirect_count are not advertised, so the dEQP indirect suite is mostly NotSupported. The draw_indirect timestamp case went Crash -> Pass.
+- Still failing: colour loadOp LOAD, CmdClearAttachments after a draw, partial clears, D24S8/stencil, 4-sample images, b4g4r4a4 clear mismatch (cause unknown), suballocation a2b10g10r10 clear/draw.
