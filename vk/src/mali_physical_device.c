@@ -96,7 +96,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .sampledImageStencilSampleCounts = samples_1_4,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
-      .timestampPeriod = 1.0f,
+      .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
       .pointSizeRange = {1.0f, 1.0f},
       .lineWidthRange = {1.0f, 8.0f},

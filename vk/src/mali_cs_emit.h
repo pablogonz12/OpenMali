@@ -26,6 +26,7 @@ extern "C" {
 #define MALI_MAX_VB 8
 #define MALI_MAX_ATTR 16
 #define MALI_CMD_SETS 4
+#define MALI_MAX_DYN 16        /* dynamic UBO/SSBO descriptors per draw (graphics) */
 #define MALI_PUSH_MAX 128
 
 /* Per-queue resources the CS refers to (created by the backend once per device). */
@@ -54,7 +55,7 @@ struct mali_hw {
 };
 
 /* One vertex attribute: 1D attribute fetch from vertex binding `binding`. pixfmt = Mali Pixel Format word (KB_PIXFMT_*). */
-struct mali_attr { uint32_t pixfmt, binding, offset, stride; };
+struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ };
 
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
@@ -101,6 +102,8 @@ struct mali_draw {
    unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
+   unsigned ndyn;                         /* dynamic buffer descriptors (offset applied), written to driver-set entries MALI_DYN_BUF_START + i of VS and FS */
+   uint32_t dyn_desc[MALI_MAX_DYN][8];
    bool indexed;                          /* vkCmdDrawIndexed: index_va/index_size/first_index/vertex_offset used (count = indexCount) */
    uint64_t index_va;                     /* bound index buffer VA with offset applied */
    uint32_t index_bytes;                  /* bytes from index_va to the buffer end */

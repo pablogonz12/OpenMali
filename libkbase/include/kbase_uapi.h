@@ -282,4 +282,14 @@ union kbase_ioctl_cs_tiler_heap_init_24 {
 struct kbase_ioctl_cs_tiler_heap_term { uint64_t gpu_heap_va; };
 #define KBASE_IOCTL_CS_TILER_HEAP_TERM _IOW(KBASE_IOCTL_TYPE, 49, struct kbase_ioctl_cs_tiler_heap_term)
 
+
+/* KBASE_IOCTL_GET_CPU_GPU_TIMEINFO (CSF): CLOCK_MONOTONIC_RAW + GPU timestamp counter in one call */
+union kbase_ioctl_get_cpu_gpu_timeinfo {
+	struct { uint32_t request_flags; uint32_t paddings[7]; } in;
+	struct { uint64_t sec; uint32_t nsec; uint32_t padding; uint64_t timestamp; uint64_t cycle_counter; } out;
+};
+#define KBASE_IOCTL_GET_CPU_GPU_TIMEINFO _IOWR(KBASE_IOCTL_TYPE, 50, union kbase_ioctl_get_cpu_gpu_timeinfo)
+#define KBASE_TIMEINFO_MONOTONIC_FLAG (1u << 0)
+#define KBASE_TIMEINFO_TIMESTAMP_FLAG (1u << 1)
+
 #endif

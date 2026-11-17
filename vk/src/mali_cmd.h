@@ -61,6 +61,8 @@ struct mali_cmd_buffer {
    unsigned nsets;
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
+   unsigned ndyn;                       /* dynamic buffer descriptors (offset applied), table-0 entry MALI_DYN_BUF_START + i */
+   uint32_t dyn_desc[MALI_MAX_DYN][8];
    uint64_t ib_va;       /* bound index buffer, offset applied (0 = none) */
    uint32_t ib_bytes;
    unsigned ib_size;     /* bytes per index */

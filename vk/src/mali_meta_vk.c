@@ -102,6 +102,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
       return;
    }
    struct mali_meta_mem *mem = mem_of(cmd);
+   if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: emit %u jobs\n", l->n);
    for (unsigned i = 0; i < l->n; i++) {
       struct mali_frame f;
       memset(&f, 0, sizeof f);
@@ -289,6 +290,7 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
       buf_surf(&d, buf, g->bufferOffset);
       d.row = (rl + p->bw - 1) / p->bw * p->bs;
       d.slice = (ih + p->bh - 1) / p->bh * d.row;
+      if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: i2b src va %llx size %llu off %llu row %u slice %u | dst va %llx size %llu row %u | ex %u ey %u bs %u\n", (unsigned long long)s.va, (unsigned long long)s.size, (unsigned long long)s.off, s.row, s.slice, (unsigned long long)d.va, (unsigned long long)d.size, d.row, ex, ey, p->bs);
       r = mali_meta_plan_copy(&l, &d, &s, p->bs, ex, ey, zcount(img, g->imageSubresource, g->imageExtent));
    }
    emit(cmd, &l, r);

@@ -75,6 +75,7 @@ kbase_probe(struct mali_gpu_info *out)
    out->core_count = __builtin_popcountll(p->shader_present);
    out->core_id_range = p->shader_present ? 64 - __builtin_clzll(p->shader_present) : 1;
    out->tls_threads = p->max_threads ? p->max_threads : 2048;
+   out->ts_hz = kb_timestamp_hz(ctx);
    out->uapi_major = major;
    out->uapi_minor = minor;
 
@@ -102,7 +103,7 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    const char *dbg = getenv("MALI_SUBMIT_DBG");
    k->dbg = dbg ? (unsigned)strtoul(dbg, NULL, 0) : 0;
 
-   struct kb_queue_opts qo = {.ring_size = 4096};
+   struct kb_queue_opts qo = {.ring_size = 1u << 20};   /* one frame record must fit: 4 KiB capped a frame at ~250 draws (mdbench drawcalls:300 = DEVICE_LOST) */
    r = kb_queue_create(k->ctx, &qo, &k->queue);
    if (r != 0) {
       kb_close(k->ctx);
@@ -285,8 +286,8 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
       if (pthread_mutex_trylock(&k->wait_lock) == 0) {
          struct kb_event ev;
          while (kb_event_read(k->ctx, &ev, 0) > 0)
-            if (ev.fatal)
-               fprintf(stderr, "mali_vk: %s\n", ev.text);
+            if (ev.fatal || getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: %sevent: %s\n", ev.fatal ? "FATAL " : "", ev.text);
          pthread_mutex_unlock(&k->wait_lock);
       }
       if (kb_queue_faulted(&k->queue))
@@ -401,7 +402,14 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 static bool
 kbase_device_lost(struct mali_kdev *k)
 {
-   return k->lost || (k->queue_live && kb_queue_faulted(&k->queue));
+   bool l = k->lost || (k->queue_live && kb_queue_faulted(&k->queue));
+   if (l && getenv("MALI_PIPE_DBG")) {
+      struct kb_event ev;
+      fprintf(stderr, "mali_vk: device lost (lost=%d faulted=%d)\n", (int)k->lost, (int)(k->queue_live && kb_queue_faulted(&k->queue)));
+      while (kb_event_read(k->ctx, &ev, 0) > 0)
+         fprintf(stderr, "mali_vk: event: %s\n", ev.text);
+   }
+   return l;
 }
 
 /* ---- M9: frame command streams, counter wait, tiler heap ---- */

@@ -247,9 +247,13 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
    spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
    vs_entries = vs_entries > MALI_DUMMY_SAMPLER_IDX + 1 ? vs_entries : MALI_DUMMY_SAMPLER_IDX + 1;
+   const unsigned dyn_end = d->ndyn ? MALI_DYN_BUF_START + d->ndyn : 0;
+   if (dyn_end > vs_entries)
+      vs_entries = dyn_end;
+   const unsigned fs_entries = dyn_end > MALI_DUMMY_SAMPLER_IDX + 1 ? dyn_end : MALI_DUMMY_SAMPLER_IDX + 1;
    vsset = A(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &va_vsset);
    vst = A(hw, res_alloc, 64, &o->vst);
-   fsset = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_fsset);
+   fsset = A(hw, fs_entries * KB_DESC_SET_STRIDE, 64, &va_fsset);
    fst = A(hw, res_alloc, 64, &o->fst);
    bl = A(hw, KB_BLEND_SIZE, 16, &o->bl);
    zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
@@ -275,7 +279,15 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    for (unsigned i = 0; i < KB_VS_ATTRS; i++) {
       uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
       if (i < g->nattr)
+      {
          kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset, g->attr[i].stride);
+         if (g->attr[i].instance) {
+            /* Attribute Frequency = Instance (word1[7:6]), offset enable off; first_instance shifts the start (panvk) */
+            ((uint32_t *)e)[0] &= ~(1u << 8);
+            ((uint32_t *)e)[1] |= 1u << 6;
+            ((uint32_t *)e)[2] += d->first_instance * g->attr[i].stride;
+         }
+      }
       else
          kb_draw_attr_unused(e);
    }
@@ -283,7 +295,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
    /* resource tables: entry 0 = driver set, entries 1.. = bound user descriptor sets (KB_TEX_USER_TABLE) */
    kb_draw_resource(vst, va_vsset, vs_entries * KB_DESC_SET_STRIDE, 1);
-   kb_draw_resource(fst, va_fsset, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
+   for (unsigned i = 0; i < d->ndyn; i++) {
+      memcpy(vsset + (MALI_DYN_BUF_START + i) * KB_DESC_SET_STRIDE, d->dyn_desc[i], 32);
+      memcpy(fsset + (MALI_DYN_BUF_START + i) * KB_DESC_SET_STRIDE, d->dyn_desc[i], 32);
+   }
+   kb_draw_resource(fst, va_fsset, fs_entries * KB_DESC_SET_STRIDE, 1);
    for (unsigned s = 0; s < d->nsets; s++) {
       kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
       kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
@@ -625,6 +641,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
 
    memset(&c, 0, sizeof c);
    E(&c, kb_cs_nop());
+   if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    M32(&c, R->flush_id, 0);
    E(&c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
    E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
@@ -646,14 +663,34 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       M32(&c, CR_JOB_SIZE + 1, d->groups[1]);
       M32(&c, CR_JOB_SIZE + 2, d->groups[2]);
    }
+   {
+      const char *cvs = getenv("MALI_CV");
+      unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
+      if (cv & 1) E(&c, kb_cs_wait(0xffff));
+      if (cv & 64) { M48(&c, R->heap, 0); E(&c, kb_cs_heap_set(R->heap)); }
+      if (cv & 128) { E(&c, kb_cs_req_res(KB_CS_RES_IDVS | KB_CS_RES_TILER)); E(&c, kb_cs_finish_tiling()); E(&c, kb_cs_wait(0xffff)); E(&c, kb_cs_req_res(0)); }
+      if (cv & 2) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, 0));
+      if (cv & 4) E(&c, kb_cs_req_res(0));
+      if (cv & 8) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_DEFERRED, 0));
+      if (getenv("MALI_CV_OTHER")) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, (unsigned)atoi(getenv("MALI_CV_OTHER"))));
+   }
    E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
    E(&c, kb_cs_req_res(KB_CS_RES_COMPUTE));
    E(&c, run_compute_instr(1, 0));
    E(&c, kb_cs_wait(1u << env->slot));
    E(&c, kb_cs_req_res(0));
-   M32(&c, R->flush_id, 0);
-   E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
-   E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   {
+      const char *cvs = getenv("MALI_CV");
+      unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
+      M32(&c, R->flush_id, 0);
+      E(&c, kb_cs_flush_cache2((cv & 16) ? 3 : 1, (cv & 16) ? 3 : 1, (cv & 16) ? 2 : 0, R->flush_id));
+      E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      if (cv & 32) {
+         M32(&c, R->flush_id, 0);
+         E(&c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
+         E(&c, kb_cs_wait(0xffff));
+      }
+   }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
@@ -702,7 +739,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       if (!dd)
          return -ENOMEM;
       kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
-      uint64_t geom = (env->geo_va + 4096) | (65536u >> 12);
+      uint64_t geom = (env->geo_va + 4096) | ((4u << 20) >> 12);
       if (v13)
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else

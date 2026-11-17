@@ -271,3 +271,22 @@ void kb_leaks(const struct kb_ctx *c, struct kb_leaks *o)
 	o->queues = c->live_queues;
 	o->kcpu_queues = c->kcpu_id >= 0;
 }
+
+uint64_t kb_timestamp_hz(struct kb_ctx *ctx)
+{
+	union kbase_ioctl_get_cpu_gpu_timeinfo a, b;
+	memset(&a, 0, sizeof a);
+	a.in.request_flags = KBASE_TIMEINFO_MONOTONIC_FLAG | KBASE_TIMEINFO_TIMESTAMP_FLAG;
+	b = a;
+	if (kb_ioctl(ctx, KBASE_IOCTL_GET_CPU_GPU_TIMEINFO, &a))
+		return 0;
+	usleep(20000);
+	if (kb_ioctl(ctx, KBASE_IOCTL_GET_CPU_GPU_TIMEINFO, &b))
+		return 0;
+	double dt = (double)(b.out.sec - a.out.sec) + (double)((int64_t)b.out.nsec - (int64_t)a.out.nsec) * 1e-9;
+	double dts = (double)(b.out.timestamp - a.out.timestamp);
+	if (dt <= 0 || dts <= 0)
+		return 0;
+	double hz = dts / dt;
+	return hz > 1e6 && hz < 2e9 ? (uint64_t)(hz + 0.5) : 0;
+}
