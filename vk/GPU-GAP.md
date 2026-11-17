@@ -29,3 +29,18 @@ NOT applied: dropping the head flush (MALI_HF=0 / MALI_CHF=0): the head FLUSH_CA
   api.buffer.suballocation (also with the pre-change source 6cec691, also after qrestore): environment, not this change. (Also: host /tmp is a full tmpfs; qdeqp.py
   now honours QDEQP_TMP.)
 - Validation that passed with the new code on the Poco: t_vk_compute (atomic256, atomic_ind, scan...), t_vk_draw, t_vk_meta, t_bc_hw 12/12.
+
+## Experiment 2026-11-17 (Job 2): head FLUSH_CACHE2 A/B on cube (Poco, mailbox, 2 runs x 6-8 s, 43-44 C, `MALI_HF` env, one change at a time)
+| MALI_HF (l2,lsc,other) | cube gpu_ms | result |
+|---|---|---|
+| default 0x332 | 0.85 | baseline |
+| 0 (none) | 0.33 | works, but head flush was the INTERMITTENT.md fix: not safe |
+| 0x330 (drop "other" inv) | 0.34 | works |
+| 0x302 (drop LSC) | 0.35 | works |
+| 0x032 (drop L2) | 0.32 | works (risk: stale tiler ctx in L2) |
+| 0x112 | 0.32 | works |
+| 0x222 / 0x200 (L2 invalidate WITHOUT clean) | - | DEVICE_LOST (QueuePresentKHR -4): L2 clean must stay with inv |
+=> the whole cube gap (0.85 vs vendor 0.17) is ~0.5 ms of flush cost; any single component removed recovers it. Candidate to adopt: 0x330 (keeps L2+LSC clean+inv, drops the other-cache/icache inv).
+NOT adopted yet: stress validation (t_vk_draw --loop 1000, t_vk_compute, t_vk_meta, t_bc_hw with MALI_HF=330) could not run: the Poco dropped off USB (adb empty) at this point.
+Resume: `vk/tests/valrun.sh "MALI_HF=330" 1000` (valguest.sh/valrun.sh push + run draw/compute/meta); if clean, change the default hf in mali_cs_emit.c (graphics line ~883) from 0x332 to 0x330, re-run mdbench cube/drawcalls/overdraw/tex.
+No PanVK job-stream capture / AFBC / FBD experiments done.
