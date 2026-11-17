@@ -304,6 +304,31 @@ mali_CmdPushConstants(VkCommandBuffer h, VkPipelineLayout layout, VkShaderStageF
       memcpy(cmd->push_cs + off, data, size);
 }
 
+/* VK_KHR_maintenance6: the "2" forms carry stage flags instead of a bind point. They forward to the 1.0 entry points (the runtime's
+ * vk_common_* wrappers go the other way, but we override the 1.0 ones). A null layout (pNext layout info) needs push descriptors /
+ * descriptor buffers, which are not advertised. */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBindDescriptorSets2KHR(VkCommandBuffer h, const VkBindDescriptorSetsInfoKHR *info)
+{
+   CMD(h);
+   if (info->layout == VK_NULL_HANDLE) {
+      unsupported(cmd, "BindDescriptorSets2 without a layout");
+      return;
+   }
+   if (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
+      mali_CmdBindDescriptorSets(h, VK_PIPELINE_BIND_POINT_COMPUTE, info->layout, info->firstSet, info->descriptorSetCount,
+                                 info->pDescriptorSets, info->dynamicOffsetCount, info->pDynamicOffsets);
+   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
+      mali_CmdBindDescriptorSets(h, VK_PIPELINE_BIND_POINT_GRAPHICS, info->layout, info->firstSet, info->descriptorSetCount,
+                                 info->pDescriptorSets, info->dynamicOffsetCount, info->pDynamicOffsets);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
+{
+   mali_CmdPushConstants(h, info->layout, info->stageFlags, info->offset, info->size, info->pValues);
+}
+
 /* ---- draws ---- */
 static void
 snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
@@ -568,6 +593,15 @@ expand_indirect(struct mali_frame *f)
 #define push_frame mali_cmd_push_frame
 
 /* ---- compute (M11): every dispatch is its own frame record, executed in order with the render passes ---- */
+/* VK_KHR_load_store_op_none: LOAD_OP_NONE means "contents preserved", which for our tiled path is the same work as LOAD (preload draw for
+ * colour; depth/stencil LOAD is not supported yet and NONE is rejected the same way). STORE_OP_NONE leaves the memory untouched: for
+ * depth/stencil that is "not stored" (the ==STORE tests below), colour is always stored by the FBD. */
+static inline bool
+is_load_op(VkAttachmentLoadOp op)
+{
+   return op == VK_ATTACHMENT_LOAD_OP_LOAD || op == VK_ATTACHMENT_LOAD_OP_NONE_KHR;
+}
+
 static void
 record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect_va)
 {
@@ -654,7 +688,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "colour attachment view");
       return;
    }
-   bool load = ca->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+   bool load = is_load_op(ca->loadOp);
    unsigned load_flags = 0;
    if (load) {
       /* R4: LOAD = a preload draw reading the old contents (linear 4-byte RGBA8-family formats only) */
@@ -683,7 +717,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       memcpy(f->colour.clear_color, ca->clearValue.color.float32, sizeof f->colour.clear_color);
    if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
       const VkRenderingAttachmentInfo *da = ri->pDepthAttachment;
-      if (da->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
+      if (is_load_op(da->loadOp)) {
          unsupported(cmd, "depth loadOp LOAD");
          return;
       }
@@ -701,7 +735,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    }
    if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
       const VkRenderingAttachmentInfo *sa = ri->pStencilAttachment;
-      if (sa->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
+      if (is_load_op(sa->loadOp)) {
          unsupported(cmd, "stencil loadOp LOAD");
          return;
       }

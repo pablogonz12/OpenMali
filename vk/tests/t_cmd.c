@@ -378,6 +378,50 @@ int main(int argc, char **argv)
       r = EndCommandBuffer(c2);
       CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "loadOp LOAD end=%d", r);
 
+      /* VK_KHR_load_store_op_none: LOAD_OP_NONE takes the LOAD path (same verdict), STORE_OP_NONE alone is accepted */
+      new_cmd(pool, &c2);
+      {
+         VkRenderingAttachmentInfo ca;
+         VkRenderingInfo ri = rendering_info(&ca, false);
+         ca.loadOp = VK_ATTACHMENT_LOAD_OP_NONE_KHR;
+         mali_CmdBeginRendering(c2, &ri);
+      }
+      r = EndCommandBuffer(c2);
+      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "loadOp NONE must follow LOAD, end=%d", r);
+      struct vk_command_buffer *vn = new_cmd(pool, &c2);
+      {
+         VkRenderingAttachmentInfo ca;
+         VkRenderingInfo ri = rendering_info(&ca, true);
+         ca.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+         mali_CmdBeginRendering(c2, &ri);
+         mali_CmdEndRendering(c2);
+      }
+      r = EndCommandBuffer(c2);
+      CHECK(r == VK_SUCCESS, "storeOp NONE end=%d", r);
+      (void)vn;
+
+      /* VK_KHR_maintenance6: PushConstants2 forwards to the 1.0 path (small push ok, oversize rejected the same way);
+       * BindDescriptorSets2 with a null layout is rejected */
+      {
+         uint32_t pv[4] = {1, 2, 3, 4};
+         VkPushConstantsInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO_KHR, .layout = (VkPipelineLayout)(uintptr_t)0,
+                                      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = sizeof pv, .pValues = pv};
+         new_cmd(pool, &c2);
+         mali_CmdPushConstants2KHR(c2, &pi);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_SUCCESS, "PushConstants2 end=%d", r);
+         pi.offset = 1u << 20;
+         new_cmd(pool, &c2);
+         mali_CmdPushConstants2KHR(c2, &pi);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "PushConstants2 oversize end=%d", r);
+         VkBindDescriptorSetsInfoKHR bi = {.sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO_KHR, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+         new_cmd(pool, &c2);
+         mali_CmdBindDescriptorSets2KHR(c2, &bi);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "BindDescriptorSets2 null layout end=%d", r);
+      }
+
       new_cmd(pool, &c2);
       mali_CmdDrawIndexed(c2, 3, 1, 0, 0, 0);
       r = EndCommandBuffer(c2);
