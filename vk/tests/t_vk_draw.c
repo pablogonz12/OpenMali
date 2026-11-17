@@ -25,9 +25,24 @@
 #define H 256
 
 static int g_fail, g_fake, g_loop = 1, g_reset;
+/* R4 fixed-function state of the next scene_create()/scene_draw() (all zero = the old tests' state) */
+static struct {
+   int on;                      /* use fxz.vert (z = rot.w) and the fields below */
+   VkCullModeFlags cull;
+   int cw;                      /* VK_FRONT_FACE_CLOCKWISE instead of COUNTER_CLOCKWISE */
+   int clamp, bias;
+   float bias_c, bias_s, bias_clamp;
+   int blend;
+   VkBlendFactor sf, df;
+   VkBlendOp op;
+   uint32_t wmask;
+   float bc[4];
+   int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
+} g_fx;
+static VkPhysicalDeviceFeatures g_feat;
 static const char *g_only, *g_spv = "shader";
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
 #define CHECK(c, ...)                                                                              \
@@ -52,11 +67,11 @@ enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT
    X(DestroyPipeline) X(CreateCommandPool) X(DestroyCommandPool) X(ResetCommandPool)                \
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
-   X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer)  \
+   X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
-   X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
+   X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -140,7 +155,7 @@ scene_create(struct scene *s, int depth)
    memset(s, 0, sizeof *s);
    s->mode = mode;
    s->depth = depth;
-   const char *vsn = "rot.vert.spv", *fsn = "var.frag.spv";
+   const char *vsn = g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
@@ -265,8 +280,8 @@ scene_create(struct scene *s, int depth)
    CHECK(BindBufferMemory(dev, s->vb[1], s->vbmem, stride) == VK_SUCCESS, "bind vb1");
 
    /* index buffer: u16 {0,1,2,2,1,3} at byte 0, u32 same at byte 16 */
-   VkBufferCreateInfo ibi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 64,
-                             .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+   VkBufferCreateInfo ibi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 128,
+                             .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
    CHECK(CreateBuffer(dev, &ibi, NULL, &s->ib) == VK_SUCCESS, "index buffer");
    GetBufferMemoryRequirements(dev, s->ib, &mr);
    VkMemoryAllocateInfo ia = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
@@ -279,6 +294,9 @@ scene_create(struct scene *s, int depth)
    for (int i = 0; i < 6; i++) i32[i] = i16[i];
    memcpy(ip, i16, sizeof i16);
    memcpy(ip + 16, i32, sizeof i32);
+   /* R4: two DrawIndexedIndirect commands at byte 64 (stride 20): triangle 1 {0,1,2}, triangle 2 {2,1,3} */
+   static const uint32_t ind[10] = {3, 1, 0, 3, 0, 3, 1, 3, 3, 0};
+   memcpy(ip + 64, ind, sizeof ind);
    UnmapMemory(dev, s->ibmem);
    CHECK(BindBufferMemory(dev, s->ib, s->ibmem, 0) == VK_SUCCESS, "bind ib");
 
@@ -368,11 +386,26 @@ scene_create(struct scene *s, int depth)
                                                 .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
                                                 .depthCompareOp = VK_COMPARE_OP_LESS, .maxDepthBounds = 1.0f};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   if (g_fx.on) {
+      rs.cullMode = g_fx.dyn ? VK_CULL_MODE_NONE : g_fx.cull;
+      rs.frontFace = (g_fx.cw != 0) != (g_fx.dyn != 0) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      rs.depthClampEnable = g_fx.clamp;
+      rs.depthBiasEnable = g_fx.bias;
+      if (!g_fx.dyn) { rs.depthBiasConstantFactor = g_fx.bias_c; rs.depthBiasSlopeFactor = g_fx.bias_s; rs.depthBiasClamp = g_fx.bias_clamp; }
+      cba.blendEnable = g_fx.blend;
+      cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = g_fx.sf;
+      cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = g_fx.df;
+      cba.colorBlendOp = cba.alphaBlendOp = g_fx.op;
+      cba.colorWriteMask = g_fx.wmask;
+   }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
-   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkDynamicState dyn[6] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+                            VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                           .dynamicStateCount = 2, .pDynamicStates = dyn};
+                                           .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
+   if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
+                cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
                                       .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
@@ -451,11 +484,17 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    }
    CmdSetViewport(cb, 0, 1, &vp);
    CmdSetScissor(cb, 0, 1, &sc);
+   if (g_fx.on && g_fx.dyn) {
+      CmdSetCullMode(cb, g_fx.cull);
+      CmdSetFrontFace(cb, g_fx.cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+      CmdSetDepthBias(cb, g_fx.bias_c, g_fx.bias_clamp, g_fx.bias_s);
+      CmdSetBlendConstants(cb, g_fx.bc);
+   }
    VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
    VkDeviceSize offs[2] = {0, 0};
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
-   if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
+   if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
    if (s->mode == MODE_TEX || s->mode == MODE_UBO)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
@@ -467,7 +506,9 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       }
       if (s->mode == MODE_DESCUPD)
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[i & 1], 0, NULL);
-      if (s->mode >= MODE_PUSHFS)
+      if (s->mode == MODE_MDI)
+         CmdDrawIndexedIndirect(cb, s->ib, 64, 2, 20);   /* multiDrawIndirect: drawCount 2 */
+      else if (s->mode >= MODE_PUSHFS)
          CmdDrawIndexed(cb, 6, 1, 0, 7, 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
@@ -647,6 +688,139 @@ test_mode(const char *name, int mode, double expect, double tol)
       printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+/* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY };
+struct fxcase {
+   const char *name;
+   int depth, n;                  /* depth attachment, draws */
+   float z[2];
+   int exp;
+   double cov;                    /* EXP_COV: expected pixels */
+   int need;                      /* 1 = depthClamp, 2 = depthBiasClamp feature needed */
+   void (*set)(void);
+};
+
+static void s_none(void) {}
+static void s_back_cw(void) { g_fx.cull = VK_CULL_MODE_BACK_BIT; g_fx.cw = 1; }
+static void s_back_ccw(void) { g_fx.cull = VK_CULL_MODE_BACK_BIT; }
+static void s_front_cw(void) { g_fx.cull = VK_CULL_MODE_FRONT_BIT; g_fx.cw = 1; }
+static void s_front_ccw(void) { g_fx.cull = VK_CULL_MODE_FRONT_BIT; }
+static void s_dyn_back_ccw(void) { s_back_ccw(); g_fx.dyn = 1; }
+static void s_dyn_front_ccw(void) { s_front_ccw(); g_fx.dyn = 1; }
+static void blend(VkBlendFactor sf, VkBlendFactor df, VkBlendOp op) { g_fx.blend = 1; g_fx.sf = sf; g_fx.df = df; g_fx.op = op; }
+static void s_add11(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD); }
+static void s_rsub11(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_REVERSE_SUBTRACT); }
+static void s_const_half(void) { blend(VK_BLEND_FACTOR_CONSTANT_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); g_fx.bc[0] = g_fx.bc[1] = g_fx.bc[2] = g_fx.bc[3] = 0.5f; }
+static void s_dyn_const_half(void) { s_const_half(); g_fx.dyn = 1; }
+static void s_one_dst(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_OP_ADD); }
+static void s_one_src(void) { blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_OP_ADD); }
+static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_OP_ADD); }
+static void s_mask_r(void) { g_fx.wmask = 1; }
+static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
+static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
+static void s_bias_on(void) { g_fx.bias = 1; g_fx.bias_c = -1e5f; }
+static void s_dyn_bias(void) { s_bias_on(); g_fx.dyn = 1; }
+static void s_clamp(void) { g_fx.clamp = 1; }
+static void s_bias_pos(void) { g_fx.bias = 1; g_fx.bias_c = 1e7f; }   /* z 0.5 + huge bias: fails LESS against the 1.0 clear */
+static void s_bias_pos_clamp(void) { s_bias_pos(); g_fx.bias_clamp = 0.25f; }   /* clamped to +0.25: z 0.75 passes */
+static void s_bias_neg_clamp(void) { g_fx.bias = 1; g_fx.bias_c = -1e7f; g_fx.bias_clamp = -0.25f; }   /* z 1.0 - 0.25 passes */
+static void s_dyn_bias_pos_clamp(void) { s_bias_pos_clamp(); g_fx.dyn = 1; }
+
+static const struct fxcase g_fxcases[] = {
+   {"fx_cull_none", 0, 1, {0.5f}, EXP_COV, 8192, 0, s_none},
+   {"fx_cull_back_cw", 0, 1, {0.5f}, EXP_COV, 8192, 0, s_back_cw},
+   {"fx_cull_back_ccw", 0, 1, {0.5f}, EXP_COV, 0, 0, s_back_ccw},
+   {"fx_cull_front_cw", 0, 1, {0.5f}, EXP_COV, 0, 0, s_front_cw},
+   {"fx_cull_front_ccw", 0, 1, {0.5f}, EXP_COV, 8192, 0, s_front_ccw},
+   {"fx_dyn_cull_back_ccw", 0, 1, {0.5f}, EXP_COV, 0, 0, s_dyn_back_ccw},
+   {"fx_dyn_cull_front_ccw", 0, 1, {0.5f}, EXP_COV, 8192, 0, s_dyn_front_ccw},
+   {"fx_blend_add11", 0, 2, {0.5f, 0.5f}, EXP_DOUBLE, 0, 0, s_add11},
+   {"fx_blend_rsub11", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_rsub11},
+   {"fx_blend_const", 0, 1, {0.5f}, EXP_HALF, 0, 0, s_const_half},
+   {"fx_dyn_blend_const", 0, 1, {0.5f}, EXP_HALF, 0, 0, s_dyn_const_half},
+   {"fx_blend_one_dstcolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_dst},
+   {"fx_blend_one_srccolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_src},
+   {"fx_blend_2srcdst", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_dst_src},
+   {"fx_blend_srcalpha", 0, 2, {0.5f, 0.5f}, EXP_SAME, 0, 0, s_src_alpha},
+   {"fx_write_mask_r", 0, 1, {0.5f}, EXP_RONLY, 0, 0, s_mask_r},
+   {"fx_bias_off", 1, 1, {1.0f}, EXP_COV, 0, 0, s_bias_off},
+   {"fx_bias_on", 1, 1, {1.0f}, EXP_COV, 8192, 0, s_bias_on},
+   {"fx_dyn_bias", 1, 1, {1.0f}, EXP_COV, 8192, 0, s_dyn_bias},
+   {"fx_bias_pos_noclamp", 1, 1, {0.5f}, EXP_COV, 0, 0, s_bias_pos},
+   {"fx_bias_pos_clamp", 1, 1, {0.5f}, EXP_COV, 8192, 2, s_bias_pos_clamp},
+   {"fx_bias_neg_clamp", 1, 1, {1.0f}, EXP_COV, 8192, 2, s_bias_neg_clamp},
+   {"fx_dyn_bias_pos_clamp", 1, 1, {0.5f}, EXP_COV, 8192, 2, s_dyn_bias_pos_clamp},
+   {"fx_clip_off_range", 0, 1, {1.5f}, EXP_COV, 0, 0, s_none},
+   {"fx_depth_clamp", 0, 1, {1.5f}, EXP_COV, 8192, 1, s_clamp},
+};
+
+static int
+fx_run(const struct fxcase *c, uint8_t px[4], uint32_t *cov)
+{
+   struct scene s;
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&g_fx, 0, sizeof g_fx);
+   g_fx.on = 1;
+   g_fx.wmask = 0xf;
+   c->set();
+   memset(&s, 0, sizeof s);
+   s.mode = MODE_TRI;
+   if (!scene_create(&s, c->depth)) return 0;
+   float rot[2][4] = {{1, 0, 0, c->z[0]}, {1, 0, 0, c->z[1]}};
+   int ok = scene_draw(&s, c->n, rot, f);
+   if (ok) {
+      *cov = count_cov(&s);
+      memcpy(px, s.px + 106 * s.pitch + 128 * 4, 4);
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   memset(&g_fx, 0, sizeof g_fx);
+   return ok;
+}
+
+static int
+test_fx(void)
+{
+   int ok = 1;
+   struct fxcase ref = {"ref", 0, 1, {0.5f}, EXP_SAME, 0, 0, s_none};
+   uint8_t p[4] = {0}, q[4];
+   uint32_t cov = 0;
+   if (g_fake) { printf("{\"test\":\"fx\",\"skipped\":\"fake backend\",\"ok\":true}\n"); return 1; }
+   if (!fx_run(&ref, p, &cov)) return 0;
+   CHECK(abs(p[0] - 85) < 12 && p[3] == 255, "fx reference pixel %u,%u,%u,%u", p[0], p[1], p[2], p[3]);
+   for (unsigned i = 0; ok && i < sizeof g_fxcases / sizeof *g_fxcases; i++) {
+      const struct fxcase *c = &g_fxcases[i];
+      if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
+      if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
+      if (!fx_run(c, q, &cov)) return 0;
+      int good = 1;
+      int e[4] = {p[0], p[1], p[2], p[3]};
+      switch (c->exp) {
+      case EXP_COV: good = fabs((double)cov - c->cov) <= c->cov * 0.02 + 8; break;
+      case EXP_SAME: e[3] = 255; break;
+      case EXP_DOUBLE: for (int k = 0; k < 3; k++) e[k] = e[k] * 2 > 255 ? 255 : e[k] * 2; e[3] = 255; break;
+      case EXP_HALF: for (int k = 0; k < 3; k++) e[k] /= 2; e[3] = 127; break;
+      case EXP_ZERO: e[0] = e[1] = e[2] = e[3] = 0; break;
+      case EXP_ADDSQ: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] * e[k] / 255; e[3] = 255; break;
+      case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
+      }
+      if (c->exp != EXP_COV)
+         for (int k = 0; k < 4; k++) good &= abs(q[k] - e[k]) <= 4;
+      if (!good) {
+         printf("{\"fail\":\"%s: pixel %u,%u,%u,%u expected %d,%d,%d,%d (coverage %u expected %.0f)\"}\n", c->name, q[0], q[1], q[2], q[3], e[0], e[1], e[2], e[3], cov, c->cov);
+         g_fail++;
+         ok = 0;
+      } else {
+         printf("{\"test\":\"%s\",\"cov\":%u,\"px\":[%u,%u,%u,%u],\"ok\":true}\n", c->name, cov, q[0], q[1], q[2], q[3]);
+      }
+   }
    return ok;
 }
 
@@ -864,7 +1038,7 @@ main(int argc, char **argv)
    if (!gipa || !negotiate || negotiate(&iv)) { printf("{\"fail\":\"icd entry\"}\n"); return 1; }
 
    PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
-   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_0};
+   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
    const char *iext[] = {"VK_KHR_get_physical_device_properties2", "VK_KHR_external_memory_capabilities",
                          "VK_KHR_external_semaphore_capabilities", "VK_KHR_external_fence_capabilities"};
@@ -875,6 +1049,7 @@ main(int argc, char **argv)
    PFN_vkEnumeratePhysicalDevices EPD = (PFN_vkEnumeratePhysicalDevices)gipa(inst, "vkEnumeratePhysicalDevices");
    PFN_vkGetPhysicalDeviceMemoryProperties GMP = (PFN_vkGetPhysicalDeviceMemoryProperties)gipa(inst, "vkGetPhysicalDeviceMemoryProperties");
    PFN_vkGetPhysicalDeviceProperties GPP = (PFN_vkGetPhysicalDeviceProperties)gipa(inst, "vkGetPhysicalDeviceProperties");
+   PFN_vkGetPhysicalDeviceFeatures GPF = (PFN_vkGetPhysicalDeviceFeatures)gipa(inst, "vkGetPhysicalDeviceFeatures");
    PFN_vkCreateDevice CreateDevice = (PFN_vkCreateDevice)gipa(inst, "vkCreateDevice");
    PFN_vkGetDeviceProcAddr GDPA = (PFN_vkGetDeviceProcAddr)gipa(inst, "vkGetDeviceProcAddr");
    PFN_vkDestroyInstance DestroyInstance = (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
@@ -890,6 +1065,9 @@ main(int argc, char **argv)
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
+   GPF(pd, &g_feat);
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .depthBiasClamp = g_feat.depthBiasClamp};
+   di.pEnabledFeatures = &en;
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
@@ -901,9 +1079,11 @@ main(int argc, char **argv)
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
+   if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);
    if (ok && CASE_ON("scissor")) ok &= test_mode("scissor", MODE_SCISSOR, 8192.0, 0.5);
    if (ok && CASE_ON("viewport")) ok &= test_mode("viewport", MODE_VPORT, 8192.0, 0.5);
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
+   if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

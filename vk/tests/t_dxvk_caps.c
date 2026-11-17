@@ -14,6 +14,7 @@
 
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_fail;
@@ -39,8 +40,10 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL;
+   int expect_missing = -1;
    for (int i = 1; i < argc; i++)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
+      else if (!strcmp(argv[i], "--expect-missing") && i + 1 < argc) expect_missing = atoi(argv[++i]);
    if (!icd) { printf("usage: t_dxvk_caps --direct <icd.so>\n"); return 2; }
    void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
    if (!lib) { printf("dlopen: %s\n", dlerror()); return 1; }
@@ -113,6 +116,9 @@ main(int argc, char **argv)
    }
    printf("summary: %u/%u required features missing, %u/%zu DXVK extensions missing\n", missing, nreq, next_missing,
           sizeof(dxvk_exts) / sizeof(dxvk_exts[0]));
+
+   /* The advertised set only changes together with a test and this number (R4 honesty rule). */
+   CHECK(expect_missing < 0 || (int)missing == expect_missing, "required features missing: %u, expected %d", missing, expect_missing);
 
    /* Device create with the supported subset (what DXVK would get with its requirement list patched down). */
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
