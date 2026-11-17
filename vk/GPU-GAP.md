@@ -66,3 +66,14 @@ cube, CMF, mailbox, wayland, 8 s, warmup 30, one run per guest session (qrestore
 | 330 | 2.60 (119) | 1.72 (164) | 2.52 (150) |
 | 332 | 1.64 (158) | 2.13 (166) | 1.61 (162) |
 => NO consistent effect of the head flush on the CMF: the numbers are bimodal (~1.6 vs ~2.5 ms) independent of the setting (0x332 has two 1.6 runs, 0x330 two 2.5 runs), i.e. dominated by GPU clock/session state, not by FLUSH_CACHE2. The "0.5 ms" Poco result and the earlier "MALI_HF=0 saves 0.35 ms" CMF note are not reproducible; the Poco worker reached the same conclusion (87e4d6b). Recommendation: do not claim a gain for 0x330.
+
+## 2026-11-17 (perf/gpu-gap, offline review; phones busy/gated, NO new measurement)
+Flush suspect: REFUTED by existing data, not by a new run. CMF (v11) HF A/B: no consistent effect, bimodal 1.6/2.5 ms for every MALI_HF value; the Poco 0.33 ms
+result did not reproduce (3 runs 0.80-0.88 with MALI_HF=0). CMF cube is 0.87 ms at 320x180 vs 2.13 ms at 720p: ~1.3 ms scales with pixels, only ~0.75 ms is fixed.
+Early-Z is on for depth-tested draws (mali_cs_emit.c emit_draw_regs: pixel_kill 0, zs_update 0, fpk allowed), so it is not a late-Z problem.
+New untested suspect for the per-pixel part: memory attributes of the RT/depth BOs. (a) every non-exec BO gets BASE_MEM_COHERENT_LOCAL (0x800) on v10/v11/v13
+(mali_backend_kbase.c:122, added for v11 SSBO atomics) including colour/depth images; (b) WSI images come from the dma-heap `system-uncached` (mali_backend_kbase.c kbase_bo_alloc,
+MALI_BO_EXPORT) unless type 1. Either could slow GPU write-back of a linear 720p RT+depth (~7 MB/frame).
+Next A/B (needs phone): same ICD, cube, interleaved, medians: `ENVV="MALI_BO_COHERENT_LOCAL=0"` vs default (cube has no SSBO atomics, so it is safe to test);
+then WSI heap system vs system-uncached. If (a) wins: allocate COHERENT_LOCAL only for buffer-capable memory (dedicated image allocs / a separate memory type) instead of all BOs.
+Build for the test: `MESA_BUILD=$PWD/../third_party/build-vk-a64-glibc-wl MALI_TARGET=a64-glibc-wl vk/build.sh` (perf/gpu-gap 8619a6f, libvulkan_mali.so sha256 9422ff68436213f0...).
