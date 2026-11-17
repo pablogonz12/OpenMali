@@ -10,3 +10,5 @@ vk/package/dist/
 *.a
 *.so
 *.zip
+__pycache__/
+*.pyc
