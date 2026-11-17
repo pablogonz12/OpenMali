@@ -476,6 +476,77 @@ class T(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("verdict is", err)
 
+    def mkjob(self, ref, commit, suite, parts, tsvs=None):
+        j = L.new_job(ref, commit, False, suite, list(parts), "", "r")
+        for cls, (alias, verdict) in parts.items():
+            j["parts"][cls].update(state="done", verdict=verdict, device=alias)
+            L.write_json(L.run_path(j["id"], cls), {"verdict": verdict, "device": alias, "counts": {"Pass": 2, "Fail": 1, "NotSupported": 1}})
+            if tsvs:
+                open(os.path.join(L.state_dir(), "logs", f"{j['id']}-{alias}-daily.tsv"), "w").write("".join(f"{c}\t{s}\t\n" for c, s in tsvs.items()))
+        L.write_json(L.job_path(j["id"]), j)
+        return j
+
+    def test_cheap_commands(self):
+        m = self.mkjob("main", "a" * 40, "daily", {"v11": ("dev-a", "pass")}, {"dEQP-VK.x.one": "Pass", "dEQP-VK.x.two": "Pass", "dEQP-VK.x.three": "Fail"})
+        b = self.mkjob("feat/x", "b" * 40, "daily", {"v11": ("dev-a", "fail")}, {"dEQP-VK.x.one": "Pass", "dEQP-VK.x.two": "NotSupported", "dEQP-VK.x.three": "Pass"})
+        rc, out, _ = self.farm("diff", m["id"], b["id"], "--class", "v11")
+        self.assertEqual(rc, 0)
+        self.assertIn("Pass->NotSupported", out)
+        self.assertIn("Fail->Pass", out)
+        self.assertNotIn("x.one", out)
+        self.assertLess(len(out.splitlines()), 40)
+        rc, out, _ = self.farm("digest")
+        self.assertIn("queue: 2 done", out)
+        self.assertIn("vs main aaaaaaa: 1 regressed (1 ->NS): x.two", out)
+        self.assertLess(len(out.splitlines()), 41)
+        rc, out, _ = self.farm("case", "x.two")
+        rows = out.splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0].split()[1] == "main" and rows[1].endswith("NotSupported"))     # newest last
+        self.assertIn("no stored daily", self.farm("case", "nope.nothing")[1])
+
+    def test_cancel(self):
+        self.attach("dev-a")
+        _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        out = self.farm("cancel", j1)[1]
+        self.assertIn("v11 cancelled", out)
+        self.assertEqual(L.job_verdict(L.find_job(j1)), "cancelled")
+        self.farmd()
+        self.assertEqual(L.find_job(j1)["parts"]["v11"]["state"], "cancelled")      # never run
+        self.assertEqual(L.find_job(j2)["parts"]["v11"]["state"], "done")
+        self.assertIn("v11 pass (untouched)", self.farm("cancel", j2)[1])           # finished parts are left alone
+        # a running part needs --running; the flag stops it cleanly, the lock is released, the part ends cancelled
+        _, j3, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--need", "v11", "--env", "FAKE_SLOW=1")
+        j = L.find_job(j3)
+        j["parts"]["v11"]["state"] = "running"
+        L.write_json(L.job_path(j3), j)
+        self.assertIn("RUNNING (use --running)", self.farm("cancel", j3)[1])
+        j["parts"]["v11"]["state"] = "pending"
+        L.write_json(L.job_path(j3), j)
+        os.makedirs(self.d + "/state/cancel", exist_ok=True)
+        open(self.d + "/state/cancel/" + j3, "w").close()
+        self.farmd()
+        self.assertEqual(L.find_job(j3)["parts"]["v11"]["state"], "cancelled")
+        lk = L.PhoneLock({"alias": "dev-a", "lock": "cmf"}, True)
+        self.assertTrue(lk.acquire())
+        lk.release()
+
+    def test_cases_suite(self):
+        self.attach("dev-a")
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--case", "dEQP-VK.a.c", "--repeat", "3", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "cases")[0], 0)      # needs a case
+        self.farmd()
+        run = json.loads(self.farm("results", jid, "--json")[1])["runs"]["v11"]
+        self.assertEqual(run["case_counts"]["dEQP-VK.a.b"], {"Pass": 3})
+        self.assertEqual(run["verdict"], "pass")
+        txt = self.farm("results", jid)[1]
+        self.assertIn("3 Pass of 3 (100% pass)", txt)
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--repeat", "2", "--need", "v11", "--env", "FAKE_CASE_NS=1")
+        self.farmd()
+        self.assertIn("2 NotSupported of 2 (0% pass)", self.farm("results", j2)[1])
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 

@@ -3,7 +3,7 @@
 Devices are referred to by alias only; serials/addresses/paths come from the devices.toml in the user's config dir."""
 import collections, datetime, fcntl, json, os, re, subprocess, tempfile, time, tomllib
 
-SUITES = ("smoke", "daily", "bench")
+SUITES = ("smoke", "daily", "bench", "cases")
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 
 
@@ -249,7 +249,9 @@ def find_job(jid):
 
 def job_verdict(job):
     """pending while any part is not finished; then error > fail > pass"""
-    parts = job["parts"].values()
+    parts = [p for p in job["parts"].values() if p["state"] != "cancelled"]
+    if not parts:
+        return "cancelled"
     if any(p["state"] in ("pending", "running") for p in parts):
         return "pending"
     vs = {p.get("verdict", "error") for p in parts}
@@ -259,7 +261,7 @@ def job_verdict(job):
     return "pass"
 
 
-def new_job(ref, commit, dirty, suite, need, env, repo_name):
+def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=1):
     base = time.strftime("%Y%m%d-%H%M%S") + "-" + commit[:8]
     jid, n = base, 1
     while os.path.exists(job_path(jid)):
@@ -268,6 +270,8 @@ def new_job(ref, commit, dirty, suite, need, env, repo_name):
     job = {"id": jid, "ref": ref, "commit": commit, "dirty": dirty, "suite": suite, "env": env, "repo": repo_name,
            "created": now(), "seq": time.time_ns(), "so_sha256": None, "build": None,
            "parts": {c: {"state": "pending", "attempts": 0, "device": None} for c in need}}
+    if suite == "cases":                                  # `farm submit --suite cases --case X --repeat N`: only these cases, N times
+        job["cases"], job["repeat"] = list(cases or []), int(repeat)
     write_json(job_path(jid), job)
     return job
 

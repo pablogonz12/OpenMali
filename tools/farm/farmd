@@ -321,7 +321,10 @@ class Farm:
             sha = hashlib.sha256(open(so, "rb").read()).hexdigest()
             shutil.copy2(so, os.path.join(L.state_dir(), "artifacts", sha + ".so"))
             if any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values()) and job["suite"] == "smoke":
-                benv = dict(os.environ, MESA_BUILD=os.path.join(tree, "third_party", "build-vk-a64-bionic"), MALI_TARGET="a64-bionic")
+                bb = os.path.join(tree, "third_party", "build-vk-a64-bionic")
+                import glob as _g                       # cross/build-cross.sh: bionic needs liblog/libsync and the libdrm objects of Mesa's wrap
+                objs = " ".join(sorted(_g.glob(os.path.join(bb, "subprojects", "libdrm-*", "libdrm.so.p", "*.o"))))
+                benv = dict(os.environ, MESA_BUILD=bb, MALI_TARGET="a64-bionic", MALI_EXTRA_LD="-static-libstdc++ -llog -lsync " + objs)
                 rc, out = L.sh(["timeout", "-k", "10", str(BUILD_TIMEOUT), "bash", os.path.join(tree, "vk", "build.sh")], BUILD_TIMEOUT + 30, env=benv)
                 so2 = os.path.join(tree, "vk", "out", "a64-bionic", "libvulkan_mali.so")
                 if rc or not os.path.exists(so2):
@@ -348,7 +351,7 @@ class Farm:
         need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
         if suite == "smoke" and any(self.shell_route(dv) for dv in self.devs.values()):
             need.append(("third_party/build-vk-a64-bionic", "Mesa a64-bionic build tree (shell-route smoke)"))
-        if suite == "daily":
+        if suite in ("daily", "cases"):
             need += [("vk/deqp/out/a64-glibc", "dEQP build (vk/deqp/build.sh)"), ("vk/deqp/lists/daily-sample.txt", "dEQP case list")]
         if not self.quick_root or not os.path.isdir(os.path.join(self.quick_root, "scripts", "quick")):
             return "missing dependency: quick_root with scripts/quick (set quick_root in ~/.config/mali-farm/farm.toml)"
@@ -446,6 +449,10 @@ class Farm:
         al = dev["alias"]
         if self.is_disabled(dev):
             self.stop_reason[al] = "disabled by owner"
+            return "stop"
+        rj = getattr(self, "running_job", {}).get(al)
+        if rj and os.path.exists(os.path.join(L.state_dir(), "cancel", rj)):         # `farm cancel --running`
+            self.stop_reason[al] = "cancelled"
             return "stop"
         if self.fake:
             ok = al in self.attached()
@@ -663,6 +670,68 @@ class Farm:
         return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
                 "notes": f"{bref}; qdeqp rc={rc}{extra}; {note if verdict != 'pass' else ''}".strip()}
 
+    def suite_cases(self, job, dev):
+        """only job["cases"], job["repeat"] times (one dEQP run per repetition, each with its own per-run .so path + sha256 check) -> per-case status counts"""
+        cases, n = job["cases"], int(job.get("repeat") or 1)
+        stat = {c: {} for c in cases}
+        if self.fake:
+            if "FAKE_SLOW=1" in job["env"].split():                  # test hook: a long run the owner can cancel
+                rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
+                if rc == 125:
+                    return {"lost": True}
+            for _ in range(n):
+                for c in cases:
+                    s = "NotSupported" if "FAKE_CASE_NS=1" in job["env"].split() else "Pass"
+                    stat[c][s] = stat[c].get(s, 0) + 1
+        else:
+            tree = self.tree(job["id"])
+            self.harness(tree)
+            shell = self.shell_route(dev)
+            wd = os.path.join(L.state_dir(), "work", f"{job['id']}-{dev['alias']}-cases")
+            os.makedirs(os.path.join(wd, "runs"), exist_ok=True)
+            if not shell:
+                for nm, tgt in (("scripts", os.path.join(self.quick_root, "scripts")), ("tools", os.path.join(self.quick_root, "tools")), ("driver", tree)):
+                    if not os.path.lexists(os.path.join(wd, nm)):
+                        os.symlink(tgt, os.path.join(wd, nm))
+            for i in range(n):
+                lf = os.path.join(wd, f"rep{i}.txt")
+                open(lf, "w").write("\n".join(cases) + "\n")
+                rid = f"{job['id']}-{dev['alias']}-r{i}"
+                if shell:
+                    tsv = os.path.join(wd, f"rep{i}.tsv")
+                    rc, out = self.run_shellroute(job, dev, "daily", rid, ["--list", lf, "--out", tsv, "--chunk", "100"], 900)
+                    so_phone = f"/data/local/tmp/g/icd.{rid}.so"
+                else:
+                    rc, out = L.run_watched([sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"), dev["lock"], lf, "--chunk", "300"], 900,
+                                            lambda: self.alive(dev), cwd=wd, env=self.phone_env(dev, {"QDEQP_ENV": job["env"], "QDEQP_RUN": rid,
+                                                                                                      "QDEQP_SO_SHA256": job.get("so_sha256") or ""}))
+                    so_phone = f"/storage/emulated/0/Download/qdeqp/libvulkan_mali.{rid}.so"
+                    rd = os.path.join(wd, "runs", "qdeqp")
+                    ts = [os.path.join(rd, x) for x in os.listdir(rd) if x.endswith(f"-ours-rep{i}.tsv")] if os.path.isdir(rd) else []
+                    tsv = max(ts, key=os.path.getsize) if ts else ""
+                bad = self.shell_rc(rc, out, "run")
+                if bad:
+                    if bad.get("verdict") == "invalid":
+                        self.adb(dev, "shell", f"rm -f {so_phone}")
+                    return bad
+                if rc in (0, 1):
+                    ok_s, got = self.verify_so(job, dev, so_phone)
+                    self.adb(dev, "shell", f"rm -f {so_phone}")
+                    if not ok_s:
+                        return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]}); result discarded"}
+                cur = L.read_tsv(tsv) if tsv and os.path.exists(tsv) else {}
+                for c in cases:
+                    s = cur.get(c, "Missing")
+                    stat[c][s] = stat[c].get(s, 0) + 1
+            shutil.rmtree(wd, ignore_errors=True)
+        tot = {}
+        for c in cases:
+            for s, k in stat[c].items():
+                tot[s] = tot.get(s, 0) + k
+        bad = [[c, ", ".join(f"{k} {s}" for s, k in sorted(v.items()))] for c, v in stat.items() if set(v) != {"Pass"}]
+        return {"verdict": "fail" if bad else "pass", "counts": tot, "case_counts": stat, "new_failures": bad, "newly_passing": [],
+                "notes": f"{n} repetitions of {len(cases)} case(s)"}
+
     def suite_bench(self, job, dev):
         return {"verdict": "error", "notes": "bench suite is a stub (not implemented yet)"}
 
@@ -679,6 +748,9 @@ class Farm:
         job = L.read_json(L.job_path(jid))
         res, h0, touched = None, {}, False
         self.stop_reason.pop(alias, None)
+        if not hasattr(self, "running_job"):
+            self.running_job = {}
+        self.running_job[alias] = jid
         try:
             gs, gwhy, h0 = self.gate_check(dev)
             if gs != "ok":
@@ -716,6 +788,11 @@ class Farm:
             log(f"{alias}: {jid}/{cls} paused by the health gate; back to pending")
             return
         why_stop = self.stop_reason.pop(alias, None)
+        self.running_job.pop(alias, None)
+        if res is None and why_stop == "cancelled":
+            self.upd(jid, lambda x: x["parts"][cls].update(state="cancelled"))
+            log(f"{alias}: {jid}/{cls} cancelled by the owner; lock released")
+            return
         if res is None and why_stop:                            # owner policy (charger removed / disabled): clean stop, no blame, no retry count
             self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))
             self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", why_stop)
@@ -752,7 +829,7 @@ class Farm:
                "battery_temp_c": info.get("battery_temp_c"), "battery_pct_start": h0.get("level"), "battery_pct_end": h1.get("level"),
                "temp_c_start": h0.get("temp_c"), "temp_c_end": h1.get("temp_c"), "counts": res.get("counts", {}),
                "new_failures": res.get("new_failures", []), "newly_passing": res.get("newly_passing", []),
-               "ns_to_fail": res.get("ns_to_fail", []), "flaky_ignored": res.get("flaky_ignored", []),
+               "ns_to_fail": res.get("ns_to_fail", []), "case_counts": res.get("case_counts"), "flaky_ignored": res.get("flaky_ignored", []),
                "verdict": res["verdict"], "notes": res.get("notes", ""), "started": started, "wall_s": round(time.time() - t0, 1)}
         L.write_json(L.run_path(jid, cls), run)
         j = self.upd(jid, lambda x: x["parts"][cls].update(state="done", verdict=run["verdict"], device=alias))

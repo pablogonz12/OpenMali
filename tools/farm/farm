@@ -25,14 +25,16 @@ def cmd_submit(a):
     for c in need:
         if c not in classes:
             print(f"farm: warning: no device of class {c} configured; that part stays pending", file=sys.stderr)
-    job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")))
+    if a.suite == "cases" and not a.case:
+        raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
+    job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
+                    cases=a.case, repeat=a.repeat)
     if dirty:
         print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
     print(job["id"])
 
 
-def cmd_status(a):
-    _, devs = L.load_devices()
+def print_devices(devs):
     ds = L.read_json(os.path.join(L.state_dir(), "devices-state.json")) if os.path.exists(os.path.join(L.state_dir(), "devices-state.json")) else {}
     for al, d in devs.items():
         s = ds.get(al, {})
@@ -43,6 +45,11 @@ def cmd_status(a):
         elif st == "on_battery":
             h = "on battery: paused"
         print(f"device {al:10} class {d['class']:4} {st:8} {h} {('via ' + s['via'] + ' ') if s.get('via') and st in ('up', 'charging', 'cooling') else ''}{s.get('note', '') if st not in ('disabled', 'on_battery') else ''}")
+
+
+def cmd_status(a):
+    _, devs = L.load_devices()
+    print_devices(devs)
     jobs = L.list_jobs()
     if not a.all:
         jobs = jobs[-15:]
@@ -99,12 +106,170 @@ SUITE_CASES = 1381                                  # lists/daily-sample.txt
 
 def cmd_results(a):
     j = L.find_job(a.job)
+    if j["suite"] == "cases" and not getattr(a, "json", False):
+        print(f"{j['id']} {j['ref']} {j['commit'][:7]} cases x{j.get('repeat')}: {L.job_verdict(j)}")
+        for c in j["parts"]:
+            p = L.run_path(j["id"], c)
+            run = L.read_json(p) if os.path.exists(p) else {}
+            for case, cnt in (run.get("case_counts") or {}).items():
+                tot = sum(cnt.values())
+                print(f"  {c} {run.get('device')}: {case[-70:]}: " + ", ".join(f"{k} {s}" for s, k in sorted(cnt.items())) + f" of {tot} ({100 * cnt.get('Pass', 0) // max(tot, 1)}% pass)")
+            if not run.get("case_counts"):
+                print(f"  {c}: {run.get('verdict') or j['parts'][c]['state']} {run.get('notes', '')[:100]}")
+        return
     out = {"job": j, "verdict": L.job_verdict(j), "runs": {}}
     for c in j["parts"]:
         p = L.run_path(j["id"], c)
         if os.path.exists(p):
             out["runs"][c] = L.read_json(p)
     print(json.dumps(out, indent=1, sort_keys=True))
+
+
+# ---------------------------------------------------------------- cheap commands (one short command instead of ad-hoc scripts)
+CAP = 5
+
+
+def job_tsv(j, cls):
+    """result tsv of a finished daily part -> {case: status} | None"""
+    p = j["parts"].get(cls) or {}
+    f = os.path.join(L.state_dir(), "logs", f"{j['id']}-{p.get('device')}-daily.tsv")
+    return L.read_tsv(f) if p.get("device") and os.path.exists(f) else None
+
+
+def names(cs, cap=CAP):
+    cs = sorted(cs)
+    short = lambda c: c.replace("dEQP-VK.", "")[-58:]
+    return ", ".join(short(c) for c in cs[:cap]) + (f" (+{len(cs) - cap} more)" if len(cs) > cap else "")
+
+
+def finished(j, cls):
+    p = j["parts"].get(cls) or {}
+    return p.get("state") == "done" and p.get("verdict")
+
+
+def cmd_cancel(a):
+    os.makedirs(os.path.join(L.state_dir(), "cancel"), exist_ok=True)
+    for jid in a.job:
+        try:
+            j = L.find_job(jid)
+        except (SystemExit, Exception):
+            print(f"{jid}: no such job")
+            continue
+        out = []
+        for c, p in j["parts"].items():
+            if p["state"] == "pending":
+                p["state"] = "cancelled"
+                out.append(f"{c} cancelled")
+            elif p["state"] == "running":
+                if a.running:
+                    open(os.path.join(L.state_dir(), "cancel", j["id"]), "w").close()      # farmd stops it within one poll and releases the lock
+                    out.append(f"{c} stop requested")
+                else:
+                    out.append(f"{c} RUNNING (use --running)")
+            else:
+                out.append(f"{c} {p.get('verdict') or p['state']} (untouched)")
+        L.write_json(L.job_path(j["id"]), j)
+        print(f"{j['id']}: " + ", ".join(out))
+
+
+def counts_str(run):
+    c = run.get("counts") or {}
+    if "Pass" in c or "Fail" in c:
+        return f"{c.get('Pass', 0)}/{c.get('Fail', 0)}/{c.get('NotSupported', 0)}"
+    return f"{c.get('tests', 0) - c.get('failed', 0)}/{c.get('tests', 0)} tests"
+
+
+def cmd_digest(a):
+    _, devs = L.load_devices()
+    print_devices(devs)
+    jobs = L.list_jobs()
+    st = {}
+    run_now = []
+    for j in jobs:
+        for c, p in j["parts"].items():
+            st[p["state"]] = st.get(p["state"], 0) + 1
+            if p["state"] == "running":
+                run_now.append(f"{j['id']}/{c} ({j['ref']} {j['suite']}) on {p.get('device')}")
+    print("queue: " + ", ".join(f"{n} {k}" for k, n in sorted(st.items())) + ("; running " + "; ".join(run_now) if run_now else ""))
+    classes = sorted({d["class"] for d in devs.values()})
+    def latest(ref, suite, cls):
+        for j in reversed(jobs):
+            if j["ref"] == ref and j["suite"] == suite and finished(j, cls):
+                return j
+    mains = {c: latest("main", "daily", c) for c in classes}
+    refs = []
+    for j in reversed(jobs):
+        if j["ref"] not in refs:
+            refs.append(j["ref"])
+    lines = []
+    for ref in refs:
+        for cls in classes:
+            sm, dl = latest(ref, "smoke", cls), latest(ref, "daily", cls)
+            if not (sm or dl):
+                continue
+            seg = []
+            for tag, j in (("smoke", sm), ("daily", dl)):
+                if j:
+                    run = L.read_json(L.run_path(j["id"], cls)) if os.path.exists(L.run_path(j["id"], cls)) else {}
+                    seg.append(f"{tag} {j['parts'][cls]['verdict']} {counts_str(run)} [{j['id'][9:15]}-{j['commit'][:7]}]")
+            lines.append(f"{ref[:22]:22} {cls:4} " + " | ".join(seg))
+            m = mains.get(cls)
+            if dl and m and ref != "main":
+                a1, b1 = job_tsv(m, cls), job_tsv(dl, cls)
+                if a1 and b1:
+                    worse = [c for c, s in a1.items() if s == "Pass" and b1.get(c, "Missing") != "Pass"]
+                    ns = [c for c in worse if b1.get(c) == "NotSupported"]
+                    if worse:
+                        lines.append(f"    vs main {m['commit'][:7]}: {len(worse)} regressed ({len(ns)} ->NS): {names(worse)}")
+    room = 40 - 4 - len(devs)
+    print("\n".join(lines[:room]) + (f"\n... {len(lines) - room} more lines (older refs)" if len(lines) > room else ""))
+
+
+def cmd_diff(a):
+    ja, jb = L.find_job(a.a), L.find_job(a.b)
+    out = []
+    for cls in sorted(set(ja["parts"]) & set(jb["parts"])):
+        if a.cls and cls != a.cls:
+            continue
+        x, y = job_tsv(ja, cls), job_tsv(jb, cls)
+        if x is None or y is None:
+            out.append(f"{cls}: no result tsv for {'A' if x is None else 'B'}")
+            continue
+        grp = {}
+        for c in sorted(set(x) | set(y)):
+            sa, sb = x.get(c, "absent"), y.get(c, "absent")
+            if sa != sb:
+                grp.setdefault(f"{sa}->{sb}", []).append(c)
+        out.append(f"{cls}: {ja['id']} ({ja['ref']}) -> {jb['id']} ({jb['ref']}): {sum(map(len, grp.values()))} changed")
+        for k, cs in sorted(grp.items(), key=lambda kv: -len(kv[1])):
+            out.append(f"  {k:24} {len(cs):4}  {names(cs, 3)}")
+    print("\n".join(out[:40]) if out else "no common class")
+
+
+def cmd_case(a):
+    import re
+    rows = []
+    for f in sorted(os.listdir(os.path.join(L.state_dir(), "logs"))):
+        m = re.match(r"^(\d{8}-\d{6}-[0-9a-f]{8}(?:-\d+)?)-(.+)-daily\.tsv$", f)
+        if not m:
+            continue
+        try:
+            j = L.find_job(m.group(1))
+        except (SystemExit, Exception):
+            j = {"ref": "?", "commit": "?" * 8, "created": m.group(1)}
+        for l in open(os.path.join(L.state_dir(), "logs", f)):
+            p = l.rstrip("\n").split("\t")
+            if len(p) >= 2 and a.substring in p[0]:
+                rows.append((j.get("created", ""), j.get("seq", 0), j["ref"], j["commit"][:7], m.group(2), p[1], p[0]))
+    rows.sort()
+    multi = len({r[6] for r in rows}) > 1
+    cap = 40
+    if len(rows) > cap:
+        print(f"... {len(rows) - cap} older rows omitted")
+    for r in rows[-cap:]:
+        print(f"{r[0][:16]} {r[2][:20]:20} {r[3]} {r[4]:8} {r[5]}" + (f"  {r[6][-60:]}" if multi else ""))
+    if not rows:
+        print("no stored daily log has a case matching that")
 
 
 def cmd_bless(a):
@@ -160,6 +325,8 @@ def main():
     s.add_argument("--suite", choices=L.SUITES, default="smoke")
     s.add_argument("--need", default="", help="comma list of device classes (default: every configured class)")
     s.add_argument("--env", default="", help='e.g. "MALI_HF=330 FOO=1"')
+    s.add_argument("--case", action="append", default=[], help="(--suite cases) a dEQP case to run; repeatable")
+    s.add_argument("--repeat", type=int, default=1, help="(--suite cases) repetitions of the case list")
     s.set_defaults(f=cmd_submit)
     s = sp.add_parser("status")
     s.add_argument("--all", action="store_true")
@@ -178,7 +345,22 @@ def main():
     s.set_defaults(f=cmd_wait)
     s = sp.add_parser("results")
     s.add_argument("job")
+    s.add_argument("--json", action="store_true", help="(cases suite prints text by default)")
     s.set_defaults(f=cmd_results)
+    s = sp.add_parser("cancel", help="cancel pending parts of jobs (--running also stops a running part cleanly)")
+    s.add_argument("job", nargs="+")
+    s.add_argument("--running", action="store_true")
+    s.set_defaults(f=cmd_cancel)
+    s = sp.add_parser("digest", help="one screen: devices, queue, latest result per ref/class and its difference vs main's latest daily")
+    s.set_defaults(f=cmd_digest)
+    s = sp.add_parser("diff", help="case-level status changes between two jobs")
+    s.add_argument("a")
+    s.add_argument("b")
+    s.add_argument("--class", dest="cls", default="")
+    s.set_defaults(f=cmd_diff)
+    s = sp.add_parser("case", help="status of matching cases across all stored daily logs, newest last")
+    s.add_argument("substring")
+    s.set_defaults(f=cmd_case)
     s = sp.add_parser("bless", help="write a main daily job's result tsvs over the committed baselines in a checkout")
     s.add_argument("job")
     s.add_argument("--checkout", default=".", help="checkout whose vk/deqp/ours-daily-sample-*.tsv are overwritten (default: cwd)")

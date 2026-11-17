@@ -81,3 +81,11 @@ For a phone with no in-app (guest) route, e.g. the Poco X4 GT (class v10): `farm
 - daily: glibc deqp-vk staged once in `/data/local/tmp/g` (see the phone's DEVICE doc), our glibc ICD at the per-run path `g/icd.<job>-<alias>.so`.
 - the sha256 of the job's .so is checked on the phone before every chunk/test and once more by farmd afterwards; a mismatch is `invalid` and re-queued.
 - same lock guard (exit 73), health gate before every chunk (exit 75 = paused, resumes from its TSV) and owner kill switch as the other routes.
+
+## Cheap commands (one short command instead of ad-hoc scripts; each prints <= ~40 lines of plain text)
+- `farm cancel <job>... [--running]`: pending parts become `cancelled` (never run); a running part needs `--running`, which stops it within one poll and releases the lock. Finished parts are untouched.
+- `farm submit <ref> --suite cases --case <name> [--case ...] --repeat N --need <class>`: only those cases, N times (one dEQP run per repetition, per-run .so path, sha256 on the phone, lock, health gate).
+  `farm results <job>` prints pass/fail/NS counts per case (`--json` for the raw run).
+- `farm digest`: devices, queue (counts + the running part), and per ref/class the latest smoke/daily with counts and verdict, plus the cases main's latest daily passes that this ref fails or turns NotSupported (5 names + count).
+- `farm diff <jobA> <jobB> [--class v11]`: case-level status changes grouped `A->B` (3 names per group).
+- `farm case <substring>`: status of matching cases in every stored daily log (date, ref, short sha, device, status), newest last.
