@@ -1,0 +1,245 @@
+# Hand-edited part of the progress diagram. tools/progress.py reads this file, the sources and the committed
+# dEQP results, and writes docs/progress.svg and docs/progress.md.
+#
+# Rules
+#  * Never mark an item "done" without evidence. Evidence is "path" or "path#token" (the file must exist in this
+#    tree and, with a token, contain it). tools/progress.py refuses a "done" item with no verifiable evidence.
+#  * "branch:<name>" evidence (work not merged to main) can only back "partial".
+#  * When unsure: "partial" or "none".
+#  * Vulkan core features and DXVK extensions are NOT listed here. They come from vk/tests/t_dxvk_caps.c (the list)
+#    and vk/src/mali_physical_device.c (what is advertised), cross-checked with DXVK_MISSING in vk/check.sh.
+#    Only downgrades/upgrades of those items go in [override].
+#  * Roadmap stages R0-R7 come from the table in ROADMAP.md. Only the extra milestones are listed here.
+
+# --- GPU generations: bring-up ladder -------------------------------------------------------------------------
+# Shared evidence per rung (the test that exercises it). Hardware rungs also use the GPU's own dEQP sample file.
+[[ladder]]
+id = "probe"
+label = "GPU id and uAPI probe"
+ev = ["libkbase/src/ctx.c"]
+
+[[ladder]]
+id = "submit"
+label = "Submit and fences"
+ev = ["vk/tests/t_queue.c"]
+
+[[ladder]]
+id = "device"
+label = "ICD enumerates, creates a device"
+ev = ["vk/tests/t_icd.c", "vk/check.sh#direct v11"]
+
+[[ladder]]
+id = "draw"
+label = "Graphics draw"
+ev = ["vk/tests/t_vk_draw.c"]
+
+[[ladder]]
+id = "compute"
+label = "Compute"
+ev = ["vk/tests/t_vk_compute.c"]
+
+[[ladder]]
+id = "meta"
+label = "Copy, blit, clear, queries"
+ev = ["vk/tests/t_vk_meta.c", "vk/tests/t_query.c"]
+
+[[ladder]]
+id = "wsi"
+label = "Present through WSI"
+ev = ["vk/tests/t_vk_present.c"]
+
+[[ladder]]
+id = "deqp"
+label = "dEQP-VK daily sample runs"
+ev = ["vk/deqp/qdeqp.py"]
+
+# status per rung: done | partial | none. "tsv" names the committed vk/deqp/ours-daily-sample-<tsv>.tsv.
+[[gpu]]
+id = "v10"
+name = "Mali-G610"
+arch = "v10"
+branch = "feat/v10"          # not merged to main: every rung is at most partial here
+tsv = ""
+probe = "partial"
+submit = "partial"
+device = "partial"
+draw = "partial"
+compute = "partial"
+meta = "partial"
+wsi = "none"
+deqp = "partial"
+note = "bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+
+[[gpu]]
+id = "v11"
+name = "Mali-G615"
+arch = "v11"
+tsv = "cmf"
+probe = "done"
+submit = "done"
+device = "done"
+draw = "done"
+compute = "done"
+meta = "done"
+wsi = "done"
+deqp = "done"
+note = "the reference GPU"
+
+[[gpu]]
+id = "v13"
+name = "Mali-G925"
+arch = "v13"
+tsv = "poco"
+probe = "done"
+submit = "done"
+device = "done"
+draw = "done"
+compute = "done"
+meta = "partial"             # README: meta ops hardware-tested on v11, partial elsewhere
+wsi = "partial"              # README: WSI passed on v11, v13 pending
+deqp = "done"
+note = "fewer hours of testing than v11"
+
+# --- pipeline pieces --------------------------------------------------------------------------------------------
+[[piece]]
+name = "Indexed draws (16 and 32 bit)"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c#idx32"]
+
+[[piece]]
+name = "Depth test and depth formats"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c#depth32s8"]
+
+[[piece]]
+name = "Stencil"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c#stencil"]
+
+[[piece]]
+name = "Blending (fixed function, constants, write masks)"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c#s_const_half"]
+
+[[piece]]
+name = "Dual-source blending"
+status = "partial"
+ev = ["branch:feat/msaa"]
+
+[[piece]]
+name = "MSAA 4x and resolve"
+status = "partial"
+ev = ["branch:feat/msaa"]
+
+[[piece]]
+name = "Textures and samplers"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c#texture"]
+
+[[piece]]
+name = "BC1-BC7 decode (offline; hardware wiring pending)"
+status = "partial"
+ev = ["vk/tests/t_bc.c", "vk/tests/t_bc_hw.c"]
+
+[[piece]]
+name = "Uniform buffers and push constants"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c#pushfs"]
+
+[[piece]]
+name = "Descriptor updates and indexing"
+status = "done"
+ev = ["vk/tests/t_vk_feat.c#test_didx", "vk/tests/t_vk_draw.c#descupd"]
+
+[[piece]]
+name = "Compute and indirect dispatch"
+status = "done"
+ev = ["vk/tests/t_vk_compute.c"]
+
+[[piece]]
+name = "Copy, blit, clear, resolve (meta ops)"
+status = "done"
+ev = ["vk/tests/t_vk_meta.c"]
+
+[[piece]]
+name = "Queries (occlusion, timestamp)"
+status = "done"
+ev = ["vk/tests/t_query.c"]
+
+[[piece]]
+name = "Render passes and dynamic rendering"
+status = "done"
+ev = ["vk/tests/t_vk_draw.c", "vk/tests/t_vk_meta.c"]
+
+[[piece]]
+name = "Timeline semaphores and sync2"
+status = "done"
+ev = ["vk/tests/t_queue.c"]
+
+[[piece]]
+name = "WSI and presentation (Wayland)"
+status = "partial"
+ev = ["vk/tests/t_vk_present.c"]
+
+[[piece]]
+name = "multiViewport (viewport 0 only without geometry shaders)"
+status = "partial"
+ev = ["vk/tests/t_vk_draw.c#multivp"]
+
+[[piece]]
+name = "Shader compiler path and disk cache"
+status = "done"
+ev = ["vk/tests/t_compile.c"]
+
+[[piece]]
+name = "Render target compression (AFBC)"
+status = "none"
+ev = ["vk/GPU-GAP.md"]
+
+[[piece]]
+name = "Robust buffer access (robustness2 bounds clamping)"
+status = "none"
+ev = ["README.md"]
+
+[[piece]]
+name = "Geometry and tessellation shaders (emulated)"
+status = "none"
+ev = ["ROADMAP.md"]
+
+[[piece]]
+name = "Transform feedback (emulated)"
+status = "none"
+ev = ["ROADMAP.md"]
+
+[[piece]]
+name = "Graphics pipeline library"
+status = "none"
+ev = ["ROADMAP.md"]
+
+# --- downgrades/upgrades for derived items (key: core.<feature>, <1x>.<feature>, ext.<VK_name>) ------------------
+[override."core.dualSrcBlend"]
+status = "partial"
+ev = ["branch:feat/msaa"]
+
+[override."core.sampleRateShading"]
+status = "partial"
+ev = ["branch:feat/msaa"]
+
+[override."12.descriptorIndexing"]
+status = "partial"
+ev = ["vk/tests/t_vk_feat.c#test_didx"]   # the sampled-image subset is on and tested; the rest of the feature is not
+
+[override."ext.VK_EXT_robustness2"]
+status = "partial"
+ev = ["vk/src/mali_physical_device.c#nullDescriptor"]   # nullDescriptor only
+
+# --- extra milestones beyond ROADMAP.md stages --------------------------------------------------------------------
+[[milestone]]
+name = "A DXVK title reaches a menu"
+status = "none"
+ev = ["ROADMAP.md"]
+
+[[milestone]]
+name = "Steam UI runs on mali-open"
+status = "none"
+ev = ["ROADMAP.md"]

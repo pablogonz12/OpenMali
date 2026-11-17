@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: MIT
+# CI for mali-open. Runners have no Mali GPU: this proves the offline checks only (fake backend, lint, diagram).
+# Phone results (dEQP baselines, hardware passes) are committed from the maintainer's own devices.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only by default. Only the "progress" job below gets contents: write.
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned Mesa, as in vk/README.md and third_party/MESA-SOURCE.txt (third_party/ is not tracked).
+  MESA_TAG: mesa-26.3.0
+  MESA_COMMIT: 0a6fa60abb737d26ac8a316a4aad7c9ddf64f9e4
+
+jobs:
+  # Job A: fast, always.
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: private-lint
+        run: tools/private-lint.sh
+      - name: skill-lint
+        run: tools/skill-lint.sh
+      # On main the "progress" job refreshes a stale diagram instead of failing the run.
+      - name: progress diagram is current
+        if: github.event_name == 'pull_request'
+        run: python3 tools/progress.py --check
+
+  # Job B: build the ICD for the host against a pinned Mesa and run vk/check.sh on the fake backend.
+  # Covered: the whole vk/check.sh (loader and direct dlopen on fake v11/v13, caps, queue, fault injection, resources,
+  #   draw/feature/compute/meta command-stream tests, export list, no libelf/panvk symbols, vulkaninfo, private-lint,
+  #   progress diagram on PRs).
+  # Skipped (not run here, by design): libkbase/check.sh, the aarch64 cross builds (need the Android NDK / cross
+  #   toolchains), the a64 warning gate, anything with /dev/mali0, the farm and every dEQP run.
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # On main the progress job refreshes the diagram, so a stale one must not turn this job red.
+      MALI_SKIP_PROGRESS_CHECK: ${{ github.event_name == 'push' && '1' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config git bison flex glslang-tools binutils \
+            python3-venv python3-dev \
+            libdrm-dev libelf-dev libudev-dev libzstd-dev libexpat1-dev zlib1g-dev \
+            libvulkan-dev vulkan-tools \
+            llvm-dev libclang-dev libclang-cpp-dev libclc-dev libllvmspirvlib-dev llvm-spirv spirv-tools libspirv-tools-dev
+
+      # Mesa tree (sources + build tree, about 0.4 GB) is cached. Only main writes the cache; PRs restore it read-only.
+      - name: Restore Mesa cache
+        id: mesa-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            third_party/mesa
+            third_party/build-vk
+          # bump v1 when the package set or the meson options below change
+          key: mesa-${{ env.MESA_COMMIT }}-ubuntu24-v1
+
+      # The venv is cheap and holds absolute paths, so it is rebuilt every run (versions as in third_party/MESA-SOURCE.txt).
+      - name: Python tools venv
+        run: |
+          python3 -m venv third_party/venv
+          third_party/venv/bin/pip install --quiet meson==1.12.1 ninja==1.13.2 mako==1.4.3 pyyaml==6.0.3 packaging
+
+      - name: Fetch pinned Mesa
+        if: steps.mesa-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$MESA_TAG" https://gitlab.freedesktop.org/mesa/mesa.git third_party/mesa
+          test "$(git -C third_party/mesa rev-parse HEAD)" = "$MESA_COMMIT"
+          rm -rf third_party/mesa/.git
+
+      # Same options as vk/README.md "One-time Mesa setup". The PanVK target is only built for its libraries and link line.
+      - name: Build Mesa libraries
+        if: steps.mesa-cache.outputs.cache-hit != 'true'
+        working-directory: third_party
+        run: |
+          export PATH="$PWD/venv/bin:$PATH"
+          meson setup build-vk mesa -Dbuildtype=release -Dgallium-drivers= \
+            -Dvulkan-drivers=panfrost -Dtools= -Dglx=disabled -Dplatforms= -Degl=disabled -Dgbm=disabled \
+            -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dvalgrind=disabled \
+            -Dlibunwind=disabled -Dpanfrost-rust=false -Dmesa-clc=enabled -Db_ndebug=false
+          ninja -C build-vk src/panfrost/vulkan/libvulkan_panfrost.so
+
+      - name: Save Mesa cache (main only)
+        if: github.event_name == 'push' && steps.mesa-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            third_party/mesa
+            third_party/build-vk
+          key: ${{ steps.mesa-cache.outputs.cache-primary-key }}
+
+      - name: vk/check.sh (builds the ICD, fake backend)
+        run: timeout 600 vk/check.sh
+
+  # Job C: refresh docs/progress.svg on main. The only job with write access; never runs on pull requests.
+  progress:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Regenerate the diagram if stale and commit it
+        run: |
+          if python3 tools/progress.py --check; then
+            echo "diagram is current"
+            exit 0
+          fi
+          python3 tools/progress.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/progress.svg docs/progress.md
+          git commit -m "docs: refresh progress diagram [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
