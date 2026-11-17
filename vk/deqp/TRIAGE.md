@@ -82,3 +82,6 @@ Flips: sampler mirror_clamp_to_edge NS->Pass, renderpass.suballocation.simple.co
 ## R4-B2 recheck (2026-11-17, after clip/drawparams/gather/fsstore/memmodel)
 Full daily sample: 272 pass / 136 fail / 971 NS / 0 crash / 2 other. Baseline 272/135/972/0. The one change: renderpass.depth_stencil_write_conditions.depth_demote_write_d24_unorm went NS -> Fail (a feature gate now opens it; not a regression of a passing case).
 An intermediate run had 11 depth.compare_ops crashes: nir_split_per_member_structs ran on every VS (commit 2560c16). It now runs only for a VS with ClipDistance (compile v14).
+
+## R4-B3 daily-sample re-run (Poco, after layer-major texture payload + inlineUniformBlock)
+Full daily sample 1381: 280 pass / 128 fail / 971 NS / 0 crash / 2 other (baseline 272/136/971/0). 0 regressions vs the previous run, 10 cases newly passing (vertex_input multi-attribute, sampler mirror_clamp/mirrored_repeat on 2d/2d_array formats). `ours-daily-sample-poco.{tsv,csv}` replaced.
