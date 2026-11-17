@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# Package the own Vulkan driver as a DroidDeck/MaliDeck "Linux Vulkan driver" zip.
+# Package the own Vulkan driver as a DroidDeck/MediaDeck "Linux Vulkan driver" zip.
 #   ./build-zip.sh [-o outdir] [--bundle <PanVK-Android adrenotools zip>] [variant...]     variants: a64-glibc a64-glibc-wl native   (default: a64-glibc a64-glibc-wl)
 # Output: <outdir>/mali-open-<variant>-<YYYYmmdd>.zip   (outdir default: ./dist)
 # a64-* zips are importable in the app. The "native" zip is x86-64, for verify-zip.sh on the laptop ONLY (the app rejects non-aarch64).
@@ -96,7 +96,7 @@ J
    } > "$w/NEEDED.txt"
    cat > "$w/README.txt" <<J
 Mali-open $var: own Vulkan ICD for Mali (Valhall v11 and 5th-gen v13 picked at runtime from the GPU id).
-Import in DroidDeck/MaliDeck: Setup > GPU drivers > import Linux driver, pick this zip. Details: driver/vk/package/README.md.
+Import in DroidDeck/MediaDeck: Setup > GPU drivers > import Linux driver, pick this zip. Details: driver/vk/package/README.md.
 Needs in the guest: $(readelf -d "$so" | grep -o 'Shared library: \[[^]]*\]' | sed 's/.*\[\(.*\)\]/\1/' | tr '\n' ' ')
 J
    (cd "$w" && sha256sum $(ls | grep -v SHA256SUMS) > SHA256SUMS)

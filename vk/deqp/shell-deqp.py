@@ -1,6 +1,6 @@
 #!/usr/bin/env python3 -I
 # SPDX-License-Identifier: MIT
-"""Shell-user dEQP route (no MaliDeck guest): glibc deqp-vk run from /data/local/tmp/g with the sysroot's ld.so, our glibc ICD
+"""Shell-user dEQP route (no MediaDeck guest): glibc deqp-vk run from /data/local/tmp/g with the sysroot's ld.so, our glibc ICD
 reached through a 20-line libvulkan.so.1 shim (vkshim.c: vkGetInstanceProcAddr -> vk_icdGetInstanceProcAddr of $MALI_ICD).
 Usage: shell-deqp.py <alias> <case-list> <out.tsv> [--chunk 100] [--wall 250]
 Every phone access goes through quick/qsafe (per-phone lock + health gate; exit 126 = gated, we wait). Resumes from <out.tsv>.

@@ -5,7 +5,7 @@ Archived before the planned bootloader unlock and LineageOS flash (wipes the pho
 - Ladder through our ICD: `t_vk_feat --spv-dir`, `t_vk_draw`, `t_vk_compute`, `t_vk_meta`, `t_vk_info`, `t_dxvk_caps` all pass (shell user, /dev/mali0).
 - Shell-route dEQP: `api.smoke` 6/6; daily sample (1381 cases, ~30 s): 302 Pass / 107 Fail / 971 NotSupported / 1 ResourceError. No v10-only failures; 20 stencil/depth cases pass here that fail on the CMF (feat/ds).
 
-## MaliDeck p20 bootstrap on a clean phone (the p17-p19 pin bug)
+## MediaDeck p20 bootstrap on a clean phone (the p17-p19 pin bug)
 - p19 on this phone: `RUNTIME_INSTALL_FAILED`, `Cannot download proot` (no pack pins).
 - p20 (versionCode 20, same key): `start steam` installs the runtime (ubuntu-r1-rc5, 291,553,163 B, via the gh-proxy retry after the direct URL) and the packs; `runtime.installed: true`, version ubuntu-r1-rc5.
 - Pack evidence: no "no pack and none is installed" warning and no "install failed"; the session log names the pinned pack dir `files/addons/proot/6d3844bb...e78a96/libproot.so (add-on pack)` and DirectAudio relay starts from the pack. Download success is not logged by the app (it only logs failures).
@@ -24,7 +24,7 @@ Archived before the planned bootloader unlock and LineageOS flash (wipes the pho
 - NOT run: valrun smoke and guest dEQP (the guest route uses the bridge; the feat/v10 glibc ICD still has to be pushed). Shell route stays 302/107/971/1.
 - Leftover: none (override consumed, env cleared, prefs removed, app force-stopped, screen off).
 
-## Guest tests on main 0645400 (MaliDeck p21, 2026-11-17)
+## Guest tests on main 0645400 (MediaDeck p21, 2026-11-17)
 Glibc ICD built from main (`MESA_BUILD=third_party/build-vk-a64-glibc MALI_TARGET=a64-glibc vk/build.sh`), qsafe lock held, app force-stopped and screen off afterwards, max battery temp 38.3 °C.
 - Sandbox `/dev/mali0`: `crw-rw-rw- 1000 1003 10,113`, opens from the guest.
 - valrun smoke (guest, `PHONE=poco-x4`): t_vk_compute pass, t_vk_meta pass, **t_vk_draw FAIL**: `t_vk_draw.c:487 r == VK_SUCCESS, graphics pipeline = -1000012000` (VK_ERROR_INVALID_SHADER_NV). Draw pipeline creation on v10 at main needs a look. (valrun.sh pushes with the raw serial, which fails on this wireless phone; run from a copy that uses `quick.py serial`.)

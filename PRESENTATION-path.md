@@ -1,4 +1,4 @@
-# Presentation path: libkbase dma-buf -> phone screen (MaliDeck 0.7.1-bridge0.5.5.3-p9-gs1)
+# Presentation path: libkbase dma-buf -> phone screen (MediaDeck 0.7.1-bridge0.5.5.3-p9-gs1)
 
 Paths under upstream/DroidDeck/app/src/main/cpp/waylandcomp/src/ unless noted. Raw runs: runs/20261115-cmf-present/.
 

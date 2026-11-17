@@ -23,7 +23,7 @@ Only CSF-based Mali (v10+) is in scope. Bifrost and Midgard JM GPUs are not supp
 
 Mali phones usually have no usable system Vulkan driver for desktop-style workloads. The alternative is a bridge, which forwards calls to
 Android and adds round trips and copies. A driver that talks to kbase directly can use async submit, cached memory, zero-copy
-presentation and the extensions DXVK and vkd3d-proton need. The aim is plug-and-play for Mali users through MaliDeck: import a zip, select the driver.
+presentation and the extensions DXVK and vkd3d-proton need. The aim is plug-and-play for Mali users through MediaDeck: import a zip, select the driver.
 
 ## Architecture
 
@@ -84,7 +84,7 @@ Vulkan calls: `t_icd --direct`, `t_vk_draw`, `t_vk_feat`, ...) and a guest run (
 Those scripts are specific to the maintainer's lab and are not part of this tree.
 The Mesa sources, Mesa build trees and the CTS are not committed: `third_party/MESA-SOURCE.txt` pins the Mesa tag and commit.
 
-## Shipping in MaliDeck
+## Shipping in MediaDeck
 
 `vk/package/build-zip.sh` builds an importable zip (`libvulkan_panfrost.so` is our library under the name the importer accepts,
 plus `meta.json`, `icd.json`, `LICENSE`, `NOTICE-MESA.txt`). Variants: `a64-glibc`, `a64-glibc-wl` (Wayland WSI). `--bundle` also writes a

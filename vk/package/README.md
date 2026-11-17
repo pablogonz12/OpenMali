@@ -1,4 +1,4 @@
-# Packaging the own Vulkan driver for DroidDeck / MaliDeck
+# Packaging the own Vulkan driver for DroidDeck / MediaDeck
 
     ./build-zip.sh [-o outdir] [--bundle <PanVK-Android-adrenotools.zip>] [a64-glibc a64-glibc-wl native]
     ./verify-zip.sh dist/mali-open-<variant>-<date>.zip

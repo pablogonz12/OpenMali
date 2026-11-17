@@ -1,6 +1,6 @@
 # mdbench ours vs bridge, Poco X8 Pro Max (Mali-G925 MC11), 2026-11-17
 
-Main = mali-open 5d0fd38 (async submit, tex array fix, 64 KiB geometry); ICD rebuilt (vk/cross/build-cross.sh glibc) and mdbench rebuilt (bench/build.sh aarch64). App MaliDeck p18.1 (p16 payload), session via run-guest.sh.
+Main = mali-open 5d0fd38 (async submit, tex array fix, 64 KiB geometry); ICD rebuilt (vk/cross/build-cross.sh glibc) and mdbench rebuilt (bench/build.sh aarch64). App MediaDeck p18.1 (p16 payload), session via run-guest.sh.
 3 x 20 s, wayland 1280x720, mailbox for BOTH, warmup 60, USB, qrestore before every config. Raw: bench/results/raw-poco-20261117.txt, runs/mdbench/.
 Temperatures (battery, USB-charging) rose from 42 to 48 C during the sweep (above the 43 C target for alu/compute/drawcalls; alu was the hottest). Treat later rows as indicative.
 CAVEAT: bridge fps sits at exactly 120.4 in every scene, ours reaches 160-295 in mailbox: the bridge path is display/compositor paced even in mailbox, ours is not, so fps is NOT comparable as throughput; compare gpu_ms and 1% low. gpu_ms is ours 1.7-2.5x the bridge.
