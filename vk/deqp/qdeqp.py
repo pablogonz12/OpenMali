@@ -98,7 +98,7 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
          f"while kill -0 $P 2>/dev/null; do sleep 4; N=$(date +%s); Z=$(stat -c %s {qpa} 2>/dev/null || echo 0); "
          f"[ \"$Z\" != \"$L\" ] && L=$Z && LT=$N; MA=$(awk '/MemAvailable/{{print int($2/1024)}}' /proc/meminfo); "
          f"LD=$(cut -d. -f1 /proc/loadavg); "
-         f"if [ $MA -lt 1500 ] || [ $((N-LT)) -gt {idle} ] || {{ [ $LD -gt 12 ] && [ $((N-T)) -gt 60 ]; }}; then "
+         f"if [ $MA -lt 1500 ] || [ $((N-LT)) -gt {idle} ] || {{ [ $LD -gt 40 ] && [ $((N-T)) -gt 60 ]; }}; then "
          f"echo __HOG mem=$MA load=$LD idle=$((N-LT)); pkill -KILL -x deqp-vk; kill -KILL $P; break; fi; done; "
          f"wait $P; echo __rc=$?; tail -c 400 /tmp/qd/{tag}.out")
     out = guest(p, s, wall + 25)
@@ -112,11 +112,11 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
 
 
 def calm(p, maxwait=120):
-    """wait until the phone's load1 < 8 and MemAvailable > 2 GB (previous process fully gone)"""
+    """wait until the phone's load1 < 40 (phone idles ~20 with Steam up) and MemAvailable > 2 GB (previous process fully gone)"""
     for _ in range(maxwait // 5):
         o = p.adb("shell", "cat /proc/loadavg; grep MemAvailable /proc/meminfo; pgrep -x deqp-vk", timeout=20).split()
         try:
-            if float(o[0]) < 8 and int(o[o.index("MemAvailable:") + 1]) > 2_000_000 and "deqp-vk" not in o:
+            if float(o[0]) < 40 and int(o[o.index("MemAvailable:") + 1]) > 2_000_000 and "deqp-vk" not in o:
                 return True
         except Exception:
             pass

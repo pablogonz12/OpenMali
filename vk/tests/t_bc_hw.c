@@ -115,6 +115,7 @@ int main(void)
    int fails = 0, nskip = 0;
    for (unsigned i = 0; i < 12; i++) {
       const struct bcg_px *g = &bcg_px[i];
+      { const char *only = getenv("BC_ONLY"); if (only && !strstr(g->name, only)) continue; }
       VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(pd, g->vk, &fp);
       if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
          printf("  %-22s SKIP (format feature missing)\n", g->name); nskip++; continue;

@@ -31,3 +31,9 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 - Do not advertise a feature before its dEQP group passes; use `vk_features` through one table in `mali_physical_device.c` only.
 - Mesa runtime helps: `vk_features/properties`, `vk_common_*` entry points, `vk_render_pass`, `vk_graphics_state` (dynamic state parse), `vk_sampler`, `vk_robustness`, `vk_meta`; emission and descriptor encoding stay ours.
 - DXVK version: pin one (3.1.1 is master tag; 2.7 requires less) in M0, because master hard-requires maintenance5/6 and geometryShader.
+
+## R4-M7 status (BC wiring, 2026-11-17)
+- Wired: BC1-BC7 advertised (`textureCompressionBC`, format features), RGBA shadow in the same allocation, decode jobs appended to the copy list after CopyBufferToImage/CopyImage (shader ids `MALI_META_BC_FIRST+`). Compute TLS spill added (`hw->tls`, tsd[0]/[2..3]; BO ~ 4096 B x 2048 thr x core_id_range for BC6H) - was rejected before.
+- Offline: check.sh v11+v13 OK, t_bc 3236 checks 0 fail, t_meta/t_cmd/t_qpool/t_desc pass. Fake backend runs t_bc_hw end to end (12 FAIL expected: no GPU).
+- CMF (Mali-G615, bionic, `out/a64-bionic/t_bc_hw`, direct ICD shim `tests/t_bc_hw_direct.h`, `BC_ONLY=<name>`; log `runs/quick/bc_hw_cmf.log`): BC7 and BC1 run without fault/hang/TLS error, but probe returns all zeros (0/300 texels match). So hardware decode is NOT verified. Suspects: sampled-image (texelFetch) read in compute was never tested on hardware (M11 covers SSBO only), or decode job ordering/binding. Not bisected.
+- Not done: blit from/to BC (-EINVAL); `tests/build-t_image.sh` link gap `mali_wsi_modifier` (pre-existing); BC6H not run separately on CMF.
