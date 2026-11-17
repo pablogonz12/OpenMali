@@ -46,7 +46,7 @@ def stage_binaries(p, icd):
     data = os.path.join(BUILD, "external", "vulkancts", "modules", "vulkan")
     if not os.path.exists(exe):
         raise SystemExit(f"no {exe}; build with driver/vk/deqp/build.sh")
-    tar = f"/tmp/qdeqp-{os.getpid()}.tar"
+    tar = f"{os.environ.get('QDEQP_TMP', '/tmp')}/qdeqp-{os.getpid()}.tar"
     with tarfile.open(tar, "w") as t:
         t.add(exe, "deqp-vk")
         for d in ("vulkan", "gles2", "gles3"):
@@ -76,8 +76,8 @@ def guest(p, script, timeout):
 def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
     idle = max(45, case_timeout)
     """Runs one chunk in the guest; returns (finished list, unfinished case|None, raw tail)"""
-    cl = f"/tmp/qdeqp_{tag}.cases"
-    local = f"/tmp/qdeqp-{p.serial}-{os.getpid()}.cases"
+    cl = f"{os.environ.get('QDEQP_TMP', '/tmp')}/qdeqp_{tag}.cases"
+    local = f"{os.environ.get('QDEQP_TMP', '/tmp')}/qdeqp-{p.serial}-{os.getpid()}.cases"
     open(local, "w").write("\n".join(cases) + "\n")
     p.adb("push", local, f"{DL}/{tag}.cases")
     os.unlink(local)

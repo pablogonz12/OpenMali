@@ -13,11 +13,19 @@ Note: "bridge" is the vendor driver; PanVK is the structural oracle (third_party
 3. Render targets/depth are linear, no AFBC (CMF: gpu_ms scales with pixels). WSI accepts LINEAR modifier only (mali_wsi_modifier).
 4. Fragment path: FBD always Clean Tile Write, colour always stored; tile size/hierarchy: hmask 0 on v13, tile_log2 12 (libkbase default).
 
-## Experiments (Poco, mdbench compute, ours, mailbox, 8-10 s, 1 run; noise ~+-0.1 ms; temp 44-46 C)
-| config | gpu_ms |
-|---|---|
-| NO_MERGE=1 TASK_THREADS=1 (= old behaviour) | 1.76 |
-| merge on, inc default (512 thr) | 1.75 |
-| merge off, inc default | 1.34 |
-| merge on, inc 1 | 1.39 |
-(non-additive: needs repeats, see below)
+## Experiments (Poco, mdbench compute, ours, mailbox, 5-10 s, 1 run each; run-to-run noise +-0.2 ms at x1; temp 44-50 C, hot)
+Fixed vs per-unit cost (compute --gpu-scale): ours x0.02 0.67 ms (0.57 with MALI_CHF=0), bridge 0.28; x1 ours 1.36 / bridge 0.87; x8 ours 6.6 / bridge 4.96.
+=> ~0.4 ms of the "2x" is FIXED per-job cost inside the timestamp window (head FLUSH_CACHE2(3,3,2)+WAIT ~0.1 ms, tail flush+WAIT, SYNC_ADD64
+system scope, ops frames around), not shader time.
+Per-unit (x8, 2 runs each): old (NO_MERGE=1 TASK_THREADS=1) 6.41 / 6.57 ms; new (allow_merging_workgroups + task increment) 5.93 / 5.62 ms = -10 %,
+per-unit slope 0.58-0.62 ms vs bridge 0.58: per-unit compute gap closed. At x1 the gain is inside the noise (1.35-1.46).
+NOT applied: dropping the head flush (MALI_HF=0 / MALI_CHF=0): the head FLUSH_CACHE2+WAIT was the fix for the intermittent tiler-ctx corruption
+(libkbase/INTERMITTENT.md); saves ~0.1-0.35 ms. Knobs kept (MALI_HF graphics, MALI_CHF compute) for later validated work.
+
+## Not done / open
+- Graphics (cube/overdraw/alu/tex/drawcalls): no change made. Candidates in order: AFBC/tiled RT (needs compositor modifier support, WSI advertises LINEAR only),
+  fixed ~0.4 ms per frame (flushes), FBD clean-tile-write/discard. No PanVK job-stream capture was taken (no time, device hot 48-50 C).
+- dEQP daily sample could NOT be run: from this session on, the Poco guest aborts deqp-vk at ~case 63-77 with VK_ERROR_OUT_OF_DEVICE_MEMORY in
+  api.buffer.suballocation (also with the pre-change source 6cec691, also after qrestore): environment, not this change. (Also: host /tmp is a full tmpfs; qdeqp.py
+  now honours QDEQP_TMP.)
+- Validation that passed with the new code on the Poco: t_vk_compute (atomic256, atomic_ind, scan...), t_vk_draw, t_vk_meta, t_bc_hw 12/12.
