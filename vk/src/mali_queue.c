@@ -13,6 +13,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include <string.h>
 #include <unistd.h>
 
+#include "kbase_cs.h"
 #include "kbase_draw.h"
 #include "mali_cmd.h"
 #include "mali_meta.h"
@@ -281,7 +282,8 @@ mali_hw_init(struct mali_device *dev)
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const struct mali_backend_ops *be = pdev->backend;
    struct mali_hwctx *h = calloc(1, sizeof *h);
-   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : 11;
+   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
+   kb_v10 = arch == 10;   /* libkbase: SET_SB_ENTRY scoreboard select, ZSD bit 21 (see kbase_cs.h) */
 
    if (!h)
       return VK_ERROR_OUT_OF_HOST_MEMORY;

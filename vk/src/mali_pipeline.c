@@ -53,7 +53,7 @@ static VkResult
 create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    struct mali_physical_device *pdev = mali_device_pdev(dev);
-   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : 11;
+   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
    struct mali_pipeline *p = vk_object_zalloc(&dev->vk, alloc, sizeof *p, VK_OBJECT_TYPE_PIPELINE);
    struct vk_graphics_pipeline_all_state *all = NULL;
    struct vk_graphics_pipeline_state st = {0};
@@ -223,7 +223,7 @@ static VkResult
 create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    struct mali_physical_device *pdev = mali_device_pdev(dev);
-   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : 11;
+   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
    struct mali_pipeline *p;
    struct mali_flat_layout flat;
    VkResult res = VK_ERROR_OUT_OF_HOST_MEMORY;

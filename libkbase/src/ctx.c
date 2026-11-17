@@ -33,9 +33,12 @@ int kb_ioctl(struct kb_ctx *ctx, unsigned long req, void *arg)
 
 /* Capability table. Add a row only after the layouts above were verified on that kernel. */
 static const struct kb_caps k_caps[] = {
-	{ 1, 21, "CMF Phone 1 (MT6878, Mali-G615 MC2), DDK r44p1", true, true, true, true, false, false },
+	{ 1, 21, "CMF Phone 1 (MT6878, Mali-G615 MC2), DDK r44p1", true, true, true, true, false, false, false },
+	/* Poco X4 GT (MT6895, Mali-G610 MC6), DDK r32p1, uAPI 1.18: probed, but the layouts below are guesses (conservative: 40 B group create,
+	 * no CQS operations, no MEM_ALLOC_EX) until a ladder run on the phone confirms them. */
+	{ 1, 18, "Poco X4 GT (MT6895, Mali-G610 MC6), DDK r32p1 [layouts verified by t_submit/clear/triangle/uniform/depth/texture]", false, true, false, true, false, false, true },
 	/* Poco X8 Pro Max (MT6991, Mali-G925 MC11), DDK r49p1. Layouts from Arm public headers, UNVERIFIED on hardware (see kbase_uapi.h). */
-	{ 1, 30, "Poco X8 Pro Max (MT6991, Immortalis-G925 MC11), DDK r49p1 [layouts unverified]", true, false, true, true, true, true },
+	{ 1, 30, "Poco X8 Pro Max (MT6991, Immortalis-G925 MC11), DDK r49p1 [layouts unverified]", true, false, true, true, true, true, false },
 };
 
 const struct kb_caps *kb_caps_lookup(unsigned major, unsigned minor)
@@ -112,6 +115,7 @@ static int load_props(struct kb_ctx *c)
 		return -e;
 	}
 	parse_props(buf, (size_t)r, &c->props);
+	kb_v10 = c->props.arch == 10;   /* arch-keyed packer switch (SET_SB_ENTRY, ZSD bit 21); the vk driver sets the same flag */
 	free(buf);
 	return 0;
 }

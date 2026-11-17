@@ -136,6 +136,8 @@ static void drain_events(struct fx *f)
 {
 	struct kb_event ev;
 	int g = 0;
+	const struct kb_event *lf = kb_last_fatal(f->ctx);
+	if (lf) { jb("last_fatal"); jok(0); jstr("text", lf->text); jx("status", lf->status); jstr("exception", kb_exception_name(lf->status)); jx("sideband", lf->sideband); jend(); }
 	while (g++ < 10 && kb_event_read(f->ctx, &ev, 300) > 0) {
 		jb("notification"); jok(0); jstr("text", ev.text); ji("type", ev.type); ji("group", ev.group);
 		ji("error_type", ev.error_type); jx("status", ev.status); jstr("exception", kb_exception_name(ev.status));

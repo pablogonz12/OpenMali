@@ -11,17 +11,17 @@
 
 #include <string.h>
 
-/* Only the v11 (G615) and v13 (G925) tables are linked; pan_format_table() would pull in every arch. */
+/* Only the v10 (G610), v11 (G615) and v13 (G925) tables are linked; pan_format_table() would pull in every arch. */
 static const struct pan_format *
 fmt_table(unsigned arch)
 {
-   return arch >= 13 ? pan_pipe_format_v13 : pan_pipe_format_v11;
+   return arch >= 13 ? pan_pipe_format_v13 : arch == 10 ? pan_pipe_format_v10 : pan_pipe_format_v11;
 }
 
 static const struct pan_blendable_format *
 blend_table(unsigned arch)
 {
-   return arch >= 13 ? pan_blendable_formats_v13 : pan_blendable_formats_v11;
+   return arch >= 13 ? pan_blendable_formats_v13 : arch == 10 ? pan_blendable_formats_v10 : pan_blendable_formats_v11;
 }
 
 /* VkFormat range we look at: the core 1.0 formats. ASTC (157..184) is skipped: it needs the ASTC plane descriptor (gap, R3-PLAN M5). */

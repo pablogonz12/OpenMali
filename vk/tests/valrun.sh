@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# Host: validation on a phone (default poco). Usage: [PHONE=cmf|poco] valrun.sh "<ENV=.. ENV2=..>" [loop]
+# Host: validation on a phone (default poco). Usage: [PHONE=cmf|poco|poco-x4] valrun.sh "<ENV=.. ENV2=..>" [loop]
 set -e; export PATH=$PATH:$HOME/Android/Sdk/platform-tools
-V=$(cd "$(dirname "$0")/.." && pwd); PH=${PHONE:-poco}; case $PH in cmf|poco) ;; *) PH=poco;; esac; S=$("$V/../tools/dev-serial" "$PH");
+V=$(cd "$(dirname "$0")/.." && pwd); PH=${PHONE:-poco}; case $PH in cmf|poco|poco-x4) ;; *) PH=poco;; esac; S=$("$V/../tools/dev-serial" "$PH");
 # the phone's qsafe lock must be held by us or by an ancestor (farmd/qsafe); QSAFE_LOCK_OVERRIDE=1 for emergencies
 if [ "${QSAFE_LOCK_OVERRIDE:-}" != 1 ]; then exec 8>>/tmp/qsafe-$PH.lock; if flock -n 8; then export QSAFE_HELD=$PH; elif [ "${QSAFE_HELD:-}" != "$PH" ]; then echo "PHONE BUSY: /tmp/qsafe-$PH.lock held by another process" >&2; exit 73; fi; fi; DL=/storage/emulated/0/Download
 timeout 100 adb -s $S push $V/out/a64-glibc/libvulkan_mali.so $DL/val_libvulkan_mali.so >/dev/null

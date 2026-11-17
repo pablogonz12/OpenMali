@@ -36,6 +36,7 @@ struct kb_caps {
 	bool notif_fatal_queue_16b; /* 16-byte fatal payloads without trace fields */
 	bool group_create_112b;   /* try the 112-byte QUEUE_GROUP_CREATE first (falls back to 40 B on ENOTTY) */
 	bool tiler_heap_24b;      /* try the 24-byte TILER_HEAP_INIT (buf_desc_va) first (falls back to 16 B on ENOTTY) */
+	bool group_create_1_6;    /* uAPI < 1.21 (r32): 32-byte QUEUE_GROUP_CREATE at nr 42 instead of nr 58 */
 };
 
 struct kb_gpu_props {
@@ -161,6 +162,7 @@ struct kb_event {
 	bool fatal;
 	char text[200];           /* readable decoding */
 };
+const struct kb_event *kb_last_fatal(const struct kb_ctx *ctx); /* last fatal notification seen by any reader, NULL if none */
 int kb_event_read(struct kb_ctx *ctx, struct kb_event *ev, int timeout_ms); /* 1 event, 0 timeout, <0 error */
 const char *kb_exception_name(unsigned code);
 unsigned long long kb_events_seen(const struct kb_ctx *ctx);

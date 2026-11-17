@@ -4,6 +4,9 @@
 #include <string.h>
 
 #include "kbase_draw.h"
+#include "kbase_cs.h"
+
+int kb_v10;   /* 1 when the GPU is arch 10 (set by the driver): SET_SB_ENTRY scoreboard select, ZSD bit 21 clear. See kbase_cs.h */
 
 void *kb_arena_alloc(struct kb_arena *a, size_t size, size_t align, uint64_t *gpu_va)
 {
@@ -28,7 +31,7 @@ void kb_arena_begin(struct kb_arena *a)
 void kb_arch_warn_v11_only(unsigned arch, const char *who)
 {
 	static int warned;
-	if (arch == 0 || arch == 11 || warned) return;
+	if (arch == 0 || arch == 10 || arch == 11 || warned) return;   /* arch 10 differences: kb_v10 */
 	warned = 1;
 	fprintf(stderr, "libkbase: %s packs Valhall v11 descriptors, GPU is arch %u: layout UNVERIFIED, expect faults\n", who, arch);
 }
@@ -145,6 +148,7 @@ void kb_draw_zsd_off(uint32_t *d)
 	memset(d, 0, KB_ZSD_SIZE);
 	d[0] = 7u;
 	d[4] = (1u << 21) | (1u << 22) | (1u << 23) | (2u << 25) | (7u << 29);  /* sep. dependency, depth cull, clamp [0,1], fixed-function depth, Always */
+	if (kb_v10) d[4] &= ~(1u << 21);                         /* v10.xml: bit 21 is "Shader read only Z/S", not separated dependency tracking */
 }
 
 void kb_draw_zsd_depth(uint32_t *d, enum kb_func func, int write)

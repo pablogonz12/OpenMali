@@ -42,7 +42,19 @@ int kb_bo_alloc(struct kb_ctx *ctx, size_t size, uint32_t flags, struct kb_bo *o
 	req.in.va_pages = size / PAGE;
 	req.in.commit_pages = size / PAGE;
 	req.in.flags = f;
-	int r = kb_ioctl(ctx, KBASE_IOCTL_MEM_ALLOC_EX, &req);
+	int r;
+	if (ctx->caps.mem_alloc_ex) {
+		r = kb_ioctl(ctx, KBASE_IOCTL_MEM_ALLOC_EX, &req);
+	} else {
+		union kbase_ioctl_mem_alloc lr;
+		memset(&lr, 0, sizeof lr);
+		lr.in.va_pages = req.in.va_pages;
+		lr.in.commit_pages = req.in.commit_pages;
+		lr.in.flags = req.in.flags;
+		r = kb_ioctl(ctx, KBASE_IOCTL_MEM_ALLOC, &lr);
+		req.out.flags = lr.out.flags;
+		req.out.gpu_va = lr.out.gpu_va;
+	}
 	if (r) {
 		kb_set_error("MEM_ALLOC_EX(%zu, flags 0x%llx): %s", size, (unsigned long long)f, strerror(-r));
 		return r;

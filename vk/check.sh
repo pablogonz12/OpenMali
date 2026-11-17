@@ -112,6 +112,21 @@ else
    for t in bc cmd compile desc image meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
 fi
 
+# v10 (Mali-G610, Poco X4 GT): every fake-backend case above, once more on MALI_FAKE_GPU=v10.
+G=v10; F="MALI_BACKEND=fake MALI_FAKE_GPU=v10"; DL="--direct $OUT/libvulkan_mali.so"
+run "loader v10"      0 $LOADER_ENV $F "$OUT/t_icd" --expect-name "Mali-G610"
+run "direct v10"      0 $F "$OUT/t_icd" $DL --expect-name "Mali-G610"
+run "vk_info v10"     0 $F "$OUT/t_vk_info" $DL
+run "dxvk_caps v10"   0 $F "$OUT/t_dxvk_caps" $DL --expect-missing "$DXVK_MISSING"
+run "queue all v10"   0 $F $TQ
+run "resources v10"   0 $F "$OUT/t_resources"
+run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200
+run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
+run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
+run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
+run "vk_meta v10"     0 $F "$OUT/t_vk_meta" $DL --loop 20
+cc -std=gnu11 -I"$V/../libkbase/include" -I"$V/../libkbase/src" -o "$OUT/t_v10_cs" "$V/tests/t_v10_cs.c" "$V/../libkbase/src/draw.c" && run "v10 cs/zsd packers" 0 "$OUT/t_v10_cs" || { echo "FAIL  t_v10_cs build"; fail=1; }
+
 # Exported symbols: the three loader entry points and nothing else.
 syms=$(nm -D --defined-only "$OUT/libvulkan_mali.so" | awk '{print $3}' | grep -v '^$' | sort | tr '\n' ' ')
 want="vk_icdGetInstanceProcAddr vk_icdGetPhysicalDeviceProcAddr vk_icdNegotiateLoaderICDInterfaceVersion "

@@ -269,7 +269,7 @@ mali_enumerate_physical_devices(struct vk_instance *vk_instance)
    if (backend == NULL || backend->probe(&gpu) != 0)
       return VK_SUCCESS;
 
-   if (gpu.arch_major != 11 && gpu.arch_major != 13) {
+   if (gpu.arch_major != 10 && gpu.arch_major != 11 && gpu.arch_major != 13) {
       vk_logw(VK_LOG_OBJS(vk_instance), "mali: unsupported GPU arch %u.%u (id 0x%08x)",
               gpu.arch_major, gpu.arch_minor, gpu.gpu_id);
       return VK_SUCCESS;
