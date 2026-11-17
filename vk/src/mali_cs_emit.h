@@ -86,6 +86,9 @@ struct mali_draw {
    uint32_t first_index;
    uint32_t count, instance_count, first_vertex, first_instance;
    uint64_t occ_va;                       /* M13: occlusion counter address (8-aligned, 0 = none); sets OQ register + DCD flags_0 mode */
+   const uint8_t *ind;                    /* indirect draw: CPU view of the VkDraw*IndirectCommand array (expanded at submit, mali_cmd.c) */
+   const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
+   uint32_t ind_n, ind_stride;
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
