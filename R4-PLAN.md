@@ -73,3 +73,30 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 - NOT done: the aggregate `descriptorIndexing` bool (needs buffer/texel-buffer non-uniform + dynamic indexing, storage image/buffer/texel UAB, variable descriptor count and the 500k limits), so it stays false (still 1 of the 26 missing).
 - DONE (R4-B2 step 2) robustness2 nullDescriptor: VK_NULL_HANDLE buffer/image view/sampler/texel buffer view writes store the hardware Null Descriptor (all-zero, Type=0; write_one + mali_dyn_buf_pack in mali_descriptor.c). `t_vk_feat --only nulld` 7/7 on Poco (ssbo/ubo/combined sampler/storage image/uniform texel/storage texel read as 0, SSBO write dropped, no stray write, no fault). Advertised: VK_EXT_robustness2 + nullDescriptor only. robustBufferAccess2 / robustImageAccess2 stay false (no OOB clamp lowering yet). DXVK_MISSING unchanged (26): nullDescriptor is not in the feature list, the extension counts toward the 11/13 ext list (VK_EXT_robustness2 now present).
 - dEQP daily sample R4-B2: 272/135/972 NS/0 crash, 0 regressions (deqp/TRIAGE.md). geometryShader design note: vk/R4-GAP.md (no native HW; emulate with compute prepass via Mesa `src/poly`; 10-14 units; R5).
+
+### Remaining DXVK-required features (26 of 47 missing), sorted by cost (R4-B2 step 4; units ~ one batch-2 feature)
+| # | feature | cost | note |
+|---|---|---|---|
+| 1 | scalarBlockLayout | 0.3 | SPIR-V carries explicit offsets; driver only has to load at arbitrary 4-byte offsets (UBO/SSBO). test: scalar vec3 packing |
+| 2 | uniformBufferStandardLayout | 0.3 | same, std430 rules for UBO (array stride 4) |
+| 3 | shaderZeroInitializeWorkgroupMemory | 0.5 | `nir_zero_initialize_shared_memory` in the compute branch (as PanVK) |
+| 4 | subgroupSizeControl, computeFullSubgroups | 0.5-1 | warp fixed at 16 (min=max=16); needs `requiredSubgroupSize` struct accepted + `FULL_SUBGROUPS` flag check |
+| 5 | occlusionQueryPrecise | 0.5 | precise flag on BeginQuery; Mali counts exactly, only advertise + test |
+| 6 | shaderDemoteToHelperInvocation | 1 | needs `nir_demote` -> Valhall discard-to-helper support check in backend |
+| 7 | shaderClipDistance, shaderCullDistance | 1-2 each | clip/cull as extra varyings + lowering |
+| 8 | shaderInt16 / storageBuffer16BitAccess / shaderInt8 / storageBuffer8BitAccess | 1-1.5 | spirv caps + backend 16/8-bit ld/st; Valhall native |
+| 9 | shaderDrawParameters | 1-1.5 | base_vertex/base_instance sysvals (base instance done), draw_index via push const per expanded draw |
+| 10 | shaderImageGatherExtended | 1.5 | non-const / 6-bit offsets in tex gather |
+| 11 | fragmentStoresAndAtomics | 1.5 | SSBO/image write in FS: early-z/side-effect flags in the FS job |
+| 12 | fillModeNonSolid | 2 | polygon mode line/point: topology rewrite at submit |
+| 13 | sampleRateShading | 2 | per-sample FS dispatch + minSampleShading |
+| 14 | shaderInt64 | 2 | nir int64 lowering ops available in Valhall (64-bit alu partial) |
+| 15 | inlineUniformBlock | 2 | extra descriptor type backed by set memory |
+| 16 | vulkanMemoryModel | 2 | spirv caps + barriers semantic; mostly flag if nothing else needed |
+| 17 | robustBufferAccess | 3 | OOB clamp lowering (`nir_lower_robust_access`) for UBO/SSBO/image |
+| 18 | dualSrcBlend | 3 | second FS output + dual-source blend in RSD |
+| 19 | multiViewport | 3 | viewport index + array of viewport/scissor descriptors, FS/VS layer output |
+| 20 | descriptorIndexing (aggregate) | 4-6 | the rest of UAB/non-uniform/dynamic indexing for buffers and storage images + variable count |
+| 21 | geometryShader | 10-14 | see R4-GAP.md design note (R5) |
+Also still missing extensions (11/13): depth_clip_enable (1), maintenance5/6 (1.5), load_store_op_none (0.5), vertex_attribute_divisor (1), memory_budget (0.5), calibrated_timestamps (1), custom_border_color (2), ext_dyn_state3 (3), GPL + pipeline_library (6-8).
+Order of work in this batch: 1, 2, 3.
