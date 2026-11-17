@@ -720,6 +720,32 @@ test_triangle(void)
    return ok;
 }
 
+/* ---- many draws in ONE frame (10k-50k): arena / CS / heap growth must not run out (was DEVICE_LOST above ~7k draws) ---- */
+static int
+test_many(void)
+{
+   static const int counts[] = {3000, 10000, 50000};
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   float (*rot)[4] = malloc(50000 * sizeof *rot);
+   for (int i = 0; i < 50000; i++) memcpy(rot[i], ID, sizeof rot[i]);
+   int ok = 1;
+   for (unsigned c = 0; ok && c < sizeof counts / sizeof *counts; c++) {
+      double t0 = now_us();
+      for (int rep = 0; ok && rep < 3; rep++)
+         ok &= scene_draw(&s, counts[c], (const float (*)[4])rot, f);
+      printf("{\"test\":\"many_draws\",\"draws\":%d,\"us_per_draw\":%.3f,\"ok\":%s}\n", counts[c], (now_us() - t0) / 3 / counts[c], ok ? "true" : "false");
+   }
+   if (ok) ok = report("many_draws", &s, 8192.0, 1.0, 1);
+   free(rot);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
 /* ---- stencil: coverage / pixel checks against the stencil test (pixels only on hardware) ---- */
 static uint32_t
 px_at(struct scene *s, int x, int y)
@@ -1576,6 +1602,7 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
+   if (ok && CASE_ON("many_draws")) ok &= test_many();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

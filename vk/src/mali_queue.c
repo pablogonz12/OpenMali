@@ -21,6 +21,7 @@ static double prof_acc[6]; static unsigned prof_n;
 
 /* ---- M9: frame resources ---- */
 #define MALI_MAX_INFLIGHT 3u
+#define MALI_MAX_OVF 64u
 struct mali_hwctx {
    struct mali_device *dev;
    struct mali_bo arena, geo, sync, tls;
@@ -38,6 +39,11 @@ struct mali_hwctx {
    size_t cur_start;
    struct mali_bo old_tls[8];     /* replaced TLS BOs: freed at teardown (in-flight / current frame may still use them) */
    unsigned n_old_tls;
+   /* overflow descriptor memory: a frame that does not fit the rolling arena (even with every frame retired) takes extra BOs, freed once the
+    * submission that used them has retired (tag = retire counter value, 0 = not yet submitted) */
+   struct { struct mali_bo bo; uint64_t tag; } ovf[MALI_MAX_OVF];
+   unsigned n_ovf;
+   size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
    struct mali_meta_dev md;
@@ -116,10 +122,58 @@ meta_upload_shader(void *u, const uint8_t *bin, uint32_t size, uint64_t *va)
 #define ARENA_BYTES (32u << 20)   /* per-frame descriptor arena: ~4.5 KB per draw (two 2 KiB driver sets); 1 MiB capped a frame at ~230 draws */
 #define HEAP_CHUNK (2u << 20)
 
+static int hw_wait(struct mali_hwctx *h, uint64_t target);
+static void hw_retire(struct mali_hwctx *h, unsigned max_left);
+
+static void *
+hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va)
+{
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   struct mali_bo *cur = h->n_ovf && !h->ovf[h->n_ovf - 1].tag ? &h->ovf[h->n_ovf - 1].bo : NULL;
+   size_t o = cur ? (h->ovf_off + al - 1) & ~(al - 1) : 0;
+   if (!cur || o + n > cur->size) {
+      if (h->n_ovf == MALI_MAX_OVF) {   /* all slots taken by submitted ones: wait for them, then reuse */
+         hw_retire(h, 0);
+         if (h->n_ovf == MALI_MAX_OVF)
+            return NULL;
+      }
+      size_t sz = h->ovf_last ? h->ovf_last * 2 : (16u << 20);
+      if (sz < n + al)
+         sz = (n + al + (1u << 20) - 1) & ~((size_t)(1u << 20) - 1);
+      if (sz > (512u << 20))
+         sz = n + al > (512u << 20) ? n + al : (512u << 20);
+      if (be->bo_alloc(h->dev->kdev, sz, MALI_BO_HOT, &h->ovf[h->n_ovf].bo))
+         return NULL;
+      h->ovf[h->n_ovf].tag = 0;
+      cur = &h->ovf[h->n_ovf++].bo;
+      h->ovf_last = sz;
+      o = 0;
+   }
+   h->ovf_off = o + n;
+   memset((char *)cur->cpu + o, 0, n);
+   if (va)
+      *va = cur->gpu_va + o;
+   return (char *)cur->cpu + o;
+}
+
 static void *
 hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
 {
-   return kb_arena_alloc(&((struct mali_hwctx *)u)->ar, n, al, va);
+   struct mali_hwctx *h = u;
+   if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
+      return hw_alloc_ovf(h, n, al, va);
+   void *p = kb_arena_alloc(&h->ar, n, al, va);
+   if (p)
+      return p;
+   /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
+   if (h->nfl) {
+      hw_retire(h, 0);
+      h->ar.start = h->cur_start;
+      p = kb_arena_alloc(&h->ar, n, al, va);
+      if (p)
+         return p;
+   }
+   return hw_alloc_ovf(h, n, al, va);
 }
 
 static int
@@ -129,12 +183,27 @@ hw_wait(struct mali_hwctx *h, uint64_t target)
    return be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, target, h->wait_ms);
 }
 
+static void
+hw_ovf_reap(struct mali_hwctx *h, uint64_t counter)
+{
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   unsigned w = 0;
+   for (unsigned i = 0; i < h->n_ovf; i++) {
+      if (h->ovf[i].tag && h->ovf[i].tag <= counter)
+         be->bo_free(h->dev->kdev, &h->ovf[i].bo);
+      else
+         h->ovf[w++] = h->ovf[i];
+   }
+   h->n_ovf = w;
+}
+
 /* Drop retired frames from the in-flight list; block on the oldest while the list is full. */
 static void
 hw_retire(struct mali_hwctx *h, unsigned max_left)
 {
    for (;;) {
       uint64_t c = *(volatile uint64_t *)h->sync.cpu;
+      hw_ovf_reap(h, c);
       unsigned k = 0;
       while (k < h->nfl && h->fl[k].expected <= c)
          k++;
@@ -217,6 +286,9 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
     * (CS SYNC_ADD64 on the event word) before the next one is built. */
    h->expected += nframes;
+   for (unsigned i = 0; i < h->n_ovf; i++)
+      if (!h->ovf[i].tag)
+         h->ovf[i].tag = h->expected;
    if (!getenv("MALI_SYNC_SUBMIT")) {
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
@@ -248,6 +320,9 @@ mali_hw_finish(struct mali_device *dev)
       hw_wait(h, h->expected);
    for (unsigned i = 0; i < h->n_old_tls; i++)
       be->bo_free(dev->kdev, &h->old_tls[i]);
+   for (unsigned i = 0; i < h->n_ovf; i++)
+      be->bo_free(dev->kdev, &h->ovf[i].bo);
+   h->n_ovf = 0;
    pthread_mutex_lock(&g_bind_lock);
    if (g_cur == h) {
       g_cur = h->below;
