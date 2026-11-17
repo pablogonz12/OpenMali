@@ -1,0 +1,20 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# tools/lesson <area> "<text, max 160 chars>" <evidence: commit, file:line or run id>
+# Appends one dated line to LESSONS.md of the MAIN checkout (first entry of `git worktree list`).
+set -euo pipefail
+[ $# -eq 3 ] || { echo 'usage: tools/lesson <area> "<text up to 160 chars>" <evidence>' >&2; exit 2; }
+area=$1; text=$2; ev=$3
+[[ $area =~ ^[a-z0-9_-]+$ ]] || { echo "lesson: area must match [a-z0-9_-]+" >&2; exit 2; }
+[ ${#text} -le 160 ] || { echo "lesson: text is ${#text} chars (max 160)" >&2; exit 2; }
+[[ $text != *$'\n'* && $ev != *$'\n'* ]] || { echo "lesson: no newlines" >&2; exit 2; }
+here=$(cd "$(dirname "$0")" && pwd)
+main=$(git -C "$here" worktree list --porcelain | awk '/^worktree /{print substr($0,10); exit}')
+[ -n "$main" ] || { echo "lesson: cannot find the main checkout" >&2; exit 1; }
+line="$(date +%F) [$area] $text ($ev)"
+# Same lint as tools/skill-lint.sh, on the new line only.
+if bad=$("$here/skill-lint.sh" --check-text "$line" 2>&1); then :; else echo "lesson: rejected: $bad" >&2; exit 1; fi
+f=$main/.opencode/skills/mali-open/LESSONS.md
+mkdir -p "$(dirname "$f")"
+echo "$line" >> "$f"
+echo "lesson: added ($(grep -c . "$f") lines in $f)"
