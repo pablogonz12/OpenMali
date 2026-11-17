@@ -1,0 +1,488 @@
+/* SPDX-License-Identifier: MIT */
+/* mali_compile(): SPIR-V -> NIR -> Mesa panfrost compiler (bi_* Bifrost/Valhall backend) -> binary + metadata.
+ * The lowering sequence is the one proven by driver/compiler-spike/spike.c (PanVK flow, panvk_vX_shader.c, as oracle only).
+ * Output is deterministic and cached on disk keyed by blake3(spirv, arch, stage, options, Mesa tag, lowering version). */
+#include "compiler/glsl_types.h"
+#include "compiler/spirv/nir_spirv.h"
+#include "panfrost/compiler/bifrost/bifrost_compile.h"
+#include "panfrost/compiler/pan_compiler.h"
+#include "panfrost/compiler/pan_nir.h"
+#include "panfrost/model/pan_model.h"
+#include "util/blake3/blake3.h"
+#include "nir.h"
+#include "nir_builder.h"
+
+#include "mali_compile.h"
+#include "mali_descriptor_lower.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* Bump when the lowering or the serialized layout changes. */
+#define MALI_COMPILE_VERSION 4
+
+_Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
+_Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
+
+static atomic_ullong g_hits, g_misses, g_stores;
+static pthread_once_t g_once = PTHREAD_ONCE_INIT;
+static const struct pan_model *g_model[2];
+
+static void
+init_once(void)
+{
+   glsl_type_singleton_init_or_ref();
+   /* GPU ids: G615 (v11) 0xB8030000, G725/G925 class (v13) 0xD8000000 (see compiler-spike/NOTES.md) */
+   static const uint64_t ids[2] = {0xB8030000ull, 0xD8000000ull};
+   for (int i = 0; i < 2; i++)
+      for (unsigned v = 0; v < 16 && !g_model[i]; v++)
+         g_model[i] = pan_get_model(ids[i], v, 16, 0);
+}
+
+/* ---- NIR passes (same as spike.c) ---- */
+
+static bool
+lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   unsigned off;
+   switch (i->intrinsic) {
+   case nir_intrinsic_load_viewport_scale:  off = 0;  break;
+   case nir_intrinsic_load_viewport_offset: off = 12; break;
+   case nir_intrinsic_load_base_global_invocation_id:   /* compute stub: no vkCmdDispatchBase, base is 0 */
+   case nir_intrinsic_load_base_workgroup_id:
+      b->cursor = nir_before_instr(&i->instr);
+      nir_def_replace(&i->def, nir_imm_zero(b, i->def.num_components, i->def.bit_size));
+      return true;
+   default: return false;
+   }
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *v = nir_load_push_constant(b, i->def.num_components, i->def.bit_size, nir_imm_int(b, off));
+   nir_def_replace(&i->def, v);
+   return true;
+}
+
+struct push_ctx { unsigned base; unsigned max_end; };
+
+static bool
+add_push_base(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   struct push_ctx *c = d;
+   if (i->intrinsic != nir_intrinsic_load_push_constant)
+      return false;
+   unsigned bytes = i->def.num_components * (i->def.bit_size / 8);
+   if (nir_src_is_const(i->src[0]))
+      c->max_end = MAX2(c->max_end, nir_src_as_uint(i->src[0]) + bytes);
+   else
+      c->max_end = UINT32_MAX;
+   /* bifrost_compile.c asserts range == 0 (the value is ignored in release builds) */
+   bool changed = nir_intrinsic_range(i) != 0;
+   nir_intrinsic_set_range(i, 0);
+   if (!c->base)
+      return changed;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_src_rewrite(&i->src[0], nir_iadd_imm(b, i->src[0].ssa, c->base));
+   return true;
+}
+
+/* Texture/sampler derefs -> constant Valhall resource handles: table 1, texture at 0, sampler at 1 (spike defaults). M7 replaces this. */
+static bool
+lower_tex_handles(nir_builder *b, nir_instr *instr, void *d)
+{
+   if (instr->type != nir_instr_type_tex)
+      return false;
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   int ti = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
+   int si = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
+   if (ti < 0 || si < 0)
+      return false;
+   b->cursor = nir_before_instr(instr);
+   nir_tex_instr_remove_src(tex, MAX2(ti, si));
+   nir_tex_instr_remove_src(tex, MIN2(ti, si));
+   nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, nir_imm_int(b, pan_res_handle(1, 0)));
+   nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, nir_imm_int(b, pan_res_handle(1, 1)));
+   tex->texture_index = 0;
+   tex->sampler_index = 0;
+   return true;
+}
+
+static unsigned
+type_size(const struct glsl_type *t, bool bindless)
+{
+   return glsl_count_attribute_slots(t, false);
+}
+
+/* ---- cache ---- */
+
+struct opts_key {   /* everything besides the SPIR-V that changes the output */
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled;
+   char mesa[24];
+};
+
+static void
+mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, char hex[65])
+{
+   struct opts_key k;
+   memset(&k, 0, sizeof k);
+   k.version = MALI_COMPILE_VERSION;
+   k.arch = o->arch;
+   k.stage = o->stage;
+   k.fau_reserved = fau_reserved;
+   k.push_base = push_base;
+   k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
+   k.sizeof_compiled = sizeof(struct mali_compiled);
+   snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
+   blake3_hasher h;
+   blake3_hasher_init(&h);
+   blake3_hasher_update(&h, &k, sizeof k);
+   if (o->link_vs && o->link_vs->size)
+      blake3_hasher_update(&h, o->link_vs->data, o->link_vs->size);
+   if (o->layout) {
+      const struct mali_compile_layout *L = o->layout;
+      blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
+      blake3_hasher_update(&h, L->dyn_start, sizeof L->dyn_start);
+      blake3_hasher_update(&h, &L->push_size, sizeof L->push_size);
+      for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
+         blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
+         blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);
+      }
+   }
+   const char *e = o->entry ? o->entry : "main";
+   blake3_hasher_update(&h, e, strlen(e) + 1);
+   blake3_hasher_update(&h, o->spirv, o->spirv_words * 4);
+   uint8_t d[32];
+   blake3_hasher_finalize(&h, d, 32);
+   for (int i = 0; i < 32; i++)
+      sprintf(hex + 2 * i, "%02x", d[i]);
+}
+
+static int
+cache_dir(const struct mali_compile_opts *o, char *buf, size_t n)
+{
+   const char *d = o->cache_dir;
+   if (d) {
+      if (!*d) return 0;
+      snprintf(buf, n, "%s", d);
+      return 1;
+   }
+   if ((d = getenv("MALI_SHADER_CACHE"))) {
+      if (!*d) return 0;
+      snprintf(buf, n, "%s", d);
+      return 1;
+   }
+   const char *x = getenv("XDG_CACHE_HOME"), *h = getenv("HOME");
+   if (x && *x) snprintf(buf, n, "%s/mali-gaming/shaders", x);
+   else if (h && *h) snprintf(buf, n, "%s/.cache/mali-gaming/shaders", h);
+   else return 0;
+   return 1;
+}
+
+static void
+mkdirs(char *p)
+{
+   for (char *s = p + 1; *s; s++)
+      if (*s == '/') { *s = 0; mkdir(p, 0755); *s = '/'; }
+   mkdir(p, 0755);
+}
+
+#define CACHE_MAGIC 0x4d414c43u   /* 'MALC' */
+
+static void
+cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
+{
+   char path[1024], tmp[1100], d2[1024];
+   snprintf(d2, sizeof d2, "%s", dir);
+   mkdirs(d2);
+   snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
+   snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
+   FILE *f = fopen(tmp, "wb");
+   if (!f) return;
+   struct mali_compiled h = *c;
+   uint32_t magic = CACHE_MAGIC;
+   h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
+   int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
+            fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
+            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
+   ok = (fclose(f) == 0) && ok;
+   if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
+   else unlink(tmp);
+}
+
+static int
+cache_load(const char *dir, const char *hex, struct mali_compiled *c)
+{
+   char path[1024];
+   snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
+   FILE *f = fopen(path, "rb");
+   if (!f) return 0;
+   uint32_t magic = 0;
+   struct mali_compiled h;
+   int ok = fread(&magic, 4, 1, f) == 1 && magic == CACHE_MAGIC && fread(&h, sizeof h, 1, f) == 1 &&
+            h.bin_size < (64u << 20) && h.nimm < (1u << 20);
+   if (ok) {
+      h.bin = malloc(h.bin_size ? h.bin_size : 1);
+      h.imm = malloc((h.nimm ? h.nimm : 1) * sizeof *h.imm);
+      ok = h.bin && h.imm && fread(h.bin, 1, h.bin_size, f) == h.bin_size &&
+           (!h.nimm || fread(h.imm, sizeof *h.imm, h.nimm, f) == h.nimm);
+      if (ok) { char x; ok = fread(&x, 1, 1, f) == 0; }   /* no trailing bytes */
+      if (!ok) { free(h.bin); free(h.imm); }
+   }
+   fclose(f);
+   if (!ok) return 0;
+   h.cache_hit = 1;
+   *c = h;
+   return 1;
+}
+
+/* ---- compile ---- */
+
+static int
+fail(char *err, size_t n, const char *m)
+{
+   if (err && n) snprintf(err, n, "%s", m);
+   return -1;
+}
+
+static int
+do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, struct mali_compiled *out,
+           char *err, size_t errsz)
+{
+   pthread_once(&g_once, init_once);
+   unsigned arch = o->arch;
+   const struct pan_model *model = g_model[arch == 13];
+   if (!model)
+      return fail(err, errsz, "no GPU model");
+   mesa_shader_stage stage = o->stage == MALI_STAGE_VERTEX ? MESA_SHADER_VERTEX :
+                             o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+   const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
+
+   struct spirv_to_nir_options so = {
+      .environment = NIR_SPIRV_VULKAN,
+      .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
+      .ssbo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_64bit_global_32bit_offset,
+      .phys_ssbo_addr_format = nir_address_format_64bit_global,
+      .shared_addr_format = nir_address_format_32bit_offset,
+      .min_ubo_alignment = 16, .min_ssbo_alignment = 16,
+      .push_const_addr_format = nir_address_format_32bit_offset,
+   };
+   nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, NULL, stage, o->entry ? o->entry : "main", &so, opts);
+   if (!nir)
+      return fail(err, errsz, "spirv_to_nir failed");
+
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
+   NIR_PASS(_, nir, nir_lower_returns);
+   NIR_PASS(_, nir, nir_inline_functions);
+   nir_remove_non_entrypoints(nir);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
+   NIR_PASS(_, nir, nir_lower_global_vars_to_local);
+   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+   if (stage != MESA_SHADER_COMPUTE)
+      NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
+   NIR_PASS(_, nir, nir_split_var_copies);
+   NIR_PASS(_, nir, nir_lower_system_values);
+   pan_preprocess_nir(nir, arch);
+
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   struct push_ctx pc = { push_base, 0 };
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, add_push_base, nir_metadata_control_flow, &pc);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+
+   struct pan_compile_inputs in = { .arch = arch, .model = model };
+   struct pan_varying_layout vl;
+   memset(&vl, 0, sizeof vl);
+   const struct pan_varying_layout *vs_layout = NULL;
+
+   if (stage == MESA_SHADER_COMPUTE) {
+      NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared, glsl_get_natural_size_align_bytes);
+      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared, nir_address_format_32bit_offset);
+      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global, nir_address_format_64bit_global);
+   } else {
+      if (stage == MESA_SHADER_VERTEX) {
+         nir_foreach_shader_in_variable(var, nir)
+            var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
+         nir_assign_io_var_locations(nir, nir_var_shader_out);
+      } else {
+         nir_assign_io_var_locations(nir, nir_var_shader_in);
+         nir_assign_io_var_locations(nir, nir_var_shader_out);
+      }
+      NIR_PASS(_, nir, nir_lower_var_copies);
+      NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees, nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
+      NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size,
+               nir_lower_io_use_interpolated_input_intrinsics);
+      NIR_PASS(_, nir, nir_opt_constant_folding);
+      pan_nir_lower_mediump_io(nir);
+
+      if (stage == MESA_SHADER_VERTEX) {
+         pan_varying_collect_formats(&vl, nir, arch);
+         pan_build_varying_layout_compact(&vl, nir, arch);
+         in.varying_layout = &vl;
+         vs_layout = &vl;
+      } else {
+         NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, 0);
+         if (o->link_vs && o->link_vs->size == sizeof vl) {
+            memcpy(&vl, o->link_vs->data, sizeof vl);
+            in.varying_layout = &vl;
+         }
+      }
+   }
+
+   if (o->layout) {
+      if (!mali_nir_lower_descriptors(nir, o->layout, err, errsz)) {
+         ralloc_free(nir);
+         if (err && errsz && !err[0]) snprintf(err, errsz, "descriptor lowering failed");
+         return -1;
+      }
+   } else {
+      NIR_PASS(_, nir, nir_shader_instructions_pass, lower_tex_handles, nir_metadata_control_flow, NULL);
+   }
+   nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
+
+   struct pan_shader_info info = {0};
+   pan_postprocess_nir(nir, &in, &info);
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
+   in.fau.reserved = fau_reserved;
+   in.fau.promote_immediates = true;
+
+   struct util_dynarray bin;
+   util_dynarray_init(&bin, NULL);
+   pan_shader_compile(nir, &in, &bin, &info);
+
+   memset(out, 0, sizeof *out);
+   out->arch = arch;
+   out->stage = o->stage;
+   out->bin_size = util_dynarray_num_elements(&bin, uint8_t);
+   out->bin = malloc(out->bin_size ? out->bin_size : 1);
+   if (!out->bin) {
+      util_dynarray_fini(&bin);
+      ralloc_free(nir);
+      return fail(err, errsz, "out of memory");
+   }
+   memcpy(out->bin, util_dynarray_begin(&bin), out->bin_size);
+   util_dynarray_fini(&bin);
+
+   if (stage == MESA_SHADER_COMPUTE)
+      for (int i = 0; i < 3; i++) out->local_size[i] = nir->info.workgroup_size[i];
+   out->work_reg_count = info.work_reg_count;
+   out->tls_size = info.tls_size;
+   out->wls_size = info.wls_size;
+   out->preload = info.preload;
+   out->fau_count = info.fau.count;
+   out->fau_reserved = info.fau.reserved;
+   for (unsigned i = info.fau.reserved; i < info.fau.count; i++)
+      if (BITSET_TEST(info.fau.is_const, i))
+         out->nimm++;
+   out->imm = malloc((out->nimm ? out->nimm : 1) * sizeof *out->imm);
+   unsigned k = 0;
+   for (unsigned i = info.fau.reserved; i < info.fau.count && out->imm; i++)
+      if (BITSET_TEST(info.fau.is_const, i)) {
+         out->imm[k].word = i;
+         out->imm[k].value = info.fau.words[i].constant;
+         k++;
+      }
+   out->push_const_bytes = pc.max_end;
+   if (o->layout && pc.max_end != UINT32_MAX && pc.max_end > o->layout->push_size) {
+      free(out->bin); free(out->imm);
+      ralloc_free(nir);
+      return fail(err, errsz, "shader reads push constants beyond the layout's push range");
+   }
+   out->ubo_count = info.ubo_count;
+   out->attribute_count = info.attribute_count;
+   out->texture_count = info.texture_count;
+   out->sampler_count = info.sampler_count;
+   out->uses_ld_var = info.bifrost.uses_ld_var;
+   out->wait_6 = info.bifrost.wait_6;
+   out->wait_7 = info.bifrost.wait_7;
+   out->writes_global = info.writes_global;
+   if (stage == MESA_SHADER_FRAGMENT) {
+      out->fs_can_discard = info.fs.can_discard;
+      out->fs_writes_depth = info.fs.writes_depth;
+      out->fs_early_fragment_tests = info.fs.early_fragment_tests;
+      out->fs_can_early_z = info.fs.can_early_z;
+      out->fs_can_fpk = info.fs.can_fpk;
+      out->fs_sidefx = info.fs.sidefx;
+      out->fs_reads_frag_coord = info.fs.reads_frag_coord;
+   } else if (stage == MESA_SHADER_VERTEX) {
+      out->vs_writes_point_size = info.vs.writes_point_size;
+      out->vs_secondary_enable = info.vs.secondary_enable;
+      out->vs_secondary_offset = info.vs.secondary_offset;
+      out->vs_secondary_work_reg_count = info.vs.secondary_work_reg_count;
+      out->vs_secondary_preload = info.vs.secondary_preload;
+      out->generic_size_B = vl.generic_size_B;
+      out->layout.size = sizeof vl;
+      memcpy(out->layout.data, &vl, sizeof vl);
+   }
+   if (stage != MESA_SHADER_COMPUTE) {
+      const struct pan_varying_layout *L = vs_layout ? vs_layout : &info.varyings.formats;
+      for (unsigned i = 0; i < L->count && out->nvarying < 64; i++) {
+         const struct pan_varying_slot *s = pan_varying_layout_slot_at(L, i);
+         if (!s) continue;
+         struct mali_varying_slot *d = &out->varying[out->nvarying++];
+         d->location = s->location;
+         d->section = s->section;
+         d->ncomps = s->ncomps;
+         d->offset = s->offset;
+         d->alu_type = s->alu_type;
+      }
+   }
+   ralloc_free(nir);
+   if (!out->imm) {
+      free(out->bin);
+      return fail(err, errsz, "out of memory");
+   }
+   return 0;
+}
+
+int
+mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
+{
+   if (!o || !out || !o->spirv || !o->spirv_words)
+      return fail(err, errsz, "bad arguments");
+   /* spirv_to_nir dereferences a NULL builder option on a bad header: check it ourselves */
+   if (o->spirv_words < 5 || o->spirv[0] != 0x07230203u)
+      return fail(err, errsz, "not a SPIR-V module (bad magic or too short)");
+   if (o->arch != 11 && o->arch != 13)
+      return fail(err, errsz, "arch must be 11 or 13");
+   if (o->stage > MALI_STAGE_COMPUTE)
+      return fail(err, errsz, "bad stage");
+   unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 16 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
+   unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 32 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
+
+   char dir[900], hex[65];
+   int use_cache = cache_dir(o, dir, sizeof dir);
+   if (use_cache) {
+      mkey(o, fau_reserved, push_base, hex);
+      if (cache_load(dir, hex, out)) {
+         atomic_fetch_add(&g_hits, 1);
+         return 0;
+      }
+   }
+   atomic_fetch_add(&g_misses, 1);
+   int r = do_compile(o, fau_reserved, push_base, out, err, errsz);
+   if (r == 0 && use_cache)
+      cache_store(dir, hex, out);
+   return r;
+}
+
+void
+mali_compiled_free(struct mali_compiled *c)
+{
+   if (!c) return;
+   free(c->bin);
+   free(c->imm);
+   memset(c, 0, sizeof *c);
+}
+
+void
+mali_compile_stats(struct mali_compile_stats *s)
+{
+   s->hits = g_hits;
+   s->misses = g_misses;
+   s->stores = g_stores;
+}

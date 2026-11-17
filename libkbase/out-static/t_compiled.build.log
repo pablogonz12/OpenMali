@@ -1,0 +1,5 @@
+In file included from tests/t_compiled.c:15:
+tests/rung2.h:568:12: warning: unused function 'r2_run' [-Wunused-function]
+  568 | static int r2_run(const char *name, int argc, char **argv, const struct scene *scenes, unsigned n, bool any_depth)
+      |            ^~~~~~
+1 warning generated.

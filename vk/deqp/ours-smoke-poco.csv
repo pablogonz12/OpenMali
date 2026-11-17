@@ -1,0 +1,8 @@
+group,total,pass,fail,notsupported,crash,other,notrun,pass_pct_of_total,pass_pct_of_supported
+dEQP-VK.api.smoke.asm_triangle,1,0,0,0,1,0,0,0.0,0.0
+dEQP-VK.api.smoke.asm_triangle_no_opname,1,0,0,0,1,0,0,0.0,0.0
+dEQP-VK.api.smoke.create_sampler,1,1,0,0,0,0,0,100.0,100.0
+dEQP-VK.api.smoke.create_shader,1,1,0,0,0,0,0,100.0,100.0
+dEQP-VK.api.smoke.triangle,1,0,0,0,1,0,0,0.0,0.0
+dEQP-VK.api.smoke.unused_resolve_attachment,1,0,0,0,1,0,0,0.0,0.0
+TOTAL,6,2,0,0,4,0,0,33.3,33.3

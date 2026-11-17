@@ -1,0 +1,33 @@
+   MOV.i32 r0, u4.w0
+   LSHIFT_AND.i32 r0, shader_output.w0, 0x0.b00, r0^
+   ICMP_OR.u32.ne.m1 r0, r0^, 0x0, 0x0
+   BRANCHZ.eq.reconverge r0^.h0, offset:15
+
+   LD_ATTR_IMM.v4.f32.slot0.wait0 @r0:r1:r2:r3, r60, r61, index:0x0, table:0x0
+   FRCP.f32 r3, r3^
+   FMAX.f32 r3, r3^, u4.w1
+   FMIN.f32 r3, r3^, u5.w0
+   FMA.f32 r0, r0^, r3, 0x0.neg
+   FMA.f32 r1, r1^, r3, 0x0.neg
+   FMA.f32 r2, r2^, r3, 0x0.neg
+   MOV.i32 r4, u1.w1
+   FMA.f32 r0, r0^, u0.w0, r4^
+   MOV.i32 r4, u2.w0
+   FMA.f32 r1, r1^, u0.w1, r4^
+   MOV.i32 r4, u2.w1
+   FMA.f32 r2, r2^, u1.w0, r4^
+   LEA_BUF_IMM.slot1.wait1 @r4:r5, r59, table:0xD, index:0x0
+   STORE.i128.istream.slot2.reconverge @r0:r1:r2:r3, [r4^:r5^], offset:0
+   MOV.i32 r0, u5.w1
+   LSHIFT_AND.i32 r0, shader_output.w0, 0x0.b00, r0
+   ICMP_OR.u32.ne.m1 r0, r0, 0x0, 0x0
+   BRANCHZ.eq.reconverge r0.h0, offset:6
+
+   LEA_BUF_IMM.slot0 @r0:r1, r59^, table:0xD, index:0x1
+   MOV.i32 r2, u6.w0
+   MOV.i32.wait0 r3, 0x0
+   SHADDX.s64 [r0:r1], [r0:r1], [r2:r3], shift:0x0
+   LD_ATTR_IMM.v4.f32.slot1.wait12 @r2:r3:r4:r5, r60^, r61^, index:0x1, table:0x0
+   STORE.i128.estream.slot2.reconverge @r2:r3:r4:r5, [r0^:r1^], offset:0
+   NOP.end 
+

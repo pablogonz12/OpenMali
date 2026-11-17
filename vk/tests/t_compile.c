@@ -1,0 +1,225 @@
+/* SPDX-License-Identifier: MIT */
+/* Offline tests of mali_compile(). Usage: t_compile [shader_dir] [-v]. Runs in a few seconds, no GPU. */
+#include "../src/mali_compile.h"
+#include "../../libkbase/tests/shaders_compiled_v11.h"
+#include "../shader/golden_compiled_v13.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+static int g_fail, g_verbose;
+#define CHECK(c, ...) do { if (!(c)) { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
+static const char *g_dir = "driver/vk/shader";
+
+struct spv { uint32_t *w; size_t n; };
+
+static struct spv
+load(const char *name)
+{
+   char p[512];
+   snprintf(p, sizeof p, "%s/%s", g_dir, name);
+   struct spv s = {0};
+   FILE *f = fopen(p, "rb");
+   if (!f) { printf("  cannot open %s\n", p); g_fail++; return s; }
+   fseek(f, 0, SEEK_END);
+   long n = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   s.w = malloc(n);
+   if (fread(s.w, 1, n, f) != (size_t)n) { g_fail++; free(s.w); s.w = NULL; }
+   else s.n = n / 4;
+   fclose(f);
+   return s;
+}
+
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+
+static int
+compile(unsigned arch, enum mali_stage st, const struct spv *s, const struct mali_varying_blob *link, const char *cache, struct mali_compiled *c)
+{
+   struct mali_compile_opts o = { .arch = arch, .stage = st, .spirv = s->w, .spirv_words = s->n, .link_vs = link, .cache_dir = cache };
+   char err[256] = "";
+   int r = mali_compile(&o, c, err, sizeof err);
+   if (r) printf("  compile error: %s\n", err);
+   return r;
+}
+
+static void
+expect_golden(const char *what, const struct mali_compiled *c, const uint8_t *bin, unsigned size, unsigned work, uint64_t preload,
+              unsigned fau_count, unsigned fau_reserved, const uint32_t (*imm)[2], unsigned nimm, int vs, unsigned sec_en,
+              unsigned sec_off, unsigned sec_work, uint64_t sec_pre, unsigned generic)
+{
+   CHECK(c->bin_size == size, "%s size %u != %u", what, c->bin_size, size);
+   CHECK(c->bin_size == size && !memcmp(c->bin, bin, size), "%s binary differs from golden", what);
+   CHECK(c->work_reg_count == work, "%s work regs", what);
+   CHECK(c->preload == preload, "%s preload 0x%llx != 0x%llx", what, (unsigned long long)c->preload, (unsigned long long)preload);
+   CHECK(c->fau_count == fau_count && c->fau_reserved == fau_reserved, "%s fau %u/%u", what, c->fau_count, c->fau_reserved);
+   CHECK(c->nimm == nimm, "%s nimm %u != %u", what, c->nimm, nimm);
+   for (unsigned i = 0; i < nimm && i < c->nimm; i++)
+      CHECK(c->imm[i].word == imm[i][0] && c->imm[i].value == imm[i][1], "%s imm %u", what, i);
+   if (vs) {
+      CHECK(c->vs_secondary_enable == sec_en && c->vs_secondary_offset == sec_off && c->vs_secondary_work_reg_count == sec_work &&
+            c->vs_secondary_preload == sec_pre, "%s secondary shader fields", what);
+      CHECK(c->generic_size_B == generic, "%s generic size", what);
+   }
+}
+
+static void
+test_golden(void)
+{
+   printf("golden (rot.vert + var.frag vs gen-compiled.sh output)\n");
+   struct spv vs = load("rot.vert.spv"), fs = load("var.frag.spv");
+   if (!vs.w || !fs.w) return;
+   struct mali_compiled c;
+   if (!compile(11, MALI_STAGE_VERTEX, &vs, NULL, "", &c)) {
+      expect_golden("v11 VS", &c, crot_vs_bin, CROT_VS_SIZE, CROT_VS_WORK_REG_COUNT, CROT_VS_PRELOAD, CROT_VS_FAU_COUNT,
+                    CROT_VS_FAU_RESERVED, crot_vs_imm, CROT_VS_NIMM, 1, CROT_VS_SECONDARY_ENABLE, CROT_VS_SECONDARY_OFFSET,
+                    CROT_VS_SECONDARY_WORK_REG_COUNT, CROT_VS_SECONDARY_PRELOAD, CROT_VS_GENERIC_SIZE_B);
+      CHECK(c.push_const_bytes == 16, "push const bytes %u", c.push_const_bytes);
+      mali_compiled_free(&c);
+   }
+   if (!compile(11, MALI_STAGE_FRAGMENT, &fs, NULL, "", &c)) {
+      expect_golden("v11 FS", &c, crot_fs_bin, CROT_FS_SIZE, CROT_FS_WORK_REG_COUNT, CROT_FS_PRELOAD, CROT_FS_FAU_COUNT,
+                    CROT_FS_FAU_RESERVED, crot_fs_imm, CROT_FS_NIMM, 0, 0, 0, 0, 0, 0);
+      mali_compiled_free(&c);
+   }
+   if (!compile(13, MALI_STAGE_VERTEX, &vs, NULL, "", &c)) {
+      expect_golden("v13 VS", &c, crot13_vs_bin, CROT13_VS_SIZE, CROT13_VS_WORK_REG_COUNT, CROT13_VS_PRELOAD, CROT13_VS_FAU_COUNT,
+                    CROT13_VS_FAU_RESERVED, crot13_vs_imm, CROT13_VS_NIMM, 1, CROT13_VS_SECONDARY_ENABLE, CROT13_VS_SECONDARY_OFFSET,
+                    CROT13_VS_SECONDARY_WORK_REG_COUNT, CROT13_VS_SECONDARY_PRELOAD, CROT13_VS_GENERIC_SIZE_B);
+      mali_compiled_free(&c);
+   }
+   if (!compile(13, MALI_STAGE_FRAGMENT, &fs, NULL, "", &c)) {
+      expect_golden("v13 FS", &c, crot13_fs_bin, CROT13_FS_SIZE, CROT13_FS_WORK_REG_COUNT, CROT13_FS_PRELOAD, CROT13_FS_FAU_COUNT,
+                    CROT13_FS_FAU_RESERVED, crot13_fs_imm, CROT13_FS_NIMM, 0, 0, 0, 0, 0, 0);
+      mali_compiled_free(&c);
+   }
+   free(vs.w); free(fs.w);
+}
+
+static void
+test_pairing(void)
+{
+   printf("vertex + fragment pairing\n");
+   struct spv vs = load("rot.vert.spv"), fs = load("var.frag.spv");
+   if (!vs.w || !fs.w) return;
+   for (unsigned arch = 11; arch <= 13; arch += 2) {
+      struct mali_compiled v, f, f0;
+      if (compile(arch, MALI_STAGE_VERTEX, &vs, NULL, "", &v)) continue;
+      CHECK(v.layout.size > 0 && v.nvarying >= 2, "v%u VS layout", arch);
+      int found = 0;
+      for (unsigned i = 0; i < v.nvarying; i++)
+         if (v.varying[i].location == 32 /* VAR0 */) found = v.varying[i].ncomps == 4 && v.varying[i].section != 0;
+      CHECK(found, "v%u VS writes VAR0 vec4 in a generic section", arch);
+      if (compile(arch, MALI_STAGE_FRAGMENT, &fs, &v.layout, "", &f)) { mali_compiled_free(&v); continue; }
+      if (compile(arch, MALI_STAGE_FRAGMENT, &fs, NULL, "", &f0)) { mali_compiled_free(&v); mali_compiled_free(&f); continue; }
+      int fsfound = 0;
+      for (unsigned i = 0; i < f.nvarying; i++) if (f.varying[i].location == 32) fsfound = 1;
+      CHECK(fsfound, "v%u FS reads VAR0 from the VS layout", arch);
+      /* the linked FS reads the varying buffer (LD_VAR_BUF_IMM) where the unlinked one uses attribute descriptors: different code */
+      CHECK(f.bin_size != f0.bin_size || memcmp(f.bin, f0.bin, f.bin_size), "v%u linked FS differs from unlinked", arch);
+      if (g_verbose)
+         printf("  v%u: VS %u B, FS linked %u B (unlinked %u B), generic %u B\n", arch, v.bin_size, f.bin_size, f0.bin_size, v.generic_size_B);
+      mali_compiled_free(&v); mali_compiled_free(&f); mali_compiled_free(&f0);
+   }
+   free(vs.w); free(fs.w);
+}
+
+static void
+test_compute(void)
+{
+   printf("compute stub\n");
+   struct spv cs = load("comp.comp.spv");
+   if (!cs.w) return;
+   for (unsigned arch = 11; arch <= 13; arch += 2) {
+      struct mali_compiled c;
+      if (compile(arch, MALI_STAGE_COMPUTE, &cs, NULL, "", &c)) continue;
+      CHECK(c.bin_size > 0 && c.bin_size % 8 == 0, "v%u compute binary size %u", arch, c.bin_size);
+      CHECK(c.push_const_bytes == 12, "v%u compute push bytes %u", arch, c.push_const_bytes);
+      mali_compiled_free(&c);
+   }
+   free(cs.w);
+}
+
+static void
+test_determinism_and_cache(void)
+{
+   printf("determinism and disk cache\n");
+   struct spv vs = load("rot.vert.spv");
+   if (!vs.w) return;
+   char dir[] = "/tmp/t_compile_cache.XXXXXX";
+   if (!mkdtemp(dir)) { g_fail++; return; }
+   struct mali_compile_stats s0, s1;
+   struct mali_compiled a, b, c;
+   mali_compile_stats(&s0);
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, "", &a), "compile a");
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, "", &b), "compile b");
+   CHECK(a.bin_size == b.bin_size && !memcmp(a.bin, b.bin, a.bin_size), "two uncached compiles are byte-identical");
+   CHECK(!memcmp(&a.layout, &b.layout, sizeof a.layout), "layouts identical");
+   mali_compiled_free(&b);
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &b), "cache miss compile");
+   CHECK(!b.cache_hit, "first cached compile is a miss");
+   double t0 = now();
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c), "cache hit load");
+   double t_hit = now() - t0;
+   CHECK(c.cache_hit == 1, "second is a hit");
+   CHECK(c.bin_size == a.bin_size && !memcmp(c.bin, a.bin, a.bin_size), "cached binary identical");
+   CHECK(c.nimm == a.nimm && !memcmp(c.imm, a.imm, a.nimm * sizeof *a.imm), "cached imm identical");
+   CHECK(c.preload == a.preload && c.generic_size_B == a.generic_size_B && !memcmp(c.varying, a.varying, sizeof c.varying), "cached metadata");
+   mali_compiled_free(&c);
+   /* other arch and other options are different keys */
+   CHECK(!compile(13, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && !c.cache_hit, "arch is part of the key");
+   mali_compiled_free(&c);
+   struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = vs.w, .spirv_words = vs.n, .cache_dir = dir,
+                                  .fau_reserved = 20 };
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "options are part of the key");
+   mali_compiled_free(&c);
+   /* corrupt entry: truncated file falls back to a compile */
+   char cmd[600];
+   snprintf(cmd, sizeof cmd, "for f in %s/*.bin; do truncate -s 100 \"$f\"; done", dir);
+   CHECK(system(cmd) == 0, "truncate");
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && !c.cache_hit && c.bin_size == a.bin_size &&
+         !memcmp(c.bin, a.bin, a.bin_size), "corrupt cache entry recompiles correctly");
+   mali_compiled_free(&c);
+   mali_compile_stats(&s1);
+   CHECK(s1.hits - s0.hits == 1, "stats: 1 hit, got %llu", (unsigned long long)(s1.hits - s0.hits));
+   if (g_verbose) printf("  hit load %.0f us\n", t_hit * 1e6);
+   mali_compiled_free(&a); mali_compiled_free(&b);
+   snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+   if (system(cmd)) g_fail++;
+   free(vs.w);
+}
+
+static void
+test_errors(void)
+{
+   printf("errors\n");
+   uint32_t junk[8] = {0x12345678, 1, 2, 3, 4, 5, 6, 7};
+   struct spv j = { junk, 8 };
+   struct mali_compiled c;
+   char err[128];
+   struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = j.w, .spirv_words = j.n, .cache_dir = "" };
+   CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "junk SPIR-V rejected");
+   o.arch = 12;
+   CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
+}
+
+int
+main(int argc, char **argv)
+{
+   for (int i = 1; i < argc; i++) {
+      if (!strcmp(argv[i], "-v")) g_verbose = 1;
+      else g_dir = argv[i];
+   }
+   double t0 = now();
+   setvbuf(stdout, NULL, _IOLBF, 0);
+   test_golden();
+   test_pairing();
+   test_compute();
+   test_determinism_and_cache();
+   test_errors();
+   printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
+   return g_fail != 0;
+}

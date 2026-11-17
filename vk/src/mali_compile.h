@@ -1,0 +1,85 @@
+/* SPDX-License-Identifier: MIT */
+/* mali_compile(): SPIR-V -> NIR -> Mesa panfrost compiler (Valhall v11/v13) -> binary + metadata.
+ * Plain C, no Mesa headers: the .c is the only user of Mesa internals. */
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+#include "mali_pipeline_layout_flat.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum mali_stage { MALI_STAGE_VERTEX = 0, MALI_STAGE_FRAGMENT = 1, MALI_STAGE_COMPUTE = 2 };
+
+#define MALI_VARYING_BLOB_MAX 1024
+
+/* VS varying layout, passed to the FS compile so that it reads the varying buffer (LD_VAR_BUF_IMM). Opaque bytes. */
+struct mali_varying_blob {
+   uint32_t size;                          /* 0 = none */
+   uint8_t data[MALI_VARYING_BLOB_MAX];
+};
+
+struct mali_varying_slot {
+   uint16_t location;   /* gl_varying_slot (VARYING_SLOT_VAR0 = 32 + n) */
+   uint8_t section;     /* pan_varying_section: 0 special/position header, 1 generic, ... */
+   uint8_t ncomps;
+   int16_t offset;      /* bytes inside the section */
+   uint16_t pad;
+   uint32_t alu_type;   /* nir_alu_type of the stored value */
+};
+
+struct mali_compile_opts {
+   unsigned arch;                 /* 11 or 13 */
+   enum mali_stage stage;
+   const uint32_t *spirv;
+   size_t spirv_words;
+   const char *entry;             /* NULL = "main" */
+   unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 16, FS 8, CS 8) */
+   unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 32, else 0 */
+   int push_base_set;             /* 0: use the default above */
+   const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
+   const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
+   const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
+};
+
+struct mali_imm { uint32_t word, value; };   /* promoted immediate: FAU word index (32-bit), value */
+
+struct mali_compiled {
+   uint32_t arch;
+   uint32_t stage;
+   uint8_t *bin;                  /* aligned(16) not guaranteed: copy to GPU memory */
+   uint32_t bin_size;
+   uint32_t work_reg_count, tls_size, wls_size;
+   uint64_t preload;              /* register preload mask for the main (or VS position) shader */
+   uint32_t fau_count, fau_reserved;   /* words; [0,fau_reserved) are filled by the driver */
+   uint32_t nimm;
+   struct mali_imm *imm;          /* nimm entries, words >= fau_reserved */
+   uint32_t push_const_bytes;     /* highest API push constant byte used (before push_base), 0 = none */
+   uint32_t ubo_count, attribute_count, texture_count, sampler_count;
+   uint32_t uses_ld_var, wait_6, wait_7, writes_global;
+   /* FS */
+   uint32_t fs_can_discard, fs_writes_depth, fs_early_fragment_tests, fs_can_early_z, fs_can_fpk, fs_sidefx, fs_reads_frag_coord;
+   /* VS */
+   uint32_t vs_writes_point_size, vs_secondary_enable, vs_secondary_offset, vs_secondary_work_reg_count;
+   uint64_t vs_secondary_preload;
+   uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
+   uint32_t nvarying;
+   struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */
+   struct mali_varying_blob layout;        /* VS: pass to the FS compile (link_vs) */
+   uint32_t local_size[3];        /* CS: workgroup size */
+   uint32_t cache_hit;            /* 1 if this result came from the disk cache */
+};
+
+/* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
+int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
+void mali_compiled_free(struct mali_compiled *c);
+
+/* Cache statistics of this process. */
+struct mali_compile_stats { uint64_t hits, misses, stores; };
+void mali_compile_stats(struct mali_compile_stats *s);
+
+#ifdef __cplusplus
+}
+#endif
