@@ -36,7 +36,8 @@ def cmd_status(a):
     ds = L.read_json(os.path.join(L.state_dir(), "devices-state.json")) if os.path.exists(os.path.join(L.state_dir(), "devices-state.json")) else {}
     for al, d in devs.items():
         s = ds.get(al, {})
-        print(f"device {al:10} class {d['class']:4} {s.get('status', 'unknown'):8} {s.get('note', '')}")
+        h = f"batt {s['batt']}% {s['temp_c']}C thermal {s['thermal']}" if s.get("batt") is not None else ""
+        print(f"device {al:10} class {d['class']:4} {s.get('status', 'unknown'):8} {h} {s.get('note', '')}")
     jobs = L.list_jobs()
     if not a.all:
         jobs = jobs[-15:]

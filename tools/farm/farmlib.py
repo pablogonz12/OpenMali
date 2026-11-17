@@ -51,18 +51,23 @@ def adb_live():
 
 
 def resolve(dev, connect=False):
-    """alias -> live transport id: USB serial, else the mDNS entry containing the serial (or the ip:port), else (connect=True)
-    `adb connect <wireless>` from devices.toml. None when the phone is not reachable."""
+    """alias -> live transport id: USB serial first; unless the device is `transport = "usb"` (usb ONLY: never mDNS, ip:port or
+    connect) also the mDNS entry containing the serial / the configured ip:port, then (connect=True) `adb connect <wireless>`.
+    None when the phone is not reachable."""
+    usb_only = dev.get("transport", "usb+wireless") == "usb"
+    w = None if usb_only else dev.get("wireless")
+
     def pick():
         live = {i: s for i, s in adb_live().items() if s == "device"}
         if dev["serial"] in live:
             return dev["serial"]
-        w = dev.get("wireless")
+        if usb_only:
+            return None
         return next((i for i in live if dev["serial"] in i or (w and i == w)), None)
     t = pick()
-    if t or not (connect and dev.get("wireless")):
+    if t or not (connect and w):
         return t
-    sh(["adb", "connect", dev["wireless"]], 20)
+    sh(["adb", "connect", w], 20)
     return pick()
 
 

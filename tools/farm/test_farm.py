@@ -6,6 +6,7 @@ import json, os, subprocess, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import farmlib as L  # noqa: E402
+import gate  # noqa: E402
 
 TOML = """quick_root = "/nonexistent"
 [[device]]
@@ -107,6 +108,68 @@ class T(unittest.TestCase):
         self.assertEqual((nf, npass), ([["b", "Crash"]], ["c"]))
         c, nf, _ = L.compare({"a": "Pass"}, {}, ["a"])
         self.assertEqual(nf, [["a", "Missing"]])
+
+    def health(self, lock, **h):
+        with open(f"{self.d}/state/fake-health-{lock}.json", "w") as f:
+            json.dump(h, f)
+
+    def alerts(self):
+        p = self.d + "/state/alerts.log"
+        return open(p).read().strip().splitlines() if os.path.exists(p) else []
+
+    def test_battery_gate_hysteresis(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.health("cmf", level=15, temp_c=30.0, thermal=0)
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "pending")
+        self.assertIn("charging", self.farm("status")[1])
+        self.assertIn("batt 15%", self.farm("status")[1])
+        self.health("cmf", level=35, temp_c=30.0, thermal=0)      # above 20 but below 50: still gated
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "pending")
+        self.assertEqual(len(self.alerts()), 1)                     # one line per state change, not per tick
+        self.health("cmf", level=55, temp_c=30.0, thermal=0)
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertEqual(run["verdict"], "pass")
+        self.assertEqual((run["battery_pct_start"], run["battery_pct_end"], run["temp_c_start"]), (55, 55, 30.0))
+        self.assertEqual(len(self.alerts()), 2)
+        self.assertIn("charging->ok", self.alerts()[1])
+
+    def test_thermal_gate(self):
+        self.attach("dev-b")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
+        for h, pending in (({"temp_c": 43.0, "thermal": 0}, True), ({"temp_c": 40.0, "thermal": 0}, True),
+                           ({"temp_c": 30.0, "thermal": 3}, True), ({"temp_c": 30.0, "thermal": 2}, True), ({"temp_c": 37.0, "thermal": 1}, False)):
+            self.health("poco", level=80, **h)
+            self.farmd()
+            self.assertEqual(L.find_job(jid)["parts"]["v13"]["state"] == "pending", pending, h)
+        self.assertEqual(len(self.alerts()), 2)                     # ok->cooling, cooling->ok
+
+    def test_next_state_pure(self):
+        th = dict(gate.DEFAULTS)
+        ok = {"level": 80, "temp_c": 30.0, "thermal": 0}
+        self.assertEqual(gate.next_state("ok", dict(ok, level=19), th)[0], "charging")
+        self.assertEqual(gate.next_state("ok", dict(ok, level=20), th)[0], "ok")
+        self.assertEqual(gate.next_state("charging", dict(ok, level=49), th)[0], "charging")
+        self.assertEqual(gate.next_state("charging", dict(ok, level=50), th)[0], "ok")
+        self.assertEqual(gate.next_state("charging", dict(ok, level=50, temp_c=44.0), th)[0], "cooling")
+        self.assertEqual(gate.next_state("ok", dict(ok, level=None, temp_c=None, thermal=None), th)[0], "ok")
+        self.assertEqual(gate.parse("  level: 74\n  temperature: 281\nCapacity level: 3\nThermal Status: 2\n"),
+                         {"level": 74, "temp_c": 28.1, "thermal": 2})
+
+    def test_usb_only_never_wireless(self):
+        calls = []
+        L.adb_live = lambda: {"adb-SERIAL-B-x._adb-tls-connect._tcp": "device", "10.0.0.5:5555": "device"}
+        L.sh = lambda cmd, timeout, **kw: calls.append(cmd) or (0, "")
+        usb = {"serial": "SERIAL-B", "transport": "usb", "wireless": "10.0.0.5:5555"}
+        self.assertIsNone(L.resolve(usb, connect=True))
+        self.assertEqual(calls, [])                                 # no `adb connect`
+        both = {"serial": "SERIAL-B", "wireless": "10.0.0.5:5555"}
+        self.assertEqual(L.resolve(both), "adb-SERIAL-B-x._adb-tls-connect._tcp")
+        L.adb_live = lambda: {"SERIAL-B": "device", "adb-SERIAL-B-x._adb-tls-connect._tcp": "device"}
+        self.assertEqual(L.resolve(both), "SERIAL-B")               # USB preferred
 
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)

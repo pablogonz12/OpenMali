@@ -214,6 +214,13 @@ def main(argv):
         tsv.flush()
 
     while todo:
+        gate = getattr(quick, "health_gate", None)
+        if gate:                                              # battery/thermal gate between chunks: stop cleanly, resumable via the TSV
+            ok_h, msg_h = gate(p)
+            if not ok_h:
+                tsv.close()
+                print(f"GATED {msg_h}; {len(rows)}/{len(cases)} done, rerun to resume", file=sys.stderr)
+                return 75
         chunk, fails = todo[:o["chunk"]], 0
         calm(p)
         fin, unf, tail, hog = run_chunk(p, chunk, tag, o["icd"], o["case-timeout"], h)

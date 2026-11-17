@@ -36,3 +36,20 @@ else `adb connect <wireless>`; it passes it to valrun/qdeqp/qrestore as `ADB_SER
     wireless = "HOST:5555"       # optional, used by recovery
 
 Tests without hardware: `python3 tools/farm/test_farm.py` (fake mode: `farmd --fake`, attached = aliases in `<state>/fake-attached`).
+
+## Transport policy, wireless adb, health gates
+
+Per device `transport = "usb"` (USB only: never mDNS/ip:port/`adb connect`, never enables wireless debugging; for the owner's daily phone)
+or `"usb+wireless"` (default: USB first, then the `adb-<serial>-*._adb-tls-connect._tcp` mDNS entry, then `adb connect <wireless>`).
+For wireless-capable phones farmd, while the phone is on USB and idle, makes sure `settings put global adb_wifi_enabled 1` and records
+mDNS name / address in `devices-state.json`. Optional `tcpip_port = 5555` also pins `adb tcpip 5555` (fixed port, restarts adbd once).
+Findings: Wireless Debugging (TLS, Android 11+) needs no cable after pairing but uses a RANDOM port per toggle (the mDNS name is the
+stable handle), switches itself off when the phone leaves the paired Wi-Fi, and is not reliably back after a reboot. `adb tcpip 5555`
+has a fixed port but is lost on reboot (and on some builds when USB is re-plugged). Neither survives a reboot without a cable, so the
+farm re-arms both whenever USB reappears.
+
+Health gates (farmd before each job and between dEQP chunks; quick.py/qsafe for agents; shared state `gate-<lock>.json`, shared module
+`gate.py` == `scripts/quick/mgate.py`): battery < 20 % => `charging` until >= 50 %; battery temp >= 43 C or Android thermal status >=
+SEVERE => `cooling` until <= 38 C and status <= LIGHT. Per-device override in devices.toml: `batt_stop batt_resume temp_stop temp_resume
+thermal_stop thermal_resume`. A gated device keeps its jobs pending, writes one alerts.log line per state change, `farm status` shows
+state/battery/temp, run JSON has battery_pct_/temp_c_ start+end. qdeqp stops with rc 75 and resumes from its TSV.

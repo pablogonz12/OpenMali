@@ -10,6 +10,7 @@ import argparse, hashlib, json, os, shutil, subprocess, sys, threading, time, tr
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import farmlib as L                                    # noqa: E402
+import gate                                            # noqa: E402
 
 RETRIES = 3
 RECOVER_EVERY = 45            # s between adb recovery attempts while a wanted device is missing
@@ -52,6 +53,7 @@ class Farm:
         self.dstate = L.read_json(self.st_path) if os.path.exists(self.st_path) else {}
         self.last_try = {}
         self.cool = {}
+        self.last_health, self.last_wl = {}, {}
 
     # ---------- devices
     def adb(self, dev, *a, timeout=20):
@@ -61,7 +63,7 @@ class Farm:
     def phone_env(self, dev, extra=None):
         """env for q* scripts / valrun / qdeqp: they resolve the transport from ADB_SERIAL_<LOCK>"""
         t = self.tid.get(dev["alias"]) or dev["serial"]
-        e = dict(os.environ, ANDROID_SERIAL=t)
+        e = dict(os.environ, ANDROID_SERIAL=t, ADB_SERIAL=t)
         e["ADB_SERIAL_" + dev["lock"].upper()] = t
         e.update(extra or {})
         return e
@@ -80,13 +82,60 @@ class Farm:
                 up.add(a)
         return up
 
-    def set_dstate(self, alias, status, note=""):
+    def set_dstate(self, alias, status, note="", **extra):
         cur = self.dstate.get(alias, {})
         if cur.get("status") != status:
-            self.dstate[alias] = {"status": status, "since": time.time(), "note": note, "since_iso": L.now()}
+            keep = {k: cur[k] for k in ("batt", "temp_c", "thermal", "wireless") if k in cur}
+            self.dstate[alias] = dict(keep, status=status, since=time.time(), note=note, since_iso=L.now())
         else:
             cur["note"] = note
+        self.dstate[alias].update(extra)
         L.write_json(self.st_path, self.dstate)
+
+    # ---------- health gates
+    def thresholds(self, dev):
+        return dict(gate.DEFAULTS, **{k: dev[k] for k in gate.DEFAULTS if k in dev})
+
+    def health(self, dev):
+        if self.fake:
+            p = os.path.join(L.state_dir(), f"fake-health-{dev['lock']}.json")
+            h = {"level": 80, "temp_c": 30.0, "thermal": 0}
+            if os.path.exists(p):
+                h.update(L.read_json(p))
+            return h
+        return gate.read_adb(self.tid.get(dev["alias"]) or dev["serial"])
+
+    def gate_check(self, dev):
+        """-> (state ok|charging|cooling, reason, health); persists hysteresis state + alerts.log line on change"""
+        h = self.health(dev)
+        st, why = gate.check(dev["lock"], h, self.thresholds(dev))
+        return st, why, h
+
+    def ensure_wireless(self, dev):
+        """only for devices whose transport allows wireless, only while reachable over USB and idle: make sure wireless debugging is on
+        and record how to get back (mDNS name, ip:port; optionally a fixed `tcpip_port` fallback). Never for transport = "usb"."""
+        if self.fake or dev.get("transport", "usb+wireless") == "usb" or self.tid.get(dev["alias"]) != dev["serial"]:
+            return
+        w = {}
+        rc, o = self.adb(dev, "shell", "settings get global adb_wifi_enabled; getprop service.adb.tcp.port; "
+                         "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*'")
+        f = o.split("\n")
+        if f and f[0].strip() != "1":
+            self.adb(dev, "shell", "settings put global adb_wifi_enabled 1")
+        ip = next((l.split()[1] for l in f if l.startswith("inet ")), None)
+        rc, m = L.sh(["adb", "mdns", "services"], 15)
+        for l in m.splitlines():
+            if dev["serial"] in l and "_adb-tls-connect" in l:
+                w["mdns"] = l.split()[0]
+                w["addr"] = l.split()[-1]
+        port = dev.get("tcpip_port")
+        if port and ip:
+            if len(f) < 2 or f[1].strip() != str(port):
+                self.adb(dev, "tcpip", str(port), timeout=20)          # restarts adbd: only here, idle, and opt-in
+            w["tcpip_addr"] = f"{ip}:{port}"
+            dev.setdefault("wireless", w["tcpip_addr"])
+        if w:
+            self.set_dstate(dev["alias"], self.dstate.get(dev["alias"], {}).get("status", "up"), self.dstate.get(dev["alias"], {}).get("note", ""), wireless=w)
 
     def recover(self, alias, step):
         """one escalating recovery step; NEVER kill-server"""
@@ -112,9 +161,23 @@ class Farm:
         for al, d in self.devs.items():
             st = self.dstate.get(al, {})
             if al in att:
-                if st.get("status") != "up":
-                    log(f"device {al} is up")
-                self.set_dstate(al, "up")
+                busy = al in self.threads
+                if not busy and time.time() - self.last_health.get(al, 0) >= (0 if self.fake else 60):
+                    self.last_health[al] = time.time()
+                    gs, why, h = self.gate_check(d)
+                    if gs != "ok":
+                        if st.get("status") != gs:
+                            log(f"device {al} gated: {gs} {why}")
+                        self.set_dstate(al, gs, why, batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"))
+                        continue
+                    if time.time() - self.last_wl.get(al, 0) > 600:
+                        self.last_wl[al] = time.time()
+                        self.ensure_wireless(d)
+                    if st.get("status") != "up":
+                        log(f"device {al} is up")
+                    self.set_dstate(al, "up", batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"))
+                elif st.get("status") not in ("up", "charging", "cooling"):
+                    self.set_dstate(al, "up")
                 continue
             if d["class"] not in wanted:                 # nobody needs it: absence is normal (the owner's daily phone)
                 if st.get("status") in (None, "up"):
@@ -190,7 +253,7 @@ class Farm:
     def harness(self, tree):
         """older commits predate the transport/env hooks of valrun.sh and qdeqp.py: install the farm checkout's copy of those two
         harness scripts into the scratch tree when the hook is missing (the code under test is untouched)"""
-        for rel, hook in (("vk/tests/valrun.sh", "ADB_SERIAL_"), ("vk/deqp/qdeqp.py", "QDEQP_ENV")):
+        for rel, hook in (("vk/tests/valrun.sh", "ADB_SERIAL_"), ("vk/deqp/qdeqp.py", "health_gate")):
             dst, src = os.path.join(tree, rel), os.path.join(os.path.dirname(os.path.dirname(HERE)), rel)
             if os.path.exists(dst) and hook not in open(dst).read() and os.path.exists(src):
                 shutil.copy2(src, dst)
@@ -221,6 +284,7 @@ class Farm:
 
     def cleanup_tree(self, jid):
         t = self.tree(jid)
+        shutil.rmtree(t + "-shim", ignore_errors=True)
         if os.path.isdir(t) and not self.fake:
             git("worktree", "remove", "--force", t, cwd=self.repo)
             shutil.rmtree(t, ignore_errors=True)
@@ -337,12 +401,16 @@ class Farm:
                             dev["lock"], listf, "--chunk", "300"], tmo + 60, cwd=shim,
                           env=self.phone_env(dev, {"QDEQP_ENV": job["env"]}))
             note = out.strip()[-200:]
+            if rc == 75:
+                return {"gated": True}
             rd = os.path.join(shim, "runs", "qdeqp")
             tsv = next((os.path.join(rd, n) for n in sorted(os.listdir(rd)) if n.endswith("-ours-daily-sample.tsv")), None) if os.path.isdir(rd) else None
             cur = L.read_tsv(tsv) if tsv else {}
             if tsv:
                 shutil.copy2(tsv, os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['alias']}-daily.tsv"))
             shutil.rmtree(shim, ignore_errors=True)
+            if not cur:
+                return {"verdict": "error", "counts": {"total": len(cases)}, "notes": f"qdeqp produced no results (rc={rc}): {note}"}
         counts, nf, npass = L.compare(base, cur, cases)
         missing = counts.get("Missing", 0)
         verdict = "fail" if nf else ("error" if missing or rc not in (0, 1) and not cur else "pass")
@@ -363,8 +431,13 @@ class Farm:
             return
         t0, started = time.time(), L.now()
         job = L.read_json(L.job_path(jid))
-        res = None
+        res, h0 = None, {}
         try:
+            gs, gwhy, h0 = self.gate_check(dev)
+            if gs != "ok":
+                log(f"{alias}: gated ({gs}: {gwhy}); {jid}/{cls} stays pending")
+                self.set_dstate(alias, gs, gwhy, batt=h0.get("level"), temp_c=h0.get("temp_c"), thermal=h0.get("thermal"))
+                return
             ok, why = self.preflight(dev)
             if not ok:
                 log(f"{alias}: {why}; {jid}/{cls} stays pending")
@@ -387,6 +460,10 @@ class Farm:
             finally:
                 lock.release()
         job = L.read_json(L.job_path(jid))
+        if res is not None and res.get("gated"):
+            self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))      # partial results kept: qdeqp resumes from its TSV
+            log(f"{alias}: {jid}/{cls} paused by the health gate; back to pending")
+            return
         if res is None:
             def back(x):
                 p = x["parts"][cls]
@@ -398,9 +475,11 @@ class Farm:
             log(f"{alias}: lost during {jid}/{cls}; back to pending")
             return
         info = self.phone_info(dev) if alias in self.attached() else {}
+        h1 = self.health(dev) if alias in self.attached() else {}
         run = {"job": jid, "commit": job["commit"], "dirty": job["dirty"], "so_sha256": job.get("so_sha256"), "env": job["env"],
                "suite": job["suite"], "device": alias, "class": cls, "gpu": info.get("gpu"), "kbase": info.get("kbase"),
-               "battery_temp_c": info.get("battery_temp_c"), "counts": res.get("counts", {}),
+               "battery_temp_c": info.get("battery_temp_c"), "battery_pct_start": h0.get("level"), "battery_pct_end": h1.get("level"),
+               "temp_c_start": h0.get("temp_c"), "temp_c_end": h1.get("temp_c"), "counts": res.get("counts", {}),
                "new_failures": res.get("new_failures", []), "newly_passing": res.get("newly_passing", []),
                "verdict": res["verdict"], "notes": res.get("notes", ""), "started": started, "wall_s": round(time.time() - t0, 1)}
         L.write_json(L.run_path(jid, cls), run)
@@ -422,7 +501,7 @@ class Farm:
                 if p["state"] != "pending":
                     continue
                 for al, d in self.devs.items():
-                    if d["class"] == cls and al in att and al not in self.threads and time.time() >= self.cool.get(al, 0):
+                    if d["class"] == cls and al in att and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
                         t = threading.Thread(target=self.run_part, args=(j["id"], cls, al), name=f"{j['id']}/{cls}/{al}", daemon=False)
                         self.threads[al] = t
                         t.start()
