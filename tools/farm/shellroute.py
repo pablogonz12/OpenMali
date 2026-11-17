@@ -15,7 +15,7 @@ import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
-ONLY_DRAW = "many_draws triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
+ONLY_DRAW = "many_draws share triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
 ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
 ONLY_FEAT = ["storfmt_nf", "ycbcr"]               # t_vk_feat cases of the smoke set (Steam-session features); same list as FEAT in vk/tests/valguest.sh
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}

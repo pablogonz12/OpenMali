@@ -58,6 +58,7 @@ struct st_state {
 static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
 static double g_t_rec, g_t_sub;   /* scene_draw: record / QueueSubmit microseconds, summed */
+static int g_share;   /* share test: 2 = alternate the scissor halves per draw */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
@@ -623,6 +624,10 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
+      if (g_share == 2) {
+         VkRect2D sci = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
+         CmdSetScissor(cb, 0, 1, &sci);
+      }
       if (s->mode == MODE_PUSHFS) {
          float pc[8] = {rot[i][0], rot[i][1], rot[i][2], rot[i][3], 0.75f, 0.25f, 0.5f, 1.0f};
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
@@ -761,6 +766,46 @@ test_many(void)
    if (ok && !g_dyn) ok = report("many_draws", &s, 8192.0, 1.0, 1);
    g_dyn = 0;
    free(rot);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+static uint32_t px_at(struct scene *s, int x, int y);
+
+/* descriptor sharing between consecutive draws: draws that differ in exactly one thing (push constant / viewport-scissor) must each get
+ * their own data. Pixels on hardware only. */
+static int
+test_share(void)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   int ok = 1;
+   /* four quarter-size triangles at (+-.5, +-.5); consecutive duplicates (identical state) are mixed with changes */
+   const float q[4][4] = {{.5f, 0, -.5f, -.5f}, {.5f, 0, .5f, -.5f}, {.5f, 0, -.5f, .5f}, {.5f, 0, .5f, .5f}};
+   float rot[8][4];
+   const int order[8] = {0, 0, 1, 2, 2, 2, 3, 1};
+   for (int i = 0; i < 8; i++) memcpy(rot[i], q[order[i]], sizeof rot[i]);
+   ok &= scene_draw(&s, 8, (const float (*)[4])rot, f);
+   if (ok && !g_fake) {
+      for (int k = 0; k < 4; k++) {
+         int cx = (int)((q[k][2] * .5f + .5f) * W), cy = (int)((q[k][3] * .5f + .5f) * H);
+         CHECK(px_at(&s, cx, cy) != 0, "share: triangle %d (push constant) missing at %d,%d", k, cx, cy);
+      }
+      CHECK(px_at(&s, W / 2, H / 2) == 0 || g_colbpp == 8, "share: stray pixel at the centre");
+      ok &= report("share_push", &s, 8192.0, 2.0, 0);
+   } else if (ok) printf("{\"test\":\"share_push\",\"skipped\":\"fake backend\",\"ok\":true}\n");
+   /* identical draw and push constants, scissor alternates left/right half: both halves must be drawn */
+   g_share = 2;
+   float id[4][4];
+   for (int i = 0; i < 4; i++) memcpy(id[i], ID, sizeof id[i]);
+   ok &= scene_draw(&s, 4, (const float (*)[4])id, f);
+   g_share = 0;
+   if (ok) ok &= report("share_scissor", &s, 8192.0, 1.0, 0);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1623,6 +1668,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
+   if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
