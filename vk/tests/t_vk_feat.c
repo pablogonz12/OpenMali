@@ -1424,7 +1424,8 @@ test_int64(void)
          uint64_t e[4] = {x / y, x % y, (uint64_t)(sy == -1 ? -sx : sx / sy), (uint64_t)(sy == -1 ? 0 : smod64(sx, sy))};   /* GLSL % on signed = OpSMod (sign of the divisor) */
          for (int k = 0; k < 4; k++) {
             uint64_t g = ((uint64_t *)bf[1].p)[i * 4 + k];
-            if (g != e[k]) bad_k[k]++; if (g != e[k] && !bad++) printf("{\"info\":\"int64div i=%u k=%d x=%llx y=%llx got %llx want %llx\"}\n", i, k, (unsigned long long)x, (unsigned long long)y, (unsigned long long)g, (unsigned long long)e[k]);
+            if (g != e[k]) bad_k[k]++;
+            if (g != e[k] && !bad++) printf("{\"info\":\"int64div i=%u k=%d x=%llx y=%llx got %llx want %llx\"}\n", i, k, (unsigned long long)x, (unsigned long long)y, (unsigned long long)g, (unsigned long long)e[k]);
          }
       }
       printf("{\"info\":\"int64div bad per op %d %d %d %d\"}\n", bad_k[0], bad_k[1], bad_k[2], bad_k[3]);
