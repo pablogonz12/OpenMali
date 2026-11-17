@@ -17,7 +17,7 @@ layout(push_constant) uniform P {
    uint nsamples;
    uint lw;                                // pixels written per row (cx1-cx0)
    // generic path (fmt bit 4): any plain colour format, described per logical channel R,G,B,A:
-   // bits 0-7 bit offset in the pixel, 8-13 size, 16-18 type (0 absent, 1 unorm, 2 snorm, 3 uint, 4 sint, 5 float)
+   // bits 0-7 bit offset in the pixel, 8-13 size, 16-18 type (0 absent, 1 unorm, 2 snorm, 3 uint, 4 sint, 5 float, 6 unsigned 5-bit-exponent float (R11G11B10), 7 shared exponent (E5B9G9R9, source only))
    uint sch0, sch1, sch2, sch3;
    uint dch0, dch1, dch2, dch3;
 } p;
@@ -82,6 +82,26 @@ void wrbits(uint baseb, uint off, uint size, uint val) {
 }
 
 int sext(uint v, uint size) { return size >= 32u ? int(v) : (int(v << (32u - size)) >> (32u - size)); }
+float ufl_dec(uint raw, uint mb) {
+   uint e = raw >> mb, m = raw & ((1u << mb) - 1u);
+   float fm = float(m) / float(1u << mb);
+   if (e == 0u) return fm * exp2(-14.0);
+   if (e < 31u) return (1.0 + fm) * exp2(float(e) - 15.0);
+   return m == 0u ? uintBitsToFloat(0x7f800000u) : uintBitsToFloat(0x7fc00000u);
+}
+uint ufl_enc(float f, uint mb) {
+   if (isnan(f)) return (31u << mb) | 1u;
+   if (!(f > 0.0)) return 0u;
+   if (isinf(f)) return 31u << mb;
+   int ex = int((floatBitsToUint(f) >> 23) & 255u) - 127;
+   float sc = float(1u << mb);
+   if (ex < -14) return uint(round(f * exp2(14.0) * sc));
+   uint e = uint(ex + 15);
+   uint m = uint(round((f / exp2(float(ex)) - 1.0) * sc));
+   if (m >= (1u << mb)) { m = 0u; e++; }
+   if (e >= 31u) return 31u << mb;
+   return (e << mb) | m;
+}
 float s2l(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 float l2s(float c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055; }
 uint gcls() { return (p.gfmt >> 16) & 3u; }
@@ -99,6 +119,8 @@ vec4 gfetchf(int x, int y, uint s) {
       float f;
       if (t == 1u) f = float(raw) / float(lowmask(sz));
       else if (t == 2u) f = max(float(sext(raw, sz)) / float(lowmask(sz - 1u)), -1.0);
+      else if (t == 6u) f = ufl_dec(raw, sz == 10u ? 5u : 6u);
+      else if (t == 7u) f = float(raw) * exp2(float(rdbits(o, 27u, 5u)) - 24.0);
       else if (sz == 32u) f = uintBitsToFloat(raw);
       else f = unpackHalf2x16(raw).x;
       if (c < 3u && (p.gfmt & (1u << 20)) != 0u) f = s2l(f);
@@ -171,6 +193,7 @@ void gmain(uint ox, uint oy_) {
       uint r;
       if (t == 1u) r = uint(clamp(f, 0.0, 1.0) * float(lowmask(sz)) + 0.5);
       else if (t == 2u) r = uint(int(round(clamp(f, -1.0, 1.0) * float(lowmask(sz - 1u)))));
+      else if (t == 6u) r = ufl_enc(f, sz == 10u ? 5u : 6u);
       else if (sz == 32u) r = floatBitsToUint(f);
       else r = packHalf2x16(vec2(f, 0.0)) & 0xffffu;
       wrbits(o, cOff(dw), sz, r);

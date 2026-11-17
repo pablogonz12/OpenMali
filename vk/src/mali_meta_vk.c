@@ -340,6 +340,15 @@ struct gdesc { uint32_t ch[4], bs, cls; bool srgb; };
 static bool
 blit_gclass(int pipe, struct gdesc *g)
 {
+   if (pipe == PIPE_FORMAT_R11G11B10_FLOAT || pipe == PIPE_FORMAT_R9G9B9E5_FLOAT) {
+      memset(g, 0, sizeof *g);
+      g->bs = 4;
+      bool e5 = pipe == PIPE_FORMAT_R9G9B9E5_FLOAT;
+      g->ch[0] = 0u | (e5 ? 9u : 11u) << 8 | (e5 ? 7u : 6u) << 16;
+      g->ch[1] = (e5 ? 9u : 11u) | (e5 ? 9u : 11u) << 8 | (e5 ? 7u : 6u) << 16;
+      g->ch[2] = (e5 ? 18u : 22u) | (e5 ? 9u : 10u) << 8 | (e5 ? 7u : 6u) << 16;
+      return true;
+   }
    const struct util_format_description *d = util_format_description(pipe);
    if (!d || d->layout != UTIL_FORMAT_LAYOUT_PLAIN || (d->colorspace != UTIL_FORMAT_COLORSPACE_RGB && d->colorspace != UTIL_FORMAT_COLORSPACE_SRGB) ||
        d->block.width != 1 || d->block.height != 1 || d->block.bits > 128 || d->block.bits % 8)
@@ -399,7 +408,10 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    bool s3 = si->lay.d.type == VK_IMAGE_TYPE_3D, d3 = di->lay.d.type == VK_IMAGE_TYPE_3D;
    int sdz = so[1].z - so[0].z, ddz = dof[1].z - dof[0].z;
    uint32_t nz = s3 || d3 ? 1 : ss.layerCount;
-   if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
+   bool zdir = (sdz > 0) == (ddz > 0);
+   if (s3 && d3 && abs(sdz) == abs(ddz) && ss.layerCount == 1 && ds.layerCount == 1)
+      nz = (uint32_t)abs(ddz);   /* 3D -> 3D, 1:1 in z (possibly reversed): one job per slice */
+   else if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
       return -EINVAL;   /* z scaling / 3D <-> array mixes */
 
    struct mali_meta_blit b;
@@ -428,11 +440,13 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
       /* Unsupported pixel class (sRGB, 16 bit, integer, depth): only the identical-format 1:1 nearest case, as a rectangle copy. */
       if (!same_pix || !plain || s3 != d3 || ss.layerCount != ds.layerCount)
          return -EINVAL;
-      VkOffset3D so0 = { so[0].x, so[0].y, so[0].z }, do0 = { dof[0].x, dof[0].y, dof[0].z };
+      if (s3 && sdz != ddz)
+         return -EINVAL;
+      VkOffset3D so0 = { so[0].x, so[0].y, sdz < 0 ? so[1].z : so[0].z }, do0 = { dof[0].x, dof[0].y, ddz < 0 ? dof[1].z : dof[0].z };
       if (!img_surf(&s, si, ss, so0, NULL) || !img_surf(&d, di, ds, do0, NULL))
          return -EINVAL;
       uint32_t w = (uint32_t)(b.s[2] > b.s[0] ? b.s[2] - b.s[0] : b.s[0] - b.s[2]), hh = (uint32_t)(b.s[3] > b.s[1] ? b.s[3] - b.s[1] : b.s[1] - b.s[3]);
-      return mali_meta_plan_copy(l, &d, &s, sp->bs, w, hh, s3 ? 1 : ss.layerCount);
+      return mali_meta_plan_copy(l, &d, &s, sp->bs, w, hh, s3 ? (uint32_t)abs(sdz) : ss.layerCount);
    }
    if (gen) {
       b.generic = true;
@@ -456,6 +470,10 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    }
    for (uint32_t z = 0; z < nz; z++) {
       VkOffset3D zs = { 0, 0, s3 ? (sdz > 0 ? so[0].z : so[0].z + sdz) : 0 }, zd = { 0, 0, d3 ? (ddz > 0 ? dof[0].z : dof[0].z + ddz) : 0 };
+      if (s3 && d3 && nz > 1) {
+         zs.z += zdir ? (int)z : (int)(nz - 1 - z);
+         zd.z += (int)z;
+      }
       VkImageSubresourceLayers s1 = ss, d1 = ds;
       s1.baseArrayLayer += z;
       d1.baseArrayLayer += z;
