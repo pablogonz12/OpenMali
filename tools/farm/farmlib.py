@@ -351,7 +351,34 @@ def parse_env(s):
 
 
 # ---- locking (the qsafe lock: flock on /tmp/qsafe-<lock>.lock; fake mode uses a private dir)
+def lock_holders(path, proc="/proc"):
+    """[(pid, comm)] of processes holding an open fd on `path` (same inode)"""
+    try:
+        ino = os.stat(path).st_ino
+    except OSError:
+        return []
+    out = []
+    for pid in os.listdir(proc):
+        if not pid.isdigit():
+            continue
+        try:
+            for fd in os.listdir(f"{proc}/{pid}/fd"):
+                try:
+                    if os.stat(f"{proc}/{pid}/fd/{fd}").st_ino == ino and os.path.realpath(f"{proc}/{pid}/fd/{fd}") == os.path.realpath(path):
+                        out.append((int(pid), open(f"{proc}/{pid}/comm").read().strip()))
+                        break
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    return out
+
+
 class PhoneLock:
+    STALE_AFTER = 600          # s a lock may stay busy before a pure-adb holder counts as a leaked fd
+    on_stale = None            # callback(msg): farmd sets it to its alert()
+    _busy_since = {}
+
     def __init__(self, dev, fake=False):
         if fake:
             d = os.path.join(state_dir(), "fake-locks")
@@ -361,9 +388,8 @@ class PhoneLock:
             self.path = f"/tmp/qsafe-{dev['lock']}.lock"
         self.fd = None
 
-    def acquire(self):
-        """non-blocking: True if we hold it now (an agent's qsafe then prints PHONE BUSY)"""
-        fd = open(self.path, "a")
+    def _try(self):
+        fd = open(self.path, "a")                 # python fds are O_CLOEXEC: children (adb, its server) never inherit the lock
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -371,6 +397,27 @@ class PhoneLock:
             return False
         self.fd = fd
         return True
+
+    def acquire(self, now=None, proc="/proc"):
+        """non-blocking: True if we hold it now (an agent's qsafe then prints PHONE BUSY).
+        Busy > STALE_AFTER and every holder is an adb process (leaked fd in an adb server): STALE-LOCK alert, re-create the file, retry."""
+        if self._try():
+            PhoneLock._busy_since.pop(self.path, None)
+            return True
+        now = time.time() if now is None else now
+        since = PhoneLock._busy_since.setdefault(self.path, now)
+        if now - since > self.STALE_AFTER:
+            h = lock_holders(self.path, proc)
+            if h and all(c == "adb" for _, c in h):
+                if self.on_stale:
+                    self.on_stale(f"STALE-LOCK {self.path} held {int(now - since)}s only by adb pid(s) {[p for p, _ in h]}: leaked fd; lock file re-created")
+                try:
+                    os.unlink(self.path)
+                except OSError:
+                    pass
+                PhoneLock._busy_since.pop(self.path, None)
+                return self._try()
+        return False
 
     def release(self):
         if self.fd:

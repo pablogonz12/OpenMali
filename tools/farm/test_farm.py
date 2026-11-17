@@ -717,5 +717,45 @@ class SweepBackoffUnit(unittest.TestCase):
         self.assertEqual(m.Farm.sweep_backoff(f, "x", 0, True), 60)                 # rc 0 but session died fast, no cases
 
 
+class StaleLockUnit(unittest.TestCase):
+    def test_adb_server_holding_lock_is_recovered_after_10min(self):
+        import farmlib as FL, tempfile, subprocess, fcntl
+        d = tempfile.mkdtemp()
+        path = d + "/qsafe-x.lock"
+        dev = {"alias": "x", "lock": "x"}
+        lk = FL.PhoneLock(dev); lk.path = path
+        got = []
+        FL.PhoneLock.on_stale = staticmethod(got.append)
+        FL.PhoneLock._busy_since = {}
+        # a child named "adb" that inherited the lock fd (what the leak looked like)
+        fake = d + "/adb"
+        os.symlink("/bin/sleep", fake)
+        fd = open(path, "a"); fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        child = subprocess.Popen([fake, "30"], pass_fds=(fd.fileno(),))
+        fd.close()
+        try:
+            self.assertEqual([c for _, c in FL.lock_holders(path)], ["adb"])
+            t0 = time.time()
+            self.assertFalse(lk.acquire(now=t0))                       # busy, clock starts
+            self.assertFalse(lk.acquire(now=t0 + 300))                 # < 10 min: still busy, no alert
+            self.assertEqual(got, [])
+            self.assertTrue(lk.acquire(now=t0 + 700))                  # > 10 min, holder is adb only: recovered
+            self.assertEqual(len(got), 1); self.assertIn("STALE-LOCK", got[0])
+            lk.release()
+        finally:
+            child.kill(); child.wait()
+
+    def test_python_children_do_not_inherit_the_lock(self):
+        import farmlib as FL, tempfile, subprocess, fcntl
+        d = tempfile.mkdtemp()
+        lk = FL.PhoneLock({"alias": "y", "lock": "y"}); lk.path = d + "/l.lock"
+        self.assertTrue(lk.acquire())
+        r = subprocess.run(["ls", "/proc/self/fd"], capture_output=True, text=True)
+        self.assertFalse(any(os.path.realpath(f"/proc/self/fd/{x}") == lk.path for x in []))
+        p = subprocess.run(["sh", "-c", "ls -l /proc/self/fd"], capture_output=True, text=True).stdout
+        self.assertNotIn("l.lock", p)
+        lk.release()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,7 +40,7 @@ def serial(alias):
 def run_chunk(alias, ser, cases, wall):
     open("/tmp/x4g/c.cases", "w").write("\n".join(cases) + "\n")
     lock = f"/tmp/qsafe-{alias}.lock"
-    subprocess.run(["flock", "-w", "120", lock, "adb", "-s", ser, "push", "/tmp/x4g/c.cases", f"{G}/c.cases"], env=ENV, capture_output=True)
+    subprocess.run(["flock", "-o", "-w", "120", lock, "adb", "-s", ser, "push", "/tmp/x4g/c.cases", f"{G}/c.cases"], env=ENV, capture_output=True)
     cmd = (f"cd {G} && rm -f c.qpa && MALI_ICD={G}/lib/libvulkan_mali.so timeout {wall} lib/ld-linux-aarch64.so.1 --library-path {G}/lib "
            f"./deqp-vk --deqp-caselist-file={G}/c.cases --deqp-log-filename={G}/c.qpa --deqp-log-images=disable --deqp-log-shader-sources=disable "
            "--deqp-surface-type=fbo --deqp-gl-config-name=rgba8888d24s8 --deqp-visibility=hidden --deqp-shadercache=disable "
@@ -52,7 +52,7 @@ def run_chunk(alias, ser, cases, wall):
         if r.returncode == 125:           # phone busy (farm): retry
             time.sleep(30); continue
         break
-    subprocess.run(["flock", "-w", "120", lock, "adb", "-s", ser, "pull", f"{G}/c.qpa", "/tmp/x4g/c.qpa"], env=ENV, capture_output=True)
+    subprocess.run(["flock", "-o", "-w", "120", lock, "adb", "-s", ser, "pull", f"{G}/c.qpa", "/tmp/x4g/c.qpa"], env=ENV, capture_output=True)
     try:
         return parse_qpa(open("/tmp/x4g/c.qpa", errors="replace").read())
     except OSError:

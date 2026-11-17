@@ -33,6 +33,9 @@ def alert(msg):
         f.write(f"{L.now()} {msg}\n")
 
 
+L.PhoneLock.on_stale = staticmethod(alert)
+
+
 def git(*a, cwd=HERE, timeout=120):
     return L.sh(["git", "-C", cwd, *a], timeout)
 
