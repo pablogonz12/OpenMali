@@ -48,6 +48,14 @@ def gated(lock):
     st, why = gate.check(lock, gate.read_adb(SERIAL), gate.thresholds(os.environ.get("SHELLROUTE_SERIAL")))
     if st != "ok":
         print(f"gated ({st}): {why}", flush=True)
+    if st == "ok":                                      # another workload (game/benchmark app) on the GPU makes dEQP crash: wait for it
+        la = adb("shell", "cat /proc/loadavg", timeout=20)[1].split()
+        try:
+            if float(la[0]) > float(os.environ.get("SHELLROUTE_MAX_LOAD", "8")):
+                print(f"gated (busy): phone load average {la[0]} (another app is using the CPU/GPU)", flush=True)
+                return True
+        except (ValueError, IndexError):
+            pass
     return st != "ok"
 
 
@@ -153,6 +161,8 @@ def daily(a):
         if unfinished and unfinished in batch and unfinished not in got:
             got[unfinished] = "Crash"                          # died or timed out inside this case
         if not got:
+            tail = adb("shell", f"tail -c 400 {G}/c.{a.run}.out", timeout=20)[1].strip().replace("\n", " | ")
+            print(f"NOPARSE {batch[0]} rc-line={o.strip()[-30:]!r} out: {tail}", flush=True)       # diagnostics for the farm log
             got[batch[0]] = "Crash"                            # nothing parsed: first case counts as Crash so we always progress
         for c in batch:
             if c in got:

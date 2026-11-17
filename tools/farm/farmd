@@ -614,6 +614,7 @@ class Farm:
             if bad:
                 return bad
             note = out.strip()[-200:]
+            open(os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['alias']}-shellroute.log"), "w").write(out[-30000:])
             cur = L.read_tsv(out_tsv) if os.path.exists(out_tsv) else {}
             if cur:
                 shutil.copy2(out_tsv, os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['alias']}-daily.tsv"))
