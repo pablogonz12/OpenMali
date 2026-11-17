@@ -185,6 +185,14 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
+      /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
+      .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
+      /* Promoted-to-core names whose feature bit is already true and probed (t_vk_draw/t_vk_meta/t_vk_feat); ANGLE and DXVK look at the extension name.
+         The runtime aliases the KHR/EXT entry points onto the core ones. t_steam_caps checks name == feature bit. */
+      .KHR_dynamic_rendering = true, .KHR_synchronization2 = true, .KHR_maintenance4 = true, .EXT_private_data = true,
+      .KHR_buffer_device_address = true, .EXT_scalar_block_layout = true, .EXT_host_query_reset = true, .KHR_uniform_buffer_standard_layout = true,
+      .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
+      .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
@@ -224,6 +232,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       /* multiViewport: no geometry shader and no shaderOutputViewportIndex, so every primitive uses viewport/scissor 0; 1..15 are accepted state
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,
+      .presentId = true, .presentWait = true, .swapchainMaintenance1 = true,   /* t_steam_caps: advertised together with the extensions */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
       .dualSrcBlend = true,        /* t_vk_draw fx_dual_* (blend shader) */
       .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */

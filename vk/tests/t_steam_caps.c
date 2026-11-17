@@ -1,0 +1,277 @@
+/* SPDX-License-Identifier: MIT */
+/* Steam-session capability probe: what gamescope (Wayland backend), gamescope's WSI layer (Steam's X11 client) and
+ * ANGLE-on-Vulkan (Steam UI, CEF) ask of a Vulkan driver, against what this ICD advertises. Loader-free (dlopen).
+ *   t_steam_caps --direct <icd.so> [--expect-missing N]
+ * Sources of the lists: vk/STEAM-GAPS.md (gamescope src/rendervulkan.cpp CVulkanDevice::createDevice, layer/VkLayer_FROG_gamescope_wsi.cpp
+ * CreateDevice/CreateInstance, ANGLE vk_renderer.cpp enableDeviceExtensions).
+ * 1. every item is printed ok/MISSING (an honest report: missing items are the backlog, not failures);
+ *    --expect-missing pins the number of MISSING *gamescope-hard* items (the gate moves only together with a test for the new item);
+ * 2. every advertised extension whose feature struct we know must report the feature (and the reverse), so no bit is advertised alone;
+ * 3. device create with gamescope's exact request MUST succeed when nothing hard is missing and MUST fail with
+ *    FEATURE_NOT_PRESENT / EXTENSION_NOT_PRESENT otherwise (no silent acceptance);
+ * 4. QUEUE_FAMILY_FOREIGN_EXT ownership barriers (gamescope's modifier path) record and submit.
+ * Exit 0 = pass. */
+#define _DEFAULT_SOURCE
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int g_fail;
+#define CHECK(c, ...)                                                                              \
+   do {                                                                                            \
+      if (!(c)) {                                                                                  \
+         printf("FAIL %s:%d %s: ", __FILE__, __LINE__, #c);                                       \
+         printf(__VA_ARGS__);                                                                      \
+         printf("\n");                                                                             \
+         g_fail = 1;                                                                               \
+      }                                                                                            \
+   } while (0)
+
+/* hard = vkCreateDevice / vkCreateInstance fails or the component refuses to start without it. */
+struct ext { const char *name; const char *who; int hard; };
+
+static const struct ext dev_exts[] = {
+   /* gamescope, Wayland backend (UsesVulkanSwapchain() == false) */
+   {"VK_KHR_external_memory_fd", "gamescope", 1},
+   {"VK_EXT_external_memory_dma_buf", "gamescope", 1},
+   {"VK_KHR_external_semaphore_fd", "gamescope", 1},
+   {"VK_EXT_robustness2", "gamescope", 1},
+   {"VK_EXT_image_drm_format_modifier", "gamescope(modifiers)", 0},
+   {"VK_EXT_queue_family_foreign", "gamescope(modifiers need it, else modifiers are switched off)", 0},
+   {"VK_EXT_physical_device_drm", "gamescope(optional: warns only; needs a DRM render node)", 0},
+   {"VK_KHR_present_id", "gamescope(feature struct is always chained)", 0},
+   {"VK_KHR_present_wait", "gamescope(feature struct is always chained)", 0},
+   /* gamescope WSI layer: forces it onto every Vulkan client's device under gamescope */
+   {"VK_EXT_swapchain_maintenance1", "wsi-layer(forced on: CreateDevice fails without it)", 1},
+   {"VK_KHR_swapchain", "wsi-layer / Steam X11 clients", 1},
+   {"VK_KHR_swapchain_mutable_format", "gamescope(swapchain backends), ANGLE", 0},
+   /* ANGLE, Vulkan 1.1 core + the ones it enables when present */
+   {"VK_KHR_external_fence_fd", "ANGLE", 0},
+   {"VK_KHR_maintenance5", "ANGLE", 0},
+   {"VK_EXT_vertex_attribute_divisor", "ANGLE(ES3 instancing divisors)", 0},
+   {"VK_EXT_custom_border_color", "ANGLE", 0},
+   {"VK_EXT_depth_clip_enable", "ANGLE/DXVK", 0},
+   {"VK_EXT_memory_budget", "ANGLE", 0},
+   {"VK_KHR_dynamic_rendering", "ANGLE(optional)", 0},
+   {"VK_KHR_synchronization2", "ANGLE(optional)", 0},
+   {"VK_EXT_extended_dynamic_state", "ANGLE(optional)", 0},
+   {"VK_EXT_extended_dynamic_state2", "ANGLE(optional)", 0},
+   {"VK_EXT_extended_dynamic_state3", "ANGLE(optional)", 0},
+   {"VK_EXT_shader_stencil_export", "ANGLE(optional)", 0},
+   {"VK_EXT_index_type_uint8", "ANGLE(optional)", 0},
+   {"VK_KHR_incremental_present", "ANGLE(optional)", 0},
+};
+
+static const struct ext inst_exts[] = {
+   {"VK_KHR_get_physical_device_properties2", "gamescope, ANGLE", 1},
+   {"VK_KHR_external_memory_capabilities", "gamescope, ANGLE", 1},
+   {"VK_KHR_external_semaphore_capabilities", "gamescope, ANGLE", 1},
+   {"VK_KHR_surface", "ANGLE, wsi-layer", 1},
+   {"VK_KHR_get_surface_capabilities2", "ANGLE, wsi-layer", 0},
+   {"VK_KHR_wayland_surface", "wsi-layer(forced on by CreateInstance)", 1},
+   {"VK_KHR_xcb_surface", "wsi-layer(forced on by CreateInstance)", 1},
+   {"VK_EXT_surface_maintenance1", "wsi-layer(with swapchain_maintenance1)", 0},
+   {"VK_EXT_swapchain_colorspace", "ANGLE, gamescope", 0},
+   {"VK_EXT_debug_utils", "ANGLE", 0},
+};
+
+static int has(const VkExtensionProperties *p, uint32_t n, const char *name)
+{
+   for (uint32_t i = 0; i < n; i++) if (!strcmp(p[i].extensionName, name)) return 1;
+   return 0;
+}
+
+int
+main(int argc, char **argv)
+{
+   const char *icd = NULL;
+   int expect_missing = -1;
+   for (int i = 1; i < argc; i++)
+      if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
+      else if (!strcmp(argv[i], "--expect-missing") && i + 1 < argc) expect_missing = atoi(argv[++i]);
+   if (!icd) { printf("usage: t_steam_caps --direct <icd.so> [--expect-missing N]\n"); return 2; }
+   void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
+   if (!lib) { printf("dlopen: %s\n", dlerror()); return 1; }
+   PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vk_icdGetInstanceProcAddr");
+   PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   PFN_vkEnumerateInstanceExtensionProperties EIEP = (PFN_vkEnumerateInstanceExtensionProperties)gipa(NULL, "vkEnumerateInstanceExtensionProperties");
+
+   uint32_t nie = 0;
+   EIEP(NULL, &nie, NULL);
+   VkExtensionProperties iep[64];
+   if (nie > 64) nie = 64;
+   EIEP(NULL, &nie, iep);
+
+   unsigned hard_missing = 0, soft_missing = 0;
+   for (unsigned i = 0; i < sizeof(inst_exts) / sizeof(inst_exts[0]); i++) {
+      int h = has(iep, nie, inst_exts[i].name);
+      printf("%s %s instance ext %s (%s)\n", h ? "ok     " : "MISSING", inst_exts[i].hard ? "hard" : "soft", inst_exts[i].name, inst_exts[i].who);
+      /* The Wayland/xcb surface extensions exist only in the Mesa builds configured with the platform (aarch64 glibc-wl);
+       * the x86 host build cannot offer them, so they do not count here. */
+      if (!h && !strstr(inst_exts[i].name, "_surface") && inst_exts[i].hard) hard_missing++;
+      else if (!h && !strstr(inst_exts[i].name, "_surface")) soft_missing++;
+   }
+
+   /* gamescope: apiVersion 1.3, no instance extensions at all with the Wayland backend */
+   VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "gamescope", .apiVersion = VK_API_VERSION_1_3};
+   VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+   VkInstance inst = NULL;
+   CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "gamescope instance (1.3, no extensions)");
+   if (!inst) return 1;
+#define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
+   I(EnumeratePhysicalDevices); I(GetPhysicalDeviceFeatures2); I(CreateDevice); I(GetPhysicalDeviceProperties2);
+   I(EnumerateDeviceExtensionProperties); I(GetPhysicalDeviceQueueFamilyProperties); I(GetDeviceProcAddr);
+   uint32_t n = 1;
+   VkPhysicalDevice pd;
+   CHECK(EnumeratePhysicalDevices(inst, &n, &pd) == VK_SUCCESS && n == 1, "enumerate");
+
+   VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+   GetPhysicalDeviceProperties2(pd, &pr);
+   CHECK(pr.properties.apiVersion >= VK_API_VERSION_1_2, "gamescope skips devices below 1.2");
+
+   uint32_t nq = 0;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+   VkQueueFamilyProperties qf[8];
+   if (nq > 8) nq = 8;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+   int general = 0;
+   for (uint32_t i = 0; i < nq; i++) general |= (qf[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
+   CHECK(general, "a graphics+compute queue family");
+
+   uint32_t ne = 0;
+   EnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);
+   VkExtensionProperties eps[160];
+   if (ne > 160) ne = 160;
+   EnumerateDeviceExtensionProperties(pd, NULL, &ne, eps);
+   for (unsigned i = 0; i < sizeof(dev_exts) / sizeof(dev_exts[0]); i++) {
+      int h = has(eps, ne, dev_exts[i].name);
+      printf("%s %s device ext %s (%s)\n", h ? "ok     " : "MISSING", dev_exts[i].hard ? "hard" : "soft", dev_exts[i].name, dev_exts[i].who);
+      if (!h && dev_exts[i].hard) hard_missing++;
+      else if (!h) soft_missing++;
+   }
+
+   /* gamescope createDevice(): features2 chain exactly as rendervulkan.cpp builds it */
+   VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+   VkPhysicalDeviceSamplerYcbcrConversionFeatures ycc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES, .pNext = &rb2};
+   VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &ycc};
+   VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &f12};
+   VkPhysicalDevicePresentWaitFeaturesKHR pw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, .pNext = &f13};
+   VkPhysicalDevicePresentIdFeaturesKHR pid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, .pNext = &pw};
+   VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT sm1 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT, .pNext = &pid};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sm1};
+   GetPhysicalDeviceFeatures2(pd, &f2);
+   struct { const char *name; VkBool32 have; int hard; const char *who; } feat[] = {
+      {"core.shaderStorageImageWriteWithoutFormat", f2.features.shaderStorageImageWriteWithoutFormat, 1, "gamescope"},
+      {"vk13.dynamicRendering", f13.dynamicRendering, 1, "gamescope"},
+      {"vk12.timelineSemaphore", f12.timelineSemaphore, 1, "gamescope"},
+      {"vk12.scalarBlockLayout", f12.scalarBlockLayout, 1, "gamescope"},
+      {"vk11.samplerYcbcrConversion", ycc.samplerYcbcrConversion, 1, "gamescope(immutable NV12 sampler in the composite layout, always created)"},
+      {"robustness2.nullDescriptor", rb2.nullDescriptor, 1, "gamescope"},
+      {"presentId", pid.presentId, 1, "gamescope(chained unconditionally; a false feature fails vkCreateDevice)"},
+      {"presentWait", pw.presentWait, 1, "gamescope(chained unconditionally)"},
+      {"swapchainMaintenance1", sm1.swapchainMaintenance1, 1, "wsi-layer(forced)"},
+   };
+   unsigned nfeat = sizeof(feat) / sizeof(feat[0]);
+   for (unsigned i = 0; i < nfeat; i++) {
+      printf("%s %s feature %s (%s)\n", feat[i].have ? "ok     " : "MISSING", feat[i].hard ? "hard" : "soft", feat[i].name, feat[i].who);
+      hard_missing += !feat[i].have;
+   }
+   printf("summary: %u hard and %u soft items missing\n", hard_missing, soft_missing);
+   CHECK(expect_missing < 0 || (int)hard_missing == expect_missing, "hard items missing: %u, expected %d", hard_missing, expect_missing);
+
+   /* an advertised extension and its feature bit come together */
+   struct { const char *ext; VkBool32 f; } pairs[] = {
+      {"VK_KHR_present_id", pid.presentId}, {"VK_KHR_present_wait", pw.presentWait},
+      {"VK_EXT_swapchain_maintenance1", sm1.swapchainMaintenance1}, {"VK_EXT_robustness2", rb2.nullDescriptor},
+      {"VK_KHR_dynamic_rendering", f13.dynamicRendering}, {"VK_KHR_synchronization2", f13.synchronization2}, {"VK_KHR_maintenance4", f13.maintenance4},
+      {"VK_EXT_private_data", f13.privateData}, {"VK_KHR_buffer_device_address", f12.bufferDeviceAddress}, {"VK_EXT_scalar_block_layout", f12.scalarBlockLayout},
+      {"VK_EXT_host_query_reset", f12.hostQueryReset}, {"VK_KHR_uniform_buffer_standard_layout", f12.uniformBufferStandardLayout},
+   };
+   for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
+      CHECK(has(eps, ne, pairs[i].ext) == (int)pairs[i].f, "%s advertised=%d but its feature=%u", pairs[i].ext, has(eps, ne, pairs[i].ext), pairs[i].f);
+
+   /* gamescope's device request */
+   static const char *const gs_exts[] = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf", "VK_KHR_external_semaphore_fd",
+                                         "VK_EXT_robustness2", "VK_EXT_image_drm_format_modifier", "VK_EXT_queue_family_foreign"};
+   unsigned ngs = 0;
+   const char *gs_use[8];
+   int gs_ok = 1;
+   for (unsigned i = 0; i < sizeof(gs_exts) / sizeof(gs_exts[0]); i++) {
+      if (has(eps, ne, gs_exts[i])) gs_use[ngs++] = gs_exts[i];
+      else if (i < 4) gs_ok = 0;   /* the first four are mandatory */
+   }
+   VkPhysicalDeviceFeatures2 req2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+   req2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+   VkPhysicalDeviceVulkan13Features r13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .dynamicRendering = VK_TRUE};
+   VkPhysicalDevicePresentWaitFeaturesKHR rpw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, .pNext = &r13, .presentWait = VK_TRUE};
+   VkPhysicalDevicePresentIdFeaturesKHR rpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, .pNext = &rpw, .presentId = VK_TRUE};
+   req2.pNext = &rpid;
+   VkPhysicalDeviceVulkan12Features r12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = req2.pNext, .scalarBlockLayout = VK_TRUE, .timelineSemaphore = VK_TRUE};
+   req2.pNext = &r12;
+   VkPhysicalDeviceSamplerYcbcrConversionFeatures rycc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES, .pNext = req2.pNext, .samplerYcbcrConversion = VK_TRUE};
+   req2.pNext = &rycc;
+   VkPhysicalDeviceRobustness2FeaturesEXT rrb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = req2.pNext, .nullDescriptor = VK_TRUE};
+   req2.pNext = &rrb;
+   VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
+   VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &req2, .queueCreateInfoCount = 1,
+                             .pQueueCreateInfos = &qci, .enabledExtensionCount = ngs, .ppEnabledExtensionNames = gs_use};
+   VkDevice dev = NULL;
+   VkResult r = CreateDevice(pd, &dci, NULL, &dev);
+   int gs_feat_ok = 1;
+   for (unsigned i = 0; i < nfeat - 1; i++) gs_feat_ok &= (int)feat[i].have;   /* all but swapchainMaintenance1 (layer only) */
+   printf("gamescope vkCreateDevice: %d (extensions ok=%d, features ok=%d)\n", r, gs_ok, gs_feat_ok);
+   if (gs_ok && gs_feat_ok) CHECK(r == VK_SUCCESS, "gamescope's device request: %d", r);
+   else CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT || r == VK_ERROR_EXTENSION_NOT_PRESENT, "an unsupported request must be refused, got %d", r);
+
+   if (dev && has(eps, ne, "VK_EXT_queue_family_foreign")) {
+      /* gamescope's modifier path: acquire/release ownership with QUEUE_FAMILY_FOREIGN_EXT around a dma-buf image; here on a buffer */
+#define D(n) PFN_vk##n d_##n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n)
+      D(GetDeviceQueue); D(CreateBuffer); D(GetBufferMemoryRequirements); D(AllocateMemory); D(BindBufferMemory); D(CreateCommandPool);
+      D(AllocateCommandBuffers); D(BeginCommandBuffer); D(EndCommandBuffer); D(CmdPipelineBarrier2); D(QueueSubmit); D(QueueWaitIdle);
+      D(DestroyBuffer); D(FreeMemory); D(DestroyCommandPool); D(DestroyDevice);
+      VkQueue q;
+      d_GetDeviceQueue(dev, 0, 0, &q);
+      VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+      VkBuffer buf;
+      CHECK(d_CreateBuffer(dev, &bci, NULL, &buf) == VK_SUCCESS, "buffer");
+      VkMemoryRequirements mr;
+      d_GetBufferMemoryRequirements(dev, buf, &mr);
+      VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = 0};
+      VkDeviceMemory mem;
+      CHECK(d_AllocateMemory(dev, &mai, NULL, &mem) == VK_SUCCESS, "memory");
+      CHECK(d_BindBufferMemory(dev, buf, mem, 0) == VK_SUCCESS, "bind");
+      VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = 0};
+      VkCommandPool pool;
+      CHECK(d_CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "pool");
+      VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBuffer cb;
+      CHECK(d_AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "cmdbuf");
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      CHECK(d_BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+      VkBufferMemoryBarrier2 bm[2] = {
+         {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+          .srcQueueFamilyIndex = 0, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .buffer = buf, .size = VK_WHOLE_SIZE},
+         {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = 0, .buffer = buf, .size = VK_WHOLE_SIZE},
+      };
+      VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 2, .pBufferMemoryBarriers = bm};
+      d_CmdPipelineBarrier2(cb, &di);
+      CHECK(d_EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      CHECK(d_QueueSubmit(q, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS, "submit foreign-queue barriers");
+      CHECK(d_QueueWaitIdle(q) == VK_SUCCESS, "wait");
+      d_DestroyCommandPool(dev, pool, NULL);
+      d_DestroyBuffer(dev, buf, NULL);
+      d_FreeMemory(dev, mem, NULL);
+      d_DestroyDevice(dev, NULL);
+      printf("foreign-queue barriers: ran\n");
+   } else if (dev) {
+      ((PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice"))(dev, NULL);
+   }
+   printf(g_fail ? "t_steam_caps FAILED\n" : "t_steam_caps OK\n");
+   return g_fail;
+}
