@@ -236,7 +236,10 @@ def plan(variant, driver, mode, best):
                     out += [O(env), P(env)]
         return out
     b = (best or {}).get(variant, {})
-    return [b.get("pres") or P(), b.get("off") or O()]
+    cfg = [b.get("pres") or P(), b.get("off") or O()]
+    if driver == "ours":          # stored winners are re-validated here (farm path too): a non-base env on cube was an invalid winner (0.18 ms GPU), so it is never replayed
+        cfg = [dict(c, env=base_env) if c.get("env") != base_env and bench == "cube" else c for c in cfg]
+    return cfg
 
 
 def label(c):

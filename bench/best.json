@@ -43,10 +43,7 @@
   "ours": {
    "cube-720p": {
     "off": {
-     "env": [
-      "MALI_RING=67108864",
-      "MALI_GEOM_SIZE=67108864"
-     ],
+     "env": [],
      "fif": 2,
      "images": 0,
      "mode": "mailbox",
@@ -55,10 +52,7 @@
      "wsi": "--wsi headless"
     },
     "pres": {
-     "env": [
-      "MALI_RING=67108864",
-      "MALI_GEOM_SIZE=67108864"
-     ],
+     "env": [],
      "fif": 2,
      "images": 3,
      "mode": "mailbox",
@@ -156,10 +150,7 @@
   "ours": {
    "cube-720p": {
     "off": {
-     "env": [
-      "MALI_RING=67108864",
-      "MALI_GEOM_SIZE=67108864"
-     ],
+     "env": [],
      "fif": 2,
      "images": 0,
      "mode": "mailbox",
@@ -168,10 +159,7 @@
      "wsi": "--wsi headless"
     },
     "pres": {
-     "env": [
-      "MALI_RING=67108864",
-      "MALI_GEOM_SIZE=67108864"
-     ],
+     "env": [],
      "fif": 2,
      "images": 3,
      "mode": "mailbox",
@@ -181,10 +169,7 @@
    },
    "cube-native": {
     "off": {
-     "env": [
-      "MALI_RING=67108864",
-      "MALI_GEOM_SIZE=67108864"
-     ],
+     "env": [],
      "fif": 2,
      "images": 0,
      "mode": "mailbox",
@@ -193,10 +178,7 @@
      "wsi": "--wsi headless"
     },
     "pres": {
-     "env": [
-      "MALI_RING=67108864",
-      "MALI_GEOM_SIZE=67108864"
-     ],
+     "env": [],
      "fif": 2,
      "images": 3,
      "mode": "mailbox",
