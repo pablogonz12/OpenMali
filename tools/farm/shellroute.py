@@ -7,7 +7,7 @@ Called by farmd under the phone lock (QSAFE_HELD=<lock>); the transport comes fr
 Integrity: the job's .so (S = its sha256) goes to a per-run path on the phone and is verified ON THE PHONE before every chunk/test.
 Exit: 0 done, 73 PHONE BUSY (lock not held), 75 gated by the health gate / owner (resume later), 76/77 .so on the phone is not the job's build
 (daily/smoke), 78 phone not staged, 79 phone unreachable. The daily resumes from the TSV (case<TAB>status<TAB>, same as qdeqp)."""
-import argparse, glob, hashlib, os, re, subprocess, sys, tempfile, time
+import argparse, json, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import farmlib as L  # noqa: E402
@@ -15,6 +15,8 @@ import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
+ONLY_DRAW = "triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
+ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 SERIAL = os.environ.get("ANDROID_SERIAL", "")
 
@@ -235,7 +237,15 @@ def smoke(a):
         adb("push", sp, f"{d}/s/{os.path.basename(sp)}", timeout=60)
     envs = " ".join(a.env.split())
     ok, tmp = True, tempfile.mkdtemp(prefix="shellroute-")
+    runs = []
     for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", "")):
+        if not a.only:
+            runs.append((n, extra, ""))
+            continue
+        for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
+            if c in (ONLY_DRAW if n == "t_vk_draw" else ONLY_META):
+                runs.append((n, f"{extra} --only {c}", c))
+    for n, extra, oc in runs:
         if gated(a.lock):
             sys.exit(75)
         if sha_phone(f"{d}/libvulkan_mali.so") != a.sha:
@@ -251,6 +261,8 @@ def smoke(a):
         adb("pull", f"{d}/{n}.log", lp, timeout=60)
         log = open(lp, errors="replace").read() if os.path.exists(lp) else ""
         fl = [x for x in log.splitlines() if '"fail"' in x]
+        for x in log.splitlines()[-200:]:                            # kept by farmd (farm log)
+            print(json.dumps({"log": n + (":" + oc if oc else ""), "line": x[:400]}), flush=True)
         r = int(m.group(1))
         ok = ok and r == 0
         print('{"test":"%s","rc":%d,"fail_lines":%d,"pass_lines":%d}' % (n, r, len(fl), log.count('"pass":true')), flush=True)
@@ -266,6 +278,7 @@ def main():
     ap.add_argument("--sha", default="")
     ap.add_argument("--run", default="undim")
     ap.add_argument("--list")
+    ap.add_argument("--only", default="")
     ap.add_argument("--out")
     ap.add_argument("--chunk", type=int, default=100)
     ap.add_argument("--wall", type=int, default=250)

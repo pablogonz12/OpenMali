@@ -25,10 +25,12 @@ def cmd_submit(a):
     for c in need:
         if c not in classes:
             print(f"farm: warning: no device of class {c} configured; that part stays pending", file=sys.stderr)
+    if a.only and a.suite != "smoke":
+        raise SystemExit("farm: --only is for --suite smoke")
     if a.suite == "cases" and not a.case:
         raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
     job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
-                    cases=a.case, repeat=a.repeat)
+                    cases=a.case, repeat=a.repeat, only=a.only)
     if dirty:
         print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
     print(job["id"])
@@ -401,6 +403,22 @@ def cmd_sweep(a):
             print(f"    {g}: {n} of {tot} not Pass/NS")
 
 
+def cmd_log(a):
+    import glob, gzip, re as _re
+    j = L.find_job(a.job)
+    fs = sorted(glob.glob(os.path.join(L.state_dir(), "logs", j["id"] + "-*-smoke.log*")))
+    if a.cls:
+        fs = [x for x in fs if f"-{a.cls}-smoke" in x]
+    if not fs:
+        raise SystemExit(f"farm: no kept test output for {j['id']}" + (f" class {a.cls}" if a.cls else "") + " (smoke jobs run since this feature only)")
+    for p in fs:
+        lines = (gzip.open(p, "rt") if p.endswith(".gz") else open(p)).read().splitlines()
+        if a.grep:
+            lines = [x for x in lines if _re.search(a.grep, x)]
+        print(f"== {os.path.basename(p)} ({len(lines)} line(s){', last ' + str(a.tail) if len(lines) > a.tail else ''})")
+        print("\n".join(lines[-a.tail:]))
+
+
 def cmd_bless(a):
     """write the job's per-class daily result tsv over the committed baselines (vk/deqp/ours-daily-sample-<baseline>.tsv) in a checkout"""
     cfg, devs = L.load_devices()
@@ -454,6 +472,7 @@ def main():
     s.add_argument("--suite", choices=L.SUITES, default="smoke")
     s.add_argument("--need", default="", help="comma list of device classes (default: every configured class)")
     s.add_argument("--env", default="", help='e.g. "MALI_HF=330 FOO=1"')
+    s.add_argument("--only", default="", help="(--suite smoke) comma list of test cases passed to the test binaries as --only (draw: triangle two depth ...; compute/meta: buf fill img ...)")
     s.add_argument("--case", action="append", default=[], help="(--suite cases) a dEQP case to run; repeatable")
     s.add_argument("--repeat", type=int, default=1, help="(--suite cases) repetitions of the case list")
     s.set_defaults(f=cmd_submit)
@@ -490,6 +509,12 @@ def main():
     s = sp.add_parser("case", help="status of matching cases across all stored daily logs, newest last")
     s.add_argument("substring")
     s.set_defaults(f=cmd_case)
+    s = sp.add_parser("log", help="kept test output (last 200 lines per test) of a smoke job part")
+    s.add_argument("job")
+    s.add_argument("--class", dest="cls", default="")
+    s.add_argument("--grep", default="")
+    s.add_argument("--tail", type=int, default=40)
+    s.set_defaults(f=cmd_log)
     s = sp.add_parser("util", help="per-phone busy % and where the idle time went (from the farm's own records)")
     s.add_argument("--since", default="today", help="today | 6h | 2d | ISO time")
     s.set_defaults(f=cmd_util)

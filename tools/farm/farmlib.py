@@ -264,7 +264,7 @@ def job_verdict(job):
     return "pass"
 
 
-def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=1):
+def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=1, only=""):
     base = time.strftime("%Y%m%d-%H%M%S") + "-" + commit[:8]
     jid, n = base, 1
     while os.path.exists(job_path(jid)):
@@ -275,6 +275,8 @@ def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=
            "parts": {c: {"state": "pending", "attempts": 0, "device": None} for c in need}}
     if suite == "cases":                                  # `farm submit --suite cases --case X --repeat N`: only these cases, N times
         job["cases"], job["repeat"] = list(cases or []), int(repeat)
+    if only:                                              # `--suite smoke --only a,b`: only these test cases (t_vk_draw/compute/meta --only)
+        job["only"] = only
     write_json(job_path(jid), job)
     return job
 

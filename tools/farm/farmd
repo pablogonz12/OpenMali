@@ -529,12 +529,36 @@ class Farm:
             open(flag, "w").close()
             return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (fake)"}
 
+    def keep_log(self, job, dev, part, out, rc):
+        """last 200 lines of each test's output of this job part -> <state>/logs/<job>-<class>-<part>.log (.gz above 64 KB); read with `farm log`"""
+        lines = []
+        for l in out.splitlines():
+            try:
+                o = json.loads(l) if l.startswith("{") else None
+            except ValueError:
+                o = None
+            lines.append(f"[{o['log']}] {o['line']}" if o and "log" in o and "line" in o else l)
+        per, keep = {}, []
+        for l in lines:                                          # last 200 lines per test tag, original order
+            per.setdefault(l.split("]")[0] if l.startswith("[") else "", []).append(l)
+        for k, v in per.items():
+            keep += v[-200:]
+        txt = "\n".join(keep) + f"\n[farm] rc={rc}\n"
+        p = os.path.join(L.state_dir(), "logs", f"{job['id']}-{dev['class']}-{part}.log")
+        if len(txt) > 65536:
+            import gzip
+            with gzip.open(p + ".gz", "wt") as f:
+                f.write(txt)
+        else:
+            open(p, "w").write(txt)
+
     def suite_smoke(self, job, dev):
         env = job["env"]
         sw = self.fake_swap(job) if self.fake else None
         if sw:
             return sw
         if self.fake:
+            self.keep_log(job, dev, "smoke", "\n".join(json.dumps({"log": "t_vk_draw", "line": f"fake line {i}" + (" only=" + job["only"] if job.get("only") else "")}) for i in range(300)), 0)
             bad = "FAKE_FAIL=1" in env
             return {"verdict": "fail" if bad else "pass", "counts": {"tests": 3, "failed": 1 if bad else 0},
                     "new_failures": [["t_vk_draw", "rc=1"]] if bad else [], "newly_passing": [], "notes": "fake"}
@@ -543,7 +567,7 @@ class Farm:
             if not job.get("so_sha256_bionic"):
                 return {"verdict": "error", "notes": "no bionic build for the shell route"}
             run_id = job["id"] + "-" + dev["alias"]
-            rc, out = self.run_shellroute(job, dev, "smoke", run_id, [], 700)
+            rc, out = self.run_shellroute(job, dev, "smoke", run_id, ["--only", job["only"]] if job.get("only") else [], 700)
             bad = self.shell_rc(rc, out, "shellroute")
             if bad:
                 return bad
@@ -555,7 +579,7 @@ class Farm:
             if dev["lock"] not in ("cmf", "poco"):
                 return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
             self.harness(tree)
-            rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, lambda: self.alive(dev),
+            rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20", job.get("only") or ""], 340, lambda: self.alive(dev),
                                     env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
             if rc == 125:
                 return {"lost": True}
@@ -573,6 +597,7 @@ class Farm:
                     recs.append(json.loads(l))
                 except ValueError:
                     pass
+        self.keep_log(job, dev, "smoke", out, rc)
         summ = next((r for r in reversed(recs) if r.get("test") == "summary"), None)
         tests = [r for r in recs if "rc" in r]
         failed = [[r["test"], f"rc={r['rc']} fail_lines={r.get('fail_lines')}"] for r in tests if r["rc"] != 0 or r.get("fail_lines")]

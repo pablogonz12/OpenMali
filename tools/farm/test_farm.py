@@ -633,6 +633,18 @@ class T(unittest.TestCase):
         self.assertIn("dev-a", out)
         self.assertIn("busy", out)
 
+    def test_smoke_log_and_only(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--only", "triangle,buf")
+        self.assertEqual(L.find_job(jid)["only"], "triangle,buf")
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--only", "x")[0], 0)
+        self.farmd()
+        rc, out, _ = self.farm("log", jid, "--class", "v11")
+        self.assertEqual(rc, 0)
+        self.assertIn("only=triangle,buf", out)
+        self.assertEqual(len(self.farm("log", jid, "--tail", "5")[1].splitlines()), 6)
+        self.assertIn("fake line 7 only", self.farm("log", jid, "--grep", "line 7 only", "--tail", "3")[1])
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 
