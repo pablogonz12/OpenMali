@@ -53,7 +53,9 @@ struct st_state {
 };
 static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
+static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
+static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
 
 enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
@@ -159,6 +161,9 @@ struct scene {
    VkDeviceMemory timem;
    VkImageView tiv;
    VkSampler smp;
+   VkImage msi;              /* g_msaa: the 4-sample colour image (col is its single-sample resolve target) */
+   VkDeviceMemory msmem;
+   VkImageView msv;
 };
 
 static int
@@ -229,6 +234,23 @@ scene_create(struct scene *s, int depth)
    CHECK(CreateImageView(dev, &vi, NULL, &s->colv) == VK_SUCCESS, "colour view");
 
    VkImageView atts[2] = {s->colv, VK_NULL_HANDLE};
+   if (g_msaa) {
+      VkImageCreateInfo mi = ii;
+      mi.samples = VK_SAMPLE_COUNT_4_BIT;
+      mi.tiling = VK_IMAGE_TILING_OPTIMAL;
+      mi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      CHECK(CreateImage(dev, &mi, NULL, &s->msi) == VK_SUCCESS, "4-sample colour image");
+      GetImageMemoryRequirements(dev, s->msi, &mr);
+      VkMemoryAllocateInfo ma = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                 .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+      CHECK(AllocateMemory(dev, &ma, NULL, &s->msmem) == VK_SUCCESS, "msaa mem");
+      CHECK(BindImageMemory(dev, s->msi, s->msmem, 0) == VK_SUCCESS, "bind msaa");
+      VkImageViewCreateInfo mv = vi;
+      mv.image = s->msi;
+      CHECK(CreateImageView(dev, &mv, NULL, &s->msv) == VK_SUCCESS, "msaa view");
+      atts[0] = s->msv;      /* attachment 0 = MSAA, attachment 1 = the resolve image (colv) */
+      atts[1] = s->colv;
+   }
    if (depth) {
       VkImageCreateInfo di = ii;
       di.format = g_depfmt;
@@ -259,15 +281,27 @@ scene_create(struct scene *s, int depth)
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .stencilLoadOp = g_st.on ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
+   if (g_msaa) {
+      ad[0].samples = VK_SAMPLE_COUNT_4_BIT;
+      ad[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      ad[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      ad[1] = ad[0];
+      ad[1].samples = VK_SAMPLE_COUNT_1_BIT;
+      ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      ad[1].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
    VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkAttachmentReference rref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
    VkAttachmentReference dref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
    VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
-                              .pColorAttachments = &cref, .pDepthStencilAttachment = depth ? &dref : NULL};
-   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = depth ? 2 : 1,
+                              .pColorAttachments = &cref, .pResolveAttachments = g_msaa ? &rref : NULL,
+                              .pDepthStencilAttachment = depth ? &dref : NULL};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = depth || g_msaa ? 2 : 1,
                                  .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp};
    CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp) == VK_SUCCESS, "render pass");
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = s->rp,
-                                  .attachmentCount = depth ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
+                                  .attachmentCount = depth || g_msaa ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
                                   .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &s->fb) == VK_SUCCESS, "framebuffer");
 
@@ -398,7 +432,8 @@ scene_create(struct scene *s, int depth)
                                                 .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                              .rasterizationSamples = g_msaa ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT,
+                                              .sampleShadingEnable = g_msaa == 2, .minSampleShading = g_msaa == 2 ? 1.0f : 0.0f};
    VkPipelineDepthStencilStateCreateInfo dss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                                                 .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
                                                 .depthCompareOp = VK_COMPARE_OP_LESS, .maxDepthBounds = 1.0f};
@@ -472,6 +507,9 @@ scene_destroy(struct scene *s)
    if (s->ib) DestroyBuffer(dev, s->ib, NULL);
    if (s->ibmem) FreeMemory(dev, s->ibmem, NULL);
    if (s->vbmem) FreeMemory(dev, s->vbmem, NULL);
+   if (s->msv) DestroyImageView(dev, s->msv, NULL);
+   if (s->msi) DestroyImage(dev, s->msi, NULL);
+   if (s->msmem) FreeMemory(dev, s->msmem, NULL);
    if (s->colv) DestroyImageView(dev, s->colv, NULL);
    if (s->depv) DestroyImageView(dev, s->depv, NULL);
    if (s->col) DestroyImage(dev, s->col, NULL);
@@ -842,6 +880,58 @@ test_two(int depth)
 }
 
 /* mode cases: expected coverage in px, tolerance %, optional centre/corner probes */
+/* MSAA (MALI_EXPERIMENTAL_MSAA=1): the triangle is rendered into a 4-sample image and resolved (hardware Average writeback) into col.
+ * Pixel checks on the resolved image: the interior keeps the colour, edge pixels have coverage 1/4..3/4 (alpha ~64/128/191), and
+ * the coverage-weighted area is the triangle area. mode 2 additionally enables sampleRateShading (minSampleShading 1.0). */
+static int
+test_msaa(const char *name, int mode)
+{
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name,
+             mode == 2 ? " / sampleRateShading" : "");
+      return 1;
+   }
+   g_msaa = mode;
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   int made = scene_create(&s, 0);
+   g_msaa = 0;
+   if (!made) return 0;
+   float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
+   if (!scene_draw(&s, 1, rot, f)) return 0;
+   int ok = 1;
+   if (!g_fake) {
+      double wsum = 0;
+      unsigned partial = 0, quarter = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            unsigned a = s.px[y * s.pitch + x * 4 + 3];
+            wsum += a / 255.0;
+            if (a > 0 && a < 255) {
+               partial++;
+               int k = (int)(a * 4 / 255.0 + 0.5);
+               if (abs((int)a - k * 255 / 4) <= 10) quarter++;
+            }
+         }
+      double err = fabs(wsum - 8192.0) / 8192.0 * 100.0;
+      CHECK(err <= 1.5, "%s coverage-weighted area %.0f expected 8192 (%.2f%%)", name, wsum, err);
+      const uint8_t *p = s.px + 106 * s.pitch + 128 * 4;   /* centroid: ~equal thirds */
+      CHECK(abs(p[0] - 85) < 12 && abs(p[1] - 85) < 12 && abs(p[2] - 85) < 12 && p[3] == 255, "%s interior %u,%u,%u,%u", name, p[0], p[1], p[2], p[3]);
+      CHECK(partial > 100, "%s only %u edge pixels with partial alpha (resolve did not average samples)", name, partial);
+      CHECK(quarter * 10 >= partial * 9, "%s edge alpha not in quarter steps: %u/%u", name, quarter, partial);
+      const uint8_t *o = s.px + 8 * s.pitch + 8 * 4;   /* outside: cleared transparent */
+      CHECK(o[3] == 0, "%s outside pixel alpha %u", name, o[3]);
+      printf("{\"test\":\"%s\",\"area\":%.0f,\"edge_px\":%u,\"quarter_px\":%u,\"ok\":true}\n", name, wsum, partial, quarter);
+   } else {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
 static int
 test_mode(const char *name, int mode, double expect, double tol)
 {
@@ -1292,13 +1382,14 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
    GMP(pd, &memprops);
+   g_fbcounts = pp.limits.framebufferColorSampleCounts;
    printf("{\"device\":\"%s\"}\n", pp.deviceName);
 
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
    di.pEnabledFeatures = &en;
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
@@ -1335,6 +1426,8 @@ main(int argc, char **argv)
    }
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
+   if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
+   if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
