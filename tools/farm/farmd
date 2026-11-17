@@ -55,8 +55,38 @@ class Farm:
         self.cool = {}
         self.last_health, self.last_wl = {}, {}
         self.stop_reason, self.last_pw, self.last_mdns = {}, {}, {}
+        self.cfg_mtime = self.devices_mtime()
 
     # ---------- devices
+    def devices_mtime(self):
+        try:
+            return os.path.getmtime(L.devices_path())
+        except OSError:
+            return 0
+
+    def reload_devices(self):
+        """devices.toml edited (by the owner or by farmd itself): pick it up without a restart; running threads keep their dict object"""
+        m = self.devices_mtime()
+        if m == self.cfg_mtime:
+            return
+        self.cfg_mtime = m
+        try:
+            cfg, new = L.load_devices()
+        except Exception as e:
+            log(f"devices.toml unreadable, keeping the old table: {e}")
+            return
+        for a, nd in new.items():
+            od = self.devs.setdefault(a, {})
+            for k in [k for k in od if k not in nd]:
+                del od[k]
+            od.update(nd)
+        for a in [a for a in self.devs if a not in new and a not in self.threads]:
+            del self.devs[a]
+        self.cfg = cfg
+        L._ROUTE_MISS.clear()
+        L._SERIALNO.clear()
+        log("devices.toml reloaded")
+
     def adb(self, dev, *a, timeout=20):
         t = self.tid.get(dev["alias"]) or dev["serial"]
         return L.sh(["adb", "-s", t, *a], timeout)
@@ -82,6 +112,10 @@ class Farm:
                 self.tid[a] = t
                 up.add(a)
         return up
+
+    def via(self, alias):
+        t = self.tid.get(alias, "")
+        return "usb" if t == self.devs[alias]["serial"] else ("mdns" if t.startswith("adb-") else "wireless") if t else ""
 
     def set_dstate(self, alias, status, note="", **extra):
         cur = self.dstate.get(alias, {})
@@ -214,7 +248,7 @@ class Farm:
                         self.ensure_wireless(d)
                     if st.get("status") != "up":
                         log(f"device {al} is up")
-                    self.set_dstate(al, "up", batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"))
+                    self.set_dstate(al, "up", batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"), via=self.via(al))
                 elif st.get("status") not in ("up", "charging", "cooling", "on_battery"):
                     self.set_dstate(al, "up")
                 continue
@@ -635,6 +669,7 @@ class Farm:
 
     # ---------- main loop
     def tick(self):
+        self.reload_devices()
         jobs = L.list_jobs()
         att = self.watch_devices(jobs)
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}

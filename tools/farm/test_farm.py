@@ -292,6 +292,32 @@ class T(unittest.TestCase):
         self.assertEqual(len(run["ns_to_fail"]), 3)
         self.assertIn("3 NotSupported->Fail", run["notes"])
 
+    def test_identified_by_serial_on_any_transport(self):
+        L._ROUTE_MISS.clear(); L._SERIALNO.clear()
+        L.adb_live = lambda: {"203.0.113.77:5555": "device", "203.0.113.78:5555": "device"}
+        L.sh = lambda cmd, timeout, **kw: (0, "OTHER\n" if "203.0.113.78:5555" in cmd else "S9\n")
+        dev = {"serial": "S9", "wireless": ["203.0.113.99:5555"]}        # stored route is stale: the phone has another address now
+        self.assertEqual(L.resolve(dev), "203.0.113.77:5555")
+        dev2 = {"serial": "NOPE", "wireless": ["203.0.113.99:5555"]}     # nobody answers with that serial
+        L._SERIALNO.clear()
+        self.assertIsNone(L.resolve(dev2))
+        L._SERIALNO.clear()
+
+    def test_config_reloaded_without_restart(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        self.assertEqual(L.wireless_routes(f.devs["dev-b"]), [])
+        self.assertEqual(f.phone_env(f.devs["dev-a"])["QSAFE_HELD"], "cmf")
+        p = self.d + "/devices.toml"
+        txt = open(p).read()
+        open(p, "w").write(txt.replace('baseline = "poco"\n', 'baseline = "poco"\nwireless = ["198.51.100.5:5555"]\n') + "\n")
+        os.utime(p, (f.cfg_mtime + 5, f.cfg_mtime + 5))
+        f.reload_devices()
+        self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 

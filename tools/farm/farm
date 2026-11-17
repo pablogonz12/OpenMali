@@ -42,7 +42,7 @@ def cmd_status(a):
             st, h = "disabled", "disabled by owner"
         elif st == "on_battery":
             h = "on battery: paused"
-        print(f"device {al:10} class {d['class']:4} {st:8} {h} {s.get('note', '') if st not in ('disabled', 'on_battery') else ''}")
+        print(f"device {al:10} class {d['class']:4} {st:8} {h} {('via ' + s['via'] + ' ') if s.get('via') and st in ('up', 'charging', 'cooling') else ''}{s.get('note', '') if st not in ('disabled', 'on_battery') else ''}")
     jobs = L.list_jobs()
     if not a.all:
         jobs = jobs[-15:]

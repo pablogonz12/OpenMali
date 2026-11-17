@@ -61,21 +61,46 @@ def wireless_routes(dev):
     return out
 
 
+_SERIALNO = {}
+
+
+def serial_of(tid):
+    """the phone's real serial (`getprop ro.serialno`) behind a transport id, cached 5 min (hits) / 1 min (misses); hard 5 s timeout so
+    one hung route cannot block the others. None = unknown."""
+    c = _SERIALNO.get(tid)
+    if c and time.time() - c[1] < (300 if c[0] else 60):
+        return c[0]
+    rc, o = sh(["adb", "-s", tid, "shell", "getprop ro.serialno"], 5)
+    f = o.split() if rc == 0 else []
+    s = f[0] if f and "error" not in o.lower() and "offline" not in o.lower() else None
+    _SERIALNO[tid] = (s, time.time())
+    return s
+
+
 def resolve(dev, connect=False):
-    """alias -> live transport id. Order: USB serial, mDNS entry containing the serial, each configured wireless ip:port that is
-    already listed, then (connect=True) `adb connect <route>` for each route. `transport = "usb"` devices: USB ONLY, never
-    mDNS/ip:port/connect. None when the phone is not reachable."""
+    """alias -> live transport id, identified by the phone's SERIAL, never by the transport name. Order: USB serial; mDNS entry containing
+    the serial; a configured ip:port route that is listed; any other listed ip:port whose `ro.serialno` equals the serial (the phone
+    changed address); then (connect=True) `adb connect <route>`. `transport = "usb"`: USB only. `transport = "wireless"`: ignores
+    the plain serial. A stale/unreachable route is a soft miss (6 s connect timeout, remembered 2 min). None = not reachable."""
     usb_only = dev.get("transport", "usb+wireless") == "usb"
     routes = [] if usb_only else wireless_routes(dev)
+    want = dev["serial"]
 
     def pick():
         live = {i: s for i, s in adb_live().items() if s == "device"}
-        if dev["serial"] in live and dev.get("transport") != "wireless":
-            return dev["serial"]
+        if want in live and dev.get("transport") != "wireless":
+            return want
         if usb_only:
             return None
-        t = next((i for i in live if dev["serial"] in i and i != dev["serial"]), None)
-        return t or next((r for r in routes if r in live), None)
+        t = next((i for i in live if want in i and i != want), None)
+        if t:
+            return t
+        cands = [r for r in routes if r in live] + [i for i in live if i not in routes and i != want and ":" in i and not i.startswith("adb-")]
+        for i in cands:
+            s = serial_of(i)
+            if s == want or (s is None and i in routes):
+                return i
+        return None
     t = pick()
     if t or not connect:
         return t
