@@ -643,7 +643,7 @@ class T(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("only=triangle,buf", out)
         self.assertEqual(len(self.farm("log", jid, "--tail", "5")[1].splitlines()), 6)
-        self.assertIn("fake line 7 only", self.farm("log", jid, "--grep", "line 7 only", "--tail", "3")[1])
+        self.assertIn("fake line 250 only", self.farm("log", jid, "--grep", "line 250 only", "--tail", "3")[1])
 
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
