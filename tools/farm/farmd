@@ -940,7 +940,9 @@ class Farm:
                 log(f"{alias}: bench pre-build error " + traceback.format_exc()[-200:])
         lock = L.PhoneLock(dev, self.fake)
         if not lock.acquire():
-            log(f"{alias}: qsafe lock busy, {jid}/{cls} stays pending")
+            if time.time() >= self.cool.get(alias, 0):           # one line per backoff, not a spin: finishing this part wakes the scheduler at once
+                log(f"{alias}: qsafe lock busy, {jid}/{cls} stays pending")
+            self.cool[alias] = time.time() + (0 if self.fake else 20)
             return
         t0, started = time.time(), L.now()
         job = L.read_json(L.job_path(jid))
