@@ -56,4 +56,7 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 ## Batch 1 status (R4-B1)
 - DONE: multiDrawIndirect (t_vk_draw --only mdi, drawCount 2, 16384 px on Poco; guest script tests/r4m1draw.sh). dEQP daily sample unchanged 270/134/0 crash.
 - NOT advertised (no passing test): drawIndirectFirstInstance (needs a firstInstance draw test); samplerAnisotropy/samplerMirrorClampToEdge (packing exists in mali_sampler.c, no pixel test, maxSamplerAnisotropy still 1); depthClipEnable/depthClamp, independentBlend, EDS1-3 (pipeline emits no clip/blend/dynamic-state mapping; dEQP draw.renderpass.basic_draw.draw.* fails 0 pass for this reason); shaderDrawParameters, shaderInt64 (compiler work); fullDrawIndexUint32, imageCubeArray (need tests); BDA, descriptorIndexing, robustness2 (not started).
-- DXVK-required features still false: 40 of 47 (was 41).
+- DONE: colour loadOp LOAD preload draw (draw.renderpass.basic_draw.draw.* 0 -> 24/24 supported); fixed-function state (cull/front face, depth bias, clip/clamp, FF blend+masks+constants, dynamic state); depthClamp + independentBlend advertised (t_vk_draw --only fx, all pass on Poco). dEQP daily sample unchanged 270/134/0 crash; draw.* probe 23 pass/9 fail/1 crash.
+- NOT DONE (no test, so not advertised): depthBiasClamp, wideLines, drawIndirectFirstInstance, samplerAnisotropy, samplerMirrorClampToEdge, fullDrawIndexUint32, imageCubeArray, storage-image extended formats, bufferDeviceAddress, descriptorIndexing, robustness2.
+- Open draw fails: D16 depth cases, negative_viewport_height.front_ccw_cull_front, scissor.static_scissor_two_clears, concurrent.compute_and_triangle_list (crash).
+- DXVK-required features still false: 38 of 47 (was 41).
