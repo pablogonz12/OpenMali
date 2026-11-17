@@ -253,6 +253,9 @@ fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 static int
 fake_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t target, int timeout_ms)
 {
+   /* nothing executes: the wait stands for the GPU retiring the frames, so advance the event counter (else hw_retire spins on a full in-flight list) */
+   if (*c < target)
+      *(volatile uint64_t *)c = target;
    return 0;
 }
 
