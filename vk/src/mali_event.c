@@ -47,7 +47,7 @@ mali_ops_build(const struct mali_env *env, const struct mali_op *ops, unsigned n
    struct b b = { 0 };
    *out = NULL;
    *nout = 0;
-   if (env->arch != 11 && env->arch != 13)
+   if (env->arch != 10 && env->arch != 11 && env->arch != 13)
       return -EINVAL;
    const struct regs *R = env->arch == 13 ? &R13 : &R11;
    E(&b, kb_cs_nop());

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* Fake backend: no kernel, no GPU. Describes one of the two target GPUs so the front end can be
- * built and exercised on the laptop. MALI_FAKE_GPU=v11 (default) or v13. */
+ * built and exercised on the laptop. MALI_FAKE_GPU=v11 (default), v10 or v13. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -36,6 +36,16 @@ fake_probe(struct mali_gpu_info *out)
       out->uapi_major = 1;
       out->uapi_minor = 21;
       strcpy(out->name, "Mali-G615 MC2");
+   } else if (strcmp(which, "v10") == 0) {
+      /* Poco X4 GT: Mali-G610 MC6 (Dimensity 8100), arch 10.8, CSF. Id from Mesa's model table (PAN_PROD_ID(10, 8, 7));
+       * uAPI 1.21 is a guess: MediaTek r40-class kbase on the phone's 5.10 kernel, verify with the probe. */
+      out->gpu_id = 0xA8070000u;
+      out->core_count = 6;
+      out->core_id_range = 6;
+      out->tls_threads = 2048;
+      out->uapi_major = 1;
+      out->uapi_minor = 21;
+      strcpy(out->name, "Mali-G610 MC6");
    } else if (strcmp(which, "v13") == 0) {
       /* Poco X8 Pro Max: Mali-G925 MC11, arch 13.8, kbase uAPI 1.30 */
       out->gpu_id = 0xD8000000u;

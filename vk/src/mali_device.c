@@ -10,6 +10,14 @@
 #include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_common_entrypoints.h"
 
+/* v10 (G610/G710/G510/G310), v11 (G615), v13 (G925 class): arch 12 shares the v13 table. */
+static const struct vk_device_entrypoint_table *
+mali_arch_entrypoints(const struct mali_physical_device *pdev)
+{
+   return pdev->gpu.arch_major >= 12 ? &mali_v13_device_entrypoints :
+          pdev->gpu.arch_major == 10 ? &mali_v10_device_entrypoints : &mali_v11_device_entrypoints;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
                   const VkAllocationCallbacks *pAllocator, VkDevice *pDevice)
@@ -31,14 +39,14 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &vk_cmd_enqueue_unless_primary_device_entrypoints, true);
    vk_device_dispatch_table_from_entrypoints(
       &dev->cmd_dispatch,
-      pdev->gpu.arch_major >= 12 ? &mali_v13_device_entrypoints : &mali_v11_device_entrypoints,
+      mali_arch_entrypoints(pdev),
       true);
    vk_device_dispatch_table_from_entrypoints(&dev->cmd_dispatch, &mali_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(&dev->cmd_dispatch, &wsi_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(&dev->cmd_dispatch, &vk_common_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(
       &dispatch_table,
-      pdev->gpu.arch_major >= 12 ? &mali_v13_device_entrypoints : &mali_v11_device_entrypoints,
+      mali_arch_entrypoints(pdev),
       false);
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &mali_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);

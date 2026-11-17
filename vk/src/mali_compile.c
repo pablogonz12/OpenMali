@@ -33,15 +33,16 @@ _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
 
 static atomic_ullong g_hits, g_misses, g_stores;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
-static const struct pan_model *g_model[2];
+static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
 static void
 init_once(void)
 {
    glsl_type_singleton_init_or_ref();
    /* GPU ids: G615 (v11) 0xB8030000, G725/G925 class (v13) 0xD8000000 (see compiler-spike/NOTES.md) */
-   static const uint64_t ids[2] = {0xB8030000ull, 0xD8000000ull};
-   for (int i = 0; i < 2; i++)
+   /* v10: G610 0xA8070000 (Mesa PAN_PROD_ID(10, 8, 7)); G710/G510 have no model entry in this Mesa and use it too */
+   static const uint64_t ids[3] = {0xA8070000ull, 0xB8030000ull, 0xD8000000ull};
+   for (int i = 0; i < 3; i++)
       for (unsigned v = 0; v < 16 && !g_model[i]; v++)
          g_model[i] = pan_get_model(ids[i], v, 16, 0);
 }
@@ -274,7 +275,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 {
    pthread_once(&g_once, init_once);
    unsigned arch = o->arch;
-   const struct pan_model *model = g_model[arch == 13];
+   const struct pan_model *model = g_model[arch == 13 ? 2 : arch == 10 ? 0 : 1];
    if (!model)
       return fail(err, errsz, "no GPU model");
    mesa_shader_stage stage = o->stage == MALI_STAGE_VERTEX ? MESA_SHADER_VERTEX :
@@ -505,8 +506,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    /* spirv_to_nir dereferences a NULL builder option on a bad header: check it ourselves */
    if (o->spirv_words < 5 || o->spirv[0] != 0x07230203u)
       return fail(err, errsz, "not a SPIR-V module (bad magic or too short)");
-   if (o->arch != 11 && o->arch != 13)
-      return fail(err, errsz, "arch must be 11 or 13");
+   if (o->arch != 10 && o->arch != 11 && o->arch != 13)
+      return fail(err, errsz, "arch must be 10, 11 or 13");
    if (o->stage > MALI_STAGE_COMPUTE)
       return fail(err, errsz, "bad stage");
    unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));

@@ -845,7 +845,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       return build_compute(hw, f, out, nout);
    *out = NULL;
    *nout = 0;
-   if ((env->arch != 11 && env->arch != 13) || !f->has_colour)
+   if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !f->has_colour)
       return -EINVAL;
    memset(&c, 0, sizeof c);
    bool geometry = f->ndraws > 0;

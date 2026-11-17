@@ -14,7 +14,7 @@ export PATH=$D/third_party/venv/bin:$PATH
 PY=$D/third_party/venv/bin/python
 [ -f "$GEN/mali_entrypoints.c" ] || "$PY" "$MESA/src/vulkan/util/vk_entrypoints_gen.py" --xml "$MESA/src/vulkan/registry/vk.xml" \
    --proto --weak --out-h "$GEN/mali_entrypoints.h" --out-c "$GEN/mali_entrypoints.c" \
-   --prefix mali --device-prefix mali_v11 --device-prefix mali_v13 --beta false
+   --prefix mali --device-prefix mali_v10 --device-prefix mali_v11 --device-prefix mali_v13 --beta false
 cd "$B"
 CMDS=$(ninja -t commands src/panfrost/vulkan/libvulkan_panfrost.so)
 CCLINE=$(grep -m1 -- 'panvk_instance\.c$' <<<"$CMDS")
@@ -47,9 +47,9 @@ PANLIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midg
       src/panfrost/compiler/midgard/libpanfrost_midgard_disasm.a src/panfrost/compiler/bifrost/libpanfrost_bifrost.a
       src/panfrost/compiler/bifrost/libpanfrost_bifrost_disasm.a src/panfrost/compiler/bifrost/valhall/libpanfrost_valhall_disasm.a
       src/panfrost/model/libpanfrost_model_lib.a src/panfrost/lib/libpanfrost_lib.a
-      src/panfrost/lib/libpan-format-v11.a src/panfrost/lib/libpan-format-v13.a src/panfrost/lib/libpan-arch-v11.a
+      src/panfrost/lib/libpan-format-v10.a src/panfrost/lib/libpan-format-v11.a src/panfrost/lib/libpan-format-v13.a src/panfrost/lib/libpan-arch-v10.a src/panfrost/lib/libpan-arch-v11.a
       src/panfrost/lib/libpan-arch-v13.a src/panfrost/lib/kmod/libpankmod_lib.a src/panfrost/genxml/libpanfrost_decode.a
-      src/panfrost/genxml/libpandecode-arch-v11.a src/panfrost/genxml/libpandecode-arch-v13.a"
+      src/panfrost/genxml/libpandecode-arch-v10.a src/panfrost/genxml/libpandecode-arch-v11.a src/panfrost/genxml/libpandecode-arch-v13.a"
 LIBS="$PANLIBS src/vulkan/util/libvulkan_util.a src/compiler/nir/libnir.a src/compiler/libcompiler.a
       src/compiler/spirv/libvtn.a src/util/libmesa_util.a src/util/libmesa_util_simd.a
       src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/util/libxmlconfig.a"

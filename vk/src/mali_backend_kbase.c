@@ -49,6 +49,7 @@ static const char *
 product_name(unsigned arch_major)
 {
    switch (arch_major) {
+   case 10: return "Mali-G610"; /* Poco X4 GT, arch 10.8 (G710/G510/G310 share the arch; the exact product id is printed by the probe) */
    case 11: return "Mali-G615"; /* CMF Phone 1, arch 11.8 */
    case 13: return "Mali-G925"; /* Poco X8 Pro Max, arch 13.8 */
    default: return "Mali-unknown";
@@ -117,7 +118,7 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    /* M11: v11 compute needs it: without it SSBO atomics are done in each core's L1 and updates from different cores are lost
     * (CMF, 2 cores: atomicAdd count ~half). So it is the default on arch 11; MALI_BO_COHERENT_LOCAL=0/1 overrides on any arch. */
    const char *cl = getenv("MALI_BO_COHERENT_LOCAL");
-   if (cl ? cl[0] == '1' : gpu->arch_major == 11 || gpu->arch_major == 13)
+   if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
    const char *fi = getenv("MALI_FAULT_INJECT");
    k->fault_at = fi ? strtoul(fi, NULL, 10) : 0;
