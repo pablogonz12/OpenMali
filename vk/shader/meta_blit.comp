@@ -17,7 +17,7 @@ layout(push_constant) uniform P {
    uint nsamples;
    uint lw;                                // pixels written per row (cx1-cx0)
    // generic path (fmt bit 4): any plain colour format, described per logical channel R,G,B,A:
-   // bits 0-7 bit offset in the pixel, 8-13 size, 16-18 type (0 absent, 1 unorm, 2 snorm, 3 uint, 4 sint, 5 float, 6 unsigned 5-bit-exponent float (R11G11B10), 7 shared exponent (E5B9G9R9, source only))
+   // bits 0-7 bit offset in the pixel, 8-13 size, 16-18 type (0 absent, 1 unorm, 2 snorm, 3 uint, 4 sint, 5 float, 6 unsigned 5-bit-exponent float (R11G11B10), 7 shared exponent (E5B9G9R9: mantissa fields; the 5-bit exponent at bit 27 belongs to the pixel, not to a channel))
    uint sch0, sch1, sch2, sch3;
    uint dch0, dch1, dch2, dch3;
 } p;
@@ -81,6 +81,17 @@ void wrbits(uint baseb, uint off, uint size, uint val) {
    }
 }
 
+// E5B9G9R9 encode (Vulkan spec, "Shared exponent"): rgb clamped to [0, 65408], exponent from the largest channel, mantissas rounded to nearest.
+// The two powers of two are built from bits (exp2() on the GPU is not exact).
+uint rgb9e5_enc(vec3 c) {
+   c = vec3(c.x > 0.0 ? min(c.x, 65408.0) : 0.0, c.y > 0.0 ? min(c.y, 65408.0) : 0.0, c.z > 0.0 ? min(c.z, 65408.0) : 0.0);
+   float m = max(max(c.x, c.y), c.z);
+   int es = max(-16, int((floatBitsToUint(m) >> 23) & 255u) - 127) + 16;   // biased shared exponent; denormals / 0 -> 0
+   float rd = uintBitsToFloat(uint(127 - (es - 24)) << 23);                // 1 / 2^(es - 15 - 9)
+   if (floor(m * rd + 0.5) >= 512.0) { es++; rd *= 0.5; }
+   uvec3 q = uvec3(floor(c * rd + 0.5));
+   return (uint(es) << 27) | (q.z << 18) | (q.y << 9) | q.x;
+}
 int sext(uint v, uint size) { return size >= 32u ? int(v) : (int(v << (32u - size)) >> (32u - size)); }
 float ufl_dec(uint raw, uint mb) {
    uint e = raw >> mb, m = raw & ((1u << mb) - 1u);
@@ -185,9 +196,16 @@ void gmain(uint ox, uint oy_) {
       vec4 b = mix(gfetchf(x0, y0 + 1, 0u), gfetchf(x0 + 1, y0 + 1, 0u), ax);
       v = mix(a, b, ay);
    }
+   uint e5 = 0u;
+   bool e5done = false;
    for (uint c = 0u; c < 4u; c++) {
       uint dw = dch(c), t = cType(dw), sz = cSize(dw);
       if (t == 0u) continue;
+      if (t == 7u) {
+         if (!e5done) { e5 = rgb9e5_enc(v.rgb); e5done = true; wrbits(o, 27u, 5u, e5 >> 27); }
+         wrbits(o, cOff(dw), sz, e5 >> cOff(dw));
+         continue;
+      }
       float f = v[c];
       if (c < 3u && (p.gfmt & (1u << 21)) != 0u) f = l2s(clamp(f, 0.0, 1.0));
       uint r;

@@ -334,6 +334,61 @@ case_blit(void)
    return 1;
 }
 
+/* RGBA8 -> E5B9G9R9 blit (the shared-exponent format as a blit destination, dEQP all_formats *.e5b9g9r9_ufloat_pack32 cases).
+ * Decoded per Mesa's rgb9e5_to_float3: v = mantissa * 2^(exp - 15 - 9); expected is src/255 within 2 ulps of the largest channel. */
+static int
+case_blit_e5(void)
+{
+   const uint32_t w = 16, h = 16;
+   struct buf src = {0}, dst = {0};
+   struct img i1 = {0}, i2 = {0};
+   TRY(mkbuf(&src, w * h * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&dst, w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   TRY(mkimg(&i1, VK_FORMAT_R8G8B8A8_UNORM, w, h, u, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&i2, VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, w, h, u, VK_SAMPLE_COUNT_1_BIT));
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   for (int l = 0; l < g_loop; l++) {
+      uint8_t *ps = src.p;
+      uint32_t *pd = dst.p;
+      for (uint32_t y = 0; y < h; y++)
+         for (uint32_t x = 0; x < w; x++) {
+            uint8_t *t = ps + (y * w + x) * 4;
+            t[0] = x * 16 + 7; t[1] = y * 16 + 3; t[2] = (x ^ y) * 9; t[3] = 255;
+         }
+      memset(pd, 0xEE, w * h * 4);
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy up = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, src.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {w, h, 1}},
+                        .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {w, h, 1}}};
+      CmdBlitImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_NEAREST);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.b, 1, &dn);
+      CHECK(submit_wait(cb), "submit");
+      if (!g_fake)
+         for (uint32_t i = 0; i < w * h; i++) {
+            uint32_t v = pd[i];
+            int e = (int)(v >> 27);
+            float sc = ldexpf(1.0f, e - 15 - 9);
+            float got[3] = { (v & 511) * sc, ((v >> 9) & 511) * sc, ((v >> 18) & 511) * sc };
+            float want[3] = { ps[i * 4] / 255.0f, ps[i * 4 + 1] / 255.0f, ps[i * 4 + 2] / 255.0f };
+            float mx = fmaxf(want[0], fmaxf(want[1], want[2]));
+            float tol = 2.0f * ldexpf(1.0f, (int)floorf(log2f(mx > 1e-6f ? mx : 1e-6f)) - 8);
+            for (int c = 0; c < 3; c++)
+               CHECK(fabsf(got[c] - want[c]) <= tol, "e5 texel %u ch %d: %08x -> %f want %f (tol %f)", i, c, v, got[c], want[c], tol);
+         }
+   }
+   rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
+   report("blit_e5", g_fake ? "results: fake backend" : NULL);
+   return 1;
+}
+
 static int
 case_clearc(void)
 {
@@ -683,6 +738,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("img")) ok &= case_img(0);
    if (ok && CASE_ON("copyimg")) ok &= case_img(1);
    if (ok && CASE_ON("blit")) ok &= case_blit();
+   if (ok && CASE_ON("blit_e5")) ok &= case_blit_e5();
    if (ok && CASE_ON("clearc")) ok &= case_clearc();
    if (ok && CASE_ON("cleard")) ok &= case_cleard();
    if (ok && CASE_ON("d16")) ok &= case_dsfmt("d16", VK_FORMAT_D16_UNORM);
