@@ -73,7 +73,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDrawIndirectCount = 1,
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
-      .maxViewports = 1,
+      .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
       .maxViewportDimensions = {4096, 4096},
       .viewportBoundsRange = {-8192.0f, 8191.0f},
       .minMemoryMapAlignment = 64,
@@ -210,6 +210,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .nullDescriptor = true,      /* t_vk_feat nulld */
+      /* multiViewport: no geometry shader and no shaderOutputViewportIndex, so every primitive uses viewport/scissor 0; 1..15 are accepted state
+         and ignored (mali_cmd.c). t_vk_draw multivp */
+      .multiViewport = true,
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
       .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */

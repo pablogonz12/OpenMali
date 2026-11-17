@@ -8,7 +8,7 @@ Condensed from `ARCHITECTURE-proposal.md` (about 39 agent-weeks in the original 
 | R1 | Standalone libkbase on both phones: hand-built command stream, dma-heap import, fences, 10k submits, injected fault decoded | Done on G615. G925 port runs but has seen less testing |
 | R2 | Compiled-shader triangle through a zero-copy present at refresh rate | Done on G615 |
 | R3 | Own Vulkan ICD: vkcube and dEQP-VK api/pipeline/renderpass at 95 % or more on v11 and v13 | **Current.** M1-M14 mostly done (draw, compute, meta, queries, WSI). Gate not run. dEQP sample: 272 pass, 136 fail |
-| R4 | Vulkan 1.3 and the DXVK feature set. A DXVK title reaches a menu | In progress. Vulkan 1.3 device is up. DXVK-required features: 8 of 47 missing. BC decode wiring pending. Gate: dEQP within 2 % of the oracle |
+| R4 | Vulkan 1.3 and the DXVK feature set. A DXVK title reaches a menu | In progress. Vulkan 1.3 device is up. DXVK-required features: 7 of 47 missing. BC decode wiring pending. Gate: dEQP within 2 % of the oracle |
 | R5 | Emulated geometry, tessellation and transform feedback. Target title matches oracle screenshots | Not started |
 | R6 | Target title on the G615 phone at least as good as the bridge, with fewer frames over 50 ms. Steam UI at least as good on both phones | Not started |
 | R7 | vkd3d-proton title in gameplay, 2 h soak, 10-title matrix | Not started |
