@@ -32,6 +32,40 @@ def load_devices():
     return cfg, devs
 
 
+def load_config():
+    """~/.config/mali-farm/farm.toml: quick_root (scripts/quick + tools), main_checkout (holds third_party, vk/deqp/out, lists)"""
+    p = os.environ.get("MALI_FARM_CONFIG") or os.path.expanduser("~/.config/mali-farm/farm.toml")
+    c = tomllib.load(open(p, "rb")) if os.path.exists(p) else {}
+    return {k: os.path.expanduser(v) for k, v in c.items() if isinstance(v, str)}
+
+
+def adb_live():
+    """-> {transport id: state} from `adb devices` (ids: plain serial, adb-<serial>-x._adb-tls-connect._tcp, ip:port)"""
+    rc, out = sh(["adb", "devices"], 15)
+    live = {}
+    for l in out.splitlines()[1:]:
+        f = l.split()
+        if len(f) >= 2:
+            live[f[0]] = f[1]
+    return live
+
+
+def resolve(dev, connect=False):
+    """alias -> live transport id: USB serial, else the mDNS entry containing the serial (or the ip:port), else (connect=True)
+    `adb connect <wireless>` from devices.toml. None when the phone is not reachable."""
+    def pick():
+        live = {i: s for i, s in adb_live().items() if s == "device"}
+        if dev["serial"] in live:
+            return dev["serial"]
+        w = dev.get("wireless")
+        return next((i for i in live if dev["serial"] in i or (w and i == w)), None)
+    t = pick()
+    if t or not (connect and dev.get("wireless")):
+        return t
+    sh(["adb", "connect", dev["wireless"]], 20)
+    return pick()
+
+
 def now():
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 

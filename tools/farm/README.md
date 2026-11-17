@@ -13,12 +13,20 @@ One JSON per run: `runs/<job>-<class>.json` (commit, dirty, .so sha256, env, sui
 newly passing, verdict pass|fail|error, wall time). `farm wait` exits 0 pass, 1 fail, 2 error, 3 timeout.
 
 Suites: smoke = vk/tests/valrun.sh (20 loops, honours --env); daily = qdeqp on lists/daily-sample.txt diffed per case against
-`vk/deqp/ours-daily-sample-<baseline>.tsv` (from the commit, else main; --env ignored); bench = stub (error).
+`vk/deqp/ours-daily-sample-<baseline>.tsv` (from the commit, else main; --env goes to deqp-vk); bench = stub (error).
 Only committed state is tested (`dirty` records uncommitted edits at submit time). Needs the untracked `third_party/` and dEQP build of the main checkout.
 
-## ~/.config/mali-farm/devices.toml (private; aliases only in the code)
+## Config (private, in ~/.config/mali-farm/; nothing machine-specific in the repo)
 
-    quick_root = "~/path/to/quick-tools-root"   # has scripts/quick/qrestore and tools/
+`farm.toml`: `quick_root` (has scripts/quick/qrestore and tools/) and `main_checkout` (holds the untracked `third_party/` Mesa build,
+`vk/deqp/out` dEQP build and `vk/deqp/lists/daily-sample.txt`; farmd fails the job with a message naming what is missing).
+`service.env` (for the systemd unit): `MALI_FARM_DIR=/path/to/checkout/tools/farm`.
+
+Transport: per alias farmd resolves the live adb id: USB serial, else the mDNS entry `adb-<serial>-*._adb-tls-connect._tcp`,
+else `adb connect <wireless>`; it passes it to valrun/qdeqp/qrestore as `ADB_SERIAL_<LOCK>` (quick.py and qsafe resolve the same way).
+
+## devices.toml
+
     [[device]]
     alias = "phone-a"            # used everywhere in the farm
     class = "v11"

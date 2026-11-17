@@ -36,12 +36,15 @@ class Farm:
     def __init__(self, fake, once, poll):
         self.fake, self.once, self.poll = fake, once, poll
         self.cfg, self.devs = L.load_devices()
-        self.quick_root = os.path.expanduser(self.cfg.get("quick_root", "~/Projects/mali-gaming"))
+        fc = L.load_config()
+        self.quick_root = fc.get("quick_root") or os.path.expanduser(self.cfg.get("quick_root", ""))
+        self.fc = fc
         rc, top = git("rev-parse", "--show-toplevel")
         self.repo = top.strip()
         # third_party/ and the dEQP build are untracked: borrow them from the main checkout (first in `git worktree list`)
         rc, wl = git("worktree", "list", "--porcelain")
-        self.main_tree = next((l.split(" ", 1)[1] for l in wl.splitlines() if l.startswith("worktree ")), self.repo)
+        self.main_tree = fc.get("main_checkout") or next((l.split(" ", 1)[1] for l in wl.splitlines() if l.startswith("worktree ")), self.repo)
+        self.tid = {}                                  # alias -> live adb transport id
         self.jl = threading.Lock()                     # job-file mutations
         self.build_locks, self.bl = {}, threading.Lock()
         self.threads = {}                              # alias -> Thread
@@ -52,7 +55,16 @@ class Farm:
 
     # ---------- devices
     def adb(self, dev, *a, timeout=20):
-        return L.sh(["adb", "-s", dev["serial"], *a], timeout)
+        t = self.tid.get(dev["alias"]) or dev["serial"]
+        return L.sh(["adb", "-s", t, *a], timeout)
+
+    def phone_env(self, dev, extra=None):
+        """env for q* scripts / valrun / qdeqp: they resolve the transport from ADB_SERIAL_<LOCK>"""
+        t = self.tid.get(dev["alias"]) or dev["serial"]
+        e = dict(os.environ, ANDROID_SERIAL=t)
+        e["ADB_SERIAL_" + dev["lock"].upper()] = t
+        e.update(extra or {})
+        return e
 
     def attached(self):
         """-> set of aliases whose device is attached and in state 'device'"""
@@ -60,13 +72,13 @@ class Farm:
             p = os.path.join(L.state_dir(), "fake-attached")
             names = set(open(p).read().split()) if os.path.exists(p) else set()
             return {a for a in self.devs if a in names}
-        rc, out = L.sh(["adb", "devices"], 15)
         up = set()
-        for l in out.splitlines()[1:]:
-            f = l.split()
-            if len(f) >= 2 and f[1] == "device":
-                up.add(f[0])
-        return {a for a, d in self.devs.items() if d["serial"] in up}
+        for a, d in self.devs.items():
+            t = L.resolve(d)
+            if t:
+                self.tid[a] = t
+                up.add(a)
+        return up
 
     def set_dstate(self, alias, status, note=""):
         cur = self.dstate.get(alias, {})
@@ -82,14 +94,17 @@ class Farm:
         if self.fake:
             log(f"[fake] recover {alias} step {step}")
             return
+        if step % 3 == 2 and d.get("wireless"):
+            t = L.resolve(d, connect=True)             # includes `adb connect <wireless>`
+            if t:
+                self.tid[alias] = t
+            return
         if step % 3 == 0:
-            L.sh(["adb", "-s", d["serial"], "reconnect"], 20)
+            L.sh(["adb", "-s", self.tid.get(alias) or d["serial"], "reconnect"], 20)
         elif step % 3 == 1:
             L.sh(["adb", "reconnect", "offline"], 20)
-        elif d.get("wireless"):
-            L.sh(["adb", "connect", d["wireless"]], 20)
         else:
-            L.sh(["adb", "-s", d["serial"], "reconnect"], 20)
+            L.sh(["adb", "-s", self.tid.get(alias) or d["serial"], "reconnect"], 20)
 
     def watch_devices(self, jobs):
         att = self.attached()
@@ -146,6 +161,10 @@ class Farm:
                 open(os.path.join(L.state_dir(), "artifacts", sha + ".so"), "w").write("fake\n")
                 self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok"))
                 return sha, ""
+            miss = self.missing_deps(job["suite"])
+            if miss:
+                self.upd(job["id"], lambda x: x.update(build="failed"))
+                return None, miss
             tree = self.tree(job["id"])
             if not os.path.isdir(tree):
                 rc, out = git("worktree", "add", "--detach", tree, job["commit"], cwd=self.repo)
@@ -167,6 +186,17 @@ class Farm:
             shutil.copy2(so, os.path.join(L.state_dir(), "artifacts", sha + ".so"))
             self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok", build_s=round(time.time() - t0)))
             return sha, ""
+
+    def missing_deps(self, suite):
+        """untracked build inputs live in the main checkout (farm.toml: main_checkout); say clearly what is missing"""
+        need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
+        if suite == "daily":
+            need += [("vk/deqp/out/a64-glibc", "dEQP build (vk/deqp/build.sh)"), ("vk/deqp/lists/daily-sample.txt", "dEQP case list")]
+        if not self.quick_root or not os.path.isdir(os.path.join(self.quick_root, "scripts", "quick")):
+            return "missing dependency: quick_root with scripts/quick (set quick_root in ~/.config/mali-farm/farm.toml)"
+        bad = [f"{r} ({w})" for r, w in need if not os.path.exists(os.path.join(self.main_tree, r))]
+        return ("missing dependency in main_checkout %s: " % os.path.basename(self.main_tree) + "; ".join(bad) +
+                " (set main_checkout in ~/.config/mali-farm/farm.toml)") if bad else ""
 
     def borrow_deqp(self, tree):
         """vk/deqp/out (dEQP build) and the untracked case lists are not in git: link/copy from the main checkout"""
@@ -223,7 +253,7 @@ class Farm:
     def qrestore(self, dev):
         if self.fake:
             return
-        L.sh([os.path.join(self.quick_root, "scripts", "quick", "qrestore"), dev["lock"]], 90)
+        L.sh([os.path.join(self.quick_root, "scripts", "quick", "qrestore"), dev["lock"]], 90, env=self.phone_env(dev))
 
     # ---------- suites -> dict(verdict, counts, new_failures, newly_passing, notes, extra)
     def baseline(self, job, dev):
@@ -248,7 +278,7 @@ class Farm:
         if dev["lock"] not in ("cmf", "poco"):
             return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
         tree = self.tree(job["id"])
-        rc, out = L.sh(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, env=dict(os.environ, PHONE=dev["lock"]))
+        rc, out = L.sh(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, env=self.phone_env(dev, {"PHONE": dev["lock"]}))
         recs = []
         for l in out.splitlines():
             if l.startswith("{"):
@@ -294,7 +324,8 @@ class Farm:
                 return {"verdict": "error", "notes": "no lists/daily-sample.txt"}
             tmo = int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400"))
             rc, out = L.sh(["timeout", "-k", "20", str(tmo), sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"),
-                            dev["lock"], listf, "--chunk", "300"], tmo + 60, cwd=shim)
+                            dev["lock"], listf, "--chunk", "300"], tmo + 60, cwd=shim,
+                          env=self.phone_env(dev, {"QDEQP_ENV": job["env"]}))
             note = out.strip()[-200:]
             rd = os.path.join(shim, "runs", "qdeqp")
             tsv = next((os.path.join(rd, n) for n in sorted(os.listdir(rd)) if n.endswith("-ours-daily-sample.tsv")), None) if os.path.isdir(rd) else None

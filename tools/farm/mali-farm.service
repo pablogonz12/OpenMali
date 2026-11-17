@@ -3,8 +3,9 @@ Description=mali-open phone farm daemon
 
 [Service]
 Type=simple
-# adjust the path to the checkout that holds tools/farm
-ExecStart=%h/Documents/scripts/mali-open/tools/farm/farmd
+# ~/.config/mali-farm/service.env must contain:  MALI_FARM_DIR=/path/to/checkout/tools/farm
+EnvironmentFile=%h/.config/mali-farm/service.env
+ExecStart=/bin/sh -c 'exec "$MALI_FARM_DIR/farmd"'
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

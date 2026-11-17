@@ -92,7 +92,7 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
     wall = min(wall, 570)                                   # droiddeckctl guest allows at most 600 s per call
     s = (f"mkdir -p /tmp/qd; [ -x /tmp/qd/deqp-vk ] && [ \"$(cat /tmp/qd/stamp 2>/dev/null)\" = {h} ] || "
          f"(rm -rf /tmp/qd/vulkan; tar -C /tmp/qd -xf {DL}/deqp.tar && echo {h} > /tmp/qd/stamp); chmod +x /tmp/qd/deqp-vk; {icdsetup}; "
-         f"cd /tmp/qd; VK_DRIVER_FILES=$I VK_ICD_FILENAMES=$I VK_LOADER_LAYERS_DISABLE='~all~' BL_OPEN_DRIVER=1 "
+         f"cd /tmp/qd; VK_DRIVER_FILES=$I VK_ICD_FILENAMES=$I VK_LOADER_LAYERS_DISABLE='~all~' BL_OPEN_DRIVER=1 {os.environ.get('QDEQP_ENV', '')} "
          f"timeout {wall} ./deqp-vk --deqp-caselist-file={DL}/{tag}.cases --deqp-log-filename={qpa} --deqp-log-images=disable "
          f"--deqp-log-shader-sources=disable --deqp-surface-type=fbo --deqp-gl-config-name=rgba8888d24s8 --deqp-visibility=hidden "
          f"--deqp-shadercache=disable --deqp-watchdog=enable --deqp-log-flush=enable >/tmp/qd/{tag}.out 2>&1 & P=$!; "
