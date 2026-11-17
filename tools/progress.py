@@ -22,7 +22,7 @@ SVG = ROOT / "docs/progress.svg"
 MD = ROOT / "docs/progress.md"
 INPUTS = ["docs/progress.toml", "vk/tests/t_dxvk_caps.c", "vk/src/mali_physical_device.c", "vk/check.sh",
           "ROADMAP.md", "vk/deqp"]
-STAMP_RE = re.compile(r"data from [^<]*")
+STAMP_RE = re.compile(r"inputs last changed [^<]*")
 W = 800
 
 
@@ -239,10 +239,11 @@ def render(groups, stamp):
     y = PAD + 20
     o.append(text(PAD, y, "mali-open driver progress", 24, TXT, "bold"))
     o.append(text(W - PAD, y, f"{pct} %", 30, "#3fb950", "bold", "end"))
+    o.append(text(W - PAD, y + 18, "of tracked items, not of the whole driver", 11, DIM, "normal", "end"))
     y += 24
     o.append(text(PAD, y, f"{full} of {total} items done, {half} partial (counted as half)", 14, DIM))
     y += 20
-    o.append(f'<text x="{PAD}" y="{y}" font-size="12" fill="{DIM}">{escape("data from " + stamp)}</text>')
+    o.append(f'<text x="{PAD}" y="{y}" font-size="12" fill="{DIM}">{escape("inputs last changed " + stamp)}</text>')
     y += 22
     # legend
     lx = PAD

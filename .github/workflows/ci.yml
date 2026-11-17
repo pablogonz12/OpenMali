@@ -68,7 +68,7 @@ jobs:
             python3-venv python3-dev \
             libdrm-dev libelf-dev libudev-dev libzstd-dev libexpat1-dev zlib1g-dev \
             libvulkan-dev vulkan-tools \
-            llvm-dev libclang-dev libclang-cpp-dev libclc-dev libllvmspirvlib-dev llvm-spirv spirv-tools libspirv-tools-dev
+            llvm-18-dev libclang-18-dev libclang-cpp18-dev libclc-18-dev libllvmspirvlib-18-dev llvm-spirv-18 spirv-tools spirv-headers
 
       # Mesa tree (sources + build tree, about 0.4 GB) is cached. Only main writes the cache; PRs restore it read-only.
       - name: Restore Mesa cache
