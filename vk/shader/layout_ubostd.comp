@@ -1,0 +1,9 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer O { float o[]; };
+layout(set = 0, binding = 1, std430) uniform U2 { float x[4]; vec2 y; float z; } u2;
+void main() {
+   for (int i = 0; i < 4; i++) o[i] = u2.x[i];
+   o[4] = u2.y.x; o[5] = u2.y.y; o[6] = u2.z;
+}

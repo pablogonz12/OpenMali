@@ -187,6 +187,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
+      .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
+      .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */

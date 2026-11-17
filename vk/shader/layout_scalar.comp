@@ -1,0 +1,12 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer O { float o[]; };
+layout(set = 0, binding = 1, scalar) uniform U1 { float a; vec3 b; float c; uint d[3]; } u1;
+layout(set = 0, binding = 2, scalar) buffer S { float a; vec3 b; float c; } s;
+void main() {
+   o[0] = u1.a; o[1] = u1.b.x; o[2] = u1.b.y; o[3] = u1.b.z; o[4] = u1.c;
+   o[5] = float(u1.d[0]); o[6] = float(u1.d[1]); o[7] = float(u1.d[2]);
+   o[8] = s.a; o[9] = s.b.x; o[10] = s.b.y; o[11] = s.b.z; o[12] = s.c;
+   s.c = 99.0;
+}

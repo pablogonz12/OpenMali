@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1041,6 +1041,133 @@ test_nulld(void)
    return pass == n;
 }
 
+
+/* R4-B2 cheap shader-capability features: scalarBlockLayout, uniformBufferStandardLayout, shaderZeroInitializeWorkgroupMemory.
+ * run_comp: one compute dispatch over a set whose bindings 0..n-1 are the given buffers/types. */
+static VkBool32 g_scalar, g_ubostd, g_zinit;
+static int
+run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, struct hbuf *bufs, uint32_t gx)
+{
+   VkDescriptorSetLayoutBinding b[4];
+   VkDescriptorPoolSize ps[4];
+   VkDescriptorBufferInfo bi[4];
+   VkWriteDescriptorSet w[4];
+   VkDescriptorSetLayout dsl;
+   VkDescriptorPool dp;
+   VkDescriptorSet ds;
+   for (int i = 0; i < n; i++) {
+      b[i] = (VkDescriptorSetLayoutBinding){.binding = i, .descriptorType = types[i], .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+      ps[i] = (VkDescriptorPoolSize){types[i], 1};
+      bi[i] = (VkDescriptorBufferInfo){bufs[i].b, 0, VK_WHOLE_SIZE};
+   }
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n, .pBindings = b};
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = n, .pPoolSizes = ps};
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   for (int i = 0; i < n; i++)
+      w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = i, .descriptorCount = 1,
+                                    .descriptorType = types[i], .pBufferInfo = &bi[i]};
+   UpdateDescriptorSets(dev, n, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv(spv);
+   CHECK(m, "shader %s", spv);
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "pipeline %s = %d", spv, r);
+   VkCommandBuffer cb = cb_begin(t);
+   CHECK(cb, "cmdbuf");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, gx, 1, 1);
+   if (!cb_submit(t, cb)) return 0;
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   return 1;
+}
+
+static int
+test_scalar(void)
+{
+   if (!g_scalar) { printf("{\"test\":\"scalar\",\"skipped\":\"scalarBlockLayout not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[3];
+   if (!hbuf_create(&bf[0], 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+       !hbuf_create(&bf[2], 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(bf[0].p, 0xEE, 4096);
+   float *u = (float *)bf[1].p, *s = (float *)bf[2].p, *o = (float *)bf[0].p;
+   uint32_t *ui = (uint32_t *)bf[1].p;
+   u[0] = 1; u[1] = 2; u[2] = 3; u[3] = 4; u[4] = 5; ui[5] = 6; ui[6] = 7; ui[7] = 8;   /* scalar: a@0 b@4..12 c@16 d@20 */
+   s[0] = 20; s[1] = 21; s[2] = 22; s[3] = 23; s[4] = 24;
+   const VkDescriptorType ty[3] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "layout_scalar.comp.spv", 3, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      static const float want[13] = {1, 2, 3, 4, 5, 6, 7, 8, 20, 21, 22, 23, 24};
+      for (int i = 0; i < 13; i++) CHECK(o[i] == want[i], "o[%d]=%g want %g", i, o[i], want[i]);
+      CHECK(s[4] == 99.0f && s[3] == 23.0f, "scalar SSBO write: c=%g b.z=%g", s[4], s[3]);
+      CHECK(*(uint32_t *)&o[13] == 0xEEEEEEEEu, "stray write o[13]");
+      printf("{\"test\":\"scalar\",\"ok\":true}\n");
+   } else printf("{\"test\":\"scalar\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 3; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_ubostd(void)
+{
+   if (!g_ubostd) { printf("{\"test\":\"ubostd\",\"skipped\":\"uniformBufferStandardLayout not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) return 0;
+   memset(bf[0].p, 0xEE, 4096);
+   float *u = (float *)bf[1].p, *o = (float *)bf[0].p;
+   for (int i = 0; i < 7; i++) u[i] = 10.0f + i;   /* std430 in a UBO: x[4] stride 4, y@16, z@24 */
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+   if (!run_comp(&t, "layout_ubostd.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      for (int i = 0; i < 7; i++) CHECK(o[i] == 10.0f + i, "o[%d]=%g want %g", i, o[i], 10.0f + i);
+      printf("{\"test\":\"ubostd\",\"ok\":true}\n");
+   } else printf("{\"test\":\"ubostd\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_zinit(void)
+{
+   if (!g_zinit) { printf("{\"test\":\"zinit\",\"skipped\":\"shaderZeroInitializeWorkgroupMemory not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf;
+   enum { WG = 64 };
+   if (!hbuf_create(&bf, WG * 64 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(bf.p, 0xEE, WG * 64 * 4);
+   const VkDescriptorType ty[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   /* every workgroup writes 0xFFFFFFFF into its shared array at the end; later workgroups on the same core must still start from 0 */
+   if (!run_comp(&t, "zeroinit.comp.spv", 1, ty, &bf, WG)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int i = 0; i < WG * 64; i++) bad += ((uint32_t *)bf.p)[i] != 0;
+      CHECK(bad == 0, "%d of %d shared reads were not zero (first %08x)", bad, WG * 64, ((uint32_t *)bf.p)[0]);
+      printf("{\"test\":\"zinit\",\"workgroups\":%d,\"bad\":%d,\"ok\":true}\n", WG, bad);
+   } else printf("{\"test\":\"zinit\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   hbuf_destroy(&bf);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1082,6 +1209,10 @@ main(int argc, char **argv)
    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rb2};
    GetPhysicalDeviceFeatures2(pd, &f2);
    g_null = rb2.nullDescriptor;
+   VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+   f12.pNext = &f13;
+   GetPhysicalDeviceFeatures2(pd, &f2);
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory;
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
@@ -1093,7 +1224,10 @@ main(int argc, char **argv)
    VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress, .runtimeDescriptorArray = f12.runtimeDescriptorArray,
       .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
-                                           .timelineSemaphore = f12.timelineSemaphore};
+                                           .timelineSemaphore = f12.timelineSemaphore,
+      .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory};
+   e12.pNext = &e13;
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e12, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
    const char *dexts[] = {"VK_EXT_robustness2"};
@@ -1117,6 +1251,9 @@ main(int argc, char **argv)
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
+   if (ok && CASE_ON("scalar")) ok &= test_scalar();
+   if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
+   if (ok && CASE_ON("zinit")) ok &= test_zinit();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
