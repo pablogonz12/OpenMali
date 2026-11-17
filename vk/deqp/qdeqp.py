@@ -16,6 +16,17 @@ import quick                      # noqa: E402  (Phone, ENVV, helpers; its main(
 
 BUILD = os.path.join(QD, "out", "a64-glibc")
 DL = "/storage/emulated/0/Download/qdeqp"
+RUN = "".join(ch for ch in os.environ.get("QDEQP_RUN", "") if ch.isalnum() or ch in "-_") or f"p{os.getpid()}"   # per-run ICD paths on the phone
+SO_ON_PHONE = f"{DL}/libvulkan_mali.{RUN}.so"
+
+
+def so_ok(p):
+    """QDEQP_SO_SHA256 set (the farm): the .so on the phone must still be exactly that build. -> (ok, why)"""
+    want = os.environ.get("QDEQP_SO_SHA256", "")
+    if not want:
+        return True, ""
+    got = (p.adb("shell", f"sha256sum {SO_ON_PHONE} 2>/dev/null", timeout=30) or "").split()[:1]
+    return (bool(got) and got[0] == want), f"on-phone sha256 {got[0][:12] if got else 'missing'} != job {want[:12]}"
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 IDLE = 180   # watchdog: seconds without QPA growth
 STRESS = re.compile(r"object_management\.(alloc_callback_fail|max_|multithreaded)|many")
@@ -63,7 +74,7 @@ def stage_binaries(p, icd):
     os.unlink(tar)
     if icd == "ours":
         so = os.path.join(ROOT, "driver", "vk", "out", "a64-glibc", "libvulkan_mali.so")
-        p.adb("push", so, f"{DL}/libvulkan_mali.so", timeout=120)
+        p.adb("push", so, SO_ON_PHONE, timeout=120)
     return h
 
 
@@ -84,15 +95,15 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
     qpa = f"{DL}/{tag}.qpa"
     p.adb("shell", f"rm -f {qpa}")
     if icd == "ours":
-        icdsetup = (f"cp {DL}/libvulkan_mali.so /tmp/qd/libvulkan_mali.so; printf '%s' "
-                    "'{\"file_format_version\":\"1.0.1\",\"ICD\":{\"library_path\":\"/tmp/qd/libvulkan_mali.so\",\"api_version\":\"1.3.0\"}}' "
-                    "> /tmp/qd/icd.json; I=/tmp/qd/icd.json")
+        icdsetup = (f"mkdir -p /tmp/qd/r-{RUN}; cp {SO_ON_PHONE} /tmp/qd/r-{RUN}/libvulkan_mali.so; printf '%s' "
+                    "'{\"file_format_version\":\"1.0.1\",\"ICD\":{\"library_path\":\"/tmp/qd/r-" + RUN + "/libvulkan_mali.so\",\"api_version\":\"1.3.0\"}}' "
+                    f"> /tmp/qd/r-{RUN}/icd.json; I=/tmp/qd/r-{RUN}/icd.json")
     else:
         icdsetup = "I=$BL_VKBRIDGE_FALLBACK_ICD"
     wall = min(wall, 570)                                   # droiddeckctl guest allows at most 600 s per call
     s = (f"mkdir -p /tmp/qd; [ -x /tmp/qd/deqp-vk ] && [ \"$(cat /tmp/qd/stamp 2>/dev/null)\" = {h} ] || "
          f"(rm -rf /tmp/qd/vulkan; tar -C /tmp/qd -xf {DL}/deqp.tar && echo {h} > /tmp/qd/stamp); chmod +x /tmp/qd/deqp-vk; {icdsetup}; "
-         f"cd /tmp/qd; VK_DRIVER_FILES=$I VK_ICD_FILENAMES=$I VK_LOADER_LAYERS_DISABLE='~all~' BL_OPEN_DRIVER=1 "
+         f"cd /tmp/qd; VK_DRIVER_FILES=$I VK_ICD_FILENAMES=$I VK_LOADER_LAYERS_DISABLE='~all~' BL_OPEN_DRIVER=1 {os.environ.get('QDEQP_ENV', '')} "
          f"timeout {wall} ./deqp-vk --deqp-caselist-file={DL}/{tag}.cases --deqp-log-filename={qpa} --deqp-log-images=disable "
          f"--deqp-log-shader-sources=disable --deqp-surface-type=fbo --deqp-gl-config-name=rgba8888d24s8 --deqp-visibility=hidden "
          f"--deqp-shadercache=disable --deqp-watchdog=enable --deqp-log-flush=enable >/tmp/qd/{tag}.out 2>&1 & P=$!; "
@@ -171,6 +182,8 @@ def main(argv):
             print("unknown arg", a)
             return 2
     p = quick.Phone(phone)
+    if hasattr(quick, "require_lock"):                        # a device test must hold the phone's lock (or run under the holder)
+        quick.require_lock(p.alias)
     cases = [l.strip() for l in open(listf) if l.strip()]
     if not o["stress"]:                                       # allocate-until-failure / threaded cases go to the stress list
         st = [c for c in cases if STRESS.search(c)]
@@ -214,6 +227,19 @@ def main(argv):
         tsv.flush()
 
     while todo:
+        if o["icd"] == "ours":
+            ok_s, why_s = so_ok(p)
+            if not ok_s:
+                tsv.close()
+                print(f"INVALID driver on the phone was replaced during the run: {why_s}", file=sys.stderr)
+                return 76
+        gate = getattr(quick, "health_gate", None)
+        if gate:                                              # battery/thermal gate between chunks: stop cleanly, resumable via the TSV
+            ok_h, msg_h = gate(p)
+            if not ok_h:
+                tsv.close()
+                print(f"GATED {msg_h}; {len(rows)}/{len(cases)} done, rerun to resume", file=sys.stderr)
+                return 75
         chunk, fails = todo[:o["chunk"]], 0
         calm(p)
         fin, unf, tail, hog = run_chunk(p, chunk, tag, o["icd"], o["case-timeout"], h)
