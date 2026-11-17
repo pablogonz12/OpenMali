@@ -4,7 +4,7 @@
 set -euo pipefail
 D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk; OUT=$V/out/native; mkdir -p "$OUT"
 cc -Wall -Werror -Wno-unused-function -I"$V/src" -I"$D/libkbase/include" -o "$OUT/t_query" "$V/tests/t_query.c" "$V/src/mali_event.c"
-"$OUT/t_query" "$OUT/t_query.jsonl"
+timeout -k 5 120 "$OUT/t_query" "$OUT/t_query.jsonl"
 DS="python3 -I $D/libkbase/tools/decode_stream.py"
 python3 -I "$V/tests/broken_ops.py" "$OUT/t_query.jsonl" "$OUT/t_query_bad.jsonl"; : > "$OUT/empty.jsonl"
 for a in 11 13; do

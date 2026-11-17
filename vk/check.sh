@@ -19,8 +19,10 @@ LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.js
 
 run() { # name, expected exit status, command...
    local name=$1 want=$2 out rc; shift 2
-   out=$(env "$@" 2>&1); rc=$?
-   if [ $rc -eq "$want" ]; then echo "ok    $name"; else echo "FAIL  $name (exit $rc, want $want)"; fail=1; fi
+   out=$(timeout -k 5 120 env "$@" 2>&1); rc=$?
+   if [ $rc -eq "$want" ]; then echo "ok    $name"
+   elif [ $rc -eq 124 ] || [ $rc -eq 137 ]; then echo "FAIL  $name TIMEOUT (120 s, exit $rc)"; fail=1
+   else echo "FAIL  $name (exit $rc, want $want)"; fail=1; fi
    if [ $verbose = 1 ] || [ $rc -ne "$want" ]; then echo "$out" | sed 's/^/        /'; fi
 }
 

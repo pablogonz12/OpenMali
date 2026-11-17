@@ -31,4 +31,4 @@ wait
 # shellcheck disable=SC2086
 c++ -o "$OUT/t_desc" "$OUT/t_desc.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor.o" "$OUT/mali_descriptor_lower.o" "$OUT/mali_pipeline_layout.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cd "$D/.."
-"$OUT/t_desc" "$V/shader" "$@"
+timeout -k 5 120 "$OUT/t_desc" "$V/shader" "$@"

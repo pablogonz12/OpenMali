@@ -31,4 +31,4 @@ wait
 c++ -o "$OUT/t_image" "$OUT/t_image.o" "$OUT/mali_bc.o" "$OUT/mali_format.o" "$OUT/mali_image.o" "$OUT/mali_buffer.o" "$OUT/mali_sampler.o" \
   "$OUT/mali_descriptor.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cd "$D/.."
-"$OUT/t_image" "$@"
+timeout -k 5 120 "$OUT/t_image" "$@"

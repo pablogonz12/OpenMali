@@ -72,4 +72,4 @@ if stale "$OUT/ref_uniform13"; then cc -std=gnu11 -O1 -I"$KB/include" -o "$OUT/r
 wait
 cd "$D/.."
 # The 5 s budget covers record + submit + decode + diff (everything after the build).
-exec python3 -I "$V/tests/cmp_cmd.py" "$OUT" "$KB/tools/decode_stream.py" "$(date +%s.%N)" "$@"
+exec timeout -k 5 120 python3 -I "$V/tests/cmp_cmd.py" "$OUT" "$KB/tools/decode_stream.py" "$(date +%s.%N)" "$@"

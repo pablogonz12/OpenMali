@@ -31,4 +31,4 @@ wait
 # shellcheck disable=SC2086
 c++ -o "$OUT/t_qpool" "$OUT/t_qpool.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor.o" "$OUT/mali_descriptor_lower.o" "$OUT/mali_pipeline_layout.o" "$OUT/mali_meta.o" "$OUT/mali_bc.o" "$OUT/mali_query_core.o" "$OUT/mali_event.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cd "$D/.."
-"$OUT/t_qpool" "$@"
+timeout -k 5 120 "$OUT/t_qpool" "$@"

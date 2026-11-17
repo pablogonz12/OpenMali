@@ -26,4 +26,4 @@ eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/tests/t_comp
 # shellcheck disable=SC2086
 c++ -o "$OUT/t_compile" "$OUT/t_compile.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor_lower.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cd "$D/.."
-"$OUT/t_compile" "$V/shader" "$@"
+timeout -k 5 120 "$OUT/t_compile" "$V/shader" "$@"

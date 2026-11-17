@@ -32,4 +32,4 @@ wait
 c++ -o "$OUT/t_bc" "$OUT/t_bc.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor.o" "$OUT/mali_descriptor_lower.o" "$OUT/mali_pipeline_layout.o" "$OUT/mali_meta.o" "$OUT/mali_bc.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cc -O1 -Wall -Wextra -Wno-unused-parameter -I$D/third_party/mesa/include -o "$OUT/t_bc_hw" $V/tests/t_bc_hw.c -lvulkan -lm -lm
 cd "$D/.."
-"$OUT/t_bc" "$@"
+timeout -k 5 120 "$OUT/t_bc" "$@"
