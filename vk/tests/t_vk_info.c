@@ -211,14 +211,14 @@ main(int argc, char **argv)
       const VkBool32 *b = (const VkBool32 *)((const char *)&f12 + 16);
       const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b),
                      mc = (unsigned)((const VkBool32 *)&f12.samplerMirrorClampToEdge - b),
-                     bda = (unsigned)((const VkBool32 *)&f12.bufferDeviceAddress - b),
+                     bda = (unsigned)((const VkBool32 *)&f12.bufferDeviceAddress - b), vmm = (unsigned)((const VkBool32 *)&f12.vulkanMemoryModel - b), vmd = (unsigned)((const VkBool32 *)&f12.vulkanMemoryModelDeviceScope - b),
                      di0 = (unsigned)((const VkBool32 *)&f12.runtimeDescriptorArray - b), di1 = (unsigned)((const VkBool32 *)&f12.shaderSampledImageArrayNonUniformIndexing - b),
                      di2 = (unsigned)((const VkBool32 *)&f12.descriptorBindingPartiallyBound - b), di3 = (unsigned)((const VkBool32 *)&f12.descriptorBindingSampledImageUpdateAfterBind - b),
                      di4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUpdateUnusedWhilePending - b),
                      s8 = (unsigned)((const VkBool32 *)&f12.storageBuffer8BitAccess - b), i8 = (unsigned)((const VkBool32 *)&f12.shaderInt8 - b),   /* t_vk_feat int8 */
                      sbl = (unsigned)((const VkBool32 *)&f12.scalarBlockLayout - b), ubs = (unsigned)((const VkBool32 *)&f12.uniformBufferStandardLayout - b); /* t_vk_feat scalar/ubostd */ /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == sbl || i == ubs || i == s8 || i == i8, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda || i == vmm || i == vmd || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == sbl || i == ubs || i == s8 || i == i8, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),

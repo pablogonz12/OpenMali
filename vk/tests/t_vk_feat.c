@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1436,6 +1436,35 @@ test_fsstore(void)
    return 1;
 }
 
+/* vulkanMemoryModel + vulkanMemoryModelDeviceScope: see memmodel.comp (4 workgroups of 64). */
+static VkBool32 g_mm;
+static int
+test_memmodel(void)
+{
+   if (!g_mm) { printf("{\"test\":\"memmodel\",\"skipped\":\"vulkanMemoryModel not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf;
+   if (!hbuf_create(&bf, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(bf.p, 0, 4096);
+   const VkDescriptorType ty[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "memmodel.comp.spv", 1, ty, &bf, 4)) return 0;
+   if (!g_fake) {
+      const uint32_t *a = (const uint32_t *)(const void *)bf.p;
+      int bad = 0;
+      for (int g = 0; g < 4; g++)
+         for (int i = 0; i < 64; i++) bad += a[8 + g * 64 + i] != 1000u + g + i;
+      CHECK(bad == 0, "%d wrong non-private results", bad);
+      CHECK(a[0] == 256, "relaxed device-scope atomicAdd counter %u expected 256", a[0]);
+      CHECK(a[1] == 4, "tickets %u expected 4", a[1]);
+      CHECK(a[2] == 4u * 1063u + 6u, "last-arriving workgroup summed %u expected %u", a[2], 4u * 1063u + 6u);
+      printf("{\"test\":\"memmodel\",\"total\":%u,\"ok\":true}\n", a[2]);
+   } else printf("{\"test\":\"memmodel\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   hbuf_destroy(&bf);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
 static VkPhysicalDevice g_pd;
@@ -1707,6 +1736,7 @@ main(int argc, char **argv)
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
+   g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
    g_i16 = f2.features.shaderInt16 && f11.storageBuffer16BitAccess;
    g_i8 = f12.shaderInt8 && f12.storageBuffer8BitAccess;
@@ -1721,7 +1751,8 @@ main(int argc, char **argv)
       .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
                                            .timelineSemaphore = f12.timelineSemaphore,
-      .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout};
+      .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
+      .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters};
@@ -1761,6 +1792,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
+   if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
 
    DeviceWaitIdle(dev);

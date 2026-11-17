@@ -1,0 +1,26 @@
+#version 450
+#extension GL_KHR_memory_scope_semantics : require
+#pragma use_vulkan_memory_model
+// R4-B2 vulkanMemoryModel (+DeviceScope): non-private stores made available/visible by workgroup barriers; device-scope ticket
+// (acquire/release atomic) so the last workgroup to finish sums every other workgroup's non-private results.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer A { uint counter; uint tickets; uint total; uint pad; uint msg[4]; uint o[256]; } a;
+shared uint last;
+void main() {
+   uint g = gl_WorkGroupID.x, i = gl_LocalInvocationIndex;
+   if (i == 0u) a.msg[g] = 1000u + g;
+   controlBarrier(gl_ScopeWorkgroup, gl_ScopeWorkgroup, gl_StorageSemanticsBuffer, gl_SemanticsAcquireRelease | gl_SemanticsMakeAvailable | gl_SemanticsMakeVisible);
+   a.o[g * 64u + i] = a.msg[g] + i;
+   atomicAdd(a.counter, 1u, gl_ScopeDevice, 0, gl_SemanticsRelaxed);
+   controlBarrier(gl_ScopeWorkgroup, gl_ScopeWorkgroup, gl_StorageSemanticsBuffer | gl_StorageSemanticsShared, gl_SemanticsAcquireRelease | gl_SemanticsMakeAvailable | gl_SemanticsMakeVisible);
+   if (i == 0u) {
+      uint t = atomicAdd(a.tickets, 1u, gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsAcquireRelease | gl_SemanticsMakeAvailable | gl_SemanticsMakeVisible);
+      last = t == 3u ? 1u : 0u;
+   }
+   controlBarrier(gl_ScopeWorkgroup, gl_ScopeWorkgroup, gl_StorageSemanticsShared, gl_SemanticsAcquireRelease);
+   if (last == 1u && i == 0u) {
+      uint s = 0u;
+      for (uint h = 0u; h < 4u; h++) s += a.o[h * 64u + 63u];
+      a.total = s;
+   }
+}

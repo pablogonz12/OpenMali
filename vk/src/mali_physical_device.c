@@ -200,6 +200,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderClipDistance = true,                                       /* t_vk_feat clip */
       .shaderImageGatherExtended = true,                                /* t_vk_feat gather */
       .fragmentStoresAndAtomics = true,                                 /* t_vk_feat fsstore */
+      .vulkanMemoryModel = true, .vulkanMemoryModelDeviceScope = true,  /* t_vk_feat memmodel */
       .shaderInt64 = true,                                              /* t_vk_feat int64 */
       .shaderInt16 = true, .storageBuffer16BitAccess = true,            /* t_vk_feat int16 */
       .shaderInt8 = true, .storageBuffer8BitAccess = true,              /* t_vk_feat int8 */
