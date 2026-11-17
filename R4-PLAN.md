@@ -112,3 +112,4 @@ Order of work in this batch: 1, 2, 3.
 - DONE shaderImageGatherExtended: `t_vk_feat --only gather` on Poco: textureGatherOffset with a RUN-TIME offset (3 quadrants, different offsets) and textureGatherOffsets (4 distinct offsets; texel c = base + offsets[c]) on a 4x4 R8 texture, all match. No compiler change needed. DXVK_MISSING 11.
 - DONE fragmentStoresAndAtomics: `t_vk_feat --only fsstore` on Poco: full-screen FS stores i+1 to an SSBO and an R32_UINT storage image per pixel, atomicAdd counter == covered pixels (65536), atomicMax == last pixel; 0 wrong SSBO elements / image texels. No driver change needed. DXVK_MISSING 10.
 - R4-B2 DONE: vulkanMemoryModel + DeviceScope (t_vk_feat memmodel passes on Poco); DXVK_MISSING 9
+- R4-B2 recheck: dEQP daily sample 272/136/971/0 (see vk/deqp/TRIAGE.md); sampleRateShading, inlineUniformBlock, dualSrcBlend, multiViewport, fillModeNonSolid NOT done (need new RSD/compiler work, no existing hooks); DXVK_MISSING 9

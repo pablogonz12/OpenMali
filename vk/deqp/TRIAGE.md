@@ -78,3 +78,7 @@ Probe `^dEQP-VK.draw\.` 300 cases: 23 pass / 9 fail / 267 NS / 1 crash. Fails: D
 Baseline 270 pass / 134 fail / 975 NS / 0 crash -> **272 pass / 135 fail / 972 NS / 0 crash / 2 other**. Per-case diff: **0 regressions**.
 Flips: sampler mirror_clamp_to_edge NS->Pass, renderpass.suballocation.simple.color Fail->Pass; 2 NS->Fail from imageCubeArray now exposed
 (`render_to_image.{core,dedicated_allocation}.cube_array.*.r32_uint_s8_uint`: the D32S8 depth/stencil attachment gap already listed above, not a cube-array defect). Build note: aarch64 needs `MESA_BUILD=third_party/build-vk-a64-glibc MALI_TARGET=a64-glibc ./build.sh` (default MESA_BUILD makes an x86 .so and dEQP reports INCOMPATIBLE_DRIVER).
+
+## R4-B2 recheck (2026-11-17, after clip/drawparams/gather/fsstore/memmodel)
+Full daily sample: 272 pass / 136 fail / 971 NS / 0 crash / 2 other. Baseline 272/135/972/0. The one change: renderpass.depth_stencil_write_conditions.depth_demote_write_d24_unorm went NS -> Fail (a feature gate now opens it; not a regression of a passing case).
+An intermediate run had 11 depth.compare_ops crashes: nir_split_per_member_structs ran on every VS (commit 2560c16). It now runs only for a VS with ClipDistance (compile v14).
