@@ -1,0 +1,62 @@
+MISSING core.depthBiasClamp
+MISSING core.depthClamp
+MISSING core.dualSrcBlend
+MISSING core.fillModeNonSolid
+MISSING core.fragmentStoresAndAtomics
+MISSING core.fullDrawIndexUint32
+MISSING core.imageCubeArray
+MISSING core.independentBlend
+MISSING core.multiDrawIndirect
+MISSING core.multiViewport
+MISSING core.occlusionQueryPrecise
+MISSING core.robustBufferAccess
+MISSING core.sampleRateShading
+MISSING core.samplerAnisotropy
+MISSING core.shaderClipDistance
+MISSING core.shaderCullDistance
+MISSING core.shaderImageGatherExtended
+MISSING core.shaderInt16
+MISSING core.shaderInt64
+MISSING core.shaderSampledImageArrayDynamicIndexing
+ok      core.textureCompressionBC
+MISSING core.geometryShader
+MISSING 11.shaderDrawParameters
+MISSING 11.storageBuffer16BitAccess
+MISSING 12.bufferDeviceAddress
+MISSING 12.descriptorIndexing
+MISSING 12.shaderSampledImageArrayNonUniformIndexing
+MISSING 12.descriptorBindingSampledImageUpdateAfterBind
+MISSING 12.descriptorBindingUpdateUnusedWhilePending
+MISSING 12.descriptorBindingPartiallyBound
+MISSING 12.runtimeDescriptorArray
+MISSING 12.storageBuffer8BitAccess
+ok      12.hostQueryReset
+MISSING 12.samplerMirrorClampToEdge
+MISSING 12.scalarBlockLayout
+MISSING 12.shaderInt8
+ok      12.timelineSemaphore
+MISSING 12.uniformBufferStandardLayout
+MISSING 12.vulkanMemoryModel
+MISSING 13.inlineUniformBlock
+MISSING 13.computeFullSubgroups
+ok      13.dynamicRendering
+ok      13.maintenance4
+MISSING 13.shaderDemoteToHelperInvocation
+MISSING 13.shaderZeroInitializeWorkgroupMemory
+MISSING 13.subgroupSizeControl
+ok      13.synchronization2
+ok      ext VK_KHR_swapchain
+MISSING ext VK_EXT_depth_clip_enable
+MISSING ext VK_EXT_robustness2
+MISSING ext VK_KHR_maintenance5
+MISSING ext VK_KHR_maintenance6
+MISSING ext VK_KHR_load_store_op_none
+MISSING ext VK_EXT_extended_dynamic_state3
+MISSING ext VK_EXT_vertex_attribute_divisor
+MISSING ext VK_EXT_memory_budget
+MISSING ext VK_KHR_calibrated_timestamps
+MISSING ext VK_EXT_custom_border_color
+MISSING ext VK_EXT_graphics_pipeline_library
+MISSING ext VK_KHR_pipeline_library
+summary: 41/47 required features missing, 12/13 DXVK extensions missing
+{"test":"t_dxvk_caps","pass":true,"missing_features":41,"missing_exts":12}
