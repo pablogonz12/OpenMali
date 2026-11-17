@@ -159,6 +159,11 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
    }
    if (!cmd->gfx.push_base[0])
       cmd->gfx.push_base[0] = 32;   /* compile defaults: VS push block at FAU byte 32, FS at 0 */
+   if (g_res.pipeline_dyn) {
+      const struct vk_dynamic_graphics_state *pd;
+      if (!g_res.pipeline_dyn(p, &pd))
+         vk_cmd_set_dynamic_graphics_state(&cmd->vk, pd);
+   }
    cmd->have_gfx = true;
 }
 
@@ -293,18 +298,66 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    d->instance_count = inst;
    d->first_vertex = first;
    d->first_instance = first_inst;
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS)) {
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS) && dyn->vp.viewport_count) {
       const VkViewport *v = &dyn->vp.viewports[0];
       d->vp[0] = v->x; d->vp[1] = v->y; d->vp[2] = v->width; d->vp[3] = v->height; d->vp[4] = v->minDepth; d->vp[5] = v->maxDepth;
    } else {
       d->vp[0] = (float)a[0]; d->vp[1] = (float)a[1]; d->vp[2] = (float)a[2]; d->vp[3] = (float)a[3];
       d->vp[4] = 0.0f; d->vp[5] = 1.0f;
    }
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_SCISSORS)) {
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_SCISSORS) && dyn->vp.scissor_count) {
       const VkRect2D *s = &dyn->vp.scissors[0];
       d->sc[0] = s->offset.x; d->sc[1] = s->offset.y; d->sc[2] = (int32_t)s->extent.width; d->sc[3] = (int32_t)s->extent.height;
    } else {
       memcpy(d->sc, a, sizeof d->sc);
+   }
+   /* R4: effective fixed-function state (pipeline statics + vkCmdSet*), see mali_CmdBindPipeline */
+   struct mali_fixed *x = &d->fx;
+   x->set = true;
+   x->cull = (dyn->rs.cull_mode & VK_CULL_MODE_FRONT_BIT ? 1 : 0) | (dyn->rs.cull_mode & VK_CULL_MODE_BACK_BIT ? 2 : 0);
+   x->front_ccw = dyn->rs.front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
+   x->depth_clamp = dyn->rs.depth_clamp_enable;
+   x->depth_clip = vk_rasterization_state_depth_clip_enable(&dyn->rs);
+   x->bias_en = dyn->rs.depth_bias.enable;
+   x->bias_const = dyn->rs.depth_bias.constant_factor;
+   x->bias_slope = dyn->rs.depth_bias.slope_factor;
+   x->bias_clamp = dyn->rs.depth_bias.clamp;
+   x->line_width = dyn->rs.line.width;
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_TEST_ENABLE))
+      d->gfx.depth_test = dyn->ds.depth.test_enable;
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_WRITE_ENABLE))
+      d->gfx.depth_write = dyn->ds.depth.write_enable;
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_COMPARE_OP))
+      d->gfx.depth_func = dyn->ds.depth.compare_op;
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+      switch (dyn->ia.primitive_topology) {
+      case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: d->gfx.prim = 1; break;
+      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: d->gfx.prim = 2; break;
+      case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: d->gfx.prim = 4; break;
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: d->gfx.prim = 8; break;
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: d->gfx.prim = 10; break;
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN: d->gfx.prim = 12; break;
+      default: unsupported(cmd, "dynamic topology");
+      }
+   }
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE))
+      d->gfx.prim_restart = dyn->ia.primitive_restart_enable;
+   /* colour attachment 0 blend */
+   const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
+   x->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cb->blend_enable;
+   x->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cb->write_mask : 0xf;
+   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & 1))
+      x->wmask = 0;
+   x->src_c = cb->src_color_blend_factor; x->dst_c = cb->dst_color_blend_factor;
+   x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
+   x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
+   memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+   if (dyn->cb.logic_op_enable || dyn->rs.rasterizer_discard_enable)
+      unsupported(cmd, dyn->cb.logic_op_enable ? "logic op" : "rasterizer discard");
+   if (x->blend_en) {
+      uint32_t eq; unsigned cm;
+      if (mali_blend_equation(x, &eq, &cm))
+         unsupported(cmd, "blend equation (fixed function)");
    }
 }
 

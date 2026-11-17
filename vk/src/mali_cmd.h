@@ -39,6 +39,8 @@ struct mali_cmd_res_ops {
    int (*shader)(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *va);
    /* VkPipeline (compute) -> compiled shader + binary VA. 0 = ok. */
    int (*compute)(VkPipeline p, const struct mali_compiled **c, uint64_t *va);
+   /* R4: the pipeline's static graphics state (applied to the command buffer at bind). */
+   int (*pipeline_dyn)(VkPipeline p, const struct vk_dynamic_graphics_state **out);
 };
 void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
 void mali_cmd_set_hw(const struct mali_hw *hw);   /* copied; NULL clears. Without it submit returns VK_ERROR_FEATURE_NOT_PRESENT */
