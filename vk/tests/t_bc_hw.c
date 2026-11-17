@@ -112,6 +112,61 @@ int main(void)
    mkbuf(BCV_NBLOCKS * 16, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &stg, &stgm, &stgp);
    mkbuf(BCG_NTEXELS * 8, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &out, &outm, &outp);
 
+   if (getenv("BC_RGBA")) {   /* bisect: plain RGBA8 image, copy + compute texelFetch, no decode */
+      VkBuffer sb; VkDeviceMemory sm_; void *sp;
+      mkbuf(300 * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &sb, &sm_, &sp);
+      uint32_t *pw = sp; for (unsigned i = 0; i < 300; i++) pw[i] = 0x80000000u | (i * 0x010203u & 0xffffffu);
+      VkImage img; VkDeviceMemory imm; VkImageView iv;
+      CK(vkCreateImage(dev, &(VkImageCreateInfo){ .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .extent = { BCV_W, BCV_H, 1 }, .mipLevels = BCV_LEVELS, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED }, NULL, &img));
+      VkMemoryRequirements mr; vkGetImageMemoryRequirements(dev, img, &mr);
+      CK(vkAllocateMemory(dev, &(VkMemoryAllocateInfo){ .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+         .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) }, NULL, &imm));
+      CK(vkBindImageMemory(dev, img, imm, 0));
+      CK(vkCreateImageView(dev, &(VkImageViewCreateInfo){ .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, BCV_LEVELS, 0, 1 } }, NULL, &iv));
+      VkDescriptorSet ds;
+      CK(vkAllocateDescriptorSets(dev, &(VkDescriptorSetAllocateInfo){ .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl }, &ds));
+      VkDescriptorImageInfo dii = { smp, iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+      VkDescriptorBufferInfo dbi = { out, 0, VK_WHOLE_SIZE };
+      vkUpdateDescriptorSets(dev, 2, (VkWriteDescriptorSet[]){
+         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &dii },
+         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &dbi } }, 0, NULL);
+      memset(outp, 0xEE, BCG_NTEXELS * 8);
+      VkCommandBuffer cb;
+      CK(vkAllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp,
+         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 }, &cb));
+      CK(vkBeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){ .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }));
+      VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img,
+         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, BCV_LEVELS, 0, 1 } };
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+      VkBufferImageCopy rg[2] = {
+         { .bufferOffset = 0, .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { BCV_W, BCV_H, 1 } },
+         { .bufferOffset = 240 * 4, .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1 }, .imageExtent = { BCV_W / 2, BCV_H / 2, 1 } } };
+      vkCmdCopyBufferToImage(cb, sb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, rg);
+      ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; ib.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+      vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &ds, 0, NULL);
+      for (unsigned lv = 0; lv < 2; lv++) {
+         uint32_t pc[5] = { BCV_W >> lv, BCV_H >> lv, lv, getenv("BC_KIND") ? (unsigned)atoi(getenv("BC_KIND")) : 0u, lv ? 240 : 0 };
+         vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 20, pc);
+         vkCmdDispatch(cb, ((lv ? 60 : 240) + 63) / 64, 1, 1);
+      }
+      VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT };
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+      CK(vkEndCommandBuffer(cb));
+      CK(vkQueueSubmit(q, 1, &(VkSubmitInfo){ .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb }, VK_NULL_HANDLE));
+      CK(vkQueueWaitIdle(q));
+      const uint32_t *got = outp; unsigned bad = 0;
+      for (unsigned i = 0; i < 300; i++) if (got[i * 2] != (getenv("BC_KIND") && atoi(getenv("BC_KIND")) == 10 ? 0x12345678u + (i < 240 ? i : i - 240) : pw[i])) { if (!bad) printf("  first i=%u got %08x exp %08x\n", i, got[i * 2], pw[i]); bad++; }
+      if (getenv("BC_DUMP")) for (unsigned i = 0; i < 300; i++) if (got[i * 2]) printf("   ok? i=%u got %08x exp %08x\n", i, got[i * 2], pw[i]);
+      printf("t_bc_hw RGBA8 plain: %s bad %u/300 (got[0..3] %08x %08x %08x %08x)\n", bad ? "FAIL" : "PASS", bad, got[0], got[2], got[4], got[6]);
+      return bad != 0;
+   }
    int fails = 0, nskip = 0;
    for (unsigned i = 0; i < 12; i++) {
       const struct bcg_px *g = &bcg_px[i];

@@ -9,6 +9,8 @@ import json, os, re, subprocess, sys, time, datetime, hashlib, tarfile, collecti
 
 QD = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.realpath(os.path.join(QD, "..", "..", ".."))
+if not os.path.isdir(os.path.join(ROOT, "scripts", "quick")):   # driver/ may be a symlink: fall back to the cwd checkout
+    ROOT = os.getcwd()
 sys.path.insert(0, os.path.join(ROOT, "scripts", "quick"))
 import quick                      # noqa: E402  (Phone, ENVV, helpers; its main() is not run on import)
 

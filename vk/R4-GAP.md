@@ -114,4 +114,4 @@ Features advertised (optimal tiling only): SAMPLED, FILTER_LINEAR, BLIT_SRC, TRA
 - Hardware test queue: `t_bc_hw` (standalone Vulkan app, run with the driver ICD qdirect-style on CMF and Poco, `BC_DEV` selects the device): 12 formats x 2 mips of a 20x12 image, golden pixels
   from Mesa; PASS = max diff <= 1 (8-bit) / 2 half ulps, sRGB <= 2. Exit 77 = BC not advertised. Passes on Intel Xe2 (native sanity check of the golden: 0 failed). Pending: run on Mali after wiring.
 
-(2026-11-17) CMF run: BC1/BC7 ran clean but probe read zeros; see R4-PLAN.md R4-M7 status.
+(2026-11-17) CMF: all 12 BC formats PASS on hardware (t_bc_hw); see R4-PLAN.md R4-M7 status. Open: texelFetch with dynamic lod returns 0 in compute on CMF.
