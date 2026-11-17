@@ -50,6 +50,9 @@ def adb_live():
     return live
 
 
+_ROUTE_MISS = {}
+
+
 def wireless_routes(dev):
     out = []
     for k in ("wireless", "address"):
@@ -77,7 +80,11 @@ def resolve(dev, connect=False):
     if t or not connect:
         return t
     for r in routes:
-        sh(["adb", "connect", r], 20)
+        if time.time() - _ROUTE_MISS.get(r, 0) < 120:        # unreachable stored route (e.g. the phone moved to another subnet): soft miss
+            continue
+        rc, o = sh(["adb", "connect", r], 6)
+        if rc != 0 or not re.search(r"connected to", o or ""):
+            _ROUTE_MISS[r] = time.time()
         t = pick()
         if t:
             return t
@@ -121,8 +128,9 @@ def run_watched(cmd, timeout, alive, grace=45, poll=5, **kw):
 
 
 def store_route(alias, addr, path=None):
-    """idempotently add `addr` to the `wireless` list of device `alias` in devices.toml (text edit: comments/other entries untouched).
-    -> True if the file changed."""
+    """keep the stored `<ip>:5555` route of device `alias` in devices.toml equal to `addr` (the phone's CURRENT wlan0 address): an old
+    `ip:5555` entry in `wireless`/`address` is replaced, other routes (other ports) stay, none yet -> a `wireless` line is added.
+    Text edit (comments and other entries untouched), atomic. -> True if the file changed."""
     path = path or devices_path()
     lines = open(path).read().split("\n")
     start = next((i for i, l in enumerate(lines) if re.match(r'\s*alias\s*=\s*"%s"' % re.escape(alias), l)), None)
@@ -130,18 +138,32 @@ def store_route(alias, addr, path=None):
         return False
     b0 = max((i for i in range(start + 1) if lines[i].lstrip().startswith("[[")), default=0)
     b1 = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[[")), len(lines))
+    changed, seen = False, False
     for i in range(b0, b1):
-        m = re.match(r'(\s*wireless\s*=\s*)(.*?)(\s*#.*)?$', lines[i])
-        if m:
-            if addr in m.group(2):
-                return False
-            v = m.group(2).strip()
-            new = v[:-1].rstrip() + (", " if v[:-1].strip() not in ("[", "") else "") + f'"{addr}"]' if v.startswith("[") else f'["{v.strip(chr(34))}", "{addr}"]'
-            lines[i] = m.group(1) + new + (m.group(3) or "")
-            break
-    else:
-        last = max(i for i in range(b0, b1) if lines[i].strip())
-        lines.insert(last + 1, f'wireless = ["{addr}"]   # added by farmd (adb tcpip route)')
+        m = re.match(r'(\s*(wireless|address)\s*=\s*)(\[[^\]]*\]|"[^"]*")(\s*#.*)?$', lines[i])
+        if not m or not any(x.endswith(":5555") for x in re.findall(r'"([^"]*)"', m.group(3))):
+            continue
+        vals = re.findall(r'"([^"]*)"', m.group(3))
+        keep = [x for x in vals if not x.endswith(":5555")]
+        new = keep + ([] if seen else [addr])
+        seen = True
+        if new == vals:
+            continue
+        v = ('["' + '", "'.join(new) + '"]') if m.group(2) == "wireless" or len(new) != 1 else f'"{new[0]}"'
+        lines[i] = m.group(1) + v + (m.group(4) or "")
+        changed = True
+    if not seen:
+        wl = next((i for i in range(b0, b1) if re.match(r"\s*wireless\s*=", lines[i])), None)
+        if wl is not None:
+            m = re.match(r'(\s*wireless\s*=\s*)(\[[^\]]*\]|"[^"]*")(\s*#.*)?$', lines[wl])
+            vals = re.findall(r'"([^"]*)"', m.group(2)) if m else []
+            lines[wl] = (m.group(1) if m else "wireless = ") + '["' + '", "'.join(vals + [addr]) + '"]' + ((m.group(3) or "") if m else "")
+        else:
+            last = max(i for i in range(b0, b1) if lines[i].strip())
+            lines.insert(last + 1, f'wireless = ["{addr}"]   # added by farmd (adb tcpip route; follows the phone\'s wlan0 IP)')
+        changed = True
+    if not changed:
+        return False
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
     with os.fdopen(fd, "w") as f:
         f.write("\n".join(lines))
@@ -206,7 +228,7 @@ def job_verdict(job):
     if any(p["state"] in ("pending", "running") for p in parts):
         return "pending"
     vs = {p.get("verdict", "error") for p in parts}
-    for v in ("error", "fail"):
+    for v in ("error", "invalid", "fail"):
         if v in vs:
             return v
     return "pass"
@@ -234,6 +256,21 @@ def read_tsv(path):
             if len(x) >= 2 and x[0]:
                 rows[x[0]] = "Pass" if x[1] in PASSLIKE else x[1]
     return rows
+
+
+def load_flaky():
+    """known-flaky cases (tools/farm/known-flaky.txt: `case  # evidence`): not counted as new failures, still reported as flaky_ignored"""
+    try:
+        return {l.split("#")[0].strip() for l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "known-flaky.txt")) if l.split("#")[0].strip()}
+    except OSError:
+        return set()
+
+
+def ns_to_fail(base, cur, cases=None):
+    """cases that were NotSupported in the baseline and now run and fail (Fail/Crash/...): invisible to new_failures, which only lists
+    baseline passes. -> [[case, status]]"""
+    cases = cases if cases is not None else sorted(set(base) | set(cur))
+    return [[c, cur[c]] for c in cases if base.get(c) == "NotSupported" and cur.get(c) not in (None, "NotSupported", "Pass", "Missing")]
 
 
 def compare(base, cur, cases=None):

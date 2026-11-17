@@ -248,8 +248,49 @@ class T(unittest.TestCase):
         self.assertFalse(L.store_route("dev-b", "198.51.100.8:5555", p))
         self.assertTrue(L.store_route("dev-b", "198.51.100.9:5555", p))
         _, devs = L.load_devices()
-        self.assertEqual(L.wireless_routes(devs["dev-b"]), ["198.51.100.8:5555", "198.51.100.9:5555"])
+        self.assertEqual(L.wireless_routes(devs["dev-b"]), ["198.51.100.9:5555"])    # follows the CURRENT ip: replaced, not appended
         self.assertEqual(L.wireless_routes(devs["dev-a"]), [])
+        open(p, "a").write('\n[[device]]\nalias = "dev-c"\nclass = "v10"\nserial = "SERIAL-C"\nlock = "c"\nbaseline = "c"\naddress = "198.51.100.20:5555"   # keep\nwireless = ["203.0.113.4:7777", "198.51.100.21:5555"]\n')
+        self.assertTrue(L.store_route("dev-c", "198.51.100.22:5555", p))
+        _, devs = L.load_devices()
+        self.assertEqual(L.wireless_routes(devs["dev-c"]), ["203.0.113.4:7777", "198.51.100.22:5555"])
+        self.assertIn("# keep", open(p).read())
+        self.assertFalse(L.store_route("dev-c", "198.51.100.22:5555", p))
+
+    def test_unreachable_stored_route_is_a_soft_miss(self):
+        calls = []
+        L._ROUTE_MISS.clear()
+        L.sh = lambda cmd, timeout, **kw: calls.append(cmd) or (0, "failed to connect to 203.0.113.50:5555")
+        L.adb_live = lambda: {}
+        dev = {"serial": "S9", "wireless": ["203.0.113.50:5555"]}
+        self.assertIsNone(L.resolve(dev, connect=True))                  # no exception
+        self.assertIsNone(L.resolve(dev, connect=True))
+        self.assertEqual(len(calls), 1)                                  # second attempt skipped (miss cached)
+        L._ROUTE_MISS.clear()
+
+    def test_invalid_run_is_requeued_not_pass_or_fail(self):
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_SO_SWAP=1")
+        self.attach("dev-a")
+        self.farmd()
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual((p["state"], p["attempts"]), ("pending", 1))
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pending")
+        self.assertTrue(os.path.exists(self.d + f"/state/runs/{jid}-v11.invalid-1.json"))
+        self.assertFalse(os.path.exists(self.d + f"/state/runs/{jid}-v11.json"))
+        self.farmd()
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["verdict"], "pass")
+
+    def test_ns_to_fail_reported(self):
+        base = {"a": "Pass", "b": "NotSupported", "c": "NotSupported", "d": "Fail"}
+        cur = {"a": "Pass", "b": "Fail", "c": "NotSupported", "d": "Fail"}
+        self.assertEqual(L.ns_to_fail(base, cur), [["b", "Fail"]])
+        self.assertEqual(L.compare(base, cur)[1], [])                    # new_failures alone would miss it
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_NS2F=3")
+        self.attach("dev-a")
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertEqual(len(run["ns_to_fail"]), 3)
+        self.assertIn("3 NotSupported->Fail", run["notes"])
 
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)

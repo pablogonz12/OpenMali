@@ -5,7 +5,7 @@
 --fake (or MALI_FARM_FAKE=1): no adb, no build, no phone: attached devices = aliases listed in <state>/fake-attached,
 suites return synthetic results (env FAKE_FAIL=1 / FAKE_REGRESS=N / FAKE_FIX=N steer them). For tests of queue/resume/JSON logic."""
 import sys; sys.dont_write_bytecode = True
-import argparse, hashlib, json, os, shutil, subprocess, sys, threading, time, traceback
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, threading, time, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -54,7 +54,7 @@ class Farm:
         self.last_try = {}
         self.cool = {}
         self.last_health, self.last_wl = {}, {}
-        self.stop_reason, self.last_pw = {}, {}
+        self.stop_reason, self.last_pw, self.last_mdns = {}, {}, {}
 
     # ---------- devices
     def adb(self, dev, *a, timeout=20):
@@ -64,7 +64,7 @@ class Farm:
     def phone_env(self, dev, extra=None):
         """env for q* scripts / valrun / qdeqp: they resolve the transport from ADB_SERIAL_<LOCK>"""
         t = self.tid.get(dev["alias"]) or dev["serial"]
-        e = dict(os.environ, ANDROID_SERIAL=t, ADB_SERIAL=t)
+        e = dict(os.environ, ANDROID_SERIAL=t, ADB_SERIAL=t, QSAFE_HELD=dev["lock"])      # farmd holds the phone lock: children run under it
         e["ADB_SERIAL_" + dev["lock"].upper()] = t
         e.update(extra or {})
         return e
@@ -116,9 +116,29 @@ class Farm:
         st, why = gate.check(dev["lock"], h, self.thresholds(dev))
         return st, why, h
 
+    def adopt_route(self, dev, addr):
+        """make `addr` (<current ip>:5555) the stored route: devices.toml + the in-memory entry. -> True if it changed"""
+        if not L.store_route(dev["alias"], addr):
+            return False
+        dev.update(L.load_devices()[1][dev["alias"]])          # re-read the edited entry
+        log(f"{dev['alias']}: stored wireless route {addr}")
+        return True
+
+    def refresh_route_mdns(self, dev):
+        """host-side only (no traffic to the phone): when its mDNS entry shows another IP than the stored :5555 route, follow it"""
+        if self.fake or dev.get("transport", "usb+wireless") == "usb":
+            return
+        rc, m = L.sh(["adb", "mdns", "services"], 15)
+        for l in m.splitlines():
+            if dev["serial"] in l and "_adb-tls-connect" in l:
+                ip = l.split()[-1].rsplit(":", 1)[0]
+                if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip) and f"{ip}:5555" not in L.wireless_routes(dev) and L.wireless_routes(dev):
+                    self.adopt_route(dev, f"{ip}:5555")
+                return
+
     def ensure_wireless(self, dev):
-        """one-time, idempotent route setup while the phone is on USB and idle: `adb tcpip 5555` (only if not already set), read the
-        wlan0 IP, `adb connect`, store <ip>:5555 in devices.toml. Wireless-debugging pairing is the owner's. Never for transport = "usb"."""
+        """while the phone is on USB and idle: `adb tcpip 5555` (only if not already set), read the wlan0 IP, `adb connect`, and keep the
+        stored <ip>:5555 route equal to the CURRENT IP (replaced when it changes). Wireless-debugging pairing is the owner's job."""
         if self.fake or dev.get("transport", "usb+wireless") != "usb+wireless" or self.tid.get(dev["alias"]) != dev["serial"] or self.is_disabled(dev):
             return
         lock = L.PhoneLock(dev, self.fake)
@@ -134,10 +154,8 @@ class Farm:
             if f[0].strip() != "5555":
                 self.adb(dev, "tcpip", "5555", timeout=20)
             if addr not in L.wireless_routes(dev):
-                L.sh(["adb", "connect", addr], 20)
-                if L.store_route(dev["alias"], addr):
-                    dev["wireless"] = L.wireless_routes(dev) + [addr] if "wireless" not in dev else L.wireless_routes({"wireless": dev["wireless"]}) + [addr]
-                    log(f"{dev['alias']}: stored wireless route {addr}")
+                L.sh(["adb", "connect", addr], 6)
+                self.adopt_route(dev, addr)
             w = {"tcpip_addr": addr}
             rc, m = L.sh(["adb", "mdns", "services"], 15)
             for l in m.splitlines():
@@ -178,6 +196,9 @@ class Farm:
                 continue
             if st.get("status") == "disabled":
                 self.last_health[al] = 0
+            if time.time() - self.last_mdns.get(al, 0) >= 60:
+                self.last_mdns[al] = time.time()
+                self.refresh_route_mdns(d)
             if al in att:
                 busy = al in self.threads
                 if not busy and time.time() - self.last_health.get(al, 0) >= (0 if self.fake else 60):
@@ -188,7 +209,7 @@ class Farm:
                             log(f"device {al} gated: {gs} {why}")
                         self.set_dstate(al, gs, why, batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"))
                         continue
-                    if time.time() - self.last_wl.get(al, 0) > 600:
+                    if time.time() - self.last_wl.get(al, 0) > 300:
                         self.last_wl[al] = time.time()
                         self.ensure_wireless(d)
                     if st.get("status") != "up":
@@ -272,7 +293,7 @@ class Farm:
         """older commits predate the transport/env hooks of valrun.sh and qdeqp.py: install the farm checkout's copy of those two
         harness scripts into the scratch tree when the hook is missing (the code under test is untouched)"""
         base = os.path.dirname(os.path.dirname(HERE))
-        for rel, hook in (("vk/tests/valrun.sh", "dev-serial"), ("vk/deqp/qdeqp.py", "health_gate"), ("tools/dev-serial", "ADB_SERIAL")):
+        for rel, hook in (("vk/tests/valrun.sh", "VAL_SO_SHA256"), ("vk/deqp/qdeqp.py", "QDEQP_SO_SHA256"), ("tools/dev-serial", "ADB_SERIAL")):
             dst, src = os.path.join(tree, rel), os.path.join(base, rel)
             if os.path.exists(src) and (not os.path.exists(dst) or hook not in open(dst).read()):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -381,8 +402,27 @@ class Farm:
                 return "stop"
         return ok
 
+    def verify_so(self, job, dev, path):
+        """sha256 of the driver .so ON THE PHONE == the job's so_sha256? -> (ok, got)"""
+        if self.fake:
+            return True, job.get("so_sha256")
+        rc, o = self.adb(dev, "shell", f"sha256sum {path} 2>/dev/null", timeout=30)
+        f = o.split()
+        got = f[0] if f else None
+        return got == job.get("so_sha256"), got
+
+    def fake_swap(self, job):
+        """test hook FAKE_SO_SWAP=1: the first run of the job finds a foreign .so on the phone"""
+        flag = os.path.join(L.state_dir(), "fake-swapped-" + job["id"])
+        if "FAKE_SO_SWAP=1" in job["env"].split() and not os.path.exists(flag):
+            open(flag, "w").close()
+            return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (fake)"}
+
     def suite_smoke(self, job, dev):
         env = job["env"]
+        sw = self.fake_swap(job) if self.fake else None
+        if sw:
+            return sw
         if self.fake:
             bad = "FAKE_FAIL=1" in env
             return {"verdict": "fail" if bad else "pass", "counts": {"tests": 3, "failed": 1 if bad else 0},
@@ -392,9 +432,14 @@ class Farm:
         tree = self.tree(job["id"])
         self.harness(tree)
         rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20"], 340, lambda: self.alive(dev),
-                                env=self.phone_env(dev, {"PHONE": dev["lock"]}))
+                                env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
         if rc == 125:
             return {"lost": True}
+        if rc == 77:
+            return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
+        ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
+        if not ok_s:
+            return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]})"}
         recs = []
         for l in out.splitlines():
             if l.startswith("{"):
@@ -417,6 +462,9 @@ class Farm:
         if base is None:
             return {"verdict": "error", "notes": "no baseline TSV for this device in the commit or main"}
         cases = sorted(base)
+        sw = self.fake_swap(job) if self.fake else None
+        if sw:
+            return sw
         if self.fake:
             cur = dict(base)
             env = job["env"]
@@ -428,6 +476,9 @@ class Farm:
             for c in fixes:
                 cur[c] = "Pass"
             rc, note = 0, "fake"
+            n2f = int(next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_NS2F=")), 0))
+            for c in [c for c in cases if base[c] == "NotSupported"][:n2f]:
+                cur[c] = "Fail"
             if "FAKE_UNPLUG=1" in env.split():                   # test hook: charger removed during the run
                 L.write_json(os.path.join(L.state_dir(), f"fake-health-{dev['lock']}.json"), {"powered": False})
                 rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
@@ -445,10 +496,17 @@ class Farm:
             if not os.path.exists(listf):
                 return {"verdict": "error", "notes": "no lists/daily-sample.txt"}
             tmo = int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400"))
+            run_id = job["id"]
+            so_phone = f"/storage/emulated/0/Download/qdeqp/libvulkan_mali.{run_id}.so"
             rc, out = L.run_watched([sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"), dev["lock"], listf, "--chunk", "300"],
-                                    tmo, lambda: self.alive(dev), cwd=shim, env=self.phone_env(dev, {"QDEQP_ENV": job["env"]}))
+                                    tmo, lambda: self.alive(dev), cwd=shim, env=self.phone_env(dev, {"QDEQP_ENV": job["env"], "QDEQP_RUN": run_id, "QDEQP_SO_SHA256": job.get("so_sha256") or ""}))
             if rc == 125:
                 return {"lost": True}
+            if rc != 75 and rc != 124:                                   # driver on the phone must still be this job's build
+                ok_s, got = (rc != 76) and self.verify_so(job, dev, so_phone) or (False, "changed mid-run")
+                self.adb(dev, "shell", f"rm -f {so_phone}")
+                if not ok_s:
+                    return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
             note = out.strip()[-200:]
             if rc == 75:
                 return {"gated": True}
@@ -461,12 +519,17 @@ class Farm:
             if not cur:
                 return {"verdict": "error", "counts": {"total": len(cases)}, "notes": f"qdeqp produced no results (rc={rc}): {note}"}
         counts, nf, npass = L.compare(base, cur, cases)
+        n2f = L.ns_to_fail(base, cur, cases)
+        flaky = L.load_flaky()
+        ignored = [x for x in nf if x[0] in flaky]
+        nf = [x for x in nf if x[0] not in flaky]
         missing = counts.get("Missing", 0)
         verdict = "fail" if nf else ("error" if missing or rc not in (0, 1) and not cur else "pass")
         if rc == 124:
             verdict = "error" if not nf else "fail"
-        return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass,
-                "notes": f"baseline from {bref}; qdeqp rc={rc}; {note if verdict != 'pass' else ''}".strip()}
+        extra = (f"; {len(n2f)} NotSupported->Fail" if n2f else "") + (f"; {len(ignored)} known-flaky ignored" if ignored else "")
+        return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
+                "notes": f"baseline from {bref}; qdeqp rc={rc}{extra}; {note if verdict != 'pass' else ''}".strip()}
 
     def suite_bench(self, job, dev):
         return {"verdict": "error", "notes": "bench suite is a stub (not implemented yet)"}
@@ -536,6 +599,20 @@ class Farm:
             self.upd(jid, back)
             log(f"{alias}: lost during {jid}/{cls}; back to pending")
             return
+        if res is not None and res.get("verdict") == "invalid":     # contaminated/unverifiable: never pass/fail; keep the evidence, re-queue
+            att = job["parts"][cls].get("attempts", 0) + 1
+            L.write_json(L.run_path(jid, cls).replace(".json", f".invalid-{att}.json"),
+                         {"job": jid, "class": cls, "device": alias, "verdict": "invalid", "notes": res.get("notes", ""), "at": L.now()})
+            def inv(x):
+                p = x["parts"][cls]
+                p["attempts"] = att
+                p["state"] = "pending" if att < RETRIES else "done"
+                if p["state"] == "done":
+                    p["verdict"] = "invalid"
+            self.upd(jid, inv)
+            log(f"{alias}: {jid}/{cls} INVALID ({res.get('notes', '')}); re-queued")
+            alert(f"INVALID-RUN {alias} {jid}/{cls}: {res.get('notes', '')}")
+            return
         info = self.phone_info(dev) if alias in self.attached() else {}
         h1 = self.health(dev) if alias in self.attached() else {}
         run = {"job": jid, "commit": job["commit"], "dirty": job["dirty"], "so_sha256": job.get("so_sha256"), "env": job["env"],
@@ -543,6 +620,7 @@ class Farm:
                "battery_temp_c": info.get("battery_temp_c"), "battery_pct_start": h0.get("level"), "battery_pct_end": h1.get("level"),
                "temp_c_start": h0.get("temp_c"), "temp_c_end": h1.get("temp_c"), "counts": res.get("counts", {}),
                "new_failures": res.get("new_failures", []), "newly_passing": res.get("newly_passing", []),
+               "ns_to_fail": res.get("ns_to_fail", []), "flaky_ignored": res.get("flaky_ignored", []),
                "verdict": res["verdict"], "notes": res.get("notes", ""), "started": started, "wall_s": round(time.time() - t0, 1)}
         L.write_json(L.run_path(jid, cls), run)
         j = self.upd(jid, lambda x: x["parts"][cls].update(state="done", verdict=run["verdict"], device=alias))
