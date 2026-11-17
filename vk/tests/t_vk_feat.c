@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1094,7 +1094,7 @@ test_nulld(void)
 
 /* R4-B2 cheap shader-capability features: scalarBlockLayout, uniformBufferStandardLayout, shaderZeroInitializeWorkgroupMemory.
  * run_comp: one compute dispatch over a set whose bindings 0..n-1 are the given buffers/types. */
-static VkBool32 g_scalar, g_ubostd, g_zinit, g_demote, g_sgctl_feat, g_fullsg_feat;
+static VkBool32 g_inlineub, g_scalar, g_ubostd, g_zinit, g_demote, g_sgctl_feat, g_fullsg_feat;
 static int
 run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, struct hbuf *bufs, uint32_t gx)
 {
@@ -1170,6 +1170,84 @@ test_scalar(void)
       printf("{\"test\":\"scalar\",\"ok\":true}\n");
    } else printf("{\"test\":\"scalar\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    for (int i = 0; i < 3; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* inlineUniformBlock: 80-byte block A written by two partial vkUpdateDescriptorSets, 16-byte block B filled by a descriptor copy
+ * from A (bytes 24..40), and an ordinary UBO C next to them (must stay intact). */
+static int
+test_inlineub(void)
+{
+   if (!g_inlineub) { printf("{\"test\":\"inlineub\",\"skipped\":\"inlineUniformBlock not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) return 0;
+   memset(bf[0].p, 0xEE, 4096);
+   uint32_t *c = (uint32_t *)bf[1].p;
+   for (int i = 0; i < 4; i++) c[i] = 0xC0DE0000u + i;
+   uint32_t a[20];
+   for (int i = 0; i < 20; i++) a[i] = 0xA0000000u + i * 0x111u;
+   VkDescriptorSetLayoutBinding b[4] = {
+      {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {1, VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 80, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {2, VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 16, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+   VkDescriptorSetLayout dsl;
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 4, .pBindings = b};
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolInlineUniformBlockCreateInfo pib = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO,
+                                                       .maxInlineUniformBlockBindings = 2};
+   VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 96}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .pNext = &pib, .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSet ds;
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo bi0 = {bf[0].b, 0, VK_WHOLE_SIZE}, bi3 = {bf[1].b, 0, 16};
+   VkWriteDescriptorSetInlineUniformBlock ib1 = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK, .dataSize = 32, .pData = a};
+   VkWriteDescriptorSetInlineUniformBlock ib2 = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK, .dataSize = 48, .pData = a + 8};
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi0},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &ib1, .dstSet = ds, .dstBinding = 1, .dstArrayElement = 0, .descriptorCount = 32, .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &ib2, .dstSet = ds, .dstBinding = 1, .dstArrayElement = 32, .descriptorCount = 48, .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi3}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   VkCopyDescriptorSet cp = {.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = ds, .srcBinding = 1, .srcArrayElement = 24, .dstSet = ds,
+                             .dstBinding = 2, .dstArrayElement = 0, .descriptorCount = 16};
+   UpdateDescriptorSets(dev, 0, NULL, 1, &cp);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("inlineub.comp.spv");
+   CHECK(m, "shader");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "pipeline = %d", r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, 1, 1, 1);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)bf[0].p;
+      for (int i = 0; i < 20; i++) CHECK(o[i] == a[i], "A[%d]=%08x want %08x", i, o[i], a[i]);
+      for (int i = 0; i < 4; i++) CHECK(o[20 + i] == a[6 + i], "B[%d]=%08x want %08x (copy)", i, o[20 + i], a[6 + i]);
+      for (int i = 0; i < 4; i++) CHECK(o[24 + i] == c[i], "C[%d]=%08x want %08x", i, o[24 + i], c[i]);
+      CHECK(o[28] == 0xEEEEEEEEu, "stray write");
+      printf("{\"test\":\"inlineub\",\"ok\":true}\n");
+   } else printf("{\"test\":\"inlineub\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
    tgt_destroy(&t);
    return 1;
 }
@@ -1777,7 +1855,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -1796,7 +1874,7 @@ main(int argc, char **argv)
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters};
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
@@ -1825,6 +1903,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
+   if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("int16")) ok &= test_int16();
