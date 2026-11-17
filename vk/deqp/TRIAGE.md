@@ -73,3 +73,8 @@ The 82 flipped cases were gated off by the 1.0 device (sync2, dynamic rendering,
 
 ## R4-A draw.* (after fixed-function state)
 Probe `^dEQP-VK.draw\.` 300 cases: 23 pass / 9 fail / 267 NS / 1 crash. Fails: D16 depth (multiple_clears d16 x6, depth_clamp.d16), negative_viewport_height.front_ccw_cull_front, scissor.static_scissor_two_clears. Crash: concurrent.compute_and_triangle_list. NS mostly missing extensions (multi_draw, vertex_attribute_divisor, vertexInputDynamicState, draw_indirect_count).
+
+## R4-B2 daily-sample re-run (Poco, after depthBiasClamp/indirect first instance/anisotropy/mirror clamp/cubeArray/wideLines/ext storage formats/BDA/descriptor indexing)
+Baseline 270 pass / 134 fail / 975 NS / 0 crash -> **272 pass / 135 fail / 972 NS / 0 crash / 2 other**. Per-case diff: **0 regressions**.
+Flips: sampler mirror_clamp_to_edge NS->Pass, renderpass.suballocation.simple.color Fail->Pass; 2 NS->Fail from imageCubeArray now exposed
+(`render_to_image.{core,dedicated_allocation}.cube_array.*.r32_uint_s8_uint`: the D32S8 depth/stencil attachment gap already listed above, not a cube-array defect). Build note: aarch64 needs `MESA_BUILD=third_party/build-vk-a64-glibc MALI_TARGET=a64-glibc ./build.sh` (default MESA_BUILD makes an x86 .so and dEQP reports INCOMPATIBLE_DRIVER).
