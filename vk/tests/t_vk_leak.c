@@ -7,7 +7,7 @@
  *   submit N frames: record fill-buffer cmd buffer (fresh each time, freed/ reset), submit, fence wait
  *   pool   create+destroy command pool/buffers/buffer+pipeline objects N times
  * Fails when a phase leaks more than --max-maps maps lines / fds, or any call returns an error.
- *   t_vk_leak --direct <icd.so> [--n N] [--only dev|mem|submit|pool|multi|second] [--max-maps K]
+ *   t_vk_leak --direct <icd.so> [--n N] [--only dev|mem|submit|pool|multi|second|pipe] [--max-maps K]
  */
 #define _DEFAULT_SOURCE
 #define VK_NO_PROTOTYPES
@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 static int g_fail;
-static const char *g_only;
+static const char *g_only, *g_spv = "comp.comp.spv";
 static int g_n = 200, g_maxmaps = 8;
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
@@ -336,6 +336,57 @@ phase_second(void)
    return 1;
 }
 
+/* compute pipelines: create+destroy N times, then hold as many live as possible (dEQP: vkCreateComputePipelines OUT_OF_DEVICE_MEMORY) */
+static int
+phase_pipe(void)
+{
+   FILE *fp = fopen(g_spv, "rb");
+   if (!fp) { printf("{\"fail\":\"pipe\",\"spv\":\"%s\"}\n", g_spv); g_fail = 1; return 0; }
+   static uint32_t code[8192];
+   size_t n = fread(code, 1, sizeof code, fp);
+   fclose(fp);
+   if (!load_dev())
+      return 0;
+   VkShaderModule sm;
+   VkShaderModuleCreateInfo smi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = n, .pCode = code};
+   CHECKV(CreateShaderModule, f.CreateShaderModule(dev, &smi, NULL, &sm));
+   VkPipelineLayout pl;
+   VkPushConstantRange pcr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   CHECKV(CreatePipelineLayout, f.CreatePipelineLayout(dev, &pli, NULL, &pl));
+   VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main"}};
+   struct meas a = {0};
+   int ok = 1;
+   for (int i = 0; i < g_n && ok; i++) {
+      if (i == g_n / 2)
+         a = measure();
+      VkPipeline p;
+      VkResult r = f.CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, NULL, &p);
+      if (r != VK_SUCCESS) { printf("{\"fail\":\"pipe\",\"iter\":%d,\"vk\":%d}\n", i, (int)r); ok = 0; break; }
+      f.DestroyPipeline(dev, p, NULL);
+   }
+   report("pipe_cycle", ok, a, measure());
+   enum { MAXP = 8192 };
+   static VkPipeline live[MAXP];
+   int cnt = 0;
+   while (cnt < MAXP && f.CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, NULL, &live[cnt]) == VK_SUCCESS)
+      cnt++;
+   for (int i = 0; i < cnt; i++)
+      f.DestroyPipeline(dev, live[i], NULL);
+   VkPipeline again;
+   int re = f.CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, NULL, &again) == VK_SUCCESS;
+   if (re)
+      f.DestroyPipeline(dev, again, NULL);
+   printf("{\"case\":\"pipe_live\",\"live\":%d,\"create_after_free\":%d,\"pass\":%s}\n", cnt, re, (cnt >= 1000 && re) ? "true" : "false");
+   if (cnt < 1000 || !re)
+      g_fail = 1;
+   f.DestroyPipelineLayout(dev, pl, NULL);
+   f.DestroyShaderModule(dev, sm, NULL);
+   f.DestroyDevice(dev, NULL);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -344,10 +395,11 @@ main(int argc, char **argv)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--n") && i + 1 < argc) g_n = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
+      else if (!strcmp(argv[i], "--spv") && i + 1 < argc) g_spv = argv[++i];
       else if (!strcmp(argv[i], "--max-maps") && i + 1 < argc) g_maxmaps = atoi(argv[++i]);
    }
    if (!icd) {
-      fprintf(stderr, "usage: t_vk_leak --direct icd.so [--n N] [--only dev|mem|submit|pool|multi|second]\n");
+      fprintf(stderr, "usage: t_vk_leak --direct icd.so [--n N] [--only dev|mem|submit|pool|multi|second|pipe]\n");
       return 2;
    }
    void *h = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
@@ -369,6 +421,7 @@ main(int argc, char **argv)
    if (CASE_ON("pool")) phase_pool();
    if (CASE_ON("multi")) phase_multi();
    if (CASE_ON("second")) phase_second();
+   if (CASE_ON("pipe")) phase_pipe();
    printf("{\"summary\":\"%s\"}\n", g_fail ? "FAIL" : "ok");
    return g_fail;
 }

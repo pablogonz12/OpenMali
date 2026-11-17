@@ -104,7 +104,7 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
          f"echo __HOG mem=$MA load=$LD idle=$((N-LT)); pkill -KILL -x deqp-vk; kill -KILL $P; break; fi; done; "
          f"wait $P; echo __rc=$?; tail -c 400 /tmp/qd/{tag}.out")
     out = guest(p, s, wall + 25)
-    local_q = f"/tmp/qdeqp-{p.serial}-{os.getpid()}.qpa"
+    local_q = f"{os.environ.get('QDEQP_TMP', '/tmp')}/qdeqp-{p.serial}-{os.getpid()}.qpa"
     p.adb("pull", qpa, local_q, timeout=120)
     txt = open(local_q, errors="replace").read() if os.path.exists(local_q) else ""
     if os.path.exists(local_q):

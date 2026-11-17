@@ -4,3 +4,4 @@ F(CreateBuffer) F(DestroyBuffer) F(GetBufferMemoryRequirements) F(BindBufferMemo
 F(CreateCommandPool) F(DestroyCommandPool) F(ResetCommandPool) F(AllocateCommandBuffers) F(FreeCommandBuffers)
 F(BeginCommandBuffer) F(EndCommandBuffer) F(CmdFillBuffer)
 F(CreateEvent) F(DestroyEvent)
+F(CreateShaderModule) F(DestroyShaderModule) F(CreatePipelineLayout) F(DestroyPipelineLayout) F(CreateComputePipelines) F(DestroyPipeline)
