@@ -173,7 +173,8 @@ mali_hw_init(struct mali_device *dev)
    if (be->bo_alloc(dev->kdev, 4096, MALI_BO_EVENT, &h->sync))
       goto fail;
    h->sync_live = true;
-   if (be->heap_create(dev->kdev, HEAP_CHUNK, 4, 64, &h->heap))
+   if (be->heap_create(dev->kdev, getenv("MALI_HEAP_CHUNK") ? (uint32_t)atoi(getenv("MALI_HEAP_CHUNK")) : HEAP_CHUNK,
+                       getenv("MALI_HEAP_INIT") ? (uint32_t)atoi(getenv("MALI_HEAP_INIT")) : 4, 64, &h->heap))
       goto fail;
    h->heap_live = true;
    h->ar.bo.cpu = h->arena.cpu;
@@ -194,6 +195,8 @@ mali_hw_init(struct mali_device *dev)
                               .sync_va = h->sync.gpu_va,
                               .core_id_range = pdev->gpu.core_id_range,
                               .tls_threads = pdev->gpu.tls_threads};
+   kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
+   hw.env.heap_desc_ready = true;
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    mali_cmd_set_hw(&hw);
    mali_cmd_set_res(&mali_cmd_res);

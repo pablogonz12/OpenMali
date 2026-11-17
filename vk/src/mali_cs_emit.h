@@ -39,6 +39,7 @@ struct mali_env {
    uint64_t heap_ctx_va;          /* tiler heap context (kb_tiler_heap.ctx_va) */
    uint64_t heap_first_chunk_va;
    uint32_t heap_chunk_size;
+   bool heap_desc_ready;          /* heap descriptor already written by the queue (never rewrite it per frame) */
    void *geo_cpu;                 /* geometry BO: 4 KiB heap descriptor page, then a 64 KiB geometry buffer */
    uint64_t geo_va;
    uint64_t sync_va;              /* CQS word the frame increments (SYNC_ADD64) when it retires */

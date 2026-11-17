@@ -103,7 +103,7 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    const char *dbg = getenv("MALI_SUBMIT_DBG");
    k->dbg = dbg ? (unsigned)strtoul(dbg, NULL, 0) : 0;
 
-   struct kb_queue_opts qo = {.ring_size = 1u << 20};   /* one frame record must fit: 4 KiB capped a frame at ~250 draws (mdbench drawcalls:300 = DEVICE_LOST) */
+   struct kb_queue_opts qo = {.ring_size = getenv("MALI_RING") ? (uint32_t)atoi(getenv("MALI_RING")) : 1u << 20};   /* one frame record must fit: 4 KiB capped a frame at ~250 draws (mdbench drawcalls:300 = DEVICE_LOST) */
    r = kb_queue_create(k->ctx, &qo, &k->queue);
    if (r != 0) {
       kb_close(k->ctx);
