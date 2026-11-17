@@ -115,6 +115,7 @@ static int load_props(struct kb_ctx *c)
 		return -e;
 	}
 	parse_props(buf, (size_t)r, &c->props);
+	kb_v10 = c->props.arch == 10;   /* arch-keyed packer switch (SET_SB_ENTRY, ZSD bit 21); the vk driver sets the same flag */
 	free(buf);
 	return 0;
 }

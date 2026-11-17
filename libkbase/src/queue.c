@@ -272,6 +272,7 @@ int kb_event_read(struct kb_ctx *ctx, struct kb_event *ev, int timeout_ms)
 		}
 		if (ev->fatal && (unsigned)ev->group < 256)
 			ctx->group_faulted[ev->group] = true;
+		if (ev->fatal) { ctx->last_fatal = *ev; ctx->have_fatal = true; }
 		break;
 	}
 	default:
@@ -279,3 +280,5 @@ int kb_event_read(struct kb_ctx *ctx, struct kb_event *ev, int timeout_ms)
 	}
 	return 1;
 }
+
+const struct kb_event *kb_last_fatal(const struct kb_ctx *ctx) { return ctx->have_fatal ? &ctx->last_fatal : NULL; }

@@ -14,6 +14,8 @@ struct kb_ctx {
 	int kcpu_id;              /* -1 until created */
 	bool group_faulted[256];
 	unsigned long long events_seen;
+	struct kb_event last_fatal;   /* last fatal notification (consumed by any reader), for post-mortem; type 0 = none */
+	bool have_fatal;
 	int live_bos, live_queues;
 	int exec_init_errno, jit_init_errno; /* 0 = MEM_EXEC_INIT / MEM_JIT_INIT succeeded */
 };

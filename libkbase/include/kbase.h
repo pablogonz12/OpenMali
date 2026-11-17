@@ -161,6 +161,7 @@ struct kb_event {
 	bool fatal;
 	char text[200];           /* readable decoding */
 };
+const struct kb_event *kb_last_fatal(const struct kb_ctx *ctx); /* last fatal notification seen by any reader, NULL if none */
 int kb_event_read(struct kb_ctx *ctx, struct kb_event *ev, int timeout_ms); /* 1 event, 0 timeout, <0 error */
 const char *kb_exception_name(unsigned code);
 unsigned long long kb_events_seen(const struct kb_ctx *ctx);
