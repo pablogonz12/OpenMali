@@ -4,6 +4,7 @@
   farmd [--once] [--fake] [--poll N]
 --fake (or MALI_FARM_FAKE=1): no adb, no build, no phone: attached devices = aliases listed in <state>/fake-attached,
 suites return synthetic results (env FAKE_FAIL=1 / FAKE_REGRESS=N / FAKE_FIX=N steer them). For tests of queue/resume/JSON logic."""
+import sys; sys.dont_write_bytecode = True
 import argparse, hashlib, json, os, shutil, subprocess, sys, threading, time, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
