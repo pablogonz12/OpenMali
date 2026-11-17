@@ -1,2 +1,7 @@
 2026-11-17 [kbase] r32p1/uAPI 1.18 has no MEM_ALLOC_EX and uses GROUP_CREATE nr 42 (32 B): ioctl size scan after set_flags (u32!) finds layouts; EPERM everywhere = SET_FLAGS wrong (vk/DEVICE-poco-x4.md)
 2026-11-17 [kbase] Tests must set kb_v10 (kb_open now does): SET_STATE_IMM32 on v10 = CS_INVALID_INSTRUCTION at its CS offset; fence wait eats the fatal event (kb_last_fatal) (libkbase/src/ctx.c)
+2026-11-17 [dqp] No guest app? deqp-vk runs as shell: sysroot ld.so + libs in /data/local/tmp, libvulkan.so.1 shim to our ICD (vk/deqp/shell-deqp.py); ~30 s/daily (vk/deqp/shell-deqp.py)
+2026-11-17 [mali-open] FS gl_FragDepth/stencil export: set outputs_written (gather_info) before pan_nir_lower_fs_outputs, else fs.writes_depth=0 and ZSD stays fixed-function early-Z (23c18df vk/src/mali_compile.c)
+2026-11-17 [mali-open] farm smoke --only: a case missing from the DRAW list in vk/tests/valguest.sh ran nothing and passed; check the log shows the case ran (ok:true) (c6c71fc, job 20261117-182638-70d72dff)
+2026-11-17 [vk] Fake t_vk_draw skipped fx cases, hiding mali_compile_blend rejecting arch 10 while dualSrcBlend was advertised; fx pipelines now build under fake (vk/src/mali_compile.c)
+2026-11-17 [perf] cube gpu gap scales with pixels (0.87ms@180p vs 2.13@720p), not flush; suspect RT/depth BO coherency (0x800 on all BOs); A/B untested (vk/GPU-GAP.md)
