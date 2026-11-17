@@ -197,6 +197,23 @@ def check_tiler(c, lo):
         c.dev.heap_page[r['id']] = page
 
 
+def rules_idvs2(evs):
+    """R-CS for v13's RUN_IDVS2 (op 12), which decode_stream.py does not know: flags word (V13-NEXT.md: malloc_enable bit 33 set, stage [51:48] = 0,
+    no v11 'fragment SRT select' bit 38), FAU count byte (kb_cs_move48 truncation) for FAU_v r8 / FAU_f r10, tiler context 64-byte aligned."""
+    errs = []
+    for e in evs:
+        if e['op'] != 12: continue
+        w, r, where = e['w'], e['regs'], 'ins %d(RUN_IDVS2)' % e['i']
+        if not (w >> 33) & 1: errs.append('%s: malloc_enable (bit 33) missing, word 0x%016x' % (where, w))
+        if (w >> 48) & 15: errs.append('%s: stage field [51:48] = %d, want 0, word 0x%016x' % (where, (w >> 48) & 15, w))
+        for nm, reg in (('FAUv', 8), ('FAUf', 10)):
+            v = ds.pair(r, reg)
+            if (v & ((1 << 56) - 1)) and not v >> 56: errs.append('%s: %s r%d has pointer but zero count byte' % (where, nm, reg))
+        t = ds.pair(r, 40)
+        if t and t % 64: errs.append('%s: tiler_ctx r40 = 0x%x not 64-byte aligned' % (where, t))
+    return errs
+
+
 def process(path, outpath, hook=None):
     devs, viol, out = {}, [], []
     warn = set()
@@ -246,7 +263,7 @@ def process(path, outpath, hook=None):
                 else:
                     out.append('  %3d %-14s %016x' % (ev['i'], ev['name'], w))
                 if op in ds.RUNS: render_job(c, ev, ev['name'])
-            for msg in ds.rules(dict(mem=d.mem), evs, arch):
+            for msg in ds.rules(dict(mem=d.mem), evs, arch) + rules_idvs2(evs):
                 if 'scoreboard re-select' in msg:   # advisory: mixed compute+draw streams trip it, hardware dEQP passes them
                     warn.add(msg.split(': ', 1)[1] if ': ' in msg else msg); continue
                 viol.append('RULE R-CS: dev%d kick %d: %s' % (d.n, n, msg))

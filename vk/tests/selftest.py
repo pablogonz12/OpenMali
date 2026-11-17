@@ -28,11 +28,11 @@ def m_heap(d, e):        # the heap descriptor page is rewritten every frame (c6
         c = d.mem.read(t, 128); h = (struct.unpack_from('<I', c, 24)[0] | struct.unpack_from('<I', c, 28)[0] << 32) & ((1 << 48) - 1)
         if h:
             b = bytearray(d.mem.read(h & ~4095, 4096)); b[16] ^= 0xff; d.mem.add(h & ~4095, bytes(b)); return
-def m_cs(d, e):          # RUN_IDVS without the fragment SRT select bit (bit 38)
+def m_cs(d, e):          # v11 RUN_IDVS without the fragment SRT select bit (38) / v13 RUN_IDVS2 without malloc_enable (33)
     if e.get('done'): return
     q = qwords(e)
     for i, w in enumerate(q):
-        if w >> 56 == 6: q[i] = w & ~(1 << 38); put(e, q); e['done'] = 1; return
+        if w >> 56 in (6, 12): q[i] = w & ~(1 << (38 if w >> 56 == 6 else 33)); put(e, q); e['done'] = 1; return
 
 def run(path, arch, hook, tmp):
     os.environ['GOLDEN_ARCH'] = str(arch)
@@ -53,7 +53,7 @@ if __name__ == '__main__':
     v11, v13 = head(v11, tmp), head(v13, tmp)
     bad = 0
     for name, path, arch, hook in (('R-VA', v11, 11, m_va), ('R-VA', v13, 13, m_va), ('R-SET', v11, 11, m_set), ('R-SET', v13, 13, m_set),
-                                   ('R-HEAP', v11, 11, m_heap), ('R-HEAP', v13, 13, m_heap), ('R-CS', v11, 11, m_cs)):
+                                   ('R-HEAP', v11, 11, m_heap), ('R-HEAP', v13, 13, m_heap), ('R-CS', v11, 11, m_cs), ('R-CS', v13, 13, m_cs)):
         clean = run(path, arch, None, tmp)
         if clean: print('FAIL  %s: undamaged dump already violates: %s' % (name, clean[0])); bad = 1; continue
         v = run(path, arch, hook, tmp)
