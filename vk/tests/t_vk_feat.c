@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -26,7 +26,7 @@ static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
-static VkBool32 g_mirror;
+static VkBool32 g_mirror, g_bda;
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 
@@ -54,7 +54,7 @@ static float g_lw = 1.0f;
    X(CmdBindIndexBuffer) X(CmdDrawIndirect) X(CmdDrawIndexedIndirect) X(CreateDescriptorSetLayout)                  \
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
-   X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer)
+   X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -794,6 +794,68 @@ test_storfmt(void)
    return pass == n;
 }
 
+/* bufferDeviceAddress: push a 64-bit pointer (buffer address + 256) to a compute shader that writes through it. */
+static int
+test_bda(void)
+{
+   if (!g_bda) { printf("{\"test\":\"bda\",\"skipped\":\"bufferDeviceAddress not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096,
+                            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
+   VkBuffer buf;
+   CHECK(CreateBuffer(dev, &bi, NULL, &buf) == VK_SUCCESS, "buffer");
+   VkMemoryRequirements mr;
+   GetBufferMemoryRequirements(dev, buf, &mr);
+   VkMemoryAllocateFlagsInfo fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &fi, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+   VkDeviceMemory mem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "alloc");
+   CHECK(BindBufferMemory(dev, buf, mem, 0) == VK_SUCCESS, "bind");
+   uint32_t *p;
+   CHECK(MapMemory(dev, mem, 0, VK_WHOLE_SIZE, 0, (void **)&p) == VK_SUCCESS, "map");
+   memset(p, 0xEE, 4096);
+   VkBufferDeviceAddressInfo da = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buf};
+   uint64_t addr = GetBufferDeviceAddress(dev, &da);
+   CHECK(addr && !(addr & 3), "address 0x%llx", (unsigned long long)addr);
+   CHECK(GetBufferDeviceAddress(dev, &da) == addr, "address stable");
+
+   struct { uint64_t addr; uint32_t base; uint32_t pad; } pc = {addr + 256, 1000, 0};
+   VkPushConstantRange pcr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("bda.comp.spv");
+   CHECK(m, "shader");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "compute pipeline = %d", r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, &pc);
+   CmdDispatch(cb, 2, 1, 1);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      for (int i = 0; i < 128; i++)
+         CHECK(p[64 + i] == 1000u + 3u * i, "elem %d = %u expected %u", i, p[64 + i], 1000u + 3u * i);
+      CHECK(p[63] == 0xEEEEEEEEu && p[192] == 0xEEEEEEEEu, "stray write: p[63]=%x p[192]=%x", p[63], p[192]);
+      printf("{\"test\":\"bda\",\"addr\":\"0x%llx\",\"ok\":true}\n", (unsigned long long)addr);
+   } else {
+      printf("{\"test\":\"bda\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyBuffer(dev, buf, NULL);
+   FreeMemory(dev, mem, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -835,10 +897,11 @@ main(int argc, char **argv)
    GetPhysicalDeviceFeatures2(pd, &f2);
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
+   g_bda = f12.bufferDeviceAddress;
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    /* enable exactly what is advertised (everything advertised is under test somewhere) */
-   VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge,
+   VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress,
                                            .timelineSemaphore = f12.timelineSemaphore};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e12, .features = g_feat};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
@@ -857,6 +920,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
+   if (ok && CASE_ON("bda")) ok &= test_bda();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

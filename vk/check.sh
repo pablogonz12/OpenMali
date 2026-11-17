@@ -14,7 +14,7 @@ if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit
 fail=0
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
 # Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=33
+DXVK_MISSING=32
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
 run() { # name, expected exit status, command...

@@ -172,6 +172,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .dynamicRendering = true,
       .maintenance4 = true,
       .privateData = true,
+      .bufferDeviceAddress = true, /* t_vk_feat bda */
       .multiDrawIndirect = true,
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .samplerMirrorClampToEdge = true,

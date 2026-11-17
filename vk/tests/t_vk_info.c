@@ -200,9 +200,10 @@ main(int argc, char **argv)
          CHECK(!a[i], "vk11 feature #%u advertised without a test", i);
       const VkBool32 *b = (const VkBool32 *)((const char *)&f12 + 16);
       const unsigned tl = (unsigned)((const VkBool32 *)&f12.timelineSemaphore - b), hq = (unsigned)((const VkBool32 *)&f12.hostQueryReset - b),
-                     mc = (unsigned)((const VkBool32 *)&f12.samplerMirrorClampToEdge - b); /* t_vk_feat mirror */
+                     mc = (unsigned)((const VkBool32 *)&f12.samplerMirrorClampToEdge - b),
+                     bda = (unsigned)((const VkBool32 *)&f12.bufferDeviceAddress - b); /* t_vk_feat bda */ /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == tl || i == hq || i == mc, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d);
