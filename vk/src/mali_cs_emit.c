@@ -636,6 +636,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
 
    memset(&c, 0, sizeof c);
    E(&c, kb_cs_nop());
+   if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    M32(&c, R->flush_id, 0);
    E(&c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
    E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
@@ -657,14 +658,34 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       M32(&c, CR_JOB_SIZE + 1, d->groups[1]);
       M32(&c, CR_JOB_SIZE + 2, d->groups[2]);
    }
+   {
+      const char *cvs = getenv("MALI_CV");
+      unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
+      if (cv & 1) E(&c, kb_cs_wait(0xffff));
+      if (cv & 64) { M48(&c, R->heap, 0); E(&c, kb_cs_heap_set(R->heap)); }
+      if (cv & 128) { E(&c, kb_cs_req_res(KB_CS_RES_IDVS | KB_CS_RES_TILER)); E(&c, kb_cs_finish_tiling()); E(&c, kb_cs_wait(0xffff)); E(&c, kb_cs_req_res(0)); }
+      if (cv & 2) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, 0));
+      if (cv & 4) E(&c, kb_cs_req_res(0));
+      if (cv & 8) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_DEFERRED, 0));
+      if (getenv("MALI_CV_OTHER")) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, (unsigned)atoi(getenv("MALI_CV_OTHER"))));
+   }
    E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
    E(&c, kb_cs_req_res(KB_CS_RES_COMPUTE));
    E(&c, run_compute_instr(1, 0));
    E(&c, kb_cs_wait(1u << env->slot));
    E(&c, kb_cs_req_res(0));
-   M32(&c, R->flush_id, 0);
-   E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
-   E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   {
+      const char *cvs = getenv("MALI_CV");
+      unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
+      M32(&c, R->flush_id, 0);
+      E(&c, kb_cs_flush_cache2((cv & 16) ? 3 : 1, (cv & 16) ? 3 : 1, (cv & 16) ? 2 : 0, R->flush_id));
+      E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      if (cv & 32) {
+         M32(&c, R->flush_id, 0);
+         E(&c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
+         E(&c, kb_cs_wait(0xffff));
+      }
+   }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));

@@ -286,8 +286,8 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
       if (pthread_mutex_trylock(&k->wait_lock) == 0) {
          struct kb_event ev;
          while (kb_event_read(k->ctx, &ev, 0) > 0)
-            if (ev.fatal)
-               fprintf(stderr, "mali_vk: %s\n", ev.text);
+            if (ev.fatal || getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: %sevent: %s\n", ev.fatal ? "FATAL " : "", ev.text);
          pthread_mutex_unlock(&k->wait_lock);
       }
       if (kb_queue_faulted(&k->queue))
