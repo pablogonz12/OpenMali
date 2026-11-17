@@ -1364,9 +1364,9 @@ class Farm:
         """a phone idle > 15 min (health gate ok, owner not using it) whose installed MediaDeck versionCode differs from the last one a menu run
         was queued for -> one auto menu job pinned to it (below explicit jobs, same level as the auto bench). Once per version: the version is
         recorded when queued, so an error is not retried automatically (resubmit by hand: farm submit --suite menu)."""
-        if not self.auto_bench_on() or os.path.exists(os.path.join(L.state_dir(), "bench", "menu-off")):
+        if any(os.path.exists(os.path.join(L.state_dir(), "bench", f)) for f in ("off", "menu-off")):       # kill switches: bench/off (all auto bench) or bench/menu-off
             return
-        if self.once and not os.environ.get("MALI_FARM_AUTO_MENU"):
+        if self.once and not os.environ.get("MALI_FARM_AUTO_MENU"):                                       # --once (tests): only when a test asks for it
             return
         if not self.menubench_path():
             return

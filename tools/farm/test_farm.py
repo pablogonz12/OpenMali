@@ -922,6 +922,7 @@ class T(unittest.TestCase):
         self.farmd()
         good = {r["profile"]: r for r in self.menu_rows()}
         self.assertTrue(good["uncapped"]["valid"])
+        time.sleep(1.1)                                                                                  # menubench stamps whole seconds: keep the jobs' rows apart
         open(root + "/mode", "w").write("selfcheck")                                                    # same version again: uncapped self-check fails
         rc, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
         self.farmd()
@@ -930,6 +931,7 @@ class T(unittest.TestCase):
         self.assertEqual(now["uncapped"]["avg_fps"], good["uncapped"]["avg_fps"])                        # ... but the valid row stays
         self.assertTrue(now["uncapped"]["valid"])
         self.assertEqual(now["default"]["job"], jid)                                                     # the valid default row was refreshed
+        time.sleep(1.1)
         open(root + "/vc", "w").write("23")                                                              # a new version with no valid row: stored as invalid
         self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
         self.farmd()
@@ -966,7 +968,7 @@ class T(unittest.TestCase):
         self.nosweep()
         root = self.fake_menubench("ok")
         self.attach("dev-a")
-        self.env.update(MALI_FARM_AUTO_MENU="1", MALI_FARM_AUTO_BENCH="1", MALI_FARM_BENCH_IDLE="0")
+        self.env.update(MALI_FARM_AUTO_MENU="1", MALI_FARM_BENCH_IDLE="0")
         self.farmd()
         menus = [j for j in L.list_jobs() if j["suite"] == "menu"]
         self.assertEqual(len(menus), 1)
