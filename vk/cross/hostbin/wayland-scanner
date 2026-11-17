@@ -1,0 +1,4 @@
+#!/bin/bash
+# host wayland-scanner (1.26) reporting 1.24.0 so meson accepts it against the sysroot's libwayland 1.24.0
+[ "$1" = --version ] && { echo "wayland-scanner 1.24.0"; exit 0; }
+exec /usr/bin/wayland-scanner "$@"

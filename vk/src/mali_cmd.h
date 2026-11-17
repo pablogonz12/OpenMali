@@ -1,0 +1,118 @@
+/* SPDX-License-Identifier: MIT */
+/* M8, Vulkan layer: command buffers over vk_command_buffer. Recording only builds a CPU-side description (struct mali_frame per
+ * render pass instance, mali_cs_emit.h); descriptors and the command stream are built at submit time from a rolling arena
+ * (mali_cmd_submit), because the arena must not hand out VAs of an in-flight job (libkbase/INTERMITTENT.md).
+ *
+ * The device is Vulkan 1.0 (MALI_DEVICE_API_VERSION), so the 1.0 entrypoints are implemented. vkCmdBeginRendering is exported as
+ * mali_CmdBeginRendering for the day dynamic rendering is exposed; render pass 1.0 goes through the runtime's emulation
+ * (vk_common_CmdBeginRenderPass2 -> CmdBeginRendering) once the device advertises it. Viewport/scissor are taken from the runtime's
+ * dynamic graphics state (vk_common_CmdSetViewport/Scissor).
+ *
+ * Seams (installed by wiring code, see R3-PLAN.md "M8"): mali_cmd_set_hw (descriptor memory + submit), mali_cmd_set_res (pipeline,
+ * image and shader resolvers; M5/M6 own those objects). */
+#ifndef MALI_CMD_H
+#define MALI_CMD_H
+
+#include "vk_command_buffer.h"
+#include "vk_command_pool.h"
+#include "vk_shader.h"
+#include "mali_cs_emit.h"
+#include "mali_event.h"
+#include "mali_private.h"
+
+/* A render target or depth image as the command buffer needs it. */
+struct mali_cmd_target {
+   uint64_t va;
+   uint32_t row_stride;
+   unsigned width, height;
+   int zs_format;   /* 0 = colour (RGBA8), else enum kb_zs_format */
+   bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */
+};
+
+struct mali_cmd_res_ops {
+   /* VkPipeline (graphics) -> state; arch of the compiled shaders must match the device. 0 = ok. */
+   int (*pipeline)(VkPipeline p, struct mali_gfx_state *out);
+   int (*image_view)(VkImageView v, struct mali_cmd_target *out);
+   int (*image)(VkImage i, struct mali_cmd_target *out);   /* for vkCmdClear*Image */
+   /* vk_shader (shader-object path, vk_device_shader_ops::cmd_bind_shaders) -> compiled shader + binary VA. 0 = ok. */
+   int (*shader)(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *va);
+   /* VkPipeline (compute) -> compiled shader + binary VA. 0 = ok. */
+   int (*compute)(VkPipeline p, const struct mali_compiled **c, uint64_t *va);
+};
+void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
+void mali_cmd_set_hw(const struct mali_hw *hw);   /* copied; NULL clears. Without it submit returns VK_ERROR_FEATURE_NOT_PRESENT */
+
+struct mali_cmd_buffer {
+   struct vk_command_buffer vk;
+
+   struct mali_frame *frames;   /* finished render pass instances (and clear-only frames) */
+   unsigned nframes, capframes;
+   struct mali_frame cur;       /* the open one */
+   bool in_render;
+
+   struct mali_gfx_state gfx;
+   bool have_gfx;
+   uint64_t vb_va[MALI_MAX_VB];
+   uint32_t vb_size[MALI_MAX_VB];
+   uint8_t push[2][MALI_PUSH_MAX];
+   unsigned nsets;
+   uint64_t set_va[MALI_CMD_SETS];
+   uint32_t set_bytes[MALI_CMD_SETS];
+   uint64_t ib_va;       /* bound index buffer, offset applied (0 = none) */
+   uint32_t ib_bytes;
+   unsigned ib_size;     /* bytes per index */
+   const struct mali_compiled *cs;   /* bound compute pipeline */
+   uint64_t cs_va;
+   uint8_t push_cs[MALI_PUSH_MAX];
+   uint64_t occ_va;             /* M13: active occlusion query counter address (0 = none), copied into every draw */
+   unsigned occ_mode;
+   struct mali_op *def_ops;     /* M13: ops recorded inside a render pass, pushed after the pass' frame */
+   unsigned ndef, capdef;
+};
+
+static inline struct mali_cmd_buffer *
+mali_cmd_buffer_from_vk(struct vk_command_buffer *cmd)
+{
+   return container_of(cmd, struct mali_cmd_buffer, vk);
+}
+
+/* M12/M13 hooks (mali_cmd.c): append a finished frame / an ops frame; ops recorded inside a render pass are deferred until it ends. */
+void mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f);
+void mali_cmd_push_ops(struct mali_cmd_buffer *cmd, const struct mali_op *ops, unsigned n);
+void mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned mode);
+
+/* Install as dev->vk.command_buffer_ops (vk_common_Create/Allocate/Free/ResetCommandPool and Begin/End then work as is). */
+extern const struct vk_command_buffer_ops mali_cmd_ops;
+
+/* Builds + submits every recorded frame of the given command buffers, in order. VkResult (device lost on a build/submit failure).
+ * To be called from mali_queue_submit (M4 currently sends an empty CS, wiring item). */
+VkResult mali_cmd_submit(struct vk_command_buffer *cmd);
+
+/* Hooks with the vk_device_shader_ops signatures (M6 wiring). */
+void mali_cmd_bind_shaders(struct vk_command_buffer *cmd, uint32_t stage_count, const mesa_shader_stage *stages,
+                           struct vk_shader *const *shaders);
+
+/* Entrypoints implemented here (picked up by the generated weak mali_entrypoints). */
+VKAPI_ATTR VkResult VKAPI_CALL mali_BeginCommandBuffer(VkCommandBuffer, const VkCommandBufferBeginInfo *);
+VKAPI_ATTR VkResult VKAPI_CALL mali_EndCommandBuffer(VkCommandBuffer);
+VKAPI_ATTR void VKAPI_CALL mali_CmdBindPipeline(VkCommandBuffer, VkPipelineBindPoint, VkPipeline);
+VKAPI_ATTR void VKAPI_CALL mali_CmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t,
+                                                      const VkDescriptorSet *, uint32_t, const uint32_t *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdBindVertexBuffers(VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *, const VkDeviceSize *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdBindIndexBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType);
+VKAPI_ATTR void VKAPI_CALL mali_CmdPushConstants(VkCommandBuffer, VkPipelineLayout, VkShaderStageFlags, uint32_t, uint32_t,
+                                                 const void *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
+VKAPI_ATTR void VKAPI_CALL mali_CmdDispatchIndirect(VkCommandBuffer, VkBuffer, VkDeviceSize);
+VKAPI_ATTR void VKAPI_CALL mali_CmdDraw(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t);
+VKAPI_ATTR void VKAPI_CALL mali_CmdDrawIndexed(VkCommandBuffer, uint32_t, uint32_t, uint32_t, int32_t, uint32_t);
+VKAPI_ATTR void VKAPI_CALL mali_CmdBeginRendering(VkCommandBuffer, const VkRenderingInfo *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdEndRendering(VkCommandBuffer);
+VKAPI_ATTR void VKAPI_CALL mali_CmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearColorValue *, uint32_t,
+                                                   const VkImageSubresourceRange *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdClearDepthStencilImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearDepthStencilValue *,
+                                                          uint32_t, const VkImageSubresourceRange *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdClearAttachments(VkCommandBuffer, uint32_t, const VkClearAttachment *, uint32_t,
+                                                    const VkClearRect *);
+
+#endif

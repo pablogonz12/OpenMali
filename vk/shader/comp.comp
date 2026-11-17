@@ -1,0 +1,7 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+// Compute stub for M6: descriptor-free (buffer device address through a push constant) until M7 lowers descriptors.
+layout(local_size_x = 8, local_size_y = 1, local_size_z = 1) in;
+layout(buffer_reference, std430) buffer B { uint v[]; };
+layout(push_constant) uniform P { B b; uint k; } p;
+void main() { p.b.v[gl_GlobalInvocationID.x] = gl_GlobalInvocationID.x * p.k; }

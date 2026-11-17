@@ -1,0 +1,517 @@
+/* SPDX-License-Identifier: MIT */
+/* M12, Vulkan layer of the meta operations: vkCmdCopyBuffer2 / CopyImage2 / BlitImage2 / CopyBufferToImage2 / CopyImageToBuffer2 /
+ * FillBuffer / UpdateBuffer / ResolveImage2 and the compute clears. Each region is planned by mali_meta.c into compute jobs which are
+ * pushed as compute frames (mali_cmd_push_frame, wiring item, R3-PLAN.md M12), executed in order with everything else.
+ *
+ * Only linear images are handled (the default, R3-PLAN.md M5): tiled -> VK_ERROR_FEATURE_NOT_PRESENT on the command buffer (sticky,
+ * like every unsupported command of mali_cmd.c). */
+#include <errno.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mali_cmd.h"
+#include "mali_image.h"
+#include "mali_meta.h"
+#include "mali_meta_vk.h"
+#include "mali_bc.h"
+
+#include "util/format/u_format.h"
+#include "vk_format.h"
+
+/* Exported from mali_cmd.c by the wiring (alias of push_frame). Weak: the file links without it and the commands then fail cleanly. */
+__attribute__((weak)) void mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f);
+
+#define CMD(h) struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(h))
+
+/* ---- per command buffer persistent memory (descriptor sets, staged update data) ---- */
+static pthread_mutex_t g_tab_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct tab_ent { const void *cmd; struct mali_meta_mem mem; } *g_tab;
+static unsigned g_ntab, g_captab;
+
+static struct mali_meta_mem *
+mem_of(const void *cmd)
+{
+   struct mali_meta_mem *r = NULL;
+   pthread_mutex_lock(&g_tab_lock);
+   for (unsigned i = 0; i < g_ntab; i++)
+      if (g_tab[i].cmd == cmd)
+         r = &g_tab[i].mem;
+   if (!r) {
+      if (g_ntab == g_captab) {
+         unsigned nc = g_captab ? g_captab * 2 : 8;
+         struct tab_ent *n = realloc(g_tab, nc * sizeof *n);
+         if (!n) {
+            pthread_mutex_unlock(&g_tab_lock);
+            return NULL;
+         }
+         g_tab = n;
+         g_captab = nc;
+      }
+      g_tab[g_ntab].cmd = cmd;
+      memset(&g_tab[g_ntab].mem, 0, sizeof g_tab[g_ntab].mem);
+      r = &g_tab[g_ntab++].mem;
+   }
+   pthread_mutex_unlock(&g_tab_lock);
+   return r;
+}
+
+/* Wiring: call from the command buffer reset and destroy paths (after the work was waited for). */
+void
+mali_meta_cmd_forget(const void *cmd)
+{
+   pthread_mutex_lock(&g_tab_lock);
+   for (unsigned i = 0; i < g_ntab; i++)
+      if (g_tab[i].cmd == cmd) {
+         mali_meta_mem_release(&g_tab[i].mem);
+         g_tab[i] = g_tab[--g_ntab];
+         break;
+      }
+   pthread_mutex_unlock(&g_tab_lock);
+}
+
+static void
+fail(struct mali_cmd_buffer *cmd, VkResult r)
+{
+   vk_command_buffer_set_error(&cmd->vk, r);
+}
+
+/* Plans -> frames. Consumes (frees) the list. */
+static void
+emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
+{
+   if (plan_err) {
+      fail(cmd, plan_err == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_meta_list_free(l);
+      return;
+   }
+   if (!mali_cmd_push_frame || cmd->in_render) {
+      fail(cmd, VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_meta_list_free(l);
+      return;
+   }
+   struct mali_meta_mem *mem = mem_of(cmd);
+   for (unsigned i = 0; i < l->n; i++) {
+      struct mali_frame f;
+      memset(&f, 0, sizeof f);
+      f.compute = true;
+      int r = mem ? mali_meta_materialize(&l->j[i], mem, &f.disp) : -ENOMEM;
+      if (r) {
+         fail(cmd, r == -ENOMEM ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_ERROR_FEATURE_NOT_PRESENT);
+         break;
+      }
+      mali_cmd_push_frame(cmd, &f);
+   }
+   mali_meta_list_free(l);
+}
+
+/* Exported for mali_query.c: plan result -> compute frames of the command buffer (consumes the list). */
+void
+mali_meta_vk_emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
+{
+   emit(cmd, l, plan_err);
+}
+
+/* ---- surfaces ---- */
+static void
+buf_surf(struct mali_meta_surf *s, struct vk_buffer *b, uint64_t off)
+{
+   *s = (struct mali_meta_surf){ vk_buffer_address(b, 0), b->size, off, 0, 0 };
+}
+
+/* The image subresource at texel offset `o`; false for tiled or unbound images. */
+static bool
+img_surf(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresourceLayers sub, VkOffset3D o, const struct mali_plane_layout **pl)
+{
+   if (img->lay.d.tiled || !img->va)
+      return false;
+   const struct mali_plane_layout *p = mali_image_plane_for_aspect(&img->lay, sub.aspectMask);
+   if (!p)
+      return false;
+   bool is3d = img->lay.d.type == VK_IMAGE_TYPE_3D;
+   const struct mali_slice *sl = &p->slice[sub.mipLevel];
+   uint64_t off = mali_image_subresource_offset(p, sub.mipLevel, is3d ? 0 : sub.baseArrayLayer);
+   off += (uint64_t)(o.x / p->bw) * p->bs + (uint64_t)(o.y / p->bh) * sl->row_stride;
+   if (is3d)
+      off += (uint64_t)o.z * sl->surface_stride;
+   *s = (struct mali_meta_surf){ img->va, img->lay.size, off, sl->row_stride, (uint32_t)(is3d ? sl->surface_stride : p->array_stride) };
+   if (pl)
+      *pl = p;
+   return true;
+}
+
+static uint32_t
+lvl(uint32_t v, uint32_t l)
+{
+   v >>= l;
+   return v ? v : 1;
+}
+
+static uint32_t
+zcount(const struct mali_image *img, VkImageSubresourceLayers sub, VkExtent3D e)
+{
+   return img->lay.d.type == VK_IMAGE_TYPE_3D ? e.depth : sub.layerCount;
+}
+
+/* ---- BC decode (R4-M7): after a write to the compressed region, decode the touched blocks into the shadow ---- */
+static int
+bc_decode(struct mali_meta_list *l, const struct mali_image *img, VkImageSubresourceLayers sub, VkOffset3D o, VkExtent3D e)
+{
+   struct mali_bc_list bl = { 0 };
+   const bool is3d = img->lay.d.type == VK_IMAGE_TYPE_3D;
+   int r;
+   if (!img->va)
+      return -EINVAL;
+   /* texel extent rounded to whole blocks, clamped to the level (the planner accepts "multiple of 4 or reaching the level edge") */
+   VkExtent3D lv = { lvl(img->lay.d.extent.width, sub.mipLevel), lvl(img->lay.d.extent.height, sub.mipLevel), lvl(img->lay.d.extent.depth, sub.mipLevel) };
+   VkOffset3D o4 = { o.x & ~3, o.y & ~3, o.z };
+   VkExtent3D e4 = e;
+   e4.width = ((uint32_t)(o.x - o4.x) + e.width + 3) & ~3u;
+   e4.height = ((uint32_t)(o.y - o4.y) + e.height + 3) & ~3u;
+   if ((uint32_t)o4.x + e4.width > lv.width) e4.width = lv.width - (uint32_t)o4.x;
+   if ((uint32_t)o4.y + e4.height > lv.height) e4.height = lv.height - (uint32_t)o4.y;
+   if (is3d) {
+      r = mali_bc_plan_decode(&bl, &img->bc_lay, img->va, sub.mipLevel, 0, 1, o4, e4);
+   } else {
+      o4.z = 0;
+      e4.depth = 1;
+      r = mali_bc_plan_decode(&bl, &img->bc_lay, img->va, sub.mipLevel, sub.baseArrayLayer, sub.layerCount, o4, e4);
+   }
+   for (unsigned i = 0; !r && i < bl.n; i++)
+      r = mali_meta_list_add_bc(l, &bl.j[i]);
+   mali_bc_list_free(&bl);
+   return r;
+}
+
+/* ---- copies ---- */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdCopyBuffer2(VkCommandBuffer h, const VkCopyBufferInfo2 *ci)
+{
+   CMD(h);
+   struct vk_buffer *src = vk_buffer_from_handle(ci->srcBuffer), *dst = vk_buffer_from_handle(ci->dstBuffer);
+   struct mali_meta_list l = { 0 };
+   int r = 0;
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
+      const VkBufferCopy2 *g = &ci->pRegions[i];
+      struct mali_meta_surf s, d;
+      buf_surf(&s, src, g->srcOffset);
+      buf_surf(&d, dst, g->dstOffset);
+      r = mali_meta_plan_buffer_copy(&l, &d, &s, g->size);
+   }
+   emit(cmd, &l, r);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
+{
+   CMD(h);
+   struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
+   struct mali_meta_list l = { 0 };
+   int r = 0;
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
+      const VkImageCopy2 *g = &ci->pRegions[i];
+      struct mali_meta_surf s, d;
+      const struct mali_plane_layout *sp, *dp;
+      if (!img_surf(&s, si, g->srcSubresource, g->srcOffset, &sp) || !img_surf(&d, di, g->dstSubresource, g->dstOffset, &dp) ||
+          sp->bs != dp->bs || sp->bw != dp->bw || sp->bh != dp->bh) {
+         r = -EINVAL;
+         break;
+      }
+      uint32_t ez = zcount(si, g->srcSubresource, g->extent);
+      r = mali_meta_plan_copy(&l, &d, &s, sp->bs, (g->extent.width + sp->bw - 1) / sp->bw, (g->extent.height + sp->bh - 1) / sp->bh, ez);
+      if (!r && di->bc)
+         r = bc_decode(&l, di, g->dstSubresource, g->dstOffset, g->extent);
+   }
+   emit(cmd, &l, r);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci)
+{
+   CMD(h);
+   struct vk_buffer *buf = vk_buffer_from_handle(ci->srcBuffer);
+   struct mali_image *img = mali_image_from_handle(ci->dstImage);
+   struct mali_meta_list l = { 0 };
+   int r = 0;
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
+      const VkBufferImageCopy2 *g = &ci->pRegions[i];
+      struct mali_meta_surf s, d;
+      const struct mali_plane_layout *p;
+      if (!img_surf(&d, img, g->imageSubresource, g->imageOffset, &p)) {
+         r = -EINVAL;
+         break;
+      }
+      uint32_t ex = (g->imageExtent.width + p->bw - 1) / p->bw, ey = (g->imageExtent.height + p->bh - 1) / p->bh;
+      uint32_t rl = g->bufferRowLength ? g->bufferRowLength : g->imageExtent.width;
+      uint32_t ih = g->bufferImageHeight ? g->bufferImageHeight : g->imageExtent.height;
+      buf_surf(&s, buf, g->bufferOffset);
+      s.row = (rl + p->bw - 1) / p->bw * p->bs;
+      s.slice = (ih + p->bh - 1) / p->bh * s.row;
+      r = mali_meta_plan_copy(&l, &d, &s, p->bs, ex, ey, zcount(img, g->imageSubresource, g->imageExtent));
+      if (!r && img->bc)
+         r = bc_decode(&l, img, g->imageSubresource, g->imageOffset, g->imageExtent);
+   }
+   emit(cmd, &l, r);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci)
+{
+   CMD(h);
+   struct mali_image *img = mali_image_from_handle(ci->srcImage);
+   struct vk_buffer *buf = vk_buffer_from_handle(ci->dstBuffer);
+   struct mali_meta_list l = { 0 };
+   int r = 0;
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
+      const VkBufferImageCopy2 *g = &ci->pRegions[i];
+      struct mali_meta_surf s, d;
+      const struct mali_plane_layout *p;
+      if (!img_surf(&s, img, g->imageSubresource, g->imageOffset, &p)) {
+         r = -EINVAL;
+         break;
+      }
+      uint32_t ex = (g->imageExtent.width + p->bw - 1) / p->bw, ey = (g->imageExtent.height + p->bh - 1) / p->bh;
+      uint32_t rl = g->bufferRowLength ? g->bufferRowLength : g->imageExtent.width;
+      uint32_t ih = g->bufferImageHeight ? g->bufferImageHeight : g->imageExtent.height;
+      buf_surf(&d, buf, g->bufferOffset);
+      d.row = (rl + p->bw - 1) / p->bw * p->bs;
+      d.slice = (ih + p->bh - 1) / p->bh * d.row;
+      r = mali_meta_plan_copy(&l, &d, &s, p->bs, ex, ey, zcount(img, g->imageSubresource, g->imageExtent));
+   }
+   emit(cmd, &l, r);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdFillBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkDeviceSize size, uint32_t data)
+{
+   CMD(h);
+   struct vk_buffer *buf = vk_buffer_from_handle(b);
+   struct mali_meta_list l = { 0 };
+   struct mali_meta_surf d;
+   if (size == VK_WHOLE_SIZE)
+      size = (buf->size - off) & ~3ull;
+   buf_surf(&d, buf, off);
+   int r = size ? mali_meta_plan_fill(&l, &d, size, data) : 0;
+   emit(cmd, &l, r);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdUpdateBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkDeviceSize size, const void *data)
+{
+   CMD(h);
+   struct vk_buffer *buf = vk_buffer_from_handle(b);
+   struct mali_meta_list l = { 0 };
+   struct mali_meta_surf d;
+   buf_surf(&d, buf, off);
+   int r = size ? mali_meta_plan_update(&l, &d, size, data) : 0;
+   emit(cmd, &l, r);
+}
+
+/* ---- blit / resolve ---- */
+/* Pixel class the blit shader handles: 8-bit UNORM x n or 32-bit float x n (RGBA order or BGRA = swap_rb). */
+static bool
+blit_class(int pipe, unsigned *n, bool *f32, bool *bgra)
+{
+   const struct util_format_description *d = util_format_description(pipe);
+   if (!d || d->layout != UTIL_FORMAT_LAYOUT_PLAIN || d->colorspace != UTIL_FORMAT_COLORSPACE_RGB || d->nr_channels < 1)
+      return false;
+   unsigned nc = d->nr_channels;
+   bool u8 = true, fl = true;
+   for (unsigned c = 0; c < nc; c++) {
+      u8 &= d->channel[c].size == 8 && d->channel[c].type == UTIL_FORMAT_TYPE_UNSIGNED && d->channel[c].normalized;
+      fl &= d->channel[c].size == 32 && d->channel[c].type == UTIL_FORMAT_TYPE_FLOAT;
+   }
+   if (!u8 && !fl)
+      return false;
+   *n = nc;
+   *f32 = fl;
+   *bgra = nc >= 3 && d->swizzle[0] == PIPE_SWIZZLE_Z && d->swizzle[2] == PIPE_SWIZZLE_X;
+   return true;
+}
+
+static int
+blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mali_image *di, const VkImageBlit2 *g, VkFilter filter, bool resolve_mode,
+         const VkImageResolve2 *rg)
+{
+   VkImageSubresourceLayers ss = resolve_mode ? rg->srcSubresource : g->srcSubresource, ds = resolve_mode ? rg->dstSubresource : g->dstSubresource;
+   VkOffset3D so[2], dof[2];
+   if (resolve_mode) {
+      so[0] = rg->srcOffset;
+      so[1] = (VkOffset3D){ rg->srcOffset.x + (int)rg->extent.width, rg->srcOffset.y + (int)rg->extent.height, rg->srcOffset.z + (int)rg->extent.depth };
+      dof[0] = rg->dstOffset;
+      dof[1] = (VkOffset3D){ rg->dstOffset.x + (int)rg->extent.width, rg->dstOffset.y + (int)rg->extent.height, rg->dstOffset.z + (int)rg->extent.depth };
+   } else {
+      so[0] = g->srcOffsets[0]; so[1] = g->srcOffsets[1];
+      dof[0] = g->dstOffsets[0]; dof[1] = g->dstOffsets[1];
+   }
+   struct mali_meta_surf s, d;
+   const struct mali_plane_layout *sp, *dp;
+   VkOffset3D zero = { 0, 0, 0 };
+   if (si->bc || di->bc)
+      return -EINVAL;   /* blit from/to BC images: not done (would have to read the shadow) */
+   if (!img_surf(&s, si, ss, zero, &sp) || !img_surf(&d, di, ds, zero, &dp))
+      return -EINVAL;
+   uint32_t sw = lvl(si->lay.d.extent.width, ss.mipLevel), sh = lvl(si->lay.d.extent.height, ss.mipLevel);
+   uint32_t dw = lvl(di->lay.d.extent.width, ds.mipLevel), dh = lvl(di->lay.d.extent.height, ds.mipLevel);
+   bool s3 = si->lay.d.type == VK_IMAGE_TYPE_3D, d3 = di->lay.d.type == VK_IMAGE_TYPE_3D;
+   int sdz = so[1].z - so[0].z, ddz = dof[1].z - dof[0].z;
+   uint32_t nz = s3 || d3 ? 1 : ss.layerCount;
+   if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
+      return -EINVAL;   /* z scaling / 3D <-> array mixes */
+   if (sp->pipe != dp->pipe && sp->bs != dp->bs)
+      return -EINVAL;
+
+   struct mali_meta_blit b;
+   memset(&b, 0, sizeof b);
+   b.src_w = sw;
+   b.src_h = sh;
+   b.s[0] = so[0].x; b.s[1] = so[0].y; b.s[2] = so[1].x; b.s[3] = so[1].y;
+   b.d[0] = dof[0].x; b.d[1] = dof[0].y; b.d[2] = dof[1].x; b.d[3] = dof[1].y;
+   int dx0 = b.d[0] < b.d[2] ? b.d[0] : b.d[2], dx1 = b.d[0] < b.d[2] ? b.d[2] : b.d[0];
+   int dy0 = b.d[1] < b.d[3] ? b.d[1] : b.d[3], dy1 = b.d[1] < b.d[3] ? b.d[3] : b.d[1];
+   b.clamp[0] = dx0 < 0 ? 0 : dx0; b.clamp[1] = dy0 < 0 ? 0 : dy0;
+   b.clamp[2] = dx1 > (int)dw ? (int)dw : dx1; b.clamp[3] = dy1 > (int)dh ? (int)dh : dy1;
+   if (b.clamp[2] <= b.clamp[0] || b.clamp[3] <= b.clamp[1])
+      return 0;
+
+   unsigned sn, dn;
+   bool sf, df, sbgra, dbgra;
+   bool same_pix = sp->pipe == dp->pipe;
+   bool plain = b.s[0] == b.d[0] && b.s[1] == b.d[1] && b.s[2] == b.d[2] && b.s[3] == b.d[3];   /* 1:1, no mirror */
+   bool cls = blit_class(sp->pipe, &sn, &sf, &sbgra) && blit_class(dp->pipe, &dn, &df, &dbgra) && sn == dn && sf == df;
+   if (resolve_mode && (!cls || !same_pix || si->lay.d.samples < 2))
+      return -EINVAL;
+   if (!resolve_mode && !cls) {
+      /* Unsupported pixel class (sRGB, 16 bit, integer, depth): only the identical-format 1:1 nearest case, as a rectangle copy. */
+      if (!same_pix || !plain || s3 != d3 || ss.layerCount != ds.layerCount)
+         return -EINVAL;
+      VkOffset3D so0 = { so[0].x, so[0].y, so[0].z }, do0 = { dof[0].x, dof[0].y, dof[0].z };
+      if (!img_surf(&s, si, ss, so0, NULL) || !img_surf(&d, di, ds, do0, NULL))
+         return -EINVAL;
+      uint32_t w = (uint32_t)(b.s[2] > b.s[0] ? b.s[2] - b.s[0] : b.s[0] - b.s[2]), hh = (uint32_t)(b.s[3] > b.s[1] ? b.s[3] - b.s[1] : b.s[1] - b.s[3]);
+      return mali_meta_plan_copy(l, &d, &s, sp->bs, w, hh, s3 ? 1 : ss.layerCount);
+   }
+   b.ncomp = sn;
+   b.f32 = sf;
+   b.swap_rb = sbgra != dbgra;
+   b.mode = resolve_mode ? 2 : (filter == VK_FILTER_LINEAR ? 1 : 0);
+   if (resolve_mode) {
+      b.nsamples = si->lay.d.samples;
+      b.sample_stride = (uint32_t)si->lay.plane[0].slice[ss.mipLevel].surface_stride;
+   }
+   for (uint32_t z = 0; z < nz; z++) {
+      VkOffset3D zs = { 0, 0, s3 ? (sdz > 0 ? so[0].z : so[0].z + sdz) : 0 }, zd = { 0, 0, d3 ? (ddz > 0 ? dof[0].z : dof[0].z + ddz) : 0 };
+      VkImageSubresourceLayers s1 = ss, d1 = ds;
+      s1.baseArrayLayer += z;
+      d1.baseArrayLayer += z;
+      if (!img_surf(&b.src, si, s1, zs, NULL) || !img_surf(&b.dst, di, d1, zd, NULL))
+         return -EINVAL;
+      b.src.size = si->lay.size;
+      b.dst.size = di->lay.size;
+      int r = mali_meta_plan_blit(l, &b);
+      if (r)
+         return r;
+   }
+   return 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
+{
+   CMD(h);
+   struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
+   struct mali_meta_list l = { 0 };
+   int r = 0;
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++)
+      r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);
+   emit(cmd, &l, r);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdResolveImage2(VkCommandBuffer h, const VkResolveImageInfo2 *ci)
+{
+   CMD(h);
+   struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
+   struct mali_meta_list l = { 0 };
+   int r = 0;
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++)
+      r = blit_one(&l, si, di, NULL, VK_FILTER_NEAREST, true, &ci->pRegions[i]);
+   emit(cmd, &l, r);
+}
+
+/* ---- clears (named mali_meta_*: mali_cmd.c owns mali_CmdClear*Image for the render-target fast path; wiring falls back to these) ---- */
+static int
+clear_range(struct mali_meta_list *l, const struct mali_image *img, VkImageAspectFlags aspect, const VkImageSubresourceRange *rg, const uint32_t cst[4])
+{
+   uint32_t nl = rg->levelCount == VK_REMAINING_MIP_LEVELS ? img->lay.d.levels - rg->baseMipLevel : rg->levelCount;
+   uint32_t nlay = rg->layerCount == VK_REMAINING_ARRAY_LAYERS ? img->lay.d.layers - rg->baseArrayLayer : rg->layerCount;
+   for (uint32_t m = 0; m < nl; m++) {
+      VkImageSubresourceLayers sub = { aspect, rg->baseMipLevel + m, rg->baseArrayLayer, nlay };
+      struct mali_meta_surf d;
+      const struct mali_plane_layout *p;
+      VkOffset3D z = { 0, 0, 0 };
+      if (!img_surf(&d, img, sub, z, &p))
+         return -EINVAL;
+      VkExtent3D e = { lvl(img->lay.d.extent.width, sub.mipLevel), lvl(img->lay.d.extent.height, sub.mipLevel), lvl(img->lay.d.extent.depth, sub.mipLevel) };
+      if (p->bw != 1 || p->bh != 1 || p->bs > 16)
+         return -EINVAL;
+      /* multisampled: sample k of each layer sits at k * surface_stride */
+      for (uint32_t k = 0; k < img->lay.d.samples; k++) {
+         struct mali_meta_surf dk = d;
+         dk.off += (uint64_t)k * p->slice[sub.mipLevel].surface_stride;
+         int r = mali_meta_plan_const(l, &dk, p->bs, e.width, e.height, zcount(img, sub, e), cst);
+         if (r)
+            return r;
+      }
+   }
+   return 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_meta_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout lo, const VkClearColorValue *c, uint32_t n, const VkImageSubresourceRange *r)
+{
+   CMD(h);
+   struct mali_image *img = mali_image_from_handle(image);
+   struct mali_meta_list l = { 0 };
+   int err = 0;
+   const struct mali_plane_layout *p = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+   uint32_t cst[4] = { 0 };
+   if (!p) {
+      emit(cmd, &l, -EINVAL);
+      return;
+   }
+   util_format_pack_rgba(p->pipe, cst, c, 1);
+   for (uint32_t i = 0; i < n && !err; i++)
+      err = clear_range(&l, img, VK_IMAGE_ASPECT_COLOR_BIT, &r[i], cst);
+   emit(cmd, &l, err);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_meta_CmdClearDepthStencilImage(VkCommandBuffer h, VkImage image, VkImageLayout lo, const VkClearDepthStencilValue *v, uint32_t n, const VkImageSubresourceRange *r)
+{
+   CMD(h);
+   struct mali_image *img = mali_image_from_handle(image);
+   struct mali_meta_list l = { 0 };
+   int err = 0;
+   for (uint32_t i = 0; i < n && !err; i++) {
+      for (unsigned a = 0; a < 2 && !err; a++) {
+         VkImageAspectFlags asp = a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
+         if (!(r[i].aspectMask & asp))
+            continue;
+         const struct mali_plane_layout *p = mali_image_plane_for_aspect(&img->lay, asp);
+         uint32_t cst[4] = { 0 };
+         if (!p) {
+            err = -EINVAL;
+            break;
+         }
+         if (a) {
+            uint8_t s = (uint8_t)v->stencil;
+            util_format_pack_s_8uint(p->pipe, cst, &s, 1);
+         } else {
+            util_format_pack_z_float(p->pipe, cst, &v->depth, 1);
+         }
+         err = clear_range(&l, img, asp, &r[i], cst);
+      }
+   }
+   emit(cmd, &l, err);
+}

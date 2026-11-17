@@ -1,0 +1,83 @@
+#version 450
+// M12 meta: scaled / mirrored blit (nearest, bilinear) and MSAA resolve between linear 2D surfaces of 8-bit UNORM or 32-bit float
+// texels with 1..4 components. One invocation = one destination pixel. Source coordinates follow Vulkan: texel centres at +0.5,
+// source region [sx0,sx1) (may be reversed = mirrored) mapped onto destination region [dx0,dx1).
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer S { uint d[]; } src;
+layout(set = 0, binding = 1, std430) buffer D { uint d[]; } dst;
+layout(push_constant) uniform P {
+   uint src_off, src_row, sample_stride;   // bytes; sample_stride = distance between samples of one pixel (resolve)
+   uint dst_off, dst_row, pad0;
+   int sx0, sy0, sx1, sy1;                 // source rectangle (signed: reversed = mirror)
+   int dx0, dy0, dx1, dy1;                 // destination rectangle (signed: reversed = mirror)
+   int cx0, cy0, cx1, cy1;                 // destination clamp rectangle (the written pixels, dst-space, x1/y1 exclusive)
+   int sw, sh;                             // source image size (clamp)
+   uint fmt;                               // bits 0-1 ncomp-1, bit2 float32 (else unorm8), bit3 swap R<->B (src and dst differ in BGRA-ness)
+   uint mode;                              // 0 nearest, 1 linear, 2 resolve (average of nsamples)
+   uint nsamples;
+   uint lw;                                // pixels written per row (cx1-cx0)
+} p;
+
+uint ncomp() { return (p.fmt & 3u) + 1u; }
+bool isf() { return (p.fmt & 4u) != 0u; }
+
+vec4 fetch(int x, int y, uint s) {
+   x = clamp(x, 0, p.sw - 1);
+   y = clamp(y, 0, p.sh - 1);
+   uint o = p.src_off + s * p.sample_stride + uint(y) * p.src_row + uint(x) * (isf() ? 4u * ncomp() : ncomp());
+   vec4 v = vec4(0.0, 0.0, 0.0, 1.0);
+   uint n = ncomp();
+   if (isf()) {
+      for (uint c = 0u; c < n; c++) v[c] = uintBitsToFloat(src.d[(o >> 2) + c]);
+   } else {
+      for (uint c = 0u; c < n; c++) {
+         uint b = o + c;
+         v[c] = float((src.d[b >> 2] >> ((b & 3u) * 8u)) & 0xffu) / 255.0;
+      }
+   }
+   if ((p.fmt & 8u) != 0u) v = v.bgra;
+   return v;
+}
+
+void put8(uint o, uint v) {
+   uint sh = (o & 3u) * 8u;
+   atomicAnd(dst.d[o >> 2], ~(0xffu << sh));
+   atomicOr(dst.d[o >> 2], v << sh);
+}
+
+void main() {
+   uint i = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * (32768u * 64u);
+   uint total = p.lw * uint(p.cy1 - p.cy0);
+   if (i >= total) return;
+   int ox = p.cx0 + int(i % p.lw);
+   int oy = p.cy0 + int(i / p.lw);
+   vec4 v;
+   if (p.mode == 2u) {
+      v = vec4(0.0);
+      for (uint s = 0u; s < p.nsamples; s++) v += fetch(ox - p.dx0 + p.sx0, oy - p.dy0 + p.sy0, s);
+      v /= float(p.nsamples);
+   } else {
+      // position of the destination pixel centre in destination space, mapped linearly onto the source rectangle
+      float u = (float(ox) + 0.5 - float(p.dx0)) / float(p.dx1 - p.dx0);
+      float w = (float(oy) + 0.5 - float(p.dy0)) / float(p.dy1 - p.dy0);
+      float fx = float(p.sx0) + u * float(p.sx1 - p.sx0);
+      float fy = float(p.sy0) + w * float(p.sy1 - p.sy0);
+      if (p.mode == 0u) {
+         v = fetch(int(floor(fx)), int(floor(fy)), 0u);
+      } else {
+         fx -= 0.5; fy -= 0.5;
+         int x0 = int(floor(fx)), y0 = int(floor(fy));
+         float ax = fx - float(x0), ay = fy - float(y0);
+         vec4 a = mix(fetch(x0, y0, 0u), fetch(x0 + 1, y0, 0u), ax);
+         vec4 b = mix(fetch(x0, y0 + 1, 0u), fetch(x0 + 1, y0 + 1, 0u), ax);
+         v = mix(a, b, ay);
+      }
+   }
+   uint n = ncomp();
+   uint bpp = isf() ? 4u * n : n;
+   uint o = p.dst_off + uint(oy) * p.dst_row + uint(ox) * bpp;
+   for (uint c = 0u; c < n; c++) {
+      if (isf()) dst.d[(o >> 2) + c] = floatBitsToUint(v[c]);
+      else put8(o + c, uint(clamp(v[c], 0.0, 1.0) * 255.0 + 0.5));
+   }
+}

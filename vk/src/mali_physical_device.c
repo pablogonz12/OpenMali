@@ -1,0 +1,267 @@
+/* SPDX-License-Identifier: MIT */
+#include "mali_private.h"
+#include "mali_queue.h"
+#include "mali_format.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "mali_entrypoints.h"
+#include "util/list.h"
+#include "vk_alloc.h"
+#include "vk_util.h"
+
+/* M1 policy: every limit is the Vulkan 1.0 required minimum (spec table "Required Limits").
+ * The milestone that implements a feature raises its limits to what the hardware does. */
+static void
+mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
+{
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+
+   *p = (struct vk_properties){
+      .apiVersion = MALI_DEVICE_API_VERSION,
+      .driverVersion = VK_MAKE_API_VERSION(0, 0, 1, 0),
+      .vendorID = MALI_VENDOR_ID_ARM,
+      .deviceID = gpu->gpu_id >> 16,
+      .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+      /* pipelineCacheUUID: zero until the shader cache exists (M6, from the build-id). */
+
+      .maxImageDimension1D = 4096,
+      .maxImageDimension2D = 4096,
+      .maxImageDimension3D = 256,
+      .maxImageDimensionCube = 4096,
+      .maxImageArrayLayers = 256,
+      .maxTexelBufferElements = 65536,
+      .maxUniformBufferRange = 16384,
+      .maxStorageBufferRange = 1u << 27,
+      .maxPushConstantsSize = 128,
+      .maxMemoryAllocationCount = 4096,
+      .maxSamplerAllocationCount = 4000,
+      .bufferImageGranularity = 1,
+      .maxBoundDescriptorSets = 4,
+      .maxPerStageDescriptorSamplers = 16,
+      .maxPerStageDescriptorUniformBuffers = 12,
+      .maxPerStageDescriptorStorageBuffers = 4,
+      .maxPerStageDescriptorSampledImages = 16,
+      .maxPerStageDescriptorStorageImages = 4,
+      .maxPerStageDescriptorInputAttachments = 4,
+      .maxPerStageResources = 128,
+      .maxDescriptorSetSamplers = 96,
+      .maxDescriptorSetUniformBuffers = 72,
+      .maxDescriptorSetUniformBuffersDynamic = 8,
+      .maxDescriptorSetStorageBuffers = 24,
+      .maxDescriptorSetStorageBuffersDynamic = 4,
+      .maxDescriptorSetSampledImages = 96,
+      .maxDescriptorSetStorageImages = 24,
+      .maxDescriptorSetInputAttachments = 4,
+      .maxVertexInputAttributes = 16,
+      .maxVertexInputBindings = 16,
+      .maxVertexInputAttributeOffset = 2047,
+      .maxVertexInputBindingStride = 2048,
+      .maxVertexOutputComponents = 64,
+      .maxFragmentInputComponents = 64,
+      .maxFragmentOutputAttachments = 4,
+      .maxFragmentCombinedOutputResources = 4,
+      .maxComputeSharedMemorySize = 16384,
+      .maxComputeWorkGroupCount = {65535, 65535, 65535},
+      .maxComputeWorkGroupInvocations = 128,
+      .maxComputeWorkGroupSize = {128, 128, 64},
+      .subPixelPrecisionBits = 4,
+      .subTexelPrecisionBits = 4,
+      .mipmapPrecisionBits = 4,
+      .maxDrawIndexedIndexValue = (1u << 24) - 1,
+      .maxDrawIndirectCount = 1,
+      .maxSamplerLodBias = 2.0f,
+      .maxSamplerAnisotropy = 1.0f,
+      .maxViewports = 1,
+      .maxViewportDimensions = {4096, 4096},
+      .viewportBoundsRange = {-8192.0f, 8191.0f},
+      .minMemoryMapAlignment = 64,
+      .minTexelBufferOffsetAlignment = 256,
+      .minUniformBufferOffsetAlignment = 256,
+      .minStorageBufferOffsetAlignment = 256,
+      .minTexelOffset = -8,
+      .maxTexelOffset = 7,
+      .maxFramebufferWidth = 4096,
+      .maxFramebufferHeight = 4096,
+      .maxFramebufferLayers = 256,
+      .framebufferColorSampleCounts = samples_1_4,
+      .framebufferDepthSampleCounts = samples_1_4,
+      .framebufferStencilSampleCounts = samples_1_4,
+      .framebufferNoAttachmentsSampleCounts = samples_1_4,
+      .maxColorAttachments = 4,
+      .sampledImageColorSampleCounts = samples_1_4,
+      .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT,
+      .sampledImageDepthSampleCounts = samples_1_4,
+      .sampledImageStencilSampleCounts = samples_1_4,
+      .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
+      .maxSampleMaskWords = 1,
+      .timestampPeriod = 1.0f,
+      .discreteQueuePriorities = 2,
+      .pointSizeRange = {1.0f, 1.0f},
+      .lineWidthRange = {1.0f, 1.0f},
+      .standardSampleLocations = true,
+      .optimalBufferCopyOffsetAlignment = 1,
+      .optimalBufferCopyRowPitchAlignment = 1,
+      .nonCoherentAtomSize = 64,
+      .maxTimelineSemaphoreValueDifference = UINT64_MAX,
+   };
+
+   snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
+            gpu->fake ? ", fake backend" : "");
+}
+
+static VkResult
+mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instance *instance,
+                          const struct mali_backend_ops *backend, const struct mali_gpu_info *gpu)
+{
+   struct vk_physical_device_dispatch_table dispatch_table;
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                                      &mali_physical_device_entrypoints, true);
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
+
+   /* No device extensions and no optional features yet. */
+   const struct vk_device_extension_table extensions = {
+      .KHR_timeline_semaphore = true,
+      .KHR_descriptor_update_template = true, /* M7: templates (core only from 1.1) */
+      .KHR_external_memory = true,
+      .KHR_external_memory_fd = true,
+      .EXT_external_memory_dma_buf = true,
+      .KHR_external_semaphore = true,
+      .KHR_external_semaphore_fd = true,
+      .KHR_external_fence = true,
+      .KHR_external_fence_fd = true,
+      .KHR_swapchain = true,                 /* M14 */
+      .KHR_swapchain_mutable_format = true,
+      .EXT_image_drm_format_modifier = true, /* LINEAR only */
+   };
+   const struct vk_features features = {.timelineSemaphore = true, .textureCompressionBC = true};
+   struct vk_properties properties;
+   mali_get_properties(gpu, &properties);
+
+   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &extensions, &features,
+                                             &properties, &dispatch_table);
+   if (result != VK_SUCCESS)
+      return result;
+
+   pdev->backend = backend;
+   pdev->gpu = *gpu;
+   mali_sync_init_physical(pdev);
+
+   /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
+    * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
+   pdev->memory = (VkPhysicalDeviceMemoryProperties){
+      .memoryTypeCount = 2,
+      .memoryTypes = {
+         {.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .heapIndex = 0},
+         {.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+          .heapIndex = 0},
+      },
+      .memoryHeapCount = 1,
+      .memoryHeaps = {{.size = gpu->heap_bytes, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
+   };
+
+   result = mali_wsi_init(pdev);
+   if (result != VK_SUCCESS) {
+      vk_physical_device_finish(&pdev->vk);
+      return result;
+   }
+
+   return VK_SUCCESS;
+}
+
+VkResult
+mali_enumerate_physical_devices(struct vk_instance *vk_instance)
+{
+   struct mali_instance *instance = container_of(vk_instance, struct mali_instance, vk);
+   const struct mali_backend_ops *backend = mali_backend_select();
+   struct mali_gpu_info gpu;
+
+   /* "No compatible device" is VK_SUCCESS with an empty list: the loader fails the whole
+    * enumeration if any ICD returns an error. */
+   if (backend == NULL || backend->probe(&gpu) != 0)
+      return VK_SUCCESS;
+
+   if (gpu.arch_major != 11 && gpu.arch_major != 13) {
+      vk_logw(VK_LOG_OBJS(vk_instance), "mali: unsupported GPU arch %u.%u (id 0x%08x)",
+              gpu.arch_major, gpu.arch_minor, gpu.gpu_id);
+      return VK_SUCCESS;
+   }
+
+   struct mali_physical_device *pdev =
+      vk_zalloc(&instance->vk.alloc, sizeof(*pdev), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!pdev)
+      return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   VkResult result = mali_physical_device_init(pdev, instance, backend, &gpu);
+   if (result != VK_SUCCESS) {
+      vk_free(&instance->vk.alloc, pdev);
+      return result;
+   }
+
+   list_addtail(&pdev->vk.link, &instance->vk.physical_devices.list);
+   return VK_SUCCESS;
+}
+
+void
+mali_destroy_physical_device(struct vk_physical_device *vk_pdev)
+{
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   struct vk_instance *instance = vk_pdev->instance;
+
+   mali_wsi_finish(pdev);
+   vk_physical_device_finish(&pdev->vk);
+   vk_free(&instance->alloc, pdev);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
+                                             uint32_t *pQueueFamilyPropertyCount,
+                                             VkQueueFamilyProperties2 *pQueueFamilyProperties)
+{
+   VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pQueueFamilyProperties,
+                          pQueueFamilyPropertyCount);
+
+   vk_outarray_append_typed(VkQueueFamilyProperties2, &out, p)
+   {
+      p->queueFamilyProperties = (VkQueueFamilyProperties){
+         .queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
+         .queueCount = 1,
+         .timestampValidBits = 64,
+         .minImageTransferGranularity = {1, 1, 1},
+      };
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
+                                        VkPhysicalDeviceMemoryProperties2 *pMemoryProperties)
+{
+   VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
+
+   pMemoryProperties->memoryProperties = pdev->memory;
+}
+
+/* Format, image-format and sparse-image-format properties: mali_format.c (M5). */
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetPhysicalDeviceExternalBufferProperties(
+   VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
+   VkExternalBufferProperties *pExternalBufferProperties)
+{
+   /* dma-buf only (M4). */
+   VkExternalMemoryProperties p = {0};
+   if (pExternalBufferInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+      p = (VkExternalMemoryProperties){
+         .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
+                                   VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
+         .exportFromImportedHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+         .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+      };
+   pExternalBufferProperties->externalMemoryProperties = p;
+}

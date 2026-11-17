@@ -1,0 +1,12 @@
+third_party/
+runs/
+vk/out/
+vk/deqp/*/
+vk/deqp/*.log
+vk/package/dist/
+**/build/
+**/out/
+*.o
+*.a
+*.so
+*.zip

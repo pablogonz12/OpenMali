@@ -1,0 +1,6 @@
+#version 450
+layout(local_size_x=8) in;
+layout(set=1, binding=3) buffer B { vec4 v[]; } b[2];
+layout(set=0, binding=0) uniform U { vec4 k; } u;
+layout(push_constant) uniform P { uint i; } p;
+void main(){ b[p.i].v[gl_GlobalInvocationID.x] = b[1].v[gl_GlobalInvocationID.x] * u.k; }

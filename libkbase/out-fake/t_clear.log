@@ -1,0 +1,7 @@
+{"test":"open","ok":true,"rc":0,"opt_finish":false,"opt_noclean":false,"opt_tiled":false,"opt_slot":3}
+{"test":"queue_create","ok":true,"rc":0}
+{"test":"clear_256_red","ok":false,"colour":"red","width":256,"height":256,"row_stride_bytes":1024,"format":"R8G8B8A8 linear","fence_rc":0,"fence_signalled":true,"submit_to_signal_us":51.46,"expected_pixel":"0xff0000ff","pixels":65536,"mismatches":65536,"untouched_prefill":65536,"first_bad_index":0,"first_bad_value":"0x5a3c1e87","seen_values":["0x5a3c1e87"]}
+{"test":"descriptor_dump","tag":"clear_256_red","fbd_gpu_va":"0x5f00000000","words":["00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00ff00ff","00000000","00ff00ff","04005480","20010000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","04000000","86880299","00000000","00000000","00000000","00000000","00000000","00000000","0000a000","0000005f","00000400","00040000","ff0000ff","ff0000ff","ff0000ff","ff0000ff"]}
+{"test":"fault_state","ok":false,"queue_faulted":false,"cs_extract":"0x80","cs_insert":"0x80"}
+{"test":"teardown","ok":true,"leaked_bos":0,"leaked_queues":0}
+{"test":"summary","ok":false,"failures":1}

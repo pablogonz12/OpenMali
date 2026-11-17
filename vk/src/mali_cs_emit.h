@@ -1,0 +1,145 @@
+/* SPDX-License-Identifier: MIT */
+/* M8, Mesa-free core: a recorded frame (one render pass instance: attachments + draws) -> hardware descriptors + CSF command stream.
+ * Plain C: no Vulkan or Mesa headers. All descriptors/CS words come from the libkbase builders that were proven on the phones
+ * (kb_draw_*, kb_v13_*, kb_fb_pack, kb_cs_*, kb13_cs_*); this file only sequences them, the way tests/rung2.h (v11) and
+ * tests/rung2_v13.h (v13) do. Arch (11 or 13) is a RUNTIME switch (struct mali_env.arch), not a per-arch compile of this file.
+ *
+ * Seams (everything the core needs from the outside is in struct mali_hw):
+ *   alloc      zeroed GPU-visible descriptor memory; MUST be a rolling arena (kb_arena_begin), see libkbase/INTERMITTENT.md
+ *   job_begin  called once per frame before any alloc (kb_arena_begin)
+ *   submit     hands the finished CS to the queue
+ * Limits (documented in R3-PLAN.md "M8"): one colour attachment RGBA8 + optional D32F/D24X8/D16, opaque blend, triangle lists,
+ * non-indexed draws, one vertex-attribute path (RGBA32F-style 1D attributes), colour loadOp LOAD unsupported. */
+#ifndef MALI_CS_EMIT_H
+#define MALI_CS_EMIT_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "mali_compile.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define MALI_MAX_VB 8
+#define MALI_MAX_ATTR 16
+#define MALI_CMD_SETS 4
+#define MALI_PUSH_MAX 128
+
+/* Per-queue resources the CS refers to (created by the backend once per device). */
+struct mali_env {
+   unsigned arch;                 /* 11 or 13 */
+   uint32_t hmask;                /* tiler hierarchy mask: v11 0xfe, v13 0 (libkbase tests) */
+   unsigned tile_log2;            /* v13 only: FBD / tiler tile size log2 (libkbase default 12) */
+   unsigned slot;                 /* scoreboard slot of the vertex/fragment jobs (3) */
+   uint32_t tf_or;                /* v13: ORed into the tiler flags (0x40000, V13-NEXT2.md); 0 on v11 */
+   uint64_t heap_ctx_va;          /* tiler heap context (kb_tiler_heap.ctx_va) */
+   uint64_t heap_first_chunk_va;
+   uint32_t heap_chunk_size;
+   void *geo_cpu;                 /* geometry BO: 4 KiB heap descriptor page, then a 64 KiB geometry buffer */
+   uint64_t geo_va;
+   uint64_t sync_va;              /* CQS word the frame increments (SYNC_ADD64) when it retires */
+   unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
+};
+
+struct mali_hw {
+   void *user;
+   void *(*alloc)(void *user, size_t size, size_t align, uint64_t *va);
+   void (*job_begin)(void *user);
+   int (*submit)(void *user, const uint64_t *cs, unsigned ninstr);
+   void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
+   struct mali_env env;
+};
+
+/* One vertex attribute: 1D attribute fetch from vertex binding `binding`. pixfmt = Mali Pixel Format word (KB_PIXFMT_*). */
+struct mali_attr { uint32_t pixfmt, binding, offset, stride; };
+
+/* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
+struct mali_gfx_state {
+   const struct mali_compiled *vs, *fs;   /* compiled with arch == env.arch */
+   uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
+   unsigned nattr;
+   struct mali_attr attr[MALI_MAX_ATTR];
+   bool depth_test, depth_write;
+   unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
+   unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
+};
+
+struct mali_draw {
+   struct mali_gfx_state gfx;
+   uint64_t vb_va[MALI_MAX_VB];           /* bound vertex buffers (offset applied) */
+   uint32_t vb_size[MALI_MAX_VB];
+   uint8_t push[2][MALI_PUSH_MAX];        /* [0] vertex stage view, [1] fragment stage view of the push constants */
+   float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
+   int32_t sc[4];                         /* scissor x, y, w, h */
+   unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
+   uint64_t set_va[MALI_CMD_SETS];
+   uint32_t set_bytes[MALI_CMD_SETS];
+   bool indexed;                          /* vkCmdDrawIndexed: index_va/index_size/first_index/vertex_offset used (count = indexCount) */
+   uint64_t index_va;                     /* bound index buffer VA with offset applied */
+   uint32_t index_bytes;                  /* bytes from index_va to the buffer end */
+   unsigned index_size;                   /* 1, 2 or 4 */
+   uint32_t first_index;
+   uint32_t count, instance_count, first_vertex, first_instance;
+   uint64_t occ_va;                       /* M13: occlusion counter address (8-aligned, 0 = none); sets OQ register + DCD flags_0 mode */
+   unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
+};
+
+/* A compute dispatch (M11): one per frame record, executed with RUN_COMPUTE. */
+struct mali_dispatch {
+   const struct mali_compiled *cs;        /* compiled with stage COMPUTE */
+   uint64_t cs_va;
+   uint8_t push[MALI_PUSH_MAX];
+   unsigned nsets;
+   uint64_t set_va[MALI_CMD_SETS];
+   uint32_t set_bytes[MALI_CMD_SETS];
+   uint32_t groups[3];                    /* workgroup counts (direct) */
+   uint64_t indirect_va;                  /* != 0: 3 x u32 workgroup counts are loaded from here by the CS */
+};
+
+struct mali_op;
+
+struct mali_att {
+   uint64_t va;                           /* 64-byte aligned */
+   uint32_t row_stride;                   /* bytes, multiple of 16 */
+   int zs_format;                         /* depth only: 1 D32F, 2 D24X8, 3 D16 (enum kb_zs_format); colour is RGBA8 */
+   bool clear;                            /* loadOp CLEAR (false = DONT_CARE, handled as clear to 0; LOAD is rejected by the caller) */
+   bool store;                            /* storeOp STORE; colour: always stored (no FBD knob yet); depth: false = Z write enable off */
+   float clear_color[4];
+   float clear_depth;
+};
+
+struct mali_frame {
+   unsigned width, height;                /* framebuffer size (attachment extent) */
+   int32_t area[4];                       /* render area x, y, w, h */
+   bool has_colour, has_zs;
+   struct mali_att colour, zs;
+   bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
+   struct mali_dispatch disp;
+   struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
+   unsigned nops;
+   struct mali_draw *draws;
+   unsigned ndraws, cap;
+};
+
+int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* 0 or -ENOMEM */
+void mali_frame_finish(struct mali_frame *f);                               /* frees the draw list */
+
+/* Allocates + fills the descriptors via hw->alloc and returns the CS in a malloc'd array (caller frees). 0 or -errno:
+ * -ENOMEM (arena full), -ENOTSUP (indexed draw, unsupported format), -EINVAL (no colour attachment, bad shader). */
+int mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **cs, unsigned *ninstr);
+/* job_begin + build + write barrier + hw->submit. */
+int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
+
+/* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
+int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
+                         uint64_t sample_locations_va);
+/* Converts a 0..1 float to an 8-bit UNORM clear channel (round to nearest, clamped). */
+uint8_t mali_unorm8(float c);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

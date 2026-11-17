@@ -1,0 +1,10 @@
+   MOV.i32.wait0126 r2, u5.w0
+   ATEST.wait0 @r60, r60^, 0x3F800000, atest_datum.w0
+   MOV.i32.discard r3, 0x3F800000
+   MOV.i32 r0, u4.w0
+   MOV.i32.wait r1, u4.w1
+   BLEND.slot0.v4.f32.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, target:0x0
+   IADD_IMM.i32 r48, 0x0, #0x0
+   BRANCHZI.eq.absolute 0x0, blend_descriptor_0.w1
+
+
