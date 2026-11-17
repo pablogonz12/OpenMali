@@ -163,13 +163,14 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    const bool slices = d->type == VK_IMAGE_TYPE_3D && !vol;   /* 2D (array) view of a 3D image: each layer = one z slice */
    const unsigned ordering = d->tiled ? 1 : 2;
 
+   /* Payload order (Mesa pan_emit_iview_texture_payload, v7+): layer-major, then mip level. */
    uint8_t *out = payload;
-   for (unsigned li = 0; li < v->levels; li++) {
-      const unsigned lev = v->base_level + li;
-      const struct mali_slice *s = &p->slice[lev];
-      const unsigned w = minify(d->extent.width, lev), h = minify(d->extent.height, lev);
-      const unsigned nl = vol ? 1u : v->layers;
-      for (unsigned ly = 0; ly < nl; ly++) {
+   const unsigned nl = vol ? 1u : v->layers;
+   for (unsigned ly = 0; ly < nl; ly++) {
+      for (unsigned li = 0; li < v->levels; li++) {
+         const unsigned lev = v->base_level + li;
+         const struct mali_slice *s = &p->slice[lev];
+         const unsigned w = minify(d->extent.width, lev), h = minify(d->extent.height, lev);
          uint64_t va = image_va + p->offset + s->offset, size = s->size, ss = 0;
          const unsigned layer = v->base_layer + ly;
          if (vol) {

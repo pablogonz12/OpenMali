@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -602,6 +602,49 @@ test_cubearray(void)
       printf("{\"test\":\"cubearray\",\"ok\":true}\n");
    } else {
       printf("{\"test\":\"cubearray\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   tex_destroy(&x);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* Array texture with mips (layer-major payload order): 8x8, 4 mips, 3 layers, every (layer, mip) its own flat colour
+ * R = 40 + 60 L, G = 40 + 50 M, B = 100. Quadrants sample (L,M) = (1,0), (2,1), (1,2), (2,3). */
+static int
+test_arrtex(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   uint8_t data[3 * (64 + 16 + 4 + 1) * 4];
+   VkBufferImageCopy reg[12];
+   size_t off = 0;
+   unsigned n = 0;
+   for (unsigned l = 0; l < 3; l++)
+      for (unsigned m = 0; m < 4; m++) {
+         unsigned dim = 8u >> m;
+         reg[n++] = (VkBufferImageCopy){.bufferOffset = off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, l, 1}, .imageExtent = {dim, dim, 1}};
+         for (unsigned i = 0; i < dim * dim; i++, off += 4) {
+            data[off] = 40 + 60 * l; data[off + 1] = 40 + 50 * m; data[off + 2] = 100; data[off + 3] = 255;
+         }
+      }
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 8, 8, 4, 3, 0);
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 3.0f};
+   struct tex x;
+   if (!tex_create(&t, &x, &ici, VK_IMAGE_VIEW_TYPE_2D_ARRAY, 3, data, off, reg, 12, &si)) return 0;
+   const float s[4] = {1.0f, 1.0f, 0, 0};
+   if (!quad_draw(&t, &x, "arrtex.frag.spv", s)) return 0;
+   if (!g_fake) {
+      static const struct { int x, y, l, m; } probe[] = {{64, 64, 1, 0}, {192, 64, 2, 1}, {64, 192, 1, 2}, {192, 192, 2, 3}};
+      for (unsigned i = 0; i < 4; i++) {
+         const uint8_t *p = pix(&t, probe[i].x, probe[i].y);
+         CHECK(near(p, 40 + 60 * probe[i].l, 40 + 50 * probe[i].m, 100, 255, 6), "quadrant %u got %u,%u,%u,%u expected layer %d mip %d", i, p[0],
+               p[1], p[2], p[3], probe[i].l, probe[i].m);
+      }
+      printf("{\"test\":\"arrtex\",\"ok\":true}\n");
+   } else {
+      printf("{\"test\":\"arrtex\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
    tex_destroy(&x);
    tgt_destroy(&t);
@@ -1775,6 +1818,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
+   if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("bda")) ok &= test_bda();
