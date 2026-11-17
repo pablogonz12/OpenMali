@@ -1213,7 +1213,25 @@ test_fx(void)
    struct fxcase ref = {"ref", 0, 1, {0.5f}, EXP_SAME, 0, 0, s_none};
    uint8_t p[4] = {0}, q[4];
    uint32_t cov = 0;
-   if (g_fake) { printf("{\"test\":\"fx\",\"skipped\":\"fake backend\",\"ok\":true}\n"); return 1; }
+   if (g_fake) {   /* the fake backend renders nothing, but every fx pipeline (shader + blend compile, per GPU class) must still build */
+      for (unsigned i = 0; i < sizeof g_fxcases / sizeof *g_fxcases; i++) {
+         const struct fxcase *c = &g_fxcases[i];
+         struct scene s;
+         if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
+         memset(&g_fx, 0, sizeof g_fx);
+         g_fx.on = 1;
+         g_fx.wmask = 0xf;
+         c->set();
+         memset(&s, 0, sizeof s);
+         s.mode = MODE_TRI;
+         printf("{\"test\":\"%s\",\"pipeline\":\"%s\"}\n", c->name, "creating");
+         if (!scene_create(&s, c->depth)) return 0;
+         scene_destroy(&s);
+         memset(&g_fx, 0, sizeof g_fx);
+      }
+      printf("{\"test\":\"fx\",\"skipped\":\"fake backend: pipelines only\",\"ok\":true}\n");
+      return 1;
+   }
    if (!fx_run(&ref, p, &cov)) return 0;
    CHECK(abs(p[0] - 85) < 12 && p[3] == 255, "fx reference pixel %u,%u,%u,%u", p[0], p[1], p[2], p[3]);
    for (unsigned i = 0; ok && i < sizeof g_fxcases / sizeof *g_fxcases; i++) {

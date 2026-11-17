@@ -571,6 +571,7 @@ mali_compile_stats(struct mali_compile_stats *s)
 }
 
 /* ---- blend shader ---- */
+nir_shader *pan_blend_create_shader_v10(const struct pan_blend_state *, nir_alu_type, nir_alu_type, unsigned);
 nir_shader *pan_blend_create_shader_v11(const struct pan_blend_state *, nir_alu_type, nir_alu_type, unsigned);
 nir_shader *pan_blend_create_shader_v13(const struct pan_blend_state *, nir_alu_type, nir_alu_type, unsigned);
 
@@ -592,11 +593,11 @@ lower_load_blend_const(nir_builder *b, nir_instr *instr, UNUSED void *data)
 int
 mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz)
 {
-   if (!o || !out || (o->arch != 11 && o->arch != 13))
+   if (!o || !out || (o->arch != 10 && o->arch != 11 && o->arch != 13))
       return fail(err, errsz, "bad blend arguments");
    pthread_once(&g_once, init_once);
    unsigned arch = o->arch;
-   const struct pan_model *model = g_model[arch == 13];
+   const struct pan_model *model = g_model[arch == 13 ? 2 : arch == 10 ? 0 : 1];
    if (!model)
       return fail(err, errsz, "no GPU model");
 
@@ -615,8 +616,9 @@ mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, c
    rt->equation.alpha_dst_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->alpha_dst);
    rt->equation.color_mask = o->color_mask & 0xf;
 
-   nir_shader *nir = arch == 13 ? pan_blend_create_shader_v13(&st, o->src0_type, o->src1_type, 0)
-                                : pan_blend_create_shader_v11(&st, o->src0_type, o->src1_type, 0);
+   nir_shader *nir = arch == 13   ? pan_blend_create_shader_v13(&st, o->src0_type, o->src1_type, 0)
+                     : arch == 10 ? pan_blend_create_shader_v10(&st, o->src0_type, o->src1_type, 0)
+                                  : pan_blend_create_shader_v11(&st, o->src0_type, o->src1_type, 0);
    if (!nir)
       return fail(err, errsz, "pan_blend_create_shader failed");
    NIR_PASS(_, nir, nir_shader_instructions_pass, lower_load_blend_const, nir_metadata_control_flow, NULL);
