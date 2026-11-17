@@ -332,6 +332,12 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_zsd_off(zsd);
    }
 
+   /* Z/S written by the fragment shader (genxml Depth/stencil: Depth source 4:25 = Shader, Stencil from shader 0:30) */
+   if (g->depth_test && f->has_zs && g->fs && g->fs->fs_writes_depth)
+      zsd[4] = (zsd[4] & ~(3u << 25)) | (3u << 25);
+   if (f->has_st && d->fx.set && d->fx.st_test && g->fs && g->fs->fs_writes_stencil)
+      zsd[0] |= 1u << 30;
+
    /* stencil test (genxml Depth/stencil words 0..2, identical on v11 and v13; panvk build_zsd) */
    if (f->has_st && d->fx.set && d->fx.st_test) {
       static const uint8_t sop[8] = { 0 /* KEEP */, 2 /* ZERO */, 1 /* REPLACE */, 6 /* INCR_SAT */, 7 /* DECR_SAT */, 3 /* INVERT */, 4 /* INCR_WRAP */, 5 /* DECR_WRAP */ };
@@ -518,6 +524,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    bool v13 = env->arch == 13;
    unsigned pk = ((g->depth_test && f->has_zs) || (f->has_st && d->fx.set && d->fx.st_test)) ? 0 : 2;
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
+   if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
+      dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
+      dop.zs_update = 3;
+      dop.allow_fpk = 0;
+   }
    uint32_t dcd_extra = 0, pf_clear = 0;
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;

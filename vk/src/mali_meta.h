@@ -109,9 +109,12 @@ int mali_meta_shader_get(enum mali_meta_shader sh, const struct mali_compiled **
 /* Builds the dispatch (descriptor set bytes in persistent memory, push constants, groups). Does not touch the frame list. */
 int mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, struct mali_dispatch *out);
 
-/* R4: fills a draw (full-viewport triangle) that re-emits the old contents of a linear RGBA8-family colour attachment (va, row_bytes,
- * bytes bound); flags 1 = memory order BGRA, 2 = sRGB. vp/sc are left to the caller. 0 or -errno. */
-int mali_meta_preload(struct mali_meta_mem *mem, uint64_t va, uint32_t bytes, uint32_t row_bytes, unsigned flags, struct mali_draw *d);
+/* R4: fills a draw (full-viewport triangle) that re-emits the old contents of a linear attachment. kind: colour (any render-target format:
+ * arg = format kind | 0x100 sRGB, bpp = bytes per texel, see preload.frag), depth (arg 0 = D32F, 1 = D16), stencil, or depth+stencil
+ * (va[0] depth, va[1] stencil). vp/sc are left to the caller. 0 or -errno. */
+enum mali_preload_kind { MALI_PRELOAD_COLOUR, MALI_PRELOAD_Z, MALI_PRELOAD_S, MALI_PRELOAD_ZS, MALI_PRELOAD_KINDS };
+struct mali_preload_src { uint64_t va[2]; uint32_t bytes[2], row[2], arg, bpp; };
+int mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
 
 /* Software reference of the shaders: executes the job with GPU VAs interpreted as host pointers. */
 void mali_meta_ref_run(const struct mali_meta_job *j);

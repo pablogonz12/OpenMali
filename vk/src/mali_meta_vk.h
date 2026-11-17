@@ -6,8 +6,9 @@
 struct mali_cmd_buffer;
 struct mali_meta_list;
 void mali_meta_vk_emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err);
+#include "mali_meta.h"
 struct mali_draw;
-int mali_meta_vk_preload(struct mali_cmd_buffer *cmd, uint64_t va, uint32_t bytes, uint32_t row_bytes, unsigned flags, struct mali_draw *d);
+int mali_meta_vk_preload(struct mali_cmd_buffer *cmd, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
 void mali_meta_cmd_forget(const void *cmd);
 VKAPI_ATTR void VKAPI_CALL mali_CmdCopyBuffer2(VkCommandBuffer, const VkCopyBufferInfo2 *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdCopyImage2(VkCommandBuffer, const VkCopyImageInfo2 *);

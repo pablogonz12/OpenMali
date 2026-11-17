@@ -468,6 +468,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (stage == MESA_SHADER_FRAGMENT) {
       out->fs_can_discard = info.fs.can_discard;
       out->fs_writes_depth = info.fs.writes_depth;
+      out->fs_writes_stencil = info.fs.writes_stencil;
       out->fs_early_fragment_tests = info.fs.early_fragment_tests;
       out->fs_can_early_z = info.fs.can_early_z;
       out->fs_can_fpk = info.fs.can_fpk;
