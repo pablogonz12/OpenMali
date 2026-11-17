@@ -397,6 +397,89 @@ case_cleard(void)
    return 1;
 }
 
+/* D16 / D32S8: clear, buffer->image upload per aspect, image->image copy, readback */
+static int
+case_dsfmt(const char *name, VkFormat fmt)
+{
+   const uint32_t w = 32, h = 16;
+   const int d16 = fmt == VK_FORMAT_D16_UNORM, hs = fmt == VK_FORMAT_D32_SFLOAT_S8_UINT;
+   const uint32_t zb = d16 ? 2 : 4;
+   VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkImageAspectFlags all = VK_IMAGE_ASPECT_DEPTH_BIT | (hs ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+   struct buf zsrc = {0}, zdst = {0}, ssrc = {0}, sdst = {0};
+   struct img a = {0}, b = {0};
+   TRY(mkbuf(&zsrc, w * h * zb, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&zdst, w * h * zb, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   TRY(mkbuf(&ssrc, w * h, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&sdst, w * h, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   TRY(mkimg(&a, fmt, w, h, u, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&b, fmt, w, h, u, VK_SAMPLE_COUNT_1_BIT));
+   for (int l = 0; l < g_loop; l++) {
+      for (uint32_t i = 0; i < w * h; i++) {
+         if (d16) ((uint16_t *)zsrc.p)[i] = (uint16_t)(i * 61 + 7);
+         else ((float *)zsrc.p)[i] = (float)(i % 251) / 251.0f;
+         ((uint8_t *)ssrc.p)[i] = (uint8_t)(i * 7 + 3);
+      }
+      memset(zdst.p, 0xEE, w * h * zb);
+      memset(sdst.p, 0xEE, w * h);
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      layout_tr(cb, b.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      /* clear b then overwrite a from buffers, copy a -> b, read b back */
+      VkClearDepthStencilValue c = {.depth = 0.5f, .stencil = 0x11};
+      VkImageSubresourceRange rg = {all, 0, 1, 0, 1};
+      CmdClearDepthStencilImage(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &rg);
+      VkBufferImageCopy up = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, zsrc.b, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      if (hs) {
+         VkBufferImageCopy us = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+         CmdCopyBufferToImage(cb, ssrc.b, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &us);
+      }
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      VkImageCopy ic = {.srcSubresource = {all, 0, 0, 1}, .dstSubresource = {all, 0, 0, 1}, .extent = {w, h, 1}};
+      CmdCopyImage(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+      layout_tr(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, zdst.b, 1, &dn);
+      if (hs) {
+         VkBufferImageCopy ds = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+         CmdCopyImageToBuffer(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sdst.b, 1, &ds);
+      }
+      CHECK(submit_wait(cb), "submit");
+      if (!g_fake) {
+         CHECK(!memcmp(zdst.p, zsrc.p, w * h * zb), "%s depth plane differs after upload+copy+readback", name);
+         if (hs) CHECK(!memcmp(sdst.p, ssrc.p, w * h), "%s stencil plane differs", name);
+      }
+   }
+   /* clear-only pass: both aspects */
+   {
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      VkClearDepthStencilValue c = {.depth = 0.25f, .stencil = 0x5A};
+      VkImageSubresourceRange rg = {all, 0, 1, 0, 1};
+      CmdClearDepthStencilImage(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &rg);
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, zdst.b, 1, &dn);
+      if (hs) {
+         VkBufferImageCopy ds = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+         CmdCopyImageToBuffer(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sdst.b, 1, &ds);
+      }
+      CHECK(submit_wait(cb), "submit clear");
+      if (!g_fake)
+         for (uint32_t i = 0; i < w * h; i++) {
+            if (d16) CHECK(abs((int)((uint16_t *)zdst.p)[i] - 16384) <= 1, "d16 clear px %u = %u", i, ((uint16_t *)zdst.p)[i]);
+            else CHECK(fabsf(((float *)zdst.p)[i] - 0.25f) < 1e-6f, "d32 clear px %u", i);
+            if (hs) CHECK(((uint8_t *)sdst.p)[i] == 0x5A, "stencil clear px %u = %u", i, ((uint8_t *)sdst.p)[i]);
+         }
+   }
+   rmimg(&a); rmimg(&b); rmbuf(&zsrc); rmbuf(&zdst); rmbuf(&ssrc); rmbuf(&sdst);
+   report(name, g_fake ? "results: fake backend" : NULL);
+   return 1;
+}
+
 /* 4x MSAA clear then resolve */
 static int
 case_resolve(void)
@@ -600,6 +683,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("blit")) ok &= case_blit();
    if (ok && CASE_ON("clearc")) ok &= case_clearc();
    if (ok && CASE_ON("cleard")) ok &= case_cleard();
+   if (ok && CASE_ON("d16")) ok &= case_dsfmt("d16", VK_FORMAT_D16_UNORM);
+   if (ok && CASE_ON("d32s8")) ok &= case_dsfmt("d32s8", VK_FORMAT_D32_SFLOAT_S8_UINT);
    if (ok && CASE_ON("resolve")) ok &= case_resolve();
    if (ok && CASE_ON("event")) ok &= case_event();
    if (ok && CASE_ON("ts")) ok &= case_ts();

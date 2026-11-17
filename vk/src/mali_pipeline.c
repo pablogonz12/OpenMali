@@ -348,8 +348,9 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    out->rt = NULL;
    switch (img->vk.format) {
    case VK_FORMAT_R8G8B8A8_UNORM: break;
-   case VK_FORMAT_D32_SFLOAT: zs = 1; break;
-   case VK_FORMAT_X8_D24_UNORM_PACK32: zs = 2; break;
+   /* D+S formats attach their depth plane only (separate planes; no stencil test/clear in the FBD yet) */
+   case VK_FORMAT_D32_SFLOAT: case VK_FORMAT_D32_SFLOAT_S8_UINT: zs = 1; break;
+   case VK_FORMAT_X8_D24_UNORM_PACK32: case VK_FORMAT_D24_UNORM_S8_UINT: zs = 2; break;
    case VK_FORMAT_D16_UNORM: zs = 3; break;
    default: {
       bool ok;

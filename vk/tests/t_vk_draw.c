@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture|depth16|depth32s8]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -24,6 +24,7 @@
 #define W 256
 #define H 256
 
+static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static int g_fail, g_fake, g_loop = 1, g_reset;
 /* R4 fixed-function state of the next scene_create()/scene_draw() (all zero = the old tests' state) */
 static struct {
@@ -218,7 +219,7 @@ scene_create(struct scene *s, int depth)
    VkImageView atts[2] = {s->colv, VK_NULL_HANDLE};
    if (depth) {
       VkImageCreateInfo di = ii;
-      di.format = VK_FORMAT_D32_SFLOAT;
+      di.format = g_depfmt;
       di.tiling = VK_IMAGE_TILING_OPTIMAL;
       di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
       CHECK(CreateImage(dev, &di, NULL, &s->dep) == VK_SUCCESS, "depth image");
@@ -230,8 +231,8 @@ scene_create(struct scene *s, int depth)
       CHECK(BindImageMemory(dev, s->dep, s->depmem, 0) == VK_SUCCESS, "bind depth");
       VkImageViewCreateInfo dv = vi;
       dv.image = s->dep;
-      dv.format = VK_FORMAT_D32_SFLOAT;
-      dv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+      dv.format = g_depfmt;
+      dv.subresourceRange.aspectMask = g_depfmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT;
       CHECK(CreateImageView(dev, &dv, NULL, &s->depv) == VK_SUCCESS, "depth view");
       atts[1] = s->depv;
    }
@@ -241,7 +242,7 @@ scene_create(struct scene *s, int depth)
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL},
-      {.format = VK_FORMAT_D32_SFLOAT, .samples = VK_SAMPLE_COUNT_1_BIT,
+      {.format = g_depfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
@@ -650,7 +651,7 @@ test_two(int depth)
       /* with LESS and equal z, B appears only outside A; without depth it overwrites: same union.
        * Distinguish by colour: B's vertex colours differ from A at shared pixels, so compare the
        * centre pixel against what A alone would give (A wins when depth rejects B). */
-      ok = report("depth", &s, 16384.0 - ov, 2.5, 0);
+      ok = report(g_depfmt == VK_FORMAT_D16_UNORM ? "depth16" : g_depfmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? "depth32s8" : "depth", &s, 16384.0 - ov, 2.5, 0);
       if (ok && !g_fake) {
          const uint8_t *p = s.px + 128 * s.pitch + 128 * 4; /* inside both */
          /* B centre colour is mix with bottom-left... just require non-zero and report it */
@@ -1121,6 +1122,9 @@ main(int argc, char **argv)
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
+   /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
+   if (ok && CASE_ON("depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   if (ok && CASE_ON("depth32s8")) { g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("poly")) {
       ok &= test_poly("poly_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
       ok &= test_poly("poly_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
