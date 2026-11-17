@@ -16,6 +16,7 @@
 #include "vk_command_buffer.h"
 
 /* ---- M9: frame resources ---- */
+#define MALI_MAX_INFLIGHT 3u
 struct mali_hwctx {
    struct mali_device *dev;
    struct mali_bo arena, geo, sync, tls;
@@ -27,6 +28,12 @@ struct mali_hwctx {
    unsigned wait_ms;              /* MALI_FRAME_TIMEOUT_MS, default 10000 */
    struct mali_bo meta_sh[16];    /* M12: uploaded meta shader binaries, freed at device teardown */
    unsigned n_meta_sh;
+   /* async submit: frames in flight (retire counter value + arena range), oldest first */
+   struct { uint64_t expected; size_t start; } fl[MALI_MAX_INFLIGHT];
+   unsigned nfl;
+   size_t cur_start;
+   struct mali_bo old_tls[8];     /* replaced TLS BOs: freed at teardown (in-flight / current frame may still use them) */
+   unsigned n_old_tls;
 };
 
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
@@ -81,10 +88,47 @@ hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
    return kb_arena_alloc(&((struct mali_hwctx *)u)->ar, n, al, va);
 }
 
+static int
+hw_wait(struct mali_hwctx *h, uint64_t target)
+{
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   return be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, target, h->wait_ms);
+}
+
+/* Drop retired frames from the in-flight list; block on the oldest while the list is full. */
+static void
+hw_retire(struct mali_hwctx *h, unsigned max_left)
+{
+   for (;;) {
+      uint64_t c = *(volatile uint64_t *)h->sync.cpu;
+      unsigned k = 0;
+      while (k < h->nfl && h->fl[k].expected <= c)
+         k++;
+      if (k) {
+         memmove(h->fl, h->fl + k, (h->nfl - k) * sizeof h->fl[0]);
+         h->nfl -= k;
+      }
+      if (h->nfl <= max_left)
+         return;
+      if (hw_wait(h, h->fl[0].expected))
+         return;
+   }
+}
+
 static void
 hw_job_begin(void *u)
 {
-   kb_arena_begin(&((struct mali_hwctx *)u)->ar);
+   struct mali_hwctx *h = u;
+   hw_retire(h, MALI_MAX_INFLIGHT - 1);
+   kb_arena_begin(&h->ar);
+   h->cur_start = h->ar.start;
+   if (h->nfl && !getenv("MALI_SYNC_SUBMIT")) {
+      /* the new frame must stay clear of the oldest in-flight frame's arena range */
+      size_t so = h->fl[0].start;
+      if (so > h->ar.start)
+         h->ar.lapped = 1;   /* already wrapped: limit is the oldest frame */
+      h->ar.start = so;
+   }
 }
 
 static void *
@@ -96,8 +140,14 @@ hw_tls(void *u, size_t size, uint64_t *va)
       struct mali_bo nb;
       if (be->bo_alloc(h->dev->kdev, size, 0, &nb))
          return NULL;
-      if (h->tls_live)
-         be->bo_free(h->dev->kdev, &h->tls);   /* frames retire in order: the previous TLS user is finished */
+      if (h->tls_live) {
+         if (h->n_old_tls < 8)
+            h->old_tls[h->n_old_tls++] = h->tls;   /* may still be in use by in-flight frames or earlier draws of this one */
+         else {
+            hw_retire(h, 0);
+            be->bo_free(h->dev->kdev, &h->tls);
+         }
+      }
       h->tls = nb;
       h->tls_live = true;
    }
@@ -118,7 +168,13 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
     * (CS SYNC_ADD64 on the event word) before the next one is built. */
    h->expected++;
-   int wr = be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, h->expected, h->wait_ms);
+   if (!getenv("MALI_SYNC_SUBMIT")) {
+      h->fl[h->nfl].expected = h->expected;
+      h->fl[h->nfl].start = h->cur_start;
+      h->nfl++;
+      return 0;
+   }
+   int wr = hw_wait(h, h->expected);
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
 }
@@ -131,6 +187,10 @@ mali_hw_finish(struct mali_device *dev)
 
    if (!h)
       return;
+   if (h->expected)
+      hw_wait(h, h->expected);
+   for (unsigned i = 0; i < h->n_old_tls; i++)
+      be->bo_free(dev->kdev, &h->old_tls[i]);
    mali_cmd_set_hw(NULL);
    mali_cmd_set_res(NULL);
    mali_meta_set_dev(NULL);
