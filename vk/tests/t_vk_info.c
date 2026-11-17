@@ -205,14 +205,16 @@ main(int argc, char **argv)
                      bda = (unsigned)((const VkBool32 *)&f12.bufferDeviceAddress - b),
                      di0 = (unsigned)((const VkBool32 *)&f12.runtimeDescriptorArray - b), di1 = (unsigned)((const VkBool32 *)&f12.shaderSampledImageArrayNonUniformIndexing - b),
                      di2 = (unsigned)((const VkBool32 *)&f12.descriptorBindingPartiallyBound - b), di3 = (unsigned)((const VkBool32 *)&f12.descriptorBindingSampledImageUpdateAfterBind - b),
-                     di4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUpdateUnusedWhilePending - b); /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
+                     di4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUpdateUnusedWhilePending - b),
+                     sbl = (unsigned)((const VkBool32 *)&f12.scalarBlockLayout - b), ubs = (unsigned)((const VkBool32 *)&f12.uniformBufferStandardLayout - b); /* t_vk_feat scalar/ubostd */ /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda || i == di0 || i == di1 || i == di2 || i == di3 || i == di4, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == tl || i == hq || i == mc || i == bda || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == sbl || i == ubs, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
-                     m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d);
+                     m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
+                     zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d);   /* t_vk_feat zinit */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */
