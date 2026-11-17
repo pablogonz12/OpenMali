@@ -29,11 +29,11 @@ dEQP-VK.api.command_buffers.indirect_compute_dispatch_offsets_4_8,1,0,0,1,0,0,0,
 dEQP-VK.api.command_buffers.pool_reset_release_res,1,1,0,0,0,0,0,0,100.0,100.0
 dEQP-VK.api.command_buffers.record_query_imprecise_w_flag,1,0,0,1,0,0,0,0,0.0,0.0
 dEQP-VK.api.command_buffers.recording_to_invalid,1,1,0,0,0,0,0,0,100.0,100.0
-dEQP-VK.api.command_buffers.submit_twice_secondary,1,0,0,0,0,0,1,0,0.0,0.0
+dEQP-VK.api.command_buffers.submit_twice_secondary,1,1,0,0,0,0,0,0,100.0,100.0
 dEQP-VK.api.buffer.dedicated_alloc,4,4,0,0,0,0,0,0,100.0,100.0
 dEQP-VK.api.buffer.invalid_buffer_features,1,1,0,0,0,0,0,0,100.0,100.0
 dEQP-VK.api.buffer.suballocation,13,0,0,13,0,0,0,0,0.0,0.0
-dEQP-VK.api.buffer_view.access,3,0,3,0,0,0,0,0,0.0,0.0
+dEQP-VK.api.buffer_view.access,3,2,1,0,0,0,0,0,66.7,66.7
 dEQP-VK.api.buffer_view.create,4,2,0,2,0,0,0,0,50.0,100.0
 dEQP-VK.api.copy_and_blit.core,887,172,23,692,0,0,0,0,19.4,88.2
 dEQP-VK.api.image_clearing.core,113,30,11,72,0,0,0,0,26.5,73.2
@@ -63,4 +63,4 @@ dEQP-VK.renderpass.depth_stencil_write_conditions.depth_terminate_initialize_d24
 dEQP-VK.renderpass.depth_stencil_write_conditions.depth_terminate_write_initialize_d32sf,1,0,0,1,0,0,0,0,0.0,0.0
 dEQP-VK.renderpass.depth_stencil_write_conditions.stencil_kill_write_d24unorm_s8ui,1,0,0,1,0,0,0,0,0.0,0.0
 dEQP-VK.renderpass.dithering.v1,2,0,0,2,0,0,0,0,0.0,0.0
-TOTAL,1381,280,128,971,0,0,2,0,20.3,68.3
+TOTAL,1381,283,126,971,0,0,1,0,20.5,69.0

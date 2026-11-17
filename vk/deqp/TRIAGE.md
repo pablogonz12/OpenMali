@@ -85,3 +85,11 @@ An intermediate run had 11 depth.compare_ops crashes: nir_split_per_member_struc
 
 ## R4-B3 daily-sample re-run (Poco, after layer-major texture payload + inlineUniformBlock)
 Full daily sample 1381: 280 pass / 128 fail / 971 NS / 0 crash / 2 other (baseline 272/136/971/0). 0 regressions vs the previous run, 10 cases newly passing (vertex_input multi-attribute, sampler mirror_clamp/mirrored_repeat on 2d/2d_array formats). `ours-daily-sample-poco.{tsv,csv}` replaced.
+
+## Job 1 regression (2026-11-17): dEQP aborted at case ~63-77 with VK_ERROR_OUT_OF_DEVICE_MEMORY — fixed
+Not a BO leak (t_vk_leak: 300-2000 iterations of device create/destroy, memory alloc/free/map, fill-buffer submits, pools/cmd buffers, 8192 live compute pipelines: 0 growth of fds/maps/RSS, 64 simultaneous devices fine).
+Causes: (1) `mali_cmd`/`mali_meta` bindings are process-global; destroying ANY VkDevice (dEQP creates short-lived extra devices) unbound them for the surviving main device,
+so `vkCreateEvent` (and meta allocations) returned OUT_OF_DEVICE_MEMORY (api.command_buffers.submit_twice_secondary). Fix: stack of live devices in mali_queue.c, destroy re-binds the previous one; meta shader uploads deduped
+(re-bind clears the shader cache). Regression test `t_vk_leak --only second` fails before (CreateEvent=-2), passes after. (2) harness: `qdeqp.py` pulled the QPA to hard-coded /tmp (full tmpfs) => "no QPA"; now QDEQP_TMP.
+Daily sample after: 283 pass / 126 fail / 971 NS / 0 crash / 1 other (baseline 280/128/971/0); 0 regressions, 3 newly passing (buffer_view r8_unorm, r16g16b16a16_uint, submit_twice_secondary).
+Run `t_vk_leak` on the guest with `vk/tests/leakrun.sh "--n 300"`; TMPDIR=~/.cache/mali-tmp for the build while /tmp is full.
