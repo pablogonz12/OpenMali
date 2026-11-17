@@ -171,6 +171,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .dynamicRendering = true,
       .maintenance4 = true,
       .privateData = true,
+      .multiDrawIndirect = true,
    };
    struct vk_properties properties;
    mali_get_properties(gpu, &properties);

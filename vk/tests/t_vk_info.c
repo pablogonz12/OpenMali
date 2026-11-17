@@ -172,8 +172,12 @@ main(int argc, char **argv)
       const VkBool32 *c = (const VkBool32 *)&f2.features;
       const unsigned nc = sizeof(f2.features) / 4;
       unsigned bc_idx = (unsigned)((const VkBool32 *)&f2.features.textureCompressionBC - c);
+      /* multiDrawIndirect: backed by t_vk_draw --only mdi (drawCount 2, pixel-checked on the Poco) */
+      unsigned mdi_idx = (unsigned)((const VkBool32 *)&f2.features.multiDrawIndirect - c);
+      CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
+      CHECK(!f2.features.drawIndirectFirstInstance, "drawIndirectFirstInstance has no test yet");
       for (unsigned i = 0; i < nc; i++)
-         CHECK(!c[i] || i == bc_idx, "core feature #%u advertised without a test", i);
+         CHECK(!c[i] || i == bc_idx || i == mdi_idx, "core feature #%u advertised without a test", i);
       const VkBool32 *a = (const VkBool32 *)((const char *)&f11 + 16);
       for (unsigned i = 0; i < (sizeof(f11) - 16) / 4; i++)
          CHECK(!a[i], "vk11 feature #%u advertised without a test", i);
