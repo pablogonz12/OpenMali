@@ -94,6 +94,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
       return;
    }
    struct mali_meta_mem *mem = mem_of(cmd);
+   if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: emit %u jobs\n", l->n);
    for (unsigned i = 0; i < l->n; i++) {
       struct mali_frame f;
       memset(&f, 0, sizeof f);
