@@ -47,9 +47,9 @@ int main(int argc, char **argv)
       }
       free(cs);
    }
-   struct mali_env bad = { .arch = 10 };
+   struct mali_env bad = { .arch = 9 };
    uint64_t *cs; unsigned n;
-   CHECK(mali_ops_build(&bad, NULL, 0, &cs, &n) != 0, "arch 10 rejected");
+   CHECK(mali_ops_build(&bad, NULL, 0, &cs, &n) != 0, "arch 9 rejected");
    if (jf) fclose(jf);
    printf("t_query: %s\n", g_fail ? "FAIL" : "ok");
    return g_fail != 0;
