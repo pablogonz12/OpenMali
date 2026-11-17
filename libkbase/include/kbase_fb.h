@@ -39,6 +39,13 @@ struct kb_fb_params {
 	uint32_t zs_row_stride;       /* bytes, multiple of 16; 0 = width * bytes per pixel rounded up to 16 */
 	float clear_depth;            /* FBD "Z Clear" */
 	unsigned zs_no_store;         /* 1: Z Write Enable off (depth only used inside the frame, nothing written back) */
+	/* stencil attachment (genxml v10+ "S Target" in the same ZS/CRC extension, words 0:16.. and 12..15; FBD "S Clear" 12:0, "S Write Enable" 12:8).
+	 * Independent of zs_format: stencil-only (S8) frames use the extension with the Z fields idle. */
+	unsigned has_stencil;
+	uint64_t s_gpu_va;            /* 64-byte aligned, S8 plane (1 byte per pixel) */
+	uint32_t s_row_stride;        /* bytes, multiple of 16; 0 = width rounded up to 16 */
+	uint8_t clear_stencil;        /* FBD "S Clear" */
+	unsigned s_no_store;          /* 1: S Write Enable off */
 	/* non-RGBA8 colour target (0 = RGBA8 as before): Internal Format, writeback colour format, 12-bit RT swizzle (0 = identity),
 	 * Color Buffer Allocation (>>10 units) and the four raw clear words. */
 	unsigned rt_internal, rt_wb, rt_swizzle, rt_alloc;

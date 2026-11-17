@@ -224,17 +224,26 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
    int r = 0;
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkImageCopy2 *g = &ci->pRegions[i];
-      struct mali_meta_surf s, d;
-      const struct mali_plane_layout *sp, *dp;
-      if (!img_surf(&s, si, g->srcSubresource, g->srcOffset, &sp) || !img_surf(&d, di, g->dstSubresource, g->dstOffset, &dp) ||
-          sp->bs != dp->bs || sp->bw != dp->bw || sp->bh != dp->bh) {
-         r = -EINVAL;
-         break;
+      /* D+S images are two planes: a region naming both aspects copies the depth plane, then the stencil plane */
+      const VkImageAspectFlags am = g->srcSubresource.aspectMask;
+      const bool both = (am & VK_IMAGE_ASPECT_DEPTH_BIT) && (am & VK_IMAGE_ASPECT_STENCIL_BIT);
+      for (unsigned a = 0; a < (both ? 2u : 1u) && !r; a++) {
+         VkImageSubresourceLayers ss = g->srcSubresource, ds = g->dstSubresource;
+         if (both) {
+            ss.aspectMask = ds.aspectMask = a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
+         }
+         struct mali_meta_surf s, d;
+         const struct mali_plane_layout *sp, *dp;
+         if (!img_surf(&s, si, ss, g->srcOffset, &sp) || !img_surf(&d, di, ds, g->dstOffset, &dp) ||
+             sp->bs != dp->bs || sp->bw != dp->bw || sp->bh != dp->bh) {
+            r = -EINVAL;
+            break;
+         }
+         uint32_t ez = zcount(si, ss, g->extent);
+         r = mali_meta_plan_copy(&l, &d, &s, sp->bs, (g->extent.width + sp->bw - 1) / sp->bw, (g->extent.height + sp->bh - 1) / sp->bh, ez);
+         if (!r && di->bc)
+            r = bc_decode(&l, di, ds, g->dstOffset, g->extent);
       }
-      uint32_t ez = zcount(si, g->srcSubresource, g->extent);
-      r = mali_meta_plan_copy(&l, &d, &s, sp->bs, (g->extent.width + sp->bw - 1) / sp->bw, (g->extent.height + sp->bh - 1) / sp->bh, ez);
-      if (!r && di->bc)
-         r = bc_decode(&l, di, g->dstSubresource, g->dstOffset, g->extent);
    }
    emit(cmd, &l, r);
 }

@@ -352,6 +352,15 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    x->bias_slope = dyn->rs.depth_bias.slope_factor;
    x->bias_clamp = dyn->rs.depth_bias.clamp;
    x->line_width = dyn->rs.line.width;
+   x->st_test = dyn->ds.stencil.test_enable;
+   {
+      const struct vk_stencil_test_face_state *fs[2] = { &dyn->ds.stencil.front, &dyn->ds.stencil.back };
+      for (int k = 0; k < 2; k++) {
+         struct mali_st_face *o = k ? &x->st_b : &x->st_f;
+         o->cmp = fs[k]->op.compare; o->fail = fs[k]->op.fail; o->dfail = fs[k]->op.depth_fail; o->pass = fs[k]->op.pass;
+         o->wmask = fs[k]->write_mask; o->vmask = fs[k]->compare_mask; o->ref = fs[k]->reference;
+      }
+   }
    if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_TEST_ENABLE))
       d->gfx.depth_test = dyn->ds.depth.test_enable;
    if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_WRITE_ENABLE))
@@ -641,7 +650,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    const VkRenderingAttachmentInfo *ca = &ri->pColorAttachments[0];
-   if (g_res.image_view(ca->imageView, &t) || t.zs_format) {
+   if (g_res.image_view(ca->imageView, &t) || t.is_zs) {
       unsupported(cmd, "colour attachment view");
       return;
    }
@@ -689,6 +698,23 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->zs.clear = da->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->zs.clear_depth = da->clearValue.depthStencil.depth;
       f->zs.store = da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   }
+   if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
+      const VkRenderingAttachmentInfo *sa = ri->pStencilAttachment;
+      if (sa->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
+         unsupported(cmd, "stencil loadOp LOAD");
+         return;
+      }
+      if (g_res.image_view(sa->imageView, &t) || !t.has_s) {
+         unsupported(cmd, "stencil attachment view");
+         return;
+      }
+      f->has_st = true;
+      f->st.va = t.s_va;
+      f->st.row_stride = t.s_row_stride;
+      f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+      f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
+      f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    }
    if (load) {
       struct mali_draw d;
@@ -802,6 +828,14 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          }
          f->zs.clear = true;
          f->zs.clear_depth = att[i].clearValue.depthStencil.depth;
+      }
+      if (att[i].aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) {
+         if (!f->has_st) {
+            unsupported(cmd, "stencil clear without stencil attachment");
+            return;
+         }
+         f->st.clear = true;
+         f->st.clear_stencil = (uint8_t)att[i].clearValue.depthStencil.stencil;
       }
    }
 }

@@ -341,16 +341,20 @@ res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 static int
 target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, struct mali_cmd_target *out)
 {
-   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&img->lay, aspect);
-   if (!pl || !img->va || level >= img->lay.d.levels || img->lay.d.tiled)
+   if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled)
       return -EINVAL;
    int zs = 0;
+   bool has_d = true;   /* the format has a depth plane we can attach */
    out->rt = NULL;
+   out->is_zs = false;
+   out->has_s = false;
    switch (img->vk.format) {
    case VK_FORMAT_R8G8B8A8_UNORM: break;
-   case VK_FORMAT_D32_SFLOAT: zs = 1; break;
-   case VK_FORMAT_X8_D24_UNORM_PACK32: zs = 2; break;
-   case VK_FORMAT_D16_UNORM: zs = 3; break;
+   /* D+S images are two planes (depth, S8): the depth plane is the ZS target, the S8 plane the S target */
+   case VK_FORMAT_D32_SFLOAT: case VK_FORMAT_D32_SFLOAT_S8_UINT: zs = 1; break;
+   case VK_FORMAT_X8_D24_UNORM_PACK32: case VK_FORMAT_D24_UNORM_S8_UINT: zs = 2; break;
+   case VK_FORMAT_D16_UNORM: case VK_FORMAT_D16_UNORM_S8_UINT: zs = 3; break;
+   case VK_FORMAT_S8_UINT: has_d = false; break;
    default: {
       bool ok;
       out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
@@ -359,13 +363,37 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       break;
    }
    }
-   if (!zs && aspect != VK_IMAGE_ASPECT_COLOR_BIT)
+   const bool st_fmt = img->vk.format == VK_FORMAT_S8_UINT || img->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                       img->vk.format == VK_FORMAT_D24_UNORM_S8_UINT || img->vk.format == VK_FORMAT_D16_UNORM_S8_UINT;
+   const bool want_d = zs && has_d && (aspect & VK_IMAGE_ASPECT_DEPTH_BIT);
+   const bool want_s = st_fmt && (aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+   if (!zs && !st_fmt && aspect != VK_IMAGE_ASPECT_COLOR_BIT)
       return -EINVAL;
-   out->va = img->va + mali_image_subresource_offset(pl, level, layer);
-   out->row_stride = pl->slice[level].row_stride;
+   if ((zs || st_fmt) && !want_d && !want_s)
+      return -EINVAL;
+   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&img->lay, want_d ? VK_IMAGE_ASPECT_DEPTH_BIT : want_s ? VK_IMAGE_ASPECT_STENCIL_BIT : aspect);
+   if (!pl)
+      return -EINVAL;
    out->width = MAX2(img->lay.d.extent.width >> level, 1u);
    out->height = MAX2(img->lay.d.extent.height >> level, 1u);
-   out->zs_format = zs;
+   out->zs_format = want_d ? zs : 0;
+   out->va = img->va + mali_image_subresource_offset(pl, level, layer);
+   out->row_stride = pl->slice[level].row_stride;
+   out->is_zs = zs || st_fmt;
+   if (want_s) {
+      const struct mali_plane_layout *sp = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_STENCIL_BIT);
+      if (!sp)
+         return -EINVAL;
+      out->has_s = true;
+      out->s_va = img->va + mali_image_subresource_offset(sp, level, layer);
+      out->s_row_stride = sp->slice[level].row_stride;
+      if ((out->s_va & 63) || (out->s_row_stride & 15))
+         return -EINVAL;
+   }
+   if (!want_d && want_s) {   /* stencil-only view: no ZS target, the primary va is unused */
+      out->va = out->s_va;
+      out->row_stride = out->s_row_stride;
+   }
    return (out->va & 63) || (out->row_stride & 15) ? -EINVAL : 0;
 }
 
@@ -376,7 +404,7 @@ res_image_view(VkImageView h, struct mali_cmd_target *out)
    if (!v)
       return -EINVAL;
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
-   VkImageAspectFlags a = v->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+   VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
    return target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
 }
 

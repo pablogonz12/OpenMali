@@ -176,6 +176,13 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.clear_depth = f->zs.clear ? f->zs.clear_depth : 0.0f;
       p.zs_no_store = !f->zs.store;
    }
+   if (f->has_st) {
+      p.has_stencil = 1;
+      p.s_gpu_va = f->st.va;
+      p.s_row_stride = f->st.row_stride;
+      p.clear_stencil = f->st.clear ? f->st.clear_stencil : 0;
+      p.s_no_store = !f->st.store;
+   }
    p.arch = env->arch == 13 ? 13 : 0;
    int rc = kb_fb_pack(out, &p);
    if (rc)

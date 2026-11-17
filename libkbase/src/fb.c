@@ -45,12 +45,16 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	kb_arch_warn_v11_only(p->arch, "kb_fb_pack");
 	/* TODO(v13): FBD / RGB RT bit positions below are Mesa genxml v11.xml; v13 not compared (no values invented here). */
 	const int zs = p->zs_format != KB_ZS_NONE;
+	const int st = p->has_stencil != 0;
+	const int ext = zs || st;
+	uint32_t s_row = p->s_row_stride ? p->s_row_stride : (p->width + 15u) & ~15u;
+	if (st && ((p->s_gpu_va & 63) || (s_row & 15))) return -EINVAL;
 	uint32_t zs_row = p->zs_row_stride ? p->zs_row_stride : (p->width * kb_zs_bytes_per_pixel(p->zs_format) + 15u) & ~15u;
 	if (zs && ((p->zs_gpu_va & 63) || (zs_row & 15) || p->zs_format > KB_ZS_D16)) return -EINVAL;
-	memset(out, 0, zs ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE);
+	memset(out, 0, ext ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE);
 	uint32_t *f = (uint32_t *)(void *)out;                 /* FBD: Framebuffer Parameters */
 	uint32_t *x = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE); /* ZS/CRC extension, only if zs */
-	uint32_t *r = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (zs ? KB_FB_ZSEXT_SIZE : 0)); /* RGB Render Target */
+	uint32_t *r = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (ext ? KB_FB_ZSEXT_SIZE : 0)); /* RGB Render Target */
 
 	put(f, 4, 0, 32, (uint32_t)p->sample_locations_va);  /* Sample Locations pointer */
 	put(f, 5, 0, 32, (uint32_t)(p->sample_locations_va >> 32));
@@ -73,9 +77,22 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 12, 29, 1, 1);                                    /* Empty Tile Write Enable (PanVK sets bits 31:28 of word 12) */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
 	put(f, 12, 16, 2, !zs ? 1 : p->zs_format == KB_ZS_D32F ? 2 : p->zs_format == KB_ZS_D24X8 ? 1 : 0);
+	if (ext) put(f, 12, 21, 1, 1);                           /* Has ZS CRC Extension */
+	if (st) {
+		put(f, 12, 0, 8, p->clear_stencil);                  /* S Clear */
+		put(f, 12, 8, 1, !p->s_no_store);                    /* S Write Enable */
+		/* S Target (v10.xml): word 0 bits 16 Write Format S8 (1), 20 Block Format linear, 24 MSAA single, 31 Clean Tile Write Enable (shared bit with ZS) */
+		put(x, 0, 16, 4, 1);
+		put(x, 0, 20, 4, 2);
+		put(x, 0, 24, 2, 0);
+		put(x, 0, 31, 1, 1);
+		put(x, 12, 0, 32, (uint32_t)p->s_gpu_va);            /* Base */
+		put(x, 13, 0, 32, (uint32_t)(p->s_gpu_va >> 32));
+		put(x, 14, 0, 32, s_row);                            /* Row Stride */
+		put(x, 15, 0, 32, (uint32_t)((uint64_t)s_row * p->height));   /* Surface Stride */
+	}
 	if (zs) {
 		put(f, 12, 18, 1, !p->zs_no_store);                  /* Z Write Enable */
-		put(f, 12, 21, 1, 1);                                /* Has ZS CRC Extension */
 		put(f, 13, 0, 32, ubits_f(p->clear_depth));          /* Z Clear (float) */
 		/* ZS Target (v11.xml "ZS Target"; pan_desc.c pan_emit_linear_zs_attachment) */
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
