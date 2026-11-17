@@ -151,6 +151,8 @@ struct scene {
 static int
 scene_create(struct scene *s, int depth)
 {
+   /* s->mode is an INPUT: callers must initialise the struct. An uninitialised stack `struct scene` made mode random per process (low half of
+    * an ASLR pointer): >= MODE_PUSHFS drew the full-screen indexed quad instead of the triangle (coverage 65536, ~50 % of runs on the CMF). */
    int mode = s->mode;
    memset(s, 0, sizeof *s);
    s->mode = mode;
@@ -569,7 +571,7 @@ static const float ID[4] = {1, 0, 0, 0};
 static int
 test_triangle(void)
 {
-   struct scene s;
+   struct scene s = {.mode = MODE_TRI};   /* scene_create() takes s->mode as an input */
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
@@ -601,7 +603,7 @@ test_triangle(void)
 static int
 test_two(int depth)
 {
-   struct scene s;
+   struct scene s = {.mode = MODE_TRI};   /* scene_create() takes s->mode as an input */
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
@@ -650,7 +652,7 @@ test_two(int depth)
 static int
 test_mode(const char *name, int mode, double expect, double tol)
 {
-   struct scene s;
+   struct scene s = {.mode = MODE_TRI};   /* scene_create() takes s->mode as an input */
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
@@ -830,7 +832,7 @@ test_fx(void)
 static int
 test_occ(void)
 {
-   struct scene s;
+   struct scene s = {.mode = MODE_TRI};   /* scene_create() takes s->mode as an input */
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
@@ -897,7 +899,7 @@ test_occ(void)
 static int
 test_ring(void)
 {
-   struct scene s;
+   struct scene s = {.mode = MODE_TRI};   /* scene_create() takes s->mode as an input */
    VkFence f[3];
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    for (int i = 0; i < 3; i++) CHECK(CreateFence(dev, &fi, NULL, &f[i]) == VK_SUCCESS, "fence");
@@ -966,7 +968,7 @@ near3(const uint8_t *p, int r, int g, int b, int tol)
 static int
 test_quad(const char *name, int mode)
 {
-   struct scene s;
+   struct scene s = {.mode = MODE_TRI};   /* scene_create() takes s->mode as an input */
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
