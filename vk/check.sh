@@ -1,15 +1,17 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Offline check of the ICD (no GPU, no phone). Prints one line per case and "OK" or "FAILED".
-#   ./check.sh [--no-build] [-v]
+#   ./check.sh [--no-build] [-v] [--bless]
+#     --bless   regenerate vk/tests/golden/*.txt (decoded command streams of t_vk_draw/t_vk_feat/t_vk_meta on both fake GPUs) from the
+#               current driver; review `git diff vk/tests/golden` and commit it with the change that caused it
 #   MALI_SAN=1 ./check.sh   same cases with ASan+UBSan driver objects (out/native-san; the standalone build-t_*.sh tests are skipped)
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
 SAN=${MALI_SAN:-0}
 if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san; else OUT=$V/out/native; fi
-build=1; verbose=0
+build=1; verbose=0; bless=0
 for a in "$@"; do
-   case $a in --no-build) build=0 ;; -v) verbose=1 ;; *) echo "usage: check.sh [--no-build] [-v]"; exit 2 ;; esac
+   case $a in --no-build) build=0 ;; -v) verbose=1 ;; --bless) bless=1 ;; *) echo "usage: check.sh [--no-build] [-v] [--bless]"; exit 2 ;; esac
 done
 if [ "$SAN" = 1 ]; then
    # The test executables are not sanitized; the sanitized driver .so needs the runtime preloaded. Leaks are reported by LSan at exit.
@@ -68,6 +70,34 @@ for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
+
+# Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs
+# (MALI_FAKE_DUMP); the dump is rendered address-normalised and diffed against tests/golden/<test>-<gpu>.txt. BO flag rules run in the
+# fake backend's bo_alloc (a violation fails the test itself).
+GOLD=$V/tests/golden; GDIR=$OUT/golden; mkdir -p "$GOLD" "$GDIR"
+golden() { # test, gpu, extra args...
+   local t=$1 g=$2 name out rc; shift 2
+   name=$t-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
+   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_$t" --direct "$OUT/libvulkan_mali.so" "$@" 2>&1); rc=$?
+   if [ $rc -ne 0 ]; then echo "FAIL  golden $name (test exit $rc)"; echo "$out" | tail -15 | sed 's/^/        /'; fail=1; return; fi
+   out=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); rc=$?
+   if [ $rc -ne 0 ]; then echo "FAIL  rules $name"; echo "$out" | head -20 | sed 's/^/        /'; fail=1; return; fi
+   [ $verbose = 1 ] && echo "$out" | sed 's/^/        /'
+   if [ $bless = 1 ]; then cp "$GDIR/$name.txt" "$GOLD/$name.txt"; echo "bless $name ($(wc -l <"$GOLD/$name.txt") lines)"; return; fi
+   if [ ! -f "$GOLD/$name.txt" ]; then echo "FAIL  golden $name: no tests/golden/$name.txt (run ./check.sh --bless)"; fail=1
+   elif cmp -s "$GOLD/$name.txt" "$GDIR/$name.txt"; then echo "ok    golden $name ($(grep -c '^kick' "$GOLD/$name.txt") kicks)"
+   else echo "FAIL  golden $name differs (./check.sh --bless if intended):"; diff -u "$GOLD/$name.txt" "$GDIR/$name.txt" | head -30 | sed 's/^/        /'; fail=1; fi
+}
+for g in v11 v13; do
+   golden vk_draw $g --spv-dir "$V/shader"
+   golden vk_feat $g --spv-dir "$V/shader"
+   golden vk_meta $g
+done
+# The rules must have teeth: a 4 MiB geometry buffer (the v13 Poco bug) has to be caught.
+out=$(MALI_GEOM_SIZE=4194304 MALI_FAKE_DUMP="$GDIR/geom.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" 2>&1 >/dev/null; rm -f "$GDIR/geom.jsonl.x")
+out=$(GOLDEN_ARCH=13 python3 -I "$V/tests/golden.py" "$GDIR/geom.jsonl" "$GDIR/geom.txt" 2>&1)
+if grep -q "R-GEOM" <<<"$out"; then echo "ok    rule self-test (R-GEOM catches 4 MiB)"; else echo "FAIL  rule self-test: R-GEOM did not fire on MALI_GEOM_SIZE=4194304"; fail=1; fi
+rm -f "$GDIR/geom.jsonl"
 
 # Standalone offline tests (each builds itself against the Mesa tree, then runs; they exit non-zero on failure).
 if [ "$SAN" = 1 ]; then

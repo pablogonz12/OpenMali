@@ -7,6 +7,7 @@
 #include "mali_backend.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -64,7 +65,138 @@ struct mali_kdev {
    unsigned long cs_submits, cs_instr;
    uint64_t next_va;
    bool lost;
+   /* Offline checking (MALI_FAKE_DUMP=path|-): BO registry + decoded-stream dump, see tests/golden.py */
+   struct fake_bo *bos;
+   unsigned nbos, capbos, id, kicks;
 };
+
+
+/* ---- offline checking: BO registry, BO flag rules, command-stream dump (read by tests/golden.py) ----
+ * VAs are a deterministic bump allocator and BOs are numbered in creation order, so a dump has no host pointers/timestamps. */
+struct fake_bo {
+   uint64_t va;
+   size_t size;
+   uint32_t flags;
+   int kind;                  /* 0 = BO, 1 = tiler heap (no CPU mapping) */
+   bool live;
+   void *cpu;
+   uint64_t *phash;           /* per 4 KiB page FNV-1a of what was last dumped */
+};
+
+static unsigned g_fake_ndev;
+static FILE *g_dump_file;
+
+static FILE *
+dump_out(void)
+{
+   static bool tried;
+   if (!tried) {
+      tried = true;
+      const char *p = getenv("MALI_FAKE_DUMP");
+      if (p && *p)
+         g_dump_file = strcmp(p, "-") ? fopen(p, "a") : stdout;
+   }
+   return g_dump_file;
+}
+
+/* Rules for BO flags (hardware found: wrong allocation flags broke Poco v13; the kbase backend picks the allocation type by
+ * flag precedence EXPORT > EVENT > EXEC > plain, so a combination silently loses a flag). Returns a message or NULL. */
+static const char *
+fake_flag_rule(size_t size, uint32_t flags)
+{
+   const uint32_t known = MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOSTLAZY | MALI_BO_HOT;
+   if (flags & ~known)
+      return "unknown MALI_BO_* bits";
+   if (size == 0)
+      return "zero-size BO";
+   if ((flags & MALI_BO_EVENT) && (flags & (MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EXEC | MALI_BO_HOT | MALI_BO_HOSTLAZY)))
+      return "EVENT BO (CQS words, kernel visible) must be plain uncached GPU memory: no CACHED/EXPORT/EXEC/HOT/HOSTLAZY";
+   if ((flags & MALI_BO_EXEC) && (flags & (MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_HOT | MALI_BO_HOSTLAZY)))
+      return "EXEC BO (shader binaries) must not be CACHED/EXPORT/HOT/HOSTLAZY (GPU_RD|GPU_EX only)";
+   if ((flags & MALI_BO_EXPORT) && (flags & MALI_BO_HOT))
+      return "HOT (arena) BO cannot be a dma-buf export";
+   if ((flags & MALI_BO_HOT) && (flags & MALI_BO_HOSTLAZY))
+      return "HOT and HOSTLAZY are opposites (MEM_SYNC every submit vs never)";
+   return NULL;
+}
+
+static uint64_t
+page_hash(const uint8_t *p)
+{
+   uint64_t h = 1469598103934665603ull;
+   for (unsigned i = 0; i < 4096; i += 8) {
+      uint64_t w;
+      memcpy(&w, p + i, 8);
+      h = (h ^ w) * 1099511628211ull;
+   }
+   return h;
+}
+
+static struct fake_bo *
+reg_bo(struct mali_kdev *k, uint64_t va, size_t size, uint32_t flags, int kind, void *cpu)
+{
+   if (k->nbos == k->capbos) {
+      unsigned c = k->capbos ? k->capbos * 2 : 64;
+      struct fake_bo *n = realloc(k->bos, c * sizeof(*n));
+      if (!n)
+         return NULL;
+      k->bos = n;
+      k->capbos = c;
+   }
+   struct fake_bo *b = &k->bos[k->nbos++];
+   *b = (struct fake_bo){.va = va, .size = size, .flags = flags, .kind = kind, .live = true, .cpu = cpu};
+   if (kind == 0) {
+      static const uint8_t zero[4096];
+      uint64_t zh = page_hash(zero);   /* all-zero pages are never dumped (a reader's Mem reads unmapped bytes as 0 anyway) */
+      size_t np = size / 4096 ? size / 4096 : 1;
+      b->phash = malloc(np * sizeof(uint64_t));
+      for (size_t i = 0; b->phash && i < np; i++)
+         b->phash[i] = zh;
+   }
+   return b;
+}
+
+static void
+emit_hex(FILE *f, const uint8_t *p, size_t n)
+{
+   static const char hx[] = "0123456789abcdef";
+   for (size_t i = 0; i < n; i++) {
+      fputc(hx[p[i] >> 4], f);
+      fputc(hx[p[i] & 15], f);
+   }
+}
+
+/* One kick: live regions (numbered by creation order), the pages that changed since the last dump, then the stream. */
+static void
+dump_kick(struct mali_kdev *k, const uint64_t *cs, unsigned n)
+{
+   FILE *f = dump_out();
+   if (!f)
+      return;
+   k->kicks++;
+   fprintf(f, "{\"ev\":\"kick\",\"dev\":%u,\"n\":%u}\n", k->id, k->kicks);
+   for (unsigned i = 0; i < k->nbos; i++) {
+      struct fake_bo *b = &k->bos[i];
+      fprintf(f, "{\"ev\":\"region\",\"dev\":%u,\"id\":%u,\"va\":\"0x%llx\",\"len\":%zu,\"kind\":%d,\"flags\":%u,\"live\":%d}\n", k->id, i,
+              (unsigned long long)b->va, b->size, b->kind, b->flags, b->live);
+      if (!b->live || b->kind != 0 || !b->cpu)
+         continue;
+      for (size_t o = 0; o < b->size; o += 4096) {
+         const uint8_t *pg = (const uint8_t *)b->cpu + o;
+         uint64_t h = page_hash(pg);
+         if (!b->phash || h == b->phash[o / 4096])
+            continue;
+         b->phash[o / 4096] = h;
+         fprintf(f, "{\"ev\":\"mem\",\"dev\":%u,\"va\":\"0x%llx\",\"hex\":\"", k->id, (unsigned long long)(b->va + o));
+         emit_hex(f, pg, 4096);
+         fputs("\"}\n", f);
+      }
+   }
+   fprintf(f, "{\"ev\":\"ring\",\"dev\":%u,\"n\":%u,\"hex\":\"", k->id, k->kicks);
+   emit_hex(f, (const uint8_t *)cs, (size_t)n * 8);
+   fputs("\"}\n", f);
+   fflush(f);
+}
 
 static int
 fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
@@ -77,6 +209,7 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k->fault_at = f ? strtoul(f, NULL, 10) : 0;
    k->slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
    k->next_va = 0x5f00000000ull;
+   k->id = g_fake_ndev++;
    *out = k;
    return 0;
 }
@@ -87,6 +220,9 @@ fake_device_destroy(struct mali_kdev *k)
    if (!k)
       return;
    pthread_mutex_destroy(&k->lock);
+   for (unsigned i = 0; i < k->nbos; i++)
+      free(k->bos[i].phash);
+   free(k->bos);
    free(k);
 }
 
@@ -101,12 +237,20 @@ fake_map(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct mali_b
    k->next_va += size + 4096;
    pthread_mutex_unlock(&k->lock);
    *out = (struct mali_bo){.gpu_va = va, .cpu = p, .size = size, .flags = flags, .dmabuf_fd = fd};
+   pthread_mutex_lock(&k->lock);
+   reg_bo(k, va, size, flags, 0, p);
+   pthread_mutex_unlock(&k->lock);
    return 0;
 }
 
 static int
 fake_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
 {
+   const char *rule = fake_flag_rule(size, flags);
+   if (rule) {
+      fprintf(stderr, "mali-fake RULE VIOLATION: bo_alloc(size %zu, flags 0x%x): %s\n", size, flags, rule);
+      return -EINVAL;
+   }
    size = (size + 4095) & ~(size_t)4095;
    if (size > (1ull << 32))
       return -ENOMEM;
@@ -149,6 +293,11 @@ fake_bo_import(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct 
 static void
 fake_bo_free(struct mali_kdev *k, struct mali_bo *bo)
 {
+   pthread_mutex_lock(&k->lock);
+   for (unsigned i = 0; i < k->nbos; i++)
+      if (k->bos[i].live && k->bos[i].kind == 0 && k->bos[i].va == bo->gpu_va)
+         k->bos[i].live = false;
+   pthread_mutex_unlock(&k->lock);
    if (bo->cpu)
       munmap(bo->cpu, bo->size);
    if (bo->dmabuf_fd >= 0)
@@ -246,6 +395,7 @@ fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
    bool lost = k->lost;
    k->cs_submits++;
    k->cs_instr += n;
+   dump_kick(k, cs, n);
    pthread_mutex_unlock(&k->lock);
    return lost ? -EIO : 0;
 }
@@ -263,6 +413,10 @@ static int
 fake_heap_create(struct mali_kdev *k, uint32_t chunk, uint32_t initial, uint32_t max, struct mali_heap *out)
 {
    *out = (struct mali_heap){.ctx_va = 0xf0000000ull, .first_chunk_va = 0xf1000000ull, .chunk_size = chunk};
+   pthread_mutex_lock(&k->lock);
+   reg_bo(k, out->ctx_va, 4096, 0, 1, NULL);
+   reg_bo(k, out->first_chunk_va, chunk ? chunk : 4096, 0, 1, NULL);
+   pthread_mutex_unlock(&k->lock);
    return 0;
 }
 
