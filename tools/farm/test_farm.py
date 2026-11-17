@@ -645,6 +645,59 @@ class T(unittest.TestCase):
         self.assertEqual(len(self.farm("log", jid, "--tail", "5")[1].splitlines()), 6)
         self.assertIn("fake line 250 only", self.farm("log", jid, "--grep", "line 250 only", "--tail", "3")[1])
 
+    def test_build_cache_covers_t_binaries(self):
+        """a daily's cached .so must come with its t_* binaries: a smoke job of the same commit finds them (or rebuilds), never 0/0 tests"""
+        import importlib.machinery, importlib.util, threading, shutil
+        ld = importlib.machinery.SourceFileLoader("farmd_mod", HERE + "/farmd")
+        spec = importlib.util.spec_from_loader("farmd_mod", ld)
+        fd = importlib.util.module_from_spec(spec)
+        ld.exec_module(fd)
+        f = object.__new__(fd.Farm)
+        f.fake, f.devs, f.build_locks, f.bl, f.jl = False, {}, {}, threading.Lock(), threading.Lock()
+        f.repo = f.main_tree = self.d + "/repo"
+        f.missing_deps = lambda suite: ""
+        f.borrow_deqp = lambda tree: None
+        os.makedirs(self.d + "/state/artifacts", exist_ok=True)
+        os.makedirs(self.d + "/state/work", exist_ok=True)
+        os.makedirs(self.d + "/state/logs", exist_ok=True)
+        builds = []
+
+        def fake_sh(cmd, timeout=0, env=None, **kw):             # stands in for vk/build.sh: writes the .so and t_* next to it
+            tree = os.path.dirname(os.path.dirname(cmd[-1]))
+            out = os.path.join(tree, "vk", "out", "a64-glibc")
+            os.makedirs(out, exist_ok=True)
+            open(out + "/libvulkan_mali.so", "w").write("so-built")
+            for t in ("t_vk_draw", "t_vk_compute"):
+                open(out + "/" + t, "w").write("bin")
+                os.chmod(out + "/" + t, 0o755)
+            builds.append(tree)
+            return 0, ""
+        orig_sh, fd.L.sh = fd.L.sh, fake_sh
+        try:
+            _, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+            _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            for j in (j1, j2):
+                os.makedirs(f.tree(j) + "/vk", exist_ok=True)       # worktree already "created"
+                open(f.tree(j) + "/vk/build.sh", "w").write("")
+            sha, _ = f.build(L.find_job(j1))
+            self.assertEqual(len(builds), 1)
+            sha2, _ = f.build(L.find_job(j2))
+            self.assertEqual(sha, sha2)
+            self.assertEqual(len(builds), 1, "cache hit expected")
+            out2 = f.tree(j2) + "/vk/out/a64-glibc"
+            self.assertTrue(os.access(out2 + "/t_vk_draw", os.X_OK) and os.access(out2 + "/t_vk_compute", os.X_OK))
+            self.assertEqual(L.find_job(j2).get("build_cached"), j1)
+            # archive from before the fix (no t_* stored): the smoke job must rebuild, not run with 0 tests
+            shutil.rmtree(f.tests_dir(sha))
+            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            os.makedirs(f.tree(j3) + "/vk", exist_ok=True)
+            open(f.tree(j3) + "/vk/build.sh", "w").write("")
+            f.build(L.find_job(j3))
+            self.assertEqual(len(builds), 2, "missing t_* archive must trigger a rebuild")
+            self.assertTrue(os.access(f.tree(j3) + "/vk/out/a64-glibc/t_vk_draw", os.X_OK))
+        finally:
+            fd.L.sh = orig_sh
+
     def test_env_validation(self):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 

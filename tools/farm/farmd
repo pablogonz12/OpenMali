@@ -322,8 +322,11 @@ class Farm:
                     art = os.path.join(L.state_dir(), "artifacts", (o.get("so_sha256") or "x") + ".so")
                     if o["id"] != job["id"] and o["commit"] == job["commit"] and not o.get("dirty") and o.get("build") == "ok" and os.path.exists(art):
                         od = os.path.join(tree, "vk", "out", "a64-glibc")
+                        if job["suite"] == "smoke" and not self.tests_archived(o["so_sha256"]):
+                            continue                  # the smoke suite runs the t_* binaries: a daily's cached .so alone is not enough, rebuild
                         os.makedirs(od, exist_ok=True)
                         shutil.copy2(art, os.path.join(od, "libvulkan_mali.so"))
+                        self.restore_tests(o["so_sha256"], od)
                         self.upd(job["id"], lambda x, o=o: x.update(so_sha256=o["so_sha256"], build="ok", build_s=0, build_cached=o["id"]))
                         return o["so_sha256"], ""
             env = dict(os.environ, MESA_BUILD=os.path.join(tree, "third_party", "build-vk-a64-glibc"), MALI_TARGET="a64-glibc")
@@ -335,6 +338,7 @@ class Farm:
                 return None, f"build rc={rc} ({'timeout' if rc in (124, 137) else 'see logs/' + job['id'] + '-build.log'})"
             sha = hashlib.sha256(open(so, "rb").read()).hexdigest()
             shutil.copy2(so, os.path.join(L.state_dir(), "artifacts", sha + ".so"))
+            self.archive_tests(sha, os.path.dirname(so))
             if any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values()) and job["suite"] == "smoke":
                 bb = os.path.join(tree, "third_party", "build-vk-a64-bionic")
                 import glob as _g                       # cross/build-cross.sh: bionic needs liblog/libsync and the libdrm objects of Mesa's wrap
@@ -350,6 +354,33 @@ class Farm:
                 self.upd(job["id"], lambda x: x.update(so_sha256_bionic=sha2))
             self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok", build_s=round(time.time() - t0)))
             return sha, ""
+
+    @staticmethod
+    def tests_dir(sha):
+        return os.path.join(L.state_dir(), "artifacts", sha + ".tests")
+
+    def tests_archived(self, sha):
+        """the t_* binaries built next to the cached .so (a.so alone cannot run the smoke suite)"""
+        return os.path.exists(os.path.join(self.tests_dir(sha), "COMPLETE"))
+
+    def archive_tests(self, sha, outdir):
+        td = self.tests_dir(sha)
+        if self.tests_archived(sha):
+            return
+        shutil.rmtree(td, ignore_errors=True)
+        os.makedirs(td)
+        for f in sorted(os.listdir(outdir)):
+            fp = os.path.join(outdir, f)
+            if f.startswith("t_") and os.path.isfile(fp) and os.access(fp, os.X_OK):
+                shutil.copy2(fp, os.path.join(td, f))
+        open(os.path.join(td, "COMPLETE"), "w").write("")
+
+    def restore_tests(self, sha, outdir):
+        td = self.tests_dir(sha)
+        if self.tests_archived(sha):
+            for f in os.listdir(td):
+                if f.startswith("t_"):
+                    shutil.copy2(os.path.join(td, f), os.path.join(outdir, f))
 
     def harness(self, tree):
         """older commits predate the transport/env hooks of valrun.sh and qdeqp.py: install the farm checkout's copy of those two
