@@ -133,7 +133,7 @@ else
 fi
 
 # no private identifiers (serials, home paths, IPs, emails) in tracked files
-if "$V/../tools/private-lint.sh" >/dev/null; then echo "ok    private-lint"; else echo "FAIL  private-lint"; "$V/../tools/private-lint.sh" | sed 's/^/        /'; fail=1; fi
+if env -u LD_PRELOAD "$V/../tools/private-lint.sh" >/dev/null; then echo "ok    private-lint"; else echo "FAIL  private-lint"; env -u LD_PRELOAD "$V/../tools/private-lint.sh" | sed 's/^/        /'; fail=1; fi
 
 # opt-in: host dEQP-VK gate (slow; needs the host deqp-vk build, see deqp/README.md)
 if [ $deqp_host = 1 ]; then
