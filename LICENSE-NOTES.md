@@ -1,12 +1,12 @@
 # Licence notes (for the project owner to decide)
 
-Status: **no top-level LICENSE file exists yet.** This is an inventory and a recommendation, not legal advice.
+Status: **decided: MIT** (top-level `LICENSE`, "Copyright (c) 2026 the mali-open authors"). This is an inventory and a recommendation, not legal advice.
 
 ## Our code
 
 Every file in `vk/src`, `libkbase/src`, `libkbase/include`, `vk/shader` and the scripts carries `SPDX-License-Identifier: MIT`.
 A grep for `Copyright`, `GPL` and licence text in those trees found **no copied third-party notices**. The packaging script writes
-a `LICENSE` (MIT, "Copyright (c) the mali-gaming authors") into each zip, so that name is already public in artefacts.
+a `LICENSE` (MIT, "Copyright (c) 2026 the mali-open authors") into each zip, so that name is already public in artefacts.
 **The owner must confirm the copyright holder line and the licence before any public release.**
 
 **Recommendation: MIT.** It is compatible with everything linked (Mesa is MIT) and matches what the code headers already say.
