@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -54,7 +54,7 @@ static float g_lw = 1.0f;
    X(CmdBindIndexBuffer) X(CmdDrawIndirect) X(CmdDrawIndexedIndirect) X(CreateDescriptorSetLayout)                  \
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
-   X(CmdPipelineBarrier)
+   X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -652,6 +652,148 @@ test_wide(void)
    return 1;
 }
 
+/* shaderStorageImageExtendedFormats: write a known texel through imageStore into every spec-listed extended format, copy out, compare bytes. */
+struct sfmt { const char *q; VkFormat f; int n, bits; char kind; };  /* kind: U unorm, S snorm, u uint, i sint, F float; special: n=0 packed */
+static const struct sfmt sfmts[] = {
+   {"r8", 9, 1, 8, 'U'}, {"r8_snorm", 10, 1, 8, 'S'}, {"r8ui", 13, 1, 8, 'u'}, {"r8i", 14, 1, 8, 'i'},
+   {"rg8", 16, 2, 8, 'U'}, {"rg8_snorm", 17, 2, 8, 'S'}, {"rg8ui", 20, 2, 8, 'u'}, {"rg8i", 21, 2, 8, 'i'},
+   {"rgb10_a2", 64, 0, 0, 'U'}, {"rgb10_a2ui", 68, 0, 0, 'u'},
+   {"r16", 70, 1, 16, 'U'}, {"r16_snorm", 71, 1, 16, 'S'}, {"r16ui", 74, 1, 16, 'u'}, {"r16i", 75, 1, 16, 'i'}, {"r16f", 76, 1, 16, 'F'},
+   {"rg16", 77, 2, 16, 'U'}, {"rg16_snorm", 78, 2, 16, 'S'}, {"rg16ui", 81, 2, 16, 'u'}, {"rg16i", 82, 2, 16, 'i'}, {"rg16f", 83, 2, 16, 'F'},
+   {"rgba16", 91, 4, 16, 'U'}, {"rgba16_snorm", 92, 4, 16, 'S'}, {"rgba16ui", 95, 4, 16, 'u'}, {"rgba16i", 96, 4, 16, 'i'}, {"rgba16f", 97, 4, 16, 'F'},
+   {"rg32ui", 101, 2, 32, 'u'}, {"rg32i", 102, 2, 32, 'i'}, {"rg32f", 103, 2, 32, 'F'},
+   {"r11f_g11f_b10f", 122, 0, 0, 'F'},
+};
+
+/* expected little-endian texel into out[], returns size */
+static int
+sfmt_expect(const struct sfmt *f, uint8_t *out)
+{
+   if (!f->n) {
+      uint32_t v = !strcmp(f->q, "rgb10_a2") ? 0xFFF003FFu : !strcmp(f->q, "rgb10_a2ui") ? (1u | 2u << 10 | 3u << 20 | 1u << 30) : 0x780003C0u;
+      memcpy(out, &v, 4);
+      return 4;
+   }
+   int bytes = f->bits / 8;
+   for (int c = 0; c < f->n; c++) {
+      uint64_t v;
+      switch (f->kind) {
+      case 'U': v = (c == 1) ? 0 : (f->bits == 32 ? 0xffffffffu : (1ull << f->bits) - 1); break;
+      case 'S': v = (c == 1) ? 0 : (1ull << (f->bits - 1)) - 1; break;
+      case 'u': v = (uint64_t[]){1, 2, 3, 1}[c]; break;
+      case 'i': v = ((uint64_t[]){(uint64_t)-1, 2, (uint64_t)-3, 1}[c]) & (f->bits == 32 ? 0xffffffffu : (1ull << f->bits) - 1); break;
+      default: v = (c == 1) ? 0 : (f->bits == 16 ? 0x3C00 : 0x3F800000u); break;
+      }
+      memcpy(out + c * bytes, &v, bytes);   /* little endian host */
+   }
+   return f->n * bytes;
+}
+
+static int
+storfmt_one(struct tgt *t, const struct sfmt *f)
+{
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f->f, .extent = {4, 4, 1},
+                           .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                           .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImage img;
+   VkDeviceMemory mem;
+   VkMemoryRequirements mr;
+   if (CreateImage(dev, &ii, NULL, &img) != VK_SUCCESS) { printf("{\"storfmt\":\"%s\",\"fail\":\"CreateImage\"}\n", f->q); return 0; }
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "mem");
+   CHECK(BindImageMemory(dev, img, mem, 0) == VK_SUCCESS, "bind");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = f->f,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "view");
+   VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorImageInfo dii = {.imageView = view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &dii};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   char name[64];
+   snprintf(name, sizeof name, "stor_%s.comp.spv", f->q);
+   VkShaderModule m = load_spv(name);
+   CHECK(m, "shader %s", name);
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   if (r != VK_SUCCESS) { printf("{\"storfmt\":\"%s\",\"fail\":\"pipeline %d\"}\n", f->q, r); g_fail++; return 0; }
+   struct hbuf ob;
+   if (!hbuf_create(&ob, 4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(ob.p, 0xA5, 4096);
+   VkCommandBuffer cb = cb_begin(t);
+   CHECK(cb, "cmdbuf");
+   VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                              .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img,
+                              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, 1, 1, 1);
+   ib.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+   ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   ib.oldLayout = ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+   CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, ob.b, 1, &reg);
+   if (!cb_submit(t, cb)) return 0;
+   int ok = 1;
+   if (!g_fake) {
+      uint8_t exp[16];
+      int tb = sfmt_expect(f, exp);
+      for (int i = 0; i < 16 && ok; i++)
+         if (memcmp(ob.p + i * tb, exp, tb)) {
+            ok = 0;
+            printf("{\"storfmt\":\"%s\",\"fail\":\"texel %d\",\"got\":\"", f->q, i);
+            for (int k = 0; k < tb; k++) printf("%02x", ob.p[i * tb + k]);
+            printf("\",\"want\":\"");
+            for (int k = 0; k < tb; k++) printf("%02x", exp[k]);
+            printf("\"}\n");
+         }
+   }
+   if (!ok) g_fail++;
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, mem, NULL);
+   hbuf_destroy(&ob);
+   return ok;
+}
+
+static int
+test_storfmt(void)
+{
+   if (!g_feat.shaderStorageImageExtendedFormats) { printf("{\"test\":\"storfmt\",\"skipped\":\"shaderStorageImageExtendedFormats not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   int pass = 0, n = (int)(sizeof sfmts / sizeof *sfmts);
+   for (int i = 0; i < n; i++) pass += storfmt_one(&t, &sfmts[i]);
+   printf("{\"test\":\"storfmt\",\"formats\":%d,\"passed\":%d,\"ok\":%s}\n", n, g_fake ? n : pass, pass == n ? "true" : "false");
+   tgt_destroy(&t);
+   return pass == n;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -714,6 +856,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
    if (ok && CASE_ON("wide")) ok &= test_wide();
+   if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
