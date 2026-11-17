@@ -37,14 +37,14 @@ fake_probe(struct mali_gpu_info *out)
       out->uapi_minor = 21;
       strcpy(out->name, "Mali-G615 MC2");
    } else if (strcmp(which, "v10") == 0) {
-      /* Poco X4 GT: Mali-G610 MC6 (Dimensity 8100), arch 10.8, CSF. Id from Mesa's model table (PAN_PROD_ID(10, 8, 7));
-       * uAPI 1.21 is a guess: MediaTek r40-class kbase on the phone's 5.10 kernel, verify with the probe. */
-      out->gpu_id = 0xA8070000u;
+      /* Poco X4 GT: Mali-G610 MC6 (Dimensity 8100), arch 10.8, CSF. Measured with probe/probe.c
+       * (vk/DEVICE-poco-x4.md): gpu_id 0xA8670000, kbase r32p1 uAPI 1.18, shader_present 0x130013 (6 cores, non-contiguous). */
+      out->gpu_id = 0xA8670000u;
       out->core_count = 6;
-      out->core_id_range = 6;
+      out->core_id_range = 21;   /* highest set bit of shader_present 0x130013, as the kbase backend computes it */
       out->tls_threads = 2048;
       out->uapi_major = 1;
-      out->uapi_minor = 21;
+      out->uapi_minor = 18;
       strcpy(out->name, "Mali-G610 MC6");
    } else if (strcmp(which, "v13") == 0) {
       /* Poco X8 Pro Max: Mali-G925 MC11, arch 13.8, kbase uAPI 1.30 */

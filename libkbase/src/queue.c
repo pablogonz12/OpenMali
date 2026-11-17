@@ -65,6 +65,15 @@ int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct
 	}
 	if (r == -ENOTTY || !ctx->caps.group_create_112b)
 		r = kb_ioctl(ctx, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc);
+	if (r == -ENOTTY) {
+		union kbase_ioctl_cs_queue_group_create_1_6 g16;
+		memset(&g16, 0, sizeof g16);
+		g16.in.tiler_mask = gc.in.tiler_mask; g16.in.fragment_mask = gc.in.fragment_mask; g16.in.compute_mask = gc.in.compute_mask;
+		g16.in.cs_min = gc.in.cs_min; g16.in.priority = gc.in.priority; g16.in.tiler_max = gc.in.tiler_max;
+		g16.in.fragment_max = gc.in.fragment_max; g16.in.compute_max = gc.in.compute_max;
+		r = kb_ioctl(ctx, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6, &g16);
+		if (r == 0) { gc.out.group_handle = g16.out.group_handle; gc.out.group_uid = g16.out.group_uid; }
+	}
 	if (r) {
 		kb_set_error("CS_QUEUE_GROUP_CREATE: %s", strerror(-r));
 		goto fail;

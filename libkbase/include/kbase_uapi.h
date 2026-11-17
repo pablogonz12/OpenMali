@@ -73,6 +73,13 @@ union kbase_ioctl_mem_alloc_ex {                                          /* [KC
 };
 #define KBASE_IOCTL_MEM_ALLOC_EX _IOWR(KBASE_IOCTL_TYPE, 59, union kbase_ioctl_mem_alloc_ex)
 
+/* Legacy MEM_ALLOC (nr 5): the only allocator before MEM_ALLOC_EX; uAPI 1.18 (r32) has no nr 59. Same field layout for the 4 words we use. */
+union kbase_ioctl_mem_alloc {
+	struct { __u64 va_pages, commit_pages, extension, flags; } in;
+	struct { __u64 flags, gpu_va; } out;
+};
+#define KBASE_IOCTL_MEM_ALLOC _IOWR(KBASE_IOCTL_TYPE, 5, union kbase_ioctl_mem_alloc)
+
 union kbase_ioctl_mem_query {                                             /* [K] nr 6 */
 	struct { __u64 gpu_addr; __u64 query; } in;
 	struct { __u64 value; } out;
@@ -153,6 +160,12 @@ union kbase_ioctl_cs_queue_group_create_112 {
 	} in;
 	struct { __u8 group_handle; __u8 padding[3]; __u32 group_uid; } out;
 };
+/* uAPI 1.18 (r32p1, Poco X4 GT): the create is nr 42, 32 bytes (upstream CREATE_1_6), found by an ioctl size scan on the phone. */
+union kbase_ioctl_cs_queue_group_create_1_6 {
+	struct { __u64 tiler_mask, fragment_mask, compute_mask; __u8 cs_min, priority, tiler_max, fragment_max, compute_max, padding[3]; } in;
+	struct { __u8 group_handle; __u8 padding[3]; __u32 group_uid; } out;
+};
+#define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6 _IOWR(KBASE_IOCTL_TYPE, 42, union kbase_ioctl_cs_queue_group_create_1_6)
 #define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_112 _IOWR(KBASE_IOCTL_TYPE, 58, union kbase_ioctl_cs_queue_group_create_112)
 struct kbase_ioctl_cs_queue_group_term { __u8 group_handle; __u8 padding[7]; };
 #define KBASE_IOCTL_CS_QUEUE_GROUP_TERMINATE _IOW(KBASE_IOCTL_TYPE, 43, struct kbase_ioctl_cs_queue_group_term)

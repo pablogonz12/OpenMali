@@ -6,7 +6,7 @@ Status: compiles (native, a64-glibc, a64-bionic objects, -Werror) and passes eve
 ## What v10 is wired as
 - `arch_major == 10` -> `env->arch`/`mali_compile` arch 10; it takes the **v11 code path** (RUN_IDVS, IDVS SR, hmask 0xfe, R11
   scratch registers, tile log2 as v11) plus the differences below. Format tables: `pan_pipe_format_v10`, `pan_blendable_formats_v10`.
-- Mesa model for the compiler: G610 `0xA8070000` (PAN_PROD_ID(10,8,7)); G310 is `0xAC040000` in Mesa. G710/G510 have no model
+- Mesa model for the compiler: G610 `0xA8670000` (measured: product_id 0xA867); G310 is `0xAC040000` in Mesa. G710/G510 have no model
   entry in this Mesa, so they would compile against the G610 model (unverified, exact product ids unknown until a probe).
 - `kb_v10` (libkbase global, set in `mali_hw_init`) switches the two libkbase packers that differ.
 
@@ -27,5 +27,5 @@ Status: compiles (native, a64-glibc, a64-bionic objects, -Werror) and passes eve
 
 ## Unhandled / unverified on hardware
 1. MSAA `Multiple` value (above). 2. Whether the MediaTek kbase accepts our CSF queue setup (v10 firmware iterators: 8 SBs).
-3. COHERENT_LOCAL default. 4. Exact GPU id / core mask of this SoC (fake uses 0xA8070000, MC6, uAPI 1.21: guesses).
+3. COHERENT_LOCAL default. 4. Settled by the probe (vk/DEVICE-poco-x4.md): gpu_id 0xA8670000, shader_present 0x130013 (MC6, non-contiguous, core_id_range 21), uAPI 1.18 (r32p1).
 5. `libkbase/tests/*` hand-built references are v11/v13 only; no v10 reference capture exists. 6. G710/G510 model.

@@ -40,8 +40,8 @@ init_once(void)
 {
    glsl_type_singleton_init_or_ref();
    /* GPU ids: G615 (v11) 0xB8030000, G725/G925 class (v13) 0xD8000000 (see compiler-spike/NOTES.md) */
-   /* v10: G610 0xA8070000 (Mesa PAN_PROD_ID(10, 8, 7)); G710/G510 have no model entry in this Mesa and use it too */
-   static const uint64_t ids[3] = {0xA8070000ull, 0xB8030000ull, 0xD8000000ull};
+   /* v10: G610 0xA8670000 (measured on the phone: product_id 0xA867); G710/G510 have no model entry in this Mesa and use it too */
+   static const uint64_t ids[3] = {0xA8670000ull, 0xB8030000ull, 0xD8000000ull};
    for (int i = 0; i < 3; i++)
       for (unsigned v = 0; v < 16 && !g_model[i]; v++)
          g_model[i] = pan_get_model(ids[i], v, 16, 0);
