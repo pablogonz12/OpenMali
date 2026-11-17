@@ -702,5 +702,20 @@ class T(unittest.TestCase):
         self.assertEqual(self.farm("submit", "HEAD", "--env", "A=b;rm")[0] != 0, True)
 
 
+class SweepBackoffUnit(unittest.TestCase):
+    def test_backoff_1_to_30_min_and_alert_after_5(self):
+        import importlib.machinery, importlib.util, types
+        ld = importlib.machinery.SourceFileLoader("farmd_mod", os.path.join(os.path.dirname(os.path.abspath(__file__)), "farmd"))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod", ld)); ld.exec_module(m)
+        alerts = []
+        m.alert = alerts.append; m.log = lambda *_: None
+        f = types.SimpleNamespace(sweep_bad={}, cool={})
+        waits = [m.Farm.sweep_backoff(f, "x", rc, False) for rc in (75, 125, 75, 125, 75, 75, 75, 75)]
+        self.assertEqual(waits, [60, 120, 240, 480, 960, 1800, 1800, 1800])
+        self.assertEqual(len(alerts), 1); self.assertIn("SWEEP-CHURN", alerts[0])
+        self.assertEqual(m.Farm.sweep_backoff(f, "x", 0, False), 0)                 # healthy chunk resets
+        self.assertEqual(m.Farm.sweep_backoff(f, "x", 0, True), 60)                 # rc 0 but session died fast, no cases
+
+
 if __name__ == "__main__":
     unittest.main()

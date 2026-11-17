@@ -18,6 +18,7 @@ RECOVER_EVERY = 45            # s between adb recovery attempts while a wanted d
 DOWN_AFTER = int(os.environ.get("MALI_FARM_DOWN_AFTER", "600"))
 BUILD_TIMEOUT = 300
 SWEEP_WALL = int(os.environ.get("MALI_FARM_SWEEP_WALL", "300"))      # s per idle-sweep chunk (a few minutes)
+SWEEP_FAST_DEATH = 60                                                   # s: a sweep session dying sooner than this without new cases counts as churn
 SWEEP_CHUNK = int(os.environ.get("MALI_FARM_SWEEP_CHUNK", "1500"))   # cases per idle-sweep chunk (the wall cap cuts it short if slower)
 os.environ["PATH"] = os.path.expanduser("~/Android/Sdk/platform-tools") + os.pathsep + os.environ.get("PATH", "")
 
@@ -1009,6 +1010,20 @@ class Farm:
                         lk.release()
             self.wake.set()
 
+    def sweep_backoff(self, alias, rc, fast_dead):
+        """churn guard: a chunk that aborted (rc not 0/1/124, e.g. 75 thermal, 125 guest) or whose session died fast with no new cases
+        delays the next sweep start on this phone 1,2,4..30 min; SWEEP-CHURN alert at the 5th in a row. -> wait seconds (0 = healthy chunk)"""
+        if rc in (0, 1, 124) and not fast_dead:
+            self.sweep_bad[alias] = 0
+            return 0
+        n = self.sweep_bad[alias] = self.sweep_bad.get(alias, 0) + 1
+        wait = min(1800, 60 * 2 ** (n - 1))
+        self.cool[alias] = max(self.cool.get(alias, 0), time.time() + wait)
+        log(f"{alias}: sweep chunk rc={rc}{' (session died fast, no new cases)' if fast_dead else ''} ({n} in a row): backing off {wait}s")
+        if n == 5:
+            alert(f"SWEEP-CHURN {alias}: {n} sweep chunks in a row aborted or died fast (rc={rc}); sessions restart with backoff up to 30 min")
+        return wait
+
     def sweep_chunk(self, dev):
         """one chunk of the walk -> True (continue), False (stop this sweep session), None (stopped before touching the phone)"""
         alias, cls = dev["alias"], dev["class"]
@@ -1070,15 +1085,6 @@ class Farm:
             alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
             self.cool[alias] = time.time() + 60
             return False
-        if rc not in (0, 1, 124):                           # guest/gate abort (e.g. 75 thermal, 125 session failed): every retry restarts the Steam session on the owner's phone
-            n = self.sweep_bad[alias] = self.sweep_bad.get(alias, 0) + 1
-            wait = min(1800, 60 * 2 ** (n - 1))             # backoff 1,2,4,.. min, capped at 30 min
-            self.cool[alias] = max(self.cool.get(alias, 0), time.time() + wait)
-            log(f"{alias}: sweep chunk rc={rc} ({n} in a row): backing off {wait}s")
-            if n == 5:
-                alert(f"SWEEP-CHURN {alias}: {n} sweep chunks in a row ended rc={rc}; sessions restart with backoff up to 30 min")
-        else:
-            self.sweep_bad[alias] = 0
         adv = []                                            # contiguous finished prefix of the chunk; stress cases are skipped (K)
         for c in names:
             if S.STRESS.search(c):
@@ -1094,6 +1100,8 @@ class Farm:
                 log(f"{alias}: sweep skips {names[0]} (no result twice)")
         else:
             st["stall"] = 0
+        fast_dead = time.time() - t0 < SWEEP_FAST_DEATH and not any(k != "K" for _, k in adv)   # session died within ~60 s, no new cases
+        self.sweep_backoff(alias, rc, fast_dead)
         if adv:
             h1 = self.health(dev) if (self.fake or alias in self.attached()) else {}
             S.record(cls, st, st["pos"], [c for c, _ in adv], [k for _, k in adv],
