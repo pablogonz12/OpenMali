@@ -140,7 +140,9 @@ static struct vk_command_buffer *new_cmd(VkCommandPool pool, VkCommandBuffer *h)
    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
    r = BeginCommandBuffer(*h, &bi);
    CHECK(r == VK_SUCCESS, "begin %d", r);
-   return vk_command_buffer_from_handle(*h);
+   struct vk_command_buffer *vc = vk_command_buffer_from_handle(*h);
+   vc->dynamic_graphics_state.rs.depth_clip_enable = VK_MESA_DEPTH_CLIP_ENABLE_NOT_CLAMP;   /* Vulkan default (no pipeline here to set it) */
+   return vc;
 }
 
 static VkRenderingInfo rendering_info(VkRenderingAttachmentInfo *ca, bool clear)
@@ -260,9 +262,12 @@ static int setup_kb(void)
    return 0;
 }
 
+static int hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes) { ((struct fx *)u)->nsubmit += nframes - 1; return hw_submit(u, cs, n); }   /* nsubmit counts frames */
+static void hw_drain(void *u) { (void)u; }   /* fake submits are synchronous */
+
 static struct mali_hw make_hw(void)
 {
-   struct mali_hw hw = {.user = &F, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit};
+   struct mali_hw hw = {.user = &F, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .drain = hw_drain};
    hw.env = (struct mali_env){.arch = ARCH,
 #if ARCH == 13
                               .hmask = 0, .tile_log2 = 12, .tf_or = 0x40000,

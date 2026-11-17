@@ -1,14 +1,26 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Offline check of the ICD (no GPU, no phone). Prints one line per case and "OK" or "FAILED".
-#   ./check.sh [--no-build] [-v]
+#   ./check.sh [--no-build] [-v] [--bless]
+#     --bless   regenerate vk/tests/golden/*.txt (decoded command streams of t_vk_draw/t_vk_feat/t_vk_meta on both fake GPUs) from the
+#               current driver; review `git diff vk/tests/golden` and commit it with the change that caused it
+#     --deqp-host  also run deqp/host-run.sh (host dEQP-VK vs the ASan fake-backend ICD, ~2 min); skipped with a message if the host deqp-vk
+#               build (third_party/build-vk-x86-host) is absent
+#   MALI_SAN=1 ./check.sh   same cases with ASan+UBSan driver objects (out/native-san; the standalone build-t_*.sh tests are skipped)
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
-OUT=$V/out/native
-build=1; verbose=0
+SAN=${MALI_SAN:-0}
+if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san; else OUT=$V/out/native; fi
+build=1; verbose=0; bless=0; deqp_host=0
 for a in "$@"; do
-   case $a in --no-build) build=0 ;; -v) verbose=1 ;; *) echo "usage: check.sh [--no-build] [-v]"; exit 2 ;; esac
+   case $a in --no-build) build=0 ;; -v) verbose=1 ;; --bless) bless=1 ;; --deqp-host) deqp_host=1 ;; *) echo "usage: check.sh [--no-build] [-v] [--bless] [--deqp-host]"; exit 2 ;; esac
 done
+if [ "$SAN" = 1 ]; then
+   # The test executables are not sanitized; the sanitized driver .so needs the runtime preloaded. Leaks are reported by LSan at exit.
+   export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
+   export ASAN_OPTIONS=detect_leaks=${MALI_SAN_LEAKS:-0}:abort_on_error=0:halt_on_error=1
+   export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+fi
 if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
 fail=0
@@ -61,6 +73,45 @@ for g in v11 v13; do
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
 
+# Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs
+# (MALI_FAKE_DUMP); the dump is rendered address-normalised and diffed against tests/golden/<test>-<gpu>.txt. BO flag rules run in the
+# fake backend's bo_alloc (a violation fails the test itself).
+GOLD=$V/tests/golden; GDIR=$OUT/golden; mkdir -p "$GOLD" "$GDIR"
+golden() { # test, gpu, extra args...
+   local t=$1 g=$2 name out rc; shift 2
+   name=$t-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
+   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_$t" --direct "$OUT/libvulkan_mali.so" "$@" 2>&1); rc=$?
+   if [ $rc -ne 0 ]; then echo "FAIL  golden $name (test exit $rc)"; echo "$out" | tail -15 | sed 's/^/        /'; fail=1; return; fi
+   out=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); rc=$?
+   if [ $rc -ne 0 ]; then echo "FAIL  rules $name"; echo "$out" | head -20 | sed 's/^/        /'; fail=1; return; fi
+   [ $verbose = 1 ] && echo "$out" | sed 's/^/        /'
+   if [ $bless = 1 ]; then cp "$GDIR/$name.txt" "$GOLD/$name.txt"; echo "bless $name ($(wc -l <"$GOLD/$name.txt") lines)"; return; fi
+   if [ ! -f "$GOLD/$name.txt" ]; then echo "FAIL  golden $name: no tests/golden/$name.txt (run ./check.sh --bless)"; fail=1
+   elif cmp -s "$GOLD/$name.txt" "$GDIR/$name.txt"; then echo "ok    golden $name ($(grep -c '^kick' "$GOLD/$name.txt") kicks)"
+   else echo "FAIL  golden $name differs (./check.sh --bless if intended):"; diff -u "$GOLD/$name.txt" "$GDIR/$name.txt" | head -30 | sed 's/^/        /'; fail=1; fi
+}
+for g in v11 v13; do
+   golden vk_draw $g --spv-dir "$V/shader"
+   golden vk_feat $g --spv-dir "$V/shader"
+   golden vk_meta $g
+done
+# The rules must have teeth: each one is made to fire on a deliberately damaged dump / fault-injected backend.
+out=$(MALI_GEOM_SIZE=4194304 MALI_FAKE_DUMP="$GDIR/geom.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" 2>&1 >/dev/null)
+out=$(GOLDEN_ARCH=13 python3 -I "$V/tests/golden.py" "$GDIR/geom.jsonl" "$GDIR/geom.txt" 2>&1)
+if grep -q "R-GEOM" <<<"$out"; then echo "ok    rule self-test R-GEOM fires (4 MiB geometry buffer)"; else echo "FAIL  rule self-test: R-GEOM did not fire on MALI_GEOM_SIZE=4194304"; fail=1; fi
+out=$(MALI_FAKE_BADFLAGS=1 MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" 2>&1)
+if grep -q "RULE VIOLATION" <<<"$out"; then echo "ok    rule self-test R-FLAGS fires (EVENT|CACHED BO rejected)"; else echo "FAIL  rule self-test: R-FLAGS did not fire with MALI_FAKE_BADFLAGS=1"; fail=1; fi
+out=$(python3 -I "$V/tests/selftest.py" "$GDIR/vk_draw-v11.jsonl" "$GDIR/vk_draw-v13.jsonl" "$GDIR" 2>&1 | grep -v '^warn:'); echo "$out"
+grep -q '^FAIL' <<<"$out" && fail=1
+rm -f "$GDIR/geom.jsonl"
+
+# Standalone offline tests (each builds itself against the Mesa tree, then runs; they exit non-zero on failure).
+if [ "$SAN" = 1 ]; then
+   echo "skip  build-t_*.sh tests (not sanitized)"
+else
+   for t in bc cmd compile desc image meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+fi
+
 # Exported symbols: the three loader entry points and nothing else.
 syms=$(nm -D --defined-only "$OUT/libvulkan_mali.so" | awk '{print $3}' | grep -v '^$' | sort | tr '\n' ' ')
 want="vk_icdGetInstanceProcAddr vk_icdGetPhysicalDeviceProcAddr vk_icdNegotiateLoaderICDInterfaceVersion "
@@ -82,6 +133,17 @@ else
 fi
 
 # no private identifiers (serials, home paths, IPs, emails) in tracked files
-if "$V/../tools/private-lint.sh" >/dev/null; then echo "ok    private-lint"; else echo "FAIL  private-lint"; "$V/../tools/private-lint.sh" | sed 's/^/        /'; fail=1; fi
+if env -u LD_PRELOAD "$V/../tools/private-lint.sh" >/dev/null; then echo "ok    private-lint"; else echo "FAIL  private-lint"; env -u LD_PRELOAD "$V/../tools/private-lint.sh" | sed 's/^/        /'; fail=1; fi
+
+# opt-in: host dEQP-VK gate (slow; needs the host deqp-vk build, see deqp/README.md)
+if [ $deqp_host = 1 ]; then
+   hd=${DEQP_VK:-$V/../third_party/build-vk-x86-host/external/vulkancts/modules/vulkan/deqp-vk}
+   if [ ! -x "$hd" ]; then echo "skip  host dEQP (--deqp-host): no deqp-vk at ${hd#$V/../} -- build it first, see deqp/README.md"
+   else
+      [ -f "$V/out/native-san/libvulkan_mali.so" ] || (MALI_SAN=1 MALI_TARGET=native-san "$V/build.sh" >/dev/null 2>&1)
+      out=$(timeout 900 "$V/deqp/host-run.sh" 2>&1); rc=$?
+      if [ $rc -eq 0 ]; then echo "ok    host dEQP (no new Crash/Timeout/NotSupported)"; else echo "FAIL  host dEQP gate"; echo "$out" | grep -v '^  v1[13]: ' | tail -25 | sed 's/^/        /'; fail=1; fi
+   fi
+fi
 
 [ $fail = 0 ] && echo OK || { echo FAILED; exit 1; }

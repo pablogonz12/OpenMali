@@ -76,6 +76,11 @@ mali_meta_cmd_forget(const void *cmd)
          g_tab[i] = g_tab[--g_ntab];
          break;
       }
+   if (!g_ntab) {   /* last command buffer gone: drop the table too (it was the 192-byte LeakSanitizer finding in t_vk_draw) */
+      free(g_tab);
+      g_tab = NULL;
+      g_captab = 0;
+   }
    pthread_mutex_unlock(&g_tab_lock);
 }
 
