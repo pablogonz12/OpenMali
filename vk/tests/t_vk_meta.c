@@ -23,7 +23,7 @@
 #define W 64
 #define H 64
 
-static int g_fail, g_fake, g_loop = 1;
+static int g_fail, g_fake, g_loop = 1, g_ms4 = 1;   /* g_ms4: 4x colour samples advertised (MALI_EXPERIMENTAL_MSAA gate) */
 static const char *g_only;
 
 
@@ -484,6 +484,7 @@ case_dsfmt(const char *name, VkFormat fmt)
 static int
 case_resolve(void)
 {
+   if (!g_ms4) { printf("{\"test\":\"resolve\",\"skipped\":\"4x MSAA not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n"); return 1; }
    const uint32_t w = 32, h = 32;
    struct buf dst = {0};
    struct img ms = {0}, rs = {0};
@@ -658,6 +659,7 @@ main(int argc, char **argv)
    if ((r != VK_SUCCESS && r != VK_INCOMPLETE) || cnt < 1) { printf("{\"fail\":\"no device\"}\n"); return 1; }
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
+   g_ms4 = !!(pp.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT);
    GMP(pd, &memprops);
    printf("{\"device\":\"%s\"}\n", pp.deviceName);
 
