@@ -7,6 +7,7 @@
  *   - dynamic descriptor offsets, instance-rate vertex attributes, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "mali_cmd.h"
@@ -43,7 +44,8 @@ mali_cmd_set_hw(const struct mali_hw *hw)
 static void
 unsupported(struct mali_cmd_buffer *cmd, const char *what)
 {
-   (void)what;
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
