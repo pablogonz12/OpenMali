@@ -5,3 +5,4 @@
 2026-11-17 [mali-open] farm smoke --only: a case missing from the DRAW list in vk/tests/valguest.sh ran nothing and passed; check the log shows the case ran (ok:true) (c6c71fc, job 20261117-182638-70d72dff)
 2026-11-17 [vk] Fake t_vk_draw skipped fx cases, hiding mali_compile_blend rejecting arch 10 while dualSrcBlend was advertised; fx pipelines now build under fake (vk/src/mali_compile.c)
 2026-11-17 [perf] cube gpu gap scales with pixels (0.87ms@180p vs 2.13@720p), not flush; suspect RT/depth BO coherency (0x800 on all BOs); A/B untested (vk/GPU-GAP.md)
+2026-11-17 [farm] poco-x4 idles at loadavg 12 with 500% CPU idle: loadavg>8 gate paused all X4 jobs; now also needs >=50% CPU busy (f33243d shellroute.py) (f33243d)
