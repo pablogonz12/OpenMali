@@ -189,6 +189,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
+      .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .depthBiasClamp = true,      /* t_vk_draw fx_bias_*_clamp */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */

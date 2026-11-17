@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1044,7 +1044,7 @@ test_nulld(void)
 
 /* R4-B2 cheap shader-capability features: scalarBlockLayout, uniformBufferStandardLayout, shaderZeroInitializeWorkgroupMemory.
  * run_comp: one compute dispatch over a set whose bindings 0..n-1 are the given buffers/types. */
-static VkBool32 g_scalar, g_ubostd, g_zinit;
+static VkBool32 g_scalar, g_ubostd, g_zinit, g_demote;
 static int
 run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, struct hbuf *bufs, uint32_t gx)
 {
@@ -1172,6 +1172,45 @@ test_zinit(void)
    return 1;
 }
 
+/* shaderDemoteToHelperInvocation: pixels with even x demote (no write, alpha stays 0); the odd-x pixels computed dFdx after the demote
+ * and must see the demoted neighbour's value: r = dFdx * 0.5 = 128. A killed (non-helper) neighbour gives a wrong/zero derivative. */
+static int
+test_demote(void)
+{
+   if (!g_demote) { printf("{\"test\":\"demote\",\"skipped\":\"shaderDemoteToHelperInvocation not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "quad.vert.spv", "demote.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   const float s[4] = {W, H, 0, 0};
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 4; y < H - 4; y++)
+         for (int x = 4; x < W - 4; x++) {
+            if (abs((x ^ 1) - (W - 1 - y)) <= 3 || abs(x - (W - 1 - y)) <= 3) continue;   /* quad diagonal: two triangles meet, quads straddle them */
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            if (x & 1) bad += !near(p, 128, 255, 0, 255, 6);
+            else bad += p[3] != 0;
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (odd %u,%u,%u,%u even %u,%u,%u,%u)", bad, n, pix(&t, 5, 9)[0], pix(&t, 5, 9)[1], pix(&t, 5, 9)[2],
+            pix(&t, 5, 9)[3], pix(&t, 6, 9)[0], pix(&t, 6, 9)[1], pix(&t, 6, 9)[2], pix(&t, 6, 9)[3]);
+      printf("{\"test\":\"demote\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"demote\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1216,7 +1255,7 @@ main(int argc, char **argv)
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    f12.pNext = &f13;
    GetPhysicalDeviceFeatures2(pd, &f2);
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation;
    g_feat = f2.features;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
@@ -1230,7 +1269,7 @@ main(int argc, char **argv)
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation};
    e12.pNext = &e13;
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e12, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
@@ -1258,6 +1297,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
+   if (ok && CASE_ON("demote")) ok &= test_demote();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
