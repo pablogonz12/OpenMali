@@ -1101,7 +1101,8 @@ class Farm:
         else:
             st["stall"] = 0
         fast_dead = time.time() - t0 < SWEEP_FAST_DEATH and not any(k != "K" for _, k in adv)   # session died within ~60 s, no new cases
-        self.sweep_backoff(alias, rc, fast_dead)
+        if why_stop != "preempted":                         # yielding to a real job is not churn
+            self.sweep_backoff(alias, rc, fast_dead)
         if adv:
             h1 = self.health(dev) if (self.fake or alias in self.attached()) else {}
             S.record(cls, st, st["pos"], [c for c, _ in adv], [k for _, k in adv],
