@@ -171,7 +171,15 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    for (unsigned i = 0; i < KB_VS_ATTRS; i++) {
       uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
       if (i < g->nattr)
+      {
          kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset, g->attr[i].stride);
+         if (g->attr[i].instance) {
+            /* Attribute Frequency = Instance (word1[7:6]), offset enable off; first_instance shifts the start (panvk) */
+            ((uint32_t *)e)[0] &= ~(1u << 8);
+            ((uint32_t *)e)[1] |= 1u << 6;
+            ((uint32_t *)e)[2] += d->first_instance * g->attr[i].stride;
+         }
+      }
       else
          kb_draw_attr_unused(e);
    }
