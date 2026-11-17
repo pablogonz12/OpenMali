@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture|depth16|depth32s8]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture|depth16|depth32s8|stencil]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -41,6 +41,16 @@ static struct {
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
+/* stencil test of the next scene (depth test is off then); values are Vulkan's */
+struct st_state {
+   int on;
+   VkCompareOp cmp_f, cmp_b;
+   VkStencilOp fail, dfail, pass;
+   uint32_t cmask, wmask, ref, clear;
+   int cw;                      /* front face = clockwise */
+   int dyn;                     /* compare mask / write mask / reference are dynamic (the static values are wrong on purpose) */
+};
+static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
 static const char *g_only, *g_spv = "shader";
 
@@ -73,7 +83,7 @@ enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
-   X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
+   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -232,7 +242,8 @@ scene_create(struct scene *s, int depth)
       VkImageViewCreateInfo dv = vi;
       dv.image = s->dep;
       dv.format = g_depfmt;
-      dv.subresourceRange.aspectMask = g_depfmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT;
+      dv.subresourceRange.aspectMask = g_depfmt == VK_FORMAT_D32_SFLOAT_S8_UINT || g_depfmt == VK_FORMAT_D24_UNORM_S8_UINT ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) :
+                                        g_depfmt == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
       CHECK(CreateImageView(dev, &dv, NULL, &s->depv) == VK_SUCCESS, "depth view");
       atts[1] = s->depv;
    }
@@ -244,7 +255,7 @@ scene_create(struct scene *s, int depth)
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL},
       {.format = g_depfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+       .stencilLoadOp = g_st.on ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
    VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
    VkAttachmentReference dref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -389,6 +400,17 @@ scene_create(struct scene *s, int depth)
    VkPipelineDepthStencilStateCreateInfo dss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                                                 .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
                                                 .depthCompareOp = VK_COMPARE_OP_LESS, .maxDepthBounds = 1.0f};
+   if (g_st.on) {
+      dss.depthTestEnable = dss.depthWriteEnable = VK_FALSE;
+      dss.stencilTestEnable = VK_TRUE;
+      VkStencilOpState f = {.failOp = g_st.fail, .passOp = g_st.pass, .depthFailOp = g_st.dfail, .compareOp = g_st.cmp_f,
+                            .compareMask = g_st.dyn ? 0x0f : g_st.cmask, .writeMask = g_st.dyn ? 0 : g_st.wmask,
+                            .reference = g_st.dyn ? 9 : g_st.ref};
+      dss.front = f;
+      dss.back = f;
+      dss.back.compareOp = g_st.cmp_b;
+      rs.frontFace = g_st.cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+   }
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
    if (g_fx.on) {
       rs.cullMode = g_fx.dyn ? VK_CULL_MODE_NONE : g_fx.cull;
@@ -404,10 +426,15 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
-   VkDynamicState dyn[6] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
-                            VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
+   VkDynamicState dyn[9] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+                            VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                            VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
+   if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
+      for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
+      dys.dynamicStateCount += 3;
+   }
    if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
                 cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
@@ -470,7 +497,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
-   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = s->depth ? 2 : 1, .pClearValues = cv};
@@ -509,6 +536,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    }
    VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
    VkDeviceSize offs[2] = {0, 0};
+   if (g_st.on && g_st.dyn) {
+      CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.cmask);
+      CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.wmask);
+      CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.ref);
+   }
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
@@ -612,6 +644,154 @@ test_triangle(void)
           ok ? "true" : "false");
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* ---- stencil: coverage / pixel checks against the stencil test (pixels only on hardware) ---- */
+static uint32_t
+px_at(struct scene *s, int x, int y)
+{
+   uint32_t v;
+   memcpy(&v, s->px + y * s->pitch + x * 4, 4);
+   return v;
+}
+
+struct st_case {
+   const char *name;
+   VkCompareOp cmp_f, cmp_b;
+   VkStencilOp fail, pass;
+   uint32_t cmask, wmask, ref, clear;
+   int cw, dyn;
+   double expect;               /* coverage of one triangle (8192 px) or 0 */
+};
+
+static int
+test_st_cov(const struct st_case *c)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_st = (struct st_state){.on = 1, .cmp_f = c->cmp_f, .cmp_b = c->cmp_b, .fail = c->fail, .dfail = VK_STENCIL_OP_KEEP,
+                         .pass = c->pass, .cmask = c->cmask, .wmask = c->wmask, .ref = c->ref, .clear = c->clear,
+                         .cw = c->cw, .dyn = c->dyn};
+   int ok = scene_create(&s, 1);
+   float rot[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, rot, f);
+   g_st = (struct st_state){0};
+   if (ok) {
+      if (g_fake) {
+         printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", c->name);
+      } else {
+         uint32_t cov = count_cov(&s);
+         ok = c->expect == 0 ? cov == 0 : fabs((double)cov - c->expect) / c->expect * 100.0 <= 2.5;
+         CHECK(ok, "%s coverage %u expected %.0f", c->name, cov, c->expect);
+         printf("{\"test\":\"%s\",\"coverage\":%u,\"ok\":%s}\n", c->name, cov, ok ? "true" : "false");
+      }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* centre pixel of: draw A only, B only, A then B under the stencil state `st`.
+ * wmask != 0 -> the INCR_CLAMP pass op marks A, B is rejected where A overlaps (centre == A);
+ * wmask == 0 -> nothing is written, B overwrites (centre == B). */
+static int
+test_st_two(const char *name, int dyn, uint32_t wmask)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_st = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
+                         .pass = VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = wmask, .ref = 0, .clear = 0, .dyn = dyn};
+   int ok = scene_create(&s, 1);
+   float one[2][4] = {{1, 0, 0, 0}, {-1, 0, 0, 0}};
+   uint32_t a = 0, b = 0, ab = 0;
+   if (ok) ok = scene_draw(&s, 1, &one[0], f);
+   if (ok) a = px_at(&s, 128, 128);
+   if (ok) ok = scene_draw(&s, 1, &one[1], f);
+   if (ok) b = px_at(&s, 128, 128);
+   if (ok) ok = scene_draw(&s, 2, one, f);
+   if (ok) ab = px_at(&s, 128, 128);
+   g_st = (struct st_state){0};
+   if (ok) {
+      if (g_fake) {
+         printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      } else {
+         CHECK(a != b, "%s: centre A %08x == B %08x (test is blind)", name, a, b);
+         uint32_t want = wmask ? a : b;
+         ok = ok && ab == want;
+         CHECK(ab == want, "%s: centre %08x expected %08x (A %08x B %08x)", name, ab, want, a, b);
+         printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"ok\":%s}\n", name, ab, want, ok ? "true" : "false");
+      }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+static int
+test_stencil(VkFormat fmt)
+{
+   VkFormat save = g_depfmt;
+   g_depfmt = fmt;
+   const VkCompareOp EQ = VK_COMPARE_OP_EQUAL, NV = VK_COMPARE_OP_NEVER, AL = VK_COMPARE_OP_ALWAYS;
+   const VkStencilOp KP = VK_STENCIL_OP_KEEP;
+   const struct st_case cases[] = {
+      {"stencil_never", NV, NV, KP, KP, 0xff, 0xff, 0, 0, 0, 0, 0},
+      {"stencil_always", AL, AL, KP, KP, 0xff, 0xff, 0, 0, 0, 0, 8192},
+      {"stencil_eq_pass", EQ, EQ, KP, KP, 0xff, 0xff, 5, 5, 0, 0, 8192},
+      {"stencil_eq_fail", EQ, EQ, KP, KP, 0xff, 0xff, 4, 5, 0, 0, 0},
+      {"stencil_cmask", EQ, EQ, KP, KP, 0x0f, 0xff, 0x05, 0x15, 0, 0, 8192},     /* (0x15 & 0xf) == (0x05 & 0xf) */
+      {"stencil_cmask_fail", EQ, EQ, KP, KP, 0xff, 0xff, 0x05, 0x15, 0, 0, 0},
+      {"stencil_dyn_ref", EQ, EQ, KP, KP, 0xff, 0xff, 5, 5, 0, 1, 8192},         /* static ref is 9, mask 0x0f */
+      {"stencil_dyn_cmask", EQ, EQ, KP, KP, 0x0f, 0xff, 0x05, 0x15, 0, 1, 8192},
+   };
+   int ok = 1;
+   for (unsigned i = 0; ok && i < sizeof cases / sizeof *cases; i++) {
+      char nm[64];
+      struct st_case c = cases[i];
+      snprintf(nm, sizeof nm, "%s%s", c.name, fmt == VK_FORMAT_S8_UINT ? "_s8" : fmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? "_d32s8" : "_d24s8");
+      c.name = nm;
+      ok = test_st_cov(&c);
+   }
+   /* back faces use the back state: front NEVER / back ALWAYS shows the triangle for exactly one winding */
+   if (ok) {
+      struct st_case fb = {"stencil_face", NV, AL, KP, KP, 0xff, 0xff, 0, 0, 0, 0, -1}, r0, r1;
+      r0 = fb; r1 = fb;
+      r1.cw = 1;
+      r0.expect = 0; r1.expect = 8192;
+      char nm0[64], nm1[64];
+      const char *sfx = fmt == VK_FORMAT_S8_UINT ? "_s8" : fmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? "_d32s8" : "_d24s8";
+      snprintf(nm0, sizeof nm0, "stencil_face_ccw%s", sfx);
+      snprintf(nm1, sizeof nm1, "stencil_face_cw%s", sfx);
+      r0.name = nm0; r1.name = nm1;
+      /* which winding is the back face depends on the vertex order; accept either assignment but not both/neither */
+      if (g_fake) {
+         ok = test_st_cov(&r0);
+      } else {
+         int f0 = g_fail;
+         int a = test_st_cov(&r0), b = test_st_cov(&r1);
+         if (!a && !b) {   /* neither matched the 0/8192 guess: try the opposite assignment */
+            g_fail = f0;
+            r0.expect = 8192; r1.expect = 0;
+            a = test_st_cov(&r0); b = test_st_cov(&r1);
+         }
+         ok = a && b;
+      }
+   }
+   if (ok) {
+      char nm[64];
+      const char *sfx = fmt == VK_FORMAT_S8_UINT ? "_s8" : fmt == VK_FORMAT_D32_SFLOAT_S8_UINT ? "_d32s8" : "_d24s8";
+      snprintf(nm, sizeof nm, "stencil_incr%s", sfx);
+      ok = test_st_two(nm, 0, 0xff);
+      if (ok) { snprintf(nm, sizeof nm, "stencil_wmask0%s", sfx); ok = test_st_two(nm, 0, 0); }
+      if (ok) { snprintf(nm, sizeof nm, "stencil_dyn_wmask%s", sfx); ok = test_st_two(nm, 1, 0xff); }
+      if (ok) { snprintf(nm, sizeof nm, "stencil_dyn_wmask0%s", sfx); ok = test_st_two(nm, 1, 0); }
+   }
+   g_depfmt = save;
    return ok;
 }
 
@@ -1125,6 +1305,11 @@ main(int argc, char **argv)
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
    if (ok && CASE_ON("depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("depth32s8")) { g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   if (ok && CASE_ON("stencil")) {
+      ok &= test_stencil(VK_FORMAT_S8_UINT);
+      ok &= test_stencil(VK_FORMAT_D32_SFLOAT_S8_UINT);
+      ok &= test_stencil(VK_FORMAT_D24_UNORM_S8_UINT);
+   }
    if (ok && CASE_ON("poly")) {
       ok &= test_poly("poly_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
       ok &= test_poly("poly_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
