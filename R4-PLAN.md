@@ -45,3 +45,5 @@ Sum without M12: 48 d; with: 55 d. M0-M2 give the early "DXVK instance creates" 
 - Limits stay at the 1.0 minima (never above what we exercise); t_vk_info checks them against spec minimum and the PanVK-on-Poco ceiling (R4-ORACLE).
 - New stubs: GetBufferOpaqueCaptureAddress, GetDeviceMemoryOpaqueCaptureAddress, GetDeviceImageSparseMemoryRequirements (rest of the 1.0-1.3 device entrypoints come from vk_common_*; t_vk_info checks ~75 names via vkGetDeviceProcAddr).
 - Guest (Poco) verification: see below once done.
+- Guest verification (Poco G925, 2026-11-17): real `vulkaninfo --summary` and full `vulkaninfo` (540 lines, rc 0, no error/VUID/invalid lines) load our ICD, `apiVersion = 1.3.363`, driverID PANVK, conformanceVersion 0.0.0.0; `t_vk_info` passes on the real device (incl. QueueSubmit2 + timeline wait, host query reset, privateData); dump saved as `vk/R4-ORACLE/vulkaninfo-ours-poco-r4m1.txt`; guest script `vk/tests/r4m1guest.sh` via `scripts/quick/qdrv`.
+- dEQP daily sample (1381, Poco): 270 pass / 134 fail / 975 NS / 0 crash, 0 regressions vs 225/97 (details in `vk/deqp/TRIAGE.md`).
