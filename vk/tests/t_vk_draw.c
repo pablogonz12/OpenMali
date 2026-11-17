@@ -27,7 +27,7 @@
 static int g_fail, g_fake, g_loop = 1, g_reset;
 static const char *g_only, *g_spv = "shader";
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
 #define CHECK(c, ...)                                                                              \
@@ -52,7 +52,7 @@ enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT
    X(DestroyPipeline) X(CreateCommandPool) X(DestroyCommandPool) X(ResetCommandPool)                \
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
-   X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer)  \
+   X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
@@ -265,8 +265,8 @@ scene_create(struct scene *s, int depth)
    CHECK(BindBufferMemory(dev, s->vb[1], s->vbmem, stride) == VK_SUCCESS, "bind vb1");
 
    /* index buffer: u16 {0,1,2,2,1,3} at byte 0, u32 same at byte 16 */
-   VkBufferCreateInfo ibi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 64,
-                             .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+   VkBufferCreateInfo ibi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 128,
+                             .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
    CHECK(CreateBuffer(dev, &ibi, NULL, &s->ib) == VK_SUCCESS, "index buffer");
    GetBufferMemoryRequirements(dev, s->ib, &mr);
    VkMemoryAllocateInfo ia = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
@@ -279,6 +279,9 @@ scene_create(struct scene *s, int depth)
    for (int i = 0; i < 6; i++) i32[i] = i16[i];
    memcpy(ip, i16, sizeof i16);
    memcpy(ip + 16, i32, sizeof i32);
+   /* R4: two DrawIndexedIndirect commands at byte 64 (stride 20): triangle 1 {0,1,2}, triangle 2 {2,1,3} */
+   static const uint32_t ind[10] = {3, 1, 0, 3, 0, 3, 1, 3, 3, 0};
+   memcpy(ip + 64, ind, sizeof ind);
    UnmapMemory(dev, s->ibmem);
    CHECK(BindBufferMemory(dev, s->ib, s->ibmem, 0) == VK_SUCCESS, "bind ib");
 
@@ -455,7 +458,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkDeviceSize offs[2] = {0, 0};
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
-   if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
+   if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
    if (s->mode == MODE_TEX || s->mode == MODE_UBO)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
@@ -467,7 +470,9 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       }
       if (s->mode == MODE_DESCUPD)
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[i & 1], 0, NULL);
-      if (s->mode >= MODE_PUSHFS)
+      if (s->mode == MODE_MDI)
+         CmdDrawIndexedIndirect(cb, s->ib, 64, 2, 20);   /* multiDrawIndirect: drawCount 2 */
+      else if (s->mode >= MODE_PUSHFS)
          CmdDrawIndexed(cb, 6, 1, 0, 7, 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
@@ -901,6 +906,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
+   if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);
    if (ok && CASE_ON("scissor")) ok &= test_mode("scissor", MODE_SCISSOR, 8192.0, 0.5);
    if (ok && CASE_ON("viewport")) ok &= test_mode("viewport", MODE_VPORT, 8192.0, 0.5);
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
