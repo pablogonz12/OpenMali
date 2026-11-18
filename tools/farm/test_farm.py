@@ -941,7 +941,7 @@ class T(unittest.TestCase):
     def test_cancel(self):
         self.attach("dev-a")
         _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
         out = self.farm("cancel", j1)[1]
         self.assertIn("v11 cancelled", out)
         self.assertEqual(L.job_verdict(L.find_job(j1)), "cancelled")
@@ -1220,7 +1220,7 @@ class T(unittest.TestCase):
     def test_farm_prio_and_submit_prio(self):
         _, a, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.y")
         _, b, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.z", "--prio", "3")
-        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (20, 3))
+        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (L.SINGLE_CASE_PRIO, 3))
         rc, out, _ = self.farm("prio", a, "1")
         self.assertEqual(rc, 0)
         self.assertIn("20 -> 1", out)
@@ -1458,7 +1458,7 @@ class T(unittest.TestCase):
             self.assertEqual(L.find_job(j2).get("build_cached"), j1)
             # archive from before the fix (no t_* stored): the smoke job must rebuild, not run with 0 tests
             shutil.rmtree(f.tests_dir(sha))
-            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
             os.makedirs(f.tree(j3) + "/vk", exist_ok=True)
             open(f.tree(j3) + "/vk/build.sh", "w").write("")
             f.build(L.find_job(j3))
@@ -1634,6 +1634,7 @@ class T(unittest.TestCase):
         rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
         self.assertNotEqual(rc, 0)
         self.assertIn("selects no class", err)
+        self.attach("dev-a")
         _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
         self.farmd()
         self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
