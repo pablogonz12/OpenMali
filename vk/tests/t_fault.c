@@ -187,7 +187,7 @@ static PFN_vkGetDeviceProcAddr gdpa;
    X(CreateFramebuffer) X(DestroyFramebuffer) X(DestroyDevice) X(GetDeviceQueue) X(BeginCommandBuffer) X(EndCommandBuffer) \
    X(CmdFillBuffer) X(QueueSubmit) X(WaitForFences) X(GetBufferMemoryRequirements) X(BindBufferMemory) X(CreateBufferView) \
    X(DestroyBufferView)
-#define X(n) static PFN_vk##n p_##n;
+#define X(n) static PFN_vk##n p_##n __attribute__((unused));
 FNS(X)
 #undef X
 
