@@ -157,6 +157,13 @@ Caveat of (a): wsi_common's `sw` flag is global, so software mode also moves the
 
 **The web helper (`+Vulkan` on the bridge) and the GL 3.0 blockers:** the web helper's arguments are `-cef-force-gpu -cef-use-gl=angle -cef-use-angle=vulkan` (`droiddeck-session`, with `BL_VKBRIDGE_CEF_VULKAN=0` by default): ANGLE **on Vulkan directly, not GL through zink**. So the zink GL 3.0 blockers (`EXT_transform_feedback`, `EXT_vertex_attribute_divisor`) do **not** apply to it; ANGLE emulates transform feedback with SSBOs and the instance divisor in its own translation (from memory, not verified here). What it does need on our driver is the surface/swapchain path (X11 through the layer to Wayland, or `xcb_surface` without the layer). The blockers still gate zink-GL clients: Steam's own GL (GLX, kopper) and Xwayland's glamor if one is ever present.
 
+## Round 7: VK_EXT/KHR_vertex_attribute_divisor (host only, not advertised on the branch)
+Needed by zink for GL 3.3 / ES 3.0 (`ARB_instanced_arrays`). Divisors 0 and 1 already worked (stride-0 trick); > 1 was rejected in `mali_pipeline.c`.
+- **On the branch (09e0baa, `check.sh` OK):** `kb_draw_attr_instance` in libkbase (frequency, 1D POT type 2 with R, NPOT type 3 with R/E/D as panvk), host test `t_resources attr_instance`, shader `div.vert`, `t_vk_feat divisor` (skips while not advertised).
+- **In `patches/vertex-attribute-divisor.patch` (needs the hot files + advertisement; host `check.sh` OK after `--bless`):** pipeline reject removed, `mali_attr.divisor`, emit call, extension/features/`maxVertexAttribDivisor`.
+- **Confirmed on hardware:** nothing yet (phone at 56 C when tried). `t_vk_feat --only divisor` on v10/v11/v13 must pass before the patch lands.
+- **Open:** firstInstance with divisor > 1 (hence `supportsNonZeroFirstInstance = false`).
+
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
 ```
@@ -168,7 +175,7 @@ To exercise gamescope alone on hardware first, run it headless under the farm's 
 ## Needs in files this branch may not touch (other workers)
 - `mali_cmd.c`: honouring the dynamic states of EXT_extended_dynamic_state 1/2/3; index conversion for `index_type_uint8`.
 - `mali_cs_emit.c`: nothing is required for the Steam menu itself; dual-source blend and sample mask (ds3) land here later.
-- `mali_pipeline.c`: pass `pSpecializationInfo` to `mali_compile` (gamescope needs it, see Round 2 result); vertex attribute divisor > 1 (line ~176), immutable ycbcr samplers when pipelines are built.
+- `mali_pipeline.c`: pass `pSpecializationInfo` to `mali_compile` (gamescope needs it, see Round 2 result); vertex attribute divisor > 1 (done as `patches/vertex-attribute-divisor.patch`, see "Round 7"), immutable ycbcr samplers when pipelines are built.
 - BO allocator: tiled/AFBC modifier images need dma-buf export of non-linear BOs and a stride/modifier plane layout; LINEAR works today.
 
 ## Risks
