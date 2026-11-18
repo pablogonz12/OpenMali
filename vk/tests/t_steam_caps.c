@@ -201,7 +201,7 @@ main(int argc, char **argv)
          {"timelineSemaphore", f12.timelineSemaphore, 1, "-"},
          {"VK_KHR_external_memory_fd", has(eps, ne, "VK_KHR_external_memory_fd"), 1, "-"},
          {"VK_KHR_maintenance1 extension flag", has(eps, ne, "VK_KHR_maintenance1"), 0, "S"},
-         {"logicOp", f2.features.logicOp, 0, "M"},
+         {"logicOp", f2.features.logicOp, 0, "done"},
          {"VK_EXT_custom_border_color", has(eps, ne, "VK_EXT_custom_border_color"), 0, "M"},
          {"VK_EXT_line_rasterization", has(eps, ne, "VK_EXT_line_rasterization"), 0, "M"},
          {"VK_EXT_physical_device_drm", has(eps, ne, "VK_EXT_physical_device_drm"), 0, "S"},
