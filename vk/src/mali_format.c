@@ -368,7 +368,7 @@ mali_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, VkFormat format, Vk
       p3->optimalTilingFeatures = ok ? f.optimal : 0;
       p3->bufferFeatures = ok ? f.buffer : 0;
       /* 1.3 *_WITHOUT_FORMAT bits: the storage path is format-agnostic for all _I formats. */
-      const uint64_t nf = 0x80000000ull | 0x100000000ull;   /* STORAGE_{READ,WRITE}_WITHOUT_FORMAT */
+      const uint64_t nf = 0x100000000ull;   /* STORAGE_WRITE_WITHOUT_FORMAT only: shaderStorageImageReadWithoutFormat is not advertised (mali_physical_device.c) */
       if (ok && (f.optimal & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) p3->optimalTilingFeatures |= nf;
       if (ok && (f.linear & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) p3->linearTilingFeatures |= nf;
       if (ok && (f.buffer & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT)) p3->bufferFeatures |= nf;
