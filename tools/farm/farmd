@@ -772,6 +772,9 @@ class Farm:
         if self.fake:
             self.keep_log(job, dev, "smoke", "\n".join(json.dumps({"log": "t_vk_draw", "line": f"fake line {i}" + (" only=" + job["only"] if job.get("only") else "")}) for i in range(300)), 0)
             bad = "FAKE_FAIL=1" in env
+            fc = next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_FAIL_COMMIT=")), "")       # test hook: this commit (alone or inside a batch) is the culprit
+            if fc and (job["commit"].startswith(fc) or any(c.startswith(fc) for c in (job.get("batch") or {}).get("commits", []))):
+                bad = True
             return {"verdict": "fail" if bad else "pass", "counts": {"tests": 3, "failed": 1 if bad else 0},
                     "new_failures": [["t_vk_draw", "rc=1"]] if bad else [], "newly_passing": [], "notes": "fake"}
         tree = self.tree(job["id"])
@@ -1780,6 +1783,21 @@ class Farm:
             log(f"auto bench: {a} idle > {idle:.0f}s with no bench row for main {tip[:8]}: {j['id']}")
             break                                                              # one at a time: the oldest missing first
 
+    def auto_bisect(self, jobs):
+        """a failed `submit --batch` job: run each branch alone (same suite/classes/env, same priority) and remember the ids on the batch job"""
+        for j in jobs:
+            b = j.get("batch")
+            if not b or j.get("bisect") is not None or L.job_verdict(j) != "fail":
+                continue
+            ids = {}
+            for ref, commit in zip(b["refs"], b["commits"]):
+                n = L.new_job(ref, commit, False, j["suite"], list(j["parts"]), j.get("env", ""), j.get("repo", ""), cases=j.get("cases"), repeat=j.get("repeat", 1),
+                              only=j.get("only", ""), prio=L.job_prio(j), keep_old=True)
+                ids[ref] = n["id"]
+            j["bisect"] = ids
+            L.write_json(L.job_path(j["id"]), j)
+            log(f"batch {j['id']} failed: bisecting per branch: " + " ".join(f"{r}={i}" for r, i in ids.items()))
+
     def auto_daily(self, att, jobs):
         """once per main tip and phone class: an auto daily of main itself (below explicit jobs) so the farm knows what main really passes
         (save_observed). Kill switch: <state>/baseline/off. Recorded when queued, so a failure is not retried in a loop."""
@@ -1848,6 +1866,7 @@ class Farm:
             jobs = L.list_jobs()
             self.auto_daily(att, jobs)
             jobs = L.list_jobs()
+            self.auto_bisect(jobs)
         except Exception:
             log("auto bench/menu error: " + traceback.format_exc()[-300:])
         if (not self.fake or os.environ.get("MALI_FARM_PUBLISH_REMOTE")) and not (getattr(self, "pub_t", None) and self.pub_t.is_alive()) \
