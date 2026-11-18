@@ -1641,6 +1641,8 @@ class MenuUnit(unittest.TestCase):
         self.assertTrue(why.startswith(ML.LAUNCHER_ONLY))
         self.assertTrue(ML.owner_in_use(self.PW_ON, self.FG % "com.android.chrome", pkg, launch=True)[0])      # another app is still the owner
         self.assertTrue(ML.owner_in_use("", home, pkg, launch=True)[0])                                        # unreadable: never run blind
+        self.assertTrue(ML.owner_in_use(self.PW_ON, self.FG % "com.example.home", pkg, launch=True)[0])        # an app named *.home is not the launcher
+        self.assertFalse(ML.owner_in_use(self.PW_ON, self.FG % "com.miui.home", pkg, launch=True)[0])
 
     def test_guest_flag_and_start_limit(self):
         devs = {"x4": {"class": "v10", "route": "shell", "guest": True}, "old": {"class": "v10", "route": "shell"}}

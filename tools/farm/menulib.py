@@ -112,9 +112,12 @@ def foreground_pkg(out):
     return m.group(1) if m else None
 
 
+HOME_PKGS = ("com.mi.android.globallauncher", "com.miui.home", "com.android.launcher3", "com.google.android.apps.nexuslauncher", "com.sec.android.app.launcher")
+
+
 def is_launcher(fg):
     """home-screen package (com.mi.android.globallauncher, com.android.launcher3, com.miui.home ...)"""
-    return bool(fg) and ("launcher" in fg.lower() or fg.endswith(".home"))
+    return fg in HOME_PKGS or (bool(fg) and fg.lower().endswith("launcher"))
 
 
 LAUNCHER_ONLY = "launcher only"
