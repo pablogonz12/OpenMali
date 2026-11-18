@@ -15,7 +15,7 @@ case ${1:-} in
       cd "$(mktemp -d)"
       for f in "$O"/obj/mali_*.gcda; do
          gcov -f -n -o "$O/obj" "$f" 2>/dev/null | awk -v F="$(basename "$f" .gcda)" \
-            '/^Function/{gsub(/\x27/,"",$2);fn=$2} /^Lines executed/{split($2,a,":");print F, fn, a[2]+0, $4}'
+            '/^Function/{gsub(/\x27/,"",$2);fn=$2;next} /^Lines executed/{if(fn!=""){split($2,a,":");print F, fn, a[2]+0, $4};fn=""}'   # fn cleared: the File/total summary rows that follow are not functions
       done > funcs.txt
       awk '{t[$1]+=$4; c[$1]+=$4*$3/100} END{for(f in t) printf "%-24s %3.0f%% of %d lines\n",f,100*c[f]/t[f],t[f]}' funcs.txt | sort
       echo "--- functions never executed (file function lines)"
