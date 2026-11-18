@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -22,6 +22,8 @@
 
 static int g_fail, g_fake;
 static const char *g_only, *g_spv = "shader";
+static int g_ycbcr;
+static VkPhysicalDevice g_pd;
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
@@ -55,7 +57,8 @@ static float g_lw = 1.0f;
    X(CmdBindIndexBuffer) X(CmdDrawIndirect) X(CmdDrawIndexedIndirect) X(CreateDescriptorSetLayout)                  \
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
-   X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress)
+   X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
+   X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -866,6 +869,154 @@ test_storfmt_nf(void)
    return pass == n;
 }
 
+/* samplerYcbcrConversion: NV12 (G8_B8R8_2PLANE_420) sampled through an immutable ycbcr sampler; the driver samples luma (R8) and chroma (R8G8)
+ * as two textures and converts in the shader. Chroma is constant so the (linear, siting-shifted) chroma reconstruction does not change the result;
+ * luma is a gradient. Three conversions: 709 narrow, 601 full, 709 full with cosited-even siting. Pixels are checked on hardware only. */
+static PFN_vkGetPhysicalDeviceImageFormatProperties2 g_ifp2;
+static PFN_vkGetPhysicalDeviceFormatProperties2 g_fp2;
+
+static void
+ycc_ref(int model709, int full, int y, int cb, int cr, int out[3])
+{
+   double Y, Cb, Cr;
+   if (full) { Y = y / 255.0; Cb = (cb - 128) / 255.0; Cr = (cr - 128) / 255.0; }
+   else { Y = (y - 16) / 219.0; Cb = (cb - 128) / 224.0; Cr = (cr - 128) / 224.0; }
+   double r, g, b;
+   if (model709) { r = Y + 1.5748 * Cr; g = Y - 0.1873 * Cb - 0.4681 * Cr; b = Y + 1.8556 * Cb; }
+   else { r = Y + 1.402 * Cr; g = Y - 0.344136 * Cb - 0.714136 * Cr; b = Y + 1.772 * Cb; }
+   double v[3] = {r, g, b};
+   for (int i = 0; i < 3; i++) out[i] = (int)((v[i] < 0 ? 0 : v[i] > 1 ? 1 : v[i]) * 255.0 + 0.5);
+}
+
+static int
+test_ycbcr(void)
+{
+   if (!g_ycbcr) { printf("{\"test\":\"ycbcr\",\"skipped\":\"samplerYcbcrConversion not advertised\",\"ok\":true}\n"); return 1; }
+   const VkFormat nv12 = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+   /* capabilities gamescope reads */
+   VkFormatProperties2 fp = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+   g_fp2(g_pd, nv12, &fp);
+   const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT |
+                                     VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+   CHECK((fp.formatProperties.optimalTilingFeatures & need) == need, "NV12 optimal features %x", fp.formatProperties.optimalTilingFeatures);
+   VkSamplerYcbcrConversionImageFormatProperties yp = {.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES};
+   VkPhysicalDeviceImageFormatInfo2 pi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = nv12, .type = VK_IMAGE_TYPE_2D,
+                                          .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+   VkImageFormatProperties2 ip = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &yp};
+   CHECK(g_ifp2(g_pd, &pi, &ip) == VK_SUCCESS, "NV12 sampled image properties");
+   const uint32_t ndesc = yp.combinedImageSamplerDescriptorCount;
+   CHECK(ndesc >= 2 && ndesc <= 3, "combinedImageSamplerDescriptorCount %u", ndesc);
+   pi.format = VK_FORMAT_R8G8B8A8_UNORM;
+   yp.combinedImageSamplerDescriptorCount = 0;
+   CHECK(g_ifp2(g_pd, &pi, &ip) == VK_SUCCESS && yp.combinedImageSamplerDescriptorCount == 1, "plain format count %u", yp.combinedImageSamplerDescriptorCount);
+   pi.format = nv12;
+   pi.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+   CHECK(g_ifp2(g_pd, &pi, &ip) != VK_SUCCESS, "NV12 storage must be refused (not advertised)");
+
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { NW = 16, NH = 16 };
+   uint8_t *data = malloc(NW * NH + NW * NH / 2);
+   const int cb = 90, cr = 170;
+   for (int y = 0; y < NH; y++)
+      for (int x = 0; x < NW; x++) data[y * NW + x] = (uint8_t)(24 + 10 * x + 4 * y);
+   for (int i = 0; i < NW * NH / 4; i++) { data[NW * NH + 2 * i] = cb; data[NW * NH + 2 * i + 1] = cr; }
+   static const struct { int m709, full; VkChromaLocation loc; } cfg[3] = {
+      {1, 0, VK_CHROMA_LOCATION_MIDPOINT}, {0, 1, VK_CHROMA_LOCATION_MIDPOINT}, {1, 1, VK_CHROMA_LOCATION_COSITED_EVEN}};
+   int ok = 1;
+   for (int c = 0; c < 3 && ok; c++) {
+      VkSamplerYcbcrConversionCreateInfo yci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO, .format = nv12,
+         .ycbcrModel = cfg[c].m709 ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709 : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601,
+         .ycbcrRange = cfg[c].full ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW,
+         .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
+         .xChromaOffset = cfg[c].loc, .yChromaOffset = cfg[c].loc, .chromaFilter = VK_FILTER_LINEAR, .forceExplicitReconstruction = VK_FALSE};
+      VkSamplerYcbcrConversion conv;
+      CHECK(CreateSamplerYcbcrConversion(dev, &yci, NULL, &conv) == VK_SUCCESS, "CreateSamplerYcbcrConversion");
+      VkSamplerYcbcrConversionInfo sci_y = {.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO, .conversion = conv};
+      VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .pNext = &sci_y, .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR,
+                                .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+      VkSampler smp;
+      CHECK(CreateSampler(dev, &si, NULL, &smp) == VK_SUCCESS, "sampler with conversion");
+      VkImageCreateInfo ici = img2d(nv12, NW, NH, 1, 1, 0);
+      VkImage img;
+      CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "NV12 image");
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, img, &mr);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+      VkDeviceMemory mem;
+      CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "NV12 memory");
+      CHECK(BindImageMemory(dev, img, mem, 0) == VK_SUCCESS, "bind NV12");
+      struct hbuf st;
+      if (!hbuf_create(&st, NW * NH + NW * NH / 2, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return 0;
+      memcpy(st.p, data, NW * NH + NW * NH / 2);
+      VkCommandBuffer cb1 = cb_begin(&t);
+      CHECK(cb1, "cmdbuf");
+      VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1};
+      VkImageMemoryBarrier b1 = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img, .subresourceRange = rng};
+      CmdPipelineBarrier(cb1, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b1);
+      VkBufferImageCopy reg[2] = {
+         {.bufferOffset = 0, .imageSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1}, .imageExtent = {NW, NH, 1}},
+         {.bufferOffset = NW * NH, .imageSubresource = {VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1}, .imageExtent = {NW / 2, NH / 2, 1}}};
+      CmdCopyBufferToImage(cb1, st.b, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, reg);
+      VkImageMemoryBarrier b2 = b1;
+      b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      b2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      b2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      CmdPipelineBarrier(cb1, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b2);
+      if (!cb_submit(&t, cb1)) return 0;
+      hbuf_destroy(&st);
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = &sci_y, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = nv12, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      VkImageView view;
+      CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "NV12 view");
+      VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1,
+                                         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = &smp};
+      VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+      struct tex x = {0};
+      CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &x.dsl) == VK_SUCCESS, "dsl with immutable ycbcr sampler");
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ndesc};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &x.pool) == VK_SUCCESS, "dpool");
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = x.pool, .descriptorSetCount = 1, .pSetLayouts = &x.dsl};
+      CHECK(AllocateDescriptorSets(dev, &dai, &x.set) == VK_SUCCESS, "alloc set");
+      VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = x.set, .dstBinding = 0, .descriptorCount = 1,
+                                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+      UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+      const float s[4] = {1.0f, 1.0f, 0, 0};
+      ok = quad_draw(&t, &x, "ycbcr.frag.spv", s);
+      int bad = 0;
+      if (ok && !g_fake) {
+         for (int ty = 1; ty < NH; ty += 5)
+            for (int tx = 1; tx < NW; tx += 5) {
+               int e[3];
+               ycc_ref(cfg[c].m709, cfg[c].full, data[ty * NW + tx], cb, cr, e);
+               const uint8_t *p = pix(&t, tx * 16 + 8, ty * 16 + 8);
+               if (!near(p, e[0], e[1], e[2], 255, 6)) {
+                  printf("{\"ycbcr_mismatch\":{\"cfg\":%d,\"texel\":[%d,%d],\"got\":[%u,%u,%u],\"want\":[%d,%d,%d]}}\n", c, tx, ty, p[0], p[1], p[2], e[0], e[1], e[2]);
+                  bad++;
+               }
+            }
+      }
+      tex_destroy(&x);
+      DestroyImageView(dev, view, NULL);
+      DestroySampler(dev, smp, NULL);
+      DestroySamplerYcbcrConversion(dev, conv, NULL);
+      DestroyImage(dev, img, NULL);
+      FreeMemory(dev, mem, NULL);
+      if (bad) ok = 0;
+   }
+   free(data);
+   if (ok) printf(g_fake ? "{\"test\":\"ycbcr\",\"skipped\":\"pixels: fake backend (calls and compile ran)\",\"ok\":true}\n" : "{\"test\":\"ycbcr\",\"configs\":3,\"ok\":true}\n");
+   else printf("{\"test\":\"ycbcr\",\"ok\":false}\n");
+   tgt_destroy(&t);
+   return ok;
+}
+
 /* bufferDeviceAddress: push a 64-bit pointer (buffer address + 256) to a compute shader that writes through it. */
 static int
 test_bda(void)
@@ -1647,7 +1798,6 @@ test_memmodel(void)
 
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
-static VkPhysicalDevice g_pd;
 static PFN_vkGetPhysicalDeviceProperties2 g_gp2;
 static int
 test_subgroup_one(void)
@@ -1918,6 +2068,9 @@ main(int argc, char **argv)
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
+   g_ycbcr = f11.samplerYcbcrConversion;
+   g_ifp2 = (PFN_vkGetPhysicalDeviceImageFormatProperties2)gipa(inst, "vkGetPhysicalDeviceImageFormatProperties2");
+   g_fp2 = (PFN_vkGetPhysicalDeviceFormatProperties2)gipa(inst, "vkGetPhysicalDeviceFormatProperties2");
    g_i16 = f2.features.shaderInt16 && f11.storageBuffer16BitAccess;
    g_i8 = f12.shaderInt8 && f12.storageBuffer8BitAccess;
    g_mirror = f12.samplerMirrorClampToEdge;
@@ -1935,7 +2088,7 @@ main(int argc, char **argv)
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
    e12.pNext = &e13;
-   VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters};
+   VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e11, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
@@ -1964,6 +2117,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
+   if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();

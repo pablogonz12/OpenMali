@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* M7 descriptor sets over the Vulkan runtime. See mali_descriptor.h. */
 #include "mali_descriptor.h"
+#include "mali_format.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -101,13 +102,14 @@ dsl_destroy(struct vk_device *dev, struct vk_descriptor_set_layout *l)
    struct mali_dsl *d = container_of(l, struct mali_dsl, vk);
    vk_free(&dev->alloc, d->b);
    vk_free(&dev->alloc, d->imm);
+   vk_free(&dev->alloc, d->ycbcr);
    vk_object_free(dev, NULL, d);
 }
 
 VkResult
 mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci, struct mali_dsl **out)
 {
-   uint32_t nb = 0, nimm = 0;
+   uint32_t nb = 0, nimm = 0, nycbcr = 0;
    for (uint32_t i = 0; i < ci->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *b = &ci->pBindings[i];
       if (!type_ok(b->descriptorType)) return VK_ERROR_FEATURE_NOT_PRESENT;   /* inline uniform, accel structs: not supported */
@@ -119,7 +121,8 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
    d->vk.destroy = dsl_destroy;
    d->b = vk_zalloc(&dev->alloc, (nb ? nb : 1) * sizeof *d->b, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    d->imm = vk_zalloc(&dev->alloc, (nimm ? nimm : 1) * sizeof *d->imm, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-   if (!d->b || !d->imm) {
+   d->ycbcr = vk_zalloc(&dev->alloc, (nimm ? nimm : 1) * sizeof *d->ycbcr, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!d->b || !d->imm || !d->ycbcr) {
       dsl_destroy(dev, &d->vk);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
@@ -147,6 +150,25 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
+      /* Immutable samplers with a YCbCr conversion: the element holds one texture descriptor per image plane, then the sampler. */
+      if (b->type == MALI_DT_COMBINED_IMAGE_SAMPLER && src->pImmutableSamplers && g_res && g_res->sampler_ycbcr) {
+         uint32_t first = nycbcr;
+         bool any = false;
+         for (uint32_t k = 0; k < b->count; k++) {
+            struct vk_ycbcr_conversion_state st;
+            memset(&st, 0, sizeof st);
+            any |= g_res->sampler_ycbcr(src->pImmutableSamplers[k], &st) != 0;
+            d->ycbcr[nycbcr++] = st;
+         }
+         if (any) {
+            b->ycbcr_planes = MALI_YCBCR_PLANES;
+            b->ycbcr_off = first;
+            b->stride = MALI_YCBCR_SLOTS;
+         } else {
+            nycbcr = first;
+            memset(&d->ycbcr[first], 0, b->count * sizeof *d->ycbcr);
+         }
+      }
       if (b->stride) {
          b->slot = d->slot_count;
          d->slot_count += b->stride * b->count;
@@ -165,6 +187,7 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
    blake3_hasher h;
    blake3_hasher_init(&h);
    blake3_hasher_update(&h, d->b, nb * sizeof *d->b);
+   blake3_hasher_update(&h, d->ycbcr, nycbcr * sizeof *d->ycbcr);   /* model, range, siting, swizzle change the shader */
    blake3_hasher_finalize(&h, d->vk.blake3, sizeof d->vk.blake3);
    *out = d;
    return VK_SUCCESS;
@@ -275,7 +298,7 @@ write_immutable(struct mali_dset *s)
       const struct mali_lbinding *b = &l->b[n];
       if (b->type == MALI_DT_NONE || b->imm_off == MALI_NO_IMM_SAMPLER || !g_res) continue;
       for (uint32_t k = 0; k < b->count; k++) {
-         unsigned sub = b->type == MALI_DT_COMBINED_IMAGE_SAMPLER ? 1 : 0;
+         unsigned sub = b->type == MALI_DT_COMBINED_IMAGE_SAMPLER ? (b->ycbcr_planes ? b->ycbcr_planes : 1) : 0;
          struct mali_hw_desc hw;
          if (g_res->sampler(l->imm[b->imm_off + k], &hw) == 0)
             memcpy(s->cpu + (size_t)(b->slot + k * b->stride + sub) * MALI_DESC_SLOT_SIZE, &hw, sizeof hw);
@@ -391,6 +414,15 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
       }
       break;
    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      if (b->ycbcr_planes) {   /* [luma texture, chroma texture, sampler]; the sampler is immutable (written at allocation) */
+         struct mali_hw_desc pl[2];
+         if (!ii->imageView) {
+            for (unsigned k = 0; k < b->ycbcr_planes; k++) *slot_at(s, base + k) = null_hw;
+         } else if (g_res->image_view_planes && g_res->image_view_planes(ii->imageView, pl) == (int)b->ycbcr_planes) {
+            for (unsigned k = 0; k < b->ycbcr_planes; k++) *slot_at(s, base + k) = pl[k];
+         }
+         break;
+      }
       if (ii->imageView && g_res->image_view(ii->imageView, type, &hw) == 0)
          *slot_at(s, base) = hw;
       else if (!ii->imageView)

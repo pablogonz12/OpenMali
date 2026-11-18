@@ -142,6 +142,15 @@ res_sampler(VkSampler h, struct mali_hw_desc *o)
 }
 
 static int
+res_sampler_ycbcr(VkSampler h, struct vk_ycbcr_conversion_state *o)
+{
+   VK_FROM_HANDLE(mali_sampler, s, h);
+   if (!s || !s->vk.ycbcr_conversion) return 0;
+   *o = s->vk.ycbcr_conversion->state;
+   return 1;
+}
+
+static int
 res_buffer(VkBuffer h, uint64_t *va, uint64_t *size)
 {
    VK_FROM_HANDLE(mali_buffer, b, h);
@@ -151,4 +160,4 @@ res_buffer(VkBuffer h, uint64_t *va, uint64_t *size)
    return 0;
 }
 
-const struct mali_desc_res_ops mali_res_ops = { res_image_view, res_sampler, res_buffer, mali_buffer_view_desc };
+const struct mali_desc_res_ops mali_res_ops = { res_image_view, res_sampler, res_buffer, mali_buffer_view_desc, res_sampler_ycbcr, mali_image_view_planes };

@@ -168,6 +168,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    /* No device extensions and no optional features yet. */
    const struct vk_device_extension_table extensions = {
       .KHR_timeline_semaphore = true,
+      .KHR_sampler_ycbcr_conversion = true,   /* t_vk_feat ycbcr: G8_B8R8_2PLANE_420 */
       .KHR_descriptor_update_template = true, /* M7: templates (core only from 1.1) */
       .KHR_external_memory = true,
       .KHR_external_memory_fd = true,
@@ -216,6 +217,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
+      .samplerYcbcrConversion = true,                                   /* t_vk_feat ycbcr (NV12 only; pixels on hardware, smoke) */
       .shaderClipDistance = true,                                       /* t_vk_feat clip */
       .shaderImageGatherExtended = true,                                /* t_vk_feat gather */
       .fragmentStoresAndAtomics = true,                                 /* t_vk_feat fsstore */

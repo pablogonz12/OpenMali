@@ -11,7 +11,7 @@ LOOP=$(cat $D/val_loop.txt 2>/dev/null || echo 20)
 ONLY=$(cat $D/val_only.txt 2>/dev/null | tr ',' ' ')
 DRAW=" triangle rot two depth load_depth load_depth16 load_stencil load_colour_f16 load_colour_a2b10 depth16 depth32s8 stencil poly idx16 idx32 mdi scissor viewport multivp clearatt fx msaa_resolve4 msaa_sample_shading ring occlusion pushfs ubo descupd texture "
 META=" buf fill img copyimg blit clearc cleard resolve event ts "
-FEAT=" storfmt_nf "   # t_vk_feat cases the smoke set runs (Steam-session features; the rest of t_vk_feat is run by hand)
+FEAT=" storfmt_nf ycbcr "   # t_vk_feat cases the smoke set runs (Steam-session features; the rest of t_vk_feat is run by hand)
 for c in "t_vk_draw --loop $LOOP" "t_vk_compute --loop 5" "t_vk_meta" "t_vk_feat"; do
   set -- $c; n=$1; shift
   sp="--spv-dir $T/s"; [ $n = t_vk_meta ] && sp=""
