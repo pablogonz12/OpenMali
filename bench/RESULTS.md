@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open 54470e3d8 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 188.5 | 72.7 | 0 | 0.86 | 3.60 | 309.5 | 0.73 | 2.21 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 54470e3d8 | triangle-3k | 117.8 | 80.2 | 0 | 3.84 | 2.19 | 365.9 | 2.39 | 1.64 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
+
 ### mali-open 649e9284f (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -69,6 +76,15 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 ## cube (GPU-heavy)
+
+### mali-open 54470e3d8 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 71.6 | 36.2 | 0 | 0.14 | 13.02 | 87.8 | 0.08 | 11.31 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 54470e3d8 | cube-720p | 50.9 | 40.7 | 0 | 1.58 | 15.22 | 83.9 | 1.64 | 11.87 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.3 | 33.4 | 0 | 0.13 | 12.78 | 87.8 | 0.08 | 11.31 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 54470e3d8 | cube-native | 48.5 | 39.0 | 0 | 1.12 | 17.62 | 75.8 | 1.50 | 13.08 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 
 ### mali-open 649e9284f (2026-11-18)
 
@@ -143,19 +159,6 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
-
-## Draw-count scaling (triangle, one frame of N draws, offscreen, CMF v11, 2026-11-18)
-
-`tools/bench2 cmf --bench triangle --tri-n N`, best env `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`, one rep per cell (the CMF is bimodal: the 3k row is the best of 5). CPU = record + submit per frame. main = 74a582f (before the draw-path stack), draw-path = `perf/draw-path` with dirty mask + small draw records (5c3daca). The bridge column is the MediaDeck bridge on the same phone.
-
-| draws | main CPU ms | draw-path CPU ms | draw-path fps | draw-path GPU ms | bridge CPU ms | bridge fps |
-|---|---|---|---|---|---|---|
-| 3000 | 4.78 | 0.79 | 893 | 0.73 | 0.80 | 235 |
-| 5000 | QueueSubmit -4 | 1.44 | 456 | 1.40 | 1.34 | 168 |
-| 10000 | QueueSubmit -4 | 5.14 | 141 | 4.20 | 3.27 | 88 |
-| 20000 | QueueSubmit -4 | 10.66 | 76 | 6.46 | 5.61 | 48 |
-
-main's `QueueSubmit` -4 (VK_ERROR_DEVICE_LOST, 32 MiB descriptor arena exhausted at ~7k draws) is fixed by c02338c (a frame that does not fit spills into overflow BOs) and 44fd974 (overflow BOs pooled), merged in 068a170. At 10k and 20k the draw-path CPU time is higher than the bridge's (cause not profiled yet).
 
 ## Steam menu (realistic metric)
 
