@@ -29,6 +29,8 @@ static const struct mali_rtfmt mali_rt_tab[] = {
    { VK_FORMAT_A2R10G10B10_UNORM_PACK32, 2, 24, 4, 4, 0, SW(2, 1, 0, 3), PF(238, 0) },
    { VK_FORMAT_R5G5B5A1_UNORM_PACK16, 6, 28, 4, 4, 0, SW(3, 2, 1, 0), PF(225, 0) },
    { VK_FORMAT_B5G5R5A1_UNORM_PACK16, 6, 28, 4, 4, 0, SW(3, 0, 1, 2), PF(225, 0) },
+   /* alpha at bit 15 = Mesa B5G5R5A1 (RGB5_A1, BGRA swizzle) */
+   { VK_FORMAT_A1R5G5B5_UNORM_PACK16, 6, 28, 4, 4, 0, SW(2, 1, 0, 3), PF(225, 0) },
    { VK_FORMAT_R16_SFLOAT, 16, 16, 1, 4, 1, SW(0, 1, 2, 3), PF(199, 0) },
    { VK_FORMAT_R16G16_SFLOAT, 17, 17, 2, 4, 1, SW(0, 1, 2, 3), PF(207, 0) },
    { VK_FORMAT_R16G16B16A16_SFLOAT, 18, 19, 4, 8, 1, SW(0, 1, 2, 3), PF(223, 0) },
