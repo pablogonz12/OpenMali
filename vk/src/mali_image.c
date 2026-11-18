@@ -380,7 +380,7 @@ mali_GetImageMemoryRequirements2(VkDevice _dev, const VkImageMemoryRequirementsI
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_image, img, info->image);
-   fill_reqs(dev, img->lay.size, img->lay.alignment, r, img->vk.tiling == VK_IMAGE_TILING_OPTIMAL && !(img->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) && !img->vk.external_handle_types);
+   fill_reqs(dev, img->lay.size, img->lay.alignment, r, img->vk.tiling == VK_IMAGE_TILING_OPTIMAL && !(img->vk.usage & (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) && !img->vk.external_handle_types);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -391,7 +391,7 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
    struct mali_bc_layout bc;
    bool is_bc;
    if (image_layout(dev_arch(dev), info->pCreateInfo, &lay, &bc, NULL, &is_bc) != 0) memset(&lay, 0, sizeof lay), lay.alignment = MALI_IMAGE_ALIGN;
-   fill_reqs(dev, lay.size, lay.alignment, r, info->pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL && !(info->pCreateInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT) && !vk_find_struct_const(info->pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO));
+   fill_reqs(dev, lay.size, lay.alignment, r, info->pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL && !(info->pCreateInfo->usage & (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) && !vk_find_struct_const(info->pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO));
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
