@@ -524,6 +524,7 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    out->is_zs = zs || st_fmt;
    out->samples = img->lay.d.samples;
    out->surface_stride = (uint32_t)pl->slice[level].surface_stride;
+   out->layer_stride = pl->array_stride;
    if (want_s) {
       const struct mali_plane_layout *sp = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_STENCIL_BIT);
       if (!sp)
