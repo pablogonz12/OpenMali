@@ -50,7 +50,7 @@ for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$O
 # Steam session (STEAM-GAPS.md): none of gamescope's vkCreateDevice requirements is missing any more.
 STEAM_MISSING=0
 # zink (STEAM-GAPS.md): base requirements and EXT_physical_device_drm still missing; lower only together with the passing test.
-ZINK_MISSING=5
+ZINK_MISSING=4
 for g in v11 v13; do run "steam_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
