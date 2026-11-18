@@ -110,12 +110,20 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .optimalBufferCopyRowPitchAlignment = 1,
       .nonCoherentAtomSize = 64,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
-      /* descriptor indexing: only sampled images and samplers have update-after-bind (t_vk_feat didx); everything else reports 0 */
-      .maxUpdateAfterBindDescriptorsInAllPools = 1024, .shaderSampledImageArrayNonUniformIndexingNative = false,
+      /* descriptor indexing limits. Driver reality: binding flags are not interpreted, descriptors live in pool memory the GPU reads at
+       * submit, so an update after bind is a plain write. Only sampled images/samplers advertise the UAB features, but every UAB limit
+       * is reported (>= its non-UAB twin, Vulkan 1.2 required-limits table). Samplers/sampled images: a set must fit the 1M-slot
+       * layout cap (mali_get_descriptor_set_layout_support) and the 1 GiB pool cap: 500000 * 32 B = 16 MB. t_vk_info "uab limits" */
+      .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
-      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
-      .maxPerStageUpdateAfterBindResources = 32, .maxDescriptorSetUpdateAfterBindSamplers = 96,
-      .maxDescriptorSetUpdateAfterBindSampledImages = 96,
+      .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = 12, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageUpdateAfterBindResources = 500000,
+      .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
+      .maxDescriptorSetUpdateAfterBindUniformBuffers = 72, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
+      .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
+      .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
@@ -197,6 +205,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
+      .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
@@ -249,6 +258,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .maintenance6 = true,
       .minLod = true,              /* t_image view_min_lod */
+      .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */

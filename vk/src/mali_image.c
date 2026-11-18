@@ -397,7 +397,6 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
 {
-   VK_FROM_HANDLE(mali_device, dev, _dev);
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_image, img, b[i].image);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);
