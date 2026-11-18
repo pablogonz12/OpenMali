@@ -129,12 +129,13 @@ def charts(data, outdir):
             n = max(len(o), 1)
             for k, (ver, rs) in enumerate(d["bridge"].items()):
                 c = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"][k % 5]      # never green: that is ours
+                mk, ls = "so^Dv"[k // 5 % 5], ["--", "-.", ":"][k // 25 % 3]       # past 5 versions the colour repeats: vary the marker (and line style) too
                 pos = {r["build"]: i for i, r in enumerate(o)}
                 hit = [r for r in rs if r["build"] in pos]
                 if len(rs) > 1 and hit:
-                    ax.plot([pos[r["build"]] for r in hit], [r["fps"] for r in hit], "s--", ms=3, color=c, label=f"bridge {vers_short(ver)}")
+                    ax.plot([pos[r["build"]] for r in hit], [r["fps"] for r in hit], mk + ls, ms=3, color=c, label=f"bridge {vers_short(ver)}")
                 else:
-                    ax.axhline(rs[-1]["fps"], ls="--", color=c, label=f"bridge {vers_short(ver)}")
+                    ax.axhline(rs[-1]["fps"], ls=ls, color=c, label=f"bridge {vers_short(ver)}")
             if d["panvk"]:
                 ax.axhline(d["panvk"][-1]["fps"], ls=":", color="tab:red", label="PanVK")
             ax.set_title(v, fontsize=10)
