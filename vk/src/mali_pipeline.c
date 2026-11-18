@@ -197,7 +197,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
             has_blend = true;
       /* logicOp (static state; zink uses it statically as extendedDynamicState2LogicOp is not advertised): colour logic op in the blend shader */
-      const bool logic = st.cb->logic_op_enable;
+      /* a logic op can only change the output when colour output 0 is written and attachment 0 is writable; otherwise the pipeline is
+       * accepted without a blend shader and the draw-time check (gfx.logic_inert) lets it through */
+      const bool logic_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
+                               st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+                               (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      const bool logic = st.cb->logic_op_enable && !logic_inert;
+      p->gfx.logic_inert = st.cb->logic_op_enable && logic_inert;
       if (logic)
          has_blend = true;
       /* equations fixed function cannot express (MIN/MAX, SRC_ALPHA_SATURATE, unsupported factor pairs) also go through the blend shader */
