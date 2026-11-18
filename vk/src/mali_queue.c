@@ -487,14 +487,19 @@ mali_queue_device_finish(struct mali_device *dev)
  * kbase attaches no implicit fence to its dma-bufs itself, so without the ioctl the CPU wait is the only thing
  * keeping the compositor from sampling a half-drawn buffer, and stays. wsi_common's own probe result (made at the
  * first swapchain creation) is the decision; MALI_PRESENT_FENCE=0/1 forces it (tests), MALI_QUEUE_CPU_WAIT=1 = 0. */
+static int forced = -1;
+static pthread_once_t forced_once = PTHREAD_ONCE_INIT;
+static void
+forced_init(void)
+{
+   const char *e = getenv("MALI_PRESENT_FENCE");
+   forced = getenv("MALI_QUEUE_CPU_WAIT") ? 0 : e ? atoi(e) : -1;
+}
+
 static bool
 mali_present_fence_ok(struct mali_device *dev)
 {
-   static int forced = -2;
-   if (forced == -2) {
-      const char *e = getenv("MALI_PRESENT_FENCE");
-      forced = getenv("MALI_QUEUE_CPU_WAIT") ? 0 : e ? atoi(e) : -1;
-   }
+   pthread_once(&forced_once, forced_init);
    if (forced >= 0)
       return forced;
    const struct wsi_device *w = &mali_device_pdev(dev)->wsi;

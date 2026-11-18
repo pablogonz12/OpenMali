@@ -64,7 +64,7 @@ now_us(void)
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
    X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
-   X(BindBufferMemory) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
+   X(BindBufferMemory) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdPipelineBarrier) X(CmdCopyBuffer)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -290,6 +290,7 @@ test_order(int fence_mode)
          CHECK(fa_done == VK_SUCCESS, "iter %d: present returned before the frame finished (commit would show a half-drawn buffer)", i);
       }
       CHECK(WaitForFences(dev, 1, &fp, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fp wait");
+      CHECK(WaitForFences(dev, 1, &fa, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fa wait");
       ResetFences(dev, 1, &fa);
       ResetFences(dev, 1, &fp);
    }
@@ -344,9 +345,14 @@ test_gpufence(void)
    CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "begin");
    VkBufferCopy rg = {.size = sz};
    for (int k = 0; k < 4; k++) {
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
       CmdFillBuffer(cb, b[0], 0, sz, 0x01010101u * (k + 1));
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
       CmdCopyBuffer(cb, b[0], b[1], 1, &rg);
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
       CmdCopyBuffer(cb, b[1], b[0], 1, &rg);
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
    }
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
