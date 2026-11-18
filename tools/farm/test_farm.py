@@ -525,7 +525,7 @@ class T(unittest.TestCase):
         self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
         os.makedirs(self.d + "/state/disabled", exist_ok=True)                      # a plain touch (by lock name) works too
         open(self.d + "/state/disabled/cmf", "w").close()
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
         self.farmd()
         self.assertEqual(L.find_job(j2)["parts"]["v11"]["state"], "pending")
 
@@ -1056,9 +1056,9 @@ class T(unittest.TestCase):
         self.assertEqual((L.find_job(a)["parts"]["v11"]["state"], L.find_job(b)["parts"]["v11"]["state"]), ("done", "pending"))
 
     def test_supersede_old_gate_jobs(self):
-        _, old, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11,v13")
-        _, other, _ = self.farm("submit", "HEAD~1", "--suite", "daily", "--need", "v11")              # another suite: stays
-        _, keep, _ = self.farm("submit", "HEAD~2", "--suite", "smoke", "--need", "v11", "--keep-old")
+        _, old, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
+        _, other, _ = self.farm("submit", "HEAD~1", "--suite", "daily", "--need", "v11", "--allow-stale")              # another suite: stays
+        _, keep, _ = self.farm("submit", "HEAD~2", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
@@ -1342,7 +1342,7 @@ class T(unittest.TestCase):
         self.assertTrue(good["uncapped"]["valid"])
         time.sleep(1.1)                                                                                  # menubench stamps whole seconds: keep the jobs' rows apart
         open(root + "/mode", "w").write("selfcheck")                                                    # same version again: uncapped self-check fails
-        rc, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        rc, jid, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11", "--rerun")
         self.farmd()
         self.assertEqual(self.farm("wait", jid)[1], "fail")                                              # the job says so ...
         now = {r["profile"]: r for r in self.menu_rows()}
@@ -1468,7 +1468,7 @@ class T(unittest.TestCase):
             self.assertNotEqual(rc, 0)
             self.assertIn("behind origin/main", err)
             self.assertEqual(self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
-        rc, jid, err = self.farm("submit", "origin/main", "--suite", "smoke", "--need", "v11", "--merge-with-main")
+        rc, jid, err = self.farm("submit", "origin/main~1", "--suite", "smoke", "--need", "v11", "--merge-with-main")
         self.assertEqual(rc, 0, err)
         j = L.find_job(jid)
         self.assertTrue(j["ref"].endswith("+main"))

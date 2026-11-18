@@ -27,7 +27,7 @@ def cmd_submit(a):
         if not om:
             raise SystemExit("farm: --merge-with-main needs origin/main (git fetch)")
         tree = git("merge-tree", "--write-tree", commit, om)               # fails (exit 1) on conflicts
-        commit = git("commit-tree", tree.splitlines()[0], "-p", commit, "-p", om, "-m", f"farm: {a.ref} merged with origin/main {om[:8]} (gate only)")
+        commit = git("commit-tree", tree.splitlines()[0], "-p", commit, *([] if commit == om else ["-p", om]), "-m", f"farm: {a.ref} merged with origin/main {om[:8]} (gate only)")
         a.ref = f"{a.ref}+main"
     elif om and not a.allow_stale:
         behind = int(git("rev-list", "--count", f"{commit}..{om}"))
