@@ -188,7 +188,7 @@ def _git(clone, *a, timeout=120):
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
-def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cmd=None, branch="main"):
+def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cmd=None, branch="main", perf_cmd=None):
     """merge <state>/bench/results.jsonl into bench/results.jsonl of a clone owned by the farm, regenerate RESULTS.md, commit
     "bench: <phones> rows for <short commit>" and push to `remote` <branch>. Never touches any other checkout. A rejected push
     (somebody ff-merged meanwhile) is retried from a fresh fetch. -> {"status": "pushed|nothing|error", "n": rows changed, "msg": ...}"""
@@ -230,6 +230,14 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
         r = subprocess.run(rep, cwd=clone, capture_output=True, text=True, timeout=120)
         if r.returncode:
             return {"status": "error", "n": 0, "msg": "report failed: " + (r.stdout + r.stderr).strip()[-200:]}
+        if changed:                                                             # charts + README table: best effort, a plotting failure never blocks publishing
+            pc = perf_cmd or ["python3", "-I", os.path.join(clone, "bench", "plot.py"), "--root", clone]
+            try:
+                pr = subprocess.run(pc, cwd=clone, capture_output=True, text=True, timeout=120)
+                if pr.returncode:
+                    log("publish: plot failed (ignored): " + (pr.stdout + pr.stderr).strip()[-200:])
+            except Exception as e:                                              # missing interpreter, timeout, ...
+                log(f"publish: plot failed (ignored): {e}")
         if changed:
             phones = ",".join(sorted({r["phone"] for r in changed}))
             short = (changed[-1].get("commit_full") or changed[-1].get("commit") or "?")[:9]
@@ -238,7 +246,7 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
             phones = ",".join(sorted({r["phone"] for r in mchanged}))
             short = "vc" + ",".join(str(v) for v in sorted({r["version_code"] for r in mchanged}))
             subject = f"bench: Steam menu rows {phones} for MediaDeck {short}"
-        for f in ("bench/results.jsonl", "bench/menu.jsonl", "bench/RESULTS.md"):
+        for f in ("bench/results.jsonl", "bench/menu.jsonl", "bench/RESULTS.md", "README.md", "bench/charts"):
             if os.path.exists(os.path.join(clone, f)):                          # one pathspec per call: a missing file must not abort the add
                 _git(clone, "add", f)
         rc, o = _git(clone, "commit", "-q", "-m", subject)

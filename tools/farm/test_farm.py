@@ -1519,6 +1519,18 @@ class PublishUnit(unittest.TestCase):
         self.assertIn(("cmf", "ours", c1[:9]), keys)
         self.assertEqual(self.git(self.work, "log", "-1", "--format=%s"), "bench: cmf,poco-x4 rows for " + c2[:9])
 
+    def test_publish_regenerates_charts_and_a_failing_plot_never_blocks(self):
+        gen = [sys.executable, "-c", "import os;os.makedirs('bench/charts',exist_ok=True);open('bench/charts/x.svg','w').write('svg');open('README.md','a').write('perf')"]
+        self.put(self.row("cmf", "ours", "d" * 40))
+        self.assertEqual(self.pub(perf_cmd=gen)["status"], "pushed")
+        self.git(self.work, "pull", "-q", "origin", "main")
+        self.assertTrue(os.path.exists(os.path.join(self.work, "bench", "charts", "x.svg")))      # same commit as the rows
+        self.assertEqual(self.git(self.work, "show", "--stat", "--format=", "HEAD").count("\n"), 4)
+        self.put(self.row("cmf", "ours", "e" * 40))
+        for bad in ([sys.executable, "-c", "raise SystemExit(3)"], ["/nonexistent/plotter"]):
+            self.put(self.row("cmf", "ours", "f" * 39 + str(len(bad))))
+            self.assertEqual(self.pub(perf_cmd=bad)["status"], "pushed")
+
     def test_rejected_push_is_retried_and_other_checkouts_untouched(self):
         self.put(self.row("cmf", "ours", "c" * 40))
         # a worker ff-merges into origin right between our fetch and our push (pre-push hook of the farm's clone)
