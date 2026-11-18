@@ -26,12 +26,20 @@ W="-Wall -Wextra -Wshadow -Wno-unused-parameter -Wno-missing-field-initializers 
 [ $conv = 1 ] && W="$W -Wconversion -Wno-sign-conversion"
 KB=$D/libkbase
 : >"$OUT/$cc.log"
+nfail=0; nsrc=0; failed=""   # a source whose compiler invocation fails (compiler missing, syntax error, unknown flag) was NOT checked
 for s in $V/src/*.c $KB/src/*.c; do
    case $s in */mali_entrypoints.c) continue ;; esac
-   eval "$CC -Wno-unknown-warning-option -fdiagnostics-color=never -I$GEN -I$V/src -I$KB/include -I$KB/src $W -fsyntax-only $s" >>"$OUT/$cc.log" 2>&1 || true
+   nsrc=$((nsrc+1))
+   if ! eval "$CC -Wno-unknown-warning-option -fdiagnostics-color=never -I$GEN -I$V/src -I$KB/include -I$KB/src $W -fsyntax-only $s" >>"$OUT/$cc.log" 2>&1; then
+      nfail=$((nfail+1)); failed="$failed ${s#$D/}"   # still non-fatal: the report goes on, but is marked incomplete below
+   fi
 done
 grep -v "/mesa/src" "$OUT/$cc.log" >"$OUT/$cc.log.f" 2>/dev/null || true
 # Mesa's own headers are not ours to fix: report only our files.
 grep -E '^(/|\.\./)?[^ ]*(vk/src|libkbase)/[^ ]*: warning:' "$OUT/$cc.log" | sort -u >"$OUT/$cc.ours.log" || true
+if [ $nfail -gt 0 ]; then
+   echo "INCOMPLETE: the $cc invocation failed for $nfail of $nsrc sources (compiler missing, error or unsupported flag; see $OUT/$cc.log):$failed" >&2
+   echo "INCOMPLETE: the counts below cover only the sources that compiled; this is NOT a zero-warning result"
+fi
 echo "$(wc -l <"$OUT/$cc.ours.log") warnings in our files ($cc), $OUT/$cc.ours.log"
 grep -o '\[-W[a-z-]*\]' "$OUT/$cc.ours.log" | sort | uniq -c | sort -rn || true
