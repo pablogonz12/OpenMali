@@ -16,6 +16,7 @@
 #include "mali_cmd.h"
 #include "mali_meta_vk.h"
 #include "mali_query.h"
+#include "mali_queue.h"
 #include "mali_query_core.h"
 #include "vk_buffer.h"
 #include "vk_query_pool.h"
@@ -42,7 +43,7 @@ mali_CreateQueryPool(VkDevice _dev, const VkQueryPoolCreateInfo *ci, const VkAll
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    p->q.count = ci->queryCount;
    p->q.type = ci->queryType == VK_QUERY_TYPE_OCCLUSION ? MALI_QT_OCCLUSION : MALI_QT_TIMESTAMP;
-   p->q.cpu = mali_meta_dev_alloc(mali_qpool_size(ci->queryCount ? ci->queryCount : 1), 64, &p->q.va);
+   p->q.cpu = mali_hw_meta_alloc(container_of(dev, struct mali_device, vk), mali_qpool_size(ci->queryCount ? ci->queryCount : 1), 64, &p->q.va);
    if (!p->q.cpu) {
       vk_query_pool_destroy(dev, alloc, &p->vk);
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -58,7 +59,7 @@ mali_DestroyQueryPool(VkDevice _dev, VkQueryPool h, const VkAllocationCallbacks 
    struct mali_query_pool *p = mali_query_pool_from_handle(h);
    if (!p)
       return;
-   mali_meta_dev_free(p->q.cpu, p->q.va, mali_qpool_size(p->q.count ? p->q.count : 1));
+   mali_hw_meta_free(container_of(dev, struct mali_device, vk), p->q.cpu);
    vk_query_pool_destroy(dev, alloc, &p->vk);
 }
 

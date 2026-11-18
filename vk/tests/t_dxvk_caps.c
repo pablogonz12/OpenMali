@@ -152,6 +152,16 @@ main(int argc, char **argv)
       /* the driver does not honour these: logic op is unsupported() in the draw snapshot, there is no tessellation */
       CHECK(!eds2.extendedDynamicState2LogicOp && !eds2.extendedDynamicState2PatchControlPoints, "EDS2 logicOp=%u patchControlPoints=%u must stay false", eds2.extendedDynamicState2LogicOp, eds2.extendedDynamicState2PatchControlPoints);
    }
+   /* VK_KHR_unified_image_layouts: name and feature bit move together, and the feature is reported through vkGetPhysicalDeviceFeatures2. */
+   VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR uil = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};
+   {
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &uil};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_KHR_unified_image_layouts");
+      CHECK(adv == 1 && uil.unifiedImageLayouts == 1, "VK_KHR_unified_image_layouts advertised=%d unifiedImageLayouts=%u (want 1/1)", adv, uil.unifiedImageLayouts);
+      CHECK(uil.unifiedImageLayoutsVideo == 0, "unifiedImageLayoutsVideo must stay false (no video)");
+   }
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e11};
    e2.features = f2.features; e11 = f11; e11.pNext = &e12; e12 = f12; e12.pNext = &e13; e13 = f13; e13.pNext = &m6;   /* m6 -> dce, queried above */
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
