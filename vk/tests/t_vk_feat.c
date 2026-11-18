@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|spec|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -23,6 +23,7 @@
 static int g_fail, g_fake;
 static const char *g_only, *g_spv = "shader";
 static int g_ycbcr;
+static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
@@ -223,7 +224,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
    CHECK(CreatePipelineLayout(dev, &pli, NULL, lay) == VK_SUCCESS, "pipeline layout");
    VkPipelineShaderStageCreateInfo st[2] = {
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = v, .pName = "main"},
-      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = f, .pName = "main"}};
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = f, .pName = "main",
+       .pSpecializationInfo = g_spec_fs}};
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = g_topo};
@@ -1013,6 +1015,103 @@ test_ycbcr(void)
    free(data);
    if (ok) printf(g_fake ? "{\"test\":\"ycbcr\",\"skipped\":\"pixels: fake backend (calls and compile ran)\",\"ok\":true}\n" : "{\"test\":\"ycbcr\",\"configs\":3,\"ok\":true}\n");
    else printf("{\"test\":\"ycbcr\",\"ok\":false}\n");
+   tgt_destroy(&t);
+   return ok;
+}
+
+/* Specialization constants: a compute shader (uint, float, bool, local_size_x_id) and a fragment shader (float, uint, bool; ids 0/3/5)
+ * built with the SPIR-V defaults and then with VkSpecializationInfo overrides (data order differs from the id order; one constant
+ * is left at its default). */
+static int
+test_spec(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   int ok = 1;
+   /* ---- fragment ---- */
+   struct { uint32_t mode; float r; uint32_t blue; } fd = {2, 0.75f, 1};
+   VkSpecializationMapEntry fe[3] = {{0, offsetof(__typeof__(fd), r), 4}, {3, offsetof(__typeof__(fd), mode), 4}, {5, offsetof(__typeof__(fd), blue), 4}};
+   VkSpecializationInfo fsi = {3, fe, sizeof fd, &fd};
+   for (int pass = 0; pass < 2; pass++) {
+      g_spec_fs = pass ? &fsi : NULL;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      if (!make_pipe(&t, "quad.vert.spv", "spec.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe)) { g_spec_fs = NULL; return 0; }
+      g_spec_fs = NULL;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      const float s[4] = {1.0f, 1.0f, 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+      CmdDraw(cb, 6, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         const uint8_t *p = pix(&t, W / 2, H / 2);
+         int good = pass ? near(p, 191, 255, 255, 255, 3) : near(p, 64, 0, 0, 255, 3);
+         if (!good) { printf("{\"spec_frag_mismatch\":{\"overridden\":%d,\"got\":[%u,%u,%u,%u]}}\n", pass, p[0], p[1], p[2], p[3]); ok = 0; }
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+   }
+   /* ---- compute ---- */
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "set");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout clay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &clay) == VK_SUCCESS, "layout");
+   struct { float f; uint32_t wg; uint32_t b; uint32_t a; } cd = {3.5f, 4, 1, 9};
+   VkSpecializationMapEntry ce[4] = {{1, offsetof(__typeof__(cd), a), 4}, {2, offsetof(__typeof__(cd), f), 4}, {4, offsetof(__typeof__(cd), wg), 4}, {7, offsetof(__typeof__(cd), b), 4}};
+   VkSpecializationInfo csi = {4, ce, sizeof cd, &cd};
+   for (int pass = 0; pass < 2; pass++) {
+      struct hbuf ob;
+      if (!hbuf_create(&ob, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+      memset(ob.p, 0xEE, 256);
+      VkDescriptorBufferInfo bi = {ob.b, 0, 256};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+                                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+      UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+      VkShaderModule m = load_spv("spec.comp.spv");
+      CHECK(m, "shader");
+      VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = clay,
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
+                   .pSpecializationInfo = pass ? &csi : NULL}};
+      VkPipeline pipe;
+      VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+      DestroyShaderModule(dev, m, NULL);
+      CHECK(r == VK_SUCCESS, "compute pipeline = %d", r);
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, clay, 0, 1, &set, 0, NULL);
+      CmdDispatch(cb, 1, 1, 1);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         const uint32_t *o = (const uint32_t *)ob.p;
+         uint32_t wa = pass ? 9 : 7, wb = pass ? 1 : 0, wwg = pass ? 4 : 1;
+         float fw = pass ? 3.5f : 2.5f;
+         uint32_t fwb;
+         memcpy(&fwb, &fw, 4);
+         int good = o[0] == wa && o[1] == fwb && o[2] == wb && o[3] == 0xEEEEEEEEu && o[4 + wwg - 1] == 100 + wwg && o[4] == 100 + wwg &&
+                    o[4 + wwg] == 0xEEEEEEEEu;
+         if (!good) { printf("{\"spec_comp_mismatch\":{\"overridden\":%d,\"o\":[%u,0x%x,%u,0x%x,%u,%u,%u,%u,0x%x]}}\n", pass, o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8]); ok = 0; }
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      hbuf_destroy(&ob);
+   }
+   DestroyPipelineLayout(dev, clay, NULL);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   printf("{\"test\":\"spec\",\"ok\":%s%s}\n", ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend (calls and compile ran)\"" : "");
    tgt_destroy(&t);
    return ok;
 }
@@ -2118,6 +2217,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
+   if (ok && CASE_ON("spec")) ok &= test_spec();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();

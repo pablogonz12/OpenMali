@@ -189,6 +189,10 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    }
    const char *e = o->entry ? o->entry : "main";
    blake3_hasher_update(&h, e, strlen(e) + 1);
+   for (unsigned i = 0; i < o->nspec; i++) {   /* specialization constants change the shader */
+      blake3_hasher_update(&h, &o->spec[i], sizeof o->spec[i]);
+      blake3_hasher_update(&h, (const uint8_t *)o->spec_data + o->spec[i].offset, o->spec[i].size);
+   }
    blake3_hasher_update(&h, o->spirv, o->spirv_words * 4);
    uint8_t d[32];
    blake3_hasher_finalize(&h, d, 32);
@@ -315,7 +319,20 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       .min_ubo_alignment = 16, .min_ssbo_alignment = 16,
       .push_const_addr_format = nir_address_format_32bit_offset,
    };
-   nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, NULL, stage, o->entry ? o->entry : "main", &so, opts);
+   struct nir_spirv_specialization spec = {0};
+   struct nir_spirv_specialization_entry *se = NULL;
+   if (o->nspec) {
+      se = calloc(o->nspec, sizeof *se);
+      if (!se)
+         return fail(err, errsz, "out of memory");
+      for (unsigned i = 0; i < o->nspec; i++)
+         se[i] = (struct nir_spirv_specialization_entry){.id = o->spec[i].id, .size = o->spec[i].size,
+                                                         .data = (uint8_t *)o->spec_data + o->spec[i].offset};
+      spec.num_entries = o->nspec;
+      spec.entries = se;
+   }
+   nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
+   free(se);
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
 
