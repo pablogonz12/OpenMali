@@ -209,6 +209,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
+      .EXT_hdr_metadata = true,              /* wsi_SetHdrMetadataEXT (wsi_common); stored by the Wayland chain, no-op elsewhere */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */

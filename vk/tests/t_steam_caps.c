@@ -66,6 +66,7 @@ static const struct ext dev_exts[] = {
    {"VK_EXT_shader_stencil_export", "ANGLE(optional)", 0},
    {"VK_EXT_index_type_uint8", "ANGLE(optional)", 0},
    {"VK_KHR_incremental_present", "ANGLE(optional)", 0},
+   {"VK_EXT_hdr_metadata", "DXVK/vkd3d-proton HDR(optional)", 0},
 };
 
 static const struct ext inst_exts[] = {
@@ -353,6 +354,24 @@ main(int argc, char **argv)
    printf("gamescope vkCreateDevice: %d (extensions ok=%d, features ok=%d)\n", r, gs_ok, gs_feat_ok);
    if (gs_ok && gs_feat_ok) CHECK(r == VK_SUCCESS, "gamescope's device request: %d", r);
    else CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT || r == VK_ERROR_EXTENSION_NOT_PRESENT, "an unsupported request must be refused, got %d", r);
+
+   if (has(eps, ne, "VK_EXT_hdr_metadata")) {   /* own device: the gamescope request above does not enable it, and dispatch is per enabled extension */
+      const char *hx[] = {"VK_EXT_hdr_metadata"};
+      VkDeviceQueueCreateInfo hq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
+      VkDeviceCreateInfo hdi = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &hq,
+                                .enabledExtensionCount = 1, .ppEnabledExtensionNames = hx};
+      VkDevice hdev = NULL;
+      CHECK(CreateDevice(pd, &hdi, NULL, &hdev) == VK_SUCCESS, "device with VK_EXT_hdr_metadata");
+      if (hdev) {
+         PFN_vkSetHdrMetadataEXT hdr = (PFN_vkSetHdrMetadataEXT)GetDeviceProcAddr(hdev, "vkSetHdrMetadataEXT");
+         CHECK(hdr != NULL, "vkSetHdrMetadataEXT resolves with VK_EXT_hdr_metadata enabled");
+         if (hdr) {   /* wsi_common: zero swapchains is a legal no-op (no surface exists on the fake backend) */
+            VkHdrMetadataEXT md = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT, .maxLuminance = 1000.0f, .minLuminance = 0.01f};
+            hdr(hdev, 0, NULL, &md);
+         }
+         ((PFN_vkDestroyDevice)GetDeviceProcAddr(hdev, "vkDestroyDevice"))(hdev, NULL);
+      }
+   }
 
    if (dev && has(eps, ne, "VK_EXT_queue_family_foreign")) {
       /* gamescope's modifier path: acquire/release ownership with QUEUE_FAMILY_FOREIGN_EXT around a dma-buf image; here on a buffer */
