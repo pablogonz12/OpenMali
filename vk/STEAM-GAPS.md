@@ -35,7 +35,7 @@ Effort: S < 1 day, M 1-3 days, L > 3 days. "HW" = Mali can do it (PanVK is the o
 | KHR_maintenance5 | **hard for zink** (see the zink section) | | soft | soft | **have** (round 4): module-less stages, `vkCmdBindIndexBuffer2KHR`; `t_vk_feat maint5` | done |
 | EXT_vertex_attribute_divisor, EXT_custom_border_color | | | soft | soft | missing, see DXVK-GAP.md | M each |
 | EXT_extended_dynamic_state 1/2/3 | | | soft | soft | missing; each dynamic state must be read in the `mali_cmd.c` snapshot | M (1,2) / M (3) |
-| EXT_shader_stencil_export, EXT_index_type_uint8, KHR_incremental_present, instance EXT_swapchain_colorspace | | | soft | | missing | S each (uint8 index needs an index-conversion path in `mali_cmd.c`; stencil export has the preload shader already) |
+| EXT_shader_stencil_export, EXT_index_type_uint8, KHR_incremental_present (instance EXT_swapchain_colorspace: **have**, `t_steam_caps`) | | | soft | | missing | S each (uint8 index needs an index-conversion path in `mali_cmd.c`; stencil export has the preload shader already) |
 | geometryShader, robustBufferAccess, full descriptorIndexing, GPL | | | | hard | missing, see DXVK-GAP.md | L |
 
 ## Result of the offline experiment (no phone)

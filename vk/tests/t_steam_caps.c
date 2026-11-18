@@ -125,6 +125,17 @@ main(int argc, char **argv)
    VkInstance inst = NULL;
    CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "gamescope instance (1.3, no extensions)");
    if (!inst) return 1;
+   /* ANGLE enables VK_EXT_swapchain_colorspace when it is listed: the instance must accept it (behavioural; fails when the name is unlisted). */
+   {
+      const char *csx = "VK_EXT_swapchain_colorspace";
+      VkInstanceCreateInfo ci2 = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
+                                  .enabledExtensionCount = 1, .ppEnabledExtensionNames = &csx};
+      PFN_vkDestroyInstance DI = (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
+      VkInstance i2 = NULL;
+      CHECK(has(iep, nie, csx), "instance lists VK_EXT_swapchain_colorspace");
+      CHECK(CreateInstance(&ci2, NULL, &i2) == VK_SUCCESS, "instance accepts VK_EXT_swapchain_colorspace");
+      if (i2 && DI) DI(i2, NULL);
+   }
 #define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceFeatures2); I(CreateDevice); I(GetPhysicalDeviceProperties2);
    I(EnumerateDeviceExtensionProperties); I(GetPhysicalDeviceQueueFamilyProperties); I(GetDeviceProcAddr);

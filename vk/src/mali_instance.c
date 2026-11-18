@@ -29,6 +29,7 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
    .KHR_surface = true,
    .KHR_get_surface_capabilities2 = true,
    .EXT_surface_maintenance1 = true,   /* companion of swapchain_maintenance1 (wsi_common) */
+   .EXT_swapchain_colorspace = true,   /* ANGLE/gamescope ask for it; wsi_common lists SRGB_NONLINEAR (+ PASS_THROUGH on Wayland), t_steam_caps swcs */
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface = true,
 #endif
