@@ -98,6 +98,28 @@ void kb_draw_attr_1d(uint32_t *d, uint32_t pixfmt, unsigned table, unsigned buff
 	d[4] = stride;
 }
 
+void kb_draw_attr_instance(uint32_t *d, uint32_t divisor)
+{
+	/* instance frequency (word1[7:6] = 1), offset enable off; per panvk (csf/panvk_vX_cmd_draw.c) and genxml v10 "Attribute" */
+	d[0] &= ~(1u << 8);
+	d[1] |= 1u << 6;
+	if (divisor <= 1)
+		return;                                          /* type stays 1D: divisor 1 is the plain instance counter */
+	unsigned r = 31 - __builtin_clz(divisor);                 /* floor(log2) */
+	d[0] &= ~(0xfu << 4);
+	if (!(divisor & (divisor - 1))) {
+		d[0] |= 2u << 4;                                 /* 1D POT divisor: R = log2 */
+		d[1] |= r << 24;
+		return;
+	}
+	/* 1D NPOT divisor: D = round(2^(32+r) / divisor) - 2^31, E = the rounding remainder is above divisor/2 (pan_compute_npot_divisor) */
+	uint64_t f0 = ((uint64_t)1 << (32 + r)) + divisor / 2;
+	uint64_t fi = f0 / divisor, ff = f0 - fi * divisor;
+	d[0] |= 3u << 4;
+	d[1] |= (r << 24) | ((ff > divisor / 2 ? 1u : 0u) << 29);
+	d[5] = (uint32_t)(fi - ((uint64_t)1 << 31));
+}
+
 void kb_draw_attr_unused(uint32_t *d)
 {
 	memset(d, 0, KB_ATTR_SIZE);
