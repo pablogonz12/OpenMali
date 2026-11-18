@@ -1,3 +1,5 @@
+> **Which driver is the guest really using?** Run `tools/inspect-session --serial <ip:port>` (add `--json`, or `--watch 5`). Read-only, no lock. It prints, per gamescope/Xwayland/steam/steamwebhelper/game process, the Vulkan ICD and GL libs mapped in the guest (verdict OURS / BRIDGE / SOFTWARE / NONE), the renderer string Steam's CEF reports over CDP, on-screen fps from SurfaceFlinger pacing, and GPU freq/busy when adb may read them (usually denied). "Mapped" is not "used", so read it together with the fps line.
+
 # Steam-menu gap table (ours vs gamescope + Steam CEF/ANGLE + DXVK), 2026-11-18
 
 Goal: the Steam menu inside the MediaDeck guest on our driver (today only the Mali bridge does this). Source of truth for what we advertise:
