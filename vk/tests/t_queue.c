@@ -263,8 +263,7 @@ test_binary(void)
 /* Present ordering. A = the frame (signals S and fence FA), P = the present (waits S, signals FP; wsi_common commits the
  * buffer right after P's vkQueueSubmit returns). MALI_FAKE_SLOW_US makes fences complete late. Mode "wait"
  * (MALI_PRESENT_FENCE=0, kernels without dma-buf sync_file import): the commit must not precede the frame's completion, so
- * FA is signalled when P returns. Mode "fence" (=1): P returns at once (pipelining) and the fence that travels with the
- * buffer (FP) must not complete before the frame's (FA). */
+ * FA is signalled when P returns. Mode "fence" (=1): P returns at once (pipelining) (the ordering of the fence that travels with the buffer is proven on hardware by --only gpufence). */
 static int
 test_order(int fence_mode)
 {
@@ -286,7 +285,7 @@ test_order(int fence_mode)
       if (fence_mode) {
          CHECK(fa_done == VK_NOT_READY, "iter %d: present returned only after the frame finished (no pipelining)", i);
          CHECK(WaitForFences(dev, 1, &fp, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fp wait");
-         CHECK(GetFenceStatus(dev, fa) == VK_SUCCESS, "iter %d: present fence completed before the frame's", i);
+         /* "FP never completes before FA" is hardware ordering (the fake completes each submission on its own timer): see --only gpufence */
       } else {
          CHECK(fa_done == VK_SUCCESS, "iter %d: present returned before the frame finished (commit would show a half-drawn buffer)", i);
       }
