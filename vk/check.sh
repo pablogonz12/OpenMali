@@ -54,6 +54,7 @@ run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --di
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_qerr $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_qerr" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
 for g in v11 v13; do run "angle_seq $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_angle_seq" --direct "$OUT/libvulkan_mali.so"; done
 run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
