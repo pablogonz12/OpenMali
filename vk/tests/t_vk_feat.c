@@ -436,6 +436,7 @@ test_divisor(void)
    struct hbuf vb;
    if (!hbuf_create(&vb, 64, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
    static const float vals[4] = {0.0f, 0.5f, 1.0f, 1.5f};
+   memset(vb.p, 0, 64);   /* instances past the four columns (d = 1 draws 6) read zeros = column 0, not leftover memory */
    memcpy(vb.p, vals, sizeof vals);
    for (unsigned c = 0; c < sizeof cs / sizeof *cs; c++) {
       const uint32_t d = cs[c][0], fi = cs[c][1], ni = cs[c][2];
