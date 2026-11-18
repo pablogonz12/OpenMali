@@ -259,6 +259,85 @@ run_case(const char *name, int kind, const char *spv, unsigned local, unsigned g
    return rc;
 }
 
+/* Compute with a dynamic storage-buffer descriptor: src is bound with a dynamic offset (256 bytes = 64 words) and dst[i] must be src[64 + i] + 1.
+ * Before the fix record_dispatch dropped the dynamic descriptors and the shader read an uninitialised resource table (deqp dynamic_offset.compute). */
+static int
+run_dyn(void)
+{
+   const unsigned N = 64;
+   struct buf src = {0}, dst = {0};
+   VkShaderModule sm = load_spv("dynbuf.comp.spv");
+   CHECK(sm, "load dynbuf.comp.spv");
+   VkDescriptorSetLayoutBinding lb[2] = {
+      {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+      {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
+   VkDescriptorSetLayout dsl;
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSet ds;
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "alloc set");
+   VkPipelineLayout pl;
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipeline pipe;
+   VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main"}};
+   CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, NULL, &pipe) == VK_SUCCESS, "CreateComputePipelines");
+   CHECK(mkbuf(&src, 2 * N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "src");
+   CHECK(mkbuf(&dst, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "dst");
+   uint32_t *s = src.p, *d = dst.p;
+   for (unsigned i = 0; i < 2 * N; i++) s[i] = 1000 * (i / N) + i;
+   memset(d, 0xee, N * 4);
+   VkDescriptorBufferInfo bi[2] = {{src.b, 0, 2 * N * 4 / 2}, {dst.b, 0, VK_WHOLE_SIZE}};
+   VkWriteDescriptorSet w[2] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &bi[0]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi[1]}};
+   UpdateDescriptorSets(dev, 2, w, 0, NULL);
+   VkCommandPool pool;
+   VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(cb, &cbi) == VK_SUCCESS, "begin");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   uint32_t dynoff = N * 4;
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &ds, 1, &dynoff);
+   CmdDispatch(cb, 1, 1, 1);
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+   if (!g_fake) {
+      unsigned bad = 0, first = 0;
+      for (unsigned i = 0; i < N; i++)
+         if (d[i] != s[N + i] + 1) { if (!bad) first = i; bad++; }
+      CHECK(bad == 0, "dyn: %u of %u wrong, first at %u: got %u want %u", bad, N, first, d[first], s[N + first] + 1);
+   }
+   printf("{\"test\":\"dyn\",\"ok\":true%s}\n", g_fake ? ",\"skipped\":\"results: fake backend\"" : "");
+   DestroyFence(dev, f, NULL);
+   DestroyCommandPool(dev, pool, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, pl, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyShaderModule(dev, sm, NULL);
+   rmbuf(&src); rmbuf(&dst);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -315,7 +394,8 @@ main(int argc, char **argv)
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
-   if (CASE_ON("saxpy")) ok &= run_case("saxpy", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 0);
+   if (CASE_ON("dyn")) ok &= run_dyn();
+   if (ok && CASE_ON("saxpy")) ok &= run_case("saxpy", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 0);
    if (ok && CASE_ON("saxpy_ind")) ok &= run_case("saxpy_ind", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 1);
    if (ok && CASE_ON("atomic")) ok &= run_case("atomic", K_ATOMIC, "atomic.comp.spv", 64, 100, 0);
    if (ok && CASE_ON("atomic256")) ok &= run_case("atomic256", K_ATOMIC, "atomic256.comp.spv", 256, 37, 0);
