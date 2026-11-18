@@ -355,6 +355,7 @@ main(int argc, char **argv)
    if (gs_ok && gs_feat_ok) CHECK(r == VK_SUCCESS, "gamescope's device request: %d", r);
    else CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT || r == VK_ERROR_EXTENSION_NOT_PRESENT, "an unsupported request must be refused, got %d", r);
 
+   CHECK(has(eps, ne, "VK_EXT_hdr_metadata"), "VK_EXT_hdr_metadata must be advertised");
    if (has(eps, ne, "VK_EXT_hdr_metadata")) {   /* own device: the gamescope request above does not enable it, and dispatch is per enabled extension */
       const char *hx[] = {"VK_EXT_hdr_metadata"};
       VkDeviceQueueCreateInfo hq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
