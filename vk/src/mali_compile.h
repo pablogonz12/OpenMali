@@ -107,6 +107,9 @@ void mali_compiled_free(struct mali_compiled *c);
 struct mali_compile_stats { uint64_t hits, misses, stores; };
 void mali_compile_stats(struct mali_compile_stats *s);
 
+/* 16-byte pipelineCacheUUID for a GPU id: changes with the compiler version, Mesa tag and every layout constant in the cache key. */
+void mali_compile_cache_uuid(uint32_t gpu_id, uint8_t uuid[16]);
+
 #ifdef __cplusplus
 }
 #endif

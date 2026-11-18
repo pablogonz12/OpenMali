@@ -184,7 +184,22 @@ test_determinism_and_cache(void)
    CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && !c.cache_hit && c.bin_size == a.bin_size &&
          !memcmp(c.bin, a.bin, a.bin_size), "corrupt cache entry recompiles correctly");
    mali_compiled_free(&c);
+   /* same-size corruption (one flipped byte in the code): only the checksum can catch it */
+   snprintf(cmd, sizeof cmd, "for f in %s/*.bin; do sz=$(stat -c %%s \"$f\"); printf '\\377' | dd of=\"$f\" bs=1 seek=$((sz - 40)) conv=notrunc 2>/dev/null; done", dir);
+   CHECK(system(cmd) == 0, "flip a byte");
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && !c.cache_hit && c.bin_size == a.bin_size &&
+         !memcmp(c.bin, a.bin, a.bin_size), "bit-flipped cache entry is rejected and recompiled");
+   mali_compiled_free(&c);
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && c.cache_hit == 1, "the recompiled entry replaced the bad one");
+   mali_compiled_free(&c);
+   {
+      uint8_t u1[16], u2[16], u3[16];
+      mali_compile_cache_uuid(0x90930000, u1); mali_compile_cache_uuid(0x90930000, u2); mali_compile_cache_uuid(0xb8020000, u3);
+      static const uint8_t zero[16];
+      CHECK(!memcmp(u1, u2, 16) && memcmp(u1, u3, 16) && memcmp(u1, zero, 16), "pipelineCacheUUID: stable, per GPU, non-zero");
+   }
    mali_compile_stats(&s1);
+   s0.hits += 1;   /* the hit just above is not part of the stats window the next check reads */
    CHECK(s1.hits - s0.hits == 1, "stats: 1 hit, got %llu", (unsigned long long)(s1.hits - s0.hits));
    if (g_verbose) printf("  hit load %.0f us\n", t_hit * 1e6);
    mali_compiled_free(&a); mali_compiled_free(&b);

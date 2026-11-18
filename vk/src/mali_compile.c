@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 21   /* 21: cache entries carry a checksum (MALD); generated code unchanged. 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -236,24 +236,39 @@ mkdirs(char *p)
    mkdir(p, 0755);
 }
 
-#define CACHE_MAGIC 0x4d414c43u   /* 'MALC' */
+#define CACHE_MAGIC 0x4d414c44u   /* 'MALD': v2 = payload checksum at the end (MALC entries are ignored and recompiled) */
+
+static void
+cache_sum(const struct mali_compiled *h, const uint8_t *bin, const struct mali_imm *imm, uint8_t out[16])
+{
+   blake3_hasher s;
+   blake3_hasher_init(&s);
+   blake3_hasher_update(&s, h, sizeof *h);
+   blake3_hasher_update(&s, bin, h->bin_size);
+   blake3_hasher_update(&s, imm, (size_t)h->nimm * sizeof *h->imm);
+   blake3_hasher_finalize(&s, out, 16);
+}
 
 static void
 cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
 {
+   static atomic_uint seq;
    char path[1024], tmp[1100], d2[1024];
    snprintf(d2, sizeof d2, "%s", dir);
    mkdirs(d2);
    snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
-   snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
+   /* pid + per-process counter: two threads (or a thread and a fork) storing the same key must not share a temp file */
+   snprintf(tmp, sizeof tmp, "%s.tmp%d.%u", path, (int)getpid(), atomic_fetch_add(&seq, 1));
    FILE *f = fopen(tmp, "wb");
    if (!f) return;
    struct mali_compiled h = *c;
    uint32_t magic = CACHE_MAGIC;
    h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
+   uint8_t sum[16];
+   cache_sum(&h, c->bin, c->imm, sum);
    int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
             fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
-            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
+            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm) && fwrite(sum, 16, 1, f) == 1;
    ok = (fclose(f) == 0) && ok;
    if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
    else unlink(tmp);
@@ -271,11 +286,18 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
    int ok = fread(&magic, 4, 1, f) == 1 && magic == CACHE_MAGIC && fread(&h, sizeof h, 1, f) == 1 &&
             h.bin_size < (64u << 20) && h.nimm < (1u << 20);
    if (ok) {
+      uint8_t sum[16], want[16];
       h.bin = malloc(h.bin_size ? h.bin_size : 1);
       h.imm = malloc((h.nimm ? h.nimm : 1) * sizeof *h.imm);
       ok = h.bin && h.imm && fread(h.bin, 1, h.bin_size, f) == h.bin_size &&
-           (!h.nimm || fread(h.imm, sizeof *h.imm, h.nimm, f) == h.nimm);
+           (!h.nimm || fread(h.imm, sizeof *h.imm, h.nimm, f) == h.nimm) && fread(sum, 16, 1, f) == 1;
       if (ok) { char x; ok = fread(&x, 1, 1, f) == 0; }   /* no trailing bytes */
+      if (ok) {   /* a bit flip inside the code must not reach the GPU */
+         struct mali_compiled z = h;
+         z.bin = NULL; z.imm = NULL; z.cache_hit = 0;
+         cache_sum(&z, h.bin, h.imm, want);
+         ok = !memcmp(sum, want, 16);
+      }
       if (!ok) { free(h.bin); free(h.imm); }
    }
    fclose(f);
@@ -283,6 +305,29 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
    h.cache_hit = 1;
    *c = h;
    return 1;
+}
+
+/* VkPhysicalDeviceProperties::pipelineCacheUUID: changes with anything that changes compiled output, so apps (DXVK, Fossilize) discard
+ * their saved VkPipelineCache blobs instead of replaying stale ones. */
+void
+mali_compile_cache_uuid(uint32_t gpu_id, uint8_t uuid[16])
+{
+   struct opts_key k;
+   memset(&k, 0, sizeof k);
+   k.version = MALI_COMPILE_VERSION;
+   k.sizeof_compiled = sizeof(struct mali_compiled);
+   k.max_sets = MALI_MAX_SETS;
+   k.dyn_table = MALI_DYN_TABLE;
+   k.dyn_buf_start = MALI_DYN_BUF_START;
+   k.dummy_sampler_idx = MALI_DUMMY_SAMPLER_IDX;
+   k.max_push_bytes = MALI_MAX_PUSH_BYTES;
+   snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
+   blake3_hasher h;
+   blake3_hasher_init(&h);
+   blake3_hasher_update(&h, "mali-own-pc1", 12);
+   blake3_hasher_update(&h, &gpu_id, sizeof gpu_id);
+   blake3_hasher_update(&h, &k, sizeof k);
+   blake3_hasher_finalize(&h, uuid, 16);
 }
 
 /* ---- compile ---- */
