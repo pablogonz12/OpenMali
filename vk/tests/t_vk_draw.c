@@ -1163,7 +1163,7 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
  * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
  * left half must hold that target's draw colour and the right half its clear colour. */
 static int
-test_mrt(const char *name, int nrt)
+test_mrt(const char *name, int nrt, int clear_att)
 {
    static const float clr[4][4] = {{0, 0, 0, 0}, {1, 1, 1, 1}, {0, 1, 1, 0}, {1, 0, 1, 0}};
    static const float drw[4][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 0, 1}};
@@ -1211,7 +1211,7 @@ test_mrt(const char *name, int nrt)
    VkAttachmentReference ar[4];
    for (int i = 0; i < nrt; i++) {
       ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .loadOp = clear_att ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
       ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -1263,6 +1263,13 @@ test_mrt(const char *name, int nrt)
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
                                .renderArea = {{0, 0}, {W, H}}, .clearValueCount = (uint32_t)nrt, .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   if (clear_att) {   /* the loadOp is DONT_CARE: whole-area vkCmdClearAttachments before the first draw on every RT (RT>0 patches its descriptor) */
+      VkClearAttachment ca[4];
+      for (int i = 0; i < nrt; i++)
+         ca[i] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i, .clearValue = cv[i]};
+      VkClearRect cr = {.rect = {{0, 0}, {W, H}}, .layerCount = 1};
+      CmdClearAttachments(cb, (uint32_t)nrt, ca, 1, &cr);
+   }
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
    VkRect2D sc = {{0, 0}, {W, H}};
@@ -2231,8 +2238,9 @@ main(int argc, char **argv)
    if (ok && CASE_ON("ubo")) ok &= test_quad("ubo", MODE_UBO);
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
-   if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
-   if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
+   if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2, 0);   /* last: its allocations must not shift the older cases' goldens */
+   if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
+   if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

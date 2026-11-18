@@ -1261,12 +1261,15 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
    }
    for (uint32_t i = 0; i < na; i++) {
       if (att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
-         if (att[i].colorAttachment != 0) {
+         uint32_t ci = att[i].colorAttachment;
+         if (ci >= f->ncolour) {
             unsupported(cmd, "colour attachment index");
             return;
          }
-         f->colour.clear = true;   /* a loadOp CLEAR patch of the FBD */
-         memcpy(f->colour.clear_color, att[i].clearValue.color.float32, sizeof f->colour.clear_color);
+         /* a loadOp CLEAR patch of the FBD (RT>0: its colour_x descriptor) */
+         struct mali_att *x = ci ? &f->colour_x[ci - 1] : &f->colour;
+         x->clear = true;
+         memcpy(x->clear_color, att[i].clearValue.color.float32, sizeof x->clear_color);
       }
       if (att[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) {
          if (!f->has_zs) {
