@@ -648,6 +648,32 @@ class T(unittest.TestCase):
                 self.assertEqual(res["verdict"], "invalid", out)
                 self.assertIn("7ce07a55b210", res["notes"])
 
+    def test_bench_ui_blocked_is_invalid_and_requeued_once(self):
+        """a foreground permission dialog (bench2 prints UI-BLOCKED) or rc=0 / 0 rows / empty log is INVALID with max_attempts 2, not `error`"""
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod3", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod3", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        f.fake = False
+        f.bench_prepare = lambda job: "/nonexistent/mdbench"
+        f.tree = lambda jid: self.d + "/tree"
+        f.best_file = lambda job: self.d + "/best.json"
+        f.keep_log = lambda *a: None
+        f.shell_route = lambda dev: False
+        f.alive = lambda dev: True
+        f.phone_env = lambda dev, ex=None: {}
+        f.verify_so = lambda job, dev, path, key="so_sha256": (True, "x")
+        job = {"id": "j1", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
+        dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
+        orig = m.L.run_watched
+        self.addCleanup(setattr, m.L, "run_watched", orig)
+        for out in ("dev-b: UI-BLOCKED: foreground dialog mCurrentFocus=Window{x u0 com.google.android.permissioncontroller/.GrantPermissionsActivity}", ""):
+            m.L.run_watched = lambda cmd, tmo, alive, env=None, o=out, **k: (0, o)
+            res = f.suite_bench(job, dev)
+            self.assertEqual((res["verdict"], res["max_attempts"]), ("invalid", 2), out)
+            self.assertIn("UI-BLOCKED", res["notes"])
+
     def test_sweep_power_rule_pure(self):
         pb = S.power_blocked
         ok = {"level": 60, "temp_c": 30.0, "powered": True}

@@ -1060,7 +1060,7 @@ dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.r16g16b16_sf
 dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.r8g8b8_uint_1x33	NotSupported	
 dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.r5g6b5_unorm_pack16_64x11_clamp_input_sample_count_8	NotSupported	
 dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.r8g8b8a8_unorm_64x11_sample_count_64	NotSupported	
-dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.a2r10g10b10_unorm_pack32_64x11_clamp_input_sample_count_4	Pass	
+dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.a2r10g10b10_unorm_pack32_64x11_clamp_input_sample_count_4	Fail	
 dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.a2b10g10r10_sint_pack32_64x11_sample_count_16	NotSupported	
 dEQP-VK.api.image_clearing.core.clear_color_attachment.single_layer.r32g32b32_sint_64x11_sample_count_32	NotSupported	
 dEQP-VK.api.image_clearing.core.clear_color_attachment.multiple_layers.b4g4r4a4_unorm_pack16	Fail	

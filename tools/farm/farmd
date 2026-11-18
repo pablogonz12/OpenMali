@@ -1133,6 +1133,9 @@ class Farm:
             if "CHUNK DONE" not in out:
                 break
         self.keep_log(job, dev, "bench", out, rc)
+        if "UI-BLOCKED" in out:                                              # a foreground dialog bench2 could not dismiss: the owner is not using the phone, retry once
+            shutil.rmtree(wd, ignore_errors=True)
+            return {"verdict": "invalid", "max_attempts": 2, "notes": "UI-BLOCKED: " + out.strip()[-160:]}
         if "CHUNK DONE" in out or "PENDING:" in out or "stop:" in out:         # budget used up / owner using the phone / gated: resume later from bench/raw in wd
             # decided BEFORE the sha check: a "PENDING:" chunk (owner in the foreground) returns before bench2 pushes anything, so the .so on the
             # phone is a previous job's and would be judged INVALID (3 attempts burnt in 30 s on 2026-11-18). The final, complete chunk is verified below.
@@ -1147,6 +1150,8 @@ class Farm:
         rows = [r for r in rows if r.get("commit") == job["commit"][:9] and "bench" in r]
         shutil.rmtree(wd, ignore_errors=True)
         drivers = {r["driver"] for r in rows}
+        if rc == 0 and not rows and not out.strip():                         # exit 0, no rows, empty log: nothing ran (a dialog on top of the app); not a driver error
+            return {"verdict": "invalid", "max_attempts": 2, "notes": "UI-BLOCKED?: bench2 rc=0, 0 rows, empty log (foreground dialog?)"}
         if not rows or drivers != {"ours", "bridge"}:
             return {"verdict": "error", "counts": {"rows": len(rows)}, "notes": f"bench2 rc={rc}, drivers with rows {sorted(drivers)}: {out.strip()[-200:]}"}
         B.append_rows(L.state_dir(), rows, job, alias)
@@ -1442,7 +1447,7 @@ class Farm:
             def inv(x):
                 p = x["parts"][cls]
                 p["attempts"] = att
-                p["state"] = "pending" if att < RETRIES else "done"
+                p["state"] = "pending" if att < res.get("max_attempts", RETRIES) else "done"
                 if p["state"] == "done":
                     p["verdict"] = "invalid"
             self.upd(jid, inv)
