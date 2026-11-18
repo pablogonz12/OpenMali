@@ -647,6 +647,8 @@ class Farm:
                 return {"gated": True}
             if rc == 77:
                 return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
+            if rc == 74:                                                   # qdrv produced no result for this run: never judge the driver on it
+                return {"verdict": "error", "notes": "no result from the phone session (valrun: qdrv wrote none): " + out.strip()[-200:]}
             ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
             if not ok_s:
                 return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]})"}

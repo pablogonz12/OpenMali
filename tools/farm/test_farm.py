@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Dry-run tests of queue, pending/resume, comparison and JSON logic (no phone, no build). Run: python3 tools/farm/test_farm.py"""
-import hashlib, json, os, subprocess, sys, tempfile, time, unittest
+import hashlib, json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -869,6 +869,40 @@ class T(unittest.TestCase):
         out = self.farm("digest")[1]
         self.assertIn("queue by class: v11 2 pending, 0 running; v13 1 pending, 0 running", out)
         self.assertIn(f"pending {g['id']} smoke p0", out)
+
+    def test_valrun_never_reads_another_runs_result(self):
+        """qdrv fails before writing a result ("session not READY"): valrun must report NO RESULT (rc 74), not cat the newest valguest jsonl of
+        another phone/job (that made a perf/draw-path smoke fail with a foreign job's work dir in the failing line)"""
+        home = self.d + "/home"
+        tree = self.d + "/tree"
+        qdir = home + "/Projects/mali-gaming/runs/quick"
+        for dpath in (qdir, home + "/Projects/mali-gaming/scripts/quick", home + "/.cache/mali-tmp", tree + "/vk/tests", tree + "/vk/out/a64-glibc", tree + "/tools", self.d + "/bin"):
+            os.makedirs(dpath, exist_ok=True)
+        shutil.copy(HERE + "/../../vk/tests/valrun.sh", tree + "/vk/tests/valrun.sh")
+        for n in ("libvulkan_mali.so", "t_vk_draw", "t_vk_compute", "t_vk_meta"):
+            open(tree + "/vk/out/a64-glibc/" + n, "w").write("x")
+        def script(path, body):
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, 0o755)
+        script(self.d + "/bin/adb", "exit 0\n")
+        script(tree + "/tools/dev-serial", "echo SERIAL\n")
+        stale = qdir + "/20990101-000000-cmf-drv-valguest.sh.jsonl"         # another phone's older result, newest file of the directory
+        open(stale, "w").write('{"line":"FOREIGN work/other-job/vk/tests/t_vk_draw.c:1059"}\n')
+        qdrv = home + "/Projects/mali-gaming/scripts/quick/qdrv"
+        script(qdrv, "echo 'FAIL session not READY; fix: scripts/quick/qrestore poco'\n")
+        env = dict(os.environ, HOME=home, PATH=self.d + "/bin:" + os.environ["PATH"], QSAFE_LOCK_OVERRIDE="1")
+        run = lambda: subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True, env=env, timeout=60, cwd=tree)
+        r = run()
+        self.assertEqual(r.returncode, 74, r.stdout + r.stderr)
+        self.assertNotIn("FOREIGN", r.stdout + r.stderr)
+        self.assertIn("NO RESULT", r.stderr)
+        self.assertIn("session not READY", r.stderr)                        # the qdrv line is kept for the job notes
+        script(qdrv, "echo ok; echo '{\"line\":\"OTHER-PHONE\"}' >" + qdir + "/29990101-000000-poco-x4-drv-valguest.sh.jsonl; "
+                     "echo '{\"line\":\"MINE\"}' >" + qdir + "/29990101-000001-poco-drv-valguest.sh.jsonl\n")
+        r = run()                                                            # a fresh result of THIS phone only (poco is not poco-x4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("MINE", r.stdout)
+        self.assertNotIn("OTHER-PHONE", r.stdout)
 
     def test_auto_bench_beats_sweep(self):
         self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)

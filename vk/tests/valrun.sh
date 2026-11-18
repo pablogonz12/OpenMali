@@ -11,5 +11,10 @@ for t in t_vk_draw t_vk_compute t_vk_meta; do timeout 100 adb -s $S push $V/out/
 for f in $V/shader/*.spv; do timeout 100 adb -s $S push $f $DL/val_$(basename $f) >/dev/null; done
 echo "$1" >$HOME/.cache/mali-tmp/val_env.txt; echo "${2:-20}" >$HOME/.cache/mali-tmp/val_loop.txt; echo "${3:-}" >$HOME/.cache/mali-tmp/val_only.txt
 adb -s $S push $HOME/.cache/mali-tmp/val_env.txt $DL/val_env.txt >/dev/null; adb -s $S push $HOME/.cache/mali-tmp/val_loop.txt $DL/val_loop.txt >/dev/null; adb -s $S push $HOME/.cache/mali-tmp/val_only.txt $DL/val_only.txt >/dev/null
-cd ~/Projects/mali-gaming; timeout 280 scripts/quick/qdrv $PH $V/tests/valguest.sh --keep 2>&1 | tail -1
-cat "$(ls -t runs/quick/*drv-valguest.sh.jsonl | head -1)"
+cd ~/Projects/mali-gaming; M=$(mktemp); trap 'rm -f "$M"' EXIT
+timeout 280 scripts/quick/qdrv $PH $V/tests/valguest.sh --keep 2>&1 | tail -1 | tee /dev/stderr >/dev/null
+# THIS run's result only: this phone's file written after we started. `ls -t | head -1` over every phone returned an older job's (or another phone's)
+# result whenever qdrv failed before writing one (e.g. "session not READY"), so a smoke could fail with a foreign job's test line
+R=$(find runs/quick -maxdepth 1 -name "????????-??????-$PH-drv-valguest.sh.jsonl" -newer "$M" | sort | tail -1)
+[ -n "$R" ] || { echo "NO RESULT: qdrv wrote no $PH valguest result for this run (phone session not ready?); see the qdrv line above" >&2; exit 74; }
+cat "$R"
