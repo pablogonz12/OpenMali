@@ -22,7 +22,8 @@
 
 static int g_fail, g_fake;
 static const char *g_only, *g_spv = "shader";
-static int g_ycbcr, g_imageless;
+static int g_ycbcr, g_imageless, g_sepds;
+static PFN_vkGetPhysicalDeviceFormatProperties2 g_fp2;
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static VkPhysicalDeviceFeatures g_feat;
@@ -359,6 +360,91 @@ test_imageless(void)
    DestroyRenderPass(dev, rp2, NULL);
    tgt_destroy(&t);
    printf("{\"test\":\"imageless\",\"ok\":%s%s}\n", ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend (calls ran)\"" : "");
+   return ok;
+}
+
+/* ---------------------------------------------------------------- sepds */
+/* separateDepthStencilLayouts: a D+S attachment whose depth and stencil aspects sit in different layouts (VkAttachmentReferenceStencilLayout /
+ * VkAttachmentDescriptionStencilLayout chained to renderpass2), then a barrier that moves only the depth aspect to DEPTH_READ_ONLY_OPTIMAL
+ * and a copy of the depth aspect: the cleared depth value must survive. The driver tracks no layouts, so this proves the structs and enums are
+ * accepted and the pass still clears and stores. */
+static int
+test_sepds(void)
+{
+   if (!g_sepds) { printf("{\"test\":\"sepds\",\"skipped\":\"separateDepthStencilLayouts not advertised\",\"ok\":true}\n"); return 1; }
+   VkFormat fmt = VK_FORMAT_D32_SFLOAT_S8_UINT;
+   VkFormatProperties2 fp = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+   g_fp2(g_pd, fmt, &fp);
+   const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+   if ((fp.formatProperties.optimalTilingFeatures & need) != need) {
+      fmt = VK_FORMAT_D24_UNORM_S8_UINT; g_fp2(g_pd, fmt, &fp);
+      if ((fp.formatProperties.optimalTilingFeatures & need) != need) { printf("{\"test\":\"sepds\",\"skipped\":\"no D+S format with attachment+transfer src\",\"ok\":true}\n"); return 1; }
+   }
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt, .extent = {64, 64, 1},
+                           .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                           .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImage img; VkDeviceMemory mem; VkImageView view; VkRenderPass rp; VkFramebuffer fb;
+   CHECK(CreateImage(dev, &ii, NULL, &img) == VK_SUCCESS, "D+S image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)memtype(mr.memoryTypeBits, 0)};
+   CHECK(AllocateMemory(dev, &mai, NULL, &mem) == VK_SUCCESS, "D+S memory");
+   CHECK(BindImageMemory(dev, img, mem, 0) == VK_SUCCESS, "bind D+S");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+                               .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1}};
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "D+S view");
+   VkAttachmentDescriptionStencilLayout sdl = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_STENCIL_LAYOUT,
+      .stencilInitialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .stencilFinalLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL};
+   VkAttachmentDescription2 ad = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, .pNext = &sdl, .format = fmt, .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL};
+   VkAttachmentReferenceStencilLayout srl = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT, .stencilLayout = VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL};
+   VkAttachmentReference2 dref = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, .pNext = &srl, .attachment = 0,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT};
+   VkSubpassDescription2 sp = {.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2, .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .pDepthStencilAttachment = &dref};
+   VkRenderPassCreateInfo2 rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, .attachmentCount = 1, .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   CHECK(CreateRenderPass2(dev, &rpi, NULL, &rp) == VK_SUCCESS, "vkCreateRenderPass2 with separate D/S layouts");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1, .pAttachments = &view, .width = 64, .height = 64, .layers = 1};
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "D+S framebuffer");
+   struct tgt t = {0};
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &pci, NULL, &t.pool) == VK_SUCCESS, "pool");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &t.fence) == VK_SUCCESS, "fence");
+   struct hbuf ob;
+   if (!hbuf_create(&ob, 64 * 64 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(ob.p, 0xA5, 64 * 64 * 4);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   VkClearValue cv = {.depthStencil = {0.25f, 7}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+   VkSubpassBeginInfo sb = {.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO, .contents = VK_SUBPASS_CONTENTS_INLINE};
+   VkSubpassEndInfo se = {.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO};
+   CmdBeginRenderPass2(cb, &rb, &sb);
+   CmdEndRenderPass2(cb, &se);
+   /* depth aspect only: DEPTH_ATTACHMENT_OPTIMAL -> DEPTH_READ_ONLY_OPTIMAL; stencil aspect: STENCIL_READ_ONLY_OPTIMAL -> STENCIL_ATTACHMENT_OPTIMAL */
+   VkImageMemoryBarrier br[2] = {
+      {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+       .oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img, .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}},
+      {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+       .oldLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL,
+       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img, .subresourceRange = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1}}};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, br);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {64, 64, 1}};
+   CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, ob.b, 1, &reg);
+   int ok = cb_submit(&t, cb);
+   if (ok && !g_fake) {
+      float d; memcpy(&d, ob.p + (30 * 64 + 30) * 4, 4);
+      if (fmt == VK_FORMAT_D32_SFLOAT_S8_UINT) { ok = d > 0.249f && d < 0.251f; CHECK(ok, "depth after separate-layout pass: %f expected 0.25", d); }
+      else { uint32_t v; memcpy(&v, &d, 4); ok = (v & 0xffffffu) >= 0x3fffffu - 2 && (v & 0xffffffu) <= 0x400000u + 2; CHECK(ok, "D24 depth after pass: 0x%x expected ~0x3fffff", v & 0xffffffu); }
+   }
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);   /* fence / pool only: the colour members are zero */
+   DestroyFramebuffer(dev, fb, NULL); DestroyRenderPass(dev, rp, NULL); DestroyImageView(dev, view, NULL); DestroyImage(dev, img, NULL); FreeMemory(dev, mem, NULL);
+   printf("{\"test\":\"sepds\",\"ok\":%s%s}\n", ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend (calls ran)\"" : "");
    return ok;
 }
 
@@ -1092,7 +1178,6 @@ test_storfmt_nf(void)
  * as two textures and converts in the shader. Chroma is constant so the (linear, siting-shifted) chroma reconstruction does not change the result;
  * luma is a gradient. Three conversions: 709 narrow, 601 full, 709 full with cosited-even siting. Pixels are checked on hardware only. */
 static PFN_vkGetPhysicalDeviceImageFormatProperties2 g_ifp2;
-static PFN_vkGetPhysicalDeviceFormatProperties2 g_fp2;
 
 static void
 ycc_ref(int model709, int full, int y, int cb, int cr, int out[3])
@@ -2463,6 +2548,7 @@ main(int argc, char **argv)
    g_dparams = f11.shaderDrawParameters;
    g_ycbcr = f11.samplerYcbcrConversion;
    g_imageless = f12.imagelessFramebuffer;
+   g_sepds = f12.separateDepthStencilLayouts;
    g_ifp2 = (PFN_vkGetPhysicalDeviceImageFormatProperties2)gipa(inst, "vkGetPhysicalDeviceImageFormatProperties2");
    g_fp2 = (PFN_vkGetPhysicalDeviceFormatProperties2)gipa(inst, "vkGetPhysicalDeviceFormatProperties2");
    g_i16 = f2.features.shaderInt16 && f11.storageBuffer16BitAccess;
@@ -2483,7 +2569,7 @@ main(int argc, char **argv)
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
-   e12.imagelessFramebuffer = f12.imagelessFramebuffer;
+   e12.imagelessFramebuffer = f12.imagelessFramebuffer; e12.separateDepthStencilLayouts = f12.separateDepthStencilLayouts;
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceMaintenance5FeaturesKHR em5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &e11, .maintenance5 = g_m5};
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor};
@@ -2541,6 +2627,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
+   if (ok && CASE_ON("sepds")) ok &= test_sepds();
    if (ok && CASE_ON("int16")) ok &= test_int16();
    if (ok && CASE_ON("int64")) ok &= test_int64();
    if (ok && CASE_ON("int8")) ok &= test_int8();

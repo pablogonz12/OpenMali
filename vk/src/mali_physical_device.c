@@ -206,6 +206,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       /* zink 26.0.8 (the guest's Mesa) refuses a device without these two NAMES (zink_device_info.py: required=True, silent in release builds).
          Both are runtime behaviour: vk_common_CreateRenderPass2/CmdBeginRenderPass2 build on dynamic rendering, the imageless framebuffer's views come
          from VkRenderPassAttachmentBeginInfo. t_vk_feat imageless (pixels on hardware), t_steam_caps by-name list. */
+      .KHR_separate_depth_stencil_layouts = true,   /* needs KHR_create_renderpass2 (below) */
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
@@ -219,6 +220,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .synchronization2 = true,
       .dynamicRendering = true,
       .imagelessFramebuffer = true,   /* t_vk_feat imageless */
+      .separateDepthStencilLayouts = true,   /* t_vk_feat sepds: layouts are not tracked */
       .maintenance4 = true,
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
