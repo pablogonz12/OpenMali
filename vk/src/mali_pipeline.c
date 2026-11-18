@@ -52,6 +52,29 @@ find_module(const VkPipelineShaderStageCreateInfo *s)
    return vk_shader_module_from_handle(s->module);
 }
 
+/* VkSpecializationInfo -> mali_compile_opts (entries copied into `buf`, MALI_SPEC_MAX of them). Entries outside dataSize are dropped. */
+#define MALI_SPEC_MAX 32
+static void
+set_spec(struct mali_compile_opts *o, struct mali_spec_entry *buf, const VkSpecializationInfo *si)
+{
+   o->nspec = 0;
+   o->spec = NULL;
+   o->spec_data = NULL;
+   if (!si || !si->mapEntryCount || !si->pData)
+      return;
+   unsigned n = 0;
+   for (uint32_t i = 0; i < si->mapEntryCount && n < MALI_SPEC_MAX; i++) {
+      const VkSpecializationMapEntry *e = &si->pMapEntries[i];
+      if (e->size == 0 || e->offset + e->size > si->dataSize)
+         continue;
+      buf[n++] = (struct mali_spec_entry){.id = e->constantID, .offset = e->offset, .size = (uint32_t)e->size};
+   }
+   o->nspec = n;
+   o->spec = n ? buf : NULL;
+   o->spec_data = si->pData;
+}
+
+
 static VkResult
 create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
@@ -63,6 +86,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    void *state_mem = NULL;
    VkResult res = VK_ERROR_OUT_OF_HOST_MEMORY;
    char err[256];
+   struct mali_spec_entry specbuf[MALI_SPEC_MAX];
 
    if (!p)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -106,6 +130,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = vss->pName;
+   set_spec(&o, specbuf, vss->pSpecializationInfo);
    if (mali_compile(&o, &p->vs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
@@ -117,6 +142,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = fss->pName;
+   set_spec(&o, specbuf, fss->pSpecializationInfo);
    /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
    unsigned samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1;
    if (samples != 1 && (samples != 4 || !mali_experimental_msaa() || BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES))) {
@@ -309,6 +335,8 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    o.spirv = (const uint32_t *)m->data;
    o.spirv_words = m->size / 4;
    o.entry = ci->stage.pName;
+   struct mali_spec_entry specbuf[MALI_SPEC_MAX];
+   set_spec(&o, specbuf, ci->stage.pSpecializationInfo);
    if (mali_compile(&o, &p->cs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: CS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
