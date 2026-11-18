@@ -133,6 +133,7 @@ main(int argc, char **argv)
          tsp.maxTimelineSemaphoreValueDifference >= (1ull << 31) - 1, "timeline diff");
    /* spec minimums (1.0 required-limits table) and PanVK-on-Poco ceilings (R4-ORACLE) */
    CHECK(L->maxImageDimension2D >= 4096 && L->maxFramebufferWidth >= 4096 && L->maxColorAttachments >= 4, "image minimums");
+   CHECK(L->minTexelGatherOffset == -8 && L->maxTexelGatherOffset == 7 && L->minTexelOffset == -8 && L->maxTexelOffset == 7, "texel (gather) offset limits (t_vk_feat gatherlim)");
    CHECK(L->maxPushConstantsSize >= 128 && L->maxPushConstantsSize <= 256, "push constants");
    CHECK(L->maxUniformBufferRange >= 16384 && L->maxUniformBufferRange <= 1048576, "ubo range");
    CHECK(L->maxBoundDescriptorSets >= 4 && L->maxBoundDescriptorSets <= 7, "bound sets");
