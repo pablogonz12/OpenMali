@@ -133,6 +133,7 @@ main(int argc, char **argv)
          tsp.maxTimelineSemaphoreValueDifference >= (1ull << 31) - 1, "timeline diff");
    /* spec minimums (1.0 required-limits table) and PanVK-on-Poco ceilings (R4-ORACLE) */
    CHECK(L->maxImageDimension2D >= 4096 && L->maxFramebufferWidth >= 4096 && L->maxColorAttachments >= 4, "image minimums");
+   CHECK(L->minTexelGatherOffset == -8 && L->maxTexelGatherOffset == 7 && L->minTexelOffset == -8 && L->maxTexelOffset == 7, "texel (gather) offset limits (t_vk_feat gatherlim)");
    CHECK(L->maxPushConstantsSize >= 128 && L->maxPushConstantsSize <= 256, "push constants");
    CHECK(L->maxUniformBufferRange >= 16384 && L->maxUniformBufferRange <= 1048576, "ubo range");
    CHECK(L->maxBoundDescriptorSets >= 4 && L->maxBoundDescriptorSets <= 7, "bound sets");
@@ -261,7 +262,8 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
                                   .pQueuePriorities = (float[]){1.0f}};
    VkPhysicalDeviceVulkan13Features en13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-      .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE, .maintenance4 = VK_TRUE, .privateData = VK_TRUE};
+      .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE, .maintenance4 = VK_TRUE, .privateData = VK_TRUE,
+      .inlineUniformBlock = VK_TRUE};   /* the layout-support probe uses an inline uniform block binding */
    VkPhysicalDeviceVulkan12Features en12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &en13,
       .timelineSemaphore = VK_TRUE, .hostQueryReset = VK_TRUE};
    const char *ext[] = {"VK_KHR_swapchain"};
@@ -290,6 +292,8 @@ main(int argc, char **argv)
    D(GetDeviceQueue2); D(CreatePrivateDataSlot); D(DestroyPrivateDataSlot); D(SetPrivateData); D(GetPrivateData);
    D(GetDeviceBufferMemoryRequirements); D(CreateQueryPool); D(DestroyQueryPool); D(ResetQueryPool);
    D(GetQueryPoolResults); D(CreateFence); D(DestroyFence); D(WaitForFences); D(QueueSubmit2);
+   D(CreateDescriptorSetLayout); D(DestroyDescriptorSetLayout); D(CreateDescriptorPool); D(DestroyDescriptorPool);
+   D(AllocateDescriptorSets); D(FreeDescriptorSets);
    D(CreateCommandPool); D(DestroyCommandPool); D(AllocateCommandBuffers); D(BeginCommandBuffer);
    D(EndCommandBuffer); D(CmdPipelineBarrier2); D(DestroyDevice); D(CreateSemaphore); D(DestroySemaphore);
    D(GetSemaphoreCounterValue); D(WaitSemaphores);
@@ -361,6 +365,77 @@ main(int argc, char **argv)
       DestroyFence(dev, f, NULL);
       DestroySemaphore(dev, tl, NULL);
       DestroyCommandPool(dev, cp, NULL);
+   }
+   /* vkGetDescriptorSetLayoutSupport (mali_get_descriptor_set_layout_support) and vkFreeDescriptorSets (mali_free_descriptor_sets) */
+   {
+      PFN_vkGetDescriptorSetLayoutSupport gdsls = (PFN_vkGetDescriptorSetLayoutSupport)gdpa(dev, "vkGetDescriptorSetLayoutSupport");
+      CHECK(gdsls, "no vkGetDescriptorSetLayoutSupport");
+      if (gdsls) {
+         VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4,
+                                           .stageFlags = VK_SHADER_STAGE_ALL};
+         VkDescriptorSetLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+         VkDescriptorSetLayoutSupport sup = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT};
+         gdsls(dev, &lci, &sup);
+         CHECK(sup.supported == VK_TRUE, "plain UBO layout reported unsupported");
+         /* inline uniform block: descriptorCount is a byte size, multiple of 4 and at most 256 */
+         b.descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
+         b.descriptorCount = 64;
+         sup.supported = VK_FALSE;
+         gdsls(dev, &lci, &sup);
+         CHECK(sup.supported == VK_TRUE, "inline uniform block 64 B reported unsupported");
+         b.descriptorCount = 62;   /* not a multiple of 4 */
+         sup.supported = VK_TRUE;
+         gdsls(dev, &lci, &sup);
+         CHECK(sup.supported == VK_FALSE, "inline uniform block 62 B reported supported");
+         b.descriptorCount = 1024; /* larger than the 256 B limit */
+         sup.supported = VK_TRUE;
+         gdsls(dev, &lci, &sup);
+         CHECK(sup.supported == VK_FALSE, "inline uniform block 1024 B reported supported");
+         /* a type the driver does not implement (acceleration structure) */
+         b.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+         b.descriptorCount = 1;
+         sup.supported = VK_TRUE;
+         gdsls(dev, &lci, &sup);
+         CHECK(sup.supported == VK_FALSE, "acceleration structure binding reported supported");
+         /* more descriptor slots than the driver can address (the support query must say no, not crash) */
+         b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+         b.descriptorCount = 0x7fffffffu;
+         sup.supported = VK_TRUE;
+         gdsls(dev, &lci, &sup);
+         CHECK(sup.supported == VK_FALSE, "2^31 storage buffers reported supported");
+      }
+
+      VkDescriptorSetLayoutBinding sb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+      VkDescriptorSetLayout dsl;
+      CHECK(CreateDescriptorSetLayout(dev, &(VkDescriptorSetLayoutCreateInfo){.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 1, .pBindings = &sb}, NULL, &dsl) == VK_SUCCESS, "CreateDescriptorSetLayout");
+      /* descriptor capacity for 4 sets, maxSets is 2: the third allocation must fail on maxSets, not on descriptor storage */
+      VkDescriptorPoolSize ps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4};
+      VkDescriptorPool pool;
+      CHECK(CreateDescriptorPool(dev, &(VkDescriptorPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &ps}, NULL, &pool) == VK_SUCCESS,
+            "CreateDescriptorPool");
+      VkDescriptorSetLayout lays[3] = {dsl, dsl, dsl};
+      VkDescriptorSet sets[3] = {0}, one = VK_NULL_HANDLE;
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool,
+                                         .descriptorSetCount = 2, .pSetLayouts = lays};
+      CHECK(AllocateDescriptorSets(dev, &dai, sets) == VK_SUCCESS && sets[0] && sets[1] && sets[0] != sets[1], "allocate 2 sets (maxSets 2)");
+      dai.descriptorSetCount = 1;
+      VkResult over = AllocateDescriptorSets(dev, &dai, &one);
+      CHECK(over == VK_ERROR_OUT_OF_POOL_MEMORY && one == VK_NULL_HANDLE, "third set from a maxSets=2 pool: %d", over);
+      /* free one set (and a VK_NULL_HANDLE entry, which must be ignored): its slot is available again */
+      VkDescriptorSet fr[2] = {sets[0], VK_NULL_HANDLE};
+      CHECK(FreeDescriptorSets(dev, pool, 2, fr) == VK_SUCCESS, "FreeDescriptorSets");
+      CHECK(AllocateDescriptorSets(dev, &dai, &one) == VK_SUCCESS && one, "allocate after free");
+      /* the pool is full again; the surviving set is still valid, so freeing it and the new one empties the pool */
+      CHECK(AllocateDescriptorSets(dev, &dai, &(VkDescriptorSet){0}) == VK_ERROR_OUT_OF_POOL_MEMORY, "pool full again");
+      VkDescriptorSet rest[2] = {sets[1], one};
+      CHECK(FreeDescriptorSets(dev, pool, 2, rest) == VK_SUCCESS, "free remaining");
+      dai.descriptorSetCount = 2;
+      CHECK(AllocateDescriptorSets(dev, &dai, sets) == VK_SUCCESS && sets[0] && sets[1], "allocate 2 after freeing all");
+      DestroyDescriptorPool(dev, pool, NULL);   /* frees the sets still in the pool */
+      DestroyDescriptorSetLayout(dev, dsl, NULL);
    }
    DestroyDevice(dev, NULL);
 
