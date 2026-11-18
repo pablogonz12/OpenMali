@@ -141,6 +141,7 @@ main(int argc, char **argv)
       int adv = 0;
       for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state");
       CHECK(adv == (int)eds.extendedDynamicState, "VK_EXT_extended_dynamic_state advertised=%d but extendedDynamicState=%u", adv, eds.extendedDynamicState);
+      CHECK(adv && eds.extendedDynamicState, "VK_EXT_extended_dynamic_state must be advertised with the feature (DXVK requires it): adv=%d feat=%u", adv, eds.extendedDynamicState);
    }
    VkPhysicalDeviceMaintenance6FeaturesKHR m6 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR, .pNext = &dce};
    {
