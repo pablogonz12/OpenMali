@@ -185,6 +185,11 @@ static int mkprops(void *buf, size_t cap)
 
 static void *map_new_bo(uint64_t flags_unused, size_t len, uint32_t kind, uint32_t fl, int exec) { (void)flags_unused; return new_region(len, (int)kind, fl, exec); }
 
+struct synccnt { uint64_t va; unsigned n; };
+static struct synccnt syncs[256];
+static int nsync;
+unsigned kb_fake_memsync_count(uint64_t va) { for (int i = 0; i < nsync; i++) if (syncs[i].va == va) return syncs[i].n; return 0; }
+
 int ioctl(int fd, unsigned long req, ...)
 {
 	init_once();
@@ -273,6 +278,12 @@ int ioctl(int fd, unsigned long req, ...)
 				struct base_fence *f = (void *)(uintptr_t)c[i].info.fence;
 				f->fd = eventfd(1, EFD_CLOEXEC);
 			}
+		OK;
+	}
+	case 15: { /* MEM_SYNC: counted per gpu_va for tests (kb_fake_memsync_count) */
+		struct { uint64_t handle, user_addr, size; uint8_t type; } *m = arg;
+		for (int i = 0; i < nsync; i++) if (syncs[i].va == m->handle) { syncs[i].n++; OK; }
+		if (nsync < 256) syncs[nsync++] = (struct synccnt){ m->handle, 1 };
 		OK;
 	}
 	default: errno = ENOTTY; return -1;
