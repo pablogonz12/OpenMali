@@ -282,14 +282,13 @@ test_push(unsigned arch)
    CHECK(s1->va != s2->va && s2->bytes == s1->bytes && s1->bytes == 2 * MALI_DESC_SLOT_SIZE, "distinct memory, 2 slots");
    w.dstBinding = 1; w.pBufferInfo = &b1;
    mali_dset_write(s2, &w);
-   struct mali_hw_desc e0, e1;
+   struct mali_hw_desc e0;
    mali_pack_buffer(arch, &e0, g_buf_va + 0x40, 256);
    CHECK(!memcmp(s1->cpu, &e0, sizeof e0), "first set binding 0 written");
    CHECK(!memcmp(s2->cpu, s1->cpu, MALI_DESC_SLOT_SIZE), "second set inherits binding 0");
    static const uint8_t zero[MALI_DESC_SLOT_SIZE];
    CHECK(!memcmp(s1->cpu + MALI_DESC_SLOT_SIZE, zero, sizeof zero), "first set binding 1 untouched by the later push");
    CHECK(memcmp(s2->cpu + MALI_DESC_SLOT_SIZE, zero, sizeof zero), "second set binding 1 written");
-   (void)e1;
    mali_push_set_destroy(&g_dev, s1);
    mali_push_set_destroy(&g_dev, s2);
 }

@@ -280,7 +280,8 @@ mali_push_set_create(struct vk_device *dev, unsigned arch, struct mali_dsl *l, c
    s->layout = (struct mali_dsl *)vk_descriptor_set_layout_ref(&l->vk);
    s->bytes = bytes;
    s->arch = arch;
-   if (prev && prev->layout == l && prev->bytes == bytes) memcpy(s->cpu, prev->cpu, bytes);
+   if (!bytes) {                       /* empty layout: no GPU memory, nothing to seed (memcpy/memset on NULL is UB) */
+   } else if (prev && prev->layout == l && prev->bytes == bytes) memcpy(s->cpu, prev->cpu, bytes);
    else {
       memset(s->cpu, 0, bytes);
       write_immutable(s);
