@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 21   /* 21: carry Mesa patches vk/mesa-patches (va_optimize OOB, num_subgroups): generated code can differ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
