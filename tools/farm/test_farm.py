@@ -1126,6 +1126,35 @@ class T(unittest.TestCase):
         st2 = {"cmf": {"status": "up"}, "b2": {"status": "up"}}
         self.assertEqual(BL.idle_candidates(2000, {"cmf": 500, "b2": 100}, devs2, st2, [], [], "T", set()), ["b2", "cmf"])   # longest idle = oldest missing first
 
+    def test_cases_wait_while_a_gate_part_is_pending(self):
+        self.nosweep()
+        self.attach("dev-a")
+        _, cs, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--case", "dEQP-VK.a.c", "--need", "v11")
+        _, one, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.d", "--need", "v11")          # one case: diagnostic prio, not held back
+        _, g, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--allow-stale")
+        j = L.find_job(g)
+        j["parts"]["v11"]["defer_until"] = time.time() + 3600                                                         # pending but not runnable now
+        L.write_json(L.job_path(g), j)
+        self.assertEqual(L.job_prio(L.find_job(cs)), 20)
+        self.farmd()
+        self.assertEqual(L.find_job(cs)["parts"]["v11"]["state"], "pending")                                          # held back by the pending gate
+        self.assertNotEqual(L.find_job(one)["parts"]["v11"]["state"], "pending")                                      # the diagnostic ran
+        self.assertEqual(L.find_job(g)["parts"]["v11"]["state"], "pending")
+        j = L.find_job(g)
+        j["parts"]["v11"]["state"] = "cancelled"
+        L.write_json(L.job_path(g), j)
+        self.farmd()
+        self.assertNotEqual(L.find_job(cs)["parts"]["v11"]["state"], "pending")                                       # gap: it runs
+
+    def test_gate_blocks_unit(self):
+        gate_j = lambda **kw: dict({"suite": "smoke", "parts": {"v11": {"state": "pending"}}}, **kw)
+        cs = {"suite": "cases", "parts": {"v11": {"state": "pending"}}}
+        self.assertTrue(L.gate_blocks(cs, "v11", [gate_j()]))
+        self.assertFalse(L.gate_blocks(cs, "v13", [gate_j()]))                                                        # other class
+        self.assertFalse(L.gate_blocks(cs, "v11", [gate_j(auto=True)]))
+        self.assertFalse(L.gate_blocks(cs, "v11", [gate_j(parts={"v11": {"state": "running"}})]))
+        self.assertFalse(L.gate_blocks(dict(cs, suite="bench"), "v11", [gate_j()]))
+
     def test_bench_priority_order(self):
         jobs = [{"id": "auto1", "auto": True, "seq": 1}, {"id": "ex2", "seq": 2}, {"id": "ex3", "seq": 3}, {"id": "auto0", "auto": True, "seq": 0}]
         self.assertEqual([j["id"] for j in BL.order_jobs(jobs)], ["ex2", "ex3", "auto0", "auto1"])   # explicit > auto, each FIFO

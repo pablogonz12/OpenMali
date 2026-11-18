@@ -1907,6 +1907,8 @@ class Farm:
                 fresh = (L.find_job(j["id"]) or j)["parts"].get(cls, p)                    # a worker may have just persisted defer_until
                 if time.time() < fresh.get("defer_until", 0):
                     continue                                                       # deferred individually (menu gate); the phone may run other jobs
+                if L.gate_blocks(j, cls, jobs):
+                    continue                                                       # cases only in a gap: a gate part of this class is pending (even if deferred or pinned elsewhere)
                 for al, d in self.devs.items():
                     if d["class"] == cls and al in att and B.pin_ok(j, al) and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
                         hn = self.hold_next(al)

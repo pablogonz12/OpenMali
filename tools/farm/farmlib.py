@@ -306,6 +306,15 @@ def job_prio(job):
     return SUITE_PRIO.get(job.get("suite"), 0)
 
 
+def gate_blocks(job, cls, jobs):
+    """True while a full `cases` run (prio >= the cases default, i.e. not a lane's one-case diagnostic) of class `cls` must wait: an explicit
+    (non-auto) gate job (smoke/daily) still has a pending part of that class. Cases runs are 15 min fillers; they start only in a gap of
+    the gate queue, so a gate that lands while one runs waits for it at most once instead of behind a queue of them"""
+    if job.get("suite") != "cases" or job_prio(job) < SUITE_PRIO["cases"]:
+        return False
+    return any(j.get("suite") in GATE_SUITES and not j.get("auto") and (j["parts"].get(cls) or {}).get("state") == "pending" for j in jobs)
+
+
 def supersede_old_gates(new, jobs, is_ancestor):
     """a new gate job (smoke/daily) obsoletes the pending parts of older gate jobs of the same line of commits: same repo, suite, env and
     --only, an older commit that is an ancestor of the new one (is_ancestor(old, new)), and only the classes the new job covers. Running and
