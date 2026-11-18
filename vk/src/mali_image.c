@@ -364,8 +364,8 @@ mali_DestroyImage(VkDevice _dev, VkImage h, const VkAllocationCallbacks *alloc)
 static bool
 nocoh_image_ok(VkImageTiling tiling, VkImageUsageFlags usage, VkExternalMemoryHandleTypeFlags handles)
 {
-   const VkImageUsageFlags gfx = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
-   return tiling == VK_IMAGE_TILING_OPTIMAL && (usage & gfx) && !(usage & VK_IMAGE_USAGE_STORAGE_BIT) && !handles;
+   /* Conformant: memoryTypeBits may depend only on tiling, handleTypes and TRANSIENT_ATTACHMENT, never on other usage bits. */
+   return tiling == VK_IMAGE_TILING_OPTIMAL && !(usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) && !handles;
 }
 
 static VkExternalMemoryHandleTypeFlags

@@ -1229,7 +1229,7 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    struct mali_frame f;
    /* Fast path (proven in M9): a render-target clear of a whole single-subresource RGBA8 image. Everything else: M12 compute clears. */
    memset(&t, 0, sizeof t);
-   if (getenv("MALI_NOFAST_CLEAR") || nr != 1 || ranges[0].baseMipLevel != 0 || ranges[0].baseArrayLayer != 0 || cmd->in_render || !g_res.image ||
+   if (nr != 1 || ranges[0].baseMipLevel != 0 || ranges[0].baseArrayLayer != 0 || cmd->in_render || !g_res.image ||
        g_res.image(image, &t) || t.zs_format || t.multi) {
       mali_meta_CmdClearColorImage(h, image, layout, c, nr, ranges);
       return;
