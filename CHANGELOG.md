@@ -18,9 +18,10 @@ Commit hashes are short SHAs. "Unreleased" covers everything so far; there are n
 | 11-17 | Job 1 regression fixed (`9e2a673`) | 283 | 126 | 971 | 0 | TRIAGE |
 | 11-17 | Farm baseline reblessed, both phones (`1ef735b`) | 302 | 107 | 971 | 1 | commit message |
 | 11-18 | Committed Poco baseline (`vk/deqp/ours-daily-sample-poco.tsv`) | 301 | 108 | 971 | 0 (1 other) | tsv |
+| 11-18 | v13 daily on main `b0ea148` (farm job 20261118-172114, PR #30) | 425 | 27 | 929 | 0 | README |
 
 Reference: PanVK oracle on the same list passes 642, fails 18, NotSupported 721, crash 0 (97.3 % of supported cases).
-Pass counts after 11-17 are not all recorded: the README table still says 272/136/971 ("latest recheck") and lags the tsv. No full CTS run and no R3 95 % gate run exist.
+The README table carries this newest clean v13 run; the committed tsv baselines are older. No full CTS run and no R3 95 % gate run exist.
 The 971 NotSupported cases count against the 2 % gate.
 
 ## Unreleased
@@ -30,7 +31,8 @@ The 971 NotSupported cases count against the 2 % gate.
 - Added with a `t_vk_feat`/`t_vk_draw` test each: multiDrawIndirect, depthBiasClamp, drawIndirectFirstInstance, fullDrawIndexUint32, samplerAnisotropy, samplerMirrorClampToEdge, imageCubeArray, wideLines, shaderStorageImageExtendedFormats, bufferDeviceAddress, descriptor indexing (sampled-image subset), robustness2 nullDescriptor, scalarBlockLayout, uniformBufferStandardLayout, zero-initialize workgroup memory, occlusionQueryPrecise, shaderDemoteToHelperInvocation, subgroup ops (compute), subgroupSizeControl, shaderInt8/16/64, shaderClipDistance, shaderDrawParameters, shaderImageGatherExtended, fragmentStoresAndAtomics, vulkanMemoryModel, fillModeNonSolid, inlineUniformBlock.
 - Specialization constants (`ec0de2e`), samplerYcbcrConversion for NV12 (`6d3f92e`), shaderStorageImageWriteWithoutFormat (`d5e606b`), VK_EXT_custom_border_color (`8e9410e`), VK_KHR_maintenance1/5, create_renderpass2, imageless_framebuffer (zink requirements).
 - PR #10: rectangular line rasterization, vertex attribute divisor (0/1 advertised; >1 not, hardware divides differently), compute dynamic buffers.
-- Not done: MSAA, dualSrcBlend, sampleRateShading, multiViewport, geometry/tessellation, logicOp, Bresenham/smooth lines.
+- Also on main now: dualSrcBlend (blend shader), multiViewport (state only), depth clamp; MSAA exists behind `MALI_EXPERIMENTAL_MSAA=1`.
+- Not done: default-on MSAA, sampleRateShading (env-gated), geometry/tessellation, logicOp, Bresenham/smooth lines.
 
 ### Graphics and render path
 - Fixed-function state mapping: cull/front face, depth bias/clamp/clip, blend with masks and constants, dynamic state (`8e9410e` era, R4-A).
