@@ -25,19 +25,20 @@ int main(void)
    struct mali_kdev *k;
    if (b->device_create(&gi, &k)) { printf("FAIL  device_create\n"); return 1; }
 
-   struct mali_bo exp, expc, hl, imp, internal, src;
+   struct mali_bo exp, expc, hl, imp, internal, src, ex;
    int r = 0;
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT, &exp);
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT | MALI_BO_CACHED, &expc);
    r |= b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &hl);
    r |= b->bo_alloc(k, 65536, 0, &internal);
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT, &src);
+   r |= b->bo_alloc(k, 4096, MALI_BO_EXEC, &ex);
    if (r) { printf("FAIL  bo_alloc\n"); return 1; }
    int fd = b->bo_export(k, &src);
    if (fd < 0 || b->bo_import(k, fd, 65536, 0, &imp)) { printf("FAIL  bo_export/import\n"); return 1; }
 
    unsigned e0 = kb_fake_memsync_count(exp.gpu_va), c0 = kb_fake_memsync_count(expc.gpu_va), h0 = kb_fake_memsync_count(hl.gpu_va),
-            i0 = kb_fake_memsync_count(imp.gpu_va), n0 = kb_fake_memsync_count(internal.gpu_va);
+            i0 = kb_fake_memsync_count(imp.gpu_va), n0 = kb_fake_memsync_count(internal.gpu_va), x0 = kb_fake_memsync_count(ex.gpu_va);
    uint64_t cs[8] = {0};
    enum { N = 5 };
    for (int s = 0; s < 2; s++) {
@@ -55,6 +56,7 @@ int main(void)
    EXPECT(kb_fake_memsync_count(expc.gpu_va) - c0 >= 2 * N, "CACHED export: never lazy, synced at each submit (%u)", kb_fake_memsync_count(expc.gpu_va) - c0);
    EXPECT(kb_fake_memsync_count(imp.gpu_va) - i0 == 0, "imported dma-buf: untracked, no per-submit MEM_SYNC (known gap, pre-existing)");
    EXPECT(kb_fake_memsync_count(internal.gpu_va) == n0, "arch 11 internal BO: no MEM_SYNC (NOCOH)");
+   EXPECT(kb_fake_memsync_count(ex.gpu_va) == x0, "EXEC BO (shader binary, write-combined): no per-submit MEM_SYNC");
    /* the device -> CPU direction after a fence wait covers mapped BOs only */
    unsigned before = kb_fake_memsync_count(exp.gpu_va);
    static volatile uint64_t cnt = 1;

@@ -448,6 +448,17 @@ mem_sync_all(struct mali_kdev *k, unsigned op)
    mem_sync_bos(k, op, false);
 }
 
+static bool
+exec_sync(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("MALI_EXEC_SYNC");
+      v = e && e[0] == '1';
+   }
+   return v;
+}
+
 static void
 mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
 {
@@ -463,7 +474,9 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot))
+      /* Shader binaries (EXEC): written once by the CPU through a write-combined mapping (never CPU_CACHED), where kbase_sync_now() is a no-op,
+       * and never touched by the app. The ioctl was pure cost (7 BOs x ~3 syncs per frame). MALI_EXEC_SYNC=1 restores it. */
+      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot) || ((b->flags & KB_BO_GPU_EX) && !exec_sync()))
          continue;
       struct {
          uint64_t handle, user_addr, size;
