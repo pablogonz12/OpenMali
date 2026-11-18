@@ -117,3 +117,6 @@ tools/bench2 on CMF, 5 interleaved pairs, old ICD 193a1e9c (main) vs new bfc42e9
 | triangle-3k presented | 55.3 / 8.12 | 64.5 / 7.23 |
 | triangle-3k offscreen | 104.4 / 6.49 | 107.8 / 6.37 |
 (the bench2 cube is GPU-bound at 17 ms: unchanged GPU ms.)
+
+## 2026-11-18 presented cube on the CMF: submit cost (not GPU time)
+Presented cube-720p submit 1.38 -> 0.58 ms (fps 50.2 -> 56.8, gpu 15.43 -> 15.20) after exported swapchain dma-bufs became host-lazy (561404d): they were cache-synced (a real dma_buf cpu-access op, ~20 us each) at every submit. MEM_SYNC per frame ~95 -> 75 -> 30 (EXEC BOs unsynced, perf/memsync-exec), ~1.9 -> ~0.12 -> ~0.08 ms per frame. Bridge on the same phone: 71.3 fps, CPU 0.14 ms, GPU 12.82 ms, so our presented CPU side is still ~4x the bridge's; the GPU side (15.2 vs 12.8 ms) is the larger share of the fps gap. Rows: bench/RESULTS.md.

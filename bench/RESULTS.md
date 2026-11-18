@@ -143,3 +143,16 @@ Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/rig
 
 Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets `default`; `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`; `MALI_HF=0 MALI_NOTF=1`; `MALI_NO_MERGE=1`. Bridge options: none exposed in the guest besides the above.
 Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).
+
+### cube-720p presented, CMF (v11): per-submit MEM_SYNC removal (561404d, efc3096) vs main 649e928 (2026-11-18)
+
+5 interleaved pairs, medians, `tools/bench2 cmf --driver ours --variant cube-720p`, same ICD build otherwise (`MALI_IOCTL_PROF=1` counts ioctls).
+
+| phone | class | driver | version | variant | pres fps | pres submit ms | pres GPU ms | MEM_SYNC / frame | MEM_SYNC ms / frame |
+|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | ours | main 649e928 | cube-720p | 50.2 | 1.38 | 15.43 | ~95 | ~1.9 |
+| cmf | v11 | ours | perf/int-nocoh 561404d | cube-720p | 56.8 | 0.58 | 15.20 | 75 | ~0.12 |
+| cmf | v11 | ours | + EXEC BOs unsynced (b262cdb, perf/memsync-exec) | cube-720p | 57.7 | 0.55 | 15.13 | 30 | ~0.08 |
+| cmf | v11 | bridge | malideck p24 | cube-720p | 71.3 | (CPU 0.14) | 12.82 | n/a | n/a |
+
+Offscreen submit is unchanged (0.38 ms). The presented figure is still above the bridge (0.14 ms CPU): the rest is the ~30 syncs of app-mapped VkDeviceMemory plus ~3 KICK and ~4 KCPU ioctls per frame (~0.1 ms). The 95-per-frame "before" is from the 1772d2b profile build, not 649e928 itself. Note: 1772d2b (internal BOs without COHERENT_LOCAL) halved occlusion counts; see fix/meta-coh.
