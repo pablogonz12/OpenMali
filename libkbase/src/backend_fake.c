@@ -11,7 +11,9 @@
  *      KB_FAKE_MUTATE=idvs38|pixfmt688 (re-introduce an old bug into the captured stream, to prove the checker catches it;
  *      the test itself and the real backend are untouched).
  * Not modelled: any execution, cache behaviour, MMU, timing, readback contents (tests will report failures; ignore them). */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
