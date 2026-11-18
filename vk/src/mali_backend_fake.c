@@ -115,7 +115,7 @@ dump_out(void)
 static const char *
 fake_flag_rule(size_t size, uint32_t flags)
 {
-   const uint32_t known = MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOSTLAZY | MALI_BO_HOT | MALI_BO_COH;
+   const uint32_t known = MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOSTLAZY | MALI_BO_HOT | MALI_BO_COH | MALI_BO_NOCOH;
    if (flags & ~known)
       return "unknown MALI_BO_* bits";
    if (size == 0)
