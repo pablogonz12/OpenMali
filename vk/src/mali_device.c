@@ -65,6 +65,7 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
       return result;
    }
 
+   mali_wsi_trace_hook(&dev->vk.dispatch_table);
    mali_resources_init();
    mali_queue_device_init(dev);
    result = pdev->backend->device_create(&pdev->gpu, &dev->kdev);
