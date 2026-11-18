@@ -542,7 +542,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       if (dyn->cb.logic_op_enable) {
          if (bp->gfx.blend_va)
             x->blend_en = true;   /* the pipeline's blend shader does the logic op (mali_pipeline.c); it reads the destination */
-         else
+         else if (!bp->gfx.logic_inert)
             unsupported(cmd, "dynamic logic op");
       }
       if (x->blend_en && !bp->gfx.blend_va) {
