@@ -2019,7 +2019,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("st_op_decwrap")) ok &= test_load("st_op_decwrap", 4);
    if (ok && CASE_ON("load_colour_f16")) { g_colfmt = VK_FORMAT_R16G16B16A16_SFLOAT; g_colbpp = 8; ok &= test_load("load_colour_f16", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
    if (ok && CASE_ON("load_colour_rgba8ui")) { g_colfmt = VK_FORMAT_R8G8B8A8_UINT; g_colbpp = 4; ok &= test_load("load_colour_rgba8ui", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
-   if (ok && CASE_ON("load_colour_rg16sint")) { g_colfmt = VK_FORMAT_R16G16_SINT; g_colbpp = 4; ok &= test_load("load_colour_rg16sint", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
+   if (ok && CASE_ON("load_colour_rg16sint")) { g_colfmt = VK_FORMAT_R16G16_SINT; g_colbpp = 4; g_clear_u = 1; ok &= test_load("load_colour_rg16sint", 2); g_clear_u = 0; g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* non-zero clear: a LOAD that writes zeros must fail */
    if (ok && CASE_ON("load_colour_rgba8snorm")) { g_colfmt = VK_FORMAT_R8G8B8A8_SNORM; g_colbpp = 4; ok &= test_load("load_colour_rgba8snorm", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
    if (ok && CASE_ON("load_colour_rgba16unorm")) { g_colfmt = VK_FORMAT_R16G16B16A16_UNORM; g_colbpp = 8; ok &= test_load("load_colour_rgba16unorm", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
    if (ok && CASE_ON("load_colour_r32f")) { g_colfmt = VK_FORMAT_R32_SFLOAT; g_colbpp = 4; ok &= test_load("load_colour_r32f", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
