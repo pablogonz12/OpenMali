@@ -14,5 +14,8 @@
  *   without sampler gets the dummy sampler pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX)
  *   explicit io of UBO/SSBO (load_ubo/load_ssbo with the handle as index).
  * Dynamic buffers use pan_res_handle(MALI_DYN_TABLE, MALI_DYN_BUF_START + dyn_start[set] + dyn_idx).
+ * With layout->robust_access the buffer size queries (get_ssbo_size/get_ubo_size, from nir_lower_robust_access) are lowered to a global
+ * load of the Buffer descriptor's size word; the table VAs come from the push block at push_base + mali_size_tab_off(layout), and
+ * *size_tab_off is set to that offset (-1 when the shader needs no table VAs): the driver must write the table VAs there (mali_size_tab_bytes()).
  * Returns false and writes a message to err when the shader uses a set/binding that the layout lacks. */
-bool mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, char *err, size_t errsz);
+bool mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, unsigned push_base, int *size_tab_off, char *err, size_t errsz);
