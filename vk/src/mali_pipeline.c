@@ -239,6 +239,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->vs = &p->vs;
    g->fs = &p->fs;
    g->samples = samples;
+   g->dyn_stride = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_VI_BINDING_STRIDES);
    g->discard = !fss || (st.rs && st.rs->rasterizer_discard_enable);
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
@@ -286,7 +287,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const struct vk_vertex_binding_state *vb = &st.vi->bindings[a->binding];
          const bool inst = vb->input_rate == VK_VERTEX_INPUT_RATE_INSTANCE;
          /* instance rate: HW has no zero divisor, panvk uses stride 0 */
-         g->attr[g->nattr++] = (struct mali_attr){f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst};
+         g->attr[g->nattr++] = (struct mali_attr){f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst, inst && vb->divisor == 0};
       }
    }
    vk_dynamic_graphics_state_init(&p->dynamic);

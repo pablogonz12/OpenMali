@@ -71,6 +71,7 @@ reset_state(struct mali_cmd_buffer *cmd)
    memset(cmd->push_cs, 0, sizeof cmd->push_cs);
    memset(cmd->vb_va, 0, sizeof cmd->vb_va);
    memset(cmd->vb_size, 0, sizeof cmd->vb_size);
+   memset(cmd->vb_stride, 0, sizeof cmd->vb_stride);
    memset(cmd->push, 0, sizeof cmd->push);
    cmd->nsets = 0;
    cmd->ndyn = 0;
@@ -272,9 +273,10 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
       struct vk_buffer *buf = vk_buffer_from_handle(bufs[i]);
       uint64_t nva = buf ? vk_buffer_address(buf, offs[i]) : 0;
       uint32_t nsz = buf ? (uint32_t)(buf->size - offs[i]) : 0;
-      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz) {
+      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz || cmd->vb_stride[b]) {
          cmd->vb_va[b] = nva;
          cmd->vb_size[b] = nsz;
+         cmd->vb_stride[b] = 0;   /* a plain bind clears the dynamic stride */
          cmd->dirty |= MALI_D_BIND;
       }
    }
@@ -400,6 +402,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          return false;
       memcpy(bb->vb_va, cmd->vb_va, sizeof bb->vb_va);
       memcpy(bb->vb_size, cmd->vb_size, sizeof bb->vb_size);
+      memcpy(bb->vb_stride, cmd->vb_stride, sizeof bb->vb_stride);
       bb->nsets = cmd->nsets;
       memcpy(bb->set_va, cmd->set_va, sizeof bb->set_va);
       memcpy(bb->set_bytes, cmd->set_bytes, sizeof bb->set_bytes);

@@ -28,6 +28,8 @@ static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
 static unsigned g_colbpp = 4;
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
+static int g_dynstr;   /* dynamic VERTEX_INPUT_BINDING_STRIDE with a wrong static stride; the draw binds strides through CmdBindVertexBuffers2 */
+static PFN_vkCmdBindVertexBuffers2 CmdBindVertexBuffers2_;
 static int g_discard;   /* 1: rasterizerDiscardEnable with both stages, 2: vertex-only pipeline + discard */
 static int g_clear_u;   /* clear the colour attachment to the integer value (200,100,50,7) instead of float zeros */
 static int g_load;   /* two-pass LOAD test: store depth/stencil, and build s->rp2 = the same pass with loadOp LOAD */
@@ -466,6 +468,7 @@ scene_create(struct scene *s, int depth)
        .module = s->fs, .pName = "main"}};
    VkVertexInputBindingDescription bd[2] = {{0, 16, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_VERTEX}};
    VkVertexInputAttributeDescription ad2[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}};
+   if (g_dynstr) bd[0].stride = bd[1].stride = 4;
    if (g_inst) bd[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                                                .vertexBindingDescriptionCount = g_inst ? 1 : 2, .pVertexBindingDescriptions = bd,
@@ -515,6 +518,7 @@ scene_create(struct scene *s, int depth)
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
+   if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
       for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
       dys.dynamicStateCount += 3;
@@ -650,6 +654,16 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdDraw(cb, 3, 1, 0, 0);
          CmdDraw(cb, 3, 1, 0, 0);
       }
+      n = 0;
+   } else if (g_dynstr) {
+      /* two draws that differ only in the dynamic stride: stride 0 (every vertex = vertex 0: degenerate, no pixels), then 16 (the triangle) */
+      VkDeviceSize sz[2] = {VK_WHOLE_SIZE, VK_WHOLE_SIZE}, z[2] = {0, 0}, st16[2] = {16, 16};
+      CmdBindVertexBuffers2_(cb, 0, 2, vbs, offs, sz, z);
+      CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
+      CmdDraw(cb, 3, 1, 0, 0);
+      CmdBindVertexBuffers2_(cb, 0, 2, vbs, offs, sz, st16);
+      CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
+      CmdDraw(cb, 3, 1, 0, 0);
       n = 0;
    } else
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
@@ -1029,10 +1043,10 @@ test_load(const char *name, int kind)
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    VkFormat save = g_depfmt;
-   if (kind == 1) {
+   if (kind == 1 || kind == 3 || kind == 4) {
       g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT;
       g_st = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
-                               .pass = VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = 0xff, .ref = 0, .clear = 0};
+                               .pass = kind == 3 ? VK_STENCIL_OP_INVERT : kind == 4 ? VK_STENCIL_OP_DECREMENT_AND_WRAP : VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = 0xff, .ref = 0, .clear = 0};
    }
    g_load = 1;
    int ok = scene_create(&s, kind != 2);
@@ -1132,6 +1146,31 @@ test_discard(const char *name, int mode)
    }
    printf("{\"test\":\"%s\",\"coverage\":%u,\"ok\":%s%s}\n", name, cov, ok ? "true" : "false", g_fake ? ",\"skipped\":\"fake backend\"" : "");
    CHECK(ok, "%s: coverage %u, want 0", name, cov);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* dynamic vertex binding stride: static stride 4 is wrong; draw 1 binds stride 0 (nothing), draw 2 stride 16 (the triangle) */
+static int
+test_dynstride(const char *name)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_dynstr = 1;
+   int ok = scene_create(&s, 0);
+   float one[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, one, f);
+   g_dynstr = 0;
+   unsigned cov = 0;
+   if (ok && !g_fake) {
+      cov = count_cov(&s);
+      ok = cov > 1000;
+   }
+   printf("{\"test\":\"%s\",\"coverage\":%u,\"ok\":%s%s}\n", name, cov, ok ? "true" : "false", g_fake ? ",\"skipped\":\"fake backend\"" : "");
+   CHECK(ok, "%s: coverage %u, want the triangle", name, cov);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1900,6 +1939,7 @@ main(int argc, char **argv)
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
+   CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
@@ -1910,6 +1950,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("load_depth")) ok &= test_load("load_depth", 0);
    if (ok && CASE_ON("nocol_depth")) ok &= test_nocol("nocol_depth", 0);
    if (ok && CASE_ON("nocol_stencil")) ok &= test_nocol("nocol_stencil", 1);
+   if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride");
    if (ok && CASE_ON("discard_both")) ok &= test_discard("discard_both", 1);
    if (ok && CASE_ON("discard_vs_only")) ok &= test_discard("discard_vs_only", 2);
    if (ok && CASE_ON("int_clear_rgba8ui")) ok &= test_int_clear("int_clear_rgba8ui", VK_FORMAT_R8G8B8A8_UINT, 4, 0x073264c8u);
@@ -1917,6 +1958,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("int_clear_r8ui")) ok &= test_int_clear("int_clear_r8ui", VK_FORMAT_R8_UINT, 1, 0xc8u);
    if (ok && CASE_ON("load_depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_load("load_depth16", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("load_stencil")) ok &= test_load("load_stencil", 1);
+   if (ok && CASE_ON("st_op_invert")) ok &= test_load("st_op_invert", 3);
+   if (ok && CASE_ON("st_op_decwrap")) ok &= test_load("st_op_decwrap", 4);
    if (ok && CASE_ON("load_colour_f16")) { g_colfmt = VK_FORMAT_R16G16B16A16_SFLOAT; g_colbpp = 8; ok &= test_load("load_colour_f16", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
    if (ok && CASE_ON("load_colour_a2b10")) { g_colfmt = VK_FORMAT_A2B10G10R10_UNORM_PACK32; ok &= test_load("load_colour_a2b10", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; }
    if (ok && CASE_ON("depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
