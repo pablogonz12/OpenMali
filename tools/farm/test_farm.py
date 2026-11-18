@@ -1263,6 +1263,18 @@ class T(unittest.TestCase):
         self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
         self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
 
+    def test_supersede_all_suites_same_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        new = mk("new", commit="z", seq=5)
+        cases, bench, daily, other_ref, head, sweep, auto = (mk("c", suite="cases"), mk("b", suite="bench"), mk("d", suite="daily"),
+            mk("o", suite="cases", ref="lane/y"), mk("h", suite="cases", ref="HEAD"), mk("s", suite="sweep"), mk("a", suite="bench", auto=True))
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        got = L.supersede_old_gates(new, [cases, bench, daily, other_ref, head, sweep, auto], lambda o, n: True)
+        self.assertEqual(sorted(g[0] for g in got), ["b", "c", "d"])
+        self.assertEqual(other_ref["parts"]["v13"]["state"], "pending")
+        self.assertEqual(L.supersede_old_gates(dict(new, ref="HEAD"), [mk("c2", suite="cases", ref="HEAD")], lambda o, n: True), [])
+
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
         g = L.new_job("b", "3" * 40, False, "smoke", ["v11"], {}, "t")
