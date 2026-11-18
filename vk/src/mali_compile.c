@@ -182,6 +182,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
       blake3_hasher_update(&h, L->dyn_start, sizeof L->dyn_start);
       blake3_hasher_update(&h, &L->push_size, sizeof L->push_size);
+      blake3_hasher_update(&h, &L->robust_access, sizeof L->robust_access);
       for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
          blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
          blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);

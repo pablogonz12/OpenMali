@@ -256,6 +256,21 @@ test_compile(unsigned arch)
    r = mali_compile(&o, &c, err, sizeof err);
    CHECK(r == 0, "comp compile: %s", err);
    if (r == 0) { CHECK(c.bin_size > 0 && c.ubo_count >= 1 && c.push_const_bytes == 4, "comp ubo %u push %u", c.ubo_count, c.push_const_bytes); mali_compiled_free(&c); }
+   /* robust_access (robustBufferAccess2/robustImageAccess2 lowering, default off): nir_lower_robust_access runs and inserts
+    * get_ssbo_size/get_ubo_size queries, which the backend cannot do yet -> the compile is refused cleanly (not an assert). The
+    * features stay unadvertised until the size lowering exists. */
+   {
+      struct mali_compile_layout rl = fl.c;
+      rl.robust_access = 1;
+      struct mali_compiled cr;
+      o.layout = &rl;
+      err[0] = 0;
+      CHECK(mali_compile(&o, &cr, err, sizeof err) != 0 && strstr(err, "get_ssbo_size"), "robust compute with SSBO/UBO must be refused until size queries exist: %s", err);
+      o.layout = &fl.c;
+      err[0] = 0;
+      CHECK(mali_compile(&o, &cr, err, sizeof err) == 0, "default (robust off) compute still compiles: %s", err);
+      mali_compiled_free(&cr);
+   }
    /* without layout the old descriptor-free path still compiles the plain shaders */
    free(fs.w); free(cs.w);
    vk_descriptor_set_layout_unref(&g_dev, &l0->vk);
