@@ -83,7 +83,7 @@ meta_alloc(void *u, size_t size, size_t align, uint64_t *va)
 {
    struct mali_hwctx *h = u;
    struct mali_bo bo;
-   if (h->dev && mali_device_pdev(h->dev)->backend->bo_alloc(h->dev->kdev, size + META_HDR, 0, &bo) != 0)
+   if (h->dev && mali_device_pdev(h->dev)->backend->bo_alloc(h->dev->kdev, size + META_HDR, MALI_BO_COH, &bo) != 0)
       return NULL;
    memcpy(bo.cpu, &bo, sizeof bo);
    *va = bo.gpu_va + META_HDR;
