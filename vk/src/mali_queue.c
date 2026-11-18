@@ -501,18 +501,20 @@ mali_present_fence_ok(struct mali_device *dev)
    return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
 }
 
-static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit);
+static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);
 
-/* A failed submission still signals what it was to signal: waiters (a present's acquire, a fence wait) would
- * otherwise block on a sync that nothing completes. The queue is lost on these paths, so the waiters then
- * observe DEVICE_LOST instead of hanging. */
+/* A submission that loses the queue still signals what it was to signal, except the signals that already took the
+ * GPU fence (index < imported): those complete with the work. Waiters (a present's acquire, a fence wait) would
+ * otherwise block on a sync that nothing completes; with the queue lost they then observe DEVICE_LOST instead of
+ * hanging. A failure that does not lose the queue signals nothing (the work may still be pending). */
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
-   VkResult res = mali_queue_submit_impl(vq, submit);
-   if (res != VK_SUCCESS) {
+   uint32_t imported = 0;
+   VkResult res = mali_queue_submit_impl(vq, submit, &imported);
+   if (res != VK_SUCCESS && vk_queue_is_lost(vq)) {
       struct vk_device *vkdev = vq->base.device;
-      for (uint32_t i = 0; i < submit->signal_count; i++) {
+      for (uint32_t i = imported; i < submit->signal_count; i++) {
          VkResult sr = vk_sync_signal(vkdev, submit->signals[i].sync, submit->signals[i].signal_value);
          (void)sr; /* best effort: the queue is lost already */
       }
@@ -521,7 +523,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 }
 
 static VkResult
-mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit)
+mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported)
 {
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
@@ -550,7 +552,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit)
       }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
       if (r != VK_SUCCESS)
-         return r;
+         return vk_queue_set_lost(vq, "queue wait failed: %d", r);
    }
 
    double p1 = prof_now();
@@ -583,8 +585,12 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit)
          container_of(s, struct mali_sync, vk)->owner = vq;
          pthread_mutex_unlock(&dev->sync_lock);
       }
+      if (res == VK_SUCCESS)
+         *imported = i + 1;
    }
    close(fd);
+   if (res != VK_SUCCESS)
+      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;

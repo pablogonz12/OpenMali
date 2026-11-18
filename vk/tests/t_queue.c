@@ -653,6 +653,8 @@ test_wsiimg(void)
    ci.pNext = &me;
    VkImage ex = VK_NULL_HANDLE;
    CHECK(CreateImage(dev, &ci, NULL, &ex) == VK_SUCCESS, "explicit layout with the image's own pitch");
+   pl.rowPitch = 0;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT, "explicit zero row pitch");
    pl.rowPitch = lay.rowPitch + 64;
    CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT, "foreign row pitch");
    pl.rowPitch = lay.rowPitch;
@@ -699,17 +701,21 @@ test_failsignal(void)
    int n = e ? atoi(e) : 0;
    CHECK(n > 0, "MALI_FAULT_INJECT not set");
    uint64_t last = 0;
+   VkResult failed = VK_SUCCESS;
    for (int i = 0; i < n + 20; i++) {
       uint64_t sv = i + 1;
       VkTimelineSemaphoreSubmitInfo tsi = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
                                            .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &sv};
       VkSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tsi, .signalSemaphoreCount = 1,
                         .pSignalSemaphores = &t};
-      if (QueueSubmit(queue, 1, &s, VK_NULL_HANDLE) != VK_SUCCESS)
+      failed = QueueSubmit(queue, 1, &s, VK_NULL_HANDLE);
+      if (failed != VK_SUCCESS)
          break;
       last = sv;
    }
-   CHECK(last + 1 >= (uint64_t)n, "fault never reached (%llu submissions)", (unsigned long long)last);
+   CHECK(failed == VK_ERROR_DEVICE_LOST, "fault injection must fail a submission with DEVICE_LOST, got %d after %llu submissions",
+         failed, (unsigned long long)last);
+   last++; /* the value the failed submission was to signal */
    VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &t,
                              .pValues = &last};
    double t0 = now_us();

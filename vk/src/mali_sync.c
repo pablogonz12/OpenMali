@@ -9,8 +9,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MALI_SYNC_EXPORT_WAIT_S 5 /* how long an export waits for a still-queued signal operation */
-
 static uint64_t
 now_ns(void)
 {
@@ -196,19 +194,21 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
    int d = -1;
 
    pthread_mutex_lock(&dev->sync_lock);
-   /* The signal operation may still be queued behind the runtime's submit thread (DEFERRED mode): fd < 0 and not
-    * signalled means "pending", not "already signalled". Exporting -1 then would let the compositor sample a
-    * half-drawn buffer. Wait for the submission (bounded: an export without a pending signal is invalid usage). */
-   if (s->fd < 0 && !s->signaled) {
+   /* The signal operation may still be queued behind the runtime's submit thread: fd < 0 and not signalled means
+    * "submitted but not yet handed to the driver" (a signal op that was never submitted is invalid usage, and the
+    * driver cannot tell the two apart), not "already signalled". Exporting -1 then would let the compositor sample a
+    * half-drawn buffer. Wait for the submission with no fixed deadline (dependencies may legitimately take long);
+    * the predicate is rechecked under the lock on every wake and only device loss ends the wait early. */
+   while (s->fd < 0 && !s->signaled) {
+      if (vk_device_is_lost(vk) || mali_device_pdev(dev)->backend->device_lost(dev->kdev)) {
+         pthread_mutex_unlock(&dev->sync_lock);
+         return VK_ERROR_DEVICE_LOST;
+      }
       struct timespec ts;
       clock_gettime(CLOCK_MONOTONIC, &ts); /* sync_cv is a CLOCK_MONOTONIC condvar (mali_queue.c) */
-      ts.tv_sec += MALI_SYNC_EXPORT_WAIT_S;
-      while (s->fd < 0 && !s->signaled) {
-         if (pthread_cond_timedwait(&dev->sync_cv, &dev->sync_lock, &ts) == ETIMEDOUT) {
-            pthread_mutex_unlock(&dev->sync_lock);
-            return vk_error(vk, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-         }
-      }
+      ts.tv_nsec += 100 * 1000 * 1000;
+      if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+      pthread_cond_timedwait(&dev->sync_cv, &dev->sync_lock, &ts);
    }
    if (s->fd >= 0) {
       d = fcntl(s->fd, F_DUPFD_CLOEXEC, 3);

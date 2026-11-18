@@ -334,7 +334,8 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
-   uint64_t explicit_pitch = 0;   /* VkImageDrmFormatModifierExplicitCreateInfoEXT row pitch, 0 = none */
+   bool has_explicit = false;
+   uint64_t explicit_pitch = 0;   /* VkImageDrmFormatModifierExplicitCreateInfoEXT row pitch (must be non-zero when has_explicit) */
    if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
       /* Linear is the only modifier (mali_wsi_modifier): the request must allow it, and an explicit layout must
        * describe a single plane we can honour (offset 0; row pitch is the layout's, so a different one is refused). */
@@ -347,6 +348,7 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
              me->pPlaneLayouts[0].offset != 0)
             return vk_error(dev, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
          explicit_pitch = me->pPlaneLayouts[0].rowPitch;
+         has_explicit = true;
       } else {
          bool ok = false;
          if (ml)
@@ -361,7 +363,7 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
       vk_image_destroy(&dev->vk, alloc, &img->vk);
       return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
    }
-   if (explicit_pitch && lay.plane[0].slice[0].row_stride != explicit_pitch) {
+   if (has_explicit && lay.plane[0].slice[0].row_stride != explicit_pitch) {
       vk_image_destroy(&dev->vk, alloc, &img->vk);
       return vk_error(dev, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
    }
