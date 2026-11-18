@@ -237,7 +237,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
                            .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
    /* Exported VkDeviceMemory (swapchain images) is lazy like every other VkDeviceMemory: the GPU writes it and nothing on the CPU has touched it
     * until vkMapMemory (bo_host_touch). Before this, 4 swapchain dma-bufs were MEM_SYNCed (a real cache op on an imported dma-buf) at every submit. */
-   bo->host_lazy = (flags & (MALI_BO_HOSTLAZY | MALI_BO_EXPORT)) != 0;
+   bo->host_lazy = (flags & MALI_BO_HOSTLAZY) || ((flags & MALI_BO_EXPORT) && !(flags & MALI_BO_CACHED));
    bo->hot = (flags & MALI_BO_HOT) != 0;
    track_bo(k, bo, true);
    return 0;
