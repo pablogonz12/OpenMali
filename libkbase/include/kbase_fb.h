@@ -22,7 +22,20 @@ enum kb_zs_format { KB_ZS_NONE = 0, KB_ZS_D32F = 1, KB_ZS_D24X8 = 2, KB_ZS_D16 =
 #define KB_FB_DESC_SIZE_ZS    (KB_FB_FBD_SIZE + KB_FB_ZSEXT_SIZE + KB_FB_RTD_SIZE)   /* 256 */
 unsigned kb_zs_bytes_per_pixel(enum kb_zs_format f);
 
+/* Colour targets beyond RT0 (up to 3 more, descriptors follow RT0, 64 B each). Same encoding as the rt_* fields of RT0. */
+#define KB_FB_MAX_EXTRA_RT 3u
+#define KB_FB_DESC_SIZE_MAX (KB_FB_DESC_SIZE_ZS + KB_FB_MAX_EXTRA_RT * KB_FB_RTD_SIZE)
+struct kb_fb_rt {
+	uint64_t va;
+	uint32_t row_stride, surface_stride;
+	unsigned internal, wb, swizzle;
+	unsigned internal_offset;     /* bytes into the tile colour buffer, multiple of 16 */
+	uint32_t clear[4];
+};
+
 struct kb_fb_params {
+	unsigned rt_extra_count;      /* 0..KB_FB_MAX_EXTRA_RT */
+	struct kb_fb_rt rt_extra[KB_FB_MAX_EXTRA_RT];
 	unsigned width, height;       /* pixels, 1..65536 */
 	unsigned rt_none;             /* no colour attachment: the render target is declared but Write Enable is off, no buffer */
 	uint64_t rt_gpu_va;           /* colour buffer, 64-byte aligned */
