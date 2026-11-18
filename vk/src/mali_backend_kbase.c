@@ -456,7 +456,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
       unsigned n = 0;
-      for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x\n", k->bos[i]->size, k->bos[i]->flags); }
+      for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy && !(k->bos[i]->flags & KB_BO_NOCOH)) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x hot %d dmabuf %d\n", k->bos[i]->size, k->bos[i]->flags, k->bos[i]->hot, k->bos[i]->dmabuf_fd >= 0); }
       fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
    }
    for (unsigned i = 0; i < k->nbos; i++) {
