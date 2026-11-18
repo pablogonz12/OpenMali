@@ -291,14 +291,14 @@ trim_cmp(const void *a, const void *b)
  * exceed max_bytes (0 = no limit), deletes the least recently used ones (mtime; a hit refreshes it) down to 90% of the cap. Safe to run in
  * several processes at once: unlink of a vanished file is ignored and a reader that already opened an entry keeps its data. */
 void
-mali_compile_cache_trim(const char *dir, uint64_t max_bytes)
+mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
 {
    if (!cache_dir_trusted(dir)) return;
    DIR *d = opendir(dir);
    if (!d) return;
    size_t cap = 256, n = 0;
    struct trim_ent *v = malloc(cap * sizeof *v);
-   uint64_t total = 0;
+   unsigned long long total = 0;
    time_t now = time(NULL);
    struct dirent *e;
    while (v && (e = readdir(d))) {
