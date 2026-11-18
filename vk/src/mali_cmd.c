@@ -1098,12 +1098,62 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          partial = true;
    if (partial || f->ndraws) {
       /* after a draw, or a sub-rectangle: a constant-colour quad (preload.frag kind 19: the clear words are the format's raw shader output) per rect.
-       * Colour only, single-sampled, layer 0; depth/stencil clears keep the loadOp-patch path above (whole area, before the first draw). */
-      for (uint32_t i = 0; i < na; i++)
-         if (att[i].aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-            unsupported(cmd, partial ? "partial CmdClearAttachments of depth/stencil" : "CmdClearAttachments of depth/stencil after a draw (needs a quad draw)");
+       * Single-sampled, layer 0; whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
+      /* depth/stencil: fixed function, no shader read. The constant-colour quad with colour writes masked; the depth value is the viewport
+       * min=max depth (depth test ALWAYS + write, clip off), the stencil value a REPLACE-always reference. */
+      for (uint32_t i = 0; i < na; i++) {
+         VkImageAspectFlags a = att[i].aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+         if (!a)
+            continue;
+         bool zc = a & VK_IMAGE_ASPECT_DEPTH_BIT, sc = a & VK_IMAGE_ASPECT_STENCIL_BIT;
+         if ((zc && !f->has_zs) || (sc && !f->has_st) || f->samples != 1) {
+            unsupported(cmd, "CmdClearAttachments depth/stencil quad: no single-sampled attachment of that aspect");
             return;
          }
+         for (uint32_t r = 0; r < nr; r++) {
+            if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
+               unsupported(cmd, "CmdClearAttachments depth/stencil quad: layers");
+               return;
+            }
+            struct mali_preload_src ps;
+            memset(&ps, 0, sizeof ps);
+            ps.arg = 19;
+            struct mali_draw d;
+            if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
+               unsupported(cmd, "CmdClearAttachments depth/stencil quad (preload shader)");
+               return;
+            }
+            d.dirty = MALI_D_ALL;
+            d.fx.set = true;
+            d.fx.front_ccw = true;
+            d.fx.depth_clip = false;
+            d.fx.wmask = 0;
+            d.fx.src_c = d.fx.src_a = 1;
+            float dv = att[i].clearValue.depthStencil.depth;
+            d.gfx.depth_test = zc;
+            d.gfx.depth_write = zc;
+            if (sc) {
+               d.fx.st_test = true;
+               d.fx.st_f = d.fx.st_b = (struct mali_st_face){ 7 /* ALWAYS */, 2, 2, 2 /* REPLACE */, 0xff, 0xff,
+                                                              (uint8_t)att[i].clearValue.depthStencil.stencil };
+            }
+            d.sc[0] = rects[r].rect.offset.x; d.sc[1] = rects[r].rect.offset.y;
+            d.sc[2] = (int32_t)rects[r].rect.extent.width; d.sc[3] = (int32_t)rects[r].rect.extent.height;
+            d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3];
+            d.vp[4] = d.vp[5] = zc ? dv : 0.0f;
+            if (mali_frame_add_draw(f, &d)) {
+               vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+               return;
+            }
+         }
+      }
+      bool has_c = false;
+      for (uint32_t i = 0; i < na; i++)
+         has_c |= !!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT);
+      if (!has_c) {
+         cmd->dirty = MALI_D_ALL;
+         return;
+      }
       if (!f->has_colour || f->samples != 1) {
          unsupported(cmd, "CmdClearAttachments quad: no single-sampled colour attachment");
          return;
