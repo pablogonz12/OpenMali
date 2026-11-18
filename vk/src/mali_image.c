@@ -210,7 +210,7 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    tex->w[1] = (w0 - 1) | ((h0 - 1) << 16);
    tex->w[2] = swz | ((unsigned)interleave << 12) | ((levels - 1) << 16);
    {
-      const unsigned minlod = v->storage ? 0 : (unsigned)(fmaxf(v->min_lod - 0.0f, 0.0f) * 256.0f);
+      const unsigned minlod = v->storage ? 0 : (unsigned)(fmaxf(v->min_lod - (float)v->base_level, 0.0f) * 256.0f);   /* EXT_image_view_min_lod: minLod counts from image level 0, the descriptor from the view's first level */
       const unsigned maxlod = (levels - 1) * 256u;
       unsigned log2s = d->samples == 4 ? 2 : 0;
       tex->w[3] = (minlod & 0x1fff) | ((dim == 3 ? 0u : log2s) << 13) | ((maxlod & 0x1fff) << 16);

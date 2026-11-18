@@ -196,6 +196,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
+      .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
@@ -247,6 +248,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .maintenance6 = true,
+      .minLod = true,              /* t_image view_min_lod */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
