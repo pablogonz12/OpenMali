@@ -16,7 +16,7 @@ B=${MESA_BUILD:-$D/third_party/build-vk}
 # Native targets prefer the Mesa tree configured with -Dplatforms=wayland,x11 (README: "X11 WSI") when it exists, so the host ICD has
 # VK_KHR_xcb_surface; without it the X11 tests skip. Cross targets and an explicit MESA_BUILD are never overridden.
 case ${MALI_TARGET:-native} in
-   native|native-san) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
+   native|native-san|native-cov) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
 esac
 OUT=$V/out/${MALI_TARGET:-native}
 GEN=$OUT/gen
@@ -46,6 +46,9 @@ LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[
 CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 # MALI_SAN=1: ASAN+UBSAN driver objects (use with LD_PRELOAD=$(gcc -print-file-name=libasan.so) and MALI_TARGET=native-san)
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
+
+# MALI_COV=1: gcov instrumented driver objects (MALI_TARGET=native-cov; see tools/coverage.sh). -O0 so line counts map to source.
+if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
 
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
