@@ -286,6 +286,9 @@ def cache_path(ph, commit, so_sha, mode):
     return os.path.join(RAW, f"{ph.alias}-{commit}-{(so_sha or 'x')[:8]}-{mode}.jsonl")
 
 
+DIALOG_RE = re.compile(r"permissioncontroller|GrantPermissions|permission", re.I)
+
+
 def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
     t_start = time.time()
     why = ph.admit()
@@ -293,6 +296,13 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         print(f"{ph.alias}: PENDING: {why}")
         return [("pending", ph.alias, why)]
     ok, foc = ph.focus_ok()
+    if not ok and DIALOG_RE.search(foc):                           # a system permission dialog (e.g. MediaDeck "Allow notifications?") is not the owner: BACK denies it
+        ph.adb("shell", "input keyevent KEYCODE_BACK")
+        time.sleep(2)
+        ok, foc = ph.focus_ok()
+        if not ok and DIALOG_RE.search(foc):
+            print(f"{ph.alias}: UI-BLOCKED: foreground dialog {foc}")
+            return [("blocked", ph.alias, "UI-BLOCKED: foreground dialog " + foc)]
     if not ok:
         print(f"{ph.alias}: PENDING: focus rule violated ({foc}); the owner is using the phone")
         return [("pending", ph.alias, "owner is using the phone: " + foc)]
