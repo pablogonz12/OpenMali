@@ -196,7 +196,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
 {
    struct kb_fb_params p;
 
-   if (!f->has_colour || !f->width || !f->height)
+   if (!f->width || !f->height)
       return -EINVAL;
    memset(&p, 0, sizeof p);
    p.width = f->width;
@@ -218,6 +218,9 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.clear_b = mali_unorm8(f->colour.clear_color[2]);
       p.clear_a = mali_unorm8(f->colour.clear_color[3]);
    }
+   p.rt_none = !f->has_colour;
+   if (p.rt_none)
+      p.row_stride = 0;
    p.tiler_va = tiler_ctx_va;
    p.sample_locations_va = sample_locations_va;
    bool msaa = f->samples == 4;
