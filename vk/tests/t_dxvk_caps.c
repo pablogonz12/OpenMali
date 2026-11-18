@@ -148,7 +148,7 @@ main(int argc, char **argv)
       GetPhysicalDeviceFeatures2(pd, &q);
       int adv = 0;
       for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state2");
-      CHECK(adv == (int)eds2.extendedDynamicState2, "VK_EXT_extended_dynamic_state2 advertised=%d but extendedDynamicState2=%u", adv, eds2.extendedDynamicState2);
+      CHECK(adv == 1 && eds2.extendedDynamicState2 == 1, "VK_EXT_extended_dynamic_state2 advertised=%d extendedDynamicState2=%u (want 1/1)", adv, eds2.extendedDynamicState2);
       /* the driver does not honour these: logic op is unsupported() in the draw snapshot, there is no tessellation */
       CHECK(!eds2.extendedDynamicState2LogicOp && !eds2.extendedDynamicState2PatchControlPoints, "EDS2 logicOp=%u patchControlPoints=%u must stay false", eds2.extendedDynamicState2LogicOp, eds2.extendedDynamicState2PatchControlPoints);
    }
