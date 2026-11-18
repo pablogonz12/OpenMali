@@ -10,6 +10,7 @@ import argparse, fcntl, hashlib, json, os, re, shutil, subprocess, sys, threadin
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import farmlib as L
+import holdlib as H                                    # noqa: E402
 import smokeroute                                    # noqa: E402
 import gate                                            # noqa: E402
 import benchlib as B                                   # noqa: E402
@@ -499,11 +500,12 @@ class Farm:
         return True, ""
 
     def qrestore(self, dev):
+        """-> (rc, output) of the quick qrestore (the baseline: session IDLE, env empty, vkBridge/hudDeck true)"""
         if self.fake:
-            return
+            return 0, "fake"
         if self.shell_route(dev):                                       # a killed shell-route run may have left the screen dimmed
             L.sh([sys.executable, "-I", os.path.join(HERE, "shellroute.py"), "undim", "--lock", dev["lock"]], 60, env=self.phone_env(dev, {"SHELLROUTE_SERIAL": dev["serial"]}))
-        L.sh([os.path.join(self.quick_root, "scripts", "quick", "qrestore"), dev["lock"]], 90, env=self.phone_env(dev))
+        return L.sh([os.path.join(self.quick_root, "scripts", "quick", "qrestore"), dev["lock"]], 90, env=self.phone_env(dev))
 
     # ---------- suites -> dict(verdict, counts, new_failures, newly_passing, notes, extra)
     def baseline(self, job, dev):
@@ -538,7 +540,7 @@ class Farm:
         if self.is_disabled(dev):
             self.stop_reason[al] = "disabled by owner"
             return "stop"
-        if al in self.sweep_run and self.real_pending(dev["class"]):         # idle sweep yields to any real job
+        if al in self.sweep_run and (self.real_pending(dev["class"]) or self.hold_next(al)):         # idle sweep yields to any real job
             self.stop_reason[al] = "preempted"
             return "stop"
         rj = getattr(self, "running_job", {}).get(al)
@@ -1207,6 +1209,86 @@ class Farm:
                 "newly_passing": [], "notes": "; ".join(M.digest_lines(rows))[:300]}
 
     # ---------- one part of a job on one device
+    # ---------- farm hold: agents' exclusive phone holds, queued with the jobs (holdlib.py)
+    def hold_next(self, alias):
+        q = H.queued(H.list_holds(), alias)
+        return q[0] if q else None
+
+    def hold_cleanup(self, dev):
+        """end of a hold: no steam/steamwebhelper/gamescope-wl left and the baseline restored (qrestore). -> (clean, note)"""
+        if self.fake:
+            self.qrestore(dev)
+            return True, "fake"
+        bad = "ps -A | grep -E 'steam|steamwebhelper|gamescope-wl' | grep -v grep"
+        note = ""
+        for attempt in (1, 2):
+            rc, out = self.qrestore(dev)
+            _, ps = self.adb(dev, "shell", bad, timeout=30)
+            left = [l for l in ps.splitlines() if l.strip()]
+            if not left:
+                return rc == 0 and "PROBLEM" not in out, (out.strip().splitlines() or [""])[-1][:120]
+            self.adb(dev, "shell", bad + " | awk '{print $2}' | xargs -r kill -9", timeout=30)
+            time.sleep(2)
+            note = f"killed leftover: {left[0].strip()[:60]}"
+        rc, out = self.qrestore(dev)
+        _, ps = self.adb(dev, "shell", bad, timeout=30)
+        return (not ps.strip()) and "PROBLEM" not in out, note + (" STILL RUNNING" if ps.strip() else "")
+
+    def run_hold(self, hid, alias):
+        dev = self.devs[alias]
+        lock = L.PhoneLock(dev, self.fake)
+        h = L.read_json(H.path(hid))
+        def done(reason, **kw):
+            h2 = L.read_json(H.path(hid))
+            h2.update(state="done", ended=L.now(), reason=reason, **kw)
+            L.write_json(H.path(hid), h2)
+            log(f"{alias}: hold {hid} ended: {reason}" + (f" ({kw['clean_note']})" if kw.get("clean_note") else ""))
+            self.wake.set()
+        if H.released(hid) or H.age(hid) > H.HB_STALE:
+            return done("cancelled while queued" if H.released(hid) else "caller lost while queued")
+        if self.is_disabled(dev):
+            self.cool[alias] = time.time() + (0 if self.fake else 30)
+            return
+        if not lock.acquire():
+            self.cool[alias] = time.time() + (0 if self.fake else 3)          # the old flock users (qsafe, menubench) go first, we retry soon
+            return
+        touched = False
+        try:
+            gs, gwhy, _ = self.gate_check(dev)
+            if gs != "ok":
+                log(f"{alias}: gated ({gs}: {gwhy}); hold {hid} stays queued")
+                self.cool[alias] = time.time() + (0 if self.fake else 60)
+                return
+            h = L.read_json(H.path(hid))
+            touched = True
+            now = time.time()
+            h.update(state="active", started=L.now(), deadline=now + h["max_s"], lock=dev["lock"], serial=self.tid.get(alias) or dev["serial"])
+            L.write_json(H.path(hid), h)
+            log(f"{alias}: hold {hid} active (max {h['max_s']}s, waited {int(now - h['seq'] / 1e9)}s)")
+            while True:
+                why = H.end_reason(h, H.age(hid), H.released(hid), disabled=self.is_disabled(dev))
+                if why:
+                    break
+                time.sleep(0.2 if self.fake else 2)
+            clean, note = self.hold_cleanup(dev)
+            done(why, clean=clean, clean_note=note)
+        except Exception:
+            log(f"{alias}: hold {hid} error: " + traceback.format_exc()[-300:])
+            if touched:
+                try:
+                    clean, note = self.hold_cleanup(dev)
+                except Exception:
+                    clean, note = False, "cleanup failed"
+                done("farmd error", clean=clean, clean_note=note)
+        finally:
+            lock.release()
+            self.wake.set()
+
+    def start_hold(self, alias):
+        t = threading.Thread(target=self.run_hold, args=(self.hold_next(alias)["id"], alias), name=f"hold/{alias}", daemon=False)
+        self.threads[alias] = t
+        t.start()
+
     def run_part(self, jid, cls, alias):
         try:
             self._run_part(jid, cls, alias)
@@ -1627,6 +1709,11 @@ class Farm:
                 self.prebuild_t = threading.Thread(target=self.build, args=(nxt,), daemon=True, name="prebuild")
                 self.prebuild_t.start()
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
+        for h in H.list_holds():                                                  # farmd restarted mid-hold: its lock died with it
+            if h["state"] == "active" and not any(t.name == "hold/" + h["device"] for t in self.threads.values()):
+                h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False)
+                L.write_json(H.path(h["id"]), h)
+        H.gc()
         for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
                 if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls) for t in self.threads.values()):
@@ -1636,14 +1723,21 @@ class Farm:
                     continue
                 for al, d in self.devs.items():
                     if d["class"] == cls and al in att and B.pin_ok(j, al) and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
+                        hn = self.hold_next(al)
+                        if hn and H.key(hn) < H.key(j):                          # an agent's hold queued before this job (or at a better priority) goes first
+                            self.start_hold(al)
+                            continue
                         t = threading.Thread(target=self.run_part, args=(j["id"], cls, al), name=f"{j['id']}/{cls}/{al}", daemon=False)
                         self.threads[al] = t
                         t.start()
                         break
+        for al in self.devs:                                             # holds on phones with no job to run
+            if al in att and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0) and self.hold_next(al):
+                self.start_hold(al)
         for al, d in self.devs.items():                                  # nothing queued for this class + phone free: idle sweep
             cls = d["class"]
             if (al in att and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and cls not in self.sweeping
-                    and time.time() >= self.cool.get(al, 0) and self.sweep_on(d) and not self.real_pending(cls)):
+                    and time.time() >= self.cool.get(al, 0) and self.sweep_on(d) and not self.real_pending(cls) and not self.hold_next(al)):
                 t = threading.Thread(target=self.run_sweep, args=(al,), name=f"sweep/{cls}/{al}", daemon=False)
                 self.threads[al] = t
                 self.sweeping[cls] = al
