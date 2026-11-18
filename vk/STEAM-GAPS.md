@@ -180,6 +180,12 @@ Nothing here is confirmed on hardware yet.
   draw_indirect_count, index_type_uint8, provoking_vertex, conditional_rendering, color_write_enable. See Round 5.
 - Context creation cannot be predicted by name (dummy xfb buffer, descriptor init, first batch): that is a phone check.
 
+## Round 9: zink on poco-x4 hardware (2026-11-18 08:41, head 7551451, glibc-wsi ICD sha 6b6d9e76, `MALI_WSI=sw`, steam-mode session, DISPLAY=:0)
+**Hardware-confirmed:** `glxinfo -B` with `MESA_LOADER_DRIVER_OVERRIDE=zink` on our ICD (outside the vkbridge; only the test process sees it) **creates the zink screen and a context**: `direct rendering: Yes`, renderer `zink Vulkan 1.3(Mali-G610 MC6 (mali-own) (MESA_PANVK))`, OpenGL 2.1 (compat; core 0.0), ES 2.0, 3742 MB. Only message: `WARNING: ... base Zink requirements: feats.features.logicOp have_EXT_line_rasterization` (`zink_screen.c:2834`, warning only, not a refusal). That is the Round 5 GL level, so the next GL gate is not a failure but the missing optional extensions listed in Round 8.
+- `eglinfo` needs `-p x11` (it has no positional platform); the GBM path still needs `VK_EXT_physical_device_drm`.
+- A JSON whose `library_path` is on `/storage/emulated/0/...` fails with `ZINK: vkCreateInstance failed (VK_ERROR_INCOMPATIBLE_DRIVER)` (noexec fuse mount); the library must sit in the guest's own filesystem (`/tmp/x11wsi` persists across sessions).
+**Steam burst: not on our driver.** `droiddeckctl env set` of `VK_DRIVER_FILES` is overwritten by the session script, and `BL_VK_DRIVER=/tmp/x11wsi/icd.json` is read (`== vulkan driver: imported /tmp/x11wsi/libvulkan_mali.so`) but the session then prints `== vulkan driver: Mali bridge` and gamescope, Steam and the web helpers run on the bridge (no process maps our library). Killing the session's `steam` ends the session. A real burst needs the bridge preference (`vkBridge`) off for that session: not tried.
+
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
 ```
