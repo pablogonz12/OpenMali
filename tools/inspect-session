@@ -131,6 +131,8 @@ def run_ctl(args, serial, timeout=60):
 
 
 def adb_cat(serial, path):
+    if not serial:
+        return None
     try:
         p = subprocess.run(["adb", "-s", serial, "shell", "cat", path],
                            capture_output=True, text=True, timeout=15, check=False)
@@ -179,6 +181,9 @@ def collect(serial):
                                            "output", "suspended")}
     r["state"]["running"] = True
     r["state"]["build"] = st.get("build")
+    # --serial omitted: droiddeckctl picked the device; use its serial for the adb reads
+    serial = serial or st.get("deviceSerial")
+    r["serial"] = serial
     en, _ = run_ctl(["env", "list"], serial)
     r["env"] = {k: (en or {}).get(k) for k in ("active", "pending", "persistent")}
     g, err = run_ctl(["guest", "--timeout", "30", "--", "python3", "-c", GUEST_SCRIPT], serial, 60)
