@@ -425,7 +425,7 @@ test_firstinst(void)
 static int
 test_divisor(void)
 {
-   if (!g_div) { printf("{\"test\":\"divisor\",\"skipped\":\"vertexAttributeInstanceRateDivisor not advertised\",\"ok\":true}\n"); return 1; }
+   if (!g_div && !g_div0) { printf("{\"test\":\"divisor\",\"skipped\":\"vertexAttributeInstanceRateDivisor not advertised\",\"ok\":true}\n"); return 1; }
    CHECK(g_div_max >= 0xffff, "maxVertexAttribDivisor %u", g_div_max);
    /* {divisor, firstInstance, instances}. Second block: firstInstance != 0. Hardware (v10, 2026-11-18): the draw's INSTANCE_OFFSET is added to the instance
     * index BEFORE the divide, element = (firstInstance + i) / divisor, not Vulkan's firstInstance + i / divisor. That is why supportsNonZeroFirstInstance
@@ -440,6 +440,7 @@ test_divisor(void)
    memcpy(vb.p, vals, sizeof vals);
    for (unsigned c = 0; c < sizeof cs / sizeof *cs; c++) {
       const uint32_t d = cs[c][0], fi = cs[c][1], ni = cs[c][2];
+      if (d > 1 && !g_div) { printf("{\"test\":\"divisor\",\"divisor\":%u,\"skipped\":\"divisor > 1 not advertised (firstInstance semantics, see mali_physical_device.c)\",\"ok\":true}\n", d); continue; }
       if (d == 0 && !g_div0) { printf("{\"test\":\"divisor\",\"divisor\":0,\"skipped\":\"zero divisor not advertised\",\"ok\":true}\n"); continue; }
       struct tgt t;
       if (!tgt_create(&t)) return 0;
@@ -2395,7 +2396,7 @@ main(int argc, char **argv)
    g_lr_rect = flr.rectangularLines; g_lr_bres = flr.bresenhamLines; g_lr_smooth = flr.smoothLines;
    g_lr_stip_rect = flr.stippledRectangularLines; g_lr_stip_bres = flr.stippledBresenhamLines; g_lr_stip_smooth = flr.stippledSmoothLines;
    g_div = fdv.vertexAttributeInstanceRateDivisor; g_div0 = fdv.vertexAttributeInstanceRateZeroDivisor;
-   if (g_div) {
+   if (g_div || g_div0) {
       VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT dvp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT};
       VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dvp};
       ((PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2"))(pd, &p2);
@@ -2458,7 +2459,7 @@ main(int argc, char **argv)
    VkPhysicalDeviceLineRasterizationFeaturesEXT elr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &edv, .rectangularLines = flr.rectangularLines};
    e2.pNext = &elr;
    const char *dexts[6]; uint32_t ndx = 0;
-   if (g_div) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
+   if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
