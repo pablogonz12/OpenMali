@@ -65,9 +65,9 @@ Host gamescope 3.17.0.
 | robustness2.nullDescriptor, timeline semaphore, external_memory_fd | hard | have | - |
 | **KHR_maintenance5** | hard | **have (round 4)** | done |
 | `have_KHR_maintenance1` extension flag (zink checks the extension, not the version) | base (warns) | **have (round 4)**: name advertised, `vkTrimCommandPoolKHR` called in `t_steam_caps` | done |
-| `logicOp` | base (warns) | missing; Mali blend descriptors have a logic-op mode | M |
+| `logicOp` | base (warns) | missing, NOT advertised: `mali_cmd.c:426` marks logic-op draws unsupported; needs the blend descriptor's logic-op (or a fragment-shader lowering) in `mali_cmd.c`/`mali_cs_emit.c`/`mali_pipeline.c` (other worker's files): note in `patches/zink-base-requirements.NOTE.md` | M |
 | `EXT_custom_border_color` | base (warns) | **have (round 4)**: custom colour + without-format; the runtime fills `border_color_value`, the sampler descriptor words 4..7 are the same path as the fixed colours. `t_vk_feat cbc` (creation + draw on the fake backend; the border pixels are checked on hardware only, NOT yet run) | done (pixel check pending) |
-| `EXT_line_rasterization` | base (warns) | missing; only part of the modes maps to hardware | M |
+| `EXT_line_rasterization` | base (warns) | missing, NOT advertised: the draw path ignores the line mode (always the hardware's default lines, width from `lineWidth`); the honest minimum is `rectangularLines` only, which needs a hardware pixel check first. Stippled/Bresenham/smooth have no hardware path (zink then falls back to its own emulation) | M |
 | `EXT_physical_device_drm` (render node major/minor) | needed with a DRM render fd: zink 26.2.x `choose_pdev` fails without it (`failed to choose pdev`; 26.3 falls back for a single device). On the phone drisw passes fd=-1 | missing on purpose (no render node) | S |
 | X11 surface (`VK_KHR_xcb_surface`) | only for the kopper route (DRI3); the phone's drisw path needs none | host x86 build lacks it, a64 build has it | S (build flag) |
 | not measured yet | VS-only pipelines (rasterizer discard, unsupported in `mali_pipeline.c`), geometry shaders (cap the GL version), `A8_UNORM_KHR`/`A1B5G5R5` formats | | |
