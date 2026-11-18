@@ -864,6 +864,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       case VK_FORMAT_B4G4R4A4_UNORM_PACK16: kind = 9; bpp = 2; break;
       case VK_FORMAT_R5G5B5A1_UNORM_PACK16: kind = 10; bpp = 2; break;
       case VK_FORMAT_B5G5R5A1_UNORM_PACK16: kind = 11; bpp = 2; break;
+      case VK_FORMAT_A1R5G5B5_UNORM_PACK16: kind = 10 | (1u << 18); bpp = 2; break;   /* A1R5G5B5: kind 10 with the alpha-rotate flag (preload.frag) */
       default: {
          unsigned rk, rbpp, rnc;
          if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {

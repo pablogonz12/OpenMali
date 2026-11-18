@@ -116,6 +116,7 @@ void main() {
          c = vec4(float(v >> 12), float((v >> 8) & 15u), float((v >> 4) & 15u), float(v & 15u)) / 15.0;
          if (k == 9u) c.rgb = c.bgr;
       } else {                                        // 10 = R5G5B5A1, 11 = B5G5R5A1
+         if ((p.flags & 0x40000u) != 0u) v = ((v & 0x7fffu) << 1) | (v >> 15);   // bit 18: A1R5G5B5 (alpha at bit 15) -> R5G5B5A1 layout
          c = vec4(float(v >> 11), float((v >> 6) & 31u), float((v >> 1) & 31u), float(v & 1u));
          c.rgb /= 31.0;
          if (k == 11u) c.rgb = c.bgr;

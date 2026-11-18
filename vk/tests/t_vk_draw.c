@@ -2032,6 +2032,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("load_colour_r32f")) { g_colfmt = VK_FORMAT_R32_SFLOAT; g_colbpp = 4; ok &= test_load("load_colour_r32f", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
    if (ok && CASE_ON("load_colour_rgba16uint")) { g_colfmt = VK_FORMAT_R16G16B16A16_UINT; g_colbpp = 8; ok &= test_load("load_colour_rgba16uint", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }   /* RAW-format preload (kinds 12..16) */
    if (ok && CASE_ON("load_colour_a2b10")) { g_colfmt = VK_FORMAT_A2B10G10R10_UNORM_PACK32; ok &= test_load("load_colour_a2b10", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; }
+   if (ok && CASE_ON("load_colour_a1r5")) { g_colfmt = VK_FORMAT_A1R5G5B5_UNORM_PACK16; g_colbpp = 2; ok &= test_load("load_colour_a1r5", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
    if (ok && CASE_ON("depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("depth32s8")) { g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT; ok &= test_two(1); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("stencil")) {
