@@ -140,3 +140,9 @@ sets it, `farm prio <job> <n>` changes it later. A new `smoke`/`daily` job cance
 suite, repo, env and `--only` whose commit is an ancestor of the new one (same branch line), for the classes the new job covers; running and
 finished parts are never touched. The line goes to stderr and `<state>/logs/farm-queue.log`. `--keep-old` on the new job opts out.
 `farm digest` prints `queue by class` (pending/running per GPU class) and every pending job with its position per class (`v11#3`).
+
+## Driver debug output of a cases job
+
+`farm submit ... --suite cases --env "MALI_PIPE_DBG=1 MALI_META_DBG=1"` (any `MALI_*_DBG` in the env, qdeqp route v10/v11): qdeqp.py keeps the dEQP
+stdout lines `Test case ...` and the driver's stderr lines (`mali_cmd: unsupported ...`, `mali_meta_vk: plan error`) of every chunk; farmd copies
+them to `<state>/logs/<run id>.dbg` (e.g. `20261118-050057-89a8bfd2-poco-x4-r0.dbg`). The QPA never carries them, the notes TSV only the CTS message.
