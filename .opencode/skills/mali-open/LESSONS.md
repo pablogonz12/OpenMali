@@ -12,3 +12,4 @@
 2026-11-18 [workflow] Never git stash in a worktree: the stash stack is shared by all worktrees of the repo; commit WIP on the branch instead (20261118-sweepfix)
 2026-11-18 [draw-path] Frames >3000 draws exhausted the 32 MiB arena (4.6KB/draw) -> NULL alloc -> DEVICE_LOST; fake backend reproduces it. Pool overflow BOs or 20k frames take 230ms. (t_vk_draw --only many_draws; bench2 cmf, commit 44fd974)
 2026-11-18 [perf] CMF cube fps x2 came from CPU submit: per-submit MEM_SYNC of internal BOs; v11 now keeps COHERENT_LOCAL only on VkDeviceMemory (vk/GPU-GAP.md)
+2026-11-18 [draw-path] sharing static descriptor blocks/FAUs between equal-state draws plus sparse driver sets cut CMF 3k submit 3.4 -> 1.26 ms; overflow BOs end DEVICE_LOST >7k (068a170)
