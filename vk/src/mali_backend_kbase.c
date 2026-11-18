@@ -199,7 +199,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       const char *ie = getenv("MALI_INT_NOCOH");   /* default: on for arch 11 only (v10/v13 keep it: the v13 tiler bins nothing without it); =0/1 overrides */
       int_nocoh = ie ? ie[0] == '1' : k_int_nocoh_default;
    }
-   if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED)))
+   if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED | MALI_BO_COH)))
       flags |= MALI_BO_NOCOH;
    /* Why this is safe: CPU-side these BOs are write-combined (not CPU_CACHED), so kbase_sync_now() is a no-op for them (it returns early for
     * regions without KBASE_REG_CPU_CACHED); the WC buffer drains before the doorbell, and every frame CS starts with FLUSH_CACHE2 + WAIT. */

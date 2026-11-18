@@ -583,13 +583,13 @@ kick dev0 #3  (189 instructions)
   BO15 live len=0x6000 flags=0x100
   BO16 live len=0x6000 flags=0x100
   BO17 live len=0x1000 flags=0x8
-  BO18 live len=0x1000 flags=0x0
-  BO19 live len=0x1000 flags=0x0
-  BO20 live len=0x1000 flags=0x0
-  BO21 live len=0x1000 flags=0x0
-  BO22 live len=0x1000 flags=0x0
-  BO23 live len=0x1000 flags=0x0
-  BO24 live len=0x1000 flags=0x0
+  BO18 live len=0x1000 flags=0x800
+  BO19 live len=0x1000 flags=0x800
+  BO20 live len=0x1000 flags=0x800
+  BO21 live len=0x1000 flags=0x800
+  BO22 live len=0x1000 flags=0x800
+  BO23 live len=0x1000 flags=0x800
+  BO24 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -1055,13 +1055,13 @@ kick dev0 #5  (189 instructions)
   BO13 FREED len=0x40000 flags=0x100
   BO14 FREED len=0x1000 flags=0x0
   BO15 FREED len=0x6000 flags=0x100
-  BO18 FREED len=0x1000 flags=0x0
-  BO19 FREED len=0x1000 flags=0x0
-  BO20 FREED len=0x1000 flags=0x0
-  BO21 FREED len=0x1000 flags=0x0
-  BO22 FREED len=0x1000 flags=0x0
-  BO23 FREED len=0x1000 flags=0x0
-  BO24 FREED len=0x1000 flags=0x0
+  BO18 FREED len=0x1000 flags=0x800
+  BO19 FREED len=0x1000 flags=0x800
+  BO20 FREED len=0x1000 flags=0x800
+  BO21 FREED len=0x1000 flags=0x800
+  BO22 FREED len=0x1000 flags=0x800
+  BO23 FREED len=0x1000 flags=0x800
+  BO24 FREED len=0x1000 flags=0x800
   BO25 FREED len=0x1000 flags=0x0
   BO26 FREED len=0x1000 flags=0x0
   BO27 FREED len=0x1000 flags=0x8
@@ -1069,13 +1069,13 @@ kick dev0 #5  (189 instructions)
   BO29 live len=0x1000 flags=0x0
   BO30 live len=0x6000 flags=0x100
   BO31 live len=0x6000 flags=0x100
-  BO32 live len=0x1000 flags=0x0
-  BO33 live len=0x1000 flags=0x0
-  BO34 live len=0x1000 flags=0x0
-  BO35 live len=0x1000 flags=0x0
-  BO36 live len=0x1000 flags=0x0
-  BO37 live len=0x1000 flags=0x0
-  BO38 live len=0x1000 flags=0x0
+  BO32 live len=0x1000 flags=0x800
+  BO33 live len=0x1000 flags=0x800
+  BO34 live len=0x1000 flags=0x800
+  BO35 live len=0x1000 flags=0x800
+  BO36 live len=0x1000 flags=0x800
+  BO37 live len=0x1000 flags=0x800
+  BO38 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -1541,13 +1541,13 @@ kick dev0 #7  (27 instructions)
   BO28 FREED len=0x40000 flags=0x100
   BO29 FREED len=0x1000 flags=0x0
   BO30 FREED len=0x6000 flags=0x100
-  BO32 FREED len=0x1000 flags=0x0
-  BO33 FREED len=0x1000 flags=0x0
-  BO34 FREED len=0x1000 flags=0x0
-  BO35 FREED len=0x1000 flags=0x0
-  BO36 FREED len=0x1000 flags=0x0
-  BO37 FREED len=0x1000 flags=0x0
-  BO38 FREED len=0x1000 flags=0x0
+  BO32 FREED len=0x1000 flags=0x800
+  BO33 FREED len=0x1000 flags=0x800
+  BO34 FREED len=0x1000 flags=0x800
+  BO35 FREED len=0x1000 flags=0x800
+  BO36 FREED len=0x1000 flags=0x800
+  BO37 FREED len=0x1000 flags=0x800
+  BO38 FREED len=0x1000 flags=0x800
   BO39 FREED len=0x1000 flags=0x0
   BO40 FREED len=0x1000 flags=0x0
   BO41 FREED len=0x1000 flags=0x8
@@ -1555,7 +1555,7 @@ kick dev0 #7  (27 instructions)
   BO43 live len=0x1000 flags=0x0
   BO44 live len=0x1000 flags=0x100
   BO45 live len=0x1000 flags=0x100
-  BO46 live len=0x1000 flags=0x0
+  BO46 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -1733,7 +1733,7 @@ kick dev0 #9  (27 instructions)
   BO42 FREED len=0x40000 flags=0x100
   BO43 FREED len=0x1000 flags=0x0
   BO44 FREED len=0x1000 flags=0x100
-  BO46 FREED len=0x1000 flags=0x0
+  BO46 FREED len=0x1000 flags=0x800
   BO47 FREED len=0x1000 flags=0x0
   BO48 FREED len=0x1000 flags=0x0
   BO49 FREED len=0x1000 flags=0x8
@@ -1741,7 +1741,7 @@ kick dev0 #9  (27 instructions)
   BO51 live len=0x1000 flags=0x0
   BO52 live len=0x1000 flags=0x100
   BO53 live len=0x1000 flags=0x100
-  BO54 live len=0x1000 flags=0x0
+  BO54 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -1919,7 +1919,7 @@ kick dev0 #11  (324 instructions)
   BO50 FREED len=0x40000 flags=0x100
   BO51 FREED len=0x1000 flags=0x0
   BO52 FREED len=0x1000 flags=0x100
-  BO54 FREED len=0x1000 flags=0x0
+  BO54 FREED len=0x1000 flags=0x800
   BO55 FREED len=0x1000 flags=0x0
   BO56 FREED len=0x1000 flags=0x0
   BO57 FREED len=0x1000 flags=0x8
@@ -1927,18 +1927,18 @@ kick dev0 #11  (324 instructions)
   BO59 live len=0x1000 flags=0x0
   BO60 live len=0x1000 flags=0x100
   BO61 live len=0x1000 flags=0x100
-  BO62 live len=0x1000 flags=0x0
-  BO63 live len=0x1000 flags=0x0
-  BO64 live len=0x1000 flags=0x0
-  BO65 live len=0x1000 flags=0x0
-  BO66 live len=0x1000 flags=0x0
-  BO67 live len=0x1000 flags=0x0
-  BO68 live len=0x1000 flags=0x0
-  BO69 live len=0x1000 flags=0x0
-  BO70 live len=0x1000 flags=0x0
-  BO71 live len=0x1000 flags=0x0
-  BO72 live len=0x1000 flags=0x0
-  BO73 live len=0x1000 flags=0x0
+  BO62 live len=0x1000 flags=0x800
+  BO63 live len=0x1000 flags=0x800
+  BO64 live len=0x1000 flags=0x800
+  BO65 live len=0x1000 flags=0x800
+  BO66 live len=0x1000 flags=0x800
+  BO67 live len=0x1000 flags=0x800
+  BO68 live len=0x1000 flags=0x800
+  BO69 live len=0x1000 flags=0x800
+  BO70 live len=0x1000 flags=0x800
+  BO71 live len=0x1000 flags=0x800
+  BO72 live len=0x1000 flags=0x800
+  BO73 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -2644,18 +2644,18 @@ kick dev0 #13  (63 instructions)
   BO58 FREED len=0x40000 flags=0x100
   BO59 FREED len=0x1000 flags=0x0
   BO60 FREED len=0x1000 flags=0x100
-  BO62 FREED len=0x1000 flags=0x0
-  BO63 FREED len=0x1000 flags=0x0
-  BO64 FREED len=0x1000 flags=0x0
-  BO65 FREED len=0x1000 flags=0x0
-  BO66 FREED len=0x1000 flags=0x0
-  BO67 FREED len=0x1000 flags=0x0
-  BO68 FREED len=0x1000 flags=0x0
-  BO69 FREED len=0x1000 flags=0x0
-  BO70 FREED len=0x1000 flags=0x0
-  BO71 FREED len=0x1000 flags=0x0
-  BO72 FREED len=0x1000 flags=0x0
-  BO73 FREED len=0x1000 flags=0x0
+  BO62 FREED len=0x1000 flags=0x800
+  BO63 FREED len=0x1000 flags=0x800
+  BO64 FREED len=0x1000 flags=0x800
+  BO65 FREED len=0x1000 flags=0x800
+  BO66 FREED len=0x1000 flags=0x800
+  BO67 FREED len=0x1000 flags=0x800
+  BO68 FREED len=0x1000 flags=0x800
+  BO69 FREED len=0x1000 flags=0x800
+  BO70 FREED len=0x1000 flags=0x800
+  BO71 FREED len=0x1000 flags=0x800
+  BO72 FREED len=0x1000 flags=0x800
+  BO73 FREED len=0x1000 flags=0x800
   BO74 FREED len=0x1000 flags=0x0
   BO75 FREED len=0x1000 flags=0x0
   BO76 FREED len=0x1000 flags=0x8
@@ -2908,7 +2908,7 @@ kick dev0 #15  (54 instructions)
   BO87 live len=0x1000 flags=0x0
   BO88 live len=0x1000 flags=0x8
   BO89 live len=0x1000 flags=0x100
-  BO90 live len=0x1000 flags=0x0
+  BO90 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3013,7 +3013,7 @@ kick dev0 #16  (54 instructions)
   BO93 live len=0x1000 flags=0x0
   BO94 live len=0x1000 flags=0x8
   BO95 live len=0x1000 flags=0x100
-  BO96 live len=0x1000 flags=0x0
+  BO96 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3118,7 +3118,7 @@ kick dev0 #17  (54 instructions)
   BO99 live len=0x1000 flags=0x0
   BO100 live len=0x1000 flags=0x8
   BO101 live len=0x1000 flags=0x100
-  BO102 live len=0x1000 flags=0x0
+  BO102 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3223,7 +3223,7 @@ kick dev0 #18  (54 instructions)
   BO105 live len=0x1000 flags=0x0
   BO106 live len=0x1000 flags=0x8
   BO107 live len=0x1000 flags=0x100
-  BO108 live len=0x1000 flags=0x0
+  BO108 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3328,7 +3328,7 @@ kick dev0 #19  (54 instructions)
   BO111 live len=0x1000 flags=0x0
   BO112 live len=0x1000 flags=0x8
   BO113 live len=0x1000 flags=0x100
-  BO114 live len=0x1000 flags=0x0
+  BO114 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3433,7 +3433,7 @@ kick dev0 #20  (54 instructions)
   BO117 live len=0x1000 flags=0x0
   BO118 live len=0x1000 flags=0x8
   BO119 live len=0x1000 flags=0x100
-  BO120 live len=0x1000 flags=0x0
+  BO120 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3538,7 +3538,7 @@ kick dev0 #21  (54 instructions)
   BO123 live len=0x1000 flags=0x0
   BO124 live len=0x1000 flags=0x8
   BO125 live len=0x1000 flags=0x100
-  BO126 live len=0x1000 flags=0x0
+  BO126 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3644,7 +3644,7 @@ kick dev0 #22  (54 instructions)
   BO129 live len=0x1000 flags=0x0
   BO130 live len=0x1000 flags=0x8
   BO131 live len=0x1000 flags=0x100
-  BO132 live len=0x1000 flags=0x0
+  BO132 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3750,7 +3750,7 @@ kick dev0 #23  (54 instructions)
   BO135 live len=0x1000 flags=0x0
   BO136 live len=0x1000 flags=0x8
   BO137 live len=0x1000 flags=0x100
-  BO138 live len=0x1000 flags=0x0
+  BO138 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3855,7 +3855,7 @@ kick dev0 #24  (54 instructions)
   BO141 live len=0x1000 flags=0x0
   BO142 live len=0x1000 flags=0x8
   BO143 live len=0x1000 flags=0x100
-  BO144 live len=0x1000 flags=0x0
+  BO144 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -3961,7 +3961,7 @@ kick dev0 #25  (54 instructions)
   BO147 live len=0x1000 flags=0x0
   BO148 live len=0x1000 flags=0x8
   BO149 live len=0x1000 flags=0x100
-  BO150 live len=0x1000 flags=0x0
+  BO150 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4066,7 +4066,7 @@ kick dev0 #26  (54 instructions)
   BO153 live len=0x1000 flags=0x0
   BO154 live len=0x1000 flags=0x8
   BO155 live len=0x1000 flags=0x100
-  BO156 live len=0x1000 flags=0x0
+  BO156 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4171,7 +4171,7 @@ kick dev0 #27  (54 instructions)
   BO159 live len=0x1000 flags=0x0
   BO160 live len=0x1000 flags=0x8
   BO161 live len=0x1000 flags=0x100
-  BO162 live len=0x1000 flags=0x0
+  BO162 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4276,7 +4276,7 @@ kick dev0 #28  (54 instructions)
   BO165 live len=0x1000 flags=0x0
   BO166 live len=0x1000 flags=0x8
   BO167 live len=0x1000 flags=0x100
-  BO168 live len=0x1000 flags=0x0
+  BO168 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4381,7 +4381,7 @@ kick dev0 #29  (54 instructions)
   BO171 live len=0x1000 flags=0x0
   BO172 live len=0x1000 flags=0x8
   BO173 live len=0x1000 flags=0x100
-  BO174 live len=0x1000 flags=0x0
+  BO174 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4486,7 +4486,7 @@ kick dev0 #30  (54 instructions)
   BO177 live len=0x1000 flags=0x0
   BO178 live len=0x1000 flags=0x8
   BO179 live len=0x1000 flags=0x100
-  BO180 live len=0x1000 flags=0x0
+  BO180 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4591,7 +4591,7 @@ kick dev0 #31  (54 instructions)
   BO183 live len=0x1000 flags=0x0
   BO184 live len=0x1000 flags=0x8
   BO185 live len=0x1000 flags=0x100
-  BO186 live len=0x1000 flags=0x0
+  BO186 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4696,7 +4696,7 @@ kick dev0 #32  (54 instructions)
   BO189 live len=0x1000 flags=0x0
   BO190 live len=0x1000 flags=0x8
   BO191 live len=0x1000 flags=0x100
-  BO192 live len=0x1000 flags=0x0
+  BO192 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4802,7 +4802,7 @@ kick dev0 #33  (54 instructions)
   BO195 live len=0x1000 flags=0x0
   BO196 live len=0x1000 flags=0x8
   BO197 live len=0x1000 flags=0x100
-  BO198 live len=0x1000 flags=0x0
+  BO198 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -4908,7 +4908,7 @@ kick dev0 #34  (54 instructions)
   BO201 live len=0x1000 flags=0x0
   BO202 live len=0x1000 flags=0x8
   BO203 live len=0x1000 flags=0x100
-  BO204 live len=0x1000 flags=0x0
+  BO204 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5013,7 +5013,7 @@ kick dev0 #35  (54 instructions)
   BO207 live len=0x1000 flags=0x0
   BO208 live len=0x1000 flags=0x8
   BO209 live len=0x1000 flags=0x100
-  BO210 live len=0x1000 flags=0x0
+  BO210 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5118,7 +5118,7 @@ kick dev0 #36  (54 instructions)
   BO213 live len=0x1000 flags=0x0
   BO214 live len=0x1000 flags=0x8
   BO215 live len=0x1000 flags=0x100
-  BO216 live len=0x1000 flags=0x0
+  BO216 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5223,7 +5223,7 @@ kick dev0 #37  (54 instructions)
   BO219 live len=0x1000 flags=0x0
   BO220 live len=0x1000 flags=0x8
   BO221 live len=0x1000 flags=0x100
-  BO222 live len=0x1000 flags=0x0
+  BO222 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5329,7 +5329,7 @@ kick dev0 #38  (54 instructions)
   BO225 live len=0x1000 flags=0x0
   BO226 live len=0x1000 flags=0x8
   BO227 live len=0x1000 flags=0x100
-  BO228 live len=0x1000 flags=0x0
+  BO228 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5435,7 +5435,7 @@ kick dev0 #39  (54 instructions)
   BO231 live len=0x1000 flags=0x0
   BO232 live len=0x1000 flags=0x8
   BO233 live len=0x1000 flags=0x100
-  BO234 live len=0x1000 flags=0x0
+  BO234 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5540,7 +5540,7 @@ kick dev0 #40  (54 instructions)
   BO237 live len=0x1000 flags=0x0
   BO238 live len=0x1000 flags=0x8
   BO239 live len=0x1000 flags=0x100
-  BO240 live len=0x1000 flags=0x0
+  BO240 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5646,7 +5646,7 @@ kick dev0 #41  (54 instructions)
   BO243 live len=0x1000 flags=0x0
   BO244 live len=0x1000 flags=0x8
   BO245 live len=0x1000 flags=0x100
-  BO246 live len=0x1000 flags=0x0
+  BO246 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5752,7 +5752,7 @@ kick dev0 #42  (54 instructions)
   BO249 live len=0x1000 flags=0x0
   BO250 live len=0x1000 flags=0x8
   BO251 live len=0x1000 flags=0x100
-  BO252 live len=0x1000 flags=0x0
+  BO252 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5857,7 +5857,7 @@ kick dev0 #43  (54 instructions)
   BO255 live len=0x1000 flags=0x0
   BO256 live len=0x1000 flags=0x8
   BO257 live len=0x1000 flags=0x100
-  BO258 live len=0x1000 flags=0x0
+  BO258 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -5954,40 +5954,40 @@ kick dev0 #43  (54 instructions)
 kick dev0 #44  (27 instructions)
   BO83 FREED len=0x40000 flags=0x100
   BO84 FREED len=0x1000 flags=0x0
-  BO90 FREED len=0x1000 flags=0x0
-  BO96 FREED len=0x1000 flags=0x0
-  BO102 FREED len=0x1000 flags=0x0
-  BO108 FREED len=0x1000 flags=0x0
-  BO114 FREED len=0x1000 flags=0x0
-  BO120 FREED len=0x1000 flags=0x0
-  BO126 FREED len=0x1000 flags=0x0
-  BO132 FREED len=0x1000 flags=0x0
-  BO138 FREED len=0x1000 flags=0x0
-  BO144 FREED len=0x1000 flags=0x0
-  BO150 FREED len=0x1000 flags=0x0
-  BO156 FREED len=0x1000 flags=0x0
-  BO162 FREED len=0x1000 flags=0x0
-  BO168 FREED len=0x1000 flags=0x0
-  BO174 FREED len=0x1000 flags=0x0
-  BO180 FREED len=0x1000 flags=0x0
-  BO186 FREED len=0x1000 flags=0x0
-  BO192 FREED len=0x1000 flags=0x0
-  BO198 FREED len=0x1000 flags=0x0
-  BO204 FREED len=0x1000 flags=0x0
-  BO210 FREED len=0x1000 flags=0x0
-  BO216 FREED len=0x1000 flags=0x0
-  BO222 FREED len=0x1000 flags=0x0
-  BO228 FREED len=0x1000 flags=0x0
-  BO234 FREED len=0x1000 flags=0x0
-  BO240 FREED len=0x1000 flags=0x0
-  BO246 FREED len=0x1000 flags=0x0
-  BO252 FREED len=0x1000 flags=0x0
+  BO90 FREED len=0x1000 flags=0x800
+  BO96 FREED len=0x1000 flags=0x800
+  BO102 FREED len=0x1000 flags=0x800
+  BO108 FREED len=0x1000 flags=0x800
+  BO114 FREED len=0x1000 flags=0x800
+  BO120 FREED len=0x1000 flags=0x800
+  BO126 FREED len=0x1000 flags=0x800
+  BO132 FREED len=0x1000 flags=0x800
+  BO138 FREED len=0x1000 flags=0x800
+  BO144 FREED len=0x1000 flags=0x800
+  BO150 FREED len=0x1000 flags=0x800
+  BO156 FREED len=0x1000 flags=0x800
+  BO162 FREED len=0x1000 flags=0x800
+  BO168 FREED len=0x1000 flags=0x800
+  BO174 FREED len=0x1000 flags=0x800
+  BO180 FREED len=0x1000 flags=0x800
+  BO186 FREED len=0x1000 flags=0x800
+  BO192 FREED len=0x1000 flags=0x800
+  BO198 FREED len=0x1000 flags=0x800
+  BO204 FREED len=0x1000 flags=0x800
+  BO210 FREED len=0x1000 flags=0x800
+  BO216 FREED len=0x1000 flags=0x800
+  BO222 FREED len=0x1000 flags=0x800
+  BO228 FREED len=0x1000 flags=0x800
+  BO234 FREED len=0x1000 flags=0x800
+  BO240 FREED len=0x1000 flags=0x800
+  BO246 FREED len=0x1000 flags=0x800
+  BO252 FREED len=0x1000 flags=0x800
   BO253 FREED len=0x1000 flags=0x100
   BO254 FREED len=0x1000 flags=0x0
   BO255 FREED len=0x1000 flags=0x0
   BO256 FREED len=0x1000 flags=0x8
   BO257 FREED len=0x1000 flags=0x100
-  BO258 FREED len=0x1000 flags=0x0
+  BO258 FREED len=0x1000 flags=0x800
   BO259 live len=0x40000 flags=0x100
   BO260 live len=0x1000 flags=0x0
   BO261 live len=0x1000 flags=0x100
@@ -6044,7 +6044,7 @@ kick dev0 #45  (27 instructions)
   BO264 live len=0x1000 flags=0x0
   BO265 live len=0x1000 flags=0x100
   BO266 live len=0x1000 flags=0x100
-  BO267 live len=0x1000 flags=0x0
+  BO267 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -6099,7 +6099,7 @@ kick dev0 #46  (27 instructions)
   BO269 live len=0x1000 flags=0x0
   BO270 live len=0x1000 flags=0x100
   BO271 live len=0x1000 flags=0x100
-  BO272 live len=0x1000 flags=0x0
+  BO272 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -6154,7 +6154,7 @@ kick dev0 #47  (27 instructions)
   BO274 live len=0x1000 flags=0x0
   BO275 live len=0x1000 flags=0x100
   BO276 live len=0x1000 flags=0x100
-  BO277 live len=0x1000 flags=0x0
+  BO277 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -6209,7 +6209,7 @@ kick dev0 #48  (27 instructions)
   BO279 live len=0x1000 flags=0x0
   BO280 live len=0x1000 flags=0x100
   BO281 live len=0x1000 flags=0x100
-  BO282 live len=0x1000 flags=0x0
+  BO282 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -6264,7 +6264,7 @@ kick dev0 #49  (27 instructions)
   BO284 live len=0x1000 flags=0x0
   BO285 live len=0x1000 flags=0x100
   BO286 live len=0x1000 flags=0x100
-  BO287 live len=0x1000 flags=0x0
+  BO287 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -6319,7 +6319,7 @@ kick dev0 #50  (27 instructions)
   BO289 live len=0x1000 flags=0x0
   BO290 live len=0x1000 flags=0x100
   BO291 live len=0x1000 flags=0x100
-  BO292 live len=0x1000 flags=0x0
+  BO292 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -6512,27 +6512,27 @@ kick dev0 #52  (27 instructions)
   BO263 FREED len=0x40000 flags=0x100
   BO264 FREED len=0x1000 flags=0x0
   BO265 FREED len=0x1000 flags=0x100
-  BO267 FREED len=0x1000 flags=0x0
+  BO267 FREED len=0x1000 flags=0x800
   BO268 FREED len=0x1000 flags=0x0
   BO269 FREED len=0x1000 flags=0x0
   BO270 FREED len=0x1000 flags=0x100
-  BO272 FREED len=0x1000 flags=0x0
+  BO272 FREED len=0x1000 flags=0x800
   BO273 FREED len=0x1000 flags=0x0
   BO274 FREED len=0x1000 flags=0x0
   BO275 FREED len=0x1000 flags=0x100
-  BO277 FREED len=0x1000 flags=0x0
+  BO277 FREED len=0x1000 flags=0x800
   BO278 FREED len=0x1000 flags=0x0
   BO279 FREED len=0x1000 flags=0x0
   BO280 FREED len=0x1000 flags=0x100
-  BO282 FREED len=0x1000 flags=0x0
+  BO282 FREED len=0x1000 flags=0x800
   BO283 FREED len=0x1000 flags=0x0
   BO284 FREED len=0x1000 flags=0x0
   BO285 FREED len=0x1000 flags=0x100
-  BO287 FREED len=0x1000 flags=0x0
+  BO287 FREED len=0x1000 flags=0x800
   BO288 FREED len=0x1000 flags=0x0
   BO289 FREED len=0x1000 flags=0x0
   BO290 FREED len=0x1000 flags=0x100
-  BO292 FREED len=0x1000 flags=0x0
+  BO292 FREED len=0x1000 flags=0x800
   BO293 FREED len=0x1000 flags=0x0
   BO294 FREED len=0x1000 flags=0x0
   BO295 FREED len=0x1000 flags=0x0
@@ -8213,7 +8213,7 @@ kick dev0 #72  (27 instructions)
   BO385 live len=0x1000 flags=0x0
   BO386 live len=0x1000 flags=0x100
   BO387 live len=0x1000 flags=0x100
-  BO388 live len=0x1000 flags=0x0
+  BO388 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -8391,7 +8391,7 @@ kick dev0 #74  (27 instructions)
   BO384 FREED len=0x40000 flags=0x100
   BO385 FREED len=0x1000 flags=0x0
   BO386 FREED len=0x1000 flags=0x100
-  BO388 FREED len=0x1000 flags=0x0
+  BO388 FREED len=0x1000 flags=0x800
   BO389 FREED len=0x1000 flags=0x0
   BO390 FREED len=0x1000 flags=0x0
   BO391 FREED len=0x1000 flags=0x8
@@ -8460,7 +8460,7 @@ kick dev0 #75  (90 instructions)
   BO402 live len=0x1000 flags=0x0
   BO403 live len=0x1000 flags=0x0
   BO404 live len=0x1000 flags=0x8
-  BO405 live len=0x1000 flags=0x0
+  BO405 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    34 HEAP_SET       3000400000000000

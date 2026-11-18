@@ -1239,9 +1239,9 @@ kick dev0 #8  (63 instructions)
 kick dev0 #9  (95 instructions)
   BO29 live len=0x1000 flags=0x8
   BO30 live len=0x1000 flags=0x8
-  BO31 live len=0x1000 flags=0x0
+  BO31 live len=0x1000 flags=0x800
   BO32 live len=0x1000 flags=0x8
-  BO33 live len=0x1000 flags=0x0
+  BO33 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    34 HEAP_SET       3000400000000000
@@ -1540,8 +1540,8 @@ kick dev0 #10  (66 instructions)
   BO26 FREED len=0x1000 flags=0x100
   BO27 FREED len=0x1000 flags=0x100
   BO28 FREED len=0x1000 flags=0x8
-  BO31 FREED len=0x1000 flags=0x0
-  BO33 FREED len=0x1000 flags=0x0
+  BO31 FREED len=0x1000 flags=0x800
+  BO33 FREED len=0x1000 flags=0x800
   BO34 live len=0x40000 flags=0x100
   BO35 live len=0x1000 flags=0x0
   BO36 live len=0x20000 flags=0x100
@@ -2108,8 +2108,8 @@ kick dev0 #13  (63 instructions)
    59 WAIT           0300000000010000
    62 SYNC_ADD64     3300444600000000 addr=BO2
 kick dev0 #14  (95 instructions)
-  BO41 live len=0x1000 flags=0x0
-  BO42 live len=0x1000 flags=0x0
+  BO41 live len=0x1000 flags=0x800
+  BO42 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    34 HEAP_SET       3000400000000000
@@ -2408,8 +2408,8 @@ kick dev0 #15  (66 instructions)
   BO38 FREED len=0x1000 flags=0x100
   BO39 FREED len=0x1000 flags=0x100
   BO40 FREED len=0x1000 flags=0x8
-  BO41 FREED len=0x1000 flags=0x0
-  BO42 FREED len=0x1000 flags=0x0
+  BO41 FREED len=0x1000 flags=0x800
+  BO42 FREED len=0x1000 flags=0x800
   BO43 live len=0x40000 flags=0x100
   BO44 live len=0x1000 flags=0x0
   BO45 live len=0x50000 flags=0x100
@@ -2976,9 +2976,9 @@ kick dev0 #18  (63 instructions)
    59 WAIT           0300000000010000
    62 SYNC_ADD64     3300444600000000 addr=BO2
 kick dev0 #19  (95 instructions)
-  BO50 live len=0x1000 flags=0x0
+  BO50 live len=0x1000 flags=0x800
   BO51 live len=0x1000 flags=0x8
-  BO52 live len=0x1000 flags=0x0
+  BO52 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    34 HEAP_SET       3000400000000000
@@ -3279,8 +3279,8 @@ kick dev0 #20  (66 instructions)
   BO47 FREED len=0x1000 flags=0x100
   BO48 FREED len=0x1000 flags=0x100
   BO49 FREED len=0x1000 flags=0x8
-  BO50 FREED len=0x1000 flags=0x0
-  BO52 FREED len=0x1000 flags=0x0
+  BO50 FREED len=0x1000 flags=0x800
+  BO52 FREED len=0x1000 flags=0x800
   BO53 live len=0x80000 flags=0x100
   BO54 live len=0x1000 flags=0x0
   BO55 live len=0x1000 flags=0x100
@@ -3833,7 +3833,7 @@ kick dev0 #23  (63 instructions)
    59 WAIT           0300000000010000
    62 SYNC_ADD64     3300444600000000 addr=BO2
 kick dev0 #24  (77 instructions)
-  BO58 live len=0x1000 flags=0x0
+  BO58 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    34 HEAP_SET       3000400000000000
@@ -4043,7 +4043,7 @@ kick dev0 #25  (66 instructions)
   BO55 FREED len=0x1000 flags=0x100
   BO56 FREED len=0x1000 flags=0x100
   BO57 FREED len=0x1000 flags=0x8
-  BO58 FREED len=0x1000 flags=0x0
+  BO58 FREED len=0x1000 flags=0x800
   BO59 live len=0x40000 flags=0x100
   BO60 live len=0x1000 flags=0x0
   BO61 live len=0x1000 flags=0x100
@@ -4596,7 +4596,7 @@ kick dev0 #28  (63 instructions)
    59 WAIT           0300000000010000
    62 SYNC_ADD64     3300444600000000 addr=BO2
 kick dev0 #29  (77 instructions)
-  BO64 live len=0x1000 flags=0x0
+  BO64 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    34 HEAP_SET       3000400000000000
@@ -4806,7 +4806,7 @@ kick dev0 #30  (66 instructions)
   BO61 FREED len=0x1000 flags=0x100
   BO62 FREED len=0x1000 flags=0x100
   BO63 FREED len=0x1000 flags=0x8
-  BO64 FREED len=0x1000 flags=0x0
+  BO64 FREED len=0x1000 flags=0x800
   BO65 live len=0x40000 flags=0x100
   BO66 live len=0x1000 flags=0x0
   BO67 live len=0x20000 flags=0x100
@@ -19071,9 +19071,9 @@ kick dev0 #114  (106 instructions)
   BO605 live len=0x1000 flags=0x100
   BO606 live len=0x1000 flags=0x100
   BO607 live len=0x1000 flags=0x8
-  BO608 live len=0x1000 flags=0x0
+  BO608 live len=0x1000 flags=0x800
   BO609 live len=0x1000 flags=0x8
-  BO610 live len=0x1000 flags=0x0
+  BO610 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400480000000233
     3 WAIT           0300000000010000
    17 SET_STATE_IMM32 1c00000000000003
@@ -19330,8 +19330,8 @@ kick dev0 #115  (63 instructions)
   BO605 FREED len=0x1000 flags=0x100
   BO606 FREED len=0x1000 flags=0x100
   BO607 FREED len=0x1000 flags=0x8
-  BO608 FREED len=0x1000 flags=0x0
-  BO610 FREED len=0x1000 flags=0x0
+  BO608 FREED len=0x1000 flags=0x800
+  BO610 FREED len=0x1000 flags=0x800
   BO611 live len=0x40000 flags=0x100
   BO612 live len=0x1000 flags=0x0
   BO613 live len=0x1000 flags=0x100
