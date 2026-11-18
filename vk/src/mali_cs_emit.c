@@ -227,6 +227,15 @@ Anz(const struct mali_hw *hw, size_t n, size_t al, uint64_t *va)
    return hw->alloc_nz ? hw->alloc_nz(hw->user, n, al, va) : hw->alloc(hw->user, n, al, va);
 }
 
+static bool
+check_dirty(void)
+{
+   static int c = -1;
+   if (c < 0)
+      c = getenv("MALI_DIRTY_CHECK") != NULL;
+   return c;
+}
+
 /* Draws that differ only in counts / dynamic offsets / push constants / viewport share the pipeline-derived blocks (shader program
  * descriptors, blend, depth-stencil): `a` is the previous draw of the frame. Everything these blocks are built from is compared. */
 static bool
@@ -270,12 +279,22 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    const unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;   /* SRT entries: driver set, user sets, (dynamic table at MALI_DYN_TABLE) */
    const unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
 
-   const bool s1 = po && same_static(pd, d);
+   /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter. */
+   const bool s1 = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
    /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
-   const bool s2 = s1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);
-   const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
-                   !memcmp(pd->push, d->push, sizeof d->push);   /* FAUs reusable */
+   const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
+   const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !(d->dirty & (MALI_D_VP | MALI_D_PUSH));   /* FAUs reusable */
+   if (check_dirty()) {   /* trap: whatever the mask lets us reuse must be byte-equal to what the compares would have reused */
+      const bool o1 = po && same_static(pd, d);
+      const bool o2 = o1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);
+      const bool o3 = o1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
+                      !memcmp(pd->push, d->push, sizeof d->push);
+      if ((s1 && !o1) || (s2 && !o2) || (s3 && !o3)) {
+         fprintf(stderr, "MALI_DIRTY_CHECK: mask 0x%x reuses what changed (s1 %d/%d s2 %d/%d s3 %d/%d)\n", d->dirty, s1, o1, s2, o2, s3, o3);
+         abort();
+      }
+   }
    const unsigned vs_used = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);   /* entries the vertex shader can read below the dummy sampler */
 
    if (s1) {

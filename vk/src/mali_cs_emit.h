@@ -106,7 +106,18 @@ struct mali_fixed {
  * (bit 0..2 colour, 3 alpha). 0 = ok, -1 = not expressible in fixed function (min/max, SRC_ALPHA_SATURATE, dual source, odd pairs). */
 int mali_blend_equation(const struct mali_fixed *f, uint32_t *eq, unsigned *const_mask);
 
+/* Record-time dirty mask of a draw: the state groups that changed since the previous draw of the frame (a frame's first draw: all).
+ * build_draw_descs reuses the previous draw's blocks by testing these bits only (no compares). */
+#define MALI_D_PIPE   0x01u   /* bound pipeline / shaders (gfx state) */
+#define MALI_D_FX     0x02u   /* dynamic state other than viewport / scissor (fixed-function block, depth-stencil, blend) */
+#define MALI_D_VP     0x04u   /* viewport (feeds the FAUs) */
+#define MALI_D_BIND   0x08u   /* vertex buffers, descriptor sets, their count, the dynamic-descriptor count */
+#define MALI_D_DYNBUF 0x10u   /* dynamic buffer descriptor values (dynamic offsets) */
+#define MALI_D_PUSH   0x20u   /* push constants */
+#define MALI_D_ALL    0x3fu
+
 struct mali_draw {
+   uint32_t dirty;                        /* MALI_D_* since the previous draw */
    struct mali_fixed fx;
    struct mali_gfx_state gfx;
    uint64_t vb_va[MALI_MAX_VB];           /* bound vertex buffers (offset applied) */

@@ -60,6 +60,8 @@ static VkPhysicalDeviceFeatures g_feat;
 static double g_t_rec, g_t_sub;   /* scene_draw: record / QueueSubmit microseconds, summed */
 static int g_share;   /* share test: 2 = alternate the scissor halves per draw, 3 = dynamic-UBO offset from g_share_off[] and firstInstance from g_share_fi[] */
 static uint32_t g_share_off[8], g_share_fi[8];
+static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between draws, 3 = the same pipeline rebound before every draw
+                        (push constants: the caller passes different rot[] values) */
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
@@ -645,6 +647,13 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
+      if (g_dirty == 1) {
+         VkViewport vi = {(i & 1) ? W / 2 : 0, 0, W / 2, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vi);
+      } else if (g_dirty == 2)
+         CmdSetCullMode(cb, (i & 1) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+      else if (g_dirty == 3)
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
       if (g_share == 2) {
          VkRect2D sci = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
          CmdSetScissor(cb, 0, 1, &sci);
@@ -1616,6 +1625,49 @@ test_share_inst(void)
    return 1;
 }
 
+/* share_dirty (fake backend byte counter): each state group's dirty bit must make the draw rebuild what depends on it, and rebinding an equal
+ * pipeline must not. Frames of 4 draws: push constants, viewport, cull mode change between draws (more bytes than the identical frame) and the
+ * same pipeline rebound (no more bytes). MALI_DIRTY_CHECK (check.sh) additionally aborts when a mask reuses what really changed. */
+static int
+test_share_dirty(void)
+{
+   if (!g_fake) {
+      printf("{\"test\":\"share_dirty\",\"skipped\":\"fake backend byte counter\",\"ok\":true}\n");
+      return 1;
+   }
+   unlink("/tmp/mali_alloc_stats.txt");
+   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
+   float same_rot[4][4] = {{0}}, var_rot[4][4] = {{0}};
+   for (int i = 0; i < 4; i++) var_rot[i][0] = 0.1f * i;
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   static const char *names[4] = {"push", "viewport", "cullmode", "rebind_pipeline"};
+   int ok = 1;
+   for (int k = 0; ok && k < 4; k++) {
+      unsigned long long ab[3];
+      for (int pass = 0; ok && pass < 3; pass++) {
+         g_dirty = pass == 2 ? (k == 0 ? 0 : k) : (k == 0 ? 0 : 0);
+         if (k == 3) g_dirty = pass == 2 ? 3 : 0;
+         else if (k == 1) g_dirty = pass == 2 ? 1 : 0;
+         else if (k == 2) g_dirty = pass == 2 ? 2 : 0;
+         struct scene s = {.mode = MODE_TRI};
+         ok = scene_create(&s, 0) && scene_draw(&s, 4, k == 0 && pass == 2 ? var_rot : same_rot, f);
+         ab[pass] = alloc_bytes();
+         scene_destroy(&s);
+      }
+      g_dirty = 0;
+      if (!ok) break;
+      unsigned long long same = ab[1] - ab[0], chg = ab[2] - ab[1];
+      int want_more = k != 3;
+      int good = want_more ? chg >= same + 3 * 64 : chg <= same;
+      printf("{\"test\":\"share_dirty\",\"bit\":\"%s\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", names[k], same, chg, good ? "true" : "false");
+      CHECK(good, "share_dirty %s: %llu bytes for the changing frame vs %llu for the identical one", names[k], chg, same);
+   }
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
 /* full-screen quad cases: push-constant-only FS colour, sampled texture, uniform buffer, descriptor updates between draws */
 static int
 test_quad(const char *name, int mode)
@@ -1791,6 +1843,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
    if (ok && CASE_ON("share")) ok &= test_share_inst();
+   if (ok && CASE_ON("share")) ok &= test_share_dirty();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

@@ -76,6 +76,7 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndyn = 0;
    cmd->occ_va = 0;
    cmd->occ_mode = 0;
+   cmd->dirty = MALI_D_ALL;
    free(cmd->def_ops);
    cmd->def_ops = NULL;
    cmd->ndef = cmd->capdef = 0;
@@ -156,13 +157,20 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
       unsupported(cmd, "bind point");
       return;
    }
-   if (!g_res.pipeline || g_res.pipeline(p, &cmd->gfx)) {
+   struct mali_gfx_state ng;
+   memset(&ng, 0, sizeof ng);
+   if (!g_res.pipeline || g_res.pipeline(p, &ng)) {
       cmd->have_gfx = false;
+      cmd->dirty |= MALI_D_PIPE;
       unsupported(cmd, "pipeline");
       return;
    }
-   if (!cmd->gfx.push_base[0])
-      cmd->gfx.push_base[0] = 40;   /* compile defaults: VS push block at FAU byte 40, FS at 0 */
+   if (!ng.push_base[0])
+      ng.push_base[0] = 40;   /* compile defaults: VS push block at FAU byte 40, FS at 0 */
+   if (memcmp(&ng, &cmd->gfx, sizeof ng)) {   /* rebinding an equal pipeline is not a change */
+      cmd->gfx = ng;
+      cmd->dirty |= MALI_D_PIPE;
+   }
    if (g_res.pipeline_dyn) {
       const struct vk_dynamic_graphics_state *pd;
       if (!g_res.pipeline_dyn(p, &pd))
@@ -199,6 +207,7 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
    if (!cmd->gfx.push_base[0])
       cmd->gfx.push_base[0] = 40;
    cmd->have_gfx = cmd->gfx.vs && cmd->gfx.fs;
+   cmd->dirty |= MALI_D_PIPE;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -228,15 +237,25 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
             }
             struct mali_hw_desc hd;
             mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], dyn[used++]);
-            memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
-            if (start + k + 1 > cmd->ndyn)
+            if (memcmp(cmd->dyn_desc[start + k], hd.w, sizeof hd.w)) {
+               memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
+               cmd->dirty |= MALI_D_DYNBUF;
+            }
+            if (start + k + 1 > cmd->ndyn) {
                cmd->ndyn = start + k + 1;
+               cmd->dirty |= MALI_D_BIND;
+            }
          }
       }
-      cmd->set_va[s] = ds->va;
-      cmd->set_bytes[s] = ds->bytes;
-      if (s + 1 > cmd->nsets)
+      if (cmd->set_va[s] != ds->va || cmd->set_bytes[s] != ds->bytes) {
+         cmd->set_va[s] = ds->va;
+         cmd->set_bytes[s] = ds->bytes;
+         cmd->dirty |= MALI_D_BIND;
+      }
+      if (s + 1 > cmd->nsets) {
          cmd->nsets = s + 1;
+         cmd->dirty |= MALI_D_BIND;
+      }
    }
 }
 
@@ -251,13 +270,13 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
          return;
       }
       struct vk_buffer *buf = vk_buffer_from_handle(bufs[i]);
-      if (!buf) {
-         cmd->vb_va[b] = 0;
-         cmd->vb_size[b] = 0;
-         continue;
+      uint64_t nva = buf ? vk_buffer_address(buf, offs[i]) : 0;
+      uint32_t nsz = buf ? (uint32_t)(buf->size - offs[i]) : 0;
+      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz) {
+         cmd->vb_va[b] = nva;
+         cmd->vb_size[b] = nsz;
+         cmd->dirty |= MALI_D_BIND;
       }
-      cmd->vb_va[b] = vk_buffer_address(buf, offs[i]);
-      cmd->vb_size[b] = (uint32_t)(buf->size - offs[i]);
    }
 }
 
@@ -296,10 +315,14 @@ mali_CmdPushConstants(VkCommandBuffer h, VkPipelineLayout layout, VkShaderStageF
       return;
    }
    /* Per-stage view: bytes written with stageFlags without a stage are invisible to that stage (Vulkan push constant semantics) */
-   if (stages & VK_SHADER_STAGE_VERTEX_BIT)
+   if ((stages & VK_SHADER_STAGE_VERTEX_BIT) && memcmp(cmd->push[0] + off, data, size)) {
       memcpy(cmd->push[0] + off, data, size);
-   if (stages & VK_SHADER_STAGE_FRAGMENT_BIT)
+      cmd->dirty |= MALI_D_PUSH;
+   }
+   if ((stages & VK_SHADER_STAGE_FRAGMENT_BIT) && memcmp(cmd->push[1] + off, data, size)) {
       memcpy(cmd->push[1] + off, data, size);
+      cmd->dirty |= MALI_D_PUSH;
+   }
    if (stages & VK_SHADER_STAGE_COMPUTE_BIT)
       memcpy(cmd->push_cs + off, data, size);
 }
@@ -337,6 +360,25 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, 
    const int32_t *a = cmd->cur.area;
 
    memset(d, 0, sizeof *d);
+   {
+      /* dirty mask: setter bits plus the runtime's dynamic-state dirty bits (viewport apart from everything else) */
+      uint32_t m = cmd->dirty;
+      cmd->dirty = 0;
+      if (!BITSET_IS_EMPTY(dyn->dirty)) {
+         BITSET_DECLARE(t, MESA_VK_DYNAMIC_GRAPHICS_STATE_ENUM_MAX);
+         memcpy(t, dyn->dirty, sizeof t);
+         if (BITSET_TEST(t, MESA_VK_DYNAMIC_VP_VIEWPORTS) || BITSET_TEST(t, MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT))
+            m |= MALI_D_VP;
+         BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_VIEWPORTS);
+         BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT);
+         BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_SCISSORS);   /* the scissor is a per-draw register, not part of a block */
+         BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_SCISSOR_COUNT);
+         if (!BITSET_IS_EMPTY(t))
+            m |= MALI_D_FX;
+         vk_dynamic_graphics_state_clear_dirty((struct vk_dynamic_graphics_state *)dyn);
+      }
+      d->dirty = cmd->cur.ndraws ? m : MALI_D_ALL;
+   }
    d->gfx = cmd->gfx;
    memcpy(d->vb_va, cmd->vb_va, sizeof d->vb_va);
    memcpy(d->vb_size, cmd->vb_size, sizeof d->vb_size);
@@ -569,6 +611,8 @@ expand_indirect(struct mali_frame *f)
             n = *d->ind_count;
          for (uint32_t k = 0; k < n && !rc; k++) {
             struct mali_draw e = *d;
+            if (k)
+               e.dirty = 0;   /* same bound state as the first expanded draw (the per-draw parameters are compared at build) */
             const uint32_t *c = (const uint32_t *)(const void *)(d->ind + (size_t)k * d->ind_stride);
             e.ind = NULL;
             e.ind_count = NULL;
@@ -838,11 +882,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, pre[pi].what);
          return;
       }
+      d.dirty = MALI_D_ALL;
       for (int i = 0; i < 4; i++) d.sc[i] = f->area[i];
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
+   cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;
 }
 
