@@ -345,6 +345,7 @@ test_spec(void)
  * attachments only; float and sRGB attachments ignore them (the shader just writes the source). Proves (a) the Vulkan -> gallium op
  * mapping, (b) every op gives its own code on UNORM/SNORM/UINT/SINT, (c) float/sRGB code is the same for every op, (d) an unused
  * logicOp (logicOpEnable = FALSE) is never converted, so an invalid value cannot reach vk_logic_op_to_pipe. */
+static bool g_blend_no_model;   /* last blend_bin failed only because the GPU model is unavailable */
 static int
 blend_bin(unsigned arch, unsigned fmt, unsigned type, unsigned en, unsigned op, struct mali_compiled *c)
 {
@@ -354,6 +355,7 @@ blend_bin(unsigned arch, unsigned fmt, unsigned type, unsigned en, unsigned op, 
                                .logic_op_enable = en, .logic_op = op};
    char err[256] = "";
    int r = mali_compile_blend(&o, c, err, sizeof err);
+   g_blend_no_model = r && !strcmp(err, "no GPU model");
    if (r) printf("  blend compile arch %u fmt %u op %u: %s\n", arch, fmt, op, err);
    return r;
 }
@@ -388,10 +390,12 @@ test_logicop(void)
    for (unsigned ai = 0; ai < 3; ai++) {
       for (unsigned f = 0; f < sizeof fm / sizeof fm[0]; f++) {
          struct mali_compiled c[16], eq = {0};
-         bool ok[16];
-         for (int op = 0; op < 16; op++)
+         bool ok[16], no_model = false;
+         for (int op = 0; op < 16; op++) {
             ok[op] = !blend_bin(archs[ai], fm[f].fmt, fm[f].type, 1, op, &c[op]);
-         if (!ok[0] && !ok[3]) { printf("  arch %u %s: skipped (no model)\n", archs[ai], fm[f].name); continue; }
+            if (!ok[op] && g_blend_no_model) no_model = true;
+         }
+         if (no_model) { printf("  arch %u %s: skipped (no model)\n", archs[ai], fm[f].name); continue; }
          for (int op = 0; op < 16; op++) CHECK(ok[op], "arch %u %s op %d compiles", archs[ai], fm[f].name, op);
          for (int a = 0; a < 16; a++) {
             for (int b = a + 1; b < 16; b++) {
