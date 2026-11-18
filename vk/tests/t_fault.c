@@ -186,7 +186,7 @@ static PFN_vkGetDeviceProcAddr gdpa;
    X(CreateEvent) X(DestroyEvent) X(CreateQueryPool) X(DestroyQueryPool) X(CreateRenderPass) X(DestroyRenderPass) \
    X(CreateFramebuffer) X(DestroyFramebuffer) X(DestroyDevice) X(GetDeviceQueue) X(BeginCommandBuffer) X(EndCommandBuffer) \
    X(CmdFillBuffer) X(QueueSubmit) X(WaitForFences) X(GetBufferMemoryRequirements) X(BindBufferMemory) X(CreateBufferView) \
-   X(DestroyBufferView)
+   X(DestroyBufferView) X(CreateGraphicsPipelines) X(QueueWaitIdle)
 #define X(n) static PFN_vk##n p_##n;
 FNS(X)
 #undef X
@@ -470,6 +470,129 @@ out:
    return r;
 }
 
+/* record + submit + wait: allocation failures inside QueueSubmit / WaitForFences must surface as an error, never crash or leak */
+static VkResult
+scn_submit(void)
+{
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkCommandBuffer cb = VK_NULL_HANDLE;
+   VkBuffer b = VK_NULL_HANDLE;
+   VkDeviceMemory m = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE;
+   VkResult r;
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+   TRY(p_CreateBuffer(dev, &bci, CB, &b));
+   VkMemoryRequirements mr;
+   p_GetBufferMemoryRequirements(dev, b, &mr);
+   VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                               .memoryTypeIndex = (uint32_t)__builtin_ctz(mr.memoryTypeBits)};
+   TRY(p_AllocateMemory(dev, &mai, CB, &m));
+   TRY(p_BindBufferMemory(dev, b, m, 0));
+   VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   TRY(p_CreateCommandPool(dev, &pi, CB, &pool));
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   TRY(p_AllocateCommandBuffers(dev, &ai, &cb));
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   TRY(p_CreateFence(dev, &fi, CB, &fence));
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   TRY(p_BeginCommandBuffer(cb, &bi));
+   p_CmdFillBuffer(cb, b, 0, 4096, 0x01020304);
+   TRY(p_EndCommandBuffer(cb));
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   TRY(p_QueueSubmit(queue, 1, &si, fence));
+   TRY(p_WaitForFences(dev, 1, &fence, VK_TRUE, 10ull * 1000000000));
+out:
+   /* a failed submit may still have queued work: drain before freeing what it uses */
+   p_QueueWaitIdle(queue);
+   p_DestroyFence(dev, fence, CB);
+   p_DestroyCommandPool(dev, pool, CB);
+   p_DestroyBuffer(dev, b, CB);
+   p_FreeMemory(dev, m, CB);
+   return r;
+}
+
+static char *g_vert_spv, *g_frag_spv;
+static uint32_t *
+load_spv(const char *path, size_t *bytes)
+{
+   FILE *fp = fopen(path, "rb");
+   if (!fp)
+      return NULL;
+   fseek(fp, 0, SEEK_END);
+   long n = ftell(fp);
+   fseek(fp, 0, SEEK_SET);
+   uint32_t *w = n > 0 ? malloc((size_t)n) : NULL;
+   if (!w || fread(w, 1, (size_t)n, fp) != (size_t)n) {
+      free(w);
+      fclose(fp);
+      return NULL;
+   }
+   fclose(fp);
+   *bytes = (size_t)n;
+   return w;
+}
+
+static uint32_t *g_vs_words, *g_fs_words;
+static size_t g_vs_bytes, g_fs_bytes;
+
+static VkResult
+scn_gfx_pipeline(void)
+{
+   VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkRenderPass rp = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkResult r;
+   if (!g_vs_words || !g_fs_words)
+      return VK_SUCCESS;
+   VkShaderModuleCreateInfo vsi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = g_vs_bytes, .pCode = g_vs_words};
+   VkShaderModuleCreateInfo fsi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = g_fs_bytes, .pCode = g_fs_words};
+   TRY(p_CreateShaderModule(dev, &vsi, CB, &vs));
+   TRY(p_CreateShaderModule(dev, &fsi, CB, &fs));
+   VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT, 0, 32};
+   VkPipelineLayoutCreateInfo plci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pc};
+   TRY(p_CreatePipelineLayout(dev, &plci, CB, &pl));
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   TRY(p_CreateRenderPass(dev, &rpi, CB, &rp));
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkVertexInputBindingDescription vb = {0, 32, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription va[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16}};
+   VkPipelineVertexInputStateCreateInfo vin = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .vertexBindingDescriptionCount = 1,
+                                               .pVertexBindingDescriptions = &vb, .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = va};
+   VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkViewport vp = {0, 0, 16, 16, 0, 1};
+   VkRect2D sc = {{0, 0}, {16, 16}};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .pViewports = &vp,
+                                            .scissorCount = 1, .pScissors = &sc};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL,
+                                                .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+   VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vin, .pInputAssemblyState = &ia, .pViewportState = &vps, .pRasterizationState = &rs,
+                                      .pMultisampleState = &ms, .pColorBlendState = &cb, .layout = pl, .renderPass = rp};
+   r = p_CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gi, CB, &pipe);
+   if (r != VK_SUCCESS)
+      NH(pipe);
+out:
+   p_DestroyPipeline(dev, pipe, CB);
+   p_DestroyRenderPass(dev, rp, CB);
+   p_DestroyPipelineLayout(dev, pl, CB);
+   p_DestroyShaderModule(dev, fs, CB);
+   p_DestroyShaderModule(dev, vs, CB);
+   return r;
+}
+
 /* ---- sweep driver ---- */
 enum { HOST, BO, LIBC };
 static const char *const kname[] = {"host", "bo", "libc"};
@@ -597,11 +720,18 @@ main(int argc, char **argv)
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--spv") && i + 1 < argc) g_spv = argv[++i];
+      else if (!strcmp(argv[i], "--vert") && i + 1 < argc) g_vert_spv = argv[++i];
+      else if (!strcmp(argv[i], "--frag") && i + 1 < argc) g_frag_spv = argv[++i];
       else if (!strcmp(argv[i], "--self-test")) g_selftest = 1;
    }
    if (!icd || !g_spv || read_spv(g_spv)) {
       fprintf(stderr, "usage: t_fault --direct icd.so --spv comp.spv [--self-test]\n");
       return 2;
+   }
+   if (g_vert_spv && g_frag_spv) {
+      g_vs_words = load_spv(g_vert_spv, &g_vs_bytes);
+      g_fs_words = load_spv(g_frag_spv, &g_fs_bytes);
+      if (!g_vs_words || !g_fs_words) { fprintf(stderr, "cannot read --vert/--frag\n"); return 2; }
    }
    void *h = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
    if (!h) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 2; }
@@ -635,7 +765,7 @@ main(int argc, char **argv)
    static const struct { const char *name; VkResult (*fn)(void); int is_dev; } sc[] = {
       {"device", scn_device, 1}, {"memory", scn_memory, 0}, {"buffer_image", scn_buffer_image, 0},
       {"descriptors", scn_descriptors, 0}, {"pipeline", scn_pipeline, 0}, {"cmd_sync", scn_cmd_sync, 0},
-      {"render_pass", scn_render_pass, 0},
+      {"render_pass", scn_render_pass, 0}, {"submit", scn_submit, 0}, {"gfx_pipeline", scn_gfx_pipeline, 0},
    };
    for (unsigned i = 0; i < sizeof sc / sizeof *sc; i++) {
       sweep(sc[i].name, sc[i].fn, HOST, sc[i].is_dev);
