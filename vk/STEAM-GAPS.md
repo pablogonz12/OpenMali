@@ -164,6 +164,22 @@ Needed by zink for GL 3.3 / ES 3.0 (`ARB_instanced_arrays`). Divisors 0 and 1 al
 - **Confirmed on hardware:** nothing yet (phone at 56 C when tried). `t_vk_feat --only divisor` on v10/v11/v13 must pass before the patch lands.
 - **Open:** firstInstance with divisor > 1 (hence `supportsNonZeroFirstInstance = false`).
 
+## Round 8: the complete zink 26.0.8 requirement list (source of tag mesa-26.0.8; host-only, `t_steam_caps` checks it by name)
+`tests/gen_zink26.py` generates `tests/zink26_table.h` from that tag's `zink_device_info.py` (108 device extensions) and `vk.xml`; `t_steam_caps` prints every one as ok/MISSING.
+Nothing here is confirmed on hardware yet.
+- Screen creation fails (hard), all HAVE: five extensions by NAME (`have_X` is name-only, the api version does not stand in): `VK_KHR_maintenance1`, `create_renderpass2`,
+  `imageless_framebuffer`, `dynamic_rendering`, `descriptor_update_template`; `robustness2.nullDescriptor`; `timelineSemaphore`; calibrated timestamps, if advertised, must list
+  `VK_TIME_DOMAIN_DEVICE` and 0 < domains < 8 (`t_steam_caps` checks both names of the entry point).
+- The device request is every advertised table extension plus the queried feature chain: `t_steam_caps` makes that `vkCreateDevice` and resolves the 45 commands zink loads for the
+  advertised extensions through `GetDeviceProcAddr` (KHR twin, then core name, as zink does): 0 unresolved.
+- DRM path only (EGL/GBM, not the GLX/drisw path Steam's X11 clients use): `VK_EXT_physical_device_drm` (MISSING) and `VK_KHR_external_memory_fd` (have).
+- `check_base_requirements` (warnings only): `logicOp` MISSING (`patches/zink-base-requirements.NOTE.md`), `shaderClipDistance` have, `scalarBlockLayout` have, `EXT_custom_border_color` have,
+  `EXT_line_rasterization`: `patches/line-rasterization.patch` (rectangularLines only; `t_vk_feat linerast`).
+- Optional extensions: 22 have, 81 missing of 103; 24 / 79 with the divisor and line-rasterization patches. They only select GL features. Missing ones that decide the GL level:
+  transform_feedback, extended_dynamic_state 1/2/3, vertex_input_dynamic_state, push_descriptor, descriptor_indexing (core-promoted names count as missing: zink tests the name),
+  draw_indirect_count, index_type_uint8, provoking_vertex, conditional_rendering, color_write_enable. See Round 5.
+- Context creation cannot be predicted by name (dummy xfb buffer, descriptor init, first batch): that is a phone check.
+
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
 ```

@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -43,6 +43,8 @@ static int test_zinit(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
+static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
 #define CHECK(c, ...)                                                                              \
@@ -254,7 +256,7 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
-                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw};
+                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw, .pNext = g_rs_next};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
@@ -861,6 +863,36 @@ line_rows(float w)
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
    return rows;
+}
+
+/* VK_EXT_line_rasterization: the minimum honest set is rectangularLines (the hardware's default wide line is a rectangle); the other modes and
+ * every stipple bit stay false. Checks the feature bits, then draws width-5 lines with the DEFAULT and RECTANGULAR modes and expects the same ~5 rows as
+ * test_wide. Skips while the extension is not advertised. */
+static int
+test_linerast(void)
+{
+   if (!g_lr_rect) { printf("{\"test\":\"linerast\",\"skipped\":\"rectangularLines not advertised\",\"ok\":true}\n"); return 1; }
+   CHECK(!g_lr_bres && !g_lr_smooth && !g_lr_stip_rect && !g_lr_stip_bres && !g_lr_stip_smooth,
+         "only rectangularLines may be set: bresenham %u smooth %u stippled %u/%u/%u", g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth);
+   CHECK(g_feat.wideLines, "rectangular wide lines need wideLines");
+   static const VkLineRasterizationModeEXT modes[] = {VK_LINE_RASTERIZATION_MODE_DEFAULT_EXT, VK_LINE_RASTERIZATION_MODE_RECTANGULAR_EXT};
+   int rows[2];
+   for (unsigned m = 0; m < 2; m++) {
+      VkPipelineRasterizationLineStateCreateInfoEXT ls = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT,
+                                                          .lineRasterizationMode = modes[m]};
+      g_rs_next = &ls;
+      rows[m] = line_rows(5.0f);
+      g_rs_next = NULL;
+      if (rows[m] < 0) return 0;
+      if (!g_fake) CHECK(rows[m] >= 4 && rows[m] <= 6, "line mode %d width 5 covers %d rows", modes[m], rows[m]);
+   }
+   if (!g_fake) {
+      CHECK(rows[0] == rows[1], "DEFAULT and RECTANGULAR must rasterize alike (%d vs %d)", rows[0], rows[1]);
+      printf("{\"test\":\"linerast\",\"rows_default\":%d,\"rows_rect\":%d,\"ok\":true}\n", rows[0], rows[1]);
+   } else {
+      printf("{\"test\":\"linerast\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   return 1;
 }
 
 static int
@@ -2349,10 +2381,13 @@ main(int argc, char **argv)
    VkPhysicalDeviceMaintenance5FeaturesKHR fm5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &f12};
    rb2.pNext = &fm5;
    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT fdv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, .pNext = &rb2};
-   VkPhysicalDeviceCustomBorderColorFeaturesEXT fcb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = &fdv};
+   VkPhysicalDeviceLineRasterizationFeaturesEXT flr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &fdv};
+   VkPhysicalDeviceCustomBorderColorFeaturesEXT fcb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = &flr};
    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fcb};
    GetPhysicalDeviceFeatures2(pd, &f2);
    g_cbc = fcb.customBorderColors; g_cbc_nofmt = fcb.customBorderColorWithoutFormat;
+   g_lr_rect = flr.rectangularLines; g_lr_bres = flr.bresenhamLines; g_lr_smooth = flr.smoothLines;
+   g_lr_stip_rect = flr.stippledRectangularLines; g_lr_stip_bres = flr.stippledBresenhamLines; g_lr_stip_smooth = flr.stippledSmoothLines;
    g_div = fdv.vertexAttributeInstanceRateDivisor; g_div0 = fdv.vertexAttributeInstanceRateZeroDivisor;
    if (g_div) {
       VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT dvp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT};
@@ -2414,9 +2449,11 @@ main(int argc, char **argv)
    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT edv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, .pNext = &ecb,
                                                             .vertexAttributeInstanceRateDivisor = fdv.vertexAttributeInstanceRateDivisor,
                                                             .vertexAttributeInstanceRateZeroDivisor = fdv.vertexAttributeInstanceRateZeroDivisor};
-   e2.pNext = &edv;
-   const char *dexts[5]; uint32_t ndx = 0;
+   VkPhysicalDeviceLineRasterizationFeaturesEXT elr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &edv, .rectangularLines = flr.rectangularLines};
+   e2.pNext = &elr;
+   const char *dexts[6]; uint32_t ndx = 0;
    if (g_div) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
+   if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
@@ -2447,6 +2484,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
+   if (ok && CASE_ON("linerast")) ok &= test_linerast();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
