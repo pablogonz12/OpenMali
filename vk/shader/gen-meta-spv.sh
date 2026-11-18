@@ -22,6 +22,15 @@ for s in preload.vert preload.frag; do
    od -An -v -tx4 -w16 $s.spv | sed -E 's/ ([0-9a-f]{8})/0x\1,/g' >> $H
    echo "};" >> $H
 done
+# integer render targets: preload.frag with an integer-typed colour output (uvec4 / ivec4)
+for v in uint:OUT_U sint:OUT_S; do
+   n=preload_${v%%:*}_frag
+   glslangValidator -V --target-env vulkan1.1 -D${v#*:} preload.frag -o $n.spv >/dev/null
+   spirv-val $n.spv
+   echo "static const uint32_t ${n}_spv[] = {" >> $H
+   od -An -v -tx4 -w16 $n.spv | sed -E 's/ ([0-9a-f]{8})/0x\1,/g' >> $H
+   echo "};" >> $H
+done
 # depth/stencil loadOp LOAD: preload_zs.frag variants (Z, S, ZS)
 for v in z:DO_Z s:DO_S zs:DO_Z:DO_S; do
    n=preload_${v%%:*}_frag; defs=""
