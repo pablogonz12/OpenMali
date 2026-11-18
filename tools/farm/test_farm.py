@@ -1636,7 +1636,8 @@ class T(unittest.TestCase):
         self.assertIn("selects no class", err)
         self.attach("dev-a")
         _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
-        self.farmd()
+        for _ in range(3):                                      # earlier jobs of this test run first
+            self.farmd()
         self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
         self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
 
