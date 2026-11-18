@@ -69,8 +69,8 @@ test_rtfmt(unsigned arch)
       const struct mali_rtfmt *row = mali_rtfmt_find(snorm[i], &ok);
       CHECK(ok && row && row->internal >= 32, "format %d should be a RAW render target", snorm[i]);
    }
-   /* still unsupported: A1R5G5B5 (alpha at bit 15: not a swizzle of the RGB5A1 rows), 3-component, BGRA integer/snorm, A2R10G10B10 integer */
-   static const int gap[] = { VK_FORMAT_A1R5G5B5_UNORM_PACK16, VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_B8G8R8A8_SNORM,
+   /* still unsupported: 3-component, BGRA integer/snorm, A2R10G10B10 integer */
+   static const int gap[] = { VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_B8G8R8A8_SNORM,
                               VK_FORMAT_B8G8R8A8_UINT, VK_FORMAT_A2R10G10B10_UINT_PACK32 };
    for (unsigned i = 0; i < sizeof gap / sizeof gap[0]; i++) {
       mali_rtfmt_find(gap[i], &ok);
