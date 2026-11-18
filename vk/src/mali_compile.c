@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 22 /* 22: spirv_header_ok rejects malformed SPIR-V in shader modules (fuzz harness) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -317,6 +317,32 @@ spirv_header_ok(const uint32_t *w, size_t nwords)
    return w[3] != 0 && w[3] <= 4 * nwords + 1024;
 }
 
+/* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
+ * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
+static bool
+gcm_enabled(nir_shader *nir)
+{
+   if (!getenv("MALI_OPT_GCM") || nir->info.stage != MESA_SHADER_COMPUTE)
+      return false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex && nir_tex_instr_has_implicit_derivative(nir_instr_as_tex(instr)))
+               return false;
+            if (instr->type == nir_instr_type_intrinsic) {
+               switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+               case nir_intrinsic_ddx: case nir_intrinsic_ddy: case nir_intrinsic_ddx_fine: case nir_intrinsic_ddy_fine:
+               case nir_intrinsic_ddx_coarse: case nir_intrinsic_ddy_coarse:
+                  return false;
+               default: break;
+               }
+            }
+         }
+      }
+   }
+   return true;
+}
+
 static int
 do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, struct mali_compiled *out,
            char *err, size_t errsz)
@@ -481,6 +507,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
 
    struct pan_shader_info info = {0};
+   /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
+   if (gcm_enabled(nir)) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
@@ -599,7 +630,7 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
 
    char dir[900], hex[65];
-   int use_cache = cache_dir(o, dir, sizeof dir);
+   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
    if (use_cache) {
       mkey(o, fau_reserved, push_base, hex);
       if (cache_load(dir, hex, out)) {
