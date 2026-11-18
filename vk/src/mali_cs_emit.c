@@ -622,6 +622,9 @@ prim_size_bits(const struct mali_gfx_state *g, const struct mali_fixed *fx)
 }
 
 /* The per-draw register file (everything but the FAU pointers, which come after the heap prologue like in the references). */
+/* experiment: MALI_HSR=1 sets FBD HSR bits and DCD2 hsr_cull/culled */
+static int g_exp_hsr_v(void){static int v=-1;if(v<0)v=getenv("MALI_HSR")?atoi(getenv("MALI_HSR")):0;return v;}
+#define g_exp_hsr (g_exp_hsr_v()>=2)
 static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
                const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx)
@@ -723,7 +726,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
       M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
       M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
-      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, 0, 0));
+      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, g_exp_hsr, g_exp_hsr));
       M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
       M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);

@@ -8,7 +8,9 @@
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
 #include <errno.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
+#include "kbase_draw_v13.h"
 
 #include "kbase_fb.h"
 #include "mali_cs_emit.h"
@@ -265,6 +267,8 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       if (!al)
          al = 1;
       unsigned tl = env->tile_log2 - (msaa ? 2 : 0);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */
+      if (getenv("MALI_HSR") && atoi(getenv("MALI_HSR")) >= 1)
+         kb_v13_fbd_hsr(w, 1, 1, 0, 0);
       w[11] = (w[11] & ~((0xfu << 9) | (0xffu << 24))) | ((tl & 0xfu) << 9) | (al << 24);
    }
    return 0;
