@@ -141,6 +141,8 @@ struct mali_dispatch {
    unsigned nsets;
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
+   unsigned ndyn;                         /* dynamic buffer descriptors (offset applied), table MALI_DYN_TABLE like the draw path */
+   uint32_t dyn_desc[MALI_MAX_DYN][8];
    uint32_t groups[3];                    /* workgroup counts (direct) */
    uint64_t indirect_va;                  /* != 0: 3 x u32 workgroup counts are loaded from here by the CS */
 };

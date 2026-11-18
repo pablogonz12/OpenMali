@@ -624,6 +624,8 @@ record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z,
    f.disp.nsets = cmd->nsets;
    memcpy(f.disp.set_va, cmd->set_va, sizeof f.disp.set_va);
    memcpy(f.disp.set_bytes, cmd->set_bytes, sizeof f.disp.set_bytes);
+   f.disp.ndyn = cmd->ndyn;
+   memcpy(f.disp.dyn_desc, cmd->dyn_desc, sizeof f.disp.dyn_desc);
    f.disp.groups[0] = x;
    f.disp.groups[1] = y;
    f.disp.groups[2] = z;
