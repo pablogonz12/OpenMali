@@ -31,7 +31,7 @@ cmp_words(const char *what, const uint32_t *a, const uint32_t *b, uint32_t mask0
 }
 
 /* Render-target table: A8B8G8R8 packed 32 has the byte order of R8G8B8A8, so it takes the RGBA8 rows (sweep: renderpass.suballocation.formats a8b8g8r8_*).
- * Formats outside the table (pure integer, snorm, 16-bit unorm, R32G32B32A32_SFLOAT, A1R5G5B5) are not render targets yet: CmdBeginRendering rejects them. */
+ * Formats outside the table (snorm, 16-bit unorm, R32G32B32A32_SFLOAT, A1R5G5B5) are not render targets yet: CmdBeginRendering rejects them. */
 static void
 test_rtfmt(unsigned arch)
 {
@@ -44,7 +44,7 @@ test_rtfmt(unsigned arch)
    struct mali_fmt f;
    CHECK(mali_format_get(arch, VK_FORMAT_A8B8G8R8_UNORM_PACK32, &f) && f.blendable, "A8B8G8R8_UNORM blendable");
    CHECK(mali_format_get(arch, VK_FORMAT_A8B8G8R8_SRGB_PACK32, &f) && f.blendable, "A8B8G8R8_SRGB blendable");
-   static const int gap[] = { VK_FORMAT_R8G8_UINT, VK_FORMAT_R16_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R32_SINT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_A1R5G5B5_UNORM_PACK16 };
+   static const int gap[] = { VK_FORMAT_R16_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_A1R5G5B5_UNORM_PACK16 };
    for (unsigned i = 0; i < sizeof gap / sizeof gap[0]; i++) {
       mali_rtfmt_find(gap[i], &ok);
       CHECK(!ok, "format %d unexpectedly a render target (update the gap list in the sweep notes)", gap[i]);
