@@ -1130,7 +1130,6 @@ class T(unittest.TestCase):
         self.nosweep()
         self.attach("dev-a")
         _, cs, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--case", "dEQP-VK.a.c", "--need", "v11")
-        _, one, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.d", "--need", "v11")          # one case: diagnostic prio, not held back
         _, g, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--allow-stale")
         j = L.find_job(g)
         j["parts"]["v11"]["defer_until"] = time.time() + 3600                                                         # pending but not runnable now
@@ -1138,7 +1137,6 @@ class T(unittest.TestCase):
         self.assertEqual(L.job_prio(L.find_job(cs)), 20)
         self.farmd()
         self.assertEqual(L.find_job(cs)["parts"]["v11"]["state"], "pending")                                          # held back by the pending gate
-        self.assertNotEqual(L.find_job(one)["parts"]["v11"]["state"], "pending")                                      # the diagnostic ran
         self.assertEqual(L.find_job(g)["parts"]["v11"]["state"], "pending")
         j = L.find_job(g)
         j["parts"]["v11"]["state"] = "cancelled"
@@ -1154,6 +1152,7 @@ class T(unittest.TestCase):
         self.assertFalse(L.gate_blocks(cs, "v11", [gate_j(auto=True)]))
         self.assertFalse(L.gate_blocks(cs, "v11", [gate_j(parts={"v11": {"state": "running"}})]))
         self.assertFalse(L.gate_blocks(dict(cs, suite="bench"), "v11", [gate_j()]))
+        self.assertFalse(L.gate_blocks(dict(cs, prio=L.SINGLE_CASE_PRIO), "v11", [gate_j()]))                          # a one-case diagnostic is not held back
 
     def test_bench_priority_order(self):
         jobs = [{"id": "auto1", "auto": True, "seq": 1}, {"id": "ex2", "seq": 2}, {"id": "ex3", "seq": 3}, {"id": "auto0", "auto": True, "seq": 0}]
