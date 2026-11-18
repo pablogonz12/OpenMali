@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|clip8|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1888,6 +1888,43 @@ test_clip(void)
    return 1;
 }
 
+/* shaderClipDistance: 8 distances: clip[0]=ndc.x, clip[7]=ndc.y-0.5; limits must report 8 / cull 0 / combined 8; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+static int
+test_clip8(void)
+{
+   if (!g_feat.shaderClipDistance) { printf("{\"test\":\"clip8\",\"skipped\":\"shaderClipDistance not advertised\",\"ok\":true}\n"); return 1; }
+   const VkPhysicalDeviceProperties pr = g_props;
+   CHECK(pr.limits.maxClipDistances == 8 && pr.limits.maxCullDistances == (g_feat.shaderCullDistance ? 8u : 0u) && pr.limits.maxCombinedClipAndCullDistances == 8, "clip/cull limits %u/%u/%u", pr.limits.maxClipDistances, pr.limits.maxCullDistances, pr.limits.maxCombinedClipAndCullDistances);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "clip8.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - 128) <= 2 || abs(y - 192) <= 2) continue;
+            int in = x >= 128 && y >= 192;
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            bad += in ? !near(p, 255, 0, 0, 255, 2) : p[3] != 0;
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (in %u,%u,%u,%u  x<128 %u,%u,%u,%u  y<192 %u,%u,%u,%u)", bad, n, pix(&t, 200, 220)[0], pix(&t, 200, 220)[1], pix(&t, 200, 220)[2], pix(&t, 200, 220)[3], pix(&t, 60, 220)[0], pix(&t, 60, 220)[1], pix(&t, 60, 220)[2], pix(&t, 60, 220)[3], pix(&t, 200, 100)[0], pix(&t, 200, 100)[1], pix(&t, 200, 100)[2], pix(&t, 200, 100)[3]);
+      printf("{\"test\":\"clip8\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"clip8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderDrawParameters: see dparams.vert. Triangles A0..A2 (columns 0..2, indirect multi-draw), B (column 3), C (column 0, row 1). */
 static int g_dparams;
 static int
@@ -2511,6 +2548,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
+   if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
