@@ -85,7 +85,7 @@ def table(data):
     for p, vs in data.items():
         for v, d in vs.items():
             o, b = d["ours"], latest_bridge(d)
-            if not o and not b:
+            if not o and not b and not d["panvk"]:
                 continue
             first, last = (o[0], o[-1]) if o else (None, None)
             ch = pct(last["fps"], first["fps"]) - 100 if o and len(o) > 1 else None
@@ -101,6 +101,7 @@ def table(data):
 
 
 def charts(data, outdir):
+    written = []
     import matplotlib
     matplotlib.use("svg")
     matplotlib.rcParams["svg.hashsalt"] = "mali-open"          # stable ids: no diff noise between runs
@@ -109,7 +110,7 @@ def charts(data, outdir):
     os.makedirs(outdir, exist_ok=True)
     md = {"Date": None}
     for p, vs in data.items():
-        vs = {v: d for v, d in vs.items() if d["ours"] or d["bridge"]}
+        vs = {v: d for v, d in vs.items() if d["ours"] or d["bridge"] or d["panvk"]}
         if not vs:
             continue
         fig, axs = plt.subplots(1, len(vs), figsize=(5.2 * len(vs), 4.2), squeeze=False)
@@ -124,10 +125,10 @@ def charts(data, outdir):
             n = max(len(o), 1)
             for k, (ver, rs) in enumerate(d["bridge"].items()):
                 c = f"C{k + 1}"
-                if len(rs) > 1 and o:
-                    pos = {r["build"]: i for i, r in enumerate(o)}
-                    xs = [pos[r["build"]] for r in rs if r["build"] in pos]
-                    ax.plot(xs, [r["fps"] for r in rs if r["build"] in pos], "s--", ms=3, color=c, label=f"bridge {vers_short(ver)}")
+                pos = {r["build"]: i for i, r in enumerate(o)}
+                hit = [r for r in rs if r["build"] in pos]
+                if len(rs) > 1 and hit:
+                    ax.plot([pos[r["build"]] for r in hit], [r["fps"] for r in hit], "s--", ms=3, color=c, label=f"bridge {vers_short(ver)}")
                 else:
                     ax.axhline(rs[-1]["fps"], ls="--", color=c, label=f"bridge {vers_short(ver)}")
             if d["panvk"]:
@@ -141,6 +142,7 @@ def charts(data, outdir):
         fig.suptitle(PHONES.get(p, p), fontsize=12)
         fig.tight_layout()
         fig.savefig(os.path.join(outdir, p + ".svg"), metadata=md)
+        written.append(p + ".svg")
         plt.close(fig)
     # summary: latest ours as % of the bridge
     phones = [p for p, vs in data.items() if any(d["ours"] and latest_bridge(d) for d in vs.values())]
@@ -167,8 +169,12 @@ def charts(data, outdir):
         ax.grid(axis="y", alpha=.3)
         fig.tight_layout()
         fig.savefig(os.path.join(outdir, "summary.svg"), metadata=md)
+        written.append("summary.svg")
         plt.close(fig)
-    return sorted(f for f in os.listdir(outdir) if f.endswith(".svg"))
+    for f in os.listdir(outdir):                                  # obsolete generated charts (only ones this script names: phone svgs + summary)
+        if f.endswith(".svg") and f not in written:
+            os.remove(os.path.join(outdir, f))
+    return sorted(written)
 
 
 def section(data, files):
@@ -176,7 +182,7 @@ def section(data, files):
              "![summary](bench/charts/summary.svg)" if "summary.svg" in files else ""]
     links += [f"![{f[:-4]}](bench/charts/{f})" for f in files if f != "summary.svg"]
     note = ("fps = presented fps (best settings per row); GPU ms = offscreen GPU time. Ours is the latest build per phone, the bridge its "
-            "latest MediaDeck build. PanVK (Mesa) has no rows yet: `not measured`. Source: `bench/results.jsonl` via `bench/plot.py` (regenerated on every bench publish).")
+            "latest MediaDeck build. `not measured` = no PanVK (Mesa) result for that row. Source: `bench/results.jsonl` via `bench/plot.py` (best effort: refreshed when a bench publish adds benchmark rows).")
     return "\n".join([BEGIN, "", table(data), "", note, *links, "", END])
 
 
@@ -184,7 +190,12 @@ def main(argv):
     root = os.path.abspath(argv[argv.index("--root") + 1]) if "--root" in argv else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     rows = load(os.path.join(root, "bench", "results.jsonl"))
     data = collect(rows)
-    files = charts(data, os.path.join(root, "bench", "charts"))
+    try:
+        files = charts(data, os.path.join(root, "bench", "charts"))
+    except ImportError as e:                                     # no matplotlib on this machine: still refresh the table, keep existing charts
+        print(f"plot: charts skipped ({e})", file=sys.stderr)
+        cd = os.path.join(root, "bench", "charts")
+        files = sorted(f for f in os.listdir(cd) if f.endswith(".svg")) if os.path.isdir(cd) else []
     rd = os.path.join(root, "README.md")
     txt = open(rd).read()
     sec = section(data, files)

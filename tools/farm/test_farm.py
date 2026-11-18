@@ -1530,6 +1530,11 @@ class PublishUnit(unittest.TestCase):
         for bad in ([sys.executable, "-c", "raise SystemExit(3)"], ["/nonexistent/plotter"]):
             self.put(self.row("cmf", "ours", "f" * 39 + str(len(bad))))
             self.assertEqual(self.pub(perf_cmd=bad)["status"], "pushed")
+        half = [sys.executable, "-c", "import os;os.makedirs('bench/charts',exist_ok=True);open('bench/charts/half.svg','w').write('x');raise SystemExit(1)"]
+        self.put(self.row("cmf", "ours", "9" * 40))
+        self.assertEqual(self.pub(perf_cmd=half)["status"], "pushed")                            # a half-written report is dropped, not committed
+        self.git(self.work, "pull", "-q", "origin", "main")
+        self.assertFalse(os.path.exists(os.path.join(self.work, "bench", "charts", "half.svg")))
 
     def test_rejected_push_is_retried_and_other_checkouts_untouched(self):
         self.put(self.row("cmf", "ours", "c" * 40))
