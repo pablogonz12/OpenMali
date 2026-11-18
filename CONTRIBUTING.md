@@ -24,6 +24,7 @@ meson setup build-vk mesa -Dbuildtype=release -Dgallium-drivers= -Dvulkan-driver
     -Dopengl=false -Dllvm=enabled -Dvalgrind=disabled -Dlibunwind=disabled -Dpanfrost-rust=false \
     -Dmesa-clc=enabled -Db_ndebug=false
 ninja -C build-vk src/panfrost/vulkan/libvulkan_panfrost.so
+cd ..                             # back to the repository root: the commands below are relative to it
 ```
 
 This is the same recipe as `vk/README.md` and CI. The PanVK target is built only because it produces the static libraries we link; no PanVK code ends up in our library (`vk/check.sh` verifies that). Do not commit anything under `third_party/`. The first build takes a while (about 1000 compile steps).
@@ -34,7 +35,7 @@ This is the same recipe as `vk/README.md` and CI. The PanVK target is built only
 vk/build.sh                  # native x86-64 build -> vk/out/native/{libvulkan_mali.so,mali_icd.json,t_*}
 vk/check.sh                  # the offline gate: builds, then runs every fake-backend case, prints OK or FAILED
 vk/check.sh --no-build -v    # re-run without rebuilding, with each case's output
-MALI_SAN=1 vk/check.sh       # same cases with ASan+UBSan driver objects (vk/out/native-san)
+MALI_SAN=1 vk/check.sh       # fake-backend cases with ASan+UBSan driver objects (vk/out/native-san); skips the standalone vk/tests/build-t_*.sh tests (incl. the compiler test), so it does not replace the plain gate
 libkbase/check.sh            # libkbase offline tests (not run by CI)
 vk/cross/build-cross.sh all  # aarch64 glibc and bionic cross builds (need cross toolchains / the Android NDK; not run by CI)
 ```
@@ -46,6 +47,7 @@ Host tests worth knowing:
 - `vk/tests/build-t_compile.sh [-v]`: the shader compiler test (seconds).
 - `vk/check.sh --deqp-host`: also runs host dEQP-VK against the ASan fake-backend ICD (about 2 minutes, skipped if the host deqp build is absent).
 - Command-stream goldens live in `vk/tests/golden/`. If your change legitimately alters them, run `vk/check.sh --bless`, review `git diff vk/tests/golden` and commit it with the change that caused it.
+- `vk/check.sh --bless` also runs `vk/tests/compile-guard.sh --bless`, which records the current shader-compile source hash and `MALI_COMPILE_VERSION` in `vk/tests/compile-guard.txt`. If your change alters the shader-compile sources, bump `MALI_COMPILE_VERSION` in `vk/src/mali_compile.c` before you run `--bless` (otherwise stale shaders stay in users' caches), and commit the updated guard record with the goldens.
 
 ## 2. Gates a change must pass
 
@@ -69,6 +71,8 @@ Maintainer-side gates (not available to outside contributors; the maintainer run
 
 1. Fork and branch from fresh `origin/main`. Use a separate git worktree so your main checkout stays untouched:
    `git fetch origin && git worktree add -B <branch> ../mali-open-wt/<name> origin/main`
+   then `cd ../mali-open-wt/<name>` and do all remaining steps there (not in the original checkout).
+   The new worktree does not contain the ignored `third_party/` directory that `vk/build.sh` needs (Mesa build tree and venv): run the one-time Mesa setup from section 1 inside this worktree before the gates.
 2. Keep the change small and in one area. Commit messages say what and why; no private paths or device serials.
 3. Run the gates in section 2 locally.
 4. `gh pr create --base main` (or open the PR on GitHub). Describe what changed, what test covers it, and what was not run (for example hardware).
