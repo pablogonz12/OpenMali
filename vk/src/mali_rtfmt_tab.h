@@ -52,6 +52,28 @@ static const struct mali_rtfmt mali_rt_tab[] = {
    { VK_FORMAT_R32_SINT, 34, 3, 1, 4, 0, SW(0, 1, 2, 3), PF(197, 16), 32, 1 },
    { VK_FORMAT_R32G32_SINT, 35, 5, 2, 8, 0, SW(0, 1, 2, 3), PF(205, 16), 32, 1 },
    { VK_FORMAT_R32G32B32A32_SINT, 36, 7, 4, 16, 0, SW(0, 1, 2, 3), PF(221, 0), 32, 1 },
+   /* A8B8G8R8 integer: byte order of R8G8B8A8, same rows */
+   { VK_FORMAT_A8B8G8R8_UINT_PACK32, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(155, 0), 8, 0 },
+   { VK_FORMAT_A8B8G8R8_SINT_PACK32, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(219, 0), 8, 1 },
+   /* A2B10G10R10 integer: RAW32; int_bits = 10 only marks "integer, no rounding" (clear words are packed 10/10/10/2 in mali_render.c) */
+   { VK_FORMAT_A2B10G10R10_UINT_PACK32, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(71, 0), 10, 0 },
+   { VK_FORMAT_A2B10G10R10_SINT_PACK32, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(73, 0), 10, 1 },
+   /* SNORM / UNORM16 / 32-bit float: not blendable on Valhall, so a RAW tile buffer (internal 32 + log2 bytes, writeback RAW8..RAW128) with the
+    * blend unit's opaque conversion = the format's texture word (PF(hw >> 12, hw & 0xfff), t_image cross-checks every row against mali_fmt.hw);
+    * is_float stays 0 (clear words are the packed pixel, mali_render.c). int_bits 0: the conversion rounds. */
+   { VK_FORMAT_R8_SNORM, 32, 0, 1, 1, 0, SW(0, 1, 2, 3), PF(99, 16) },
+   { VK_FORMAT_R8G8_SNORM, 33, 1, 2, 2, 0, SW(0, 1, 2, 3), PF(107, 16) },
+   { VK_FORMAT_R8G8B8A8_SNORM, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(123, 0) },
+   { VK_FORMAT_A8B8G8R8_SNORM_PACK32, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(123, 0) },
+   { VK_FORMAT_R16_UNORM, 33, 1, 1, 2, 0, SW(0, 1, 2, 3), PF(164, 16) },
+   { VK_FORMAT_R16G16_UNORM, 34, 3, 2, 4, 0, SW(0, 1, 2, 3), PF(172, 16) },
+   { VK_FORMAT_R16G16B16A16_UNORM, 35, 5, 4, 8, 0, SW(0, 1, 2, 3), PF(188, 0) },
+   { VK_FORMAT_R16_SNORM, 33, 1, 1, 2, 0, SW(0, 1, 2, 3), PF(100, 16) },
+   { VK_FORMAT_R16G16_SNORM, 34, 3, 2, 4, 0, SW(0, 1, 2, 3), PF(108, 16) },
+   { VK_FORMAT_R16G16B16A16_SNORM, 35, 5, 4, 8, 0, SW(0, 1, 2, 3), PF(124, 0) },
+   { VK_FORMAT_R32_SFLOAT, 34, 3, 1, 4, 0, SW(0, 1, 2, 3), PF(167, 16) },
+   { VK_FORMAT_R32G32_SFLOAT, 35, 5, 2, 8, 0, SW(0, 1, 2, 3), PF(175, 16) },
+   { VK_FORMAT_R32G32B32A32_SFLOAT, 36, 7, 4, 16, 0, SW(0, 1, 2, 3), PF(191, 0) },
 };
 
 /* NULL + *supported true for R8G8B8A8_UNORM (the proven default); *supported false = not a render target we can draw to. */

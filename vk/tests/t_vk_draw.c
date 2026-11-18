@@ -27,6 +27,7 @@
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
 static unsigned g_colbpp = 4;
+static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
 static int g_clear_u;   /* clear the colour attachment to the integer value (200,100,50,7) instead of float zeros */
 static int g_load;   /* two-pass LOAD test: store depth/stencil, and build s->rp2 = the same pass with loadOp LOAD */
 static int g_fail, g_fake, g_loop = 1, g_reset;
@@ -581,6 +582,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   if (g_clear_f)
+      memcpy(cv[0].color.float32, g_clear_f, 16);
    if (g_clear_u)
       cv[0].color.uint32[0] = 200, cv[0].color.uint32[1] = 100, cv[0].color.uint32[2] = 50, cv[0].color.uint32[3] = 7;
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
@@ -1093,9 +1096,9 @@ test_load(const char *name, int kind)
    return ok;
 }
 
-/* integer render target (RGBA8UI, RG16UI, R8UI): the render pass clears to raw integer words, one triangle is drawn; the corner pixels must hold the words */
+/* RAW (non-blendable) render target: integer (RGBA8UI, RG16UI, R8UI, A8B8G8R8/A2B10G10R10 integer: clear to the raw words) or SNORM / UNORM16 / float (cf: clear to the floats); the render pass clears, one triangle is drawn; the corner pixels must hold the words */
 static int
-test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
+test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, const float *cf)
 {
    struct scene s = {.mode = MODE_TRI};
    VkFence f;
@@ -1103,11 +1106,13 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    g_colfmt = fmt;
    g_colbpp = bpp;
-   g_clear_u = 1;
+   g_clear_u = !cf;
+   g_clear_f = cf;
    int ok = scene_create(&s, 0);
    float one[1][4] = {{1, 0, 0, 0}};
    if (ok) ok = scene_draw(&s, 1, one, f);   /* a triangle in the middle; the corners keep the clear value */
    g_clear_u = 0;
+   g_clear_f = NULL;
    uint32_t got = 0, mask = bpp >= 4 ? ~0u : (1u << (8 * bpp)) - 1;
    if (ok && !g_fake) {
       got = px_at(&s, 5, 5) & mask;
@@ -1120,6 +1125,12 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
+}
+
+static int
+test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
+{
+   return test_int_clear_f(name, fmt, bpp, want0, NULL);
 }
 
 static int
@@ -1866,6 +1877,18 @@ main(int argc, char **argv)
    if (ok && CASE_ON("int_clear_rgba8ui")) ok &= test_int_clear("int_clear_rgba8ui", VK_FORMAT_R8G8B8A8_UINT, 4, 0x073264c8u);
    if (ok && CASE_ON("int_clear_rg16ui")) ok &= test_int_clear("int_clear_rg16ui", VK_FORMAT_R16G16_UINT, 4, 0x006400c8u);
    if (ok && CASE_ON("int_clear_r8ui")) ok &= test_int_clear("int_clear_r8ui", VK_FORMAT_R8_UINT, 1, 0xc8u);
+   {
+      static const float sn1[4] = { 1, -1, 0, 1 }, f15[4] = { 1.5f, 1.5f, 1.5f, 1.5f };
+      if (ok && CASE_ON("rt_clear_r8snorm")) ok &= test_int_clear_f("rt_clear_r8snorm", VK_FORMAT_R8_SNORM, 1, 0x7fu, sn1);
+      if (ok && CASE_ON("rt_clear_rgba8snorm")) ok &= test_int_clear_f("rt_clear_rgba8snorm", VK_FORMAT_R8G8B8A8_SNORM, 4, 0x7f00817fu, sn1);
+      if (ok && CASE_ON("rt_clear_a8b8g8r8snorm")) ok &= test_int_clear_f("rt_clear_a8b8g8r8snorm", VK_FORMAT_A8B8G8R8_SNORM_PACK32, 4, 0x7f00817fu, sn1);
+      if (ok && CASE_ON("rt_clear_r16unorm")) ok &= test_int_clear_f("rt_clear_r16unorm", VK_FORMAT_R16_UNORM, 2, 0xffffu, sn1);
+      if (ok && CASE_ON("rt_clear_rg16snorm")) ok &= test_int_clear_f("rt_clear_rg16snorm", VK_FORMAT_R16G16_SNORM, 4, 0x80017fffu, sn1);
+      if (ok && CASE_ON("rt_clear_r32f")) ok &= test_int_clear_f("rt_clear_r32f", VK_FORMAT_R32_SFLOAT, 4, 0x3fc00000u, f15);
+      if (ok && CASE_ON("rt_clear_rgba32f")) ok &= test_int_clear_f("rt_clear_rgba32f", VK_FORMAT_R32G32B32A32_SFLOAT, 16, 0x3fc00000u, f15);
+      if (ok && CASE_ON("rt_clear_a8b8g8r8ui")) ok &= test_int_clear("rt_clear_a8b8g8r8ui", VK_FORMAT_A8B8G8R8_UINT_PACK32, 4, 0x073264c8u);
+      if (ok && CASE_ON("rt_clear_a2b10g10r10ui")) ok &= test_int_clear("rt_clear_a2b10g10r10ui", VK_FORMAT_A2B10G10R10_UINT_PACK32, 4, 0xc32190c8u);
+   }
    if (ok && CASE_ON("load_depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_load("load_depth16", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("load_stencil")) ok &= test_load("load_stencil", 1);
    if (ok && CASE_ON("load_colour_f16")) { g_colfmt = VK_FORMAT_R16G16B16A16_SFLOAT; g_colbpp = 8; ok &= test_load("load_colour_f16", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }

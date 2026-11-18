@@ -281,6 +281,52 @@ static struct mali_hw make_hw(void)
    return hw;
 }
 
+/* Clear words of the RAW (non-blendable) render targets: the packed pixel replicated like pan_pack_raw (mali_render.c raw_special_words) */
+static void
+check_clear_words(int fmt, const float c[4], uint32_t w0, uint32_t w1, uint32_t w2, uint32_t w3, const char *what)
+{
+   bool ok = false;
+   const struct mali_rtfmt *rt = mali_rtfmt_lookup(fmt, &ok);
+   uint32_t w[4] = { 0 };
+   CHECK(ok && rt, "clear words %s: no row", what);
+   if (!ok || !rt)
+      return;
+   mali_rtfmt_clear_words(rt, c, w);
+   CHECK(w[0] == w0 && w[1] == w1 && w[2] == w2 && w[3] == w3, "clear words %s: %08x %08x %08x %08x want %08x %08x %08x %08x", what, w[0], w[1], w[2], w[3], w0, w1, w2, w3);
+}
+
+static void
+test_clear_words(void)
+{
+   const float one[4] = { 1.0f, 0.0f, 0.0f, 1.0f }, neg[4] = { -1.0f, 1.0f, 0.0f, 1.0f };
+   float f[4];
+   uint32_t u[4];
+   check_clear_words(VK_FORMAT_R8_SNORM, one, 0x7f7f7f7f, 0x7f7f7f7f, 0x7f7f7f7f, 0x7f7f7f7f, "R8_SNORM 1");
+   check_clear_words(VK_FORMAT_R8_SNORM, neg, 0x81818181, 0x81818181, 0x81818181, 0x81818181, "R8_SNORM -1");
+   check_clear_words(VK_FORMAT_R8G8_SNORM, neg, 0x7f817f81, 0x7f817f81, 0x7f817f81, 0x7f817f81, "R8G8_SNORM");
+   check_clear_words(VK_FORMAT_R8G8B8A8_SNORM, neg, 0x7f007f81, 0x7f007f81, 0x7f007f81, 0x7f007f81, "R8G8B8A8_SNORM");
+   check_clear_words(VK_FORMAT_A8B8G8R8_SNORM_PACK32, neg, 0x7f007f81, 0x7f007f81, 0x7f007f81, 0x7f007f81, "A8B8G8R8_SNORM");
+   check_clear_words(VK_FORMAT_R16_UNORM, one, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, "R16_UNORM 1");
+   check_clear_words(VK_FORMAT_R16G16_UNORM, one, 0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff, "R16G16_UNORM");
+   check_clear_words(VK_FORMAT_R16G16B16A16_UNORM, one, 0x0000ffff, 0xffff0000, 0x0000ffff, 0xffff0000, "R16G16B16A16_UNORM");
+   check_clear_words(VK_FORMAT_R16_SNORM, one, 0x7fff7fff, 0x7fff7fff, 0x7fff7fff, 0x7fff7fff, "R16_SNORM 1");
+   check_clear_words(VK_FORMAT_R16G16B16A16_SNORM, neg, 0x7fff8001, 0x7fff0000, 0x7fff8001, 0x7fff0000, "R16G16B16A16_SNORM");
+   f[0] = 1.0f; f[1] = 2.0f; f[2] = -0.5f; f[3] = 4.0f;
+   memcpy(u, f, sizeof u);
+   check_clear_words(VK_FORMAT_R32_SFLOAT, f, u[0], u[0], u[0], u[0], "R32_SFLOAT");
+   check_clear_words(VK_FORMAT_R32G32_SFLOAT, f, u[0], u[1], u[0], u[1], "R32G32_SFLOAT");
+   check_clear_words(VK_FORMAT_R32G32B32A32_SFLOAT, f, u[0], u[1], u[2], u[3], "R32G32B32A32_SFLOAT");
+   u[0] = 1; u[1] = 2; u[2] = 3; u[3] = 1;
+   memcpy(f, u, sizeof f);
+   check_clear_words(VK_FORMAT_A2B10G10R10_UINT_PACK32, f, 0x40300801, 0x40300801, 0x40300801, 0x40300801, "A2B10G10R10_UINT");
+   u[0] = 1; u[1] = 2; u[2] = 3; u[3] = 4;   /* A2B10G10R10_SINT: alpha is 2 bits, the value is masked */
+   memcpy(f, u, sizeof f);
+   check_clear_words(VK_FORMAT_A2B10G10R10_SINT_PACK32, f, 0x00300801, 0x00300801, 0x00300801, 0x00300801, "A2B10G10R10_SINT");
+   u[0] = 7; u[1] = 0; u[2] = 0; u[3] = 0;
+   memcpy(f, u, sizeof f);
+   check_clear_words(VK_FORMAT_A8B8G8R8_UINT_PACK32, f, 0x00000007, 0x00000007, 0x00000007, 0x00000007, "A8B8G8R8_UINT");
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -292,6 +338,7 @@ int main(int argc, char **argv)
    }
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
+   test_clear_words();
    fill_compiled();
    if (setup_kb())
       return 1;
