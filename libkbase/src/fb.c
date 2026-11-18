@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 /* kbase_fb: v11 framebuffer + render-target descriptor packers. See kbase_fb.h. */
-#include <stdlib.h>
 #include <errno.h>
 #include <string.h>
 
@@ -100,7 +99,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
 		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
 		put(x, 0, 8, 2, 0);                                  /* MSAA single */
-		put(x, 0, 31, 1, (p->zs_no_store && getenv("MALI_ZS_CTW") && getenv("MALI_ZS_CTW")[0] == '0') ? 0 : 1);   /* Clean Tile Write Enable: write the cleared depth of empty tiles (MALI_ZS_CTW=0: off when depth is not stored; experiment knob) */
+		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */
