@@ -415,6 +415,20 @@ blit_gclass(int pipe, struct gdesc *g)
    return true;
 }
 
+/* Depth/stencil aspect planes blit as the colour format of the same bits (nearest only, copy-exact): Z32F -> R32F, Z16 -> R16 UNORM, 4-byte packed
+ * depth/stencil -> R32 UINT, S8 -> R8 UINT. Other pipe formats pass through. */
+static int
+zs_alias(int pipe)
+{
+   switch (pipe) {
+   case PIPE_FORMAT_Z32_FLOAT: return PIPE_FORMAT_R32_FLOAT;
+   case PIPE_FORMAT_Z16_UNORM: return PIPE_FORMAT_R16_UNORM;
+   case PIPE_FORMAT_S8_UINT: return PIPE_FORMAT_R8_UINT;
+   case PIPE_FORMAT_Z24X8_UNORM: case PIPE_FORMAT_X8Z24_UNORM: case PIPE_FORMAT_X24S8_UINT: case PIPE_FORMAT_S8X24_UINT: return PIPE_FORMAT_R32_UINT;
+   default: return pipe;
+   }
+}
+
 static int
 blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mali_image *di, const VkImageBlit2 *g, VkFilter filter, bool resolve_mode,
          const VkImageResolve2 *rg)
@@ -473,11 +487,15 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
 
    unsigned sn, dn;
    bool sf, df, sbgra, dbgra;
+   int spipe = zs_alias(sp->pipe), dpipe = zs_alias(dp->pipe);
+   bool zs = spipe != sp->pipe;
+   if (zs && !resolve_mode)
+      filter = VK_FILTER_NEAREST;   /* depth/stencil blits are nearest only */
    bool same_pix = sp->pipe == dp->pipe;
    bool plain = b.s[0] == b.d[0] && b.s[1] == b.d[1] && b.s[2] == b.d[2] && b.s[3] == b.d[3];   /* 1:1, no mirror */
-   bool cls = blit_class(sp->pipe, &sn, &sf, &sbgra) && blit_class(dp->pipe, &dn, &df, &dbgra) && sn == dn && sf == df;
+   bool cls = blit_class(spipe, &sn, &sf, &sbgra) && blit_class(dpipe, &dn, &df, &dbgra) && sn == dn && sf == df;
    struct gdesc gs, gd;
-   bool gen = !cls && blit_gclass(sp->pipe, &gs) && blit_gclass(dp->pipe, &gd) && gs.cls == gd.cls && !(gs.cls && resolve_mode);
+   bool gen = !cls && blit_gclass(spipe, &gs) && blit_gclass(dpipe, &gd) && gs.cls == gd.cls && !(gs.cls && resolve_mode);
    if (resolve_mode && ((!cls && !gen) || !same_pix || si->lay.d.samples < 2))
       return -EINVAL;
    if (!resolve_mode && !cls && !gen) {
