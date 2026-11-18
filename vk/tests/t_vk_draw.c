@@ -1346,6 +1346,61 @@ test_msaa(const char *name, int mode)
    return ok;
 }
 
+/* MSAA colour STORE + resolve is built twice, so an occlusion query inside it must be rejected (it would count every sample twice):
+ * EndCommandBuffer fails with VK_ERROR_FEATURE_NOT_PRESENT. The same pass without a query must still record. Works on the fake backend. */
+static int
+test_msaa_store_resolve_oq(void)
+{
+   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");
+   if (!(gate && gate[0] == '1') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
+      printf("{\"test\":\"msaa_store_resolve_oq\",\"skipped\":\"4x MSAA not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n");
+      return 1;
+   }
+   g_msaa = 3;
+   struct scene s = {.mode = MODE_TRI};
+   int made = scene_create(&s, 0);
+   g_msaa = 0;
+   if (!made) return 0;
+   VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_OCCLUSION, .queryCount = 1};
+   VkQueryPool qp;
+   CHECK(CreateQueryPool(dev, &qi, NULL, &qp) == VK_SUCCESS, "CreateQueryPool");
+   for (int withq = 0; withq < 2; withq++) {
+      VkCommandBuffer cb;
+      VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc");
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+      CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+      CmdResetQueryPool(cb, qp, 0, 1);
+      VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp,
+                                  .framebuffer = s.fb, .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+      VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+      VkRect2D sc = {{0, 0}, {W, H}};
+      CmdSetViewport(cb, 0, 1, &vp);
+      CmdSetScissor(cb, 0, 1, &sc);
+      VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+      VkDeviceSize offs[2] = {0, 0};
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      float rot[4] = {1, 0, 0, 0};
+      CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot);
+      if (withq) CmdBeginQuery(cb, qp, 0, VK_QUERY_CONTROL_PRECISE_BIT);
+      CmdDraw(cb, 3, 1, 0, 0);
+      if (withq) CmdEndQuery(cb, qp, 0);
+      CmdEndRenderPass(cb);
+      VkResult r = EndCommandBuffer(cb);
+      if (withq) CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "occlusion query in STORE+resolve pass: EndCommandBuffer = %d, expected rejection", r);
+      else CHECK(r == VK_SUCCESS, "STORE+resolve without a query: EndCommandBuffer = %d", r);
+      FreeCommandBuffers(dev, s.pool, 1, &cb);
+   }
+   printf("{\"test\":\"msaa_store_resolve_oq\",\"ok\":true}\n");
+   DestroyQueryPool(dev, qp, NULL);
+   scene_destroy(&s);
+   return 1;
+}
+
 static int
 test_mode(const char *name, int mode, double expect, double tol)
 {
@@ -2064,6 +2119,7 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_store_resolve")) ok &= test_msaa("msaa_store_resolve", 3);
+   if (ok && CASE_ON("msaa_store_resolve_oq")) ok &= test_msaa_store_resolve_oq();
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();

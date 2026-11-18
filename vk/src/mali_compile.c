@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 21   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -532,6 +532,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       out->fs_can_early_z = info.fs.can_early_z;
       out->fs_can_fpk = info.fs.can_fpk;
       out->fs_sidefx = info.fs.sidefx;
+      out->fs_writes_memory = nir->info.writes_memory;
       out->fs_reads_frag_coord = info.fs.reads_frag_coord;
       out->fs_sample_shading = info.fs.sample_shading;
       out->fs_blend0_type = info.bifrost.blend[0].type;

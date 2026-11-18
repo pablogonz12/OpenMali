@@ -360,6 +360,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    const int32_t *a = cmd->cur.area;
    struct mali_frame *fr = &cmd->cur;
+   /* MSAA colour STORE + resolve is built twice at submit (mali_cmd_submit), so every draw runs its fragment work twice: an
+    * occlusion counter would count double and fragment-shader memory writes/atomics would repeat. Reject those draws. */
+   if (fr->samples == 4 && fr->colour.resolve_va && fr->colour.store &&
+       (cmd->occ_va || (cmd->gfx.fs && cmd->gfx.fs->fs_writes_memory)))
+      unsupported(cmd, "occlusion query or fragment memory writes with MSAA colour STORE + resolve (the frame is built twice)");
    const struct mali_rec *pv = fr->ndraws ? &fr->draws[fr->ndraws - 1] : NULL;
    /* dirty mask: setter bits plus the runtime's dynamic-state dirty bits (viewport and scissor apart from everything else) */
    uint32_t m = cmd->dirty;
