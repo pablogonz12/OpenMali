@@ -1486,7 +1486,7 @@ class Farm:
             self.pub_t = threading.Thread(target=lambda: self.publish_bench(), daemon=True, name="publish")      # not in self.threads: never blocks a phone
             self.pub_t.start()
         if not (self.prebuild_t and self.prebuild_t.is_alive()):     # build the next queued job's driver while the phones are still busy
-            nxt = next((j for j in jobs if j["suite"] != "menu" and not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
+            nxt = next((j for j in B.order_jobs(jobs) if j["suite"] != "menu" and not j.get("so_sha256") and j.get("build") != "failed" and any(p["state"] == "pending" for p in j["parts"].values())), None)
             if nxt:
                 self.prebuild_t = threading.Thread(target=self.build, args=(nxt,), daemon=True, name="prebuild")
                 self.prebuild_t.start()

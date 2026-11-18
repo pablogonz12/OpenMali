@@ -31,10 +31,28 @@ def cmd_submit(a):
     if a.suite == "cases" and not a.case:
         raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
     job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
-                    cases=a.case, repeat=a.repeat, only=a.only)
+                    cases=a.case, repeat=a.repeat, only=a.only, prio=a.prio, keep_old=a.keep_old)
     if dirty:
         print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
+    if not a.keep_old:
+        def anc(old, new):
+            r = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "merge-base", "--is-ancestor", old, new], capture_output=True)
+            return r.returncode == 0
+        for jid, old, cs in L.supersede_old_gates(job, L.list_jobs(), anc):
+            msg = f"supersede: {jid} ({old[:8]}) pending {','.join(cs)} cancelled by newer {job['suite']} {job['id']} ({commit[:8]}); --keep-old opts out"
+            print("farm: " + msg, file=sys.stderr)
+            os.makedirs(os.path.join(L.state_dir(), "logs"), exist_ok=True)
+            with open(os.path.join(L.state_dir(), "logs", "farm-queue.log"), "a") as f:
+                f.write(f"{L.now()} {msg}\n")
     print(job["id"])
+
+
+def cmd_prio(a):
+    j = L.find_job(a.job)
+    old = L.job_prio(j)
+    j["prio"] = a.n
+    L.write_json(L.job_path(j["id"]), j)
+    print(f"{j['id']} ({j['suite']}): priority {old} -> {a.n} (lower runs first; gates 0, bench/menu 10, cases 20)")
 
 
 def print_devices(devs):
@@ -216,6 +234,12 @@ def cmd_digest(a):
             st[p["state"]] = st.get(p["state"], 0) + 1
             if p["state"] == "running":
                 run_now.append(f"{j['id']}/{c} ({j['ref']} {j['suite']}) on {p.get('device')}")
+    by_cls, pos = L.queue_view(jobs, BL.order_jobs)
+    print("queue by class: " + "; ".join(f"{c} {q} pending, {r} running" for c, (r, q) in sorted(by_cls.items())))
+    for j in BL.order_jobs(jobs):
+        ps = [f"{c}#{pos[(j['id'], c)]}" for c in j["parts"] if (j["id"], c) in pos]
+        if ps:
+            print(f"  pending {j['id']} {j['suite']:5} p{L.job_prio(j):<2} {j['ref'][:22]:22} " + " ".join(ps))
     print("queue: " + ", ".join(f"{n} {k}" for k, n in sorted(st.items())) + ("; running " + "; ".join(run_now) if run_now else ""))
     classes = sorted({d["class"] for d in devs.values()})
     def latest(ref, suite, cls):
@@ -540,7 +564,13 @@ def main():
     s.add_argument("--only", default="", help="(--suite smoke) comma list of test cases passed to the test binaries as --only (draw: triangle two depth ...; compute/meta: buf fill img ...)")
     s.add_argument("--case", action="append", default=[], help="(--suite cases) a dEQP case to run; repeatable")
     s.add_argument("--repeat", type=int, default=1, help="(--suite cases) repetitions of the case list")
+    s.add_argument("--prio", type=int, default=None, help="queue priority, lower first (default by suite: smoke/daily 0, bench/menu 10, cases 20)")
+    s.add_argument("--keep-old", action="store_true", help="smoke/daily: do not cancel pending jobs of older commits of the same branch")
     s.set_defaults(f=cmd_submit)
+    s = sp.add_parser("prio", help="change the queue priority of a job (lower runs first; gates 0, bench/menu 10, cases 20)")
+    s.add_argument("job")
+    s.add_argument("n", type=int)
+    s.set_defaults(f=cmd_prio)
     s = sp.add_parser("status")
     s.add_argument("--all", action="store_true")
     s.set_defaults(f=cmd_status)

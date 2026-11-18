@@ -102,8 +102,10 @@ def idle_candidates(now, idle_since, devs, dstate, rows, jobs, tip, disabled, id
 
 
 def order_jobs(jobs):
-    """scheduling order of queued jobs: explicit (submitted by a human/agent) first, then auto bench; each by submission order"""
-    return sorted(jobs, key=lambda j: (1 if j.get("auto") else 0, j.get("seq", 0)))
+    """scheduling order of queued jobs: by priority (farmlib.job_prio: gates 0, bench/menu 10, exploratory cases 20), at equal priority explicit
+    (submitted by a human/agent) before auto, each by submission order"""
+    import farmlib
+    return sorted(jobs, key=lambda j: (farmlib.job_prio(j), 1 if j.get("auto") else 0, j.get("seq", 0)))
 
 
 def pin_ok(job, alias):

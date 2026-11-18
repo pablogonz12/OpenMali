@@ -803,6 +803,73 @@ class T(unittest.TestCase):
         self.farmd()
         self.assertEqual(L.find_job(auto["id"])["parts"]["v11"]["state"], "done")
 
+    def test_queue_priority_defaults_and_order(self):
+        self.assertEqual([L.SUITE_PRIO[x] for x in ("smoke", "daily", "bench", "menu", "cases", "sweep")], [0, 0, 10, 10, 20, 30])
+        cs = L.new_job("b", "1" * 40, False, "cases", ["v11"], {}, "t", cases=["x"])                  # exploratory, oldest
+        bn = L.new_job("main", "2" * 40, False, "bench", ["v11"], {}, "t", auto=True)
+        sm = L.new_job("b", "3" * 40, False, "smoke", ["v11"], {}, "t")
+        dl = L.new_job("b", "4" * 40, False, "daily", ["v11"], {}, "t")
+        self.assertEqual([j["id"] for j in BL.order_jobs(L.list_jobs())], [sm["id"], dl["id"], bn["id"], cs["id"]])   # gates, bench, cases; FIFO inside
+        old = {"id": "old", "suite": "smoke", "seq": 1}                                                # stored before the field existed: suite default
+        self.assertEqual(L.job_prio(old), 0)
+        self.assertEqual(L.job_prio({"suite": "cases", "prio": 5}), 5)
+
+    def test_farm_prio_and_submit_prio(self):
+        _, a, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.y")
+        _, b, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.z", "--prio", "3")
+        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (20, 3))
+        rc, out, _ = self.farm("prio", a, "1")
+        self.assertEqual(rc, 0)
+        self.assertIn("20 -> 1", out)
+        self.assertEqual([j["id"] for j in BL.order_jobs(L.list_jobs())], [a, b])
+        self.assertEqual(self.farm("prio", "nosuchjob", "1")[0], 1)
+        self.nosweep()
+        self.attach("dev-a")
+        self.farmd()                                                                                   # the promoted job runs first
+        self.assertEqual((L.find_job(a)["parts"]["v11"]["state"], L.find_job(b)["parts"]["v11"]["state"]), ("done", "pending"))
+
+    def test_supersede_old_gate_jobs(self):
+        _, old, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11,v13")
+        _, other, _ = self.farm("submit", "HEAD~1", "--suite", "daily", "--need", "v11")              # another suite: stays
+        _, keep, _ = self.farm("submit", "HEAD~2", "--suite", "smoke", "--need", "v11", "--keep-old")
+        j = L.find_job(old)
+        j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
+        L.write_json(L.job_path(old), j)
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        self.assertEqual(rc, 0)
+        self.assertIn("supersede", err)
+        self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
+        self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
+        self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
+        self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        self.assertNotIn("supersede", err2)
+        self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
+
+    def test_supersede_unit_rules(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1)
+        mk = lambda i, c, **kw: dict(base, id=i, commit=c, parts={"v11": {"state": "pending"}, "v13": {"state": "pending"}}, **kw)
+        old, bench, cases, env, only, other_repo, newer = (mk("o", "a"), mk("b", "a", suite="bench"), mk("c", "a", suite="cases"), mk("e", "a", env={"X": "1"}),
+                                                         mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
+        got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
+        self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
+        self.assertEqual(old["parts"]["v13"]["state"], "pending")
+        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
+        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+
+    def test_digest_queue_positions(self):
+        a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
+        g = L.new_job("b", "3" * 40, False, "smoke", ["v11"], {}, "t")
+        by, pos = L.queue_view(L.list_jobs(), BL.order_jobs)
+        self.assertEqual(by, {"v11": (0, 2), "v13": (0, 1)})
+        self.assertEqual((pos[(g["id"], "v11")], pos[(a["id"], "v11")], pos[(a["id"], "v13")]), (1, 2, 1))
+        out = self.farm("digest")[1]
+        self.assertIn("queue by class: v11 2 pending, 0 running; v13 1 pending, 0 running", out)
+        self.assertIn(f"pending {g['id']} smoke p0", out)
+
     def test_auto_bench_beats_sweep(self):
         self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
         self.attach("dev-a")

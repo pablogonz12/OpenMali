@@ -264,7 +264,58 @@ def job_verdict(job):
     return "pass"
 
 
-def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=1, only="", auto=False, pin=""):
+# scheduling priority, lower runs first: merge gates (smoke/daily of a branch head) < bench/menu < exploratory `cases` runs < idle sweep (always last)
+SUITE_PRIO = {"smoke": 0, "daily": 0, "bench": 10, "menu": 10, "cases": 20, "sweep": 30}
+GATE_SUITES = ("smoke", "daily")
+
+
+def job_prio(job):
+    """the job's priority: its `prio` field (farm submit --prio / farm prio), else the default of its suite (jobs stored before the field existed)"""
+    if job.get("prio") is not None:
+        return int(job["prio"])
+    return SUITE_PRIO.get(job.get("suite"), 0)
+
+
+def supersede_old_gates(new, jobs, is_ancestor):
+    """a new gate job (smoke/daily) obsoletes the pending parts of older gate jobs of the same line of commits: same repo, suite, env and
+    --only, an older commit that is an ancestor of the new one (is_ancestor(old, new)), and only the classes the new job covers. Running and
+    finished parts stay. Marks the parts cancelled in the stored jobs and returns [(job id, old commit, [classes])]"""
+    out = []
+    if new.get("suite") not in GATE_SUITES or new.get("auto") or new.get("keep_old"):
+        return out
+    for j in jobs:
+        if (j["id"] == new["id"] or j.get("suite") != new["suite"] or j.get("repo") != new.get("repo") or j.get("auto")
+                or (j.get("env") or {}) != (new.get("env") or {}) or (j.get("only") or "") != (new.get("only") or "")
+                or j["commit"] == new["commit"] or j.get("seq", 0) > new.get("seq", 0) or not is_ancestor(j["commit"], new["commit"])):
+            continue
+        cs = [c for c, p in j["parts"].items() if p["state"] == "pending" and c in new["parts"]]
+        if not cs:
+            continue
+        for c in cs:
+            j["parts"][c]["state"] = "cancelled"
+        write_json(job_path(j["id"]), j)
+        out.append((j["id"], j["commit"], cs))
+    return out
+
+
+def queue_view(jobs, order):
+    """-> ({class: (running, pending)}, {(job id, class): 1-based position among the pending parts of that class in scheduling order}).
+    `order` sorts the jobs (benchlib.order_jobs); a pending part pinned to a phone is counted in its class like the others"""
+    by_cls, pos = {}, {}
+    for j in jobs:
+        for c, p in j["parts"].items():
+            r, q = by_cls.get(c, (0, 0))
+            by_cls[c] = (r + (p["state"] == "running"), q)
+    for j in order(jobs):
+        for c, p in j["parts"].items():
+            if p["state"] == "pending":
+                r, q = by_cls[c]
+                by_cls[c] = (r, q + 1)
+                pos[(j["id"], c)] = q + 1
+    return by_cls, pos
+
+
+def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=1, only="", auto=False, pin="", prio=None, keep_old=False):
     base = time.strftime("%Y%m%d-%H%M%S") + "-" + commit[:8]
     jid, n = base, 1
     while os.path.exists(job_path(jid)):
@@ -272,11 +323,14 @@ def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=
         jid = f"{base}-{n}"
     job = {"id": jid, "ref": ref, "commit": commit, "dirty": dirty, "suite": suite, "env": env, "repo": repo_name,
            "created": now(), "seq": time.time_ns(), "so_sha256": None, "build": None,
+           "prio": int(prio) if prio is not None else SUITE_PRIO.get(suite, 0),
            "parts": {c: {"state": "pending", "attempts": 0, "device": None} for c in need}}
     if suite == "cases":                                  # `farm submit --suite cases --case X --repeat N`: only these cases, N times
         job["cases"], job["repeat"] = list(cases or []), int(repeat)
     if auto:                                              # queued by farmd itself (bench triggers): lower priority than explicit jobs
         job["auto"] = True
+    if keep_old:                                          # farm submit --keep-old: do not cancel pending gate jobs of older commits
+        job["keep_old"] = True
     if pin:                                               # runs only on this phone alias (idle-triggered bench)
         job["pin"] = pin
     if only:                                              # `--suite smoke --only a,b`: only these test cases (t_vk_draw/compute/meta --only)

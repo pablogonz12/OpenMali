@@ -121,3 +121,12 @@ A case that passes in any rerun is flaky (`flaky: [{case, fails, runs}]` in the 
 `farm flaky [--class v11]` prints the list; `farm flaky --seed [--days 3]` adds cases that flipped Pass/Fail on the same commit or driver binary, or on main
 (two or more changes in time order), across stored dailies. Test hooks: `FAKE_FLAKY=N FAKE_FLAKY_PASS_ON=K`, `FAKE_FLAKY_CASES=1`.
 
+
+## Queue priority and supersede
+
+Every job has a `prio` (lower runs first, FIFO inside a level; explicit before auto at equal level). Defaults by suite: `smoke`/`daily` (merge
+gates) 0, `bench`/`menu` 10, `cases` (exploratory, PIPE_DBG runs) 20; the idle sweep only runs when nothing is pending. `farm submit --prio N`
+sets it, `farm prio <job> <n>` changes it later. A new `smoke`/`daily` job cancels the *pending* parts of older gate jobs of the same
+suite, repo, env and `--only` whose commit is an ancestor of the new one (same branch line), for the classes the new job covers; running and
+finished parts are never touched. The line goes to stderr and `<state>/logs/farm-queue.log`. `--keep-old` on the new job opts out.
+`farm digest` prints `queue by class` (pending/running per GPU class) and every pending job with its position per class (`v11#3`).
