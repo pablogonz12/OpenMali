@@ -70,7 +70,7 @@ def cmd_submit(a):
         raise SystemExit("farm: --need selects no class")
     if a.prio is None and a.suite == "cases" and len(a.case) == 1 and a.repeat <= 1:
         a.prio = L.SINGLE_CASE_PRIO                              # a lane's one-case diagnostic must not wait behind a 15 min full cases run
-    if not a.rerun and not dirty:                                # the identical job already queued/running: return it, never double-queue
+    if not a.rerun:                                              # (dirty edits are never tested, so the commit alone identifies the job) the identical job already queued/running: return it, never double-queue
         inflight = L.find_inflight(L.list_jobs(), commit, a.suite, need, L.parse_env(a.env), a.only, a.case, a.repeat)
         if inflight:
             print(f"farm: same commit/suite/class is already {L.job_verdict(inflight)} as {inflight['id']}; not resubmitting (--rerun forces)", file=sys.stderr)
