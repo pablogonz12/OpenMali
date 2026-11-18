@@ -64,7 +64,7 @@ Host gamescope 3.17.0.
 | maintenance1, create_renderpass2, dynamic_rendering, descriptor_update_template | hard (core-promoted) | have | - |
 | robustness2.nullDescriptor, timeline semaphore, external_memory_fd | hard | have | - |
 | **KHR_maintenance5** | hard | **have (round 4)** | done |
-| `have_KHR_maintenance1` extension flag (zink checks the extension, not the version) | base (warns) | missing | S |
+| `have_KHR_maintenance1` extension flag (zink checks the extension, not the version) | base (warns) | **have (round 4)**: name advertised, `vkTrimCommandPoolKHR` called in `t_steam_caps` | done |
 | `logicOp` | base (warns) | missing; Mali blend descriptors have a logic-op mode | M |
 | `EXT_custom_border_color` | base (warns) | missing; sampler descriptors carry the border colour | M |
 | `EXT_line_rasterization` | base (warns) | missing; only part of the modes maps to hardware | M |
@@ -74,7 +74,7 @@ Host gamescope 3.17.0.
 
 `t_steam_caps` has this list; `check.sh` pins the count of missing items (`ZINK_MISSING`).
 
-**Order:** (1) maintenance5 (done), (2) the `maintenance1` flag (S), (3) `logicOp`, `custom_border_color`, `line_rasterization` (each only with a test and only when the hardware path works), (4) `EXT_physical_device_drm` once there is a real render node, (5) then whatever the next GL context creation shows.
+**Order:** (1) maintenance5 (done), (2) the `maintenance1` flag (done), (3) `logicOp`, `custom_border_color`, `line_rasterization` (each only with a test and only when the hardware path works), (4) `EXT_physical_device_drm` once there is a real render node, (5) then whatever the next GL context creation shows.
 
 **Host result (fake v10, headless gamescope Xwayland, `LIBGL_KOPPER_DRI2=1` because host Xwayland has no DRI3):** with maintenance5 zink creates its screen (`vkCreateDevice` is reached) and prints the base-requirement warning for `logicOp`, `have_KHR_maintenance1`, `custom_border_color`, `line_rasterization`. `glxinfo` then segfaults in context creation: kopper calls `vkCreateXcbSurfaceKHR` through a NULL pointer (struct sType 1000005000) because the x86 host ICD has no X11 surface extension. That is a host-build limit, not a driver bug.
 

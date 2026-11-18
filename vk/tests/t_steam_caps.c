@@ -231,7 +231,7 @@ main(int argc, char **argv)
 
    /* gamescope's device request */
    static const char *const gs_exts[] = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf", "VK_KHR_external_semaphore_fd",
-                                         "VK_EXT_robustness2", "VK_EXT_image_drm_format_modifier", "VK_EXT_queue_family_foreign"};
+                                         "VK_EXT_robustness2", "VK_EXT_image_drm_format_modifier", "VK_EXT_queue_family_foreign", "VK_KHR_maintenance1"};
    unsigned ngs = 0;
    const char *gs_use[8];
    int gs_ok = 1;
@@ -282,6 +282,11 @@ main(int argc, char **argv)
       VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = 0};
       VkCommandPool pool;
       CHECK(d_CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "pool");
+      if (has(eps, ne, "VK_KHR_maintenance1")) {   /* zink's extension flag: the promoted entry point must be callable on a device that enabled the name */
+         PFN_vkTrimCommandPoolKHR trim = (PFN_vkTrimCommandPoolKHR)GetDeviceProcAddr(dev, "vkTrimCommandPoolKHR");
+         CHECK(trim != NULL, "vkTrimCommandPoolKHR resolves with VK_KHR_maintenance1 enabled");
+         if (trim) trim(dev, pool, 0);
+      }
       VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
       VkCommandBuffer cb;
       CHECK(d_AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "cmdbuf");
