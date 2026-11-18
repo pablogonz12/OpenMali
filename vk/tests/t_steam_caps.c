@@ -218,11 +218,24 @@ main(int argc, char **argv)
       CHECK(expect_zink < 0 || (int)zmiss == expect_zink, "zink items missing: %u, expected %d", zmiss, expect_zink);
    }
 
+   /* zink 26.0.8 (the DroidDeck guest's Mesa, zink_device_info.py): these five are required=True and matched by extension NAME only; the
+    * api version does not stand in for them. A missing one makes zink_get_physical_device_info fail, the debug_printf is compiled out of
+    * release builds, and glx prints only "failed to create drisw screen". */
+   {
+      static const char *const req[] = {"VK_KHR_maintenance1", "VK_KHR_create_renderpass2", "VK_KHR_imageless_framebuffer",
+                                        "VK_KHR_dynamic_rendering", "VK_KHR_descriptor_update_template"};
+      for (unsigned i = 0; i < sizeof req / sizeof req[0]; i++) {
+         int h = has(eps, ne, req[i]);
+         printf("%s hard zink 26.0.8 by-name %s\n", h ? "ok     " : "MISSING", req[i]);
+         CHECK(h, "zink 26.0.8 requires the extension name %s", req[i]);
+      }
+   }
+
    /* an advertised extension and its feature bit come together */
    struct { const char *ext; VkBool32 f; } pairs[] = {
       {"VK_KHR_present_id", pid.presentId}, {"VK_KHR_present_wait", pw.presentWait},
       {"VK_EXT_swapchain_maintenance1", sm1.swapchainMaintenance1}, {"VK_EXT_robustness2", rb2.nullDescriptor},
-      {"VK_KHR_dynamic_rendering", f13.dynamicRendering}, {"VK_KHR_synchronization2", f13.synchronization2}, {"VK_KHR_maintenance4", f13.maintenance4},
+      {"VK_KHR_dynamic_rendering", f13.dynamicRendering}, {"VK_KHR_imageless_framebuffer", f12.imagelessFramebuffer}, {"VK_KHR_synchronization2", f13.synchronization2}, {"VK_KHR_maintenance4", f13.maintenance4},
       {"VK_EXT_private_data", f13.privateData}, {"VK_KHR_buffer_device_address", f12.bufferDeviceAddress}, {"VK_EXT_scalar_block_layout", f12.scalarBlockLayout},
       {"VK_EXT_host_query_reset", f12.hostQueryReset}, {"VK_KHR_uniform_buffer_standard_layout", f12.uniformBufferStandardLayout},
    };

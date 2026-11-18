@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|spec|maint5|cbc|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -22,7 +22,7 @@
 
 static int g_fail, g_fake;
 static const char *g_only, *g_spv = "shader";
-static int g_ycbcr;
+static int g_ycbcr, g_imageless;
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static VkPhysicalDeviceFeatures g_feat;
@@ -67,7 +67,7 @@ static float g_lw = 1.0f;
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
-   X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion)
+   X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -302,6 +302,58 @@ static int
 near(const uint8_t *p, int r, int g, int b, int a, int tol)
 {
    return abs(p[0] - r) <= tol && abs(p[1] - g) <= tol && abs(p[2] - b) <= tol && abs(p[3] - a) <= tol;
+}
+
+/* ---------------------------------------------------------------- imageless framebuffer + renderpass2 (zink 26.0.8 requires both extension names) */
+/* A clear-only pass built with vkCreateRenderPass2, an imageless framebuffer (attachment image info only) and the view supplied at
+ * vkCmdBeginRenderPass2 through VkRenderPassAttachmentBeginInfo. The clear colour must land in the image (hardware only). */
+static int
+test_imageless(void)
+{
+   if (!g_imageless) { printf("{\"test\":\"imageless\",\"skipped\":\"imagelessFramebuffer not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkAttachmentDescription2 ad = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, .format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                  .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference2 cref = {.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+   VkSubpassDescription2 sp = {.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2, .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo2 rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, .attachmentCount = 1, .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp2;
+   CHECK(CreateRenderPass2(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "vkCreateRenderPass2");
+   VkFormat vf = VK_FORMAT_R8G8B8A8_UNORM;
+   VkFramebufferAttachmentImageInfo ai = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO, .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                          .width = W, .height = H, .layerCount = 1, .viewFormatCount = 1, .pViewFormats = &vf};
+   VkFramebufferAttachmentsCreateInfo fa = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO, .attachmentImageInfoCount = 1, .pAttachmentImageInfos = &ai};
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .pNext = &fa, .flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT,
+                                  .renderPass = rp2, .attachmentCount = 1, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "imageless framebuffer");
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   VkClearValue cv = {.color = {{0.2f, 0.4f, 0.6f, 1.0f}}};
+   VkRenderPassAttachmentBeginInfo ab = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO, .attachmentCount = 1, .pAttachments = &t.view};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .pNext = &ab, .renderPass = rp2, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   VkSubpassBeginInfo sb = {.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO, .contents = VK_SUBPASS_CONTENTS_INLINE};
+   VkSubpassEndInfo se = {.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO};
+   CmdBeginRenderPass2(cb, &rb, &sb);
+   CmdEndRenderPass2(cb, &se);
+   if (!cb_submit(&t, cb)) return 0;
+   int ok = 1;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, 100, 100);
+      ok = near(p, 51, 102, 153, 255, 3);
+      CHECK(ok, "imageless clear pixel %u,%u,%u,%u expected 51,102,153,255", p[0], p[1], p[2], p[3]);
+   }
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp2, NULL);
+   tgt_destroy(&t);
+   printf("{\"test\":\"imageless\",\"ok\":%s%s}\n", ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend (calls ran)\"" : "");
+   return ok;
 }
 
 /* ---------------------------------------------------------------- firstinst / idx32 */
@@ -2259,6 +2311,7 @@ main(int argc, char **argv)
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
    g_ycbcr = f11.samplerYcbcrConversion;
+   g_imageless = f12.imagelessFramebuffer;
    g_ifp2 = (PFN_vkGetPhysicalDeviceImageFormatProperties2)gipa(inst, "vkGetPhysicalDeviceImageFormatProperties2");
    g_fp2 = (PFN_vkGetPhysicalDeviceFormatProperties2)gipa(inst, "vkGetPhysicalDeviceFormatProperties2");
    g_i16 = f2.features.shaderInt16 && f11.storageBuffer16BitAccess;
@@ -2279,6 +2332,7 @@ main(int argc, char **argv)
    VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
+   e12.imagelessFramebuffer = f12.imagelessFramebuffer;
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceMaintenance5FeaturesKHR em5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &e11, .maintenance5 = g_m5};
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor};
@@ -2307,6 +2361,7 @@ main(int argc, char **argv)
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
+   if (ok && CASE_ON("imageless")) ok &= test_imageless();
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
