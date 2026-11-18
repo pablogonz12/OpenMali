@@ -27,8 +27,12 @@ def new_hold(alias, max_s, prio=DEFAULT_PRIO, lease=False, who=""):
     hid, n = time.strftime("h%Y%m%d-%H%M%S") + f"-{os.getpid()}", 1
     h = {"id": hid, "device": alias, "prio": int(prio), "max_s": int(max_s), "lease": bool(lease), "who": who, "state": "queued",
          "created": L.now(), "seq": time.time_ns(), "auto": 0}
-    L.write_json(path(hid), h)
-    touch(hid, "hb")
+    touch(hid, "hb")                                  # first the heartbeat: farmd must never see a queued hold without one and cancel a live caller
+    try:
+        L.write_json(path(hid), h)
+    except BaseException:
+        os.unlink(path(hid, "hb"))
+        raise
     return h
 
 
