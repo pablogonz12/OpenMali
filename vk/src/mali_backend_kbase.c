@@ -194,12 +194,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    if (flags & MALI_BO_EXPORT) {
       /* dma-heap buffer imported into the GPU: the heap decides cacheability (system = cached,
        * system-uncached = write-combined). */
-      static int wsi_cached = -1;   /* MALI_WSI_HEAP=cached: experiment knob, exported images from the cached system heap (default unchanged: uncached) */
-      if (wsi_cached < 0) {
-         const char *wh = getenv("MALI_WSI_HEAP");
-         wsi_cached = wh && !strcmp(wh, "cached");
-      }
-      int fd = kb_dmaheap_alloc(((flags & MALI_BO_CACHED) || wsi_cached) ? KB_HEAP_SYSTEM : KB_HEAP_SYSTEM_UNCACHED, size);
+      int fd = kb_dmaheap_alloc((flags & MALI_BO_CACHED) ? KB_HEAP_SYSTEM : KB_HEAP_SYSTEM_UNCACHED, size);
       if (fd < 0) {
          free(bo);
          return fd;
@@ -212,7 +207,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       r = kb_bo_alloc(k->ctx, size, KB_BO_GPU_RD | KB_BO_GPU_EX, bo);
    } else {
       r = kb_bo_alloc(k->ctx, size,
-                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) | ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0), bo);
+                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0), bo);
    }
    if (r != 0) {
       free(bo);
@@ -452,7 +447,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot))
+      if (b->host_lazy || (hot_only && !b->hot))
          continue;
       struct {
          uint64_t handle, user_addr, size;

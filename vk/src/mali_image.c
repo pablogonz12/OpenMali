@@ -335,14 +335,12 @@ mali_DestroyImage(VkDevice _dev, VkImage h, const VkAllocationCallbacks *alloc)
 }
 
 static void
-fill_reqs(struct mali_device *dev, uint64_t size, uint64_t align, VkImageUsageFlags usage, VkMemoryRequirements2 *r)
+fill_reqs(struct mali_device *dev, uint64_t size, uint64_t align, VkMemoryRequirements2 *r)
 {
    const struct mali_physical_device *pd = mali_device_pdev(dev);
    r->memoryRequirements.size = align_up(size, align);
    r->memoryRequirements.alignment = align;
-   /* types 0,1 are COHERENT_LOCAL (v10/v11/v13 default, needed for cross-core atomics); type 2 is not. Storage images may take atomics: keep them on 0/1. */
-   const uint32_t all = (1u << pd->memory.memoryTypeCount) - 1;
-   r->memoryRequirements.memoryTypeBits = (usage & VK_IMAGE_USAGE_STORAGE_BIT) ? (all & 3u) : (all & 4u);
+   r->memoryRequirements.memoryTypeBits = (1u << pd->memory.memoryTypeCount) - 1;
    vk_foreach_struct(st, e, r->pNext) {
       if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
          VkMemoryDedicatedRequirements *dr = e;
@@ -357,7 +355,7 @@ mali_GetImageMemoryRequirements2(VkDevice _dev, const VkImageMemoryRequirementsI
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_image, img, info->image);
-   fill_reqs(dev, img->lay.size, img->lay.alignment, img->vk.usage, r);
+   fill_reqs(dev, img->lay.size, img->lay.alignment, r);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -368,7 +366,7 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
    struct mali_bc_layout bc;
    bool is_bc;
    if (image_layout(dev_arch(dev), info->pCreateInfo, &lay, &bc, NULL, &is_bc) != 0) memset(&lay, 0, sizeof lay), lay.alignment = MALI_IMAGE_ALIGN;
-   fill_reqs(dev, lay.size, lay.alignment, info->pCreateInfo->usage, r);
+   fill_reqs(dev, lay.size, lay.alignment, r);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

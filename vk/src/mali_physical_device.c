@@ -254,7 +254,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
     * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
    pdev->memory = (VkPhysicalDeviceMemoryProperties){
-      .memoryTypeCount = 3,
+      .memoryTypeCount = 2,
       .memoryTypes = {
          {.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -264,10 +264,6 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                            VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
           .heapIndex = 0},
-         {.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-          .heapIndex = 0},   /* same flags as type 0: images (not storage) land here, no COHERENT_LOCAL (GPU-ms: GPU-GAP.md) */
       },
       .memoryHeapCount = 1,
       .memoryHeaps = {{.size = gpu->heap_bytes, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
