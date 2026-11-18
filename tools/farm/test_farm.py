@@ -1257,11 +1257,14 @@ class T(unittest.TestCase):
                                                          mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
         L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
         new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
+        o2, o3 = mk("o2", "a", suite="cases"), mk("o3", "a")
+        for j in (old, bench, cases, env, only, other_repo, newer, o2, o3):                             # supersede now updates the job FILE under the job lock
+            L.write_json(L.job_path(j["id"]), j)
         got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
         self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
-        self.assertEqual(old["parts"]["v13"]["state"], "pending")
-        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
-        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+        self.assertEqual({c: p["state"] for c, p in L.find_job("o")["parts"].items()}, {"v11": "cancelled", "v13": "pending"})
+        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [o2], lambda o, n: True), [])
+        self.assertEqual(L.supersede_old_gates(new, [o3], lambda o, n: False), [])           # not an ancestor: another branch
 
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
