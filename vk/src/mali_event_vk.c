@@ -12,6 +12,7 @@
 #include "mali_event_vk.h"
 #include "mali_meta.h"
 #include "mali_query.h"
+#include "mali_queue.h"
 #include "vk_alloc.h"
 #include "vk_device.h"
 #include "vk_object.h"
@@ -32,7 +33,7 @@ mali_CreateEvent(VkDevice _dev, const VkEventCreateInfo *ci, const VkAllocationC
    struct mali_event *e = vk_object_zalloc(dev, alloc, sizeof *e, VK_OBJECT_TYPE_EVENT);
    if (!e)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
-   e->cpu = mali_meta_dev_alloc(64, 64, &e->va);
+   e->cpu = mali_hw_meta_alloc(container_of(dev, struct mali_device, vk), 64, 64, &e->va);
    if (!e->cpu) {
       vk_object_free(dev, alloc, e);
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -49,7 +50,7 @@ mali_DestroyEvent(VkDevice _dev, VkEvent h, const VkAllocationCallbacks *alloc)
    struct mali_event *e = mali_event_from_handle(h);
    if (!e)
       return;
-   mali_meta_dev_free((void *)e->cpu, e->va, 64);
+   mali_hw_meta_free(container_of(dev, struct mali_device, vk), (void *)e->cpu);
    vk_object_free(dev, alloc, e);
 }
 
