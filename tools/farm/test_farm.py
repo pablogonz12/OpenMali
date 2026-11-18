@@ -1223,7 +1223,7 @@ class T(unittest.TestCase):
         self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (L.SINGLE_CASE_PRIO, 3))
         rc, out, _ = self.farm("prio", a, "1")
         self.assertEqual(rc, 0)
-        self.assertIn("20 -> 1", out)
+        self.assertIn("5 -> 1", out)
         self.assertEqual([j["id"] for j in BL.order_jobs(L.list_jobs())], [a, b])
         self.assertEqual(self.farm("prio", "nosuchjob", "1")[0], 1)
         self.nosweep()
@@ -1637,6 +1637,7 @@ class T(unittest.TestCase):
         self.attach("dev-a")
         _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
         self.farmd()
+        self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
         self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
 
     def test_find_passed_unit(self):
