@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open 6de4ce393 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 342.2 | 129.2 | 0 | 0.78 | 1.89 | 488.3 | 0.94 | 1.62 | present immediate/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | ours | 6de4ce393 | triangle-3k | 187.7 | 128.1 | 0 | 1.33 | 1.90 | 663.0 | 0.69 | 1.22 | present mailbox/3img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_HF=0+MALI_NOTF=1 | 2026-11-18 |
+
 ### mali-open 6bfa1cc9f (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -90,6 +97,15 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 ## cube (GPU-heavy)
+
+### mali-open 6de4ce393 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 325.8 | 93.1 | 0 | 0.01 | 2.19 | 768.9 | 0.01 | 1.24 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | ours | 6de4ce393 | cube-720p | 113.1 | 84.7 | 0 | 1.06 | 5.44 | 657.3 | 0.53 | 1.40 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 325.3 | 91.6 | 0 | 0.02 | 2.19 | 763.7 | 0.01 | 1.26 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | ours | 6de4ce393 | cube-native | 110.7 | 82.1 | 0 | 1.05 | 5.48 | 651.0 | 0.59 | 1.40 | present fifo/4img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 
 ### mali-open 6bfa1cc9f (2026-11-18)
 
