@@ -468,6 +468,25 @@ class T(unittest.TestCase):
         self.assertIn("adb tcpip 5555", out)
         self.assertNotIn("dev-a is unreachable", out)
 
+    def test_gate_skips_down_phone(self):
+        """a down phone's smoke part is 'skipped: device down': the gate verdict ignores it, digest and wait show it, cases stay pending"""
+        _, g, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
+        _, cs, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v13", "--case", "dEQP-VK.x")
+        self.attach()
+        self.farmd()
+        self.backdate("dev-b", 5)
+        self.farmd()
+        j = L.find_job(g)
+        self.assertEqual(j["parts"]["v13"]["state"], "skipped")
+        self.assertEqual(L.skipped_parts(j), [("v13", "skipped: device down")])
+        self.assertEqual(L.job_verdict(j), "skipped")
+        self.assertEqual(L.find_job(cs)["parts"]["v13"]["state"], "pending")
+        self.assertIn("SKIPPED " + g, self.farm("digest")[1])
+        rc, out, err = self.farm("wait", g, "--timeout", "5")
+        self.assertIn("WARNING: v13 part skipped: device down", err)
+        mixed = {"parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "skipped"}}}
+        self.assertEqual(L.job_verdict(mixed), "pass")                        # does not block the gate
+
     def test_compare(self):
         c, nf, npass = L.compare({"a": "Pass", "b": "Pass", "c": "Fail"}, {"a": "Pass", "b": "Crash", "c": "Pass"})
         self.assertEqual((nf, npass), ([["b", "Crash"]], ["c"]))

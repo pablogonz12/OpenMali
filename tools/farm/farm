@@ -287,9 +287,12 @@ def wait_line(j):
             run = L.read_json(rp) if os.path.exists(rp) else {}
             nf = len(run.get("new_failures") or [])
             parts.append(f"{c}:{p.get('verdict')}" + (f"({nf} new)" if nf else "") + (f" [{run['notes'][:60]}]" if run.get("notes") and p.get("verdict") != "pass" else ""))
+        elif p["state"] == "skipped":
+            parts.append(f"{c}:{p.get('note') or L.SKIP_DOWN}")
         else:
             parts.append(f"{c}:{p['state']}")
-    return f"{j['id']} {j['suite']} {j['commit'][:7]} {L.job_verdict(j)} " + " ".join(parts)
+    warn = "".join(f"\n  WARNING: {c} part {n}; merge without it only if its smoke runs after the merge" for c, n in L.skipped_parts(j))
+    return f"{j['id']} {j['suite']} {j['commit'][:7]} {L.job_verdict(j)} " + " ".join(parts) + warn
 
 
 def cmd_wait(a):
@@ -305,6 +308,8 @@ def cmd_wait(a):
         if not multi:
             if done[0]:
                 print(vs[0])
+                for c, n in L.skipped_parts(js[0]):
+                    print(f"farm: WARNING: {c} part {n}; merge without it only if its smoke runs after the merge", file=sys.stderr)
                 return {"pass": 0, "fail": 1}.get(vs[0], 2)
         elif (any(done) if a.any else all(done)):
             for j, d in zip(js, done):
@@ -435,6 +440,9 @@ def cmd_digest(a):
         ps = [f"{c}#{pos[(j['id'], c)]}" for c in j["parts"] if (j["id"], c) in pos]
         if ps:
             print(f"  pending {j['id']} {j['suite']:5} p{L.job_prio(j):<2} {j['ref'][:22]:22} " + " ".join(ps))
+    for j in jobs[-30:]:
+        for c, n in L.skipped_parts(j):
+            print(f"  SKIPPED {j['id']} {j['suite']:5} {j['ref'][:22]:22} {c}: {n}")
     print("queue: " + ", ".join(f"{n} {k}" for k, n in sorted(st.items())) + ("; running " + "; ".join(run_now) if run_now else ""))
     classes = sorted({d["class"] for d in devs.values()})
     def latest(ref, suite, cls):

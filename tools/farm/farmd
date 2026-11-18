@@ -1532,6 +1532,21 @@ class Farm:
         if L.job_verdict(j) != "pending":
             self.cleanup_tree(jid)
 
+    def skip_down_parts(self, jobs):
+        """a gate part (smoke/daily) whose class has no phone that is not 'down' is marked skipped ('skipped: device down') so the gate
+        does not wait for a phone that is not coming back soon; the digest and `farm wait` show it. Other suites stay pending."""
+        for j in jobs:
+            if j.get("suite") not in L.GATE_SUITES:
+                continue
+            for cls, p in j["parts"].items():
+                if p["state"] != "pending":
+                    continue
+                devs = [al for al, d in self.devs.items() if d["class"] == cls]
+                if devs and all(self.dstate.get(al, {}).get("status") == "down" for al in devs):
+                    self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="skipped", note=L.SKIP_DOWN))
+                    p["state"] = "skipped"
+                    log(f"{j['id']}/{cls} {L.SKIP_DOWN} ({','.join(devs)}); gate not blocked")
+
     # ---------- idle sweep (full dEQP-VK list on phones with nothing queued)
     def real_pending(self, cls):
         return any(c == cls and p["state"] == "pending" for j in L.list_jobs() for c, p in j["parts"].items())
@@ -1867,6 +1882,7 @@ class Farm:
                 L.write_json(H.path(h["id"]), h)
                 self.restore_pending.add(h["device"])
         H.gc()
+        self.skip_down_parts(jobs)
         for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
                 if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls) for t in self.threads.values()):
