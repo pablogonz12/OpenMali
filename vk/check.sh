@@ -11,7 +11,7 @@ set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
 SAN=${MALI_SAN:-0}
 if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san
-elif [ "${MALI_COV:-0}" = 1 ]; then export MALI_TARGET=native-cov; OUT=$V/out/native-cov
+elif [ "${MALI_COV:-0}" = 1 ]; then export MALI_TARGET=native-cov; OUT=$V/out/native-cov   # gcov build (tools/coverage.sh)
 else OUT=$V/out/native; fi
 build=1; verbose=0; bless=0; deqp_host=0
 for a in "$@"; do
