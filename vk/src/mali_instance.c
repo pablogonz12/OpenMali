@@ -74,8 +74,31 @@ mali_trace_addr(const char *what, uintptr_t a)
    if (dladdr((void *)a, &di) && di.dli_fname)
       mali_trace("  %s=0x%lx %s+0x%lx%s%s", what, (unsigned long)a, di.dli_fname, (unsigned long)(a - (uintptr_t)di.dli_fbase),
                  di.dli_sname ? " " : "", di.dli_sname ? di.dli_sname : "");
-   else
+   else {   /* not in any loaded object (JIT, a stripped or unmapped one): name the mapping that holds it */
+      char line[256], buf[4096];
+      int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC), len = 0;
+      bool done = false;
       mali_trace("  %s=0x%lx (no module)", what, (unsigned long)a);
+      if (fd < 0)
+         return;
+      for (ssize_t n; !done && (n = read(fd, buf, sizeof buf)) > 0;) {
+         for (ssize_t i = 0; i < n && !done; i++) {
+            if (buf[i] != '\n') {
+               if (len < (int)sizeof line - 1)
+                  line[len++] = buf[i];
+               continue;
+            }
+            line[len] = 0;
+            len = 0;
+            unsigned long lo = 0, hi = 0;
+            if (sscanf(line, "%lx-%lx", &lo, &hi) == 2 && a >= lo && a < hi) {
+               mali_trace("    maps: %s", line);
+               done = true;
+            }
+         }
+      }
+      close(fd);
+   }
 }
 
 /* The faulting frame itself: glibc's backtrace() from inside the handler stops at the signal trampoline, so it never names the code that

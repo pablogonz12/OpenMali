@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <sys/mman.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,6 +151,26 @@ int main(int argc, char **argv)
    CHECK(t && strstr(t, "FATAL signal 11"), "no FATAL line:\n%s", t ? t : "(no file)");
    CHECK(t && (strstr(t, "addr=(nil)") || strstr(t, "addr=0x0")), "FATAL line has no fault address:\n%s", t ? t : "");
    CHECK(t && strstr(t, "  pc=0x"), "no pc line:\n%s", t ? t : "");
+   unlink(path);
+
+#ifdef __x86_64__
+   /* 4. a fault in anonymous executable memory (JIT): no module, the handler names the mapping */
+   unlink(path);
+   c = fork();
+   if (c == 0) {
+      setenv("MALI_TRACE", path, 1);
+      void *l = dlopen(so, RTLD_NOW | RTLD_LOCAL);
+      if (!l)
+         _exit(3);
+      unsigned char *m = mmap(0, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      memcpy(m, "\x48\x31\xc0\x8b\x00", 5);   /* xor rax,rax; mov eax,[rax] */
+      ((void (*)(void))m)();
+      _exit(5);
+   }
+   waitpid(c, &ws, 0);
+   t = slurp(path);
+   CHECK(t && strstr(t, "(no module)") && strstr(t, "    maps: "), "no mapping line for a pc outside every module:\n%s", t ? t : "(no file)");
+#endif
    unlink(path);
 
    printf("%s\n", g_fail ? "FAIL" : "OK t_vk_trace");
