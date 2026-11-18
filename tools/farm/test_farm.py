@@ -663,7 +663,7 @@ class T(unittest.TestCase):
         f.shell_route = lambda dev: False
         f.alive = lambda dev: True
         f.phone_env = lambda dev, ex=None: {}
-        f.verify_so = lambda job, dev, path, key="so_sha256": (True, "x")
+        f.verify_so = lambda job, dev, path, key="so_sha256": (False, "7ce07a55b210")        # empty run + a stale .so on the phone: still UI-BLOCKED, 2 attempts
         job = {"id": "j1", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
         dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
         orig = m.L.run_watched
@@ -727,7 +727,7 @@ class T(unittest.TestCase):
         self.assertEqual(len(run["new_failures"]), 2)
         self.assertIn("baseline branch ", run["notes"])
         self.assertIn(" + main ", run["notes"])
-        self.assertRegex(run["notes"], r"[23] cases Pass only on main")                 # 3 while local main still has the pre-refresh baseline
+        self.assertRegex(run["notes"], r"(?<!\d)[23] cases Pass only on main")                 # 3 while local main still has the pre-refresh baseline
 
     def test_bless(self):
         repo = os.path.dirname(os.path.dirname(HERE))
