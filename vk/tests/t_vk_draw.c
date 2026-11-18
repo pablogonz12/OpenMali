@@ -72,6 +72,8 @@ static uint32_t g_share_off[8], g_share_fi[8];
 static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between draws, 3 = the same pipeline rebound before every draw
                         (push constants: the caller passes different rot[] values) */
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
+static int g_ind_upd;   /* mdi_gpu: the indirect args are zero in the host-written buffer and written by CmdUpdateBuffer in the command buffer */
+static const uint32_t g_ind_args[10] = {3, 1, 0, 3, 0, 3, 1, 3, 3, 0};   /* two VkDrawIndexedIndirectCommand: triangle {0,1,2} then {2,1,3} */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
@@ -115,7 +117,7 @@ case_skipped(const char *n)
    X(DestroyPipeline) X(CreateCommandPool) X(DestroyCommandPool) X(ResetCommandPool)                \
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
-   X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
+   X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect) X(CmdUpdateBuffer)  \
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
@@ -384,6 +386,8 @@ scene_create(struct scene *s, int depth)
    /* index buffer: u16 {0,1,2,2,1,3} at byte 0, u32 same at byte 16 */
    VkBufferCreateInfo ibi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 128,
                              .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+   if (g_ind_upd)
+      ibi.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
    CHECK(CreateBuffer(dev, &ibi, NULL, &s->ib) == VK_SUCCESS, "index buffer");
    GetBufferMemoryRequirements(dev, s->ib, &mr);
    VkMemoryAllocateInfo ia = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
@@ -397,8 +401,11 @@ scene_create(struct scene *s, int depth)
    memcpy(ip, i16, sizeof i16);
    memcpy(ip + 16, i32, sizeof i32);
    /* R4: two DrawIndexedIndirect commands at byte 64 (stride 20): triangle 1 {0,1,2}, triangle 2 {2,1,3} */
-   static const uint32_t ind[10] = {3, 1, 0, 3, 0, 3, 1, 3, 3, 0};
-   memcpy(ip + 64, ind, sizeof ind);
+   const uint32_t *ind = g_ind_args;
+   if (g_ind_upd)
+      memset(ip + 64, 0, sizeof g_ind_args);   /* the host leaves zeros: only the GPU-side CmdUpdateBuffer at record/execute time makes the draws non-empty */
+   else
+      memcpy(ip + 64, ind, sizeof g_ind_args);
    UnmapMemory(dev, s->ibmem);
    CHECK(BindBufferMemory(dev, s->ib, s->ibmem, 0) == VK_SUCCESS, "bind ib");
 
@@ -2052,6 +2059,11 @@ main(int argc, char **argv)
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
    if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);
+   if (ok && g_only && !strcmp(g_only, "mdi_gpu")) {   /* run with MALI_IND_GPU=1 to force the CS-side argument load (host-mapped memory otherwise takes the CPU path) */
+      g_ind_upd = 1;
+      ok &= test_mode("mdi_gpu", MODE_MDI, 16384.0, 0.5);
+      g_ind_upd = 0;
+   }
    if (ok && CASE_ON("scissor")) ok &= test_mode("scissor", MODE_SCISSOR, 8192.0, 0.5);
    if (ok && CASE_ON("viewport")) ok &= test_mode("viewport", MODE_VPORT, 8192.0, 0.5);
    if (ok && CASE_ON("multivp")) {

@@ -1072,6 +1072,18 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
             E(&c, kb_cs_req_res(KB_CS_RES_IDVS | KB_CS_RES_TILER));
             E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_STARTED));
          }
+         if (d->ind_va) {
+            /* GPU-written VkDraw[Indexed]IndirectCommand: load the draw parameters at run time (r62:63 = address, free in IDVS CS) */
+            const unsigned ci = v13 ? KB13_IDVS_INDEX_COUNT : KB_IDVS_INDEX_COUNT;
+            M64(&c, 62, d->ind_va);
+            E(&c, kb_cs_load_multiple(ci, 62, 0x3, 0));                                  /* count, instanceCount (regs 33, 34 adjacent) */
+            if (d->indexed) {
+               E(&c, kb_cs_load_multiple(ci + 2, 62, 0x1, 8));                           /* firstIndex -> INDEX_OFFSET */
+               E(&c, kb_cs_load_multiple(ci + 3, 62, 0x3, 12));                          /* vertexOffset, firstInstance */
+            } else
+               E(&c, kb_cs_load_multiple(ci + 3, 62, 0x3, 8));                           /* firstVertex, firstInstance */
+            E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+         }
          M64(&c, v13 ? KB13_IDVS_VERTEX_FAU : KB_IDVS_VERTEX_FAU, dd[i].vfau);
          M64(&c, v13 ? KB13_IDVS_FRAGMENT_FAU : KB_IDVS_FRAGMENT_FAU, dd[i].ffau);
          E(&c, v13 ? kb13_cs_run_idvs2(0, 0) : kb_cs_run_idvs());
@@ -1206,7 +1218,7 @@ mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
       .indexed = d->indexed, .index_va = d->index_va, .index_cpu = d->index_cpu, .index_bytes = d->index_bytes, .index_size = d->index_size,
       .first_index = d->first_index, .count = d->count, .instance_count = d->instance_count, .first_vertex = d->first_vertex,
       .first_instance = d->first_instance, .draw_id = d->draw_id, .occ_va = d->occ_va, .ind = d->ind, .ind_count = d->ind_count,
-      .ind_n = d->ind_n, .ind_stride = d->ind_stride, .occ_mode = d->occ_mode,
+      .ind_n = d->ind_n, .ind_stride = d->ind_stride, .ind_va = d->ind_va, .occ_mode = d->occ_mode,
    };
    return mali_frame_add_rec(f, &r);
 }
@@ -1240,7 +1252,7 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
    x->index_size = r->index_size; x->first_index = r->first_index;
    x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
    x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
-   x->ind_stride = r->ind_stride; x->occ_mode = r->occ_mode;
+   x->ind_stride = r->ind_stride; x->ind_va = r->ind_va; x->occ_mode = r->occ_mode;
 }
 
 void

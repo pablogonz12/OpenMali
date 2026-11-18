@@ -145,6 +145,7 @@ struct mali_draw {
    const uint8_t *ind;                    /* indirect draw: CPU view of the VkDraw*IndirectCommand array (expanded at submit, mali_cmd.c) */
    const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* != 0: GPU-side indirect draw (one VkDraw*IndirectCommand at this VA): the CS loads the counts at run time */
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
@@ -173,6 +174,7 @@ struct mali_rec {
    const uint8_t *ind;
    const uint32_t *ind_count;
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;
    unsigned occ_mode;
 };
 
