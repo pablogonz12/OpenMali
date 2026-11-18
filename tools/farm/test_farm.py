@@ -727,7 +727,7 @@ class T(unittest.TestCase):
         self.assertEqual(len(run["new_failures"]), 2)
         self.assertIn("baseline branch ", run["notes"])
         self.assertIn(" + main ", run["notes"])
-        self.assertIn("2 cases Pass only on main", run["notes"])
+        self.assertRegex(run["notes"], r"[23] cases Pass only on main")                 # 3 while local main still has the pre-refresh baseline
 
     def test_bless(self):
         repo = os.path.dirname(os.path.dirname(HERE))
