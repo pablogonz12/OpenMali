@@ -155,12 +155,16 @@ def row_key(r):
     return (r.get("phone"), r.get("driver"), r.get("version"), r.get("variant"), r.get("commit_full") or r.get("commit"))
 
 
+def row_shape_ok(r):
+    return not (r.get("version") == "fake" or "presented" not in r or "offscreen" not in r)
+
+
 def publishable(r, peers=()):
     """fake rows and implausible ones (the invalid-winner symptom: ours cube with no real work) are never published.
     "Implausible" = ours cube offscreen GPU time below half of the bridge's for the same phone, variant and commit (`peers` = rows to look the
     bridge up in); with no bridge row to compare with, below 2 ms. The fixed 2 ms alone dropped every valid ours cube row of the Poco X8
     (G925: bridge 1.32 ms, ours 1.40-1.53 ms), so RESULTS.md never had one."""
-    if r.get("version") == "fake" or "presented" not in r or "offscreen" not in r:
+    if not row_shape_ok(r):
         return False
     if r.get("bench") == "cube" and r.get("driver") == "ours":
         g = (r["offscreen"] or {}).get("gpu_ms")
@@ -176,7 +180,10 @@ def publishable(r, peers=()):
 def merge_rows(existing, new):
     """-> merged list: later rows replace earlier ones with the same key (and move to the end = newest); relative order otherwise kept"""
     d = {}
-    peers = list(existing) + list(new)           # the bridge row of a commit may already be published (ours-only job): without it the absolute 2 ms floor dropped valid X8 rows
+    # the bridge row of a commit may already be published (ours-only job): without it the absolute 2 ms floor dropped valid X8 rows.
+    # An existing row that a new same-key row replaces is not a peer (its value is gone after the merge); a new row only replaces it when it passes.
+    repl = {row_key(x) for x in new if row_shape_ok(x) and not (x.get("bench") == "cube" and x.get("driver") == "ours")}
+    peers = [e for e in existing if row_key(e) not in repl] + list(new)
     for r in existing + [x for x in new if publishable(x, peers)]:
         k = row_key(r)
         d.pop(k, None)
@@ -194,7 +201,7 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
     "bench: <phones> rows for <short commit>" and push to `remote` <branch>. Never touches any other checkout. A rejected push
     (somebody ff-merged meanwhile) is retried from a fresh fetch. -> {"status": "pushed|nothing|error", "n": rows changed, "msg": ...}"""
     allrows = load_rows(state)
-    rows = [r for r in allrows if publishable(r, allrows)]
+    rows = [r for r in allrows if row_shape_ok(r)]          # the plausibility check runs in merge_rows, where the already published bridge rows are peers
     mrows = [r for r in M.load_rows(M.menu_path(state)) if M.publishable(r)]
     if not rows and not mrows:
         return {"status": "nothing", "n": 0, "msg": "no publishable rows in the farm state"}

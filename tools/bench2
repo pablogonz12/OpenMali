@@ -169,8 +169,10 @@ class Phone:
         self.adb("push", local, f"{DL}/{name}", timeout=120)
         rc, o = self.adb("shell", f"sha256sum {DL}/{name}")
         got = o.split()[0] if o.split() else ""
-        if got != sha256(local):
+        want = sha256(local)
+        if got != want:
             die(f"{name}: sha256 on the phone differs from the local file")
+        return got                                                   # the digest of the bytes that are on the phone (not a later read of the local file)
 
     def session(self):
         rc, o = self.ctl("start", "steam", "--wait", "--reuse", timeout=200)
@@ -311,13 +313,11 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         return []
     if not os.path.exists(MDB):
         die("build the harness first: bench/mdbench/build.sh aarch64")
-    ph.push(MDB, "mdbench")
+    mdb_sha = ph.push(MDB, "mdbench")[:8]
     ph.push(os.path.join(ph.root, "driver", "libkbase", "out", "reaper-aarch64"), "reaper")
     so_sha = None
-    mdb_sha = sha256(MDB)[:8]
     if "ours" in drivers:
-        ph.push(ours_so, "mdb_icd.so")
-        so_sha = sha256(ours_so)
+        so_sha = ph.push(ours_so, "mdb_icd.so")
     if not ph.session():
         return [("error", ph.alias, "guest session did not start")]
     md = ph.malideck()
