@@ -5,7 +5,7 @@
 --fake (or MALI_FARM_FAKE=1): no adb, no build, no phone: attached devices = aliases listed in <state>/fake-attached,
 suites return synthetic results (env FAKE_FAIL=1 / FAKE_REGRESS=N / FAKE_FIX=N steer them). For tests of queue/resume/JSON logic."""
 import sys; sys.dont_write_bytecode = True
-import argparse, hashlib, json, os, re, shutil, subprocess, sys, threading, time, traceback
+import argparse, fcntl, hashlib, json, os, re, shutil, subprocess, sys, threading, time, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1073,7 +1073,7 @@ class Farm:
                 return {"verdict": "error", "notes": "fake bench failure"}
             n = B.append_rows(L.state_dir(), self.fake_bench_rows(job, dev), job, alias)
             return {"verdict": "pass", "counts": {"rows": n}, "new_failures": [], "newly_passing": [], "notes": "fake bench"}
-        if self.shell_route(dev):
+        if self.shell_route(dev) and dev.get("guest") is not True:
             return {"verdict": "error", "notes": "bench needs the in-app guest route; this phone is shell-route only"}
         mdb = self.bench_prepare(job)
         if not mdb:
@@ -1121,7 +1121,7 @@ class Farm:
         p = os.path.expanduser(p)
         return p if p and os.access(p, os.X_OK) else None
 
-    def menu_probe(self, dev):
+    def menu_probe(self, dev, launch=False):
         """-> (installed MediaDeck versionCode | None, owner in use?, why). Read-only adb. Fake mode: <state>/fake-menu/<alias>.vc (default 22), .inuse = reason"""
         alias = dev["alias"]
         if self.fake:
@@ -1133,8 +1133,32 @@ class Farm:
         _, pw = self.adb(dev, "shell", "dumpsys power | grep -m1 mWakefulness=")
         _, act = self.adb(dev, "shell", "dumpsys activity activities | grep -m2 -E 'topResumedActivity|mResumedActivity'")
         _, pk = self.adb(dev, "shell", f"dumpsys package {pkg} | grep -m1 versionCode")
-        use, why = M.owner_in_use(pw, act, pkg)
+        use, why = M.owner_in_use(pw, act, pkg, launch=launch and dev.get("foreground_launch") is True)
         return M.installed_vc(pk), use, why
+
+    def bring_front(self, dev, why):
+        """devices.toml `foreground_launch = true`: only the launcher is showing -> start MediaDeck's launcher activity. -> '' when done or not needed,
+        else the reason the job must stay pending (phone lock busy: the foreground is not ours to change; launch failed)"""
+        if dev.get("foreground_launch") is not True or not why.startswith(M.LAUNCHER_ONLY) or self.fake:
+            return ""
+        lk = open(f"/tmp/qsafe-{dev['lock']}.lock", "a")
+        try:
+            try:
+                fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)             # held only for the launch: another worker owns the screen otherwise
+            except OSError:
+                return "phone lock busy"
+            pkg = os.environ.get("DROIDDECK_PACKAGE", M.PKG_DEFAULT)
+            rc, out = self.adb(dev, "shell", f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1", timeout=30)
+            if rc != 0 or "No activities found" in (out or ""):
+                return f"MediaDeck launch failed ({(out or '').strip()[:80]})"
+            time.sleep(2)
+            _, act = self.adb(dev, "shell", "dumpsys activity activities | grep -m2 -E 'topResumedActivity|mResumedActivity'")
+            if M.foreground_pkg(act) != pkg:
+                return "MediaDeck not in the foreground after launch"
+        finally:
+            lk.close()
+        log(f"{dev['alias']}: {why}: MediaDeck brought to the front")
+        return ""
 
     def suite_menu(self, job, dev):
         """menubench <alias> --profile both --reps 3 (it takes the qsafe lock, honours the health gate, resumes its plan on exit 75), then one row per
@@ -1145,10 +1169,15 @@ class Farm:
         mb = self.menubench_path()
         if not mb:
             return {"verdict": "error", "notes": "menubench not found: set `menubench = \"/path/to/MediaDeck/scripts/quick/menubench\"` in ~/.config/mali-farm/farm.toml"}
-        vc, use, why = self.menu_probe(dev)
+        vc, use, why = self.menu_probe(dev, launch=True)
         if use:
             self.cool[alias] = time.time() + (0 if self.fake else 900)
             log(f"{alias}: owner is using the phone ({why}); {job['id']} menu stays pending")
+            return {"gated": True}
+        wait = self.bring_front(dev, why)
+        if wait:
+            self.cool[alias] = time.time() + (0 if self.fake else 900)
+            log(f"{alias}: {wait}; {job['id']} menu stays pending")
             return {"gated": True}
         results = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(mb)))), "results", "menubench.jsonl")
         since = job["created"]
@@ -1565,7 +1594,7 @@ class Farm:
             if M.queued(jobs, a) or time.time() < self.menu_next.get(a, 0):
                 continue
             self.menu_next[a] = time.time() + (0 if self.fake else 600)          # adb probe at most every 10 min per phone
-            vc, use, why = self.menu_probe(self.devs[a])
+            vc, use, why = self.menu_probe(self.devs[a], launch=True)
             if use or not M.should_queue(vc, seen.get(a), False):
                 continue
             j = L.new_job("main", tip or "0" * 40, False, "menu", [self.devs[a]["class"]], "", os.path.basename(self.repo), auto=True, pin=a)

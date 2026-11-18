@@ -54,7 +54,7 @@ def touches_driver(paths):
 
 def eligible(dev):
     """a phone the bench suite can use: an in-app (guest) route and not opted out (`bench = false` in devices.toml)"""
-    return dev.get("route") != "shell" and dev.get("bench", True) is not False
+    return (dev.get("route") != "shell" or dev.get("guest") is True) and dev.get("bench", True) is not False
 
 
 def available(devs, dstate, disabled):
