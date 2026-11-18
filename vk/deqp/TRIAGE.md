@@ -93,3 +93,9 @@ so `vkCreateEvent` (and meta allocations) returned OUT_OF_DEVICE_MEMORY (api.com
 (re-bind clears the shader cache). Regression test `t_vk_leak --only second` fails before (CreateEvent=-2), passes after. (2) harness: `qdeqp.py` pulled the QPA to hard-coded /tmp (full tmpfs) => "no QPA"; now QDEQP_TMP.
 Daily sample after: 283 pass / 126 fail / 971 NS / 0 crash / 1 other (baseline 280/128/971/0); 0 regressions, 3 newly passing (buffer_view r8_unorm, r16g16b16a16_uint, submit_twice_secondary).
 Run `t_vk_leak` on the guest with `vk/tests/leakrun.sh "--n 300"`; TMPDIR=~/.cache/mali-tmp for the build while /tmp is full.
+
+## Notes from fix/hot-clusters (2026-11-18)
+- Integer RTs (84bca7c): 7 of 41 pass on v10. The other 34 need: colour loadOp LOAD of integer formats (preload shader is float-only), 3-channel and A2-10-bit integer formats (not in the RT table), layered clears (see below), input-attachment reads in renderpass.suballocation, partial CmdClearAttachments rects.
+- cube_layers: mali_CmdBeginRendering ignores layerCount and mali_CmdClearAttachments ignores VkClearRect baseArrayLayer/layerCount, so a clear aimed at layer N lands on layer 0 of the view. Not integer-specific. Needs per-layer targets (layer stride from the image) for clear-only frames; layered draws need gl_Layer. Open.
+- clear_color_attachment a2r10g10b10 sample_count_4 fails on f3149a2 too (6 of 14 farm runs, v11 only): an msaa-path flake, belongs to feat/msaa (4x resolve/Average on A2-10 formats); not in the clear path.
+- stencil.nocolor: stencil-only passes now run (6db9993); remaining mismatches read back all-zero stencil. Suspect: pipelines without a fragment stage but rasterization enabled (draws are dropped by the discard path) or the S8 writeback.
