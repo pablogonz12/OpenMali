@@ -364,20 +364,27 @@ class Farm:
             shutil.copy2(so, os.path.join(L.state_dir(), "artifacts", sha + ".so"))
             self.archive_tests(sha, os.path.dirname(so))
             if self.needs_bionic(job):
-                bb = os.path.join(tree, "third_party", "build-vk-a64-bionic")
-                import glob as _g                       # cross/build-cross.sh: bionic needs liblog/libsync and the libdrm objects of Mesa's wrap
-                objs = " ".join(sorted(_g.glob(os.path.join(bb, "subprojects", "libdrm-*", "libdrm.so.p", "*.o"))))
-                benv = dict(os.environ, MESA_BUILD=bb, MALI_TARGET="a64-bionic", MALI_EXTRA_LD="-static-libstdc++ -llog -lsync " + objs)
-                rc, out = L.sh(["timeout", "-k", "10", str(BUILD_TIMEOUT), "bash", os.path.join(tree, "vk", "build.sh")], BUILD_TIMEOUT + 30, env=benv)
-                so2 = os.path.join(tree, "vk", "out", "a64-bionic", "libvulkan_mali.so")
-                if rc or not os.path.exists(so2):
-                    open(os.path.join(L.state_dir(), "logs", job["id"] + "-build-bionic.log"), "w").write(out)
-                    self.upd(job["id"], lambda x: x.update(build="failed"))
-                    return None, f"bionic build rc={rc} (see logs/{job['id']}-build-bionic.log)"
-                sha2 = hashlib.sha256(open(so2, "rb").read()).hexdigest()
-                self.upd(job["id"], lambda x: x.update(so_sha256_bionic=sha2))
+                _, note = self.build_bionic(job, tree)
+                if note:
+                    return None, note
             self.upd(job["id"], lambda x: x.update(so_sha256=sha, build="ok", build_s=round(time.time() - t0)))
             return sha, ""
+
+    def build_bionic(self, job, tree):
+        """a64-bionic build of the job's tree (shell route / smoke fallback) -> (sha256 | None, note); sets job["so_sha256_bionic"]"""
+        bb = os.path.join(tree, "third_party", "build-vk-a64-bionic")
+        import glob as _g                       # cross/build-cross.sh: bionic needs liblog/libsync and the libdrm objects of Mesa's wrap
+        objs = " ".join(sorted(_g.glob(os.path.join(bb, "subprojects", "libdrm-*", "libdrm.so.p", "*.o"))))
+        benv = dict(os.environ, MESA_BUILD=bb, MALI_TARGET="a64-bionic", MALI_EXTRA_LD="-static-libstdc++ -llog -lsync " + objs)
+        rc, out = L.sh(["timeout", "-k", "10", str(BUILD_TIMEOUT), "bash", os.path.join(tree, "vk", "build.sh")], BUILD_TIMEOUT + 30, env=benv)
+        so2 = os.path.join(tree, "vk", "out", "a64-bionic", "libvulkan_mali.so")
+        if rc or not os.path.exists(so2):
+            open(os.path.join(L.state_dir(), "logs", job["id"] + "-build-bionic.log"), "w").write(out)
+            self.upd(job["id"], lambda x: x.update(build="failed"))
+            return None, f"bionic build rc={rc} (see logs/{job['id']}-build-bionic.log)"
+        sha2 = hashlib.sha256(open(so2, "rb").read()).hexdigest()
+        self.upd(job["id"], lambda x: x.update(so_sha256_bionic=sha2))
+        return sha2, ""
 
     @staticmethod
     def variant(job):
@@ -633,8 +640,11 @@ class Farm:
     def smoke_shell(self, job, dev, fallback=False):
         """adb-shell route (bionic t_vk_*): -> (rc, out) or a result dict. fallback = a guest-route phone whose session is not READY: the screen
         is not touched (no dim/undim) and the log says which route ran"""
-        if not job.get("so_sha256_bionic"):
-            return {"verdict": "error", "notes": "no bionic build for the shell route"}
+        if not job.get("so_sha256_bionic"):                              # job built before the phone needed the fallback: build the bionic variant now
+            sha_b, note = self.build_bionic(job, self.tree(job["id"])) if os.path.isdir(self.tree(job["id"])) else (None, "no job tree")
+            if not sha_b:
+                return {"verdict": "error", "notes": "no bionic build for the shell route: " + note}
+            job = dict(job, so_sha256_bionic=sha_b)
         run_id = job["id"] + "-" + dev["alias"]
         rc, out = self.run_shellroute(job, dev, "smoke", run_id, ["--only", job["only"]] if job.get("only") else [], 700, nodim=fallback)
         bad = self.shell_rc(rc, out, "shellroute")

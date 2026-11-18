@@ -1581,6 +1581,19 @@ class SmokeRoute(unittest.TestCase):
         f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (0, bad)
         self.assertEqual(f.suite_smoke(dict(self.JOB), self.dev)["verdict"], "fail")
 
+    def test_job_built_before_the_fallback_gets_its_bionic_build_on_demand(self):
+        f = self.farm()
+        f.tree = lambda jid: tempfile.gettempdir()
+        built = []
+        f.build_bionic = lambda job, tree: (built.append(job["id"]) or "c" * 64, "")
+        seen = []
+        f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (seen.append(job["so_sha256_bionic"]) or (0, SMOKE_OUT))
+        job = dict(self.JOB)
+        del job["so_sha256_bionic"]
+        r = f.suite_smoke(job, self.dev)
+        self.assertEqual((r["verdict"], built, seen), ("pass", ["J1"], ["c" * 64]))
+        self.assertIn("so_sha256=" + "c" * 64, self.kept.splitlines()[0])
+
     def test_pure_helpers(self):
         import smokeroute as SR
         self.assertEqual(SR.blocked_reason("mWakefulness=Awake\nisKeyguardShowing=false"), "")
