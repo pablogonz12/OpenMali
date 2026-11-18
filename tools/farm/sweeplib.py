@@ -14,6 +14,29 @@ RESTART_AFTER_COMMITS = 25                    # main moved by more than this man
 STRESS = re.compile(r"object_management\.(alloc_callback_fail|max_|multithreaded)|many")     # same filter as the daily sample: hangs the phone
 
 
+SWEEP_TEMP_MAX = 36.0                          # C: no new sweep chunk above this (the sweep is idle-time filler; the 43 C gate is for real jobs)
+SWEEP_BATT_MIN = 80                            # % a phone that opted in to sweep on battery must have
+
+
+def power_blocked(h, dev):
+    """'' = the idle sweep may run a chunk on this phone, else why not. h = gate health {level, temp_c, powered}, dev = its devices.toml entry.
+    Default: only on a charger (an unreadable power state counts as battery). `sweep_on_battery = true` opts a phone in, then only at
+    >= sweep_batt_min % (default 80). Any phone: battery temperature <= sweep_temp_max C (default 36). The sweep is filler: it must never
+    drain or heat a phone its owner carries (2026-11-18: Poco X8, 29.8 -> 34.7 C in 6 minutes on battery)."""
+    tmax = float(dev.get("sweep_temp_max", SWEEP_TEMP_MAX))
+    t = h.get("temp_c")
+    if t is None or t > tmax:
+        return f"battery temperature {'unreadable' if t is None else f'{t:.1f} C'} (sweep limit {tmax:g} C)"
+    if h.get("powered") is True:
+        return ""
+    if not dev.get("sweep_on_battery"):
+        return "on battery (the sweep runs only on a charger; devices.toml sweep_on_battery = true opts in)"
+    lv, lmin = h.get("level"), int(dev.get("sweep_batt_min", SWEEP_BATT_MIN))
+    if lv is None or lv < lmin:
+        return f"on battery at {lv} % (sweep needs >= {lmin} %)"
+    return ""
+
+
 def sdir():
     d = os.path.join(L.state_dir(), "sweep")
     os.makedirs(d, exist_ok=True)

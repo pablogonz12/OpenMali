@@ -617,6 +617,35 @@ class T(unittest.TestCase):
                 self.assertEqual(res["verdict"], "invalid", out)
                 self.assertIn("7ce07a55b210", res["notes"])
 
+    def test_sweep_power_rule_pure(self):
+        pb = S.power_blocked
+        ok = {"level": 60, "temp_c": 30.0, "powered": True}
+        self.assertEqual(pb(ok, {}), "")
+        self.assertIn("on battery", pb(dict(ok, powered=False), {}))                         # default: charger only
+        self.assertIn("on battery", pb(dict(ok, powered=None), {}))                          # unreadable = battery
+        self.assertIn("36", pb(dict(ok, temp_c=36.5), {}))                                   # too warm, even on a charger
+        self.assertIn("unreadable", pb(dict(ok, temp_c=None), {}))
+        opt = {"sweep_on_battery": True}
+        self.assertIn("needs >= 80", pb(dict(ok, powered=False, level=79), opt))
+        self.assertEqual(pb(dict(ok, powered=False, level=80), opt), "")
+        self.assertIn("needs >= 90", pb(dict(ok, powered=False, level=85), dict(opt, sweep_batt_min=90)))
+        self.assertEqual(pb(dict(ok, temp_c=37.0), {"sweep_temp_max": 40}), "")
+
+    def test_sweep_never_runs_on_battery_unless_the_phone_opts_in(self):
+        self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
+        self.attach("dev-a")
+        hp = self.d + "/state/fake-health-cmf.json"
+        L.write_json(hp, {"powered": False, "level": 90})                                   # unplugged, 90 %
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 0)
+        self.assertFalse(os.path.exists(self.d + "/state/sweep/v11-chunks.jsonl"))
+        L.write_json(hp, {"powered": True, "temp_c": 37.0})                                 # charger but warm
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 0)
+        L.write_json(hp, {"powered": True})                                                 # charger, cool: sweeps
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 3)
+
     def test_sweep_leaves_a_guest_phone_alone_while_the_owner_uses_it(self):
         """the idle sweep starts the app's guest session, which takes the screen: it waits (no lock hold, no recorded case) while the owner is in
         another app, and walks on once the phone is free"""

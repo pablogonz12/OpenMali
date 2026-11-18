@@ -1375,10 +1375,14 @@ class Farm:
         return wait
 
     def sweep_blocked(self, dev):
-        """'' = the idle sweep may take this phone now. A guest-route phone (the sweep starts the app's guest session, which takes the screen) is
+        """'' = the idle sweep may take this phone now. Power first (sweeplib.power_blocked: charger only unless the phone opts in, temperature cap),
+        then, on a guest-route phone the sweep starts the app's guest session, which takes the screen: it is
         left alone while the owner is using it (screen awake with another app in front) or while its session cannot be READY (locked screen):
         before this, each 5-minute chunk held the phone lock while qdeqp waited for a focus it never got, then recorded the first case as a
         timeout (2026-11-18: 13 chunks of '1 case in 301s')"""
+        why = S.power_blocked(self.health(dev), dev)
+        if why:
+            return why
         if self.fake and not os.path.isdir(os.path.join(L.state_dir(), "fake-menu")):
             return ""
         if self.shell_route(dev):
