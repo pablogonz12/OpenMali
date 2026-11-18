@@ -9,8 +9,8 @@
 set -euo pipefail
 D=$(cd "$(dirname "$0")/.." && pwd); O=$D/vk/out/native-cov
 case ${1:-} in
-   build) MALI_COV=1 MALI_TARGET=native-cov "$D/vk/build.sh" ;;
-   run) find "$O" -name '*.gcda' -delete; MALI_COV=1 "$D/vk/check.sh" --no-build ;;
+   build) env -u MALI_SAN MALI_COV=1 MALI_TARGET=native-cov "$D/vk/build.sh" ;;
+   run) find "$O" -name "*.gcda" -delete; env -u MALI_SAN MALI_COV=1 "$D/vk/check.sh" --no-build ;;
    report)
       cd "$(mktemp -d)"
       for f in "$O"/obj/mali_*.gcda; do

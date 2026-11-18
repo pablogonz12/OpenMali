@@ -16,7 +16,7 @@ B=${MESA_BUILD:-$D/third_party/build-vk}
 # Native targets prefer the Mesa tree configured with -Dplatforms=wayland,x11 (README: "X11 WSI") when it exists, so the host ICD has
 # VK_KHR_xcb_surface; without it the X11 tests skip. Cross targets and an explicit MESA_BUILD are never overridden.
 case ${MALI_TARGET:-native} in
-   native|native-san) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
+   native|native-san|native-cov) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
 esac
 OUT=$V/out/${MALI_TARGET:-native}
 GEN=$OUT/gen

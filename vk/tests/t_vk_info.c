@@ -260,7 +260,8 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
                                   .pQueuePriorities = (float[]){1.0f}};
    VkPhysicalDeviceVulkan13Features en13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-      .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE, .maintenance4 = VK_TRUE, .privateData = VK_TRUE};
+      .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE, .maintenance4 = VK_TRUE, .privateData = VK_TRUE,
+      .inlineUniformBlock = VK_TRUE};   /* the layout-support probe uses an inline uniform block binding */
    VkPhysicalDeviceVulkan12Features en12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &en13,
       .timelineSemaphore = VK_TRUE, .hostQueryReset = VK_TRUE};
    const char *ext[] = {"VK_KHR_swapchain"};
@@ -407,7 +408,8 @@ main(int argc, char **argv)
       VkDescriptorSetLayout dsl;
       CHECK(CreateDescriptorSetLayout(dev, &(VkDescriptorSetLayoutCreateInfo){.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount = 1, .pBindings = &sb}, NULL, &dsl) == VK_SUCCESS, "CreateDescriptorSetLayout");
-      VkDescriptorPoolSize ps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 2};
+      /* descriptor capacity for 4 sets, maxSets is 2: the third allocation must fail on maxSets, not on descriptor storage */
+      VkDescriptorPoolSize ps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4};
       VkDescriptorPool pool;
       CHECK(CreateDescriptorPool(dev, &(VkDescriptorPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &ps}, NULL, &pool) == VK_SUCCESS,
