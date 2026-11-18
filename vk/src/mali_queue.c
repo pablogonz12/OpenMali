@@ -497,6 +497,17 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
     * rare case); the GPU-side wait is M8 work. */
    for (uint32_t i = 0; i < submit->wait_count; i++) {
       const struct vk_sync_wait *w = &submit->waits[i];
+      /* A semaphore signalled by an earlier submission of THIS queue needs no CPU wait: the queue is one in-order
+       * CS ring, so everything after it already runs behind that work. Waiting here made vkQueuePresent block
+       * until the GPU finished the frame it presents, which serialised CPU and GPU whatever the frames in flight. */
+      if (w->sync->type == &mali_sync_type && !getenv("MALI_QUEUE_CPU_WAIT")) {
+         struct mali_sync *ws = container_of(w->sync, struct mali_sync, vk);
+         pthread_mutex_lock(&dev->sync_lock);
+         bool own = ws->owner == vq && ws->fd >= 0;
+         pthread_mutex_unlock(&dev->sync_lock);
+         if (own)
+            continue;
+      }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
       if (r != VK_SUCCESS)
          return r;
@@ -527,6 +538,11 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
    for (uint32_t i = 0; i < submit->signal_count && res == VK_SUCCESS; i++) {
       struct vk_sync *s = submit->signals[i].sync;
       res = vk_sync_import_sync_file(&dev->vk, s, fd);
+      if (res == VK_SUCCESS && s->type == &mali_sync_type && fd >= 0) {
+         pthread_mutex_lock(&dev->sync_lock);
+         container_of(s, struct mali_sync, vk)->owner = vq;
+         pthread_mutex_unlock(&dev->sync_lock);
+      }
    }
    close(fd);
    if (getenv("MALI_PROF")) {
