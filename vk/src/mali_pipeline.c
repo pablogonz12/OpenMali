@@ -117,7 +117,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    const uint32_t *vcode = NULL, *fcode = NULL;
    uint32_t vwords = 0, fwords = 0;
-   if (!vss || !fss || !stage_spirv(vss, &vcode, &vwords) || !stage_spirv(fss, &fcode, &fwords)) {
+   if (!vss || !stage_spirv(vss, &vcode, &vwords) || (fss && !stage_spirv(fss, &fcode, &fwords))) {
       res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) pipelines: later */
       goto fail;
    }
@@ -149,12 +149,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
+   /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
    o.stage = MALI_STAGE_FRAGMENT;
    o.strip_psiz = 0;
-   o.spirv = fcode;
-   o.spirv_words = fwords;
-   o.entry = fss->pName;
-   set_spec(&o, specbuf, fss->pSpecializationInfo);
+   o.spirv = fss ? fcode : vcode;
+   o.spirv_words = fss ? fwords : vwords;
+   o.entry = fss ? fss->pName : vss->pName;
+   set_spec(&o, specbuf, fss ? fss->pSpecializationInfo : NULL);
    /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
    unsigned samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1;
    if (samples != 1 && (samples != 4 || !mali_experimental_msaa() || BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES))) {
@@ -164,7 +165,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
-   if (mali_compile(&o, &p->fs, err, sizeof err)) {
+   if (fss && mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -172,7 +173,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
 
    /* dualSrcBlend: SRC1 factors (VkBlendFactor 15..18) on attachment 0 need a blend shader (fixed function cannot read SRC1) */
    bool has_blend = false;
-   if (st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
+   if (fss && st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
       const struct vk_color_blend_attachment_state *a = &st.cb->attachments[0];
       const unsigned f[4] = {a->src_color_blend_factor, a->dst_color_blend_factor, a->src_alpha_blend_factor, a->dst_alpha_blend_factor};
       for (unsigned i = 0; i < 4; i++)
@@ -227,7 +228,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    p->have_code = true;
    memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
-   memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
+   if (p->fs.bin_size)
+      memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
    if (has_blend)
       memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
@@ -237,6 +239,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->vs = &p->vs;
    g->fs = &p->fs;
    g->samples = samples;
+   g->discard = !fss || (st.rs && st.rs->rasterizer_discard_enable);
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
