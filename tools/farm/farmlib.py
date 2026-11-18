@@ -262,6 +262,21 @@ def find_passed(jobs, commit, suite, need, env, only="", cases=None, repeat=1):
     return None
 
 
+SINGLE_CASE_PRIO = 5          # between gates (0) and bench/menu (10): a lane's one-case diagnostic goes before everything but gates
+
+
+def find_inflight(jobs, commit, suite, need, env, only="", cases=None, repeat=1):
+    """idempotent submit, in flight: a non-dirty job of the same commit/suite/inputs with the same classes whose parts are all pending/running -> it"""
+    for j in reversed(jobs):
+        if (j.get("commit") != commit or j.get("suite") != suite or j.get("dirty") or (j.get("env") or "") != (env or "")
+                or (j.get("only") or "") != (only or "") or list(j.get("cases") or []) != list(cases or []) or (j.get("repeat") or 1) != (repeat or 1)):
+            continue
+        ps = {c: p for c, p in j.get("parts", {}).items() if p.get("state") != "cancelled"}
+        if set(ps) == set(need) and any(p.get("state") in ("pending", "running") for p in ps.values()) and all(p.get("state") in ("pending", "running", "done") for p in ps.values()):
+            return j
+    return None
+
+
 STALE_COMMITS = 5
 
 
