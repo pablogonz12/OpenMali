@@ -24,10 +24,38 @@ void kb_set_error(const char *fmt, ...)
 }
 const char *kb_last_error(void) { return g_err; }
 
-int kb_ioctl(struct kb_ctx *ctx, unsigned long req, void *arg)
+#include <time.h>
+static struct { unsigned long req; unsigned long n; double ms; } g_ioprof[64];
+static int g_ioprof_on = -1;
+static void ioprof_dump(void)
+{
+	for (int i = 0; i < 64 && g_ioprof[i].n; i++)
+		fprintf(stderr, "IOPROF type=%c nr=%lu n=%lu total_ms=%.3f avg_us=%.1f\n", (char)_IOC_TYPE(g_ioprof[i].req) >= 32 ? (char)_IOC_TYPE(g_ioprof[i].req) : '?',
+			(unsigned long)_IOC_NR(g_ioprof[i].req), g_ioprof[i].n, g_ioprof[i].ms, g_ioprof[i].ms * 1000.0 / g_ioprof[i].n);
+}
+
+int kb_ioctl_fd(int fd, unsigned long req, void *arg)
 {
 	int r;
-	do r = ioctl(ctx->fd, req, arg); while (r < 0 && errno == EINTR);
+	if (g_ioprof_on < 0) { g_ioprof_on = getenv("MALI_IOCTL_PROF") != NULL; if (g_ioprof_on) atexit(ioprof_dump); }
+	struct timespec t0, t1;
+	if (g_ioprof_on) clock_gettime(CLOCK_MONOTONIC, &t0);
+	do r = ioctl(fd, req, arg); while (r < 0 && errno == EINTR);
+	int e = errno;
+	if (g_ioprof_on) {
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		int i = 0;
+		while (i < 63 && g_ioprof[i].n && g_ioprof[i].req != req) i++;
+		g_ioprof[i].req = req; g_ioprof[i].n++;
+		g_ioprof[i].ms += (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+	}
+	errno = e;
+	return r;
+}
+
+int kb_ioctl(struct kb_ctx *ctx, unsigned long req, void *arg)
+{
+	int r = kb_ioctl_fd(ctx->fd, req, arg);
 	return r < 0 ? -errno : 0;
 }
 

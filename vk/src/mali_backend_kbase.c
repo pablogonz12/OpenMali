@@ -467,7 +467,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
-      ioctl(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
    }
    pthread_mutex_unlock(&k->bo_lock);
 }

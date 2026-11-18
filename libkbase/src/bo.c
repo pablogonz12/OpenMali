@@ -189,7 +189,7 @@ int kb_bo_dmabuf_sync(const struct kb_bo *bo, bool end, bool write)
 		return -EINVAL;
 	struct kb_dma_buf_sync s = { (end ? KB_DMA_BUF_SYNC_END : KB_DMA_BUF_SYNC_START) |
 				     (write ? KB_DMA_BUF_SYNC_RW : KB_DMA_BUF_SYNC_READ) };
-	return ioctl(bo->dmabuf_fd, KB_DMA_BUF_IOCTL_SYNC, &s) < 0 ? -errno : 0;
+	return kb_ioctl_fd(bo->dmabuf_fd, KB_DMA_BUF_IOCTL_SYNC, &s) < 0 ? -errno : 0;
 }
 
 int kb_dmaheap_alloc(enum kb_heap heap, size_t len)
@@ -217,7 +217,7 @@ int kb_dmaheap_alloc(enum kb_heap heap, size_t len)
 int kb_dmabuf_export_sync_file(int dmabuf_fd, uint32_t flags, int *sync_fd)
 {
 	struct kb_dma_buf_export_sync_file a = { flags, -1 };
-	if (ioctl(dmabuf_fd, KB_DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &a) < 0)
+	if (kb_ioctl_fd(dmabuf_fd, KB_DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &a) < 0)
 		return -errno;
 	*sync_fd = a.fd;
 	return 0;
@@ -226,5 +226,5 @@ int kb_dmabuf_export_sync_file(int dmabuf_fd, uint32_t flags, int *sync_fd)
 int kb_dmabuf_import_sync_file(int dmabuf_fd, uint32_t flags, int sync_fd)
 {
 	struct kb_dma_buf_import_sync_file a = { flags, sync_fd };
-	return ioctl(dmabuf_fd, KB_DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &a) < 0 ? -errno : 0;
+	return kb_ioctl_fd(dmabuf_fd, KB_DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &a) < 0 ? -errno : 0;
 }
