@@ -30,3 +30,6 @@ CXX flags `-include cstdint -Wno-error -Wno-missing-template-arg-list-after-temp
 `./host-run.sh` runs `lists/daily-sample.txt` (1381 cases) on fake GPUs v11 and v13 through the ASan+UBSan driver (`MALI_SAN=1 MALI_TARGET=native-san ./build.sh`),
 in batches of 100 under a 300 s timeout (the case in flight at a crash/timeout is recorded and the run resumes after it), and compares only
 Crash/Timeout/NotSupported against `host-baseline.tsv`, printing NEW ones by name (exit 1). `--bless` rewrites the baseline. ~2 min for both GPUs.
+
+## Candidate case lists (non-gating)
+`gen-caselists.py <mustpass vk-default dir>` regenerates `cases-small.txt` (1531: draw sample, dynamic-state, clipping, fragment-operations, depth; proposed for the gated daily) and `cases-deep.txt` (6884: sampled rasterization/compute/ssbo/ubo/texture/query-pool/memory/..., never a gate). Both are only for `farm submit --suite cases --case ...`; `lists/daily-sample.txt` and `SUITE_CASES` are untouched until every GPU class has a baseline.
