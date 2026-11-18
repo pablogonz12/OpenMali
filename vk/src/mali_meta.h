@@ -72,6 +72,7 @@ struct mali_meta_blit {
    bool f32, swap_rb;
    int mode;                        /* 0 nearest, 1 linear, 2 resolve */
    uint32_t nsamples, sample_stride;
+   uint32_t zslices;                /* with zw: 1 */
    float zw;                        /* mode 1 (3D): weight of the second source slice at sample_stride (trilinear z); 0 = bilinear */
    /* generic path (any plain colour format): per logical channel R,G,B,A  off | size<<8 | type<<16, type 0 absent 1 unorm 2 snorm 3 uint 4 sint 5 float;
     * sbs/dbs bytes per pixel; cls 0 float-ish (unorm/snorm/float), 1 uint, 2 sint (nearest only); sRGB decode/encode of RGB. */
