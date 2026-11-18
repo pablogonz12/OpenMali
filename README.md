@@ -116,7 +116,7 @@ The Mesa sources, Mesa build trees and the CTS are not committed: `third_party/M
 
 ## Contributing: hot files and `patches/`
 
-`vk/src/mali_cmd.c`, `mali_cs_emit.c` and `mali_pipeline.c` are hot files: one worker at a time. Work that needs them without owning them is delivered as `patches/<name>.patch` plus the non-hot parts and a test that skips until the feature is advertised (examples in `vk/patches/` and `vk/STEAM-GAPS.md`). Merge gate and lanes: `.opencode/skills/mali-open/SKILL.md`. The device farm (`tools/farm/README.md`) has `farm hold` / `farm wait` for phone access; a bench run that finds a foreground dialog prints `UI-BLOCKED` and is requeued once as invalid.
+`vk/src/mali_cmd.c`, `mali_cs_emit.c` and `mali_pipeline.c` are hot files: one worker at a time. Work that needs them without owning them is delivered as `patches/<name>.patch` plus the non-hot parts and a test that skips until the feature is advertised (examples in `vk/patches/` and `vk/STEAM-GAPS.md`). Merge gate and lanes: `.opencode/skills/mali-open/SKILL.md`. The device farm (`tools/farm/README.md`) has `farm hold` / `farm wait` for phone access; a bench run that finds a foreground dialog prints `UI-BLOCKED` and is requeued once as invalid. Before opening a PR, go through `docs/REVIEW-CHECKLIST.md`.
 
 ## Shipping in MediaDeck
 
