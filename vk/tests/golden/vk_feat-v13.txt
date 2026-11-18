@@ -4055,7 +4055,7 @@ kick dev0 #26  (54 instructions)
   BO119 FREED len=0x1000 flags=0x8
   BO120 live len=0x40000 flags=0x100
   BO121 live len=0x1000 flags=0x0
-  BO122 live len=0x1000 flags=0x100
+  BO122 live len=0x1000 flags=0x500
   BO123 live len=0x1000 flags=0x0
   BO124 live len=0x1000 flags=0x0
   BO125 live len=0x1000 flags=0x8
@@ -4155,12 +4155,12 @@ kick dev0 #26  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #27  (54 instructions)
-  BO122 FREED len=0x1000 flags=0x100
+  BO122 FREED len=0x1000 flags=0x500
   BO123 FREED len=0x1000 flags=0x0
   BO124 FREED len=0x1000 flags=0x0
   BO125 FREED len=0x1000 flags=0x8
   BO126 FREED len=0x1000 flags=0x100
-  BO128 live len=0x1000 flags=0x100
+  BO128 live len=0x1000 flags=0x500
   BO129 live len=0x1000 flags=0x0
   BO130 live len=0x1000 flags=0x0
   BO131 live len=0x1000 flags=0x8
@@ -4260,12 +4260,12 @@ kick dev0 #27  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #28  (54 instructions)
-  BO128 FREED len=0x1000 flags=0x100
+  BO128 FREED len=0x1000 flags=0x500
   BO129 FREED len=0x1000 flags=0x0
   BO130 FREED len=0x1000 flags=0x0
   BO131 FREED len=0x1000 flags=0x8
   BO132 FREED len=0x1000 flags=0x100
-  BO134 live len=0x1000 flags=0x100
+  BO134 live len=0x1000 flags=0x500
   BO135 live len=0x1000 flags=0x0
   BO136 live len=0x1000 flags=0x0
   BO137 live len=0x1000 flags=0x8
@@ -4365,12 +4365,12 @@ kick dev0 #28  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #29  (54 instructions)
-  BO134 FREED len=0x1000 flags=0x100
+  BO134 FREED len=0x1000 flags=0x500
   BO135 FREED len=0x1000 flags=0x0
   BO136 FREED len=0x1000 flags=0x0
   BO137 FREED len=0x1000 flags=0x8
   BO138 FREED len=0x1000 flags=0x100
-  BO140 live len=0x1000 flags=0x100
+  BO140 live len=0x1000 flags=0x500
   BO141 live len=0x1000 flags=0x0
   BO142 live len=0x1000 flags=0x0
   BO143 live len=0x1000 flags=0x8
@@ -4470,12 +4470,12 @@ kick dev0 #29  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #30  (54 instructions)
-  BO140 FREED len=0x1000 flags=0x100
+  BO140 FREED len=0x1000 flags=0x500
   BO141 FREED len=0x1000 flags=0x0
   BO142 FREED len=0x1000 flags=0x0
   BO143 FREED len=0x1000 flags=0x8
   BO144 FREED len=0x1000 flags=0x100
-  BO146 live len=0x1000 flags=0x100
+  BO146 live len=0x1000 flags=0x500
   BO147 live len=0x1000 flags=0x0
   BO148 live len=0x1000 flags=0x0
   BO149 live len=0x1000 flags=0x8
@@ -4575,12 +4575,12 @@ kick dev0 #30  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #31  (54 instructions)
-  BO146 FREED len=0x1000 flags=0x100
+  BO146 FREED len=0x1000 flags=0x500
   BO147 FREED len=0x1000 flags=0x0
   BO148 FREED len=0x1000 flags=0x0
   BO149 FREED len=0x1000 flags=0x8
   BO150 FREED len=0x1000 flags=0x100
-  BO152 live len=0x1000 flags=0x100
+  BO152 live len=0x1000 flags=0x500
   BO153 live len=0x1000 flags=0x0
   BO154 live len=0x1000 flags=0x0
   BO155 live len=0x1000 flags=0x8
@@ -4680,12 +4680,12 @@ kick dev0 #31  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #32  (54 instructions)
-  BO152 FREED len=0x1000 flags=0x100
+  BO152 FREED len=0x1000 flags=0x500
   BO153 FREED len=0x1000 flags=0x0
   BO154 FREED len=0x1000 flags=0x0
   BO155 FREED len=0x1000 flags=0x8
   BO156 FREED len=0x1000 flags=0x100
-  BO158 live len=0x1000 flags=0x100
+  BO158 live len=0x1000 flags=0x500
   BO159 live len=0x1000 flags=0x0
   BO160 live len=0x1000 flags=0x0
   BO161 live len=0x1000 flags=0x8
@@ -4786,12 +4786,12 @@ kick dev0 #32  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #33  (54 instructions)
-  BO158 FREED len=0x1000 flags=0x100
+  BO158 FREED len=0x1000 flags=0x500
   BO159 FREED len=0x1000 flags=0x0
   BO160 FREED len=0x1000 flags=0x0
   BO161 FREED len=0x1000 flags=0x8
   BO162 FREED len=0x1000 flags=0x100
-  BO164 live len=0x1000 flags=0x100
+  BO164 live len=0x1000 flags=0x500
   BO165 live len=0x1000 flags=0x0
   BO166 live len=0x1000 flags=0x0
   BO167 live len=0x1000 flags=0x8
@@ -4892,12 +4892,12 @@ kick dev0 #33  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #34  (54 instructions)
-  BO164 FREED len=0x1000 flags=0x100
+  BO164 FREED len=0x1000 flags=0x500
   BO165 FREED len=0x1000 flags=0x0
   BO166 FREED len=0x1000 flags=0x0
   BO167 FREED len=0x1000 flags=0x8
   BO168 FREED len=0x1000 flags=0x100
-  BO170 live len=0x1000 flags=0x100
+  BO170 live len=0x1000 flags=0x500
   BO171 live len=0x1000 flags=0x0
   BO172 live len=0x1000 flags=0x0
   BO173 live len=0x1000 flags=0x8
@@ -4997,12 +4997,12 @@ kick dev0 #34  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #35  (54 instructions)
-  BO170 FREED len=0x1000 flags=0x100
+  BO170 FREED len=0x1000 flags=0x500
   BO171 FREED len=0x1000 flags=0x0
   BO172 FREED len=0x1000 flags=0x0
   BO173 FREED len=0x1000 flags=0x8
   BO174 FREED len=0x1000 flags=0x100
-  BO176 live len=0x1000 flags=0x100
+  BO176 live len=0x1000 flags=0x500
   BO177 live len=0x1000 flags=0x0
   BO178 live len=0x1000 flags=0x0
   BO179 live len=0x1000 flags=0x8
@@ -5103,12 +5103,12 @@ kick dev0 #35  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #36  (54 instructions)
-  BO176 FREED len=0x1000 flags=0x100
+  BO176 FREED len=0x1000 flags=0x500
   BO177 FREED len=0x1000 flags=0x0
   BO178 FREED len=0x1000 flags=0x0
   BO179 FREED len=0x1000 flags=0x8
   BO180 FREED len=0x1000 flags=0x100
-  BO182 live len=0x1000 flags=0x100
+  BO182 live len=0x1000 flags=0x500
   BO183 live len=0x1000 flags=0x0
   BO184 live len=0x1000 flags=0x0
   BO185 live len=0x1000 flags=0x8
@@ -5208,12 +5208,12 @@ kick dev0 #36  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #37  (54 instructions)
-  BO182 FREED len=0x1000 flags=0x100
+  BO182 FREED len=0x1000 flags=0x500
   BO183 FREED len=0x1000 flags=0x0
   BO184 FREED len=0x1000 flags=0x0
   BO185 FREED len=0x1000 flags=0x8
   BO186 FREED len=0x1000 flags=0x100
-  BO188 live len=0x1000 flags=0x100
+  BO188 live len=0x1000 flags=0x500
   BO189 live len=0x1000 flags=0x0
   BO190 live len=0x1000 flags=0x0
   BO191 live len=0x1000 flags=0x8
@@ -5313,12 +5313,12 @@ kick dev0 #37  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #38  (54 instructions)
-  BO188 FREED len=0x1000 flags=0x100
+  BO188 FREED len=0x1000 flags=0x500
   BO189 FREED len=0x1000 flags=0x0
   BO190 FREED len=0x1000 flags=0x0
   BO191 FREED len=0x1000 flags=0x8
   BO192 FREED len=0x1000 flags=0x100
-  BO194 live len=0x1000 flags=0x100
+  BO194 live len=0x1000 flags=0x500
   BO195 live len=0x1000 flags=0x0
   BO196 live len=0x1000 flags=0x0
   BO197 live len=0x1000 flags=0x8
@@ -5418,12 +5418,12 @@ kick dev0 #38  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #39  (54 instructions)
-  BO194 FREED len=0x1000 flags=0x100
+  BO194 FREED len=0x1000 flags=0x500
   BO195 FREED len=0x1000 flags=0x0
   BO196 FREED len=0x1000 flags=0x0
   BO197 FREED len=0x1000 flags=0x8
   BO198 FREED len=0x1000 flags=0x100
-  BO200 live len=0x1000 flags=0x100
+  BO200 live len=0x1000 flags=0x500
   BO201 live len=0x1000 flags=0x0
   BO202 live len=0x1000 flags=0x0
   BO203 live len=0x1000 flags=0x8
@@ -5523,12 +5523,12 @@ kick dev0 #39  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #40  (54 instructions)
-  BO200 FREED len=0x1000 flags=0x100
+  BO200 FREED len=0x1000 flags=0x500
   BO201 FREED len=0x1000 flags=0x0
   BO202 FREED len=0x1000 flags=0x0
   BO203 FREED len=0x1000 flags=0x8
   BO204 FREED len=0x1000 flags=0x100
-  BO206 live len=0x1000 flags=0x100
+  BO206 live len=0x1000 flags=0x500
   BO207 live len=0x1000 flags=0x0
   BO208 live len=0x1000 flags=0x0
   BO209 live len=0x1000 flags=0x8
@@ -5628,12 +5628,12 @@ kick dev0 #40  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #41  (54 instructions)
-  BO206 FREED len=0x1000 flags=0x100
+  BO206 FREED len=0x1000 flags=0x500
   BO207 FREED len=0x1000 flags=0x0
   BO208 FREED len=0x1000 flags=0x0
   BO209 FREED len=0x1000 flags=0x8
   BO210 FREED len=0x1000 flags=0x100
-  BO212 live len=0x1000 flags=0x100
+  BO212 live len=0x1000 flags=0x500
   BO213 live len=0x1000 flags=0x0
   BO214 live len=0x1000 flags=0x0
   BO215 live len=0x1000 flags=0x8
@@ -5733,12 +5733,12 @@ kick dev0 #41  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #42  (54 instructions)
-  BO212 FREED len=0x1000 flags=0x100
+  BO212 FREED len=0x1000 flags=0x500
   BO213 FREED len=0x1000 flags=0x0
   BO214 FREED len=0x1000 flags=0x0
   BO215 FREED len=0x1000 flags=0x8
   BO216 FREED len=0x1000 flags=0x100
-  BO218 live len=0x1000 flags=0x100
+  BO218 live len=0x1000 flags=0x500
   BO219 live len=0x1000 flags=0x0
   BO220 live len=0x1000 flags=0x0
   BO221 live len=0x1000 flags=0x8
@@ -5838,12 +5838,12 @@ kick dev0 #42  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #43  (54 instructions)
-  BO218 FREED len=0x1000 flags=0x100
+  BO218 FREED len=0x1000 flags=0x500
   BO219 FREED len=0x1000 flags=0x0
   BO220 FREED len=0x1000 flags=0x0
   BO221 FREED len=0x1000 flags=0x8
   BO222 FREED len=0x1000 flags=0x100
-  BO224 live len=0x1000 flags=0x100
+  BO224 live len=0x1000 flags=0x500
   BO225 live len=0x1000 flags=0x0
   BO226 live len=0x1000 flags=0x0
   BO227 live len=0x1000 flags=0x8
@@ -5944,12 +5944,12 @@ kick dev0 #43  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #44  (54 instructions)
-  BO224 FREED len=0x1000 flags=0x100
+  BO224 FREED len=0x1000 flags=0x500
   BO225 FREED len=0x1000 flags=0x0
   BO226 FREED len=0x1000 flags=0x0
   BO227 FREED len=0x1000 flags=0x8
   BO228 FREED len=0x1000 flags=0x100
-  BO230 live len=0x1000 flags=0x100
+  BO230 live len=0x1000 flags=0x500
   BO231 live len=0x1000 flags=0x0
   BO232 live len=0x1000 flags=0x0
   BO233 live len=0x1000 flags=0x8
@@ -6050,12 +6050,12 @@ kick dev0 #44  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #45  (54 instructions)
-  BO230 FREED len=0x1000 flags=0x100
+  BO230 FREED len=0x1000 flags=0x500
   BO231 FREED len=0x1000 flags=0x0
   BO232 FREED len=0x1000 flags=0x0
   BO233 FREED len=0x1000 flags=0x8
   BO234 FREED len=0x1000 flags=0x100
-  BO236 live len=0x1000 flags=0x100
+  BO236 live len=0x1000 flags=0x500
   BO237 live len=0x1000 flags=0x0
   BO238 live len=0x1000 flags=0x0
   BO239 live len=0x1000 flags=0x8
@@ -6155,12 +6155,12 @@ kick dev0 #45  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #46  (54 instructions)
-  BO236 FREED len=0x1000 flags=0x100
+  BO236 FREED len=0x1000 flags=0x500
   BO237 FREED len=0x1000 flags=0x0
   BO238 FREED len=0x1000 flags=0x0
   BO239 FREED len=0x1000 flags=0x8
   BO240 FREED len=0x1000 flags=0x100
-  BO242 live len=0x1000 flags=0x100
+  BO242 live len=0x1000 flags=0x500
   BO243 live len=0x1000 flags=0x0
   BO244 live len=0x1000 flags=0x0
   BO245 live len=0x1000 flags=0x8
@@ -6260,12 +6260,12 @@ kick dev0 #46  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #47  (54 instructions)
-  BO242 FREED len=0x1000 flags=0x100
+  BO242 FREED len=0x1000 flags=0x500
   BO243 FREED len=0x1000 flags=0x0
   BO244 FREED len=0x1000 flags=0x0
   BO245 FREED len=0x1000 flags=0x8
   BO246 FREED len=0x1000 flags=0x100
-  BO248 live len=0x1000 flags=0x100
+  BO248 live len=0x1000 flags=0x500
   BO249 live len=0x1000 flags=0x0
   BO250 live len=0x1000 flags=0x0
   BO251 live len=0x1000 flags=0x8
@@ -6365,12 +6365,12 @@ kick dev0 #47  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #48  (54 instructions)
-  BO248 FREED len=0x1000 flags=0x100
+  BO248 FREED len=0x1000 flags=0x500
   BO249 FREED len=0x1000 flags=0x0
   BO250 FREED len=0x1000 flags=0x0
   BO251 FREED len=0x1000 flags=0x8
   BO252 FREED len=0x1000 flags=0x100
-  BO254 live len=0x1000 flags=0x100
+  BO254 live len=0x1000 flags=0x500
   BO255 live len=0x1000 flags=0x0
   BO256 live len=0x1000 flags=0x0
   BO257 live len=0x1000 flags=0x8
@@ -6471,12 +6471,12 @@ kick dev0 #48  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #49  (54 instructions)
-  BO254 FREED len=0x1000 flags=0x100
+  BO254 FREED len=0x1000 flags=0x500
   BO255 FREED len=0x1000 flags=0x0
   BO256 FREED len=0x1000 flags=0x0
   BO257 FREED len=0x1000 flags=0x8
   BO258 FREED len=0x1000 flags=0x100
-  BO260 live len=0x1000 flags=0x100
+  BO260 live len=0x1000 flags=0x500
   BO261 live len=0x1000 flags=0x0
   BO262 live len=0x1000 flags=0x0
   BO263 live len=0x1000 flags=0x8
@@ -6577,12 +6577,12 @@ kick dev0 #49  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #50  (54 instructions)
-  BO260 FREED len=0x1000 flags=0x100
+  BO260 FREED len=0x1000 flags=0x500
   BO261 FREED len=0x1000 flags=0x0
   BO262 FREED len=0x1000 flags=0x0
   BO263 FREED len=0x1000 flags=0x8
   BO264 FREED len=0x1000 flags=0x100
-  BO266 live len=0x1000 flags=0x100
+  BO266 live len=0x1000 flags=0x500
   BO267 live len=0x1000 flags=0x0
   BO268 live len=0x1000 flags=0x0
   BO269 live len=0x1000 flags=0x8
@@ -6682,12 +6682,12 @@ kick dev0 #50  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #51  (54 instructions)
-  BO266 FREED len=0x1000 flags=0x100
+  BO266 FREED len=0x1000 flags=0x500
   BO267 FREED len=0x1000 flags=0x0
   BO268 FREED len=0x1000 flags=0x0
   BO269 FREED len=0x1000 flags=0x8
   BO270 FREED len=0x1000 flags=0x100
-  BO272 live len=0x1000 flags=0x100
+  BO272 live len=0x1000 flags=0x500
   BO273 live len=0x1000 flags=0x0
   BO274 live len=0x1000 flags=0x0
   BO275 live len=0x1000 flags=0x8
@@ -6788,12 +6788,12 @@ kick dev0 #51  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #52  (54 instructions)
-  BO272 FREED len=0x1000 flags=0x100
+  BO272 FREED len=0x1000 flags=0x500
   BO273 FREED len=0x1000 flags=0x0
   BO274 FREED len=0x1000 flags=0x0
   BO275 FREED len=0x1000 flags=0x8
   BO276 FREED len=0x1000 flags=0x100
-  BO278 live len=0x1000 flags=0x100
+  BO278 live len=0x1000 flags=0x500
   BO279 live len=0x1000 flags=0x0
   BO280 live len=0x1000 flags=0x0
   BO281 live len=0x1000 flags=0x8
@@ -6894,12 +6894,12 @@ kick dev0 #52  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #53  (54 instructions)
-  BO278 FREED len=0x1000 flags=0x100
+  BO278 FREED len=0x1000 flags=0x500
   BO279 FREED len=0x1000 flags=0x0
   BO280 FREED len=0x1000 flags=0x0
   BO281 FREED len=0x1000 flags=0x8
   BO282 FREED len=0x1000 flags=0x100
-  BO284 live len=0x1000 flags=0x100
+  BO284 live len=0x1000 flags=0x500
   BO285 live len=0x1000 flags=0x0
   BO286 live len=0x1000 flags=0x0
   BO287 live len=0x1000 flags=0x8
@@ -6999,12 +6999,12 @@ kick dev0 #53  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #54  (54 instructions)
-  BO284 FREED len=0x1000 flags=0x100
+  BO284 FREED len=0x1000 flags=0x500
   BO285 FREED len=0x1000 flags=0x0
   BO286 FREED len=0x1000 flags=0x0
   BO287 FREED len=0x1000 flags=0x8
   BO288 FREED len=0x1000 flags=0x100
-  BO290 live len=0x1000 flags=0x100
+  BO290 live len=0x1000 flags=0x500
   BO291 live len=0x1000 flags=0x0
   BO292 live len=0x1000 flags=0x0
   BO293 live len=0x1000 flags=0x8
@@ -7134,7 +7134,7 @@ kick dev0 #55  (54 instructions)
   BO277 FREED len=0x1000 flags=0x800
   BO283 FREED len=0x1000 flags=0x800
   BO289 FREED len=0x1000 flags=0x800
-  BO290 FREED len=0x1000 flags=0x100
+  BO290 FREED len=0x1000 flags=0x500
   BO291 FREED len=0x1000 flags=0x0
   BO292 FREED len=0x1000 flags=0x0
   BO293 FREED len=0x1000 flags=0x8
@@ -7142,7 +7142,7 @@ kick dev0 #55  (54 instructions)
   BO295 FREED len=0x1000 flags=0x800
   BO296 live len=0x40000 flags=0x100
   BO297 live len=0x1000 flags=0x0
-  BO298 live len=0x1000 flags=0x100
+  BO298 live len=0x1000 flags=0x500
   BO299 live len=0x1000 flags=0x0
   BO300 live len=0x1000 flags=0x0
   BO301 live len=0x1000 flags=0x8
@@ -7242,12 +7242,12 @@ kick dev0 #55  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #56  (54 instructions)
-  BO298 FREED len=0x1000 flags=0x100
+  BO298 FREED len=0x1000 flags=0x500
   BO299 FREED len=0x1000 flags=0x0
   BO300 FREED len=0x1000 flags=0x0
   BO301 FREED len=0x1000 flags=0x8
   BO302 FREED len=0x1000 flags=0x100
-  BO304 live len=0x1000 flags=0x100
+  BO304 live len=0x1000 flags=0x500
   BO305 live len=0x1000 flags=0x0
   BO306 live len=0x1000 flags=0x0
   BO307 live len=0x1000 flags=0x8
@@ -7347,12 +7347,12 @@ kick dev0 #56  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #57  (54 instructions)
-  BO304 FREED len=0x1000 flags=0x100
+  BO304 FREED len=0x1000 flags=0x500
   BO305 FREED len=0x1000 flags=0x0
   BO306 FREED len=0x1000 flags=0x0
   BO307 FREED len=0x1000 flags=0x8
   BO308 FREED len=0x1000 flags=0x100
-  BO310 live len=0x1000 flags=0x100
+  BO310 live len=0x1000 flags=0x500
   BO311 live len=0x1000 flags=0x0
   BO312 live len=0x1000 flags=0x0
   BO313 live len=0x1000 flags=0x8
@@ -7453,12 +7453,12 @@ kick dev0 #57  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #58  (54 instructions)
-  BO310 FREED len=0x1000 flags=0x100
+  BO310 FREED len=0x1000 flags=0x500
   BO311 FREED len=0x1000 flags=0x0
   BO312 FREED len=0x1000 flags=0x0
   BO313 FREED len=0x1000 flags=0x8
   BO314 FREED len=0x1000 flags=0x100
-  BO316 live len=0x1000 flags=0x100
+  BO316 live len=0x1000 flags=0x500
   BO317 live len=0x1000 flags=0x0
   BO318 live len=0x1000 flags=0x0
   BO319 live len=0x1000 flags=0x8
@@ -7559,12 +7559,12 @@ kick dev0 #58  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #59  (54 instructions)
-  BO316 FREED len=0x1000 flags=0x100
+  BO316 FREED len=0x1000 flags=0x500
   BO317 FREED len=0x1000 flags=0x0
   BO318 FREED len=0x1000 flags=0x0
   BO319 FREED len=0x1000 flags=0x8
   BO320 FREED len=0x1000 flags=0x100
-  BO322 live len=0x1000 flags=0x100
+  BO322 live len=0x1000 flags=0x500
   BO323 live len=0x1000 flags=0x0
   BO324 live len=0x1000 flags=0x0
   BO325 live len=0x1000 flags=0x8
@@ -7664,12 +7664,12 @@ kick dev0 #59  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #60  (54 instructions)
-  BO322 FREED len=0x1000 flags=0x100
+  BO322 FREED len=0x1000 flags=0x500
   BO323 FREED len=0x1000 flags=0x0
   BO324 FREED len=0x1000 flags=0x0
   BO325 FREED len=0x1000 flags=0x8
   BO326 FREED len=0x1000 flags=0x100
-  BO328 live len=0x1000 flags=0x100
+  BO328 live len=0x1000 flags=0x500
   BO329 live len=0x1000 flags=0x0
   BO330 live len=0x1000 flags=0x0
   BO331 live len=0x1000 flags=0x8
@@ -7769,12 +7769,12 @@ kick dev0 #60  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #61  (54 instructions)
-  BO328 FREED len=0x1000 flags=0x100
+  BO328 FREED len=0x1000 flags=0x500
   BO329 FREED len=0x1000 flags=0x0
   BO330 FREED len=0x1000 flags=0x0
   BO331 FREED len=0x1000 flags=0x8
   BO332 FREED len=0x1000 flags=0x100
-  BO334 live len=0x1000 flags=0x100
+  BO334 live len=0x1000 flags=0x500
   BO335 live len=0x1000 flags=0x0
   BO336 live len=0x1000 flags=0x0
   BO337 live len=0x1000 flags=0x8
@@ -7875,12 +7875,12 @@ kick dev0 #61  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #62  (54 instructions)
-  BO334 FREED len=0x1000 flags=0x100
+  BO334 FREED len=0x1000 flags=0x500
   BO335 FREED len=0x1000 flags=0x0
   BO336 FREED len=0x1000 flags=0x0
   BO337 FREED len=0x1000 flags=0x8
   BO338 FREED len=0x1000 flags=0x100
-  BO340 live len=0x1000 flags=0x100
+  BO340 live len=0x1000 flags=0x500
   BO341 live len=0x1000 flags=0x0
   BO342 live len=0x1000 flags=0x0
   BO343 live len=0x1000 flags=0x8
@@ -7981,12 +7981,12 @@ kick dev0 #62  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #63  (54 instructions)
-  BO340 FREED len=0x1000 flags=0x100
+  BO340 FREED len=0x1000 flags=0x500
   BO341 FREED len=0x1000 flags=0x0
   BO342 FREED len=0x1000 flags=0x0
   BO343 FREED len=0x1000 flags=0x8
   BO344 FREED len=0x1000 flags=0x100
-  BO346 live len=0x1000 flags=0x100
+  BO346 live len=0x1000 flags=0x500
   BO347 live len=0x1000 flags=0x0
   BO348 live len=0x1000 flags=0x0
   BO349 live len=0x1000 flags=0x8
@@ -8086,12 +8086,12 @@ kick dev0 #63  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #64  (54 instructions)
-  BO346 FREED len=0x1000 flags=0x100
+  BO346 FREED len=0x1000 flags=0x500
   BO347 FREED len=0x1000 flags=0x0
   BO348 FREED len=0x1000 flags=0x0
   BO349 FREED len=0x1000 flags=0x8
   BO350 FREED len=0x1000 flags=0x100
-  BO352 live len=0x1000 flags=0x100
+  BO352 live len=0x1000 flags=0x500
   BO353 live len=0x1000 flags=0x0
   BO354 live len=0x1000 flags=0x0
   BO355 live len=0x1000 flags=0x8
@@ -8192,12 +8192,12 @@ kick dev0 #64  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #65  (54 instructions)
-  BO352 FREED len=0x1000 flags=0x100
+  BO352 FREED len=0x1000 flags=0x500
   BO353 FREED len=0x1000 flags=0x0
   BO354 FREED len=0x1000 flags=0x0
   BO355 FREED len=0x1000 flags=0x8
   BO356 FREED len=0x1000 flags=0x100
-  BO358 live len=0x1000 flags=0x100
+  BO358 live len=0x1000 flags=0x500
   BO359 live len=0x1000 flags=0x0
   BO360 live len=0x1000 flags=0x0
   BO361 live len=0x1000 flags=0x8
@@ -8297,12 +8297,12 @@ kick dev0 #65  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #66  (54 instructions)
-  BO358 FREED len=0x1000 flags=0x100
+  BO358 FREED len=0x1000 flags=0x500
   BO359 FREED len=0x1000 flags=0x0
   BO360 FREED len=0x1000 flags=0x0
   BO361 FREED len=0x1000 flags=0x8
   BO362 FREED len=0x1000 flags=0x100
-  BO364 live len=0x1000 flags=0x100
+  BO364 live len=0x1000 flags=0x500
   BO365 live len=0x1000 flags=0x0
   BO366 live len=0x1000 flags=0x0
   BO367 live len=0x1000 flags=0x8
@@ -8402,12 +8402,12 @@ kick dev0 #66  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #67  (54 instructions)
-  BO364 FREED len=0x1000 flags=0x100
+  BO364 FREED len=0x1000 flags=0x500
   BO365 FREED len=0x1000 flags=0x0
   BO366 FREED len=0x1000 flags=0x0
   BO367 FREED len=0x1000 flags=0x8
   BO368 FREED len=0x1000 flags=0x100
-  BO370 live len=0x1000 flags=0x100
+  BO370 live len=0x1000 flags=0x500
   BO371 live len=0x1000 flags=0x0
   BO372 live len=0x1000 flags=0x0
   BO373 live len=0x1000 flags=0x8
@@ -8508,12 +8508,12 @@ kick dev0 #67  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #68  (54 instructions)
-  BO370 FREED len=0x1000 flags=0x100
+  BO370 FREED len=0x1000 flags=0x500
   BO371 FREED len=0x1000 flags=0x0
   BO372 FREED len=0x1000 flags=0x0
   BO373 FREED len=0x1000 flags=0x8
   BO374 FREED len=0x1000 flags=0x100
-  BO376 live len=0x1000 flags=0x100
+  BO376 live len=0x1000 flags=0x500
   BO377 live len=0x1000 flags=0x0
   BO378 live len=0x1000 flags=0x0
   BO379 live len=0x1000 flags=0x8
@@ -8614,12 +8614,12 @@ kick dev0 #68  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #69  (54 instructions)
-  BO376 FREED len=0x1000 flags=0x100
+  BO376 FREED len=0x1000 flags=0x500
   BO377 FREED len=0x1000 flags=0x0
   BO378 FREED len=0x1000 flags=0x0
   BO379 FREED len=0x1000 flags=0x8
   BO380 FREED len=0x1000 flags=0x100
-  BO382 live len=0x1000 flags=0x100
+  BO382 live len=0x1000 flags=0x500
   BO383 live len=0x1000 flags=0x0
   BO384 live len=0x1000 flags=0x0
   BO385 live len=0x1000 flags=0x8
@@ -8719,12 +8719,12 @@ kick dev0 #69  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #70  (54 instructions)
-  BO382 FREED len=0x1000 flags=0x100
+  BO382 FREED len=0x1000 flags=0x500
   BO383 FREED len=0x1000 flags=0x0
   BO384 FREED len=0x1000 flags=0x0
   BO385 FREED len=0x1000 flags=0x8
   BO386 FREED len=0x1000 flags=0x100
-  BO388 live len=0x1000 flags=0x100
+  BO388 live len=0x1000 flags=0x500
   BO389 live len=0x1000 flags=0x0
   BO390 live len=0x1000 flags=0x0
   BO391 live len=0x1000 flags=0x8
@@ -8824,12 +8824,12 @@ kick dev0 #70  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #71  (54 instructions)
-  BO388 FREED len=0x1000 flags=0x100
+  BO388 FREED len=0x1000 flags=0x500
   BO389 FREED len=0x1000 flags=0x0
   BO390 FREED len=0x1000 flags=0x0
   BO391 FREED len=0x1000 flags=0x8
   BO392 FREED len=0x1000 flags=0x100
-  BO394 live len=0x1000 flags=0x100
+  BO394 live len=0x1000 flags=0x500
   BO395 live len=0x1000 flags=0x0
   BO396 live len=0x1000 flags=0x0
   BO397 live len=0x1000 flags=0x8
@@ -8929,12 +8929,12 @@ kick dev0 #71  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #72  (54 instructions)
-  BO394 FREED len=0x1000 flags=0x100
+  BO394 FREED len=0x1000 flags=0x500
   BO395 FREED len=0x1000 flags=0x0
   BO396 FREED len=0x1000 flags=0x0
   BO397 FREED len=0x1000 flags=0x8
   BO398 FREED len=0x1000 flags=0x100
-  BO400 live len=0x1000 flags=0x100
+  BO400 live len=0x1000 flags=0x500
   BO401 live len=0x1000 flags=0x0
   BO402 live len=0x1000 flags=0x0
   BO403 live len=0x1000 flags=0x8
@@ -9035,12 +9035,12 @@ kick dev0 #72  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #73  (54 instructions)
-  BO400 FREED len=0x1000 flags=0x100
+  BO400 FREED len=0x1000 flags=0x500
   BO401 FREED len=0x1000 flags=0x0
   BO402 FREED len=0x1000 flags=0x0
   BO403 FREED len=0x1000 flags=0x8
   BO404 FREED len=0x1000 flags=0x100
-  BO406 live len=0x1000 flags=0x100
+  BO406 live len=0x1000 flags=0x500
   BO407 live len=0x1000 flags=0x0
   BO408 live len=0x1000 flags=0x0
   BO409 live len=0x1000 flags=0x8
@@ -9141,12 +9141,12 @@ kick dev0 #73  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #74  (54 instructions)
-  BO406 FREED len=0x1000 flags=0x100
+  BO406 FREED len=0x1000 flags=0x500
   BO407 FREED len=0x1000 flags=0x0
   BO408 FREED len=0x1000 flags=0x0
   BO409 FREED len=0x1000 flags=0x8
   BO410 FREED len=0x1000 flags=0x100
-  BO412 live len=0x1000 flags=0x100
+  BO412 live len=0x1000 flags=0x500
   BO413 live len=0x1000 flags=0x0
   BO414 live len=0x1000 flags=0x0
   BO415 live len=0x1000 flags=0x8
@@ -9246,12 +9246,12 @@ kick dev0 #74  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #75  (54 instructions)
-  BO412 FREED len=0x1000 flags=0x100
+  BO412 FREED len=0x1000 flags=0x500
   BO413 FREED len=0x1000 flags=0x0
   BO414 FREED len=0x1000 flags=0x0
   BO415 FREED len=0x1000 flags=0x8
   BO416 FREED len=0x1000 flags=0x100
-  BO418 live len=0x1000 flags=0x100
+  BO418 live len=0x1000 flags=0x500
   BO419 live len=0x1000 flags=0x0
   BO420 live len=0x1000 flags=0x0
   BO421 live len=0x1000 flags=0x8
@@ -9351,12 +9351,12 @@ kick dev0 #75  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #76  (54 instructions)
-  BO418 FREED len=0x1000 flags=0x100
+  BO418 FREED len=0x1000 flags=0x500
   BO419 FREED len=0x1000 flags=0x0
   BO420 FREED len=0x1000 flags=0x0
   BO421 FREED len=0x1000 flags=0x8
   BO422 FREED len=0x1000 flags=0x100
-  BO424 live len=0x1000 flags=0x100
+  BO424 live len=0x1000 flags=0x500
   BO425 live len=0x1000 flags=0x0
   BO426 live len=0x1000 flags=0x0
   BO427 live len=0x1000 flags=0x8
@@ -9456,12 +9456,12 @@ kick dev0 #76  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #77  (54 instructions)
-  BO424 FREED len=0x1000 flags=0x100
+  BO424 FREED len=0x1000 flags=0x500
   BO425 FREED len=0x1000 flags=0x0
   BO426 FREED len=0x1000 flags=0x0
   BO427 FREED len=0x1000 flags=0x8
   BO428 FREED len=0x1000 flags=0x100
-  BO430 live len=0x1000 flags=0x100
+  BO430 live len=0x1000 flags=0x500
   BO431 live len=0x1000 flags=0x0
   BO432 live len=0x1000 flags=0x0
   BO433 live len=0x1000 flags=0x8
@@ -9562,12 +9562,12 @@ kick dev0 #77  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #78  (54 instructions)
-  BO430 FREED len=0x1000 flags=0x100
+  BO430 FREED len=0x1000 flags=0x500
   BO431 FREED len=0x1000 flags=0x0
   BO432 FREED len=0x1000 flags=0x0
   BO433 FREED len=0x1000 flags=0x8
   BO434 FREED len=0x1000 flags=0x100
-  BO436 live len=0x1000 flags=0x100
+  BO436 live len=0x1000 flags=0x500
   BO437 live len=0x1000 flags=0x0
   BO438 live len=0x1000 flags=0x0
   BO439 live len=0x1000 flags=0x8
@@ -9668,12 +9668,12 @@ kick dev0 #78  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #79  (54 instructions)
-  BO436 FREED len=0x1000 flags=0x100
+  BO436 FREED len=0x1000 flags=0x500
   BO437 FREED len=0x1000 flags=0x0
   BO438 FREED len=0x1000 flags=0x0
   BO439 FREED len=0x1000 flags=0x8
   BO440 FREED len=0x1000 flags=0x100
-  BO442 live len=0x1000 flags=0x100
+  BO442 live len=0x1000 flags=0x500
   BO443 live len=0x1000 flags=0x0
   BO444 live len=0x1000 flags=0x0
   BO445 live len=0x1000 flags=0x8
@@ -9773,12 +9773,12 @@ kick dev0 #79  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #80  (54 instructions)
-  BO442 FREED len=0x1000 flags=0x100
+  BO442 FREED len=0x1000 flags=0x500
   BO443 FREED len=0x1000 flags=0x0
   BO444 FREED len=0x1000 flags=0x0
   BO445 FREED len=0x1000 flags=0x8
   BO446 FREED len=0x1000 flags=0x100
-  BO448 live len=0x1000 flags=0x100
+  BO448 live len=0x1000 flags=0x500
   BO449 live len=0x1000 flags=0x0
   BO450 live len=0x1000 flags=0x0
   BO451 live len=0x1000 flags=0x8
@@ -9879,12 +9879,12 @@ kick dev0 #80  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #81  (54 instructions)
-  BO448 FREED len=0x1000 flags=0x100
+  BO448 FREED len=0x1000 flags=0x500
   BO449 FREED len=0x1000 flags=0x0
   BO450 FREED len=0x1000 flags=0x0
   BO451 FREED len=0x1000 flags=0x8
   BO452 FREED len=0x1000 flags=0x100
-  BO454 live len=0x1000 flags=0x100
+  BO454 live len=0x1000 flags=0x500
   BO455 live len=0x1000 flags=0x0
   BO456 live len=0x1000 flags=0x0
   BO457 live len=0x1000 flags=0x8
@@ -9985,12 +9985,12 @@ kick dev0 #81  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #82  (54 instructions)
-  BO454 FREED len=0x1000 flags=0x100
+  BO454 FREED len=0x1000 flags=0x500
   BO455 FREED len=0x1000 flags=0x0
   BO456 FREED len=0x1000 flags=0x0
   BO457 FREED len=0x1000 flags=0x8
   BO458 FREED len=0x1000 flags=0x100
-  BO460 live len=0x1000 flags=0x100
+  BO460 live len=0x1000 flags=0x500
   BO461 live len=0x1000 flags=0x0
   BO462 live len=0x1000 flags=0x0
   BO463 live len=0x1000 flags=0x8
@@ -10090,12 +10090,12 @@ kick dev0 #82  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #83  (54 instructions)
-  BO460 FREED len=0x1000 flags=0x100
+  BO460 FREED len=0x1000 flags=0x500
   BO461 FREED len=0x1000 flags=0x0
   BO462 FREED len=0x1000 flags=0x0
   BO463 FREED len=0x1000 flags=0x8
   BO464 FREED len=0x1000 flags=0x100
-  BO466 live len=0x1000 flags=0x100
+  BO466 live len=0x1000 flags=0x500
   BO467 live len=0x1000 flags=0x0
   BO468 live len=0x1000 flags=0x0
   BO469 live len=0x1000 flags=0x8
@@ -10195,12 +10195,12 @@ kick dev0 #83  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #84  (54 instructions)
-  BO466 FREED len=0x1000 flags=0x100
+  BO466 FREED len=0x1000 flags=0x500
   BO467 FREED len=0x1000 flags=0x0
   BO468 FREED len=0x1000 flags=0x0
   BO469 FREED len=0x1000 flags=0x8
   BO470 FREED len=0x1000 flags=0x100
-  BO472 live len=0x1000 flags=0x100
+  BO472 live len=0x1000 flags=0x500
   BO473 live len=0x1000 flags=0x0
   BO474 live len=0x1000 flags=0x0
   BO475 live len=0x1000 flags=0x8
@@ -10300,12 +10300,12 @@ kick dev0 #84  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #85  (54 instructions)
-  BO472 FREED len=0x1000 flags=0x100
+  BO472 FREED len=0x1000 flags=0x500
   BO473 FREED len=0x1000 flags=0x0
   BO474 FREED len=0x1000 flags=0x0
   BO475 FREED len=0x1000 flags=0x8
   BO476 FREED len=0x1000 flags=0x100
-  BO478 live len=0x1000 flags=0x100
+  BO478 live len=0x1000 flags=0x500
   BO479 live len=0x1000 flags=0x0
   BO480 live len=0x1000 flags=0x0
   BO481 live len=0x1000 flags=0x8
@@ -10405,12 +10405,12 @@ kick dev0 #85  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #86  (54 instructions)
-  BO478 FREED len=0x1000 flags=0x100
+  BO478 FREED len=0x1000 flags=0x500
   BO479 FREED len=0x1000 flags=0x0
   BO480 FREED len=0x1000 flags=0x0
   BO481 FREED len=0x1000 flags=0x8
   BO482 FREED len=0x1000 flags=0x100
-  BO484 live len=0x1000 flags=0x100
+  BO484 live len=0x1000 flags=0x500
   BO485 live len=0x1000 flags=0x0
   BO486 live len=0x1000 flags=0x0
   BO487 live len=0x1000 flags=0x8
@@ -10511,12 +10511,12 @@ kick dev0 #86  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #87  (54 instructions)
-  BO484 FREED len=0x1000 flags=0x100
+  BO484 FREED len=0x1000 flags=0x500
   BO485 FREED len=0x1000 flags=0x0
   BO486 FREED len=0x1000 flags=0x0
   BO487 FREED len=0x1000 flags=0x8
   BO488 FREED len=0x1000 flags=0x100
-  BO490 live len=0x1000 flags=0x100
+  BO490 live len=0x1000 flags=0x500
   BO491 live len=0x1000 flags=0x0
   BO492 live len=0x1000 flags=0x0
   BO493 live len=0x1000 flags=0x8
@@ -10617,12 +10617,12 @@ kick dev0 #87  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #88  (54 instructions)
-  BO490 FREED len=0x1000 flags=0x100
+  BO490 FREED len=0x1000 flags=0x500
   BO491 FREED len=0x1000 flags=0x0
   BO492 FREED len=0x1000 flags=0x0
   BO493 FREED len=0x1000 flags=0x8
   BO494 FREED len=0x1000 flags=0x100
-  BO496 live len=0x1000 flags=0x100
+  BO496 live len=0x1000 flags=0x500
   BO497 live len=0x1000 flags=0x0
   BO498 live len=0x1000 flags=0x0
   BO499 live len=0x1000 flags=0x8
@@ -10723,12 +10723,12 @@ kick dev0 #88  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #89  (54 instructions)
-  BO496 FREED len=0x1000 flags=0x100
+  BO496 FREED len=0x1000 flags=0x500
   BO497 FREED len=0x1000 flags=0x0
   BO498 FREED len=0x1000 flags=0x0
   BO499 FREED len=0x1000 flags=0x8
   BO500 FREED len=0x1000 flags=0x100
-  BO502 live len=0x1000 flags=0x100
+  BO502 live len=0x1000 flags=0x500
   BO503 live len=0x1000 flags=0x0
   BO504 live len=0x1000 flags=0x0
   BO505 live len=0x1000 flags=0x8
@@ -10829,12 +10829,12 @@ kick dev0 #89  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #90  (54 instructions)
-  BO502 FREED len=0x1000 flags=0x100
+  BO502 FREED len=0x1000 flags=0x500
   BO503 FREED len=0x1000 flags=0x0
   BO504 FREED len=0x1000 flags=0x0
   BO505 FREED len=0x1000 flags=0x8
   BO506 FREED len=0x1000 flags=0x100
-  BO508 live len=0x1000 flags=0x100
+  BO508 live len=0x1000 flags=0x500
   BO509 live len=0x1000 flags=0x0
   BO510 live len=0x1000 flags=0x0
   BO511 live len=0x1000 flags=0x8
@@ -10934,12 +10934,12 @@ kick dev0 #90  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #91  (54 instructions)
-  BO508 FREED len=0x1000 flags=0x100
+  BO508 FREED len=0x1000 flags=0x500
   BO509 FREED len=0x1000 flags=0x0
   BO510 FREED len=0x1000 flags=0x0
   BO511 FREED len=0x1000 flags=0x8
   BO512 FREED len=0x1000 flags=0x100
-  BO514 live len=0x1000 flags=0x100
+  BO514 live len=0x1000 flags=0x500
   BO515 live len=0x1000 flags=0x0
   BO516 live len=0x1000 flags=0x0
   BO517 live len=0x1000 flags=0x8
@@ -11040,12 +11040,12 @@ kick dev0 #91  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #92  (54 instructions)
-  BO514 FREED len=0x1000 flags=0x100
+  BO514 FREED len=0x1000 flags=0x500
   BO515 FREED len=0x1000 flags=0x0
   BO516 FREED len=0x1000 flags=0x0
   BO517 FREED len=0x1000 flags=0x8
   BO518 FREED len=0x1000 flags=0x100
-  BO520 live len=0x1000 flags=0x100
+  BO520 live len=0x1000 flags=0x500
   BO521 live len=0x1000 flags=0x0
   BO522 live len=0x1000 flags=0x0
   BO523 live len=0x1000 flags=0x8
@@ -11146,12 +11146,12 @@ kick dev0 #92  (54 instructions)
    50 WAIT           0300000000010000
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #93  (54 instructions)
-  BO520 FREED len=0x1000 flags=0x100
+  BO520 FREED len=0x1000 flags=0x500
   BO521 FREED len=0x1000 flags=0x0
   BO522 FREED len=0x1000 flags=0x0
   BO523 FREED len=0x1000 flags=0x8
   BO524 FREED len=0x1000 flags=0x100
-  BO526 live len=0x1000 flags=0x100
+  BO526 live len=0x1000 flags=0x500
   BO527 live len=0x1000 flags=0x0
   BO528 live len=0x1000 flags=0x0
   BO529 live len=0x1000 flags=0x8
@@ -11291,7 +11291,7 @@ kick dev0 #94  (54 instructions)
   BO513 FREED len=0x1000 flags=0x800
   BO519 FREED len=0x1000 flags=0x800
   BO525 FREED len=0x1000 flags=0x800
-  BO526 FREED len=0x1000 flags=0x100
+  BO526 FREED len=0x1000 flags=0x500
   BO527 FREED len=0x1000 flags=0x0
   BO528 FREED len=0x1000 flags=0x0
   BO529 FREED len=0x1000 flags=0x8
@@ -15157,7 +15157,7 @@ kick dev0 #138  (94 instructions)
   BO717 live len=0x1000 flags=0x0
   BO718 live len=0x41000 flags=0x100
   BO719 live len=0x40000 flags=0x100
-  BO720 live len=0x40000 flags=0x100
+  BO720 live len=0x40000 flags=0x500
   BO721 live len=0x1000 flags=0x0
   BO722 live len=0x1000 flags=0x0
   BO723 live len=0x1000 flags=0x8

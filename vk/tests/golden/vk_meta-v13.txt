@@ -267,7 +267,7 @@ kick dev0 #3  (54 instructions)
   BO14 FREED len=0x1000 flags=0x800
   BO15 live len=0x1000 flags=0x100
   BO16 live len=0x1000 flags=0x100
-  BO17 live len=0x1000 flags=0x100
+  BO17 live len=0x1000 flags=0x500
   BO18 live len=0x1000 flags=0x800
   BO19 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000233
@@ -369,13 +369,13 @@ kick dev0 #3  (54 instructions)
 kick dev0 #4  (81 instructions)
   BO15 FREED len=0x1000 flags=0x100
   BO16 FREED len=0x1000 flags=0x100
-  BO17 FREED len=0x1000 flags=0x100
+  BO17 FREED len=0x1000 flags=0x500
   BO18 FREED len=0x1000 flags=0x800
   BO19 FREED len=0x1000 flags=0x800
   BO20 live len=0x1000 flags=0x100
   BO21 live len=0x1000 flags=0x100
-  BO22 live len=0x1000 flags=0x100
-  BO23 live len=0x1000 flags=0x100
+  BO22 live len=0x1000 flags=0x500
+  BO23 live len=0x1000 flags=0x500
   BO24 live len=0x1000 flags=0x800
   BO25 live len=0x1000 flags=0x800
   BO26 live len=0x1000 flags=0x800
@@ -526,15 +526,15 @@ kick dev0 #4  (81 instructions)
 kick dev0 #5  (81 instructions)
   BO20 FREED len=0x1000 flags=0x100
   BO21 FREED len=0x1000 flags=0x100
-  BO22 FREED len=0x1000 flags=0x100
-  BO23 FREED len=0x1000 flags=0x100
+  BO22 FREED len=0x1000 flags=0x500
+  BO23 FREED len=0x1000 flags=0x500
   BO24 FREED len=0x1000 flags=0x800
   BO25 FREED len=0x1000 flags=0x800
   BO26 FREED len=0x1000 flags=0x800
   BO27 live len=0x1000 flags=0x100
   BO28 live len=0x1000 flags=0x100
-  BO29 live len=0x1000 flags=0x100
-  BO30 live len=0x1000 flags=0x100
+  BO29 live len=0x1000 flags=0x500
+  BO30 live len=0x1000 flags=0x500
   BO31 live len=0x1000 flags=0x800
   BO32 live len=0xf000 flags=0x8
   BO33 live len=0x1000 flags=0x800
@@ -692,15 +692,15 @@ kick dev0 #5  (81 instructions)
 kick dev0 #6  (81 instructions)
   BO27 FREED len=0x1000 flags=0x100
   BO28 FREED len=0x1000 flags=0x100
-  BO29 FREED len=0x1000 flags=0x100
-  BO30 FREED len=0x1000 flags=0x100
+  BO29 FREED len=0x1000 flags=0x500
+  BO30 FREED len=0x1000 flags=0x500
   BO31 FREED len=0x1000 flags=0x800
   BO33 FREED len=0x1000 flags=0x800
   BO34 FREED len=0x1000 flags=0x800
   BO35 live len=0x1000 flags=0x100
   BO36 live len=0x1000 flags=0x100
-  BO37 live len=0x1000 flags=0x100
-  BO38 live len=0x1000 flags=0x100
+  BO37 live len=0x1000 flags=0x500
+  BO38 live len=0x1000 flags=0x500
   BO39 live len=0x1000 flags=0x800
   BO40 live len=0x1000 flags=0x800
   BO41 live len=0x1000 flags=0x800
@@ -857,16 +857,16 @@ kick dev0 #6  (81 instructions)
 kick dev0 #7  (135 instructions)
   BO35 FREED len=0x1000 flags=0x100
   BO36 FREED len=0x1000 flags=0x100
-  BO37 FREED len=0x1000 flags=0x100
-  BO38 FREED len=0x1000 flags=0x100
+  BO37 FREED len=0x1000 flags=0x500
+  BO38 FREED len=0x1000 flags=0x500
   BO39 FREED len=0x1000 flags=0x800
   BO40 FREED len=0x1000 flags=0x800
   BO41 FREED len=0x1000 flags=0x800
   BO42 live len=0x1000 flags=0x100
   BO43 live len=0x1000 flags=0x100
-  BO44 live len=0x1000 flags=0x100
-  BO45 live len=0x1000 flags=0x100
-  BO46 live len=0x1000 flags=0x100
+  BO44 live len=0x1000 flags=0x500
+  BO45 live len=0x1000 flags=0x500
+  BO46 live len=0x1000 flags=0x500
   BO47 live len=0x1000 flags=0x800
   BO48 live len=0x1000 flags=0x800
   BO49 live len=0x4000 flags=0x8
@@ -1118,9 +1118,9 @@ kick dev0 #7  (135 instructions)
 kick dev0 #8  (108 instructions)
   BO42 FREED len=0x1000 flags=0x100
   BO43 FREED len=0x1000 flags=0x100
-  BO44 FREED len=0x1000 flags=0x100
-  BO45 FREED len=0x1000 flags=0x100
-  BO46 FREED len=0x1000 flags=0x100
+  BO44 FREED len=0x1000 flags=0x500
+  BO45 FREED len=0x1000 flags=0x500
+  BO46 FREED len=0x1000 flags=0x500
   BO47 FREED len=0x1000 flags=0x800
   BO48 FREED len=0x1000 flags=0x800
   BO50 FREED len=0x1000 flags=0x800
@@ -1128,8 +1128,8 @@ kick dev0 #8  (108 instructions)
   BO52 FREED len=0x1000 flags=0x800
   BO53 live len=0x1000 flags=0x100
   BO54 live len=0x1000 flags=0x100
-  BO55 live len=0x1000 flags=0x100
-  BO56 live len=0x1000 flags=0x100
+  BO55 live len=0x1000 flags=0x500
+  BO56 live len=0x1000 flags=0x500
   BO57 live len=0x1000 flags=0x800
   BO58 live len=0x7000 flags=0x8
   BO59 live len=0x1000 flags=0x800
@@ -1340,16 +1340,16 @@ kick dev0 #8  (108 instructions)
 kick dev0 #9  (108 instructions)
   BO53 FREED len=0x1000 flags=0x100
   BO54 FREED len=0x1000 flags=0x100
-  BO55 FREED len=0x1000 flags=0x100
-  BO56 FREED len=0x1000 flags=0x100
+  BO55 FREED len=0x1000 flags=0x500
+  BO56 FREED len=0x1000 flags=0x500
   BO57 FREED len=0x1000 flags=0x800
   BO59 FREED len=0x1000 flags=0x800
   BO60 FREED len=0x1000 flags=0x800
   BO61 FREED len=0x1000 flags=0x800
   BO63 live len=0x1000 flags=0x100
   BO64 live len=0x1000 flags=0x100
-  BO65 live len=0x1000 flags=0x100
-  BO66 live len=0x1000 flags=0x100
+  BO65 live len=0x1000 flags=0x500
+  BO66 live len=0x1000 flags=0x500
   BO67 live len=0x1000 flags=0x800
   BO68 live len=0x1000 flags=0x800
   BO69 live len=0x1000 flags=0x800
@@ -1558,16 +1558,16 @@ kick dev0 #9  (108 instructions)
 kick dev0 #10  (108 instructions)
   BO63 FREED len=0x1000 flags=0x100
   BO64 FREED len=0x1000 flags=0x100
-  BO65 FREED len=0x1000 flags=0x100
-  BO66 FREED len=0x1000 flags=0x100
+  BO65 FREED len=0x1000 flags=0x500
+  BO66 FREED len=0x1000 flags=0x500
   BO67 FREED len=0x1000 flags=0x800
   BO68 FREED len=0x1000 flags=0x800
   BO69 FREED len=0x1000 flags=0x800
   BO70 FREED len=0x1000 flags=0x800
   BO71 live len=0x1000 flags=0x100
   BO72 live len=0x1000 flags=0x100
-  BO73 live len=0x1000 flags=0x100
-  BO74 live len=0x1000 flags=0x100
+  BO73 live len=0x1000 flags=0x500
+  BO74 live len=0x1000 flags=0x500
   BO75 live len=0x1000 flags=0x800
   BO76 live len=0x1000 flags=0x800
   BO77 live len=0x1000 flags=0x800
@@ -1776,16 +1776,16 @@ kick dev0 #10  (108 instructions)
 kick dev0 #11  (108 instructions)
   BO71 FREED len=0x1000 flags=0x100
   BO72 FREED len=0x1000 flags=0x100
-  BO73 FREED len=0x1000 flags=0x100
-  BO74 FREED len=0x1000 flags=0x100
+  BO73 FREED len=0x1000 flags=0x500
+  BO74 FREED len=0x1000 flags=0x500
   BO75 FREED len=0x1000 flags=0x800
   BO76 FREED len=0x1000 flags=0x800
   BO77 FREED len=0x1000 flags=0x800
   BO78 FREED len=0x1000 flags=0x800
   BO79 live len=0x1000 flags=0x100
   BO80 live len=0x1000 flags=0x100
-  BO81 live len=0x1000 flags=0x100
-  BO82 live len=0x1000 flags=0x100
+  BO81 live len=0x1000 flags=0x500
+  BO82 live len=0x1000 flags=0x500
   BO83 live len=0x1000 flags=0x800
   BO84 live len=0x1000 flags=0x800
   BO85 live len=0x1000 flags=0x800
@@ -1994,16 +1994,16 @@ kick dev0 #11  (108 instructions)
 kick dev0 #12  (108 instructions)
   BO79 FREED len=0x1000 flags=0x100
   BO80 FREED len=0x1000 flags=0x100
-  BO81 FREED len=0x1000 flags=0x100
-  BO82 FREED len=0x1000 flags=0x100
+  BO81 FREED len=0x1000 flags=0x500
+  BO82 FREED len=0x1000 flags=0x500
   BO83 FREED len=0x1000 flags=0x800
   BO84 FREED len=0x1000 flags=0x800
   BO85 FREED len=0x1000 flags=0x800
   BO86 FREED len=0x1000 flags=0x800
   BO87 live len=0x1000 flags=0x100
   BO88 live len=0x1000 flags=0x100
-  BO89 live len=0x1000 flags=0x100
-  BO90 live len=0x1000 flags=0x100
+  BO89 live len=0x1000 flags=0x500
+  BO90 live len=0x1000 flags=0x500
   BO91 live len=0x1000 flags=0x800
   BO92 live len=0x1000 flags=0x800
   BO93 live len=0x1000 flags=0x800
@@ -2212,16 +2212,16 @@ kick dev0 #12  (108 instructions)
 kick dev0 #13  (108 instructions)
   BO87 FREED len=0x1000 flags=0x100
   BO88 FREED len=0x1000 flags=0x100
-  BO89 FREED len=0x1000 flags=0x100
-  BO90 FREED len=0x1000 flags=0x100
+  BO89 FREED len=0x1000 flags=0x500
+  BO90 FREED len=0x1000 flags=0x500
   BO91 FREED len=0x1000 flags=0x800
   BO92 FREED len=0x1000 flags=0x800
   BO93 FREED len=0x1000 flags=0x800
   BO94 FREED len=0x1000 flags=0x800
   BO95 live len=0x1000 flags=0x100
   BO96 live len=0x1000 flags=0x100
-  BO97 live len=0x1000 flags=0x100
-  BO98 live len=0x1000 flags=0x100
+  BO97 live len=0x1000 flags=0x500
+  BO98 live len=0x1000 flags=0x500
   BO99 live len=0x1000 flags=0x800
   BO100 live len=0x1000 flags=0x800
   BO101 live len=0x1000 flags=0x800
@@ -2430,16 +2430,16 @@ kick dev0 #13  (108 instructions)
 kick dev0 #14  (81 instructions)
   BO95 FREED len=0x1000 flags=0x100
   BO96 FREED len=0x1000 flags=0x100
-  BO97 FREED len=0x1000 flags=0x100
-  BO98 FREED len=0x1000 flags=0x100
+  BO97 FREED len=0x1000 flags=0x500
+  BO98 FREED len=0x1000 flags=0x500
   BO99 FREED len=0x1000 flags=0x800
   BO100 FREED len=0x1000 flags=0x800
   BO101 FREED len=0x1000 flags=0x800
   BO102 FREED len=0x1000 flags=0x800
   BO103 live len=0x1000 flags=0x100
   BO104 live len=0x1000 flags=0x100
-  BO105 live len=0x2000 flags=0x100
-  BO106 live len=0x1000 flags=0x100
+  BO105 live len=0x2000 flags=0x500
+  BO106 live len=0x1000 flags=0x500
   BO107 live len=0x1000 flags=0x800
   BO108 live len=0x1000 flags=0x800
   BO109 live len=0x1000 flags=0x800
@@ -2596,15 +2596,15 @@ kick dev0 #14  (81 instructions)
 kick dev0 #15  (81 instructions)
   BO103 FREED len=0x1000 flags=0x100
   BO104 FREED len=0x1000 flags=0x100
-  BO105 FREED len=0x2000 flags=0x100
-  BO106 FREED len=0x1000 flags=0x100
+  BO105 FREED len=0x2000 flags=0x500
+  BO106 FREED len=0x1000 flags=0x500
   BO107 FREED len=0x1000 flags=0x800
   BO108 FREED len=0x1000 flags=0x800
   BO109 FREED len=0x1000 flags=0x800
   BO110 live len=0x1000 flags=0x100
   BO111 live len=0x1000 flags=0x100
-  BO112 live len=0x2000 flags=0x100
-  BO113 live len=0x1000 flags=0x100
+  BO112 live len=0x2000 flags=0x500
+  BO113 live len=0x1000 flags=0x500
   BO114 live len=0x1000 flags=0x800
   BO115 live len=0x1000 flags=0x800
   BO116 live len=0x1000 flags=0x800
@@ -2761,15 +2761,15 @@ kick dev0 #15  (81 instructions)
 kick dev0 #16  (135 instructions)
   BO110 FREED len=0x1000 flags=0x100
   BO111 FREED len=0x1000 flags=0x100
-  BO112 FREED len=0x2000 flags=0x100
-  BO113 FREED len=0x1000 flags=0x100
+  BO112 FREED len=0x2000 flags=0x500
+  BO113 FREED len=0x1000 flags=0x500
   BO114 FREED len=0x1000 flags=0x800
   BO115 FREED len=0x1000 flags=0x800
   BO116 FREED len=0x1000 flags=0x800
   BO117 live len=0x1000 flags=0x100
   BO118 live len=0x1000 flags=0x100
-  BO119 live len=0x2000 flags=0x100
-  BO120 live len=0x1000 flags=0x100
+  BO119 live len=0x2000 flags=0x500
+  BO120 live len=0x1000 flags=0x500
   BO121 live len=0x1000 flags=0x800
   BO122 live len=0x1000 flags=0x800
   BO123 live len=0x1000 flags=0x800
@@ -3036,8 +3036,8 @@ kick dev0 #16  (135 instructions)
 kick dev0 #17  (162 instructions)
   BO117 FREED len=0x1000 flags=0x100
   BO118 FREED len=0x1000 flags=0x100
-  BO119 FREED len=0x2000 flags=0x100
-  BO120 FREED len=0x1000 flags=0x100
+  BO119 FREED len=0x2000 flags=0x500
+  BO120 FREED len=0x1000 flags=0x500
   BO121 FREED len=0x1000 flags=0x800
   BO122 FREED len=0x1000 flags=0x800
   BO123 FREED len=0x1000 flags=0x800
@@ -3045,8 +3045,8 @@ kick dev0 #17  (162 instructions)
   BO125 FREED len=0x1000 flags=0x800
   BO126 live len=0x1000 flags=0x100
   BO127 live len=0x1000 flags=0x100
-  BO128 live len=0x2000 flags=0x100
-  BO129 live len=0x1000 flags=0x100
+  BO128 live len=0x2000 flags=0x500
+  BO129 live len=0x1000 flags=0x500
   BO130 live len=0x1000 flags=0x800
   BO131 live len=0x1000 flags=0x800
   BO132 live len=0x1000 flags=0x800
@@ -3368,8 +3368,8 @@ kick dev0 #17  (162 instructions)
 kick dev0 #18  (486 instructions)
   BO126 FREED len=0x1000 flags=0x100
   BO127 FREED len=0x1000 flags=0x100
-  BO128 FREED len=0x2000 flags=0x100
-  BO129 FREED len=0x1000 flags=0x100
+  BO128 FREED len=0x2000 flags=0x500
+  BO129 FREED len=0x1000 flags=0x500
   BO130 FREED len=0x1000 flags=0x800
   BO131 FREED len=0x1000 flags=0x800
   BO132 FREED len=0x1000 flags=0x800
@@ -3378,8 +3378,8 @@ kick dev0 #18  (486 instructions)
   BO135 FREED len=0x1000 flags=0x800
   BO136 live len=0x1000 flags=0x100
   BO137 live len=0x1000 flags=0x100
-  BO138 live len=0x2000 flags=0x100
-  BO139 live len=0x2000 flags=0x100
+  BO138 live len=0x2000 flags=0x500
+  BO139 live len=0x2000 flags=0x500
   BO140 live len=0x1000 flags=0x800
   BO141 live len=0x1000 flags=0x800
   BO142 live len=0x1000 flags=0x800
@@ -4361,8 +4361,8 @@ kick dev0 #18  (486 instructions)
 kick dev0 #19  (702 instructions)
   BO136 FREED len=0x1000 flags=0x100
   BO137 FREED len=0x1000 flags=0x100
-  BO138 FREED len=0x2000 flags=0x100
-  BO139 FREED len=0x2000 flags=0x100
+  BO138 FREED len=0x2000 flags=0x500
+  BO139 FREED len=0x2000 flags=0x500
   BO140 FREED len=0x1000 flags=0x800
   BO141 FREED len=0x1000 flags=0x800
   BO142 FREED len=0x1000 flags=0x800
@@ -4383,8 +4383,8 @@ kick dev0 #19  (702 instructions)
   BO157 FREED len=0x1000 flags=0x800
   BO158 live len=0x1000 flags=0x100
   BO159 live len=0x2000 flags=0x100
-  BO160 live len=0x2000 flags=0x100
-  BO161 live len=0x3000 flags=0x100
+  BO160 live len=0x2000 flags=0x500
+  BO161 live len=0x3000 flags=0x500
   BO162 live len=0x1000 flags=0x800
   BO163 live len=0x1000 flags=0x800
   BO164 live len=0x1000 flags=0x800
@@ -5806,8 +5806,8 @@ kick dev0 #19  (702 instructions)
 kick dev0 #20  (162 instructions)
   BO158 FREED len=0x1000 flags=0x100
   BO159 FREED len=0x2000 flags=0x100
-  BO160 FREED len=0x2000 flags=0x100
-  BO161 FREED len=0x3000 flags=0x100
+  BO160 FREED len=0x2000 flags=0x500
+  BO161 FREED len=0x3000 flags=0x500
   BO162 FREED len=0x1000 flags=0x800
   BO163 FREED len=0x1000 flags=0x800
   BO164 FREED len=0x1000 flags=0x800
@@ -5836,8 +5836,8 @@ kick dev0 #20  (162 instructions)
   BO187 FREED len=0x1000 flags=0x800
   BO188 live len=0x1000 flags=0x100
   BO189 live len=0x1000 flags=0x100
-  BO190 live len=0x2000 flags=0x100
-  BO191 live len=0x1000 flags=0x100
+  BO190 live len=0x2000 flags=0x500
+  BO191 live len=0x1000 flags=0x500
   BO192 live len=0x1000 flags=0x800
   BO193 live len=0x1000 flags=0x800
   BO194 live len=0x1000 flags=0x800
@@ -6159,8 +6159,8 @@ kick dev0 #20  (162 instructions)
 kick dev0 #21  (44 instructions)
   BO188 FREED len=0x1000 flags=0x100
   BO189 FREED len=0x1000 flags=0x100
-  BO190 FREED len=0x2000 flags=0x100
-  BO191 FREED len=0x1000 flags=0x100
+  BO190 FREED len=0x2000 flags=0x500
+  BO191 FREED len=0x1000 flags=0x500
   BO192 FREED len=0x1000 flags=0x800
   BO193 FREED len=0x1000 flags=0x800
   BO194 FREED len=0x1000 flags=0x800
@@ -6168,7 +6168,7 @@ kick dev0 #21  (44 instructions)
   BO196 FREED len=0x1000 flags=0x800
   BO197 FREED len=0x1000 flags=0x800
   BO198 live len=0x1000 flags=0x100
-  BO199 live len=0x2000 flags=0x100
+  BO199 live len=0x2000 flags=0x500
   BO200 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000233
     3 WAIT           0300000000010000
@@ -6239,10 +6239,10 @@ kick dev0 #21  (44 instructions)
    43 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #22  (54 instructions)
   BO198 FREED len=0x1000 flags=0x100
-  BO199 FREED len=0x2000 flags=0x100
+  BO199 FREED len=0x2000 flags=0x500
   BO200 FREED len=0x1000 flags=0x800
   BO201 live len=0x1000 flags=0x100
-  BO202 live len=0x1000 flags=0x100
+  BO202 live len=0x1000 flags=0x500
   BO203 live len=0x1000 flags=0x800
   BO204 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000233
@@ -6343,15 +6343,15 @@ kick dev0 #22  (54 instructions)
    53 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #23  (108 instructions)
   BO201 FREED len=0x1000 flags=0x100
-  BO202 FREED len=0x1000 flags=0x100
+  BO202 FREED len=0x1000 flags=0x500
   BO203 FREED len=0x1000 flags=0x800
   BO204 FREED len=0x1000 flags=0x800
   BO205 live len=0x1000 flags=0x100
   BO206 live len=0x1000 flags=0x100
   BO207 live len=0x1000 flags=0x100
   BO208 live len=0x1000 flags=0x100
-  BO209 live len=0x1000 flags=0x100
-  BO210 live len=0x1000 flags=0x100
+  BO209 live len=0x1000 flags=0x500
+  BO210 live len=0x1000 flags=0x500
   BO211 live len=0x1000 flags=0x800
   BO212 live len=0x1000 flags=0x800
   BO213 live len=0x1000 flags=0x800
@@ -6656,16 +6656,16 @@ kick dev0 #25  (216 instructions)
   BO206 FREED len=0x1000 flags=0x100
   BO207 FREED len=0x1000 flags=0x100
   BO208 FREED len=0x1000 flags=0x100
-  BO209 FREED len=0x1000 flags=0x100
-  BO210 FREED len=0x1000 flags=0x100
+  BO209 FREED len=0x1000 flags=0x500
+  BO210 FREED len=0x1000 flags=0x500
   BO215 FREED len=0x1000 flags=0x800
   BO216 FREED len=0x1000 flags=0x800
   BO217 live len=0x1000 flags=0x100
   BO218 live len=0x1000 flags=0x100
   BO219 live len=0x1000 flags=0x100
   BO220 live len=0x1000 flags=0x100
-  BO221 live len=0x1000 flags=0x100
-  BO222 live len=0x1000 flags=0x100
+  BO221 live len=0x1000 flags=0x500
+  BO222 live len=0x1000 flags=0x500
   BO223 live len=0x1000 flags=0x800
   BO224 live len=0x1000 flags=0x800
   BO225 live len=0x1000 flags=0x800
@@ -7268,15 +7268,15 @@ kick dev0 #27  (162 instructions)
   BO218 FREED len=0x1000 flags=0x100
   BO219 FREED len=0x1000 flags=0x100
   BO220 FREED len=0x1000 flags=0x100
-  BO221 FREED len=0x1000 flags=0x100
-  BO222 FREED len=0x1000 flags=0x100
+  BO221 FREED len=0x1000 flags=0x500
+  BO222 FREED len=0x1000 flags=0x500
   BO231 FREED len=0x1000 flags=0x800
   BO232 FREED len=0x1000 flags=0x800
   BO233 FREED len=0x1000 flags=0x800
   BO234 FREED len=0x1000 flags=0x800
   BO235 live len=0x1000 flags=0x100
-  BO236 live len=0x4000 flags=0x100
-  BO237 live len=0x1000 flags=0x100
+  BO236 live len=0x4000 flags=0x500
+  BO237 live len=0x1000 flags=0x500
   BO238 live len=0x1000 flags=0x800
   BO239 live len=0x1000 flags=0x800
   BO240 live len=0x1000 flags=0x800
@@ -7579,8 +7579,8 @@ kick dev0 #27  (162 instructions)
   161 SYNC_ADD64     3300545600000000 addr=BO2
 kick dev0 #28  (85 instructions)
   BO235 FREED len=0x1000 flags=0x100
-  BO236 FREED len=0x4000 flags=0x100
-  BO237 FREED len=0x1000 flags=0x100
+  BO236 FREED len=0x4000 flags=0x500
+  BO237 FREED len=0x1000 flags=0x500
   BO238 FREED len=0x1000 flags=0x800
   BO239 FREED len=0x1000 flags=0x800
   BO240 FREED len=0x1000 flags=0x800
