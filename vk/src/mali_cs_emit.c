@@ -1074,18 +1074,28 @@ mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f)
    return rc;
 }
 
-int
-mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
+struct mali_draw *
+mali_frame_draw_slot(struct mali_frame *f)
 {
    if (f->ndraws == f->cap) {
       unsigned nc = f->cap ? f->cap * 2 : 8;
       struct mali_draw *nd = realloc(f->draws, nc * sizeof *nd);
       if (!nd)
-         return -ENOMEM;
+         return NULL;
       f->draws = nd;
       f->cap = nc;
    }
-   f->draws[f->ndraws++] = *d;
+   return &f->draws[f->ndraws];
+}
+
+int
+mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
+{
+   struct mali_draw *s = mali_frame_draw_slot(f);
+   if (!s)
+      return -ENOMEM;
+   *s = *d;
+   f->ndraws++;
    return 0;
 }
 

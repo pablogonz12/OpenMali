@@ -186,6 +186,7 @@ struct mali_frame {
    unsigned ndraws, cap;
 };
 
+struct mali_draw *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
 int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* 0 or -ENOMEM */
 void mali_frame_finish(struct mali_frame *f);                               /* frees the draw list */
 
