@@ -1,0 +1,4 @@
+# leaks in host tools that inherit the preloaded ASan runtime (MALI_SAN=1), not in the driver
+leak:/usr/bin/
+leak:/usr/lib/gcc/
+leak:/usr/lib/libc.so
