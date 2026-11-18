@@ -7,6 +7,7 @@ import argparse, json, os, re, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import farmlib as L                                    # noqa: E402
 import benchlib as BL                                  # noqa: E402
+import holdlib as H                                    # noqa: E402
 
 
 def git(*a):
@@ -111,6 +112,125 @@ def cmd_enable(a):
     if os.path.exists(p):
         os.unlink(p)
     print(f"{a.device}: enabled")
+
+
+def hold_beat(hid, watch_pid=0):
+    """heartbeat loop (the hold command's own thread, or the detached --lease helper): until released, finished, or the watched pid is gone"""
+    while True:
+        try:
+            h = L.read_json(H.path(hid))
+        except (OSError, ValueError):
+            return
+        if h["state"] == "done" or H.released(hid):
+            return
+        if watch_pid and not os.path.exists(f"/proc/{watch_pid}"):
+            return
+        H.touch(hid, "hb")
+        time.sleep(H.HB_EVERY)
+
+
+def hold_wait_active(hid, wait_max):
+    """block until farmd starts the hold; -> the active hold dict. Exits (rc 3) when farmd cancels it or wait_max elapses"""
+    t0, last = time.time(), None
+    while True:
+        h = L.read_json(H.path(hid))
+        if h["state"] == "active":
+            return h
+        if h["state"] == "done":
+            raise SystemExit(f"farm hold: {hid} ended before it started: {h.get('reason')}")
+        if time.time() - t0 > wait_max:
+            H.touch(hid, "rel")
+            raise SystemExit(f"farm hold: still queued after {int(wait_max)}s, cancelled (queue position {last})")
+        pos = len([x for x in H.queued(H.list_holds(), h["device"]) if x["seq"] < h["seq"]])
+        if pos != last:
+            print(f"farm hold: {hid} queued on {h['device']}, {pos} hold(s) ahead", file=sys.stderr, flush=True)
+            last = pos
+        H.touch(hid, "hb")
+        time.sleep(1)
+
+
+def hold_env(h):
+    t = h["serial"]
+    e = dict(os.environ, ANDROID_SERIAL=t, ADB_SERIAL=t, QSAFE_HELD=h["lock"], FARM_HOLD=h["id"], FARM_HOLD_DEVICE=h["device"])
+    e["ADB_SERIAL_" + h["lock"].upper()] = t
+    return e
+
+
+def hold_finish(hid):
+    """release and wait for farmd's cleanup; prints the one-line outcome on stderr"""
+    H.touch(hid, "rel")
+    t0 = time.time()
+    while time.time() - t0 < 150:
+        h = L.read_json(H.path(hid))
+        if h["state"] == "done":
+            print(f"farm hold: {hid} released ({h.get('reason')}); phone {'restored clean' if h.get('clean') else 'RESTORE PROBLEM: ' + str(h.get('clean_note'))}", file=sys.stderr)
+            return h
+        time.sleep(0.5)
+    print(f"farm hold: {hid} release requested; farmd is still cleaning up", file=sys.stderr)
+
+
+def cmd_hold(a):
+    _, devs = L.load_devices()
+    if a.release or a.status:
+        h = L.read_json(H.path(a.release or a.status))
+        if a.status:
+            print(json.dumps(h, indent=1, sort_keys=True))
+            return 0
+        hold_finish(h["id"])
+        return 0
+    if a.device not in devs:
+        raise SystemExit(f"farm hold: unknown device {a.device!r} (have: {', '.join(devs)})")
+    cmd = [c for c in (a.command or []) if c != "--"] if a.command and a.command[0] == "--" else (a.command or [])
+    if bool(cmd) == bool(a.lease):
+        raise SystemExit("farm hold: give either `-- <command>` or --lease")
+    if not a.max or a.max <= 0:
+        raise SystemExit("farm hold: --max <minutes> is required")
+    h = H.new_hold(a.device, a.max * 60, a.prio, bool(a.lease), who=os.environ.get("FARM_WHO", ""))
+    hid = h["id"]
+    import signal, threading
+    beat = threading.Thread(target=hold_beat, args=(hid,), daemon=True)
+    beat.start()
+    def die(*_):
+        H.touch(hid, "rel")
+        raise SystemExit(130)
+    signal.signal(signal.SIGTERM, die)
+    h = hold_wait_active(hid, a.wait_max * 60)
+    print(f"farm hold: {hid} active on {h['device']} (serial {h['serial']}, lock {h['lock']}, max {a.max} min)", file=sys.stderr, flush=True)
+    if a.lease:
+        print(json.dumps({"hold": hid, "device": h["device"], "serial": h["serial"], "lock": h["lock"], "deadline": h["deadline"]}))
+        # a detached helper keeps the lease alive until `farm hold --release`, the max time, or --watch-pid exits
+        subprocess.Popen([sys.executable, os.path.realpath(__file__), "hold", "--beat", hid, "--watch-pid", str(a.watch_pid)], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 0
+    def child_setup():                                    # the command dies with us: no orphan holding a phone that is being released
+        import ctypes
+        ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)
+        os.setsid()
+    p = subprocess.Popen(cmd, env=hold_env(h), preexec_fn=child_setup)
+    try:
+        while True:
+            try:
+                rc = p.wait(timeout=2)
+                break
+            except subprocess.TimeoutExpired:
+                cur = L.read_json(H.path(hid))
+                if cur["state"] == "done" or time.time() > cur["deadline"]:
+                    print(f"farm hold: {hid} ended while the command ran ({cur.get('reason') or 'max time'}): killing it", file=sys.stderr)
+                    os.killpg(p.pid, signal.SIGKILL)
+                    p.wait()
+                    rc = 124
+                    break
+    except KeyboardInterrupt:
+        os.killpg(p.pid, signal.SIGKILL)
+        rc = 130
+    hold_finish(hid)
+    return rc
+
+
+def cmd_hold_beat(a):
+    """internal: keep a --lease alive. Stops at release, done, deadline or when --watch-pid is gone"""
+    hold_beat(a.beat, a.watch_pid)
+    return 0
 
 
 def cmd_wait(a):
@@ -581,6 +701,19 @@ def main():
     s = sp.add_parser("enable")
     s.add_argument("device")
     s.set_defaults(f=cmd_enable)
+    s = sp.add_parser("hold", help="exclusive phone hold, queued fairly with farm jobs: `farm hold X8 --max 20 -- cmd...` (blocks until it starts, runs cmd, releases) or --lease")
+    s.add_argument("device", nargs="?")
+    s.add_argument("--max", type=float, help="minutes the hold may last (auto-release after that)")
+    s.add_argument("--prio", type=int, default=H.DEFAULT_PRIO, help="queue priority, lower first (default 0 = like gates)")
+    s.add_argument("--lease", action="store_true", help="return as soon as the hold starts (prints JSON); release with `farm hold --release ID`")
+    s.add_argument("--watch-pid", type=int, default=0, help="(--lease) release automatically when this pid exits")
+    s.add_argument("--wait-max", type=float, default=120, help="give up (cancel) after this many minutes in the queue")
+    s.add_argument("--release", metavar="ID")
+    s.add_argument("--status", metavar="ID")
+    s.add_argument("--beat", metavar="ID", help=argparse.SUPPRESS)
+    s.add_argument("command", nargs=argparse.REMAINDER)
+    s.set_defaults(f=lambda a: cmd_hold_beat(a) if a.beat else cmd_hold(a))
+
     s = sp.add_parser("wait")
     s.add_argument("job")
     s.add_argument("--timeout", type=float, default=1800)

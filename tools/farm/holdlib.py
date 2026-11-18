@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: MIT
+"""farm hold: a server-side FIFO queue of exclusive phone holds for agents, ordered with farm jobs by priority.
+Files in <state>/holds/: <id>.json (written by farmd only: state queued|active|done), <id>.hb (the caller touches it: heartbeat),
+<id>.rel (the caller creates it to release / cancel). farmd takes the same flock (/tmp/qsafe-<lock>.lock) as every qsafe script
+for the whole hold, so old scripts stay safe. Pure helpers here; farmd and `farm` do the I/O around them."""
+import json, os, time
+
+import farmlib as L
+
+HB_STALE = float(os.environ.get("MALI_FARM_HB_STALE", 45))   # s without a heartbeat -> the caller is dead, the hold is released
+HB_EVERY = float(os.environ.get("MALI_FARM_HB_EVERY", 10))
+DEFAULT_PRIO = 0          # same as gates: an agent that blocks on a hold is waiting on the critical path
+BAD_PROCS = ("steam", "steamwebhelper", "gamescope-wl")
+
+
+def holds_dir():
+    d = os.path.join(L.state_dir(), "holds")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def path(hid, ext="json"):
+    return os.path.join(holds_dir(), f"{hid}.{ext}")
+
+
+def new_hold(alias, max_s, prio=DEFAULT_PRIO, lease=False, who=""):
+    hid, n = time.strftime("h%Y%m%d-%H%M%S") + f"-{os.getpid()}", 1
+    h = {"id": hid, "device": alias, "prio": int(prio), "max_s": int(max_s), "lease": bool(lease), "who": who, "state": "queued",
+         "created": L.now(), "seq": time.time_ns(), "auto": 0}
+    L.write_json(path(hid), h)
+    touch(hid, "hb")
+    return h
+
+
+def touch(hid, ext):
+    with open(path(hid, ext), "a"):
+        pass
+    os.utime(path(hid, ext))
+
+
+def age(hid, ext="hb", now=None):
+    """seconds since the file was touched; huge when missing"""
+    try:
+        return (time.time() if now is None else now) - os.path.getmtime(path(hid, ext))
+    except OSError:
+        return 1e9
+
+
+def released(hid):
+    return os.path.exists(path(hid, "rel"))
+
+
+def list_holds():
+    out = []
+    for n in sorted(os.listdir(holds_dir())):
+        if n.endswith(".json"):
+            try:
+                out.append(L.read_json(os.path.join(holds_dir(), n)))
+            except (ValueError, OSError):
+                pass
+    return sorted(out, key=lambda h: h.get("seq", 0))
+
+
+def key(x):
+    """the scheduling key shared by jobs and holds: priority, explicit before auto, submission order (seq is time_ns for both)"""
+    return (L.job_prio(x), 1 if x.get("auto") else 0, x.get("seq", 0))
+
+
+def queued(holds, alias):
+    return sorted((h for h in holds if h["state"] == "queued" and h["device"] == alias), key=key)
+
+
+def end_reason(h, hb_age, rel, now=None, disabled=False):
+    """why an active hold must end now ('' = keep going)"""
+    now = time.time() if now is None else now
+    if rel:
+        return "released"
+    if disabled:
+        return "disabled by owner"
+    if now > h.get("deadline", now + 1):
+        return "max time reached"
+    if hb_age > HB_STALE:
+        return "caller lost (no heartbeat)"
+    return ""
+
+
+def gc(keep_s=86400):
+    """drop finished hold files older than a day"""
+    now = time.time()
+    for h in list_holds():
+        if h["state"] == "done" and now - os.path.getmtime(path(h["id"])) > keep_s:
+            for e in ("json", "hb", "rel"):
+                try:
+                    os.unlink(path(h["id"], e))
+                except OSError:
+                    pass
