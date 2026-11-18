@@ -1351,7 +1351,7 @@ class T(unittest.TestCase):
         self.assertEqual(now["default"]["job"], jid)                                                     # the valid default row was refreshed
         time.sleep(1.1)
         open(root + "/vc", "w").write("23")                                                              # a new version with no valid row: stored as invalid
-        self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11", "--rerun")
         self.farmd()
         inv = [r for r in self.menu_rows() if r["version_code"] == 23 and r["profile"] == "uncapped"][0]
         self.assertFalse(inv["valid"])
