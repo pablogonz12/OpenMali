@@ -114,7 +114,11 @@ plan_rect(struct mali_meta_list *l, const struct mali_meta_surf *dst, const stru
    j->bind[0] = sb;
    j->bind[1] = db;
    j->nbind = 2;
-   set_groups(j, (uint64_t)ex * ey * ez);
+   /* Byte path: one invocation per destination word (p[11] = word count), no atomics (lost on non-coherent memory). */
+   uint64_t dspan_end = doff + (dend - dst->off);
+   uint64_t nwords = ((dspan_end + 3) >> 2) - (doff >> 2);
+   p[11] = (uint32_t)nwords;
+   set_groups(j, word ? (uint64_t)ex * ey * ez : nwords);
    return 0;
 }
 

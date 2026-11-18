@@ -15,17 +15,38 @@ layout(push_constant) uniform P {
    uvec4 cst;
 } p;
 
-uint ld8(uint o) { return (src.d[o >> 2] >> ((o & 3u) * 8u)) & 0xffu; }
-void st8(uint o, uint v) {
-   uint sh = (o & 3u) * 8u;
-   atomicAnd(dst.d[o >> 2], ~(0xffu << sh));
-   atomicOr(dst.d[o >> 2], v << sh);
-}
-
 uint cw(uint k) { k &= 3u; return k == 0u ? p.cst.x : (k == 1u ? p.cst.y : (k == 2u ? p.cst.z : p.cst.w)); }
+
+uint ld8(uint o) { return (src.d[o >> 2] >> ((o & 3u) * 8u)) & 0xffu; }
 
 void main() {
    uint i = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * (32768u * 64u);
+   bool cst = (p.flags & 2u) != 0u;
+   if ((p.flags & 1u) == 0u) {
+      // Byte path: ONE invocation owns each destination word and merges the covered bytes into it (plain load/store, no atomics: atomics
+      // are lost on non-COHERENT_LOCAL memory, and a word shared by neighbouring elements/rows has a single writer). p.pad = word count.
+      if (i >= p.pad) return;
+      uint wi = (p.dst_off >> 2) + i;
+      uint old = dst.d[wi];
+      uint res = old;
+      for (uint b = 0u; b < 4u; b++) {
+         uint a = wi * 4u + b;
+         if (a < p.dst_off) continue;
+         uint rel = a - p.dst_off;
+         uint z = (p.ez > 1u && p.dst_slice != 0u) ? rel / p.dst_slice : 0u;
+         uint r = rel - z * p.dst_slice * ((p.ez > 1u && p.dst_slice != 0u) ? 1u : 0u);
+         uint y = (p.ey > 1u && p.dst_row != 0u) ? r / p.dst_row : 0u;
+         uint xb = r - y * p.dst_row * ((p.ey > 1u && p.dst_row != 0u) ? 1u : 0u);
+         if (z >= p.ez || y >= p.ey || xb >= p.ex * p.bpt) continue;
+         uint x = xb / p.bpt;
+         uint k = xb - x * p.bpt;
+         uint v = cst ? ((cw(k >> 2) >> ((k & 3u) * 8u)) & 0xffu) : ld8(p.src_off + z * p.src_slice + y * p.src_row + xb);
+         uint sh = (a & 3u) * 8u;
+         res = (res & ~(0xffu << sh)) | (v << sh);
+      }
+      if (res != old) dst.d[wi] = res;
+      return;
+   }
    uint total = p.ex * p.ey * p.ez;
    if (i >= total) return;
    uint x = i % p.ex;
@@ -34,14 +55,6 @@ void main() {
    uint z = r / p.ey;
    uint so = p.src_off + z * p.src_slice + y * p.src_row + x * p.bpt;
    uint dof = p.dst_off + z * p.dst_slice + y * p.dst_row + x * p.bpt;
-   bool cst = (p.flags & 2u) != 0u;
-   if ((p.flags & 1u) != 0u) {
-      for (uint w = 0u; w < p.bpt / 4u; w++)
-         dst.d[(dof >> 2) + w] = cst ? cw(w) : src.d[(so >> 2) + w];
-   } else {
-      for (uint b = 0u; b < p.bpt; b++) {
-         uint v = cst ? ((cw(b >> 2) >> ((b & 3u) * 8u)) & 0xffu) : ld8(so + b);
-         st8(dof + b, v);
-      }
-   }
+   for (uint w = 0u; w < p.bpt / 4u; w++)
+      dst.d[(dof >> 2) + w] = cst ? cw(w) : src.d[(so >> 2) + w];
 }
