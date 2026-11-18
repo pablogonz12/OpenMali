@@ -2,7 +2,7 @@
 
 Own ICD on Mesa's `vk_*` runtime. Plan and milestones: `../R3-PLAN.md`. State: M2 (cross builds, kbase backend, both phones enumerate and create a device).
 
-## One-time Mesa setup (pinned, unmodified mesa-26.3.0)
+## One-time Mesa setup (pinned mesa-26.3.0 + `mesa-patches/`, run `./apply-mesa-patches.sh` after unpacking)
 
     cd ../third_party
     PATH=$PWD/venv/bin:$PATH meson setup build-vk mesa -Dbuildtype=release -Dgallium-drivers= \
