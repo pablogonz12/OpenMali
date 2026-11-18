@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -34,6 +34,8 @@ static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chai
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
 static int g_cbc, g_cbc_nofmt; static uint32_t g_cbc_max;   /* EXT_custom_border_color: features and maxCustomBorderColorSamplers */
 static int g_m5;       /* maintenance5 feature advertised */
+static int g_div, g_div0; static uint32_t g_div_max;   /* EXT/KHR_vertex_attribute_divisor: instance-rate divisor, zero divisor, maxVertexAttribDivisor */
+static const VkPipelineVertexInputStateCreateInfo *g_vi;   /* make_pipe: vertex input state override (test divisor) */
 static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
 static int test_idx32(void);
 static int test_zinit(void);
@@ -67,7 +69,8 @@ static float g_lw = 1.0f;
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
-   X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2)
+   X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
+   X(CmdBindVertexBuffers)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -245,6 +248,7 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .pNext = g_modless ? &fmci : NULL, .module = g_modless ? VK_NULL_HANDLE : f, .pName = "main",
        .pSpecializationInfo = g_spec_fs}};
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   if (g_vi) vis = *g_vi;
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = g_topo};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
@@ -408,6 +412,66 @@ test_firstinst(void)
    DestroyPipelineLayout(dev, lay, NULL);
    hbuf_destroy(&ib);
    tgt_destroy(&t);
+   return 1;
+}
+
+/* ---------------------------------------------------------------- vertex attribute divisor */
+/* One float attribute at instance rate with divisor d (shader div.vert: x offset = value). 6 instances; the vertex buffer holds the
+ * offsets 0, 0.5, 1, 1.5 (triangle k at column k of four). Instance i reads element i / d (d = 0: element 0), so the triangles drawn are
+ * the columns {i / d | i < 6, i / d < 4}: checked as present / absent at each column centroid. d = 1 is the plain instance-rate case, 2 and
+ * 4 are the POT hardware divisor, 3 5 7 the NPOT one, 0 needs vertexAttributeInstanceRateZeroDivisor. */
+static int
+test_divisor(void)
+{
+   if (!g_div) { printf("{\"test\":\"divisor\",\"skipped\":\"vertexAttributeInstanceRateDivisor not advertised\",\"ok\":true}\n"); return 1; }
+   CHECK(g_div_max >= 0xffff, "maxVertexAttribDivisor %u", g_div_max);
+   static const uint32_t ds[] = {1, 2, 3, 4, 5, 7, 0};
+   struct hbuf vb;
+   if (!hbuf_create(&vb, 64, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   static const float vals[4] = {0.0f, 0.5f, 1.0f, 1.5f};
+   memcpy(vb.p, vals, sizeof vals);
+   for (unsigned c = 0; c < sizeof ds / sizeof *ds; c++) {
+      const uint32_t d = ds[c];
+      if (d == 0 && !g_div0) { printf("{\"test\":\"divisor\",\"divisor\":0,\"skipped\":\"zero divisor not advertised\",\"ok\":true}\n"); continue; }
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkVertexInputBindingDescription bd = {.binding = 0, .stride = 4, .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE};
+      VkVertexInputAttributeDescription ad = {.location = 0, .binding = 0, .format = VK_FORMAT_R32_SFLOAT, .offset = 0};
+      VkVertexInputBindingDivisorDescriptionEXT dd = {.binding = 0, .divisor = d};
+      VkPipelineVertexInputDivisorStateCreateInfoEXT dsci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
+                                                             .vertexBindingDivisorCount = 1, .pVertexBindingDivisors = &dd};
+      VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .pNext = &dsci,
+                                                 .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bd,
+                                                 .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &ad};
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      g_vi = &vi;
+      int mp = make_pipe(&t, "div.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_vi = NULL;
+      if (!mp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      VkDeviceSize off = 0;
+      CmdBindVertexBuffers(cb, 0, 1, &vb.b, &off);
+      CmdDraw(cb, 3, 6, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         int want[4] = {0, 0, 0, 0};
+         for (unsigned i = 0; i < 6; i++) { unsigned k = d ? i / d : 0; if (k < 4) want[k] = 1; }
+         for (int k = 0; k < 4; k++)
+            CHECK(red_at(&t, 21 + 64 * k, 117) == want[k], "divisor %u: column %d %s, pixel %u,%u,%u,%u", d, k, want[k] ? "missing" : "drawn",
+                  pix(&t, 21 + 64 * k, 117)[0], pix(&t, 21 + 64 * k, 117)[1], pix(&t, 21 + 64 * k, 117)[2], pix(&t, 21 + 64 * k, 117)[3]);
+         printf("{\"test\":\"divisor\",\"divisor\":%u,\"columns\":\"%d%d%d%d\",\"ok\":true}\n", d, want[0], want[1], want[2], want[3]);
+      } else {
+         printf("{\"test\":\"divisor\",\"divisor\":%u,\"skipped\":\"pixels: fake backend\",\"ok\":true}\n", d);
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   hbuf_destroy(&vb);
    return 1;
 }
 
@@ -2284,10 +2348,18 @@ main(int argc, char **argv)
    VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &f12};
    VkPhysicalDeviceMaintenance5FeaturesKHR fm5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &f12};
    rb2.pNext = &fm5;
-   VkPhysicalDeviceCustomBorderColorFeaturesEXT fcb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = &rb2};
+   VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT fdv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, .pNext = &rb2};
+   VkPhysicalDeviceCustomBorderColorFeaturesEXT fcb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = &fdv};
    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fcb};
    GetPhysicalDeviceFeatures2(pd, &f2);
    g_cbc = fcb.customBorderColors; g_cbc_nofmt = fcb.customBorderColorWithoutFormat;
+   g_div = fdv.vertexAttributeInstanceRateDivisor; g_div0 = fdv.vertexAttributeInstanceRateZeroDivisor;
+   if (g_div) {
+      VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT dvp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT};
+      VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dvp};
+      ((PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2"))(pd, &p2);
+      g_div_max = dvp.maxVertexAttribDivisor;
+   }
    {
       VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
       VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cbp};
@@ -2339,8 +2411,12 @@ main(int argc, char **argv)
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
    VkPhysicalDeviceCustomBorderColorFeaturesEXT ecb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = e2.pNext,
                                                        .customBorderColors = fcb.customBorderColors, .customBorderColorWithoutFormat = fcb.customBorderColorWithoutFormat};
-   e2.pNext = &ecb;
-   const char *dexts[4]; uint32_t ndx = 0;
+   VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT edv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, .pNext = &ecb,
+                                                            .vertexAttributeInstanceRateDivisor = fdv.vertexAttributeInstanceRateDivisor,
+                                                            .vertexAttributeInstanceRateZeroDivisor = fdv.vertexAttributeInstanceRateZeroDivisor};
+   e2.pNext = &edv;
+   const char *dexts[5]; uint32_t ndx = 0;
+   if (g_div) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
@@ -2367,6 +2443,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
    if (ok && CASE_ON("cbc")) ok &= test_cbc();
+   if (ok && CASE_ON("divisor")) ok &= test_divisor();
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();

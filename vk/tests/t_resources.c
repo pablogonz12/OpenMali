@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "kbase_draw.h"
 #include "mali_image.h"
 #include "mali_pipeline_layout.h"
 #include "mali_queue.h"
@@ -238,6 +239,38 @@ run(void)
    return 0;
 }
 
+/* kb_draw_attr_instance (VK_EXT_vertex_attribute_divisor descriptor encoding): type, frequency, R/E/D against an independent 128-bit-free
+ * reconstruction: (D + 2^31) * divisor must equal 2^(32+R) to within one divisor (E records the rounding direction). */
+static int
+test_attr_instance(void)
+{
+   uint32_t a[8];
+   kb_draw_attr_1d(a, 0x123, 0, 18, 16, 8);
+   kb_draw_attr_instance(a, 1);
+   CHECK(((a[0] >> 4) & 0xf) == 1 && !(a[0] & (1u << 8)) && ((a[1] >> 6) & 3) == 1 && a[5] == 0 && a[2] == 16 && a[3] == 18 && a[4] == 8,
+         "divisor 1: %08x %08x", a[0], a[1]);
+   kb_draw_attr_1d(a, 0x123, 0, 18, 16, 8);
+   kb_draw_attr_instance(a, 8);
+   CHECK(((a[0] >> 4) & 0xf) == 2 && ((a[1] >> 24) & 31) == 3 && !((a[1] >> 29) & 1) && a[5] == 0, "divisor 8 (POT): %08x %08x %08x", a[0], a[1], a[5]);
+   static const struct { uint32_t div, d, r, e; } npot[] = {{3, 715827883, 1, 0}, {5, 1288490189, 2, 0}, {7, 306783378, 2, 1}, {6, 715827883, 2, 0},
+                                                           {1000, 51539608, 9, 0}, {65535, 32769, 15, 0}, {0xfffffff, 8, 27, 1}};
+   for (unsigned i = 0; i < sizeof npot / sizeof *npot; i++) {
+      kb_draw_attr_1d(a, 0x123, 0, 18, 16, 8);
+      kb_draw_attr_instance(a, npot[i].div);
+      CHECK(((a[0] >> 4) & 0xf) == 3 && ((a[1] >> 6) & 3) == 1 && ((a[1] >> 24) & 31) == npot[i].r && ((a[1] >> 29) & 1) == npot[i].e && a[5] == npot[i].d,
+            "divisor %u: type %u R %u E %u D %u", npot[i].div, (a[0] >> 4) & 0xf, (a[1] >> 24) & 31, (a[1] >> 29) & 1, a[5]);
+   }
+   for (uint32_t d = 3; d < 5000; d += 2) {   /* odd: always NPOT */
+      kb_draw_attr_1d(a, 0x123, 0, 18, 16, 8);
+      kb_draw_attr_instance(a, d);
+      unsigned r = (a[1] >> 24) & 31;
+      uint64_t m = (uint64_t)((uint64_t)a[5] + ((uint64_t)1 << 31)) * d, want = (uint64_t)1 << (32 + r);
+      CHECK(r == 31 - (unsigned)__builtin_clz(d) && (m > want ? m - want : want - m) <= d / 2 + 1, "divisor %u: D %u R %u", d, a[5], r);
+   }
+   printf("{\"test\":\"attr_instance\",\"ok\":true}\n");
+   return 0;
+}
+
 int
 main(void)
 {
@@ -246,7 +279,8 @@ main(void)
       printf("{\"test\":\"t_resources\",\"pass\":false,\"error\":\"needs MALI_BACKEND=fake\"}\n");
       return 1;
    }
-   int r = run();
+   int r = test_attr_instance();
+   if (!r) r = run();
    printf("{\"test\":\"t_resources\",\"pass\":%s}\n", r || g_fail ? "false" : "true");
    return r || g_fail;
 }

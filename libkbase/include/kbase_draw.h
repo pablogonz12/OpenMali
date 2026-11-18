@@ -58,6 +58,9 @@ void kb_draw_spd_vs_varying(uint32_t *d, uint64_t binary_va, unsigned work_regs,
 void kb_draw_local_storage_none(uint32_t *d);
 /* Attribute (32 B), 1D per-vertex attribute reading from vertex-buffer descriptor `buffer_index` of resource table `table`. */
 void kb_draw_attr_1d(uint32_t *d, uint32_t pixfmt, unsigned table, unsigned buffer_index, uint32_t offset, uint32_t stride);
+/* Turn a kb_draw_attr_1d attribute into an instance-rate one with `divisor` >= 1 (1 = plain instance counter, POT = type 2, NPOT = type 3).
+ * Divisor 0 has no hardware form: the caller uses divisor 1 with stride 0 (panvk). */
+void kb_draw_attr_instance(uint32_t *d, uint32_t divisor);
 /* Attribute used as "unused" filler (invalid table 17 -> out-of-bounds behaviour). */
 void kb_draw_attr_unused(uint32_t *d);
 /* Attribute of type "vertex packet": the FS's view of the hardware varying buffer (table 61). */
