@@ -17,6 +17,7 @@ G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sy
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
 ONLY_DRAW = "triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
 ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
+ONLY_FEAT = ["storfmt_nf", "ycbcr"]               # t_vk_feat cases of the smoke set (Steam-session features); same list as FEAT in vk/tests/valguest.sh
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 SERIAL = os.environ.get("ANDROID_SERIAL", "")
 
@@ -268,7 +269,7 @@ def smoke(a):
     if not push_so(os.path.join(out, "libvulkan_mali.so"), a.sha, f"{d}/libvulkan_mali.so"):
         print("SO MISMATCH after push", flush=True)
         sys.exit(77)
-    for t in ("t_vk_draw", "t_vk_compute", "t_vk_meta"):
+    for t in ("t_vk_draw", "t_vk_compute", "t_vk_meta", "t_vk_feat"):
         if adb("push", os.path.join(out, t), f"{d}/{t}")[0] != 0:
             sys.exit(79)
     adb("shell", f"chmod +x {d}/t_vk_*", timeout=20)
@@ -277,12 +278,21 @@ def smoke(a):
     envs = " ".join(a.env.split())
     ok, tmp = True, tempfile.mkdtemp(prefix="shellroute-")
     runs = []
-    for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", "")):
+    # a t_vk_feat case runs only if this tree's binary knows it (the route may merge ahead of the cases)
+    try:
+        feat_bin = open(os.path.join(out, "t_vk_feat"), "rb").read()
+    except OSError:
+        feat_bin = b""
+    feat = [c for c in ONLY_FEAT if c.encode() + b"\0" in feat_bin]
+    for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", ""), ("t_vk_feat", "")):
         if not a.only:
-            runs.append((n, extra, ""))
+            if n == "t_vk_feat":
+                runs.extend((n, f"--only {c}", c) for c in feat)
+            else:
+                runs.append((n, extra, ""))
             continue
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
-            if c in (ONLY_DRAW if n == "t_vk_draw" else ONLY_META):
+            if c in (ONLY_DRAW if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
                 runs.append((n, f"{extra} --only {c}", c))
     for n, extra, oc in runs:
         if gated(a.lock):

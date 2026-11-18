@@ -129,7 +129,7 @@ class ShellRoute(unittest.TestCase):
             os.makedirs(f"{self.tree}/vk/out/{sub}")
             open(f"{self.tree}/vk/out/{sub}/libvulkan_mali.so", "w").write("driver " + sub)
         os.makedirs(self.tree + "/vk/out/a64-bionic", exist_ok=True)
-        for t in ("t_vk_draw", "t_vk_compute", "t_vk_meta"):
+        for t in ("t_vk_draw", "t_vk_compute", "t_vk_meta", "t_vk_feat"):
             open(f"{self.tree}/vk/out/a64-bionic/{t}", "w").write("x")
         os.makedirs(self.tree + "/vk/shader")
         open(self.tree + "/vk/shader/a.spv", "w").write("x")
