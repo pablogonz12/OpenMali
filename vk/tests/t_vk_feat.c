@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|terminate|cachectl|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -39,10 +39,13 @@ static const VkPipelineVertexInputStateCreateInfo *g_vi;   /* make_pipe: vertex 
 static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
 static int test_idx32(void);
 static int test_zinit(void);
+static int test_terminate(void);
+static int test_cachectl(void);
 #define BIND_IB(cb, b, off, ty) do { if (g_ib2) g_cbib2(cb, b, off, VK_WHOLE_SIZE, ty); else CmdBindIndexBuffer(cb, b, off, ty); } while (0)
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static VkPipelineCreateFlags g_pipe_flags;   /* make_pipe: VkGraphicsPipelineCreateInfo.flags (test cachectl) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
@@ -63,7 +66,7 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(DestroyFence) X(WaitForFences) X(QueueSubmit) X(DeviceWaitIdle) X(CreateImage) X(DestroyImage)                  \
    X(GetImageMemoryRequirements) X(BindImageMemory) X(CreateImageView) X(DestroyImageView) X(CreateBuffer)          \
    X(DestroyBuffer) X(GetBufferMemoryRequirements) X(BindBufferMemory) X(CreateShaderModule) X(DestroyShaderModule) \
-   X(CreatePipelineLayout) X(DestroyPipelineLayout) X(CreateRenderPass) X(DestroyRenderPass) X(CreateFramebuffer)   \
+   X(CreatePipelineCache) X(DestroyPipelineCache) X(CreatePipelineLayout) X(DestroyPipelineLayout) X(CreateRenderPass) X(DestroyRenderPass) X(CreateFramebuffer)   \
    X(DestroyFramebuffer) X(CreateGraphicsPipelines) X(DestroyPipeline) X(CreateCommandPool) X(DestroyCommandPool)   \
    X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdBeginRenderPass) X(CmdEndRenderPass)    \
    X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed)            \
@@ -267,7 +270,7 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
                                       .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
-                                      .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
+                                      .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp, .flags = g_pipe_flags};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
    if (g_modless) { free(vcode); free(fcode); }
    else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
@@ -1604,7 +1607,7 @@ test_nulld(void)
 
 /* R4-B2 cheap shader-capability features: scalarBlockLayout, uniformBufferStandardLayout, shaderZeroInitializeWorkgroupMemory.
  * run_comp: one compute dispatch over a set whose bindings 0..n-1 are the given buffers/types. */
-static VkBool32 g_inlineub, g_scalar, g_ubostd, g_zinit, g_demote, g_sgctl_feat, g_fullsg_feat;
+static VkBool32 g_terminate, g_cachectl, g_inlineub, g_scalar, g_ubostd, g_zinit, g_demote, g_sgctl_feat, g_fullsg_feat;
 static int
 run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, struct hbuf *bufs, uint32_t gx)
 {
@@ -1847,6 +1850,78 @@ test_demote(void)
             pix(&t, 5, 9)[3], pix(&t, 6, 9)[0], pix(&t, 6, 9)[1], pix(&t, 6, 9)[2], pix(&t, 6, 9)[3]);
       printf("{\"test\":\"demote\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
    } else printf("{\"test\":\"demote\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* shaderTerminateInvocation: even-x pixels execute terminateInvocation (no write, alpha stays 0), odd-x pixels write opaque green. */
+static int
+test_terminate(void)
+{
+   if (!g_terminate) { printf("{\"test\":\"terminate\",\"skipped\":\"shaderTerminateInvocation not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "quad.vert.spv", "terminate.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   const float s[4] = {W, H, 0, 0};
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0, odd = 0;
+      for (int y = 4; y < H - 4; y++)
+         for (int x = 4; x < W - 4; x++) {
+            if (abs((x ^ 1) - (W - 1 - y)) <= 3 || abs(x - (W - 1 - y)) <= 3) continue;   /* quad diagonal */
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            if (x & 1) { odd++; bad += !near(p, 0, 255, 0, 255, 2); }
+            else bad += p[3] != 0;
+         }
+      CHECK(odd > 0 && bad == 0, "%d of %d pixels wrong (odd %u,%u,%u,%u even %u,%u,%u,%u)", bad, n, pix(&t, 5, 9)[0], pix(&t, 5, 9)[1], pix(&t, 5, 9)[2],
+            pix(&t, 5, 9)[3], pix(&t, 6, 9)[0], pix(&t, 6, 9)[1], pix(&t, 6, 9)[2], pix(&t, 6, 9)[3]);
+      printf("{\"test\":\"terminate\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"terminate\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* pipelineCreationCacheControl: FAIL_ON_PIPELINE_COMPILE_REQUIRED / EARLY_RETURN_ON_FAILURE on a pipeline and EXTERNALLY_SYNCHRONIZED on a cache
+ * must be accepted. The driver always compiles, so the pipeline must come back VK_SUCCESS (never COMPILE_REQUIRED), and still draw. */
+static int
+test_cachectl(void)
+{
+   if (!g_cachectl) { printf("{\"test\":\"cachectl\",\"skipped\":\"pipelineCreationCacheControl not advertised\",\"ok\":true}\n"); return 1; }
+   VkPipelineCacheCreateInfo pcci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .flags = VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT};
+   VkPipelineCache pc = VK_NULL_HANDLE;
+   CHECK(CreatePipelineCache(dev, &pcci, NULL, &pc) == VK_SUCCESS, "externally synchronized pipeline cache");
+   DestroyPipelineCache(dev, pc, NULL);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_pipe_flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT | VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+   int ok = make_pipe(&t, "quad.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);   /* CHECKs == VK_SUCCESS */
+   g_pipe_flags = 0;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   const float s[4] = {W, H, 0, 0};
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) CHECK(near(pix(&t, 128, 128), 255, 0, 0, 255, 2), "flagged pipeline did not draw (%u,%u,%u,%u)", pix(&t, 128, 128)[0], pix(&t, 128, 128)[1], pix(&t, 128, 128)[2], pix(&t, 128, 128)[3]);
+   printf("{\"test\":\"cachectl\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
@@ -2457,7 +2532,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_terminate = f13.shaderTerminateInvocation; g_cachectl = f13.pipelineCreationCacheControl; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -2547,6 +2622,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
+   if (ok && CASE_ON("terminate")) ok &= test_terminate();
+   if (ok && CASE_ON("cachectl")) ok &= test_cachectl();
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();

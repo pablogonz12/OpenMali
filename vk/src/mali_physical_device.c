@@ -244,6 +244,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
+      .shaderTerminateInvocation = true,   /* t_vk_feat terminate: spirv_to_nir OpTerminateInvocation -> discard */
+      .pipelineCreationCacheControl = true, /* t_vk_feat cachectl: flags accepted, the driver always compiles (never COMPILE_REQUIRED) */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .maintenance6 = true,
