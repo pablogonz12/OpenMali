@@ -767,6 +767,33 @@ mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
    cmd->frames[cmd->nframes++] = *f;
 }
 
+/* colour loadOp LOAD of the RAW-tile-buffer formats (integer, SNORM, UNORM16, float32): preload.frag kinds 12..18 (kind | components << 12), bytes per texel */
+static bool
+raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
+{
+   static const struct { int f; uint8_t k, bpp, nc; } t[] = {
+      { VK_FORMAT_R8_UINT, 12, 1, 1 }, { VK_FORMAT_R8G8_UINT, 12, 2, 2 }, { VK_FORMAT_R8G8B8A8_UINT, 12, 4, 4 }, { VK_FORMAT_A8B8G8R8_UINT_PACK32, 12, 4, 4 },
+      { VK_FORMAT_R16_UINT, 12, 2, 1 }, { VK_FORMAT_R16G16_UINT, 12, 4, 2 }, { VK_FORMAT_R16G16B16A16_UINT, 12, 8, 4 },
+      { VK_FORMAT_R32_UINT, 12, 4, 1 }, { VK_FORMAT_R32G32_UINT, 12, 8, 2 }, { VK_FORMAT_R32G32B32A32_UINT, 12, 16, 4 },
+      { VK_FORMAT_R8_SINT, 13, 1, 1 }, { VK_FORMAT_R8G8_SINT, 13, 2, 2 }, { VK_FORMAT_R8G8B8A8_SINT, 13, 4, 4 }, { VK_FORMAT_A8B8G8R8_SINT_PACK32, 13, 4, 4 },
+      { VK_FORMAT_R16_SINT, 13, 2, 1 }, { VK_FORMAT_R16G16_SINT, 13, 4, 2 }, { VK_FORMAT_R16G16B16A16_SINT, 13, 8, 4 },
+      { VK_FORMAT_R32_SINT, 13, 4, 1 }, { VK_FORMAT_R32G32_SINT, 13, 8, 2 }, { VK_FORMAT_R32G32B32A32_SINT, 13, 16, 4 },
+      { VK_FORMAT_R8_SNORM, 14, 1, 1 }, { VK_FORMAT_R8G8_SNORM, 14, 2, 2 }, { VK_FORMAT_R8G8B8A8_SNORM, 14, 4, 4 }, { VK_FORMAT_A8B8G8R8_SNORM_PACK32, 14, 4, 4 },
+      { VK_FORMAT_R16_SNORM, 14, 2, 1 }, { VK_FORMAT_R16G16_SNORM, 14, 4, 2 }, { VK_FORMAT_R16G16B16A16_SNORM, 14, 8, 4 },
+      { VK_FORMAT_R16_UNORM, 15, 2, 1 }, { VK_FORMAT_R16G16_UNORM, 15, 4, 2 }, { VK_FORMAT_R16G16B16A16_UNORM, 15, 8, 4 },
+      { VK_FORMAT_R32_SFLOAT, 16, 4, 1 }, { VK_FORMAT_R32G32_SFLOAT, 16, 8, 2 }, { VK_FORMAT_R32G32B32A32_SFLOAT, 16, 16, 4 },
+      { VK_FORMAT_A2B10G10R10_UINT_PACK32, 17, 4, 4 }, { VK_FORMAT_A2B10G10R10_SINT_PACK32, 18, 4, 4 },
+   };
+   for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++)
+      if (t[i].f == fmt) {
+         *kind = t[i].k;
+         *bpp = t[i].bpp;
+         *nc = t[i].nc;
+         return true;
+      }
+   return false;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
@@ -835,9 +862,15 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       case VK_FORMAT_B4G4R4A4_UNORM_PACK16: kind = 9; bpp = 2; break;
       case VK_FORMAT_R5G5B5A1_UNORM_PACK16: kind = 10; bpp = 2; break;
       case VK_FORMAT_B5G5R5A1_UNORM_PACK16: kind = 11; bpp = 2; break;
-      default:
-         unsupported(cmd, "colour loadOp LOAD of this format");
-         return;
+      default: {
+         unsigned rk, rbpp, rnc;
+         if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {
+            unsupported(cmd, "colour loadOp LOAD of this format");
+            return;
+         }
+         kind = rk | (rnc << 12) | ((rk == 12 || rk == 17) ? 1u << 16 : (rk == 13 || rk == 18) ? 2u << 16 : 0);   /* bits 16..17: integer-typed colour output (uint / sint) */
+         bpp = rbpp;
+      }
       }
       psrc.arg = kind | (srgb ? 0x100u : 0u);
       psrc.bpp = bpp;
@@ -1051,16 +1084,61 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
 {
    CMD(h);
    struct mali_frame *f = &cmd->cur;
-   if (!cmd->in_render || f->ndraws) {
-      unsupported(cmd, "CmdClearAttachments after a draw (needs a quad draw)");
+   if (!cmd->in_render) {
+      unsupported(cmd, "CmdClearAttachments outside a rendering");
       return;
    }
+   bool partial = false;
    for (uint32_t r = 0; r < nr; r++)
       if (rects[r].rect.offset.x != f->area[0] || rects[r].rect.offset.y != f->area[1] ||
-          (int32_t)rects[r].rect.extent.width != f->area[2] || (int32_t)rects[r].rect.extent.height != f->area[3]) {
-         unsupported(cmd, "partial CmdClearAttachments");
+          (int32_t)rects[r].rect.extent.width != f->area[2] || (int32_t)rects[r].rect.extent.height != f->area[3])
+         partial = true;
+   if (partial || f->ndraws) {
+      /* after a draw, or a sub-rectangle: a constant-colour quad (preload.frag kind 19: the clear words are the format's raw shader output) per rect.
+       * Colour only, single-sampled, layer 0; depth/stencil clears keep the loadOp-patch path above (whole area, before the first draw). */
+      for (uint32_t i = 0; i < na; i++)
+         if (att[i].aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            unsupported(cmd, partial ? "partial CmdClearAttachments of depth/stencil" : "CmdClearAttachments of depth/stencil after a draw (needs a quad draw)");
+            return;
+         }
+      if (!f->has_colour || f->samples != 1) {
+         unsupported(cmd, "CmdClearAttachments quad: no single-sampled colour attachment");
          return;
       }
+      for (uint32_t i = 0; i < na; i++) {
+         if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
+            continue;
+         if (att[i].colorAttachment != 0) {
+            unsupported(cmd, "colour attachment index");
+            return;
+         }
+         for (uint32_t r = 0; r < nr; r++) {
+            if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
+               unsupported(cmd, "CmdClearAttachments quad: layers");
+               return;
+            }
+            struct mali_preload_src ps;
+            memset(&ps, 0, sizeof ps);
+            ps.arg = 19 | (f->colour.rt && f->colour.rt->int_bits ? (f->colour.rt->is_signed ? 2u : 1u) << 16 : 0);   /* the clear words are the raw shader output: integer-typed for integer formats */
+            memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
+            struct mali_draw d;
+            if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
+               unsupported(cmd, "CmdClearAttachments quad (preload shader)");
+               return;
+            }
+            d.dirty = MALI_D_ALL;
+            d.sc[0] = rects[r].rect.offset.x; d.sc[1] = rects[r].rect.offset.y;
+            d.sc[2] = (int32_t)rects[r].rect.extent.width; d.sc[3] = (int32_t)rects[r].rect.extent.height;
+            d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
+            if (mali_frame_add_draw(f, &d)) {
+               vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+               return;
+            }
+         }
+      }
+      cmd->dirty = MALI_D_ALL;   /* the quads are not snapshots of the bound state */
+      return;
+   }
    for (uint32_t i = 0; i < na; i++) {
       if (att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
          if (att[i].colorAttachment != 0) {
