@@ -11,6 +11,7 @@ struct mali_sync {
    struct vk_sync vk;
    int fd;
    bool signaled;
+   const void *owner;   /* queue whose submission attached fd (in-order queue: a later wait of that queue on it is already satisfied) */
 };
 
 extern const struct vk_sync_type mali_sync_type;

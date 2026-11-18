@@ -35,6 +35,7 @@ mali_sync_init(struct vk_device *vk, struct vk_sync *sync, uint64_t initial_valu
    struct mali_sync *s = to_sync(sync);
 
    s->fd = -1;
+   s->owner = NULL;
    s->signaled = initial_value != 0;
    return VK_SUCCESS;
 }
@@ -59,6 +60,7 @@ mali_sync_signal(struct vk_device *vk, struct vk_sync *sync, uint64_t value)
    if (s->fd >= 0)
       close(s->fd);
    s->fd = -1;
+   s->owner = NULL;
    s->signaled = true;
    pthread_cond_broadcast(&dev->sync_cv);
    pthread_mutex_unlock(&dev->sync_lock);
@@ -75,6 +77,7 @@ mali_sync_reset(struct vk_device *vk, struct vk_sync *sync)
    if (s->fd >= 0)
       close(s->fd);
    s->fd = -1;
+   s->owner = NULL;
    s->signaled = false;
    pthread_mutex_unlock(&dev->sync_lock);
    return VK_SUCCESS;
@@ -91,6 +94,8 @@ mali_sync_move(struct vk_device *vk, struct vk_sync *dst, struct vk_sync *src)
       close(d->fd);
    d->fd = s->fd;
    d->signaled = s->signaled;
+   d->owner = s->owner;
+   s->owner = NULL;
    s->fd = -1;
    s->signaled = false;
    pthread_cond_broadcast(&dev->sync_cv);
@@ -174,6 +179,7 @@ mali_sync_import_sync_file(struct vk_device *vk, struct vk_sync *sync, int sync_
    if (s->fd >= 0)
       close(s->fd);
    s->fd = d;
+   s->owner = NULL;
    s->signaled = d < 0;
    pthread_cond_broadcast(&dev->sync_cv);
    pthread_mutex_unlock(&dev->sync_lock);
