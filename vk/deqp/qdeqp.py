@@ -100,7 +100,7 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
                     f"> /tmp/qd/r-{RUN}/icd.json; I=/tmp/qd/r-{RUN}/icd.json")
     else:
         icdsetup = "I=$BL_VKBRIDGE_FALLBACK_ICD"
-    imgs = "enable" if "QDEQP_IMAGES=1" in os.environ.get("QDEQP_ENV", "") else "disable"   # opt-in: result/reference images in the kept QPA
+    imgs = "enable" if "QDEQP_IMAGES=1" in os.environ.get("QDEQP_ENV", "").split() else "disable"   # opt-in: result/reference images in the kept QPA
     wall = min(wall, 570)                                   # droiddeckctl guest allows at most 600 s per call
     s = (f"mkdir -p /tmp/qd; [ -x /tmp/qd/deqp-vk ] && [ \"$(cat /tmp/qd/stamp 2>/dev/null)\" = {h} ] || "
          f"(rm -rf /tmp/qd/vulkan; tar -C /tmp/qd -xf {DL}/deqp.tar && echo {h} > /tmp/qd/stamp); chmod +x /tmp/qd/deqp-vk; {icdsetup}; "
