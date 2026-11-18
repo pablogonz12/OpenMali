@@ -729,6 +729,19 @@ class T(unittest.TestCase):
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
 
+    def test_missing_so_is_an_error_not_an_invalid_driver(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod3", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod3", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        r = f.so_gone_result(job, None, 1, "FAIL session not READY")
+        self.assertEqual(r["verdict"], "error")
+        self.assertIn("session not READY", r["notes"])
+        self.assertEqual(f.so_gone_result(job, "b" * 64, 1, "")["verdict"], "invalid")       # a foreign .so is still invalid
+        self.assertEqual(f.so_gone_result(job, None, 76, "")["verdict"], "invalid")          # changed mid-run: unchanged
+
     def test_bench_cube_ours_plausibility_follows_the_bridge(self):
         def row(drv, gpu, ph="poco-x8"):
             return {"phone": ph, "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}

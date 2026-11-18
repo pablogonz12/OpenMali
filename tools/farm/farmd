@@ -651,6 +651,13 @@ class Farm:
         got = f[0] if f else None
         return got == job.get(key), got
 
+    def so_gone_result(self, job, got, rc, out):
+        """guest-route daily, the on-phone sha check failed -> result dict. No .so at all (got None) after a normal exit: qdeqp stopped before
+        it staged the driver (session not READY, adb/focus trouble), a plain error with qdeqp's own message, not a swapped driver"""
+        if got is None and rc in (0, 1):
+            return {"verdict": "error", "notes": f"qdeqp left no driver on the phone (rc={rc}, stopped before the push); not a sha mismatch: {out.strip()[-200:]}"}
+        return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
+
     def shell_route(self, dev):
         return dev.get("route") == "shell"
 
@@ -908,7 +915,7 @@ class Farm:
                 ok_s, got = (rc != 76) and self.verify_so(job, dev, so_phone) or (False, "changed mid-run")
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s:
-                    return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
+                    return self.so_gone_result(job, got, rc, out)
             note = out.strip()[-200:]
             if rc == 75:
                 return {"gated": True}
