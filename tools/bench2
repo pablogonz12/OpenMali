@@ -106,13 +106,16 @@ class Phone:
         """-> None when the phone may be used, else a reason string (the phone then stays pending)"""
         if L.disabled_dir() and os.path.exists(os.path.join(L.disabled_dir(), self.alias)) or G.disabled(self.dev["lock"], self.alias):
             return "disabled by owner"
-        self.lock = L.PhoneLock(self.dev)
-        if os.environ.get("QSAFE_HELD") == self.dev["lock"]:           # an ancestor (farmd/qsafe) already holds the lock
-            self.lock = None
-        elif not self.acquire_wait(WAIT[0]):
-            self.lock = None
-            return "PHONE BUSY (qsafe lock held by another worker)"
-        os.environ["QSAFE_HELD"] = self.dev["lock"]
+        if self.lock is not None:                                      # re-admission (recursive re-sweep): keep the flock this process already holds
+            pass
+        else:
+            self.lock = L.PhoneLock(self.dev)
+            if os.environ.get("QSAFE_HELD") == self.dev["lock"]:       # an ancestor (farmd/qsafe) already holds the lock
+                self.lock = None
+            elif not self.acquire_wait(WAIT[0]):
+                self.lock = None
+                return "PHONE BUSY (qsafe lock held by another worker)"
+            os.environ["QSAFE_HELD"] = self.dev["lock"]
         self.tid = L.resolve(self.dev, connect=True)
         if not self.tid:
             return "offline (no adb route)"

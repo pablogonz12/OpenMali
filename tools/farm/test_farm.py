@@ -2207,6 +2207,31 @@ class Bench2Rank(unittest.TestCase):
         pen = lambda k: 1.05 if k == "b" else 1.0
         self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube", pen)), "a")
 
+    def test_readmission_keeps_the_phone_lock(self):
+        """the recursive re-sweep calls admit() again on the same Phone: the first admission's flock must survive (QSAFE_HELD is then set by
+        ourselves, which must not be mistaken for an ancestor's lock and drop ours)"""
+        b = self.b
+        dev = {"alias": "poco-x8", "class": "x8", "lock": "unit-test-lock"}
+        ph = b.Phone(dev, {"quick_root": "/nonexistent"})
+        got = []
+        ph.acquire_wait = lambda secs: (setattr(ph.lock, "fd", object()), got.append(ph.lock), True)[-1]
+        ph.health = lambda: None
+        saved = (b.L.resolve, b.L.disabled_dir, b.G.disabled, os.environ.pop("QSAFE_HELD", None))
+        b.L.resolve, b.L.disabled_dir, b.G.disabled = (lambda *a, **k: "tid"), (lambda: None), (lambda *a: False)
+        try:
+            self.assertIsNone(ph.admit())
+            first = ph.lock
+            self.assertIsNotNone(first)
+            self.assertIsNone(ph.admit())
+            self.assertIs(ph.lock, first)            # not replaced / not dropped
+            self.assertIsNotNone(first.fd)
+            self.assertEqual(len(got), 1)            # and not re-acquired
+        finally:
+            b.L.resolve, b.L.disabled_dir, b.G.disabled = saved[:3]
+            os.environ.pop("QSAFE_HELD", None)
+            if saved[3] is not None:
+                os.environ["QSAFE_HELD"] = saved[3]
+
     def test_stored_best_must_carry_the_current_sig(self):
         v, d = "cube-native", "ours"
         today = __import__("datetime").date(2026, 11, 18)
