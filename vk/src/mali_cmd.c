@@ -767,6 +767,33 @@ mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
    cmd->frames[cmd->nframes++] = *f;
 }
 
+/* colour loadOp LOAD of the RAW-tile-buffer formats (integer, SNORM, UNORM16, float32): preload.frag kinds 12..18 (kind | components << 12), bytes per texel */
+static bool
+raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
+{
+   static const struct { int f; uint8_t k, bpp, nc; } t[] = {
+      { VK_FORMAT_R8_UINT, 12, 1, 1 }, { VK_FORMAT_R8G8_UINT, 12, 2, 2 }, { VK_FORMAT_R8G8B8A8_UINT, 12, 4, 4 }, { VK_FORMAT_A8B8G8R8_UINT_PACK32, 12, 4, 4 },
+      { VK_FORMAT_R16_UINT, 12, 2, 1 }, { VK_FORMAT_R16G16_UINT, 12, 4, 2 }, { VK_FORMAT_R16G16B16A16_UINT, 12, 8, 4 },
+      { VK_FORMAT_R32_UINT, 12, 4, 1 }, { VK_FORMAT_R32G32_UINT, 12, 8, 2 }, { VK_FORMAT_R32G32B32A32_UINT, 12, 16, 4 },
+      { VK_FORMAT_R8_SINT, 13, 1, 1 }, { VK_FORMAT_R8G8_SINT, 13, 2, 2 }, { VK_FORMAT_R8G8B8A8_SINT, 13, 4, 4 }, { VK_FORMAT_A8B8G8R8_SINT_PACK32, 13, 4, 4 },
+      { VK_FORMAT_R16_SINT, 13, 2, 1 }, { VK_FORMAT_R16G16_SINT, 13, 4, 2 }, { VK_FORMAT_R16G16B16A16_SINT, 13, 8, 4 },
+      { VK_FORMAT_R32_SINT, 13, 4, 1 }, { VK_FORMAT_R32G32_SINT, 13, 8, 2 }, { VK_FORMAT_R32G32B32A32_SINT, 13, 16, 4 },
+      { VK_FORMAT_R8_SNORM, 14, 1, 1 }, { VK_FORMAT_R8G8_SNORM, 14, 2, 2 }, { VK_FORMAT_R8G8B8A8_SNORM, 14, 4, 4 }, { VK_FORMAT_A8B8G8R8_SNORM_PACK32, 14, 4, 4 },
+      { VK_FORMAT_R16_SNORM, 14, 2, 1 }, { VK_FORMAT_R16G16_SNORM, 14, 4, 2 }, { VK_FORMAT_R16G16B16A16_SNORM, 14, 8, 4 },
+      { VK_FORMAT_R16_UNORM, 15, 2, 1 }, { VK_FORMAT_R16G16_UNORM, 15, 4, 2 }, { VK_FORMAT_R16G16B16A16_UNORM, 15, 8, 4 },
+      { VK_FORMAT_R32_SFLOAT, 16, 4, 1 }, { VK_FORMAT_R32G32_SFLOAT, 16, 8, 2 }, { VK_FORMAT_R32G32B32A32_SFLOAT, 16, 16, 4 },
+      { VK_FORMAT_A2B10G10R10_UINT_PACK32, 17, 4, 4 }, { VK_FORMAT_A2B10G10R10_SINT_PACK32, 18, 4, 4 },
+   };
+   for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++)
+      if (t[i].f == fmt) {
+         *kind = t[i].k;
+         *bpp = t[i].bpp;
+         *nc = t[i].nc;
+         return true;
+      }
+   return false;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
@@ -835,9 +862,15 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       case VK_FORMAT_B4G4R4A4_UNORM_PACK16: kind = 9; bpp = 2; break;
       case VK_FORMAT_R5G5B5A1_UNORM_PACK16: kind = 10; bpp = 2; break;
       case VK_FORMAT_B5G5R5A1_UNORM_PACK16: kind = 11; bpp = 2; break;
-      default:
-         unsupported(cmd, "colour loadOp LOAD of this format");
-         return;
+      default: {
+         unsigned rk, rbpp, rnc;
+         if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {
+            unsupported(cmd, "colour loadOp LOAD of this format");
+            return;
+         }
+         kind = rk | (rnc << 12);
+         bpp = rbpp;
+      }
       }
       psrc.arg = kind | (srgb ? 0x100u : 0u);
       psrc.bpp = bpp;

@@ -12,12 +12,46 @@ float f11(uint v, uint mbits) {   // unsigned small float: 5 exponent bits, mbit
    if (e == 31u) return m != 0u ? uintBitsToFloat(0x7fc00000u) : uintBitsToFloat(0x7f800000u);
    return (1.0 + fm) * exp2(float(e) - 15.0);
 }
+// RAW render-target kinds (integer / SNORM / UNORM16 / float32 formats): the tile row converts the shader output with the format's opaque
+// conversion, so integers are written as raw 32-bit values (bit-cast into the float output), SNORM/UNORM16 as floats.
+// flags: kind 12 UINT, 13 SINT, 14 SNORM, 15 UNORM16, 16 FLOAT32, 17 A2B10G10R10 UINT, 18 A2B10G10R10 SINT; bits 12..14 = components.
+uint ldc(uint byteoff, uint cb) {   // one component of cb (1, 2 or 4) bytes
+   uint w = src.d[byteoff >> 2];
+   if (cb == 4u) return w;
+   uint v = w >> ((byteoff & 3u) * 8u);
+   return v & (cb == 1u ? 0xffu : 0xffffu);
+}
+vec4 raw_kind(uint k, uint off, uint bpp, uint nc) {
+   uint cb = bpp / nc;
+   uvec4 u = uvec4(0u, 0u, 0u, 1u);
+   if (k >= 17u) {
+      uint w = src.d[off >> 2];
+      uvec4 v = uvec4(w & 1023u, (w >> 10) & 1023u, (w >> 20) & 1023u, w >> 30);
+      if (k == 18u) {
+         ivec4 s = ivec4(bitfieldExtract(int(v.x), 0, 10), bitfieldExtract(int(v.y), 0, 10), bitfieldExtract(int(v.z), 0, 10), bitfieldExtract(int(v.w), 0, 2));
+         return uintBitsToFloat(uvec4(s));
+      }
+      return uintBitsToFloat(v);
+   }
+   vec4 fv = vec4(0.0, 0.0, 0.0, 1.0);
+   for (uint i = 0u; i < 4u; i++) {
+      if (i >= nc) break;
+      uint v = ldc(off + i * cb, cb);
+      if (k == 12u) u[i] = v;
+      else if (k == 13u) u[i] = uint(bitfieldExtract(int(v), 0, int(cb * 8u)));
+      else if (k == 14u) fv[i] = max(float(bitfieldExtract(int(v), 0, int(cb * 8u))) / float((1 << (cb * 8u - 1u)) - 1), -1.0);
+      else if (k == 15u) fv[i] = float(v) / 65535.0;
+      else fv[i] = uintBitsToFloat(v);
+   }
+   return k <= 13u ? uintBitsToFloat(u) : fv;
+}
 void main() {
    uvec2 f = uvec2(gl_FragCoord.xy);
    uint off = f.y * p.row_bytes + f.x * p.bpp;
    uint w = src.d[off >> 2];
    uint sh = (off & 3u) * 8u;
    uint k = p.flags & 255u;
+   if (k >= 12u) { o = raw_kind(k, off, p.bpp, max((p.flags >> 12) & 7u, 1u)); return; }
    vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
    if (k <= 1u) {                                     // 0 = UNORM8 (R8/RG8/RGBA8), 1 = BGRA8
       uint v = w >> sh;
