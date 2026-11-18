@@ -458,6 +458,50 @@ case_blit3d(VkFilter filter, uint32_t dd, const char *name)
    return 1;
 }
 
+/* Copy between a block-compressed and an uncompressed image of equal texel-block size (dEQP image_to_image BC/ETC2 <-> RGBA16/RGBA32 pairs):
+ * 4x4 RGBA16_UINT texels -> BC1 16x16 (extent in source texels) -> second RGBA16_UINT (extent in BC texels): the bytes must survive. */
+static int
+case_copybc(void)
+{
+   const uint32_t n = 4;
+   struct buf src = {0}, dst = {0};
+   struct img u1 = {0}, bc = {0}, u2 = {0};
+   TRY(mkbuf(&src, n * n * 8, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&dst, n * n * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   TRY(mkimg(&u1, VK_FORMAT_R16G16B16A16_UINT, n, n, u, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&bc, VK_FORMAT_BC1_RGB_UNORM_BLOCK, 4 * n, 4 * n, u, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&u2, VK_FORMAT_R16G16B16A16_UINT, n, n, u, VK_SAMPLE_COUNT_1_BIT));
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   for (int l = 0; l < g_loop; l++) {
+      uint32_t *ps = src.p, *pd = dst.p;
+      for (uint32_t i = 0; i < n * n * 2; i++) ps[i] = 0x9e3779b9u * (i + 1);
+      memset(pd, 0xEE, n * n * 8);
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, u1.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      layout_tr(cb, bc.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      layout_tr(cb, u2.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy up = {.imageSubresource = sl, .imageExtent = {n, n, 1}};
+      CmdCopyBufferToImage(cb, src.b, u1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      layout_tr(cb, u1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkImageCopy c1 = {.srcSubresource = sl, .dstSubresource = sl, .extent = {n, n, 1}};   /* source texels: one BC1 block each */
+      CmdCopyImage(cb, u1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, bc.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c1);
+      layout_tr(cb, bc.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkImageCopy c2 = {.srcSubresource = sl, .dstSubresource = sl, .extent = {4 * n, 4 * n, 1}};
+      CmdCopyImage(cb, bc.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, u2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c2);
+      layout_tr(cb, u2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {n, n, 1}};
+      CmdCopyImageToBuffer(cb, u2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.b, 1, &dn);
+      CHECK(submit_wait(cb), "submit");
+      if (!g_fake)
+         for (uint32_t i = 0; i < n * n * 2; i++) CHECK(pd[i] == ps[i], "word %u: %08x != %08x", i, pd[i], ps[i]);
+   }
+   rmimg(&u1); rmimg(&bc); rmimg(&u2); rmbuf(&src); rmbuf(&dst);
+   report("copybc", g_fake ? "results: fake backend" : NULL);
+   return 1;
+}
+
 static int
 case_clearc(void)
 {
@@ -808,6 +852,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("copyimg")) ok &= case_img(1);
    if (ok && CASE_ON("blit")) ok &= case_blit();
    if (ok && CASE_ON("blit_e5")) ok &= case_blit_e5();
+   if (ok && CASE_ON("copybc")) ok &= case_copybc();
    if (ok && CASE_ON("blit3d_n1")) ok &= case_blit3d(VK_FILTER_NEAREST, 1, "blit3d_n1");   /* one destination slice: centre of the source range */
    if (ok && CASE_ON("blit3d_l1")) ok &= case_blit3d(VK_FILTER_LINEAR, 1, "blit3d_l1");   /* trilinear */
    if (ok && CASE_ON("blit3d_l3")) ok &= case_blit3d(VK_FILTER_LINEAR, 3, "blit3d_l3");

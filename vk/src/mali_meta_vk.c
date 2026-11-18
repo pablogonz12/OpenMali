@@ -241,14 +241,22 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
          struct mali_meta_surf s, d;
          const struct mali_plane_layout *sp, *dp;
          if (!img_surf(&s, si, ss, g->srcOffset, &sp) || !img_surf(&d, di, ds, g->dstOffset, &dp) ||
-             sp->bs != dp->bs || sp->bw != dp->bw || sp->bh != dp->bh) {
+             sp->bs != dp->bs) {
             r = -EINVAL;
             break;
          }
-         uint32_t ez = zcount(si, ss, g->extent);
-         r = mali_meta_plan_copy(&l, &d, &s, sp->bs, (g->extent.width + sp->bw - 1) / sp->bw, (g->extent.height + sp->bh - 1) / sp->bh, ez);
-         if (!r && di->bc)
-            r = bc_decode(&l, di, ds, g->dstOffset, g->extent);
+         /* The extent is in source texels; a compressed <-> uncompressed copy moves one block per texel (equal block size), so the
+          * destination extent in its own texels is the block count times its block size. */
+         uint32_t ez = zcount(si, ss, g->extent), ex = (g->extent.width + sp->bw - 1) / sp->bw, ey = (g->extent.height + sp->bh - 1) / sp->bh;
+         r = mali_meta_plan_copy(&l, &d, &s, sp->bs, ex, ey, ez);
+         if (!r && di->bc) {
+            VkExtent3D de = g->extent;
+            if (sp->bw != dp->bw || sp->bh != dp->bh) {
+               de.width = ex * dp->bw;
+               de.height = ey * dp->bh;
+            }
+            r = bc_decode(&l, di, ds, g->dstOffset, de);
+         }
       }
    }
    emit(cmd, &l, r);
