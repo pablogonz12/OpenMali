@@ -20,13 +20,12 @@ farm submit <ref> --suite daily --need v11,v13
 |---|---|---|
 | `smoke` | merge gate, `vk/tests/valrun.sh` | 0 |
 | `daily` | dEQP daily sample vs the baseline, per case | 0 |
-| `cases` | named dEQP cases, `--case N [--case M] --repeat R` | 5 (one-case) / 20 (full) |
+| `cases` | named dEQP cases, `--case N [--case M] --repeat R` | 20 |
 | `bench` | triangle/cube ours vs bridge | 10 |
 | `menu` | Steam menu benchmark (MediaDeck) | 10 |
 
 Useful flags: `--need <classes>` (comma list; default is every class), `--env "K=V ..."`,
-`--only` (smoke test subset), `--prio N`, `--batch r1,r2` (gate several branches merged;
-`farm batch <job>` names the culprit), `--merge-with-main`, `--allow-stale`, `--rerun`,
+`--only` (smoke test subset), `--prio N`, `--merge-with-main`, `--allow-stale`, `--rerun`,
 `--keep-old`.
 
 Things that surprise people:
@@ -86,7 +85,7 @@ farm hold --status <id>
 ## 4. Priorities and queue
 
 Lower number runs first, FIFO inside a level, explicit before auto at equal level.
-Gates 0, one-case `cases` 5, bench/menu 10, full `cases` 20; auto bench/menu sit below
+Gates 0, bench/menu 10, `cases` 20; auto bench/menu sit below
 explicit jobs; the idle sweep only runs when nothing is pending.
 
 ```
@@ -101,7 +100,7 @@ Use prio sparingly: do not give exploratory jobs gate priority.
 - `farm digest`: one screen. Devices, queue by class with positions (`v11#3`), latest
   smoke/daily per ref/class with the difference vs main's latest daily, newest bench row
   per phone, flaky counts. Start here.
-- `farm status`: devices (state, battery, temperature, `disabled by owner`, `on battery:
+- `farm status`: devices (`up`/`down`, battery %, temperature, thermal, transport; also `disabled by owner`, `on battery:
   paused`) and, under a down phone, the recovery steps.
 - `farm case <substring>`: status of matching cases in every stored daily, newest last.
   Use it to tell "new regression" from "was always failing".
@@ -161,8 +160,8 @@ Diagnosis order (read-only first):
    wait while the owner is in another app or the screen is locked. dEQP daily has no
    locked-phone fallback (it ends invalid/pending); smoke falls back to the shell route on
    `smoke_fallback = "shell"` phones.
-9. Stale lock / `PHONE BUSY`: find the holder (`farm hold --status`, `ls <state>/holds`)
-   before anything else. A hold from a dead caller frees itself in 45 s.
+9. Stale lock / `PHONE BUSY`: find the holder first: `ls <state>/holds` (files are
+   `<id>.json`), then `farm hold --status <id>`. A hold from a dead caller frees itself in 45 s.
 10. `RUNAWAY-APP` in alerts.log: farmd force-stopped a foreground app above 90 % CPU for
     15 min on an idle `foreground_launch` phone.
 
@@ -171,10 +170,12 @@ After the phone returns, pending parts start by themselves. Resubmit only errore
 ### Restarting farmd (safely)
 
 A restart kills the running part and any hold. Only when nothing runs:
-1. `farm disable <dev>` for every phone.
+1. Note which phones are enabled (`farm status` marks owner-disabled ones `disabled by owner`), then
+   `farm disable <dev>` for those only; leave already-disabled phones alone.
 2. Wait until `farm status` shows no `:running`.
 3. `systemctl --user restart mali-farm.service`.
-4. `farm enable <dev>` for each.
+4. `farm enable <dev>` only for the phones you disabled in step 1; a phone the owner
+   had disabled stays disabled.
 
 Jobs killed by a restart are INVALID and requeued; holds are released.
 
@@ -186,7 +187,7 @@ Jobs killed by a restart are INVALID and requeued; holds are released.
 | submit prints an old job id | idempotent smoke reuse | `--rerun` if you need a fresh run |
 | `farm wait` exit 3 | timeout, job still going | wait again |
 | `farm wait` exit 2 | error or invalid | `farm log`/`results`, alerts.log, resubmit |
-| exit 73 `PHONE BUSY` | you do not hold the lock | use `farm hold -- cmd` |
+| exit 73 `PHONE BUSY` | you do not hold the lock | use `farm hold <device> --max <min> -- <command...>` |
 | hold exit 124 | hold expired / disabled / farmd restarted | re-request a hold |
 | run `invalid`, sha mismatch | driver .so on phone differs | farmd re-pushes once and requeues; resubmit if it repeats |
 | gate `cooling` / `charging` | thermal or battery gate | wait or fix the cause |
