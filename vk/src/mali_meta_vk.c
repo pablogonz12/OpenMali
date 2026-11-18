@@ -6,6 +6,7 @@
  * Only linear images are handled (the default, R3-PLAN.md M5): tiled -> VK_ERROR_FEATURE_NOT_PRESENT on the command buffer (sticky,
  * like every unsupported command of mali_cmd.c). */
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -444,8 +445,8 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    bool zdir = (sdz > 0) == (ddz > 0);
    if (getenv("MALI_META_DBG") && (s3 || d3))
       fprintf(stderr, "mali_meta_vk: 3d blit s3=%d d3=%d sdz=%d ddz=%d layers %u/%u src %d..%d dst %d..%d\n", s3, d3, sdz, ddz, ss.layerCount, ds.layerCount, so[0].z, so[1].z, dof[0].z, dof[1].z);
-   if (s3 && d3 && (abs(sdz) == abs(ddz) || (filter == VK_FILTER_NEAREST && !resolve_mode)) && ss.layerCount == 1 && ds.layerCount == 1 && sdz && ddz)
-      nz = (uint32_t)abs(ddz), zmap = true;   /* 3D -> 3D, 1:1 in z (possibly reversed) or nearest-scaled: one job per destination slice */
+   if (s3 && d3 && (abs(sdz) == abs(ddz) || !resolve_mode) && ss.layerCount == 1 && ds.layerCount == 1 && sdz && ddz)
+      nz = (uint32_t)abs(ddz), zmap = true;   /* 3D -> 3D, 1:1 in z (possibly reversed) or nearest-scaled: one job per destination slice (z scaling: nearest, or trilinear = two source slices mixed) */
    else if ((s3 || d3) && ((s3 && abs(sdz) != 1) || (d3 && abs(ddz) != 1) || ss.layerCount != 1))
       return -EINVAL;   /* z scaling / 3D <-> array mixes */
 
@@ -508,7 +509,19 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
       if (zmap) {
          int au = zdir ? (int)z : (int)(nz - 1 - z);
          int sz = (int)(((2ll * au + 1) * abs(sdz)) / (2ll * (int)nz));
-         zs.z += sz < abs(sdz) ? sz : abs(sdz) - 1;
+         if (b.mode == 1) {
+            /* trilinear: source z of the destination slice centre, minus 0.5 = between slice z0 and z0 + 1 (clamped to the image like the x/y taps) */
+            double t = (double)(sdz > 0 ? so[0].z : so[1].z) + ((double)au + 0.5) * abs(sdz) / (double)nz - 0.5;
+            int z0 = (int)floor(t), zl = (int)lvl(si->lay.d.extent.depth, ss.mipLevel) - 1, z1 = z0 + 1;
+            double fr = t - (double)z0;
+            z0 = z0 < 0 ? 0 : z0 > zl ? zl : z0;
+            z1 = z1 < 0 ? 0 : z1 > zl ? zl : z1;
+            zs.z = z0;
+            b.zw = z1 > z0 ? (float)fr : 0.0f;
+            b.zslices = (uint32_t)(z1 - z0);
+         } else {
+            zs.z += sz < abs(sdz) ? sz : abs(sdz) - 1;
+         }
          zd.z += (int)z;
       }
       VkImageSubresourceLayers s1 = ss, d1 = ds;
@@ -518,6 +531,8 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
          return -EINVAL;
       b.src.size = si->lay.size;
       b.dst.size = di->lay.size;
+      if (b.zw != 0.0f)
+         b.sample_stride = b.src.slice * b.zslices;
       int r = mali_meta_plan_blit(l, &b);
       if (r)
          return r;

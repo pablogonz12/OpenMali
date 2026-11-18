@@ -241,6 +241,20 @@ static void t_blit(void)
    for (int i = 0; i < 4; i++) CHECK(fd[i] > ef[i] - 1e-4 && fd[i] < ef[i] + 1e-4, "linear f32 %d: %f vs %f", i, fd[i], ef[i]);
    mali_meta_list_free(&l);
 
+   /* trilinear: two f32 slices (1x1 each, values 10 and 20) 16 bytes... slice stride 4 B; weight 0.25 -> 12.5, weight 0 -> bilinear of slice 0 */
+   float zs2[2] = { 10.0f, 20.0f }, zd1[1];
+   for (int k = 0; k < 2; k++) {
+      mkblit(&bl, (uint8_t *)zs2, 1, 1, (uint8_t *)zd1, 1, 1, 1, true);
+      bl.mode = 1;
+      bl.zw = k ? 0.25f : 0.0f;
+      bl.sample_stride = k ? 4 : 0;
+      bl.src.size = 8;
+      CHECK(mali_meta_plan_blit(&l, &bl) == 0, "plan trilinear");
+      run(&l);
+      CHECK(fabsf(zd1[0] - (k ? 12.5f : 10.0f)) < 1e-4f, "trilinear %d: %f", k, zd1[0]);
+      mali_meta_list_free(&l);
+   }
+
    /* clamped (scissored) region only touches the rect */
    uint8_t z[64];
    memset(z, 0xee, 64);

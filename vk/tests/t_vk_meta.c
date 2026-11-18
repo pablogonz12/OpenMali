@@ -809,6 +809,11 @@ main(int argc, char **argv)
    if (ok && CASE_ON("blit")) ok &= case_blit();
    if (ok && CASE_ON("blit_e5")) ok &= case_blit_e5();
    if (ok && CASE_ON("blit3d_n1")) ok &= case_blit3d(VK_FILTER_NEAREST, 1, "blit3d_n1");   /* one destination slice: centre of the source range */
+   if (ok && CASE_ON("blit3d_l1")) ok &= case_blit3d(VK_FILTER_LINEAR, 1, "blit3d_l1");   /* trilinear */
+   if (ok && CASE_ON("blit3d_l3")) ok &= case_blit3d(VK_FILTER_LINEAR, 3, "blit3d_l3");
+   if (ok && CASE_ON("blit3d_l4")) ok &= case_blit3d(VK_FILTER_LINEAR, 4, "blit3d_l4");
+   if (ok && CASE_ON("blit3d_l16")) ok &= case_blit3d(VK_FILTER_LINEAR, 16, "blit3d_l16");   /* 1:1 in z: bilinear only */
+   if (ok && CASE_ON("blit3d_l24")) ok &= case_blit3d(VK_FILTER_LINEAR, 24, "blit3d_l24");   /* z magnified */
    if (ok && CASE_ON("blit3d_n4")) ok &= case_blit3d(VK_FILTER_NEAREST, 4, "blit3d_n4");
    if (ok && CASE_ON("clearc")) ok &= case_clearc();
    if (ok && CASE_ON("cleard")) ok &= case_cleard();
