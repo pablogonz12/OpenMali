@@ -1071,7 +1071,10 @@ mali_cmd_push_ops(struct mali_cmd_buffer *cmd, const struct mali_op *ops, unsign
    }
    memcpy(f.ops, ops, n * sizeof *ops);
    f.nops = n;
+   unsigned before = cmd->nframes;
    push_frame(cmd, &f);
+   if (cmd->nframes == before)   /* push_frame failed (OOM): it did not take ownership */
+      free(f.ops);
 }
 
 void
@@ -1308,8 +1311,9 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       }
       if (nall + n > capall) {
          capall = (nall + n) * 2;
-         all = realloc(all, capall * sizeof *all);
-         if (!all) { free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+         uint64_t *na = realloc(all, capall * sizeof *all);
+         if (!na) { free(all); free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+         all = na;
       }
       memcpy(all + nall, cs, n * sizeof *all);
       nall += n;
