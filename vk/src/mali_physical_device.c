@@ -153,6 +153,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxBufferSize = 1u << 30;
    p->lineSubPixelPrecisionBits = 4;   /* == subPixelPrecisionBits; t_vk_feat linerast */
    p->maxCustomBorderColorSamplers = 4000;   /* == maxSamplerAllocationCount: a custom colour costs nothing beyond the descriptor */
+   p->maxVertexAttribDivisor = 0xfffffff;   /* NPOT divisor encoding is exact to 2^28 (t_resources attr_instance) */
+   p->supportsNonZeroFirstInstance = false;   /* KHR property: stays false until t_vk_feat divisor (firstInstance cases) passes on hardware */
    p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
    p->maxCombinedImageSamplerDescriptorCount = 1; /* maintenance6; blockTexelViewCompatibleMultipleLayers stays false */
    p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
@@ -188,6 +190,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
       .EXT_custom_border_color = true,       /* t_vk_feat cbc: runtime border_color_value -> sampler descriptor words 4..7 (same path as the fixed colours) */
       .KHR_maintenance5 = true,              /* t_vk_feat maint5: BindIndexBuffer2, module-less stages (zink requires it, STEAM-GAPS.md) */
+      .EXT_vertex_attribute_divisor = true, .KHR_vertex_attribute_divisor = true,   /* t_vk_feat divisor */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
@@ -245,6 +248,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
+      .vertexAttributeInstanceRateDivisor = true, .vertexAttributeInstanceRateZeroDivisor = true,   /* t_vk_feat divisor (zero: divisor 1 with stride 0, as panvk) */
       /* multiViewport: no geometry shader and no shaderOutputViewportIndex, so every primitive uses viewport/scissor 0; 1..15 are accepted state
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,

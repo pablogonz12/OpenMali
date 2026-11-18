@@ -427,13 +427,16 @@ test_divisor(void)
 {
    if (!g_div) { printf("{\"test\":\"divisor\",\"skipped\":\"vertexAttributeInstanceRateDivisor not advertised\",\"ok\":true}\n"); return 1; }
    CHECK(g_div_max >= 0xffff, "maxVertexAttribDivisor %u", g_div_max);
-   static const uint32_t ds[] = {1, 2, 3, 4, 5, 7, 0};
+   /* {divisor, firstInstance, instances}: the second block (firstInstance != 0 with a divisor > 1) checks that the instance base is added to the
+    * divided index (Vulkan: element = firstInstance + i / divisor), not divided itself. */
+   static const uint32_t cs[][3] = {{1, 0, 6}, {2, 0, 6}, {3, 0, 6}, {4, 0, 6}, {5, 0, 6}, {7, 0, 6}, {0, 0, 6},
+                                    {2, 1, 4}, {3, 1, 6}, {4, 2, 8}, {1, 1, 2}};
    struct hbuf vb;
    if (!hbuf_create(&vb, 64, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
    static const float vals[4] = {0.0f, 0.5f, 1.0f, 1.5f};
    memcpy(vb.p, vals, sizeof vals);
-   for (unsigned c = 0; c < sizeof ds / sizeof *ds; c++) {
-      const uint32_t d = ds[c];
+   for (unsigned c = 0; c < sizeof cs / sizeof *cs; c++) {
+      const uint32_t d = cs[c][0], fi = cs[c][1], ni = cs[c][2];
       if (d == 0 && !g_div0) { printf("{\"test\":\"divisor\",\"divisor\":0,\"skipped\":\"zero divisor not advertised\",\"ok\":true}\n"); continue; }
       struct tgt t;
       if (!tgt_create(&t)) return 0;
@@ -456,18 +459,18 @@ test_divisor(void)
       begin_pass(cb, &t, pipe);
       VkDeviceSize off = 0;
       CmdBindVertexBuffers(cb, 0, 1, &vb.b, &off);
-      CmdDraw(cb, 3, 6, 0, 0);
+      CmdDraw(cb, 3, ni, 0, fi);
       CmdEndRenderPass(cb);
       if (!cb_submit(&t, cb)) return 0;
       if (!g_fake) {
          int want[4] = {0, 0, 0, 0};
-         for (unsigned i = 0; i < 6; i++) { unsigned k = d ? i / d : 0; if (k < 4) want[k] = 1; }
+         for (unsigned i = 0; i < ni; i++) { unsigned k = fi + (d ? i / d : 0); if (k < 4) want[k] = 1; }
          for (int k = 0; k < 4; k++)
-            CHECK(red_at(&t, 21 + 64 * k, 117) == want[k], "divisor %u: column %d %s, pixel %u,%u,%u,%u", d, k, want[k] ? "missing" : "drawn",
+            CHECK(red_at(&t, 21 + 64 * k, 117) == want[k], "divisor %u first %u: column %d %s, pixel %u,%u,%u,%u", d, fi, k, want[k] ? "missing" : "drawn",
                   pix(&t, 21 + 64 * k, 117)[0], pix(&t, 21 + 64 * k, 117)[1], pix(&t, 21 + 64 * k, 117)[2], pix(&t, 21 + 64 * k, 117)[3]);
-         printf("{\"test\":\"divisor\",\"divisor\":%u,\"columns\":\"%d%d%d%d\",\"ok\":true}\n", d, want[0], want[1], want[2], want[3]);
+         printf("{\"test\":\"divisor\",\"divisor\":%u,\"first_instance\":%u,\"columns\":\"%d%d%d%d\",\"ok\":true}\n", d, fi, want[0], want[1], want[2], want[3]);
       } else {
-         printf("{\"test\":\"divisor\",\"divisor\":%u,\"skipped\":\"pixels: fake backend\",\"ok\":true}\n", d);
+         printf("{\"test\":\"divisor\",\"divisor\":%u,\"first_instance\":%u,\"skipped\":\"pixels: fake backend\",\"ok\":true}\n", d, fi);
       }
       DestroyPipeline(dev, pipe, NULL);
       DestroyPipelineLayout(dev, lay, NULL);
