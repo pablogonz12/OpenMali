@@ -220,6 +220,12 @@ Next (needs a burst): refresh and sha-check the guest lib, rerun with `MALI_TRAC
 - The old burst-5 files: `repro14.err` ends in Chromium's `Crashing due to FD ownership violation` + `Trace/breakpoint trap` (the in-process ANGLE repro in `/tmp`-less proot fds), an artefact of that repro, not the helper's SIGSEGV. No further repro hold is planned.
 - Next: one 15 s session that only copies `libGLX_mesa.so.0.0.0` (and `libgallium_dri.so` version) to `/sdcard/Download`, then disassemble at lr-4 to name the NULL pointer (a loader/DRI extension table member). Likely suspects to check there: a DRI-loader callback the Xwayland/gamescope X server lacks (no DRI3/Present) while zink is the selected driver.
 
+### Round 13: the helper SIGSEGV is in the guest's Mesa GLX, not in our ICD
+- Guest rootfs (public `ubuntu-r1-rc5`, sha256 434d3d91...) fetched on the host, no session: Mesa 26.0.8-1ubuntu0.3+droiddeck1.
+- `libGLX_mesa.so.0+0x2a3cc` is the `blr x1` in **`__glXGetDrawableAttribute`** (`glXQueryDrawable`), `case GLX_SWAP_INTERVAL_EXT`: **`psc->driScreen.getSwapInterval` is NULL** (`glx_pbuffer.c:315`, no guard; `glXGetSwapIntervalEXT` does guard).
+- The hook is set only by `dri3_glx.c` and by `drisw_glx.c` when `psc->kopper`. The helper has `LIBGL_KOPPER_DISABLE=true` (session.log, burst 6) and no DRI3, so the screen is plain drisw and SDL3's swap-interval query crashes.
+- Our ICD is not involved (`t_angle_seq` and the 303-entry procaddr table are clean). Fix: `patches/mesa-glx-null-swapinterval.patch` for the guest Mesa rebuild. Hardware test not run: it needs that rebuild.
+
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
 ```
