@@ -155,10 +155,10 @@ layout_tr(VkCommandBuffer cb, VkImage im, VkImageLayout from, VkImageLayout to, 
 struct img { VkImage i; VkDeviceMemory m; };
 
 static int
-mkimg(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, VkImageUsageFlags usage, VkSampleCountFlagBits s)
+mkimg3(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, uint32_t d, VkImageUsageFlags usage, VkSampleCountFlagBits s)
 {
-   VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt,
-                           .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = s,
+   VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, .format = fmt,
+                           .extent = {w, h, d ? d : 1}, .mipLevels = 1, .arrayLayers = 1, .samples = s,
                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    CHECK(CreateImage(dev, &ci, NULL, &o->i) == VK_SUCCESS, "CreateImage fmt %d", fmt);
    VkMemoryRequirements mr;
@@ -169,6 +169,12 @@ mkimg(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, VkImageUsageFlags usa
    CHECK(AllocateMemory(dev, &ai, NULL, &o->m) == VK_SUCCESS, "img alloc");
    CHECK(BindImageMemory(dev, o->i, o->m, 0) == VK_SUCCESS, "img bind");
    return 1;
+}
+
+static int
+mkimg(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, VkImageUsageFlags usage, VkSampleCountFlagBits s)
+{
+   return mkimg3(o, fmt, w, h, 0, usage, s);
 }
 
 static void
@@ -386,6 +392,69 @@ case_blit_e5(void)
    }
    rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
    report("blit_e5", g_fake ? "results: fake backend" : NULL);
+   return 1;
+}
+
+/* 3D -> 3D blit with z scaling (dEQP all_formats 3d regions: 16 source slices onto 1..4 destination slices). Source R = 10 * z, G = 8 * x, B = 8 * y.
+ * Nearest samples the slice containing the centre of the destination slice; linear is trilinear: the source z of a destination slice centre
+ * minus 0.5, the two neighbouring slices (clamped to the image) mixed by the fraction. x/y are 1:1. */
+static int
+case_blit3d(VkFilter filter, uint32_t dd, const char *name)
+{
+   const uint32_t w = 8, h = 8, sd = 16;
+   struct buf src = {0}, dst = {0};
+   struct img i1 = {0}, i2 = {0};
+   TRY(mkbuf(&src, w * h * sd * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&dst, w * h * dd * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   TRY(mkimg3(&i1, VK_FORMAT_R8G8B8A8_UNORM, w, h, sd, u, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg3(&i2, VK_FORMAT_R8G8B8A8_UNORM, w, h, dd, u, VK_SAMPLE_COUNT_1_BIT));
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   for (int l = 0; l < g_loop; l++) {
+      uint8_t *ps = src.p, *pd = dst.p;
+      for (uint32_t z = 0; z < sd; z++)
+         for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++) {
+               uint8_t *t = ps + ((z * h + y) * w + x) * 4;
+               t[0] = z * 10; t[1] = x * 8; t[2] = y * 8; t[3] = 255;
+            }
+      memset(pd, 0xEE, w * h * dd * 4);
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy up = {.imageSubresource = sl, .imageExtent = {w, h, sd}};
+      CmdCopyBufferToImage(cb, src.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {w, h, sd}},
+                        .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {w, h, dd}}};
+      CmdBlitImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, filter);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {w, h, dd}};
+      CmdCopyImageToBuffer(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.b, 1, &dn);
+      CHECK(submit_wait(cb), "submit");
+      if (!g_fake)
+         for (uint32_t z = 0; z < dd; z++) {
+            float fz = (z + 0.5f) * sd / dd, want;
+            if (filter == VK_FILTER_NEAREST) {
+               want = 10.0f * floorf(fz);
+            } else {
+               float t = fz - 0.5f, f0 = floorf(t), a = t - f0;
+               int z0 = (int)f0, z1 = z0 + 1;
+               z0 = z0 < 0 ? 0 : z0 > (int)sd - 1 ? (int)sd - 1 : z0;
+               z1 = z1 < 0 ? 0 : z1 > (int)sd - 1 ? (int)sd - 1 : z1;
+               want = 10.0f * (z0 * (1 - a) + z1 * a);
+            }
+            for (uint32_t y = 0; y < h; y++)
+               for (uint32_t x = 0; x < w; x++) {
+                  uint8_t *t = pd + ((z * h + y) * w + x) * 4;
+                  CHECK(fabsf(t[0] - want) <= 1.5f && t[1] == x * 8 && t[2] == y * 8 && t[3] == 255,
+                        "%s (%u,%u,%u) = %d,%d,%d,%d want %.1f,%u,%u", name, x, y, z, t[0], t[1], t[2], t[3], want, x * 8, y * 8);
+               }
+         }
+   }
+   rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
+   report(name, g_fake ? "results: fake backend" : NULL);
    return 1;
 }
 
@@ -739,6 +808,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("copyimg")) ok &= case_img(1);
    if (ok && CASE_ON("blit")) ok &= case_blit();
    if (ok && CASE_ON("blit_e5")) ok &= case_blit_e5();
+   if (ok && CASE_ON("blit3d_n1")) ok &= case_blit3d(VK_FILTER_NEAREST, 1, "blit3d_n1");   /* one destination slice: centre of the source range */
+   if (ok && CASE_ON("blit3d_n4")) ok &= case_blit3d(VK_FILTER_NEAREST, 4, "blit3d_n4");
    if (ok && CASE_ON("clearc")) ok &= case_clearc();
    if (ok && CASE_ON("cleard")) ok &= case_cleard();
    if (ok && CASE_ON("d16")) ok &= case_dsfmt("d16", VK_FORMAT_D16_UNORM);
