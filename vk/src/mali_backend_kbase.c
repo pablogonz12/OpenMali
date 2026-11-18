@@ -121,7 +121,8 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
     * (CMF, 2 cores: atomicAdd count ~half). So it is the default on arch 11; MALI_BO_COHERENT_LOCAL=0/1 overrides on any arch. */
    const char *cl = getenv("MALI_BO_COHERENT_LOCAL");
    k_int_nocoh_default = gpu->arch_major == 11;
-   if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
+   /* v13: off by default (X8 A/B, interleaved: overdraw 790-843 -> 976-1016 fps, tex 748-1015 -> 964-1322, submit CPU 0.26 -> 0.06 ms; no per-submit MEM_SYNC over every BO). =1 restores it. */
+   if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11)
       kb_bo_extra_flags |= 0x800;
    const char *fi = getenv("MALI_FAULT_INJECT");
    k->fault_at = fi ? strtoul(fi, NULL, 10) : 0;
