@@ -69,14 +69,14 @@ VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateDescriptorPool(VkDevice d, const VkDescriptorPoolCreateInfo *ci, const VkAllocationCallbacks *a, VkDescriptorPool *out)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
-   return mali_create_descriptor_pool(&dev->vk, arch_of(d), ci, out);
+   return mali_create_descriptor_pool(&dev->vk, arch_of(d), ci, a, out);
 }
 
 VKAPI_ATTR void VKAPI_CALL
 mali_DestroyDescriptorPool(VkDevice d, VkDescriptorPool p, const VkAllocationCallbacks *a)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
-   if (p) mali_destroy_descriptor_pool(&dev->vk, p);
+   if (p) mali_destroy_descriptor_pool(&dev->vk, p, a);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

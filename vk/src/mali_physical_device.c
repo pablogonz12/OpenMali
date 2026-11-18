@@ -17,7 +17,9 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;   /* as on main; 4x draws stay behind MALI_EXPERIMENTAL_MSAA=1 */
+   /* KNOWN GAP (feat-audit): 1x|4x is advertised unconditionally (dEQP relies on it; the multisample lane is making 4x real), but 4x pipelines
+    * are still rejected unless MALI_EXPERIMENTAL_MSAA=1 (mali_pipeline.c) and resolve/LOAD/depth cases are limited (vk/README.md "Known gaps"). */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -84,6 +86,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .minStorageBufferOffsetAlignment = 256,
       .minTexelOffset = -8,
       .maxTexelOffset = 7,
+      .minTexelGatherOffset = -8,   /* shaderImageGatherExtended: i4 narrow / i8 register texel offset; t_vk_feat gatherlim */
+      .maxTexelGatherOffset = 7,
       .maxFramebufferWidth = 4096,
       .maxFramebufferHeight = 4096,
       .maxFramebufferLayers = 256,
@@ -91,7 +95,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .framebufferDepthSampleCounts = samples_1_4,
       .framebufferStencilSampleCounts = samples_1_4,
       .framebufferNoAttachmentsSampleCounts = samples_1_4,
-      .maxColorAttachments = 4,
+      .maxColorAttachments = 4,   /* the Vulkan minimum; KNOWN GAP: only ONE colour attachment renders (mali_cmd.c "need exactly one colour attachment"), see vk/README.md "Known gaps" */
       .sampledImageColorSampleCounts = samples_1_4,
       .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .sampledImageDepthSampleCounts = samples_1_4,
@@ -108,12 +112,20 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .optimalBufferCopyRowPitchAlignment = 1,
       .nonCoherentAtomSize = 64,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
-      /* descriptor indexing: only sampled images and samplers have update-after-bind (t_vk_feat didx); everything else reports 0 */
-      .maxUpdateAfterBindDescriptorsInAllPools = 1024, .shaderSampledImageArrayNonUniformIndexingNative = false,
+      /* descriptor indexing limits. Driver reality: binding flags are not interpreted, descriptors live in pool memory the GPU reads at
+       * submit, so an update after bind is a plain write. Only sampled images/samplers advertise the UAB features, but every UAB limit
+       * is reported (>= its non-UAB twin, Vulkan 1.2 required-limits table). Samplers/sampled images: a set must fit the 1M-slot
+       * layout cap (mali_get_descriptor_set_layout_support) and the 1 GiB pool cap: 500000 * 32 B = 16 MB. t_vk_info "uab limits" */
+      .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
-      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
-      .maxPerStageUpdateAfterBindResources = 32, .maxDescriptorSetUpdateAfterBindSamplers = 96,
-      .maxDescriptorSetUpdateAfterBindSampledImages = 96,
+      .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = 12, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageUpdateAfterBindResources = 500000,
+      .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
+      .maxDescriptorSetUpdateAfterBindUniformBuffers = 72, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
+      .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
+      .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
@@ -135,6 +147,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxMemoryAllocationSize = 1u << 30;
 
    /* ---- Vulkan 1.2 ---- driverID has no Mali-open value; PanVK is the nearest sibling (same compiler). */
+   /* Deliberate: zink keys real workarounds on this id (implicit_sync off, renderpass optimisation for tilers, invalid linear modifier,
+    * no msrtss); an unregistered id would lose them. Revisit only if a PanVK quirk turns out wrong for us. */
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
    snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
@@ -194,6 +208,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
+      .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
@@ -245,6 +260,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .maintenance6 = true,
+      .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
