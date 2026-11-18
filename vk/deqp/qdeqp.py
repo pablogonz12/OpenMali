@@ -100,11 +100,12 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
                     f"> /tmp/qd/r-{RUN}/icd.json; I=/tmp/qd/r-{RUN}/icd.json")
     else:
         icdsetup = "I=$BL_VKBRIDGE_FALLBACK_ICD"
+    imgs = "enable" if "QDEQP_IMAGES=1" in os.environ.get("QDEQP_ENV", "") else "disable"   # opt-in: result/reference images in the kept QPA
     wall = min(wall, 570)                                   # droiddeckctl guest allows at most 600 s per call
     s = (f"mkdir -p /tmp/qd; [ -x /tmp/qd/deqp-vk ] && [ \"$(cat /tmp/qd/stamp 2>/dev/null)\" = {h} ] || "
          f"(rm -rf /tmp/qd/vulkan; tar -C /tmp/qd -xf {DL}/deqp.tar && echo {h} > /tmp/qd/stamp); chmod +x /tmp/qd/deqp-vk; {icdsetup}; "
          f"cd /tmp/qd; VK_DRIVER_FILES=$I VK_ICD_FILENAMES=$I VK_LOADER_LAYERS_DISABLE='~all~' BL_OPEN_DRIVER=1 {os.environ.get('QDEQP_ENV', '')} "
-         f"timeout {wall} ./deqp-vk --deqp-caselist-file={DL}/{tag}.cases --deqp-log-filename={qpa} --deqp-log-images=disable "
+         f"timeout {wall} ./deqp-vk --deqp-caselist-file={DL}/{tag}.cases --deqp-log-filename={qpa} --deqp-log-images={imgs} "
          f"--deqp-log-shader-sources=disable --deqp-surface-type=fbo --deqp-gl-config-name=rgba8888d24s8 --deqp-visibility=hidden "
          f"--deqp-shadercache=disable --deqp-watchdog=enable --deqp-log-flush=enable >/tmp/qd/{tag}.out 2>&1 & P=$!; "
          f"L=0; T=$(date +%s); LT=$T; "          # watchdog: kill on low RAM / high load / QPA idle 3 min
@@ -123,6 +124,11 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
     p.adb("pull", qpa, local_q, timeout=120)
     txt = open(local_q, errors="replace").read() if os.path.exists(local_q) else ""
     if os.path.exists(local_q):
+        if imgs == "enable":   # keep the full QPA (with images) for offline decoding: $QDEQP_QPA_DIR (default ~/.cache/mali-tmp/qpa)/<run>.qpa
+            kd = os.environ.get("QDEQP_QPA_DIR", os.path.expanduser("~/.cache/mali-tmp/qpa"))
+            os.makedirs(kd, exist_ok=True)
+            with open(os.path.join(kd, f"{RUN}.qpa"), "a") as kf:
+                kf.write(txt)
         os.unlink(local_q)
     fin, unf = parse_qpa(txt)
     return fin, unf, out[-300:], "__HOG" in out
