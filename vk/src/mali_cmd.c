@@ -697,6 +697,8 @@ record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z,
       unsupported(cmd, "dispatch inside a rendering or without a compute pipeline");
       return;
    }
+   if (!cmd->cs->bin_size)
+      return;   /* an empty compute shader does nothing observable */
    memset(&f, 0, sizeof f);
    f.compute = true;
    f.disp.cs = cmd->cs;
@@ -771,7 +773,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    const VkRenderingAttachmentInfo *ca = &ri->pColorAttachments[0];
-   if (g_res.image_view(ca->imageView, &t) || t.is_zs) {
+   int ivr = g_res.image_view(ca->imageView, &t);
+   if (ivr || t.is_zs) {
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_cmd: colour attachment view: resolver rc=%d is_zs=%d\n", ivr, t.is_zs);
       unsupported(cmd, "colour attachment view");
       return;
    }
