@@ -126,7 +126,7 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 # X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)
 rm -f "$OUT/t_vk_xcb"
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb 2>"$OBJ/t_vk_xcb.err" \
-   || { if grep -qE "xcb/xcb.h: No such file|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_vk_xcb.err"; then
+   || { if grep -qE "xcb/xcb.h: No such file|xcb/xcb.h. file not found|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_vk_xcb.err"; then
            echo "note: t_vk_xcb not built (no xcb headers/libs for this target)"; else cat "$OBJ/t_vk_xcb.err"; exit 1; fi; }
 
 [ "$OUT/libvulkan_mali.so" -nt "$V/src/mali_cs_emit.c" ] || { echo "FAILED: libvulkan_mali.so older than sources"; exit 1; }
