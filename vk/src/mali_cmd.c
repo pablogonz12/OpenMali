@@ -474,13 +474,22 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       }
       if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE))
          bp->gfx.prim_restart = dyn->ia.primitive_restart_enable;
-      /* fillModeNonSolid (pipeline polygonMode): the topology above is the API one (dyn->set also covers static state); map triangles */
-      if (bp->gfx.poly_mode && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
-         if (bp->gfx.prim >= 8) {
-            if (bp->gfx.poly_mode == 1) { bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
-            else bp->gfx.prim = 1;
-         } else
-            bp->gfx.poly_mode = 0;   /* non-triangle topology: polygonMode does not apply */
+      /* fillModeNonSolid: polygonMode (pipeline state or VK_EXT_extended_dynamic_state3 vkCmdSetPolygonModeEXT; dyn->set covers both) needs the
+       * API topology above. LINE = triangle edges (prim 2, rewritten to an indexed line list at frame build), POINT = the vertices as a point list */
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_RS_POLYGON_MODE) && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+         const bool tri = bp->gfx.prim >= 8;
+         bp->gfx.poly_mode = 0;
+         bp->gfx.poly_prim = 0;
+         switch (dyn->rs.polygon_mode) {
+         case VK_POLYGON_MODE_FILL: break;
+         case VK_POLYGON_MODE_LINE:   /* a non-triangle topology: polygonMode does not apply */
+            if (tri) { bp->gfx.poly_mode = 1; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
+            break;
+         case VK_POLYGON_MODE_POINT:
+            if (tri) { bp->gfx.poly_mode = 2; bp->gfx.prim = 1; bp->gfx.prim_restart = false; }
+            break;
+         default: unsupported(cmd, "polygon mode");
+         }
       }
       /* colour attachment 0 blend */
       const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];

@@ -52,6 +52,7 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dynpoly;                 /* poly is set with vkCmdSetPolygonModeEXT (pipeline polygonMode FILL + VK_DYNAMIC_STATE_POLYGON_MODE_EXT) */
    int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
@@ -73,6 +74,8 @@ static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between d
                         (push constants: the caller passes different rot[] values) */
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
+static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
+static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
@@ -483,7 +486,7 @@ scene_create(struct scene *s, int depth)
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                             .viewportCount = s->mode == MODE_MVP ? 4 : 1, .scissorCount = s->mode == MODE_MVP ? 4 : 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
+                                                .polygonMode = g_fx.dynpoly ? VK_POLYGON_MODE_FILL : (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f, .rasterizerDiscardEnable = g_discard != 0};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = g_msaa ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT,
@@ -518,12 +521,13 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
-   VkDynamicState dyn[9] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+   VkDynamicState dyn[11] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
    if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+   if (g_fx.dynpoly) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
       for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
       dys.dynamicStateCount += 3;
@@ -638,6 +642,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdSetDepthBias(cb, g_fx.bias_c, g_fx.bias_clamp, g_fx.bias_s);
       CmdSetBlendConstants(cb, g_fx.bc);
    }
+   if (g_fx.dynpoly) CmdSetPolygonModeEXT_(cb, (VkPolygonMode)g_fx.poly);
    VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
    VkDeviceSize offs[2] = {0, 0};
    if (g_st.on && g_st.dyn) {
@@ -1432,6 +1437,39 @@ test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx
    return good;
 }
 
+/* VK_EXT_extended_dynamic_state3 polygonMode: same scenes as test_poly, but the pipeline is created FILL with POLYGON_MODE_EXT dynamic and the mode
+ * comes from vkCmdSetPolygonModeEXT. On the fake backend nothing renders: the draw must still build and its decoded stream (golden) differs from FILL. */
+static int
+test_poly_dyn(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx, int cy)
+{
+   struct scene s = {.mode = mode};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   if (!g_have_eds3) { printf("{\"test\":\"%s\",\"skipped\":\"extendedDynamicState3PolygonMode not advertised\",\"ok\":true}\n", name); return 1; }
+   if (!g_feat.fillModeNonSolid) { printf("{\"test\":\"%s\",\"skipped\":\"fillModeNonSolid not advertised\",\"ok\":true}\n", name); return 1; }
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&g_fx, 0, sizeof g_fx);
+   g_fx.poly = poly;
+   g_fx.dynpoly = 1;
+   if (!scene_create(&s, 0)) return 0;
+   s.mode = mode;
+   float rot[1][4] = {{1, 0, 0, 0}};
+   int ok = scene_draw(&s, 1, rot, f);
+   int good = ok;
+   if (ok && !g_fake) {
+      uint32_t cov = count_cov(&s);
+      const uint8_t *c = s.px + cy * s.pitch + cx * 4;
+      good = cov >= lo && cov <= hi && c[3] == 0;
+      if (!good) { printf("{\"fail\":\"%s: coverage %u expected %u..%u, interior alpha %u (want 0)\"}\n", name, cov, lo, hi, c[3]); g_fail++; }
+      else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
+   } else if (ok)
+      printf("{\"test\":\"%s\",\"ok\":true,\"skipped\":\"pixels: fake backend\"}\n", name);
+   memset(&g_fx, 0, sizeof g_fx);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return good;
+}
+
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
 enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
 struct fxcase {
@@ -1967,7 +2005,9 @@ main(int argc, char **argv)
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
-   const char *dce_ext[] = {"VK_EXT_depth_clip_enable"};
+   const char *dce_ext[] = {"VK_EXT_depth_clip_enable", "VK_EXT_extended_dynamic_state3"};
+   const char *en_ext[2];
+   VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
    {
       PFN_vkGetPhysicalDeviceFeatures2 GPF2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
       PFN_vkEnumerateDeviceExtensionProperties EDE = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
@@ -1976,21 +2016,40 @@ main(int argc, char **argv)
       VkExtensionProperties eps[128];
       if (ne > 128) ne = 128;
       EDE(pd, NULL, &ne, eps);
-      int has = 0;
-      for (uint32_t i = 0; i < ne; i++) has |= !strcmp(eps[i].extensionName, dce_ext[0]);
+      int has = 0, has3 = 0;
+      for (uint32_t i = 0; i < ne; i++) {
+         has |= !strcmp(eps[i].extensionName, dce_ext[0]);
+         has3 |= !strcmp(eps[i].extensionName, dce_ext[1]);
+      }
+      dce_f.pNext = &eds3_f;
       VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dce_f};
       GPF2(pd, &f2);
+      void *chain = NULL;
+      if (has3 && eds3_f.extendedDynamicState3PolygonMode) {
+         g_have_eds3 = 1;
+         /* enable polygonMode only: the other bits are not what this test exercises */
+         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+                                                               .extendedDynamicState3PolygonMode = VK_TRUE};
+         eds3_f = e3;
+         eds3_f.pNext = NULL;
+         en_ext[di.enabledExtensionCount++] = dce_ext[1];
+         chain = &eds3_f;
+      }
       if (has && dce_f.depthClipEnable) {
          g_have_dclip = 1;
-         di.pNext = &dce_f;
-         di.enabledExtensionCount = 1;
-         di.ppEnabledExtensionNames = dce_ext;
+         dce_f.pNext = chain;
+         chain = &dce_f;
+         en_ext[di.enabledExtensionCount++] = dce_ext[0];
       }
+      di.pNext = chain;
+      di.ppEnabledExtensionNames = en_ext;
    }
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
+   CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
+   if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
@@ -2048,6 +2107,9 @@ main(int argc, char **argv)
       ok &= test_poly("poly_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
       ok &= test_poly("poly_line_idx32", MODE_IDX32, 1, 250, 2500, 100, 130);
       ok &= test_poly("poly_line_mdi", MODE_MDI, 1, 250, 5000, 100, 130);
+      ok &= test_poly_dyn("poly_dyn_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
+      ok &= test_poly_dyn("poly_dyn_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
+      ok &= test_poly_dyn("poly_dyn_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
    }
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
