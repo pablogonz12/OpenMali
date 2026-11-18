@@ -706,9 +706,9 @@ class T(unittest.TestCase):
     def test_bless(self):
         repo = os.path.dirname(os.path.dirname(HERE))
         self.attach("dev-a", "dev-b")
-        _, bad, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11,v13")      # not main's tip -> refused (unless HEAD == main)
-        _, jid, _ = self.farm("submit", "main", "--suite", "daily", "--need", "v11,v13")
-        _, smoke, _ = self.farm("submit", "main", "--suite", "smoke", "--need", "v11")
+        _, bad, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11,v13", "--allow-stale")      # not main's tip -> refused (unless HEAD == main)
+        _, jid, _ = self.farm("submit", "main", "--suite", "daily", "--need", "v11,v13", "--allow-stale")
+        _, smoke, _ = self.farm("submit", "main", "--suite", "smoke", "--need", "v11", "--allow-stale")
         for _ in range(3):
             self.farmd()
         co = self.d + "/co"
