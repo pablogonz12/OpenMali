@@ -631,8 +631,19 @@ def util_data(since, now, devs, jobs):
                 ev.setdefault(m.group(2), []).append((ts(m.group(1)), m.group(4)))
     except OSError:
         pass
-    busy, builds, sweep, demand = {}, {}, {}, {}
+    busy, builds, sweep, demand, held = {}, {}, {}, {}, {}
     firsts = [since]
+    hd = os.path.join(sd, "holds")                                # agent holds (farm hold) own the phone lock but are no runs: without them that time showed up as idle
+    for f in os.listdir(hd) if os.path.isdir(hd) else []:
+        if f.endswith(".json"):
+            try:
+                h = L.read_json(os.path.join(hd, f))
+                if h.get("started") and h.get("device"):
+                    e = ts(h["ended"]) if h.get("ended") else now
+                    if e >= since:
+                        held.setdefault(h["device"], []).append((ts(h["started"]), e))
+            except (OSError, ValueError, KeyError):
+                pass
     for r in runs:
         if not r.get("started") or not r.get("device"):
             continue
@@ -659,7 +670,7 @@ def util_data(since, now, devs, jobs):
                 demand.setdefault(cls, []).append((ts(j["created"]), now))
     start = min(firsts[1:] or [since])
     start = max(since, start)
-    return start, busy, builds, sweep, demand, ev
+    return start, busy, builds, sweep, demand, ev, held
 
 
 def cmd_util(a):
@@ -667,11 +678,11 @@ def cmd_util(a):
     _, devs = L.load_devices()
     jobs = L.list_jobs()
     since = parse_since(a.since)
-    start, busy, builds, sweep, demand, ev = util_data(since, now, devs, jobs)
+    start, busy, builds, sweep, demand, ev, held = util_data(since, now, devs, jobs)
     n = max(int(now - start), 1)
     print(f"util since {time.strftime('%m-%d %H:%M', time.localtime(start))} ({n // 3600}h{n % 3600 // 60:02d}m window; busy = a job part holds the phone, build = its driver build under the lock)")
     for al, d in devs.items():
-        cat = bytearray(n)                                    # 0 no work, 1 queue gap, 2.. gate states, 250 sweep, 251 busy
+        cat = bytearray(n)                                    # 0 no work, 1 queue gap, 2.. gate states, 250 sweep, 252 agent hold, 251 busy
         names = {}
         fill = lambda iv, code: [cat.__setitem__(slice(max(int(x - start), 0), max(min(int(y - start), n), 0)), bytes([code]) * max(min(int(y - start), n) - max(int(x - start), 0), 0)) for x, y in iv]
         fill(demand.get(d["class"], []), 1)
@@ -681,13 +692,14 @@ def cmd_util(a):
                 names.setdefault(st, 2 + len(names))
                 fill([(t, evs[i + 1][0] if i + 1 < len(evs) else now)], names[st])
         fill(sweep.get(al, []), 250)
+        fill(held.get(al, []), 252)                           # an agent hold, busy or not (the phone is not free for jobs)
         fill(busy.get(al, []), 251)
         pct = lambda k: 100 * sum(1 for c in cat if c == k) / n
         tot_busy = pct(251)
         bs = sum(max(y - x, 0) for x, y in builds.get(al, [])) / n * 100
         idle = [("no work queued", pct(0)), ("queue gap (build/poll/other class/lock held by a worker)", pct(1))] + [(f"gated: {st}", pct(code)) for st, code in names.items()]
         idle = sorted(((p, k) for k, p in idle if p >= 0.5), reverse=True)
-        print(f"{al:9} {d['class']:4} busy {tot_busy:4.0f}% (build {bs:.0f}%) sweep {pct(250):.0f}% | idle: " + ", ".join(f"{k} {p:.0f}%" for p, k in idle[:4]))
+        print(f"{al:9} {d['class']:4} busy {tot_busy:4.0f}% (build {bs:.0f}%) sweep {pct(250):.0f}% held (agent hold) {pct(252):.0f}% | idle: " + ", ".join(f"{k} {p:.0f}%" for p, k in idle[:4]))
     temps = [l for l in open(os.path.join(L.state_dir(), "logs", "temps-poco-x4.log"))][-1:] if os.path.exists(os.path.join(L.state_dir(), "logs", "temps-poco-x4.log")) else []
     if temps:
         print("last shell-route chunk temps: " + temps[0].strip()[-90:])

@@ -107,7 +107,7 @@ Use prio sparingly: do not give exploratory jobs gate priority.
 - `farm flaky [--class v11] [--seed]`: cases that fail but pass a rerun. A daily
   automatically reruns main-passing Fails up to 3 times; a pass makes the case flaky (not
   a new failure). `known-flaky.txt` cases are ignored by the verdict but reported.
-- `farm util [--since today|6h|2d]`: where phone time went (busy, sweep, gated, queue gap).
+- `farm util [--since today|6h|2d]`: where phone time went (busy, sweep, agent holds, gated, queue gap).
 - `farm sweep status|failures|on|off`: idle full-list sweep; it yields to any queued job.
 
 Reading a daily verdict: `fail +N new` means N cases Pass in main's baseline (or the

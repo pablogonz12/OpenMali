@@ -1402,6 +1402,20 @@ class T(unittest.TestCase):
         self.assertIn("dev-a", out)
         self.assertIn("busy", out)
 
+    def test_util_counts_agent_holds(self):
+        import datetime as dt
+        iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        now = time.time()
+        H.new_hold("dev-b", 60)                                                          # writes holds/<id>.json; make it a finished hold of 20 of the last 40 min
+        h = H.list_holds()[0]
+        h.update(state="done", started=iso(now - 1800), ended=iso(now - 600))
+        L.write_json(H.path(h["id"]), h)
+        out = self.farm("util", "--since", "40m")[1]
+        line = next(l for l in out.splitlines() if l.startswith("dev-b"))
+        pct = int(line.split("held (agent hold) ")[1].split("%")[0])
+        self.assertTrue(42 <= pct <= 58, line)                                           # was counted as idle before
+        self.assertIn("held (agent hold) 0%", next(l for l in out.splitlines() if l.startswith("dev-a")))
+
     def test_smoke_log_and_only(self):
         self.attach("dev-a")
         _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--only", "triangle,buf")
