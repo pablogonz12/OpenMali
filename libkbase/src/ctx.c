@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer A: context, handshake, GPU properties, capability table. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
