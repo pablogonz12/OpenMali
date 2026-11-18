@@ -39,6 +39,8 @@ static const VkPipelineVertexInputStateCreateInfo *g_vi;   /* make_pipe: vertex 
 static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
 static int test_idx32(void);
 static int test_zinit(void);
+static int test_cachectl(void);
+static int test_sepds(void);
 #define BIND_IB(cb, b, off, ty) do { if (g_ib2) g_cbib2(cb, b, off, VK_WHOLE_SIZE, ty); else CmdBindIndexBuffer(cb, b, off, ty); } while (0)
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1853,6 +1855,61 @@ test_demote(void)
    return 1;
 }
 
+/* pipelineCreationCacheControl: FAIL_ON_PIPELINE_COMPILE_REQUIRED must fail with VK_PIPELINE_COMPILE_REQUIRED (no cache hit exists) and write
+ * VK_NULL_HANDLE; EARLY_RETURN_ON_FAILURE stops the array. The create infos are otherwise garbage on purpose: the flag must be honoured
+ * before anything is read (a driver that ignores the flag fails on the empty stage instead, or creates a pipeline). */
+static VkBool32 g_cachectl, g_sepds;
+static int
+test_cachectl(void)
+{
+   CHECK(g_cachectl, "pipelineCreationCacheControl is required by Vulkan 1.3 (feature table) and implemented here");
+   if (!g_cachectl) return 0;
+   VkComputePipelineCreateInfo c[2];
+   memset(c, 0, sizeof c);
+   for (int i = 0; i < 2; i++) {
+      c[i].sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+      c[i].flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+   }
+   VkPipeline p[2] = {(VkPipeline)(uintptr_t)0x1234, (VkPipeline)(uintptr_t)0x1234};
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 2, c, NULL, p);
+   CHECK(r == VK_PIPELINE_COMPILE_REQUIRED, "compute FAIL_ON_COMPILE_REQUIRED = %d want %d", r, VK_PIPELINE_COMPILE_REQUIRED);
+   CHECK(p[0] == VK_NULL_HANDLE && p[1] == VK_NULL_HANDLE, "compute handles must be VK_NULL_HANDLE (%p %p)", (void *)p[0], (void *)p[1]);
+   c[0].flags |= VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+   p[0] = p[1] = (VkPipeline)(uintptr_t)0x1234;
+   r = CreateComputePipelines(dev, VK_NULL_HANDLE, 2, c, NULL, p);
+   CHECK(r == VK_PIPELINE_COMPILE_REQUIRED && p[0] == VK_NULL_HANDLE && p[1] == VK_NULL_HANDLE, "compute early return: %d %p %p", r, (void *)p[0], (void *)p[1]);
+   VkGraphicsPipelineCreateInfo gi;
+   memset(&gi, 0, sizeof gi);
+   gi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+   gi.flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+   VkPipeline gp = (VkPipeline)(uintptr_t)0x1234;
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gi, NULL, &gp);
+   CHECK(r == VK_PIPELINE_COMPILE_REQUIRED && gp == VK_NULL_HANDLE, "graphics FAIL_ON_COMPILE_REQUIRED = %d %p", r, (void *)gp);
+   printf("{\"test\":\"cachectl\",\"ok\":true}\n");
+   return 1;
+}
+
+/* separateDepthStencilLayouts: the bit is advertised AND the device was created with it enabled (main() enables everything advertised;
+ * the runtime rejects CreateDevice for an enabled-but-unadvertised bit), and the split layouts survive a barrier record+submit. */
+static int
+test_sepds(void)
+{
+   CHECK(g_sepds, "separateDepthStencilLayouts is required by Vulkan 1.2 (feature table) and implemented here");
+   if (!g_sepds) return 0;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = t.img, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   if (!cb_submit(&t, cb)) return 0;
+   printf("{\"test\":\"sepds\",\"ok\":true}\n");
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
 static int
 test_clip(void)
@@ -2420,7 +2477,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_cachectl = f13.pipelineCreationCacheControl; g_sepds = f12.separateDepthStencilLayouts; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -2466,6 +2523,7 @@ main(int argc, char **argv)
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
    e13.privateData = f13.privateData;
+   e13.pipelineCreationCacheControl = f13.pipelineCreationCacheControl; e12.separateDepthStencilLayouts = f12.separateDepthStencilLayouts;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
@@ -2510,6 +2568,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
+   if (ok && CASE_ON("cachectl")) ok &= test_cachectl();
+   if (ok && CASE_ON("sepds")) ok &= test_sepds();
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();

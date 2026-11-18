@@ -218,6 +218,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .dynamicRendering = true,
       .imagelessFramebuffer = true,   /* t_vk_feat imageless */
       .maintenance4 = true,
+      .pipelineCreationCacheControl = true,   /* t_vk_feat cachectl: FAIL_ON_PIPELINE_COMPILE_REQUIRED -> VK_PIPELINE_COMPILE_REQUIRED (no cache hits exist) */
+      .separateDepthStencilLayouts = true,    /* t_vk_feat sepds: image layouts are never read (coherent, layout-free hardware state), so the split depth/stencil layouts are accepted as-is */
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
       .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */

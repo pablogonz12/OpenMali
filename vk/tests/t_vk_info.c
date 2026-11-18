@@ -223,17 +223,18 @@ main(int argc, char **argv)
                      di2 = (unsigned)((const VkBool32 *)&f12.descriptorBindingPartiallyBound - b), di3 = (unsigned)((const VkBool32 *)&f12.descriptorBindingSampledImageUpdateAfterBind - b),
                      di4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUpdateUnusedWhilePending - b),
                      s8 = (unsigned)((const VkBool32 *)&f12.storageBuffer8BitAccess - b), i8 = (unsigned)((const VkBool32 *)&f12.shaderInt8 - b),   /* t_vk_feat int8 */
-                     sbl = (unsigned)((const VkBool32 *)&f12.scalarBlockLayout - b), ubs = (unsigned)((const VkBool32 *)&f12.uniformBufferStandardLayout - b); /* t_vk_feat scalar/ubostd */ /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
+                     sbl = (unsigned)((const VkBool32 *)&f12.scalarBlockLayout - b), ubs = (unsigned)((const VkBool32 *)&f12.uniformBufferStandardLayout - b), sds = (unsigned)((const VkBool32 *)&f12.separateDepthStencilLayouts - b); /* t_vk_feat sepds */ /* t_vk_feat scalar/ubostd */ /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == imgl || i == tl || i == hq || i == mc || i == bda || i == vmm || i == vmd || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == sbl || i == ubs || i == s8 || i == i8, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == imgl || i == tl || i == hq || i == mc || i == bda || i == vmm || i == vmd || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == sbl || i == ubs || i == s8 || i == i8 || i == sds, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
                      dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d),
-                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
+                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d), pcc = (unsigned)((const VkBool32 *)&f13.pipelineCreationCacheControl - d); /* t_vk_feat cachectl */   /* t_vk_feat demote */
+      CHECK(f12.separateDepthStencilLayouts && f13.pipelineCreationCacheControl, "1.2/1.3-mandatory bits implemented here must be advertised");
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == sgc || i == cfs || i == iub || i == pcc, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */
