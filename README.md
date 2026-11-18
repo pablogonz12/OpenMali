@@ -30,9 +30,9 @@ How close mali-open gets to the Mali bridge (MediaDeck's, the target) per phone,
 | cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 54.8 (633f2069a, 2026-11-18) | +19% | 71.4 (p25) | 77% | not measured | 13.04 / 11.31 |
 | cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 61.4 (633f2069a, 2026-11-18) | +34% | 70.6 (p25) | 87% | not measured | 13.55 / 11.32 |
 | cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 287.5 (633f2069a, 2026-11-18) | +296% | 185.8 (p25) | 155% | not measured | 1.15 / 2.77 |
-| poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | 76.9 (20e290c1a, 2026-11-17) | 491.3 (d2d8f7259, 2026-11-18) | +539% | 445.2 (p25) | 110% | not measured | 1.53 / 1.35 |
-| poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | 77.3 (20e290c1a, 2026-11-17) | 120.4 (d2d8f7259, 2026-11-18) | +56% | 458.3 (p25) | 26% | not measured | 1.52 / 1.32 |
-| poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 573.2 (d2d8f7259, 2026-11-18) | +473% | 354.1 (p25) | 162% | not measured | 1.19 / 1.62 |
+| poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | 76.9 (20e290c1a, 2026-11-17) | 492.8 (453cd8d0c, 2026-11-18) | +541% | 451.6 (p25) | 109% | not measured | 1.55 / 1.32 |
+| poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | 77.3 (20e290c1a, 2026-11-17) | 496.9 (453cd8d0c, 2026-11-18) | +543% | 454.1 (p25) | 109% | not measured | 1.53 / 1.32 |
+| poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 601.6 (453cd8d0c, 2026-11-18) | +501% | 347.6 (p25) | 173% | not measured | 1.17 / 1.61 |
 | poco-x4 | Poco X4 Mali-G610 (v10) | cube-720p | n/a | n/a | n/a | 119.6 (p22) | n/a | not measured | n/a |
 | poco-x4 | Poco X4 Mali-G610 (v10) | cube-native | n/a | n/a | n/a | 115.8 (p22) | n/a | not measured | n/a |
 | poco-x4 | Poco X4 Mali-G610 (v10) | triangle-3k | 149.7 (23edb3f94-dirty, 2026-11-18) | 149.7 (23edb3f94-dirty, 2026-11-18) | n/a | 338.3 (p22) | 44% | not measured | 0.92 / 1.15 |
