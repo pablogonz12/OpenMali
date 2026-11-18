@@ -194,6 +194,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_maintenance5 = true,              /* t_vk_feat maint5: BindIndexBuffer2, module-less stages (zink requires it, STEAM-GAPS.md) */
       .EXT_vertex_attribute_divisor = true, .KHR_vertex_attribute_divisor = true,   /* t_vk_feat divisor */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
+      .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
@@ -245,6 +246,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
+      .extendedDynamicState = true,
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .maintenance6 = true,
       .nullDescriptor = true,      /* t_vk_feat nulld */
