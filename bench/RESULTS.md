@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open 531f79fa4 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 362.9 | 128.5 | 0 | 0.92 | 1.78 | 485.7 | 0.95 | 1.63 | present immediate/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | ours | 531f79fa4 | triangle-3k | 108.4 | 88.0 | 0 | 5.09 | 1.86 | 240.5 | 3.94 | 1.64 | present mailbox/3img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_HF=0+MALI_NOTF=1 | 2026-11-18 |
+
 ### mali-open 20e290c1a (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -34,6 +41,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 ## cube (GPU-heavy)
+
+### mali-open 531f79fa4 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 436.4 | 117.7 | 0 | 0.01 | 1.61 | 732.9 | 0.01 | 1.32 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 462.8 | 138.1 | 0 | 0.01 | 1.53 | 729.4 | 0.01 | 1.33 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 
 ### mali-open 20e290c1a (2026-11-18)
 
