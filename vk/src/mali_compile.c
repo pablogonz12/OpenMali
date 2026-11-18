@@ -21,6 +21,7 @@
 #include "mali_compile.h"
 #include "mali_descriptor_lower.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -31,6 +32,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
@@ -209,25 +211,24 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       sprintf(hex + 2 * i, "%02x", d[i]);
 }
 
+/* 1 = usable. -1 only if the result was truncated. Android apps have no HOME and no XDG_CACHE_HOME: they must pass opts.cache_dir or set
+ * MALI_SHADER_CACHE to their app cache dir; the last resort is $TMPDIR/mali-gaming-<uid>/shaders (never "/.cache"). */
 static int
 cache_dir(const struct mali_compile_opts *o, char *buf, size_t n)
 {
    const char *d = o->cache_dir;
-   if (d) {
+   int w;
+   if (d || (d = getenv("MALI_SHADER_CACHE"))) {
       if (!*d) return 0;
-      snprintf(buf, n, "%s", d);
-      return 1;
+      w = snprintf(buf, n, "%s", d);
+      return w > 0 && (size_t)w < n;
    }
-   if ((d = getenv("MALI_SHADER_CACHE"))) {
-      if (!*d) return 0;
-      snprintf(buf, n, "%s", d);
-      return 1;
-   }
-   const char *x = getenv("XDG_CACHE_HOME"), *h = getenv("HOME");
-   if (x && *x) snprintf(buf, n, "%s/mali-gaming/shaders", x);
-   else if (h && *h) snprintf(buf, n, "%s/.cache/mali-gaming/shaders", h);
+   const char *x = getenv("XDG_CACHE_HOME"), *h = getenv("HOME"), *t = getenv("TMPDIR");
+   if (x && *x == '/') w = snprintf(buf, n, "%s/mali-gaming/shaders", x);
+   else if (h && *h == '/' && strcmp(h, "/")) w = snprintf(buf, n, "%s/.cache/mali-gaming/shaders", h);
+   else if (t && *t == '/') w = snprintf(buf, n, "%s/mali-gaming-%u/shaders", t, (unsigned)geteuid());
    else return 0;
-   return 1;
+   return w > 0 && (size_t)w < n;
 }
 
 static void
@@ -235,7 +236,16 @@ mkdirs(char *p)
 {
    for (char *s = p + 1; *s; s++)
       if (*s == '/') { *s = 0; mkdir(p, 0755); *s = '/'; }
-   mkdir(p, 0755);
+   mkdir(p, 0700);   /* the leaf holds GPU code: private to the user */
+}
+
+/* Entries are only checksummed, not authenticated: anyone who can write the directory can plant code that runs on the GPU (and the CPU
+ * side parses it). Refuse a cache directory that is not a real directory owned by us and closed to group/other writes (a shared /tmp). */
+static int
+cache_dir_trusted(const char *dir)
+{
+   struct stat st;
+   return !lstat(dir, &st) && S_ISDIR(st.st_mode) && st.st_uid == geteuid() && !(st.st_mode & 022);
 }
 
 #define CACHE_MAGIC 0x4d414c44u   /* 'MALD': v2 = payload checksum at the end (MALC entries are ignored and recompiled) */
@@ -277,50 +287,47 @@ trim_cmp(const void *a, const void *b)
    return (x->mtime > y->mtime) - (x->mtime < y->mtime);
 }
 
+/* Removes temp files left by killed processes (older than 10 min: a live writer finishes in milliseconds) and, when the .bin entries
+ * exceed max_bytes (0 = no limit), deletes the least recently used ones (mtime; a hit refreshes it) down to 90% of the cap. Safe to run in
+ * several processes at once: unlink of a vanished file is ignored and a reader that already opened an entry keeps its data. */
 void
-mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
+mali_compile_cache_trim(const char *dir, uint64_t max_bytes)
 {
+   if (!cache_dir_trusted(dir)) return;
    DIR *d = opendir(dir);
    if (!d) return;
-   struct trim_ent *v = NULL;
-   size_t n = 0, cap = 0;
-   unsigned long long total = 0;
+   size_t cap = 256, n = 0;
+   struct trim_ent *v = malloc(cap * sizeof *v);
+   uint64_t total = 0;
    time_t now = time(NULL);
-   struct dirent *de;
-   while ((de = readdir(d))) {
-      size_t l = strlen(de->d_name);
-      int is_bin = l > 4 && !strcmp(de->d_name + l - 4, ".bin");
-      int is_tmp = strstr(de->d_name, ".bin.tmp") != NULL;
-      if (!is_bin && !is_tmp) continue;
-      char path[1400];
+   struct dirent *e;
+   while (v && (e = readdir(d))) {
+      size_t l = strlen(e->d_name);
+      if (l >= sizeof v->name || l < 5) continue;
+      int is_tmp = strstr(e->d_name, ".bin.tmp") != NULL;
+      if (!is_tmp && strcmp(e->d_name + l - 4, ".bin")) continue;
       struct stat st;
-      snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
-      if (stat(path, &st) || !S_ISREG(st.st_mode)) continue;
+      if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode)) continue;
       if (is_tmp) {
-         if (now - st.st_mtime > 3600) unlink(path);
+         if (now - st.st_mtime > 600) unlinkat(dirfd(d), e->d_name, 0);
          continue;
       }
       if (n == cap) {
-         struct trim_ent *nv = realloc(v, (cap = cap ? cap * 2 : 256) * sizeof *v);
+         struct trim_ent *nv = realloc(v, (cap *= 2) * sizeof *v);
          if (!nv) break;
          v = nv;
       }
+      memcpy(v[n].name, e->d_name, l + 1);
       v[n].mtime = st.st_mtime; v[n].size = st.st_size;
-      snprintf(v[n].name, sizeof v[n].name, "%s", de->d_name);
-      total += st.st_size;
-      n++;
+      total += st.st_size; n++;
    }
-   closedir(d);
-   if (max_bytes && total > max_bytes && v) {
+   if (v && max_bytes && total > max_bytes) {
       qsort(v, n, sizeof *v, trim_cmp);
-      unsigned long long goal = max_bytes / 10 * 9;
-      for (size_t i = 0; i < n && total > goal; i++) {
-         char path[1400];
-         snprintf(path, sizeof path, "%s/%s", dir, v[i].name);
-         if (unlink(path) == 0) total -= v[i].size;
-      }
+      for (size_t i = 0; i < n && total > max_bytes / 10 * 9; i++)
+         if (!unlinkat(dirfd(d), v[i].name, 0)) total -= v[i].size;
    }
    free(v);
+   closedir(d);
 }
 
 static void
@@ -330,10 +337,11 @@ cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
    char path[1024], tmp[1100], d2[1024];
    snprintf(d2, sizeof d2, "%s", dir);
    mkdirs(d2);
+   if (!cache_dir_trusted(dir)) return;
    snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
    /* pid + per-process counter: two threads (or a thread and a fork) storing the same key must not share a temp file */
    snprintf(tmp, sizeof tmp, "%s.tmp%d.%u", path, (int)getpid(), atomic_fetch_add(&seq, 1));
-   FILE *f = fopen(tmp, "wb");
+   FILE *f = fopen(tmp, "wbx");   /* O_EXCL: a pid reused across pid namespaces must not append to someone else's temp file */
    if (!f) return;
    struct mali_compiled h = *c;
    uint32_t magic = CACHE_MAGIC;
@@ -355,12 +363,17 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
 {
    char path[1024];
    snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
+   if (!cache_dir_trusted(dir)) return 0;
    FILE *f = fopen(path, "rb");
    if (!f) return 0;
    uint32_t magic = 0;
    struct mali_compiled h;
    int ok = fread(&magic, 4, 1, f) == 1 && magic == CACHE_MAGIC && fread(&h, sizeof h, 1, f) == 1 &&
             h.bin_size < (64u << 20) && h.nimm < (1u << 20);
+   if (ok) {   /* the sizes come from the file: they must account for the whole file before anything is allocated */
+      struct stat st;
+      ok = !fstat(fileno(f), &st) && (uint64_t)st.st_size == 4 + sizeof h + h.bin_size + (uint64_t)h.nimm * sizeof *h.imm + 16;
+   }
    if (ok) {
       uint8_t sum[16], want[16];
       h.bin = malloc(h.bin_size ? h.bin_size : 1);
@@ -382,6 +395,10 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
    if (!ok) return 0;
    h.cache_hit = 1;
    *c = h;
+   {  /* LRU for the trimmer: refresh the mtime of an entry not used for a day */
+      struct stat st;
+      if (!stat(path, &st) && time(NULL) - st.st_mtime > 86400) utimensat(AT_FDCWD, path, NULL, 0);
+   }
    return 1;
 }
 

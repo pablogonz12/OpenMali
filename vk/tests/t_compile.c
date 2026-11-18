@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <utime.h>
 #include <unistd.h>
 
 static int g_fail, g_verbose;
@@ -387,6 +391,170 @@ test_spec(void)
    }
 }
 
+static unsigned
+count_files(const char *dir, const char *needle)
+{
+   unsigned n = 0;
+   DIR *d = opendir(dir);
+   struct dirent *e;
+   while (d && (e = readdir(d))) if (strstr(e->d_name, needle)) n++;
+   if (d) closedir(d);
+   return n;
+}
+
+static int
+compile_fau(const struct spv *s, const char *cache, unsigned fau, struct mali_compiled *c)
+{
+   struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = s->w, .spirv_words = s->n, .cache_dir = cache,
+                                  .fau_reserved = fau };
+   return mali_compile(&o, c, NULL, 0);
+}
+
+/* Several processes storing and loading the same keys: every result is right, a visible entry is always complete, no temp file survives. */
+static void
+race_child(const struct spv *vs, const char *dir, int id)
+{
+   unsigned bad = 0;
+   for (unsigned k = 0; k < 24; k++) {
+      unsigned fau = 16 + 2 * ((k + id * 5) % 24);   /* different start per process, same key set */
+      char pat[1024];
+      struct mali_compiled ref, c;
+      if (compile_fau(vs, "", fau, &ref)) { bad++; continue; }
+      DIR *d = opendir(dir);   /* entries visible before this process starts compiling */
+      unsigned before = 0;
+      struct dirent *e;
+      while (d && (e = readdir(d))) before += strstr(e->d_name, ".bin") && !strstr(e->d_name, ".tmp");
+      if (d) closedir(d);
+      (void)pat;
+      struct mali_compile_stats s0, s1;
+      mali_compile_stats(&s0);
+      if (compile_fau(vs, dir, fau, &c)) { bad++; continue; }
+      mali_compile_stats(&s1);
+      if (c.bin_size != ref.bin_size || memcmp(c.bin, ref.bin, ref.bin_size)) bad++;
+      /* a half-written entry must never be visible: if every key of this process had an entry before, all must hit */
+      if (before >= 24 && !c.cache_hit) bad++;
+      (void)s0; (void)s1;
+      mali_compiled_free(&c); mali_compiled_free(&ref);
+   }
+   _exit(bad ? 1 : 0);
+}
+
+static void
+test_cache_disk(void)
+{
+   printf("disk cache: trim, trust, fallback dir, concurrent processes\n");
+   struct spv vs = load("rot.vert.spv");
+   if (!vs.w) return;
+   char dir[] = "/tmp/t_compile_disk.XXXXXX", p[1100], cmd[1300];
+   if (!mkdtemp(dir)) { g_fail++; return; }
+   struct mali_compiled c;
+
+   /* ---- eviction: the oldest entries go first, the newest survive, bounded size ---- */
+   for (unsigned i = 0; i < 4; i++) { CHECK(!compile_fau(&vs, dir, 16 + 2 * i, &c), "fill %u", i); mali_compiled_free(&c); }
+   CHECK(count_files(dir, ".bin") == 4, "4 entries stored, got %u", count_files(dir, ".bin"));
+   DIR *d = opendir(dir);
+   struct dirent *e;
+   char names[4][300];
+   unsigned n = 0;
+   uint64_t one = 0;
+   while (d && (e = readdir(d)) && n < 4)
+      if (strstr(e->d_name, ".bin")) {
+         snprintf(names[n], sizeof names[n], "%s/%s", dir, e->d_name);
+         struct stat st; stat(names[n], &st); one = st.st_size;
+         struct utimbuf tb = { 1000000 + n * 1000, 1000000 + n * 1000 };   /* names[0] oldest .. names[3] newest */
+         utime(names[n], &tb);
+         n++;
+      }
+   if (d) closedir(d);
+   mali_compile_cache_trim(dir, one * 4);   /* fits: nothing goes */
+   CHECK(count_files(dir, ".bin") == 4, "under the cap nothing is evicted");
+   mali_compile_cache_trim(dir, one * 3);   /* 90% of 3 entries = 2.7: two oldest go to get below it */
+   CHECK(count_files(dir, ".bin") == 2, "over the cap: evicted down to 90%% (2 left), got %u", count_files(dir, ".bin"));
+   CHECK(access(names[0], F_OK) && access(names[1], F_OK) && !access(names[2], F_OK) && !access(names[3], F_OK), "the oldest entries were evicted, not the newest");
+   mali_compile_cache_trim(dir, 0);
+   CHECK(count_files(dir, ".bin") == 2, "cap 0 = unlimited");
+
+   /* ---- stale temp files of a killed process are swept, a fresh one (live writer) is not ---- */
+   snprintf(p, sizeof p, "%s/dead.bin.tmp1.0", dir);
+   FILE *f = fopen(p, "wb"); if (f) { fputs("x", f); fclose(f); }
+   struct utimbuf old = { time(NULL) - 3600, time(NULL) - 3600 };
+   utime(p, &old);
+   snprintf(p, sizeof p, "%s/live.bin.tmp2.0", dir);
+   f = fopen(p, "wb"); if (f) { fputs("x", f); fclose(f); }
+   mali_compile_cache_trim(dir, 0);
+   CHECK(count_files(dir, "dead.bin.tmp") == 0 && count_files(dir, "live.bin.tmp") == 1, "stale temp swept, fresh temp kept");
+   unlink(p);
+
+   /* ---- a directory others can write to is not trusted: nothing is loaded from it or stored in it ---- */
+   char dir2[] = "/tmp/t_compile_open.XXXXXX";
+   if (mkdtemp(dir2)) {
+      CHECK(!compile_fau(&vs, dir2, 16, &c) && !c.cache_hit, "miss in new dir"); mali_compiled_free(&c);
+      CHECK(!compile_fau(&vs, dir2, 16, &c) && c.cache_hit, "hit in private dir"); mali_compiled_free(&c);
+      chmod(dir2, 0777);
+      CHECK(!compile_fau(&vs, dir2, 16, &c) && !c.cache_hit, "group/other-writable dir: planted entries are not loaded"); mali_compiled_free(&c);
+      CHECK(!compile_fau(&vs, dir2, 18, &c), "compile"); mali_compiled_free(&c);
+      CHECK(count_files(dir2, ".bin") == 1, "nothing is stored in an untrusted dir");
+      snprintf(cmd, sizeof cmd, "rm -rf %s", dir2); if (system(cmd)) g_fail++;
+   }
+
+   /* ---- no HOME / XDG (an Android app process): never write to /.cache, fall back to TMPDIR; explicit env wins ---- */
+   char tdir[] = "/tmp/t_compile_tmpdir.XXXXXX";
+   if (mkdtemp(tdir)) {
+      setenv("HOME", "/", 1); unsetenv("XDG_CACHE_HOME"); unsetenv("MALI_SHADER_CACHE"); setenv("TMPDIR", tdir, 1);
+      CHECK(!compile_fau(&vs, NULL, 30, &c), "compile without cache_dir"); mali_compiled_free(&c);
+      snprintf(p, sizeof p, "%s/mali-gaming-%u/shaders", tdir, (unsigned)geteuid());
+      CHECK(count_files(p, ".bin") == 1, "TMPDIR fallback used when HOME is unusable");
+      CHECK(access("/.cache/mali-gaming", F_OK) != 0, "nothing written below /");
+      setenv("MALI_SHADER_CACHE", dir, 1);
+      CHECK(!compile_fau(&vs, NULL, 32, &c) && count_files(dir, ".bin") == 3, "MALI_SHADER_CACHE overrides"); mali_compiled_free(&c);
+      unsetenv("MALI_SHADER_CACHE"); unsetenv("TMPDIR"); setenv("HOME", "/", 1);
+      unsigned before = count_files(p, ".bin");
+      CHECK(!compile_fau(&vs, NULL, 34, &c) && count_files(p, ".bin") == before, "no usable dir at all: cache off, compile still works"); mali_compiled_free(&c);
+      snprintf(cmd, sizeof cmd, "rm -rf %s", tdir); if (system(cmd)) g_fail++;
+   }
+
+   /* ---- entry with a lying header (huge size, short file) never allocates/loads ---- */
+   {
+      char dir3[] = "/tmp/t_compile_hdr.XXXXXX";
+      if (mkdtemp(dir3)) {
+         CHECK(!compile_fau(&vs, dir3, 16, &c), "seed"); mali_compiled_free(&c);
+         snprintf(cmd, sizeof cmd, "for f in %s/*.bin; do cat \"$f\" \"$f\" > \"$f.2\"; mv \"$f.2\" \"$f\"; done", dir3);
+         if (system(cmd)) g_fail++;
+         CHECK(!compile_fau(&vs, dir3, 16, &c) && !c.cache_hit, "entry with trailing garbage is a miss"); mali_compiled_free(&c);
+         snprintf(cmd, sizeof cmd, "rm -rf %s", dir3); if (system(cmd)) g_fail++;
+      }
+   }
+
+   /* ---- 4 processes race on the same fresh directory ---- */
+   char dir4[] = "/tmp/t_compile_race.XXXXXX";
+   if (mkdtemp(dir4)) {
+      fflush(stdout);
+      pid_t pids[4];
+      for (int i = 0; i < 4; i++) {
+         pids[i] = fork();
+         if (pids[i] == 0) race_child(&vs, dir4, i);
+      }
+      int failed = 0;
+      for (int i = 0; i < 4; i++) {
+         int st = 0;
+         if (pids[i] < 0 || waitpid(pids[i], &st, 0) < 0 || !WIFEXITED(st) || WEXITSTATUS(st)) failed++;
+      }
+      CHECK(!failed, "%d of 4 racing processes saw a wrong or incomplete result", failed);
+      CHECK(count_files(dir4, ".bin") == 24 && count_files(dir4, ".tmp") == 0, "race: 24 entries, no leftover temp files (%u bin, %u tmp)",
+            count_files(dir4, ".bin"), count_files(dir4, ".tmp"));
+      for (int k = 0; k < 24; k++) {   /* every surviving entry is a valid one */
+         struct mali_compiled r;
+         CHECK(!compile_fau(&vs, dir4, 16 + 2 * k, &c) && c.cache_hit, "race: entry %d loads", k);
+         if (!c.bin) continue;
+         CHECK(!compile_fau(&vs, "", 16 + 2 * k, &r) && r.bin_size == c.bin_size && !memcmp(r.bin, c.bin, r.bin_size), "race: entry %d is the right code", k);
+         mali_compiled_free(&r); mali_compiled_free(&c);
+      }
+      snprintf(cmd, sizeof cmd, "rm -rf %s", dir4); if (system(cmd)) g_fail++;
+   }
+   snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) g_fail++;
+   free(vs.w);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -403,6 +571,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_determinism_and_cache();
+   test_cache_disk();
    test_ycbcr();
    test_spec();
    test_errors();
