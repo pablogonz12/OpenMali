@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -2251,7 +2251,7 @@ test_sgctl(void)
 }
 
 /* shaderInt16 + storageBuffer16BitAccess / shaderInt8 + storageBuffer8BitAccess */
-static VkBool32 g_i16, g_i8;
+static VkBool32 g_i16, g_i8, g_intdot;
 static int
 test_int16(void)
 {
@@ -2319,6 +2319,60 @@ test_int8(void)
       CHECK(bad == 0, "%d wrong int8 results", bad);
       printf("{\"test\":\"int8\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
    } else printf("{\"test\":\"int8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* shaderIntegerDotProduct: packed 4x8 u/s/mixed, accumulating-saturating and 8-/16-bit vector dot products against a C reference
+ * (operands include 0xFF/0x80 bytes so signedness mistakes and missing saturation change the result). */
+static int
+test_intdot(void)
+{
+   if (!g_intdot) { printf("{\"test\":\"intdot\",\"skipped\":\"shaderIntegerDotProduct not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 192 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 64 * 9 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   uint32_t *a = (uint32_t *)bf[0].p;
+   uint32_t seed = 0x1234567u;
+   for (int i = 0; i < 64; i++) {
+      seed = seed * 1664525u + 1013904223u;
+      a[i] = i == 0 ? 0xFFFFFFFFu : i == 1 ? 0x80808080u : seed;
+      seed = seed * 1664525u + 1013904223u;
+      a[64 + i] = i == 0 ? 0xFFFFFFFFu : i == 1 ? 0x80808080u : seed;
+      a[128 + i] = i < 8 ? 0x7FFFFFF0u : i < 16 ? 0x80000010u : i < 24 ? 0xFFFFFF00u : (seed ^ (seed >> 7));   /* near the saturation limits */
+   }
+   memset(bf[1].p, 0xEE, 64 * 9 * 4);
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "intdot.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int i = 0; i < 64; i++) {
+         uint32_t x = a[i], y = a[64 + i], c = a[128 + i];
+         int64_t u8 = 0, s8 = 0, m8 = 0, u16 = 0, s16 = 0;
+         for (int k = 0; k < 4; k++) {
+            uint32_t xb = (x >> (8 * k)) & 0xff, yb = (y >> (8 * k)) & 0xff;
+            u8 += (int64_t)xb * yb;
+            s8 += (int64_t)(int8_t)xb * (int8_t)yb;
+            m8 += (int64_t)xb * (int8_t)yb;
+         }
+         for (int k = 0; k < 2; k++) {
+            uint32_t xh = (x >> (16 * k)) & 0xffff, yh = (y >> (16 * k)) & 0xffff;
+            u16 += (int64_t)xh * yh;
+            s16 += (int64_t)(int16_t)xh * (int16_t)yh;
+         }
+         int64_t us = (int64_t)c + u8; if (us > 0xffffffffll) us = 0xffffffffll;
+         int64_t ss = (int64_t)(int32_t)c + s8; if (ss > INT32_MAX) ss = INT32_MAX; if (ss < INT32_MIN) ss = INT32_MIN;
+         const uint32_t e[9] = {(uint32_t)u8, (uint32_t)s8, (uint32_t)m8, (uint32_t)us, (uint32_t)ss, (uint32_t)u8, (uint32_t)s8, (uint32_t)u16, (uint32_t)s16};
+         for (int k = 0; k < 9; k++) {
+            uint32_t g = ((uint32_t *)bf[1].p)[i * 9 + k];
+            if (g != e[k] && !bad++) printf("{\"info\":\"intdot i=%d k=%d x=%08x y=%08x c=%08x got %08x want %08x\"}\n", i, k, x, y, c, g, e[k]);
+         }
+      }
+      CHECK(bad == 0, "%d wrong integer dot product results", bad);
+      printf("{\"test\":\"intdot\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
+   } else printf("{\"test\":\"intdot\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
    tgt_destroy(&t);
    return 1;
@@ -2457,7 +2511,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -2544,6 +2598,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("int16")) ok &= test_int16();
    if (ok && CASE_ON("int64")) ok &= test_int64();
    if (ok && CASE_ON("int8")) ok &= test_int8();
+   if (ok && CASE_ON("intdot")) ok &= test_intdot();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
