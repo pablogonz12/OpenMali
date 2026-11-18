@@ -72,7 +72,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .subTexelPrecisionBits = 4,
       .mipmapPrecisionBits = 4,
       .maxDrawIndexedIndexValue = 0xffffffffu,
-      .maxDrawIndirectCount = 1,
+      .maxDrawIndirectCount = 0xffff,   /* multiDrawIndirect: record_indirect/expand_indirect expand any drawCount x stride (t_vk_feat mdilimit); spec minimum with the feature is 2^16-1 */
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
