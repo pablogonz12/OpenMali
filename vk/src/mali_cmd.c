@@ -881,6 +881,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       psrc.arg = kind | (srgb ? 0x100u : 0u);
       psrc.bpp = bpp;
    }
+   struct mali_cmd_target col_t = t;   /* the colour target, kept: the depth/stencil views below overwrite t */
    if (!no_col) {
    f->width = t.width;
    f->height = t.height;
@@ -1016,7 +1017,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    }
    cmd->col_target_valid = !no_col;
    if (!no_col)
-      cmd->col_target = t;
+      cmd->col_target = col_t;
    cmd->col_load = load && !no_col;
    if (cmd->col_load)
       cmd->col_psrc = psrc;
@@ -1166,6 +1167,8 @@ oom:
 }
 
 /* ---- clears ---- */
+static void clear_attachments_rects(struct mali_cmd_buffer *cmd, uint32_t na, const VkClearAttachment *att, uint32_t nr, const VkClearRect *rects);
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment *att, uint32_t nr_in, const VkClearRect *rects_in)
 {
@@ -1181,23 +1184,43 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
    for (uint32_t r = 0; r < nr_in; r++)
       if (rects_in[r].baseArrayLayer != 0 || rects_in[r].layerCount != 1)
          layered = true;
-   VkClearRect *l0 = alloca((nr_in ? nr_in : 1) * sizeof *l0);
-   uint32_t nr = 0;
-   for (uint32_t r = 0; r < nr_in; r++)
-      if (rects_in[r].baseArrayLayer == 0) {
-         l0[nr] = rects_in[r];
-         l0[nr++].layerCount = 1;
+   VkClearRect *l0 = NULL;
+   uint32_t nr = nr_in;
+   const VkClearRect *rects = rects_in;
+   if (layered) {
+      /* only the layer-0 rects continue below, each as a single layer (heap: nr_in is caller-controlled) */
+      l0 = malloc((nr_in ? nr_in : 1) * sizeof *l0);
+      if (!l0) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
       }
-   const VkClearRect *rects = l0;
-   if (layered)
+      nr = 0;
+      for (uint32_t r = 0; r < nr_in; r++)
+         if (rects_in[r].baseArrayLayer == 0) {
+            l0[nr] = rects_in[r];
+            l0[nr++].layerCount = 1;
+         }
+      rects = l0;
       for (uint32_t i = 0; i < na; i++) {
          if (att[i].aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
             unsupported(cmd, "CmdClearAttachments depth/stencil: layers");
+            free(l0);
             return;
          }
-         if ((att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && att[i].colorAttachment == 0 && clear_color_layers(cmd, &att[i], nr_in, rects_in))
+         if ((att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && att[i].colorAttachment == 0 && clear_color_layers(cmd, &att[i], nr_in, rects_in)) {
+            free(l0);
             return;
+         }
       }
+   }
+   clear_attachments_rects(cmd, na, att, nr, rects);
+   free(l0);
+}
+
+static void
+clear_attachments_rects(struct mali_cmd_buffer *cmd, uint32_t na, const VkClearAttachment *att, uint32_t nr, const VkClearRect *rects)
+{
+   struct mali_frame *f = &cmd->cur;
    if (!nr)
       return;
    bool partial = false;
