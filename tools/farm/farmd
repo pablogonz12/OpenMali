@@ -1442,6 +1442,8 @@ class Farm:
             gs, gwhy, h0 = self.gate_check(dev, starting=True)
             if gs != "ok":
                 log(f"{alias}: gated ({gs}: {gwhy}); {jid}/{cls} stays pending")
+                if gs == "cooling":                                 # remember the first time: B.order_jobs ages it ahead of jobs that keep re-heating the phone (bench starvation)
+                    self.upd(jid, lambda x: x["parts"][cls].setdefault("gated_since", time.time()) if x["parts"][cls]["state"] == "pending" else None)
                 self.set_dstate(alias, gs, gwhy, batt=h0.get("level"), temp_c=h0.get("temp_c"), thermal=h0.get("thermal"))
                 return
             ok, why = self.preflight(dev)
@@ -1456,6 +1458,7 @@ class Farm:
             def go(x):                                              # only a still-pending part starts: a `farm cancel` since the tick snapshot wins
                 if x["parts"][cls]["state"] == "pending":
                     x["parts"][cls].update(state="running", device=alias)
+                    x["parts"][cls].pop("gated_since", None)
             if self.upd(jid, go)["parts"][cls]["state"] != "running":
                 log(f"{alias}: {jid}/{cls} was cancelled before it started")
                 return

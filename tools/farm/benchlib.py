@@ -101,11 +101,21 @@ def idle_candidates(now, idle_since, devs, dstate, rows, jobs, tip, disabled, id
     return sorted(out, key=lambda a: idle_since.get(a, now))
 
 
-def order_jobs(jobs):
+STARVE_SECS = 600                                # a part gated hot (temp_start) this long goes first: see order_jobs
+
+
+def starved(job, now=None):
+    """a pending part that has been gated for heat for > STARVE_SECS (set by farmd when the start gate says "cooling")"""
+    now = time.time() if now is None else now
+    return any(p.get("state") == "pending" and p.get("gated_since") and now - p["gated_since"] > STARVE_SECS for p in job.get("parts", {}).values())
+
+
+def order_jobs(jobs, now=None):
     """scheduling order of queued jobs: by priority (farmlib.job_prio: gates 0, bench/menu 10, exploratory cases 20), at equal priority explicit
-    (submitted by a human/agent) before auto, each by submission order"""
+    (submitted by a human/agent) before auto, each by submission order. Ageing: a job whose part keeps being gated hot (smokes re-heat the phone
+    before the bench can start, temp_start) goes first, so the phone is reserved for it until it has cooled; otherwise a stream of gates starves it."""
     import farmlib
-    return sorted(jobs, key=lambda j: (farmlib.job_prio(j), 1 if j.get("auto") else 0, j.get("seq", 0)))
+    return sorted(jobs, key=lambda j: (0 if starved(j, now) else 1, farmlib.job_prio(j), 1 if j.get("auto") else 0, j.get("seq", 0)))
 
 
 def pin_ok(job, alias):
