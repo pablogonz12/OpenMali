@@ -13,6 +13,11 @@ D=$(cd "$(dirname "$0")/.." && pwd)
 V=$D/vk
 MESA=${MESA_SRC:-$D/third_party/mesa}
 B=${MESA_BUILD:-$D/third_party/build-vk}
+# Native targets prefer the Mesa tree configured with -Dplatforms=wayland,x11 (README: "X11 WSI") when it exists, so the host ICD has
+# VK_KHR_xcb_surface; without it the X11 tests skip. Cross targets and an explicit MESA_BUILD are never overridden.
+case ${MALI_TARGET:-native} in
+   native|native-san) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
+esac
 OUT=$V/out/${MALI_TARGET:-native}
 GEN=$OUT/gen
 OBJ=$OUT/obj
@@ -81,7 +86,7 @@ PANLIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midg
 LIBS="$PANLIBS src/vulkan/util/libvulkan_util.a src/compiler/nir/libnir.a src/compiler/libcompiler.a
       src/compiler/spirv/libvtn.a src/util/libmesa_util.a src/util/libmesa_util_simd.a
       src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/util/libxmlconfig.a"
-for l in src/loader/libloader_wayland_helper.a; do   # M14: only in Mesa builds configured with -Dplatforms=wayland
+for l in src/loader/libloader_wayland_helper.a src/x11/libloader_x11.a src/loader/libloader.a; do   # M14: -Dplatforms=wayland; X11 WSI: -Dplatforms=x11
    [ -f "$l" ] && LIBS="$LIBS $l"
 done
 for l in src/util/libmesa_util_clflush.a src/util/libmesa_util_clflushopt.a; do
@@ -118,6 +123,11 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl
+# X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)
+rm -f "$OUT/t_vk_xcb"
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb 2>"$OBJ/t_vk_xcb.err" \
+   || { if grep -qE "xcb/xcb.h: No such file|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_vk_xcb.err"; then
+           echo "note: t_vk_xcb not built (no xcb headers/libs for this target)"; else cat "$OBJ/t_vk_xcb.err"; exit 1; fi; }
 
 [ "$OUT/libvulkan_mali.so" -nt "$V/src/mali_cs_emit.c" ] || { echo "FAILED: libvulkan_mali.so older than sources"; exit 1; }
 echo "built $OUT/libvulkan_mali.so ($(stat -c %s "$OUT/libvulkan_mali.so") B) mali_icd.json t_icd"

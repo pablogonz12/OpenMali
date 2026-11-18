@@ -11,12 +11,18 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
    .KHR_external_semaphore_capabilities = true,
    .KHR_external_fence_capabilities = true,
    .EXT_debug_report = true,
-   /* M14: surfaces come from wsi_common (Wayland only) */
+   /* M14: surfaces come from wsi_common (Wayland, XCB, Xlib: whatever Mesa was configured with) */
    .KHR_surface = true,
    .KHR_get_surface_capabilities2 = true,
    .EXT_surface_maintenance1 = true,   /* companion of swapchain_maintenance1 (wsi_common) */
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface = true,
+#endif
+#ifdef VK_USE_PLATFORM_XCB_KHR
+   .KHR_xcb_surface = true,    /* X11 WSI: wsi_common_x11 (DRI3/Present with the shm fallback), see STEAM-GAPS.md */
+#endif
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+   .KHR_xlib_surface = true,
 #endif
    .EXT_debug_utils = true,
 };
