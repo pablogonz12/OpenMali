@@ -15,6 +15,8 @@
 #include "panfrost/lib/pan_blend.h"
 #include "vk_blend.h"
 #include "vk_format.h"
+#include "vk_nir_convert_ycbcr.h"
+#include "vk_ycbcr_conversion.h"
 
 #include "mali_compile.h"
 #include "mali_descriptor_lower.h"
@@ -176,6 +178,13 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
          blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
          blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);
+         /* YCbCr conversions (model, range, siting, swizzle) change the generated code */
+         for (unsigned n = 0; n < L->set[i].nbindings && L->set[i].ycbcr; n++) {
+            const struct mali_lbinding *b = &L->set[i].b[n];
+            if (b->type != MALI_DT_NONE && b->ycbcr_planes)
+               blake3_hasher_update(&h, (const struct vk_ycbcr_conversion_state *)L->set[i].ycbcr + b->ycbcr_off,
+                                    b->count * sizeof(struct vk_ycbcr_conversion_state));
+         }
       }
    }
    const char *e = o->entry ? o->entry : "main";
@@ -272,6 +281,16 @@ fail(char *err, size_t n, const char *m)
 {
    if (err && n) snprintf(err, n, "%s", m);
    return -1;
+}
+
+static const struct vk_ycbcr_conversion_state *
+ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_index)
+{
+   const struct mali_compile_layout *l = data;
+   if (set >= l->nsets || binding >= l->set[set].nbindings || !l->set[set].ycbcr) return NULL;
+   const struct mali_lbinding *b = &l->set[set].b[binding];
+   if (!b->ycbcr_planes || array_index >= b->count) return NULL;
+   return (const struct vk_ycbcr_conversion_state *)l->set[set].ycbcr + b->ycbcr_off + array_index;
 }
 
 static int
@@ -409,6 +428,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
 
    if (o->layout) {
+      /* YCbCr (NV12): before the descriptors are lowered, while the texture derefs still name set/binding/array index. It turns each
+       * sample of a converted combined image sampler into per-plane samples (nir_tex_src_plane) plus the model/range/siting maths. */
+      NIR_PASS(_, nir, nir_vk_lower_ycbcr_tex, ycbcr_lookup, o->layout);
       if (!mali_nir_lower_descriptors(nir, o->layout, err, errsz)) {
          ralloc_free(nir);
          if (err && errsz && !err[0]) snprintf(err, errsz, "descriptor lowering failed");

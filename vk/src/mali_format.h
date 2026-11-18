@@ -39,10 +39,17 @@ struct mali_fmt {
       uint8_t bs, bw, bh;
       uint32_t hw;         /* texture pixel format word of the plane */
       VkImageAspectFlagBits aspect;
+      uint8_t ssx, ssy;    /* log2 chroma subsampling of the plane's extent against the image extent (NV12 plane 1: 1, 1) */
    } plane[2];
    VkFormatFeatureFlags linear, optimal, buffer;
    bool compressed;
+   bool ycbcr;             /* multi-planar YCbCr (G8_B8R8_2PLANE_420 only): plane 0 R8 (Y), plane 1 R8G8 (CbCr) at half size; sampled through a conversion */
 };
+
+/* The one YCbCr format we implement (gamescope's NV12). */
+#define MALI_YCBCR_FORMAT VK_FORMAT_G8_B8R8_2PLANE_420_UNORM
+#define MALI_YCBCR_PLANES 2u   /* descriptors of the image: luma, chroma */
+#define MALI_YCBCR_SLOTS  3u   /* 32-byte descriptor slots of one combined image sampler element with a conversion: luma, chroma, sampler */
 
 /* arch: 10..13 (11 = G615, 13 = G925). false when the format is not advertised. */
 bool mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *out);

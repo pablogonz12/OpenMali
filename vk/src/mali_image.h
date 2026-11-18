@@ -27,6 +27,7 @@ struct mali_plane_layout {
    VkImageAspectFlagBits aspect;
    int pipe;                 /* enum pipe_format */
    uint8_t clump, bs, bw, bh;
+   uint8_t ssx, ssy;         /* log2 subsampling of the plane extent (NV12 chroma: 1, 1) */
    uint32_t hw;              /* texture pixel format word */
    uint64_t offset;          /* of layer 0 level 0 within the image */
    uint64_t array_stride;
@@ -116,6 +117,12 @@ struct mali_image_view {
    unsigned arch;
    struct mali_view_desc vd;
    struct mali_hw_desc tex, storage;
+   /* YCbCr (NV12) view: tex is the luma plane (R8), tex_c the chroma plane (R8G8), each with its own payload (payload_c). */
+   bool ycbcr;
+   struct mali_hw_desc tex_c;
+   void *payload_c;
+   uint64_t payload_c_va;
+   uint32_t payload_c_entries;
    void *payload;
    uint64_t payload_va;
    uint32_t payload_entries;
@@ -153,6 +160,8 @@ void mali_image_set_mem_ops(const struct mali_desc_mem_ops *ops);
 /* Resolvers for the descriptor code (struct mali_desc_res_ops): install once with mali_desc_set_res_ops(&mali_res_ops). */
 extern const struct mali_desc_res_ops mali_res_ops;
 int mali_image_view_desc(VkImageView v, VkDescriptorType type, struct mali_hw_desc *out);
+/* NV12 view: the two plane descriptors (luma, chroma) -> 2; any other view -> 0 and out is untouched. */
+int mali_image_view_planes(VkImageView v, struct mali_hw_desc out[2]);
 int mali_buffer_view_desc(VkBufferView v, struct mali_hw_desc *out);
 
 /* Entrypoints (device level). */
