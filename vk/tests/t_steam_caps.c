@@ -89,10 +89,11 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL;
-   int expect_missing = -1;
+   int expect_missing = -1, expect_zink = -1;
    for (int i = 1; i < argc; i++)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--expect-missing") && i + 1 < argc) expect_missing = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--expect-zink-missing") && i + 1 < argc) expect_zink = atoi(argv[++i]);
    if (!icd) { printf("usage: t_steam_caps --direct <icd.so> [--expect-missing N]\n"); return 2; }
    void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
    if (!lib) { printf("dlopen: %s\n", dlerror()); return 1; }
@@ -182,6 +183,40 @@ main(int argc, char **argv)
    }
    printf("summary: %u hard and %u soft items missing\n", hard_missing, soft_missing);
    CHECK(expect_missing < 0 || (int)hard_missing == expect_missing, "hard items missing: %u, expected %d", hard_missing, expect_missing);
+
+   /* zink (Mesa 26.2/26.3, STEAM-GAPS.md "zink"): the device must pass zink_get_physical_device_info (hard: zink refuses the
+    * device, silently in release builds), and should pass check_base_requirements (soft: zink warns). Core-promoted extensions
+    * count as present at apiVersion >= their core version. */
+   {
+      uint32_t api = pr.properties.apiVersion;
+      struct { const char *name; int have; int hard; const char *effort; } zk[] = {
+         {"maintenance1 (core 1.1)", api >= VK_API_VERSION_1_1 || has(eps, ne, "VK_KHR_maintenance1"), 1, "-"},
+         {"create_renderpass2 (core 1.2)", api >= VK_API_VERSION_1_2 || has(eps, ne, "VK_KHR_create_renderpass2"), 1, "-"},
+         {"dynamic_rendering (core 1.3)", api >= VK_API_VERSION_1_3 || has(eps, ne, "VK_KHR_dynamic_rendering"), 1, "-"},
+         {"descriptor_update_template (core 1.1)", api >= VK_API_VERSION_1_1 || has(eps, ne, "VK_KHR_descriptor_update_template"), 1, "-"},
+         {"VK_KHR_maintenance5 (core only in 1.4)", api >= VK_MAKE_API_VERSION(0, 1, 4, 0) || has(eps, ne, "VK_KHR_maintenance5"), 1, "done"},
+         {"robustness2.nullDescriptor", rb2.nullDescriptor, 1, "-"},
+         {"timelineSemaphore", f12.timelineSemaphore, 1, "-"},
+         {"VK_KHR_external_memory_fd", has(eps, ne, "VK_KHR_external_memory_fd"), 1, "-"},
+         {"VK_KHR_maintenance1 extension flag", has(eps, ne, "VK_KHR_maintenance1"), 0, "S"},
+         {"logicOp", f2.features.logicOp, 0, "M"},
+         {"VK_EXT_custom_border_color", has(eps, ne, "VK_EXT_custom_border_color"), 0, "M"},
+         {"VK_EXT_line_rasterization", has(eps, ne, "VK_EXT_line_rasterization"), 0, "M"},
+         {"VK_EXT_physical_device_drm", has(eps, ne, "VK_EXT_physical_device_drm"), 0, "S"},
+      };
+      unsigned zhard = 0, zmiss = 0, zS = 0, zM = 0, zL = 0;
+      for (unsigned i = 0; i < sizeof(zk) / sizeof(zk[0]); i++) {
+         printf("%s %s zink %s%s%s\n", zk[i].have ? "ok     " : "MISSING", zk[i].hard ? "hard" : "base", zk[i].name,
+                zk[i].have ? "" : " effort ", zk[i].have ? "" : zk[i].effort);
+         if (zk[i].have) continue;
+         zmiss++;
+         zhard += zk[i].hard;
+         zS += zk[i].effort[0] == 'S'; zM += zk[i].effort[0] == 'M'; zL += zk[i].effort[0] == 'L';
+      }
+      printf("zink: %u missing (%u hard; effort S=%u M=%u L=%u)\n", zmiss, zhard, zS, zM, zL);
+      CHECK(zhard == 0, "zink hard requirements missing: %u (zink refuses the device)", zhard);
+      CHECK(expect_zink < 0 || (int)zmiss == expect_zink, "zink items missing: %u, expected %d", zmiss, expect_zink);
+   }
 
    /* an advertised extension and its feature bit come together */
    struct { const char *ext; VkBool32 f; } pairs[] = {
