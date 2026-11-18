@@ -59,12 +59,13 @@ struct mali_hw {
 };
 
 /* One vertex attribute: 1D attribute fetch from vertex binding `binding`. pixfmt = Mali Pixel Format word (KB_PIXFMT_*). */
-struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ };
+struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ };
 
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
    const struct mali_compiled *vs, *fs;   /* compiled with arch == env.arch */
    unsigned samples;                      /* rasterizationSamples: 1 or 4 */
+   bool dyn_stride;                       /* VERTEX_INPUT_BINDING_STRIDE is dynamic: attribute strides come from the bind call (draw.vb_stride) */
    bool discard;                          /* no fragment stage / rasterizerDiscardEnable: draws are skipped */
    bool per_sample;                       /* sampleRateShading: the fragment shader runs per sample (DCD0 evaluate-per-sample) */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
@@ -124,6 +125,7 @@ struct mali_draw {
    struct mali_gfx_state gfx;
    uint64_t vb_va[MALI_MAX_VB];           /* bound vertex buffers (offset applied) */
    uint32_t vb_size[MALI_MAX_VB];
+   uint32_t vb_stride[MALI_MAX_VB];       /* dynamic binding strides (gfx.dyn_stride) */
    uint8_t push[2][MALI_PUSH_MAX];        /* [0] vertex stage view, [1] fragment stage view of the push constants */
    float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
    int32_t sc[4];                         /* scissor x, y, w, h */
@@ -149,7 +151,7 @@ struct mali_draw {
 /* What a draw records (struct mali_rec): a small header plus pointers to immutable state blocks in the frame pool. A block is renewed only when
  * its dirty bits are set, otherwise the pointer is the previous draw's. mali_draw_expand rebuilds the full struct mali_draw at submit. */
 struct mali_bpipe { struct mali_fixed fx; struct mali_gfx_state gfx; float vp[6]; int32_t sc[4]; };           /* PIPE|FX|VP|SC */
-struct mali_bbind { uint64_t vb_va[MALI_MAX_VB]; uint32_t vb_size[MALI_MAX_VB]; unsigned nsets; uint64_t set_va[MALI_CMD_SETS];
+struct mali_bbind { uint64_t vb_va[MALI_MAX_VB]; uint32_t vb_size[MALI_MAX_VB]; uint32_t vb_stride[MALI_MAX_VB]; unsigned nsets; uint64_t set_va[MALI_CMD_SETS];
                     uint32_t set_bytes[MALI_CMD_SETS]; unsigned ndyn; };                                         /* BIND */
 struct mali_bpush { uint8_t push[2][MALI_PUSH_MAX]; };                                                           /* PUSH */
 struct mali_bdyn { uint32_t n; uint32_t d[][8]; };                                                               /* BIND|DYNBUF: n entries */
