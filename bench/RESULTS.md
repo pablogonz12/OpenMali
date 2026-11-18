@@ -144,6 +144,19 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
+## Draw-count scaling (triangle, one frame of N draws, offscreen, CMF v11, 2026-11-18)
+
+`tools/bench2 cmf --bench triangle --tri-n N`, best env `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`, one rep per cell (the CMF is bimodal: the 3k row is the best of 5). CPU = record + submit per frame. main = 74a582f (before the draw-path stack), draw-path = `perf/draw-path` with dirty mask + small draw records (5c3daca). The bridge column is the MediaDeck bridge on the same phone.
+
+| draws | main CPU ms | draw-path CPU ms | draw-path fps | draw-path GPU ms | bridge CPU ms | bridge fps |
+|---|---|---|---|---|---|---|
+| 3000 | 4.78 | 0.79 | 893 | 0.73 | 0.80 | 235 |
+| 5000 | QueueSubmit -4 | 1.44 | 456 | 1.40 | 1.34 | 168 |
+| 10000 | QueueSubmit -4 | 5.14 | 141 | 4.20 | 3.27 | 88 |
+| 20000 | QueueSubmit -4 | 10.66 | 76 | 6.46 | 5.61 | 48 |
+
+main's `QueueSubmit` -4 (VK_ERROR_DEVICE_LOST, 32 MiB descriptor arena exhausted at ~7k draws) is fixed by c02338c (a frame that does not fit spills into overflow BOs) and 44fd974 (overflow BOs pooled), merged in 068a170. Above 3k the draw-path rows are slower than the bridge on CPU (10k/20k) because the per-draw cost stops being the limit and CS/heap growth dominates; not yet profiled.
+
 ## Steam menu (realistic metric)
 
 Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/right through the library (`scripts/quick/menubench` in the MediaDeck repo, run by the farm `menu` suite). Render fps from the web helper's present events over 30 s, medians over the reps that passed the self-checks; `default` = as shipped, `uncapped` = frame limits off. It runs on the Mali bridge, not on mali-open: numbers change with the MediaDeck build, not with our commits. An **invalid** row (self-check failed) never replaces a valid one.
