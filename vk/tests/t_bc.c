@@ -292,9 +292,181 @@ static void t_etc1_cross(void)
    CHECK(n > 50000 && bad == 0, "ETC2 port vs Mesa ETC1 decoder: %u blocks, %u differ", n, bad);
 }
 
+/* ---- known-answer vectors for the ETC2 / EAC modes Mesa's ETC1 decoder cannot check (T, H, planar, A1 punch-through, alpha8, EAC R11/RG11 signed
+ * and unsigned). Blocks are packed here from the Khronos Data Format spec field layout (not from the decoder under test); expected values are
+ * computed by hand from the spec formulas. A decoder with a wrong mode switch, swapped colour order, wrong sign handling or alpha-before-colour
+ * block order fails them. The ETC2 shader is compared to this reference texel for texel by t_gpu on hardware. */
+static const struct mali_bc_fmt *etc2f(VkFormat f) { return mali_bc_format(f); }
+static unsigned etc2_dec(VkFormat f, const uint8_t *blk, uint8_t *out) { etc2_ref_block(etc2f(f)->mode, blk, out); return etc2f(f)->shadow_bpt; }
+
+/* per-texel selector bits, texel (x,y): bit i = x*4+y, lsb at i, msb at 16+i of the big-endian word in bytes 4..7 */
+static void etc2_sel(uint8_t *b4, unsigned (*idx)(int x, int y))
+{
+   uint32_t w = 0;
+   for (int x = 0; x < 4; x++)
+      for (int y = 0; y < 4; y++) {
+         unsigned i = idx(x, y), bit = x * 4 + y;
+         w |= (uint32_t)(i & 1) << bit; w |= (uint32_t)(i >> 1) << (16 + bit);
+      }
+   b4[0] = w >> 24; b4[1] = w >> 16; b4[2] = w >> 8; b4[3] = w;
+}
+static unsigned sel_xy(int x, int y) { return (x + y) & 3; }
+static unsigned sel_two_at_origin(int x, int y) { return (x == 0 && y == 0) ? 2 : 0; }
+/* EAC: the 16 three-bit indices (48 bits, texel order x*4+y from the msb end) all set to `v` */
+static void eac_idx(uint8_t *p6, unsigned v)
+{
+   uint64_t w = 0;
+   for (int i = 0; i < 16; i++) w = (w << 3) | (v & 7);
+   for (int i = 0; i < 6; i++) p6[i] = (uint8_t)(w >> (40 - 8 * i));
+}
+
+static int e2_in5(int v) { return v >= 0 && v <= 31; }
+/* spec validity rule: the (5 bit + signed 3 bit) sums of R,G,B decide the mode; returns the first channel that overflows (0,1,2) or 3 = none */
+static int e2_overflow_channel(const uint8_t *b)
+{
+   static const int sx[8] = { 0, 1, 2, 3, -4, -3, -2, -1 };
+   for (int c = 0; c < 3; c++) if (!e2_in5((b[c] >> 3) + sx[b[c] & 7])) return c;
+   return 3;
+}
+
+static void t_etc2_kat(void)
+{
+   uint8_t o[64], b[16];
+   /* --- differential RGB8: base 16 (5 bit) -> 132, table 0 selector 0 = +2 -> 134 for the whole block --- */
+   memset(b, 0, sizeof b); b[0] = b[1] = b[2] = 16 << 3; b[3] = 0x02;
+   etc2_dec(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, b, o);
+   for (int t = 0; t < 16; t++) CHECK(o[t * 4] == 134 && o[t * 4 + 1] == 134 && o[t * 4 + 2] == 134 && o[t * 4 + 3] == 255, "ETC2 RGB8 differential texel %d", t);
+   /* sRGB variants decode to the same bytes (the shadow format is *_SRGB, no conversion in the decoder) */
+   {
+      uint8_t s[64];
+      static const VkFormat u[3] = { VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK };
+      static const VkFormat sr[3] = { VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK, VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK, VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK };
+      uint32_t st = 77;
+      for (int k = 0; k < 3; k++)
+         for (int it = 0; it < 2000; it++) {
+            for (int i = 0; i < 16; i++) { st = st * 1664525u + 1013904223u; b[i] = (uint8_t)(st >> 24); }
+            etc2_dec(u[k], b, o); etc2_dec(sr[k], b, s);
+            CHECK(!memcmp(o, s, 64), "sRGB variant %d decodes like UNORM", k);
+            if (memcmp(o, s, 64)) break;
+         }
+   }
+   /* --- T mode: C0 = 0x334455, C1 = 0xAABBCC (4 bit replicated), distance index 7 = 64. paint: 0 C0, 1 C1+64, 2 C1, 3 C1-64 (clamped) --- */
+   {
+      /* unused bits (b0[7:5], b0[2]) are chosen so R overflows, as the spec requires; searched against the spec rule, not the decoder */
+      int found = 0;
+      for (unsigned u = 0; u < 16 && !found; u++) {
+         memset(b, 0, sizeof b);
+         b[0] = (uint8_t)((((0x3 >> 2) & 3) << 3) | (0x3 & 3) | ((u & 7) << 5) | ((u >> 3) << 2));   /* R0 = 3 -> bits[4:3]=0, bits[1:0]=3 */
+         b[1] = (0x4 << 4) | 0x5; b[2] = (0xA << 4) | 0xB; b[3] = (0xC << 4) | (3 << 2) | 0x02 | 1;   /* G0 B0 | R1 G1 | B1, dist hi bits 11, opaque bit, dist lo bit 1 */
+         if (e2_overflow_channel(b) == 0) found = 1;
+      }
+      CHECK(found, "T block: spec overflow bits found");
+      etc2_sel(b + 4, sel_xy);
+      etc2_dec(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, b, o);
+      static const uint8_t want[4][3] = { { 0x33, 0x44, 0x55 }, { 234, 251, 255 }, { 0xAA, 0xBB, 0xCC }, { 106, 123, 140 } };
+      for (int y = 0; y < 4; y++)
+         for (int x = 0; x < 4; x++) {
+            const uint8_t *g = o + (y * 4 + x) * 4, *w = want[sel_xy(x, y)];
+            CHECK(g[0] == w[0] && g[1] == w[1] && g[2] == w[2] && g[3] == 255, "ETC2 T (%d,%d): %u %u %u vs %u %u %u", x, y, g[0], g[1], g[2], w[0], w[1], w[2]);
+         }
+   }
+   /* --- H mode: C0 = 0x334455, C1 = 0xAABBCC; C0 < C1 so the ordering bit is 0; da = 1, db = 0 -> dist index 4 = 23. paint: C0+d, C0-d, C1+d, C1-d --- */
+   {
+      int found = 0;
+      const unsigned r0 = 3, g0 = 4, b0 = 5, r1 = 0xA, g1 = 0xB, b1 = 0xC;
+      /* unused bits: b0[7], b1[7:5], b1[2]; chosen so G overflows with R in range (spec), searched against the spec rule */
+      for (unsigned u = 0; u < 32 && !found; u++) {
+         memset(b, 0, sizeof b);
+         b[0] = (uint8_t)(((u & 1) << 7) | (r0 << 3) | (g0 >> 1));
+         b[1] = (uint8_t)((((u >> 1) & 7) << 5) | ((g0 & 1) << 4) | (((b0 >> 3) & 1) << 3) | (((u >> 4) & 1) << 2) | (((b0 >> 2) & 1) << 1) | ((b0 >> 1) & 1));
+         b[2] = (uint8_t)(((b0 & 1) << 7) | (r1 << 3) | (g1 >> 1));
+         b[3] = (uint8_t)(((g1 & 1) << 7) | (b1 << 3) | (1 << 2) | 0x02);   /* da = 1, opaque bit, db = 0 */
+         if (e2_overflow_channel(b) == 1) found = 1;
+      }
+      CHECK(found, "H block: spec overflow bits found");
+      etc2_sel(b + 4, sel_xy);
+      etc2_dec(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, b, o);
+      static const uint8_t want[4][3] = { { 0x33 + 23, 0x44 + 23, 0x55 + 23 }, { 0x33 - 23, 0x44 - 23, 0x55 - 23 }, { 0xAA + 23, 0xBB + 23, 0xCC + 23 }, { 0xAA - 23, 0xBB - 23, 0xCC - 23 } };
+      for (int y = 0; y < 4; y++)
+         for (int x = 0; x < 4; x++) {
+            const uint8_t *g = o + (y * 4 + x) * 4, *w = want[sel_xy(x, y)];
+            CHECK(g[0] == w[0] && g[1] == w[1] && g[2] == w[2] && g[3] == 255, "ETC2 H (%d,%d): %u %u %u vs %u %u %u", x, y, g[0], g[1], g[2], w[0], w[1], w[2]);
+         }
+   }
+   /* --- planar: O = (0,0,0), H = (63,127,63) -> 255, V = (0,0,0): R/G/B = (x*255 + 2) >> 2 (spec: (x*(CH-CO)+y*(CV-CO)+4*CO+2)>>2) --- */
+   {
+      int found = 0;
+      for (unsigned u = 0; u < 64 && !found; u++) {
+         memset(b, 0, sizeof b);
+         /* unused bits: b0[7], b1[7], b2[7:5], b2[2]; b3 = BO[0] | RH[5:1] | opaque bit | RH[0] */
+         b[0] = (uint8_t)((u & 1) << 7);
+         b[1] = (uint8_t)(((u >> 1) & 1) << 7);
+         b[2] = (uint8_t)((((u >> 2) & 7) << 5) | (((u >> 5) & 1) << 2));
+         b[3] = (uint8_t)(((63 >> 1) << 2) | 0x02 | (63 & 1));
+         b[4] = (uint8_t)((127 << 1) | (63 >> 5));                  /* GH[6:0] | BH[5] */
+         b[5] = (uint8_t)((63 & 0x1f) << 3);                         /* BH[4:0] | RV[5:3] = 0 */
+         if (e2_overflow_channel(b) == 2) found = 1;
+      }
+      CHECK(found, "planar block: spec overflow bits found");
+      etc2_dec(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, b, o);
+      for (int y = 0; y < 4; y++)
+         for (int x = 0; x < 4; x++) {
+            const uint8_t *g = o + (y * 4 + x) * 4;
+            unsigned w = (x * 255 + 2) >> 2;
+            CHECK(g[0] == w && g[1] == w && g[2] == w && g[3] == 255, "ETC2 planar (%d,%d): %u %u %u want %u", x, y, g[0], g[1], g[2], w);
+         }
+   }
+   /* --- RGB8A1: flat base 16 -> 132 (+2 = 134 when the opaque bit is set); opaque bit clear: selector 0 = 132 opaque, selector 2 = transparent black --- */
+   memset(b, 0, sizeof b); b[0] = b[1] = b[2] = 16 << 3; b[3] = 0x02;
+   etc2_dec(VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, b, o);
+   CHECK(o[0] == 134 && o[3] == 255 && o[60] == 134 && o[63] == 255, "A1 opaque block");
+   b[3] = 0x00; etc2_sel(b + 4, sel_two_at_origin);
+   etc2_dec(VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, b, o);
+   CHECK(o[0] == 0 && o[1] == 0 && o[2] == 0 && o[3] == 0, "A1 selector 2 -> transparent black");
+   CHECK(o[4] == 132 && o[5] == 132 && o[6] == 132 && o[7] == 255 && o[60] == 132 && o[63] == 255, "A1 non-opaque, selector 0 -> base colour, alpha 255");
+   /* --- RGBA8: alpha block first (bytes 0..7), colour block second. alpha: base 100, mult 2, table 13 ({-1,-2,-3,-10,0,1,2,9}), index 7 -> +9*2 = 118 --- */
+   memset(b, 0, sizeof b);
+   b[0] = 100; b[1] = (2 << 4) | 13; memset(b + 2, 0xff, 6);   /* index 7 everywhere */
+   b[8] = b[9] = b[10] = 16 << 3; b[11] = 0x02;
+   etc2_dec(VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, b, o);
+   for (int t = 0; t < 16; t++) CHECK(o[t * 4] == 134 && o[t * 4 + 3] == 118, "ETC2 RGBA8 texel %d: rgb %u alpha %u (alpha block first, colour second)", t, o[t * 4], o[t * 4 + 3]);
+   b[1] = (1 << 4) | 13; { uint8_t *p = b + 2; memset(p, 0, 6); }   /* index 0 -> -1*1 */
+   etc2_dec(VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, b, o);
+   CHECK(o[3] == 99 && o[63] == 99, "RGBA8 alpha index 0");
+   /* --- EAC R11 unsigned: base 128, mult 1, table 13, index 4 (modifier 0): c = 128*8+4 = 1028 -> 16 bit (c<<5)|(c>>6) = 32912 --- */
+   memset(b, 0, sizeof b); b[0] = 128; b[1] = (1 << 4) | 13; eac_idx(b + 2, 4);
+   etc2_dec(VK_FORMAT_EAC_R11_UNORM_BLOCK, b, o);
+   for (int t = 0; t < 16; t++) { uint16_t v; memcpy(&v, o + t * 2, 2); CHECK(v == 32912, "EAC R11 unorm texel %d = %u (want 32912)", t, v); }
+   /* clamp: base 255, mult 15, index 7 (+9): saturates at 2047 -> 0xffff */
+   b[0] = 255; b[1] = (15 << 4) | 13; eac_idx(b + 2, 7);
+   etc2_dec(VK_FORMAT_EAC_R11_UNORM_BLOCK, b, o);
+   { uint16_t v; memcpy(&v, o, 2); CHECK(v == 0xffff, "EAC R11 unorm clamp %u", v); }
+   /* --- EAC R11 signed: base 0, mult 1, index 7 (+9) -> c = 72 -> (72<<5)|(72>>5) = 2306; index 0 (-1) -> c = -8 -> -256;
+    * base -128 is treated as -127: c = -1016 -> -((1016<<5)|(1016>>5)) = -32543 --- */
+   memset(b, 0, sizeof b); b[1] = (1 << 4) | 13; eac_idx(b + 2, 7);
+   etc2_dec(VK_FORMAT_EAC_R11_SNORM_BLOCK, b, o);
+   { int16_t v; memcpy(&v, o, 2); CHECK(v == 2306, "EAC R11 snorm +9: %d", v); }
+   eac_idx(b + 2, 0);
+   etc2_dec(VK_FORMAT_EAC_R11_SNORM_BLOCK, b, o);
+   { int16_t v; memcpy(&v, o, 2); CHECK(v == -256, "EAC R11 snorm negative index: %d", v); }
+   b[0] = 0x80; eac_idx(b + 2, 4);
+   etc2_dec(VK_FORMAT_EAC_R11_SNORM_BLOCK, b, o);
+   { int16_t v; memcpy(&v, o, 2); CHECK(v == -32543, "EAC R11 snorm base -128 -> -127: %d", v); }
+   /* --- EAC RG11 unorm: R from bytes 0..7 (32912), G from bytes 8..15 (base 0: c = 4 -> 128) --- */
+   memset(b, 0, sizeof b);
+   b[0] = 128; b[1] = (1 << 4) | 13; eac_idx(b + 2, 4); b[8] = 0; b[9] = (1 << 4) | 13; eac_idx(b + 10, 4);
+   etc2_dec(VK_FORMAT_EAC_R11G11_UNORM_BLOCK, b, o);
+   for (int t = 0; t < 16; t++) { uint16_t v[2]; memcpy(v, o + t * 4, 4); CHECK(v[0] == 32912 && v[1] == 128, "EAC RG11 texel %d: R %u G %u (want 32912 / 128)", t, v[0], v[1]); }
+   /* RG11 snorm: R base 0 index 7 -> 2306, G base 0 index 0 -> -256 */
+   memset(b, 0, sizeof b); b[1] = (1 << 4) | 13; eac_idx(b + 2, 7); b[9] = (1 << 4) | 13; eac_idx(b + 10, 0);
+   etc2_dec(VK_FORMAT_EAC_R11G11_SNORM_BLOCK, b, o);
+   { int16_t v[2]; memcpy(v, o + 12, 4); CHECK(v[0] == 2306 && v[1] == -256, "EAC RG11 snorm: %d %d", v[0], v[1]); }
+}
+
 static void t_ref(void)
 {
    t_etc1_cross();
+   t_etc2_kat();
    for (int i = 0; i < NEVERY; i++) {
       VkFormat f = every(i);
       /* 2D array + mips, odd sizes */
