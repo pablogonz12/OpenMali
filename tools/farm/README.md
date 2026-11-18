@@ -82,6 +82,16 @@ For a phone with no in-app (guest) route, e.g. the Poco X4 GT (class v10): `farm
 - the sha256 of the job's .so is checked on the phone before every chunk/test and once more by farmd afterwards; a mismatch is `invalid` and re-queued.
 - same lock guard (exit 73), health gate before every chunk (exit 75 = paused, resumes from its TSV) and owner kill switch as the other routes.
 
+## Smoke fallback on a locked guest-route phone (`smoke_fallback = "shell"` in devices.toml)
+The guest smoke (valrun.sh -> qdrv -> `t_vk_*` in the MediaDeck app's Linux guest, glibc build) needs a READY app session; with the screen off or the keyguard
+showing it stays SUSPENDED. For a phone with `smoke_fallback = "shell"` (the Poco X8, v13) farmd reads `dumpsys power` (read-only) and, when the phone is not Awake
+or the keyguard shows, runs the smoke through the shell route instead (also when the guest route ran but produced no result: valrun rc 74 / "session not READY").
+- Same binaries, bionic build of the job's tree (built on demand when the job was built earlier) under the adb shell user, this job's driver, `.so` sha256 checked on the phone before every test and after the run.
+- Nothing on the phone's screen is touched (no brightness/screen commands, no input); only `adb shell` runs and the `/data/local/tmp/farm/<job>-<alias>` dir.
+- The kept log (`farm log <job>`) starts with `SMOKE-ROUTE route=guest|shell|shell-fallback serial=<transport> so_sha256=<the .so that ran> reason=...`; the part's notes say `route=shell-fallback` and list what is skipped (present/swapchain, gamescope: need the session's display; no smoke test uses them today).
+- **dEQP (`daily`, `cases`, qdeqp.py) has no such route**: it also runs in the guest session (`start_steam`, `droiddeckctl guest`), so it cannot produce results on a locked guest-route phone (a job that finds the phone locked ends `invalid`/pending, never with results).
+- A guest-route smoke without a result of THIS run is an `error` (valrun rc 74), never another phone's old result. farmd re-installs its valrun.sh into a job tree whose copy lacks that fix.
+
 ## Cheap commands (one short command instead of ad-hoc scripts; each prints <= ~40 lines of plain text)
 - `farm cancel <job>... [--running]`: pending parts become `cancelled` (never run); a running part needs `--running`, which stops it within one poll and releases the lock. Finished parts are untouched.
 - `farm submit <ref> --suite cases --case <name> [--case ...] --repeat N --need <class>`: only those cases, N times (one dEQP run per repetition, per-run .so path, sha256 on the phone, lock, health gate).
