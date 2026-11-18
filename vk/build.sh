@@ -123,6 +123,7 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_trace" "$V/tests/t_vk_trace.c" -ldl
 # X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)
 rm -f "$OUT/t_vk_xcb"
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb 2>"$OBJ/t_vk_xcb.err" \

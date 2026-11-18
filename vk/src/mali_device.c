@@ -26,9 +26,9 @@ mali_get_timestamp(struct vk_device *vk, uint64_t *timestamp)
    return be->gpu_timestamp && be->gpu_timestamp(dev->kdev, timestamp) == 0 ? VK_SUCCESS : VK_ERROR_FEATURE_NOT_PRESENT;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
-                  const VkAllocationCallbacks *pAllocator, VkDevice *pDevice)
+static VkResult
+mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
+                       const VkAllocationCallbacks *pAllocator, VkDevice *pDevice)
 {
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
    struct mali_device *dev;
@@ -118,6 +118,19 @@ fail:
    vk_device_finish(&dev->vk);
    vk_free2(&pdev->vk.instance->alloc, pAllocator, dev);
    return result;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
+                  const VkAllocationCallbacks *pAllocator, VkDevice *pDevice)
+{
+   VkResult r = mali_CreateDevice_impl(physicalDevice, pCreateInfo, pAllocator, pDevice);
+
+   mali_trace("vkCreateDevice exts=%u queues=%u -> %d", pCreateInfo->enabledExtensionCount, pCreateInfo->queueCreateInfoCount, (int)r);
+   if (r != VK_SUCCESS)
+      for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++)
+         mali_trace("  requested ext %s", pCreateInfo->ppEnabledExtensionNames[i]);
+   return r;
 }
 
 VKAPI_ATTR void VKAPI_CALL

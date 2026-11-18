@@ -1,6 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
 
+#include <fcntl.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <unistd.h>
+#ifdef __GLIBC__
+#include <execinfo.h>
+#endif
+
 #include "mali_entrypoints.h"
 #include "vk_alloc.h"
 #include "vk_util.h"
@@ -26,6 +35,79 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
 #endif
    .EXT_debug_utils = true,
 };
+
+/* MALI_TRACE=<file>: opt-in post-mortem trace for processes whose stderr nobody reads (a browser's GPU process, a game under a launcher).
+ * One line per event, appended with O_APPEND (safe across processes): load/unload (pid, process name), vkCreateInstance / vkCreateDevice
+ * (what was asked, what came back) and fatal signals (with a backtrace on glibc). Unset = nothing is opened, no handler installed. */
+static int mali_trace_fd = -1;
+
+void
+mali_trace(const char *fmt, ...)
+{
+   char buf[1024];
+   int n;
+   va_list ap;
+
+   if (mali_trace_fd < 0)
+      return;
+   n = snprintf(buf, sizeof(buf), "%d: ", (int)getpid());
+   va_start(ap, fmt);
+   n += vsnprintf(buf + n, sizeof(buf) - n - 1, fmt, ap);
+   va_end(ap);
+   if (n > (int)sizeof(buf) - 2)
+      n = sizeof(buf) - 2;
+   buf[n++] = '\n';
+   if (write(mali_trace_fd, buf, n) < 0) {}
+}
+
+static void
+mali_trace_fatal(int sig)
+{
+   mali_trace("FATAL signal %d", sig);
+#ifdef __GLIBC__
+   void *bt[40];
+   int cnt = backtrace(bt, 40);
+   backtrace_symbols_fd(bt, cnt, mali_trace_fd);
+#endif
+   signal(sig, SIG_DFL);
+   raise(sig);
+}
+
+__attribute__((constructor)) static void
+mali_trace_init(void)
+{
+   const char *path = getenv("MALI_TRACE");
+   char name[96] = "?";
+   ssize_t n;
+   int fd;
+
+   if (!path || !*path)
+      return;
+   mali_trace_fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+   if (mali_trace_fd < 0)
+      return;
+   fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+   if (fd >= 0) {
+      n = read(fd, name, sizeof(name) - 1);
+      name[n > 0 ? n : 0] = 0;
+      for (int i = 0; i + 1 < n; i++)
+         if (!name[i])
+            name[i] = ' ';
+      close(fd);
+   }
+   mali_trace("load %s", name);
+   static const int sigs[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
+   for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+      struct sigaction sa = { .sa_handler = mali_trace_fatal, .sa_flags = SA_RESETHAND | SA_NODEFER };
+      sigaction(sigs[i], &sa, NULL);
+   }
+}
+
+__attribute__((destructor)) static void
+mali_trace_fini(void)
+{
+   mali_trace("unload");
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_EnumerateInstanceVersion(uint32_t *pApiVersion)
@@ -54,6 +136,14 @@ mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    struct mali_instance *instance;
    VkResult result;
 
+   if (mali_trace_fd >= 0) {
+      const VkApplicationInfo *ai = pCreateInfo->pApplicationInfo;
+      mali_trace("vkCreateInstance app=%s engine=%s api=0x%x exts=%u layers=%u", ai && ai->pApplicationName ? ai->pApplicationName : "-",
+                 ai && ai->pEngineName ? ai->pEngineName : "-", ai ? ai->apiVersion : 0, pCreateInfo->enabledExtensionCount,
+                 pCreateInfo->enabledLayerCount);
+      for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++)
+         mali_trace("  instance ext %s", pCreateInfo->ppEnabledExtensionNames[i]);
+   }
    pAllocator = pAllocator ? pAllocator : vk_default_allocator();
    instance = vk_zalloc(pAllocator, sizeof(*instance), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
    if (!instance)
@@ -66,6 +156,7 @@ mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    result = vk_instance_init(&instance->vk, &mali_instance_extensions, &dispatch_table,
                              pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
+      mali_trace("vkCreateInstance -> %d", result);
       vk_free(pAllocator, instance);
       return vk_error(NULL, result);
    }
@@ -74,6 +165,8 @@ mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    instance->vk.physical_devices.destroy = mali_destroy_physical_device;
 
    *pInstance = mali_instance_to_handle(instance);
+   mali_trace("vkCreateInstance -> ok (api %u.%u)", VK_API_VERSION_MAJOR(instance->vk.app_info.api_version),
+              VK_API_VERSION_MINOR(instance->vk.app_info.api_version));
    return VK_SUCCESS;
 }
 

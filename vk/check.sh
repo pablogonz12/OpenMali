@@ -127,6 +127,7 @@ run "direct v10"      0 $F "$OUT/t_icd" $DL --expect-name "Mali-G610"
 run "vk_info v10"     0 $F "$OUT/t_vk_info" $DL
 run "dxvk_caps v10"   0 $F "$OUT/t_dxvk_caps" $DL --expect-missing "$DXVK_MISSING"
 run "steam_caps v10"   0 $F "$OUT/t_steam_caps" $DL --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"
+run "vk_trace v10"    0 $F "$OUT/t_vk_trace" $DL
 run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
 run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200
