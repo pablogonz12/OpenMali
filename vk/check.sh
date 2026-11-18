@@ -120,15 +120,21 @@ cwdump() { # test, gpu, cache dir, out name
    MALI_SHADER_CACHE=$3 MALI_FAKE_DUMP="$GDIR/$4.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$2 "$OUT/t_$1" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" >/dev/null 2>&1 || return 1
    GOLDEN_ARCH=${2#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$4.jsonl" "$GDIR/$4.txt" >/dev/null 2>&1
 }
-for t in vk_draw vk_feat; do for g in v11 v13; do
+cwpair() { # test, gpu: one cold/warm pair; prints its result lines, exits 1 on failure
+   local t=$1 g=$2 fail=0 CW n0 sum0
    CW=$OUT/cw-cache-$t-$g; rm -rf "$CW"; mkdir -p "$CW"
-   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; fail=1; continue; fi
+   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; return 1; fi
    n0=$(ls "$CW" | wc -l); sum0=$(cat "$CW"/*.bin 2>/dev/null | sha256sum)
-   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; fail=1; continue; fi
+   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; return 1; fi
    if [ "$n0" -gt 0 ] && [ "$n0" = "$(ls "$CW" | wc -l)" ] && [ "$sum0" = "$(cat "$CW"/*.bin | sha256sum)" ] && cmp -s "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt"; then
       echo "ok    shader cache cold == warm $t $g ($n0 entries)"
    else echo "FAIL  shader cache cold != warm $t $g (entries $n0 -> $(ls "$CW" | wc -l)):"; diff -u "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt" | head -20 | sed 's/^/        /'; fail=1; fi
-done; done
+   return $fail
+}
+# the four pairs are independent (own cache dir, own output names): run them concurrently, print in the original order
+cwpids=""; cwtags=""
+for t in vk_draw vk_feat; do for g in v11 v13; do cwpair $t $g >"$GDIR/cw-res-$t-$g.out" 2>&1 & cwpids="$cwpids $!"; cwtags="$cwtags $t:$g"; done; done
+set -- $cwpids; for tg in $cwtags; do t=${tg%:*}; g=${tg#*:}; wait "$1" || fail=1; shift; cat "$GDIR/cw-res-$t-$g.out"; done
 # teeth: an entry whose immediates differ (what a stale entry of an older lowering looks like) must change the warm dump
 CW=$OUT/cw-cache-vk_draw-v11
 for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done

@@ -48,6 +48,14 @@ CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
 
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
+# Shared ccache for every worktree (one cache dir, size-capped) when ccache is installed; MALI_NO_CCACHE=1 turns it off.
+# BASEDIR rewrites absolute paths under this checkout to relative ones so identical sources in different worktrees hit the same entry.
+CCACHE=""
+if [ -z "${MALI_NO_CCACHE:-}" ] && command -v ccache >/dev/null 2>&1; then
+   CCACHE=ccache
+   export CCACHE_DIR=${CCACHE_DIR:-$HOME/.cache/mali-ccache} CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-10G} CCACHE_BASEDIR=$D CCACHE_COMPILERCHECK=content
+   mkdir -p "$CCACHE_DIR"
+fi
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
@@ -61,16 +69,24 @@ KB=$D/libkbase
 KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
         $KB/src/draw.c $KB/src/draw_v13.c $KB/src/fb.c"
 OBJS=""
+# Compile in parallel (MALI_JOBS, default nproc); any failed compile fails the build.
+JOBS=${MALI_JOBS:-$(nproc 2>/dev/null || echo 4)}
+cfail=0; running=0
+reap() { wait -n || cfail=1; running=$((running - 1)); }
 for s in $KBSRCS; do
    o=$OBJ/kb_$(basename "$s" .c).o
-   eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
+   [ $running -ge "$JOBS" ] && reap
+   eval "$CCACHE $CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s" & running=$((running + 1))
    OBJS="$OBJS $o"
 done
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   [ $running -ge "$JOBS" ] && reap
+   eval "$CCACHE $CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s" & running=$((running + 1))
    OBJS="$OBJS $o"
 done
+while [ $running -gt 0 ]; do reap; done
+[ $cfail = 0 ] || { echo "compile failed"; exit 1; }
 
 # 4. Link. Runtime libs need --whole-archive (weak entry point overloads), as Mesa does it.
 WHOLE="src/vulkan/runtime/libvulkan_lite_runtime.a src/vulkan/runtime/libvulkan_runtime.a
