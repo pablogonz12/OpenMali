@@ -504,6 +504,36 @@ int main(int argc, char **argv)
       before = F.nsubmit;
       r = mali_cmd_submit(v4);
       CHECK(r == VK_SUCCESS && F.nsubmit == before + 1, "fold submit %d", r);
+      /* 4. layered vkCmdClearAttachments: layer 0 folds into the rendering, every layer above 0 gets its own frame.
+       *    {base 0, count 3} -> 1 + 2 frames; {base 1, count 2} -> 1 + 2 (layer 0 untouched, nothing folded into the rendering CLEAR);
+       *    {base 2, count 1} -> 1 + 1; {base 0, count 1} -> 1 (unchanged). A driver that ignored layerCount (the old behaviour) submits 1 frame in every case. */
+      {
+         static const struct { uint32_t base, count; unsigned want; } cases[] = {{0, 3, 3}, {1, 2, 3}, {0, 1, 1}, {2, 1, 2}};
+         for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
+            struct vk_command_buffer *vl = new_cmd(pool, &c2);
+            VkRenderingAttachmentInfo lca;
+            VkRenderingInfo lri = rendering_info(&lca, false);
+            mali_CmdBeginRendering(c2, &lri);
+            VkClearRect lr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = cases[i].base, .layerCount = cases[i].count};
+            mali_CmdClearAttachments(c2, 1, &cat, 1, &lr);
+            mali_CmdEndRendering(c2);
+            r = EndCommandBuffer(c2);
+            before = F.nsubmit;
+            int rs = r == VK_SUCCESS ? mali_cmd_submit(vl) : r;
+            CHECK(r == VK_SUCCESS && rs == VK_SUCCESS && F.nsubmit - before == cases[i].want,
+                  "layered clear base=%u count=%u end=%d frames=%u (want %u)", cases[i].base, cases[i].count, r, F.nsubmit - before, cases[i].want);
+         }
+         /* depth/stencil on layers above 0 is still unsupported: must be an error, not a silent layer-0 clear */
+         new_cmd(pool, &c2);
+         VkRenderingAttachmentInfo dca;
+         VkRenderingInfo dri = rendering_info(&dca, false);
+         mali_CmdBeginRendering(c2, &dri);
+         VkClearAttachment dat = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT};
+         VkClearRect dr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 0, .layerCount = 2};
+         mali_CmdClearAttachments(c2, 1, &dat, 1, &dr);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "layered depth clear must be rejected, end=%d", r);
+      }
       printf("{\"test\":\"t_cmd%d\",\"extra\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
