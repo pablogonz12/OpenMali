@@ -172,7 +172,7 @@ struct scene {
    VkPipelineLayout layout;
    VkRenderPass rp, rp2;
    int second;   /* scene_draw uses rp2 (LOAD) */
-   VkPipeline pipe;
+   VkPipeline pipe, pipe2;   /* pipe2: g_nofs+g_load second pass pipeline (with FS) */
    VkImage col, dep;
    VkDeviceMemory colmem, depmem, vbmem;
    VkImageView colv, depv;
@@ -535,8 +535,16 @@ scene_create(struct scene *s, int depth)
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                       .pDepthStencilState = depth ? &dss : NULL, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
+   if (g_nofs && g_load)
+      cba.colorWriteMask = 0;   /* pass 1 (FS-less): colour is undefined without an FS, mask it so only depth is observable */
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe);
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+   if (g_nofs && g_load) {
+      cba.colorWriteMask = 0xf;
+      gp.stageCount = 2;
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe2);
+      CHECK(r == VK_SUCCESS, "graphics pipeline (pass 2, with FS) = %d", r);
+   }
 
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
@@ -549,6 +557,7 @@ scene_destroy(struct scene *s)
    DeviceWaitIdle(dev);
    if (s->pool) DestroyCommandPool(dev, s->pool, NULL);
    if (s->pipe) DestroyPipeline(dev, s->pipe, NULL);
+   if (s->pipe2) DestroyPipeline(dev, s->pipe2, NULL);
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
    if (s->rp) DestroyRenderPass(dev, s->rp, NULL);
    if (s->rp2) DestroyRenderPass(dev, s->rp2, NULL);
@@ -606,7 +615,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = g_nocol ? 1 : s->depth ? 2 : 1, .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->second && s->pipe2 ? s->pipe2 : s->pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
    VkRect2D sc = {{0, 0}, {W, H}};
    if (s->mode == MODE_SCISSOR) sc.extent.width = W / 2;   /* left half only */
@@ -1122,6 +1131,47 @@ test_load(const char *name, int kind)
          CHECK(ok, "%s: two-pass centre %08x cov %u vs one-pass %08x cov %u (A %08x B %08x)", name, got, cgot, ref, cref, a, b);
          printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"cov\":%u,\"ok\":%s}\n", name, got, ref, cgot, ok ? "true" : "false");
       }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* depth-only (FS-less) shadow-style pass, then read the depth back: pass 1 (CLEAR depth, STORE) draws triangle A with a vertex-only pipeline and
+ * writes no colour; pass 2 (LOAD depth) draws the point-reflected triangle B with a normal pipeline at the same z and LESS. Where the stored depth
+ * equals A's z, B is rejected, so B's coverage is 8192 - overlap. If the FS-less draw wrote no depth (dropped / cleared depth), B covers all 8192. */
+static int
+test_nofs_readback(const char *name)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_nofs = 1; g_load = 1;
+   int ok = scene_create(&s, 1);
+   g_nofs = 0; g_load = 0;
+   float AB[2][4] = {{1, 0, 0, 0}, {-1, 0, 0, 0}};
+   uint32_t cov1 = 0, cov2 = 0;
+   if (ok) ok = scene_draw(&s, 1, &AB[0], f);           /* pass 1: vertex-only pipeline, depth only */
+   if (ok && !g_fake) cov1 = count_cov(&s);
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 1, &AB[1], f);           /* pass 2: LOAD depth, B with FS */
+   s.second = 0;
+   double ov = 0;
+   for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {
+         double px = (x + .5) / W * 2 - 1, py = (y + .5) / H * 2 - 1;
+         ov += (py >= -.5 && py <= .5 && fabs(px) <= (py + .5) * .5) && (fabs(px) <= (.5 - py) * .5);
+      }
+   if (ok && g_fake) {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+   } else if (ok) {
+      cov2 = count_cov(&s);
+      const double want = 8192.0 - ov;
+      const double err = fabs((double)cov2 - want) / want * 100.0;
+      CHECK(cov1 == 0, "%s: the FS-less pass wrote colour (%u px)", name, cov1);
+      CHECK(err <= 2.5, "%s: pass 2 coverage %u, want %.0f (B minus the stored depth of A); %.0f means the depth-only draw wrote no depth", name, cov2, want, 8192.0);
+      printf("{\"test\":\"%s\",\"cov_pass1\":%u,\"cov_pass2\":%u,\"want\":%.0f,\"ok\":true}\n", name, cov1, cov2, want);
    }
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
@@ -2002,6 +2052,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("load_depth")) ok &= test_load("load_depth", 0);
    if (ok && CASE_ON("nocol_depth")) ok &= test_nocol("nocol_depth", 0);
    if (ok && CASE_ON("nofs_depth")) ok &= test_nocol("nofs_depth", 0);
+   if (ok && CASE_ON("nofs_depth_readback")) ok &= test_nofs_readback("nofs_depth_readback");
    if (ok && CASE_ON("nofs_stencil")) ok &= test_nocol("nofs_stencil", 1);
    if (ok && CASE_ON("nocol_stencil")) ok &= test_nocol("nocol_stencil", 1);
    if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride");
