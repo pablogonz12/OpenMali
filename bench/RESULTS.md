@@ -6,19 +6,21 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open 20e290c1a (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 184.2 | 68.7 | 0 | 0.90 | 3.51 | 318.0 | 0.68 | 2.19 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 20e290c1a | triangle-3k | 58.8 | 40.9 | 0 | 8.71 | 2.59 | 188.8 | 4.83 | 2.25 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 293.0 | 103.4 | 0 | 1.02 | 2.25 | 509.4 | 0.97 | 1.60 | present immediate/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
+| poco-x8 | v13 | ours | 20e290c1a | triangle-3k | 100.1 | 79.6 | 0 | 5.48 | 1.92 | 339.9 | 2.75 | 1.44 | present mailbox/3img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_HF=0+MALI_NOTF=1 | 2026-11-17 |
+
 ### mali-open e2cd68cd2 (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 189.9 | 68.4 | 0 | 0.85 | 3.30 | 328.6 | 0.62 | 2.07 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | cmf | v11 | ours | e2cd68cd2 | triangle-3k | 59.2 | 41.1 | 0 | 8.43 | 2.57 | 189.7 | 4.80 | 2.25 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
-
-### mali-open 20e290c1a (2026-11-17)
-
-| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 293.0 | 103.4 | 0 | 1.02 | 2.25 | 509.4 | 0.97 | 1.60 | present immediate/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
-| poco-x8 | v13 | ours | 20e290c1a | triangle-3k | 100.1 | 79.6 | 0 | 5.48 | 1.92 | 339.9 | 2.75 | 1.44 | present mailbox/3img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_HF=0+MALI_NOTF=1 | 2026-11-17 |
 
 ### mali-open 23edb3f94-dirty (2026-11-18)
 
@@ -33,6 +35,17 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## cube (GPU-heavy)
 
+### mali-open 20e290c1a (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 71.3 | 32.7 | 0 | 0.14 | 12.82 | 87.8 | 0.08 | 11.32 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 20e290c1a | cube-720p | 47.9 | 37.9 | 0 | 2.07 | 15.62 | 76.4 | 2.16 | 12.97 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 195.1 | 67.2 | 0 | 0.03 | 3.78 | 804.1 | 0.01 | 1.19 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
+| cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.3 | 45.4 | 0 | 0.14 | 13.08 | 87.8 | 0.07 | 11.32 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 20e290c1a | cube-native | 46.2 | 37.7 | 0 | 1.51 | 18.04 | 75.6 | 2.08 | 13.13 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 211.8 | 68.2 | 0 | 0.03 | 3.49 | 800.7 | 0.01 | 1.20 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
+
 ### mali-open e2cd68cd2 (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -41,13 +54,6 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | cmf | v11 | ours | e2cd68cd2 | cube-720p | 46.0 | 37.4 | 0 | 1.49 | 18.12 | 75.7 | 2.10 | 13.10 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.2 | 31.7 | 0 | 0.12 | 12.63 | 87.8 | 0.08 | 11.32 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | cmf | v11 | ours | e2cd68cd2 | cube-native | 45.9 | 37.5 | 0 | 1.50 | 18.16 | 75.3 | 2.07 | 13.16 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
-
-### mali-open 20e290c1a (2026-11-17)
-
-| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 195.1 | 67.2 | 0 | 0.03 | 3.78 | 804.1 | 0.01 | 1.19 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
-| poco-x8 | v13 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 211.8 | 68.2 | 0 | 0.03 | 3.49 | 800.7 | 0.01 | 1.20 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-17 |
 
 ### mali-open 23edb3f94-dirty (2026-11-18)
 
