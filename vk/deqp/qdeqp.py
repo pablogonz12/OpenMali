@@ -129,6 +129,8 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
             os.makedirs(kd, exist_ok=True)
             with open(os.path.join(kd, f"{RUN}.qpa"), "a") as kf:
                 kf.write(txt)
+                if parse_qpa(txt)[1]:   # chunk killed mid-test: close the open block so the next chunk's end tag cannot claim it
+                    kf.write("\n#terminateTestCaseResult Incomplete\n#endTestCaseResult\n")
         os.unlink(local_q)
     fin, unf = parse_qpa(txt)
     return fin, unf, out[-300:], "__HOG" in out
