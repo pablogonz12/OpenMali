@@ -481,6 +481,26 @@ mali_queue_device_finish(struct mali_device *dev)
    pthread_mutex_destroy(&dev->sync_lock);
 }
 
+/* May a present submission return before the frame it presents has finished on the GPU? Only when a fence travels with
+ * the buffer: wsi_common imports the present's sync_file into the swapchain dma-buf (DMA_BUF_IOCTL_IMPORT_SYNC_FILE,
+ * needs kernel >= 6.0: CMF 6.1 and poco-x8 6.6 have it, poco-x4's 5.10 returns ENOTTY) and the compositor waits on it.
+ * kbase attaches no implicit fence to its dma-bufs itself, so without the ioctl the CPU wait is the only thing
+ * keeping the compositor from sampling a half-drawn buffer, and stays. wsi_common's own probe result (made at the
+ * first swapchain creation) is the decision; MALI_PRESENT_FENCE=0/1 forces it (tests), MALI_QUEUE_CPU_WAIT=1 = 0. */
+static bool
+mali_present_fence_ok(struct mali_device *dev)
+{
+   static int forced = -2;
+   if (forced == -2) {
+      const char *e = getenv("MALI_PRESENT_FENCE");
+      forced = getenv("MALI_QUEUE_CPU_WAIT") ? 0 : e ? atoi(e) : -1;
+   }
+   if (forced >= 0)
+      return forced;
+   const struct wsi_device *w = &mali_device_pdev(dev)->wsi;
+   return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
+}
+
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
@@ -499,8 +519,9 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       const struct vk_sync_wait *w = &submit->waits[i];
       /* A semaphore signalled by an earlier submission of THIS queue needs no CPU wait: the queue is one in-order
        * CS ring, so everything after it already runs behind that work. Waiting here made vkQueuePresent block
-       * until the GPU finished the frame it presents, which serialised CPU and GPU whatever the frames in flight. */
-      if (w->sync->type == &mali_sync_type && !getenv("MALI_QUEUE_CPU_WAIT")) {
+       * until the GPU finished the frame it presents, which serialised CPU and GPU whatever the frames in flight.
+       * Only valid while the present carries the frame's fence to the compositor (mali_present_fence_ok). */
+      if (w->sync->type == &mali_sync_type && mali_present_fence_ok(dev)) {
          struct mali_sync *ws = container_of(w->sync, struct mali_sync, vk);
          pthread_mutex_lock(&dev->sync_lock);
          bool own = ws->owner == vq && ws->fd >= 0;
