@@ -257,7 +257,7 @@ def find_passed(jobs, commit, suite, need, env, only="", cases=None, repeat=1):
                 or (j.get("only") or "") != (only or "") or list(j.get("cases") or []) != list(cases or []) or (j.get("repeat") or 1) != (repeat or 1)):
             continue
         ps = j.get("parts", {})
-        if all(c in ps and ps[c].get("state") == "done" and ps[c].get("verdict") == "pass" for c in need):
+        if need and {c for c, p in ps.items() if p.get("state") != "cancelled"} == set(need) and all(ps[c].get("state") == "done" and ps[c].get("verdict") == "pass" for c in need):
             return j
     return None
 

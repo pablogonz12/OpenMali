@@ -513,13 +513,12 @@ class Farm:
     def observed_path(self, dev, tip):
         return os.path.join(L.state_dir(), "baseline", f"{dev['baseline']}-{tip[:8]}.tsv")
 
-    def save_observed(self, dev, cur):
+    def save_observed(self, dev, cur, tip):
         """a daily of main's own tip on this phone class: what main really does today (the committed baseline can be stale: 45 v11 dailies
         failed on one case main no longer passes) -> <state>/baseline/<baseline>-<tip8>.tsv, the reference for later jobs while main stays there"""
-        tip = self.main_tip()
-        p = self.observed_path(dev, tip)
+        p = self.observed_path(dev, tip)                 # named by the commit the daily ran, not by where main is now
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = p + f".tmp{os.getpid()}"
+        tmp = p + f".tmp{os.getpid()}-{threading.get_ident()}"
         with open(tmp, "w") as f:
             f.writelines(f"{c}\t{st}\n" for c, st in sorted(cur.items()))
         os.replace(tmp, p)
@@ -585,7 +584,7 @@ class Farm:
             if self.health(dev).get("powered") is not True:
                 self.stop_reason[al] = "on battery: paused"
                 return "stop"
-        if ok and rj and time.time() - self.last_hot.get(al, 0) >= (0 if self.fake else 30):
+        if ok and (rj or al in self.sweep_run) and time.time() - self.last_hot.get(al, 0) >= (0 if self.fake else 30):
             self.last_hot[al] = time.time()                    # mid-job thermal stop: a job must not run a phone past temp_stop while the owner's steward sees 55 C
             gst, gwhy, _h = self.gate_check(dev)
             if gst == "cooling":
@@ -814,6 +813,8 @@ class Farm:
                 ok_s, got = self.verify_so(job, dev, so_phone)
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s and rc in (0, 1):
+                    if os.path.exists(out_tsv):
+                        os.unlink(out_tsv)                       # rows of a run on a foreign driver are not resumed by the retry
                     return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
             if rc in (76, 81):
                 self.adb(dev, "shell", f"rm -f {so_phone}")
@@ -889,8 +890,8 @@ class Farm:
         verdict = "fail" if nf else ("error" if missing or rc not in (0, 1) and not cur else "pass")
         if rc == 124:
             verdict = "error" if not nf else "fail"
-        if rc in (0, 1) and job["commit"] == self.main_tip() and not self.fake:
-            self.save_observed(dev, {**cur, **{c: "Pass" for c, _f, _r in flk}})
+        if rc in (0, 1) and not missing and job["commit"] == self.main_tip() and not self.fake:     # only a complete run replaces the reference
+            self.save_observed(dev, {**cur, **{c: "Pass" for c, _f, _r in flk}}, job["commit"])
         extra = (f"; {len(n2f)} NotSupported->Fail" if n2f else "") + (f"; {len(ignored)} known-flaky ignored" if ignored else "") + rnote
         return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
                 "flaky": [{"case": c, "fails": f, "runs": r} for c, f, r in flk],
@@ -917,6 +918,9 @@ class Farm:
                 shutil.rmtree(wd, ignore_errors=True)
                 return None, None, None, {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(sgot)[:12]}) during flaky reruns; result discarded"}
             if rc not in (0, 1):                                 # phone lost / gated / timeout: keep what we know, do not guess
+                if rc == 125:                                    # thermal/owner stop: wait and resume like the main run, do not record a verdict
+                    shutil.rmtree(wd, ignore_errors=True)
+                    return None, None, None, {"lost": True}
                 log(f"{dev['alias']}: flaky rerun {i} of {job['id']} stopped (rc={rc}); remaining failures stay new")
                 break
             done_runs += 1
@@ -1387,7 +1391,8 @@ class Farm:
                 res = {"verdict": "error", "notes": why}
             else:
                 job = L.read_json(L.job_path(jid))
-                res = getattr(self, "suite_" + job["suite"])(job, dev)
+                gs2, gwhy2, _h = self.gate_check(dev, starting=True)         # the phone warmed up during build/restore: re-check before the first launch
+                res = {"gated": True} if gs2 != "ok" else getattr(self, "suite_" + job["suite"])(job, dev)
                 if (res and res.get("verdict") == "invalid" and "driver on the phone" in res.get("notes", "")
                         and "(fake)" not in res.get("notes", "") and not self.is_disabled(dev)):
                     log(f"{alias}: {jid}/{cls} driver sha mismatch ({res.get('notes', '')[:80]}); re-pushing and retrying once inside the hold")
@@ -1397,6 +1402,7 @@ class Farm:
         except Exception:
             res = {"verdict": "error", "notes": "farmd exception: " + traceback.format_exc()[-300:]}
         finally:
+            self.running_job.pop(alias, None)
             try:
                 if touched and not self.is_disabled(dev):          # a gated/on-battery/disabled phone is not woken or touched
                     self.qrestore(dev)
@@ -1410,7 +1416,6 @@ class Farm:
             log(f"{alias}: {jid}/{cls} paused by the health gate; back to pending")
             return
         why_stop = self.stop_reason.pop(alias, None)
-        self.running_job.pop(alias, None)
         if res is None and why_stop == "cancelled":
             self.upd(jid, lambda x: x["parts"][cls].update(state="cancelled"))
             log(f"{alias}: {jid}/{cls} cancelled by the owner; lock released")
@@ -1480,7 +1485,7 @@ class Farm:
         rc, o = git("rev-parse", "main", cwd=self.repo)
         if rc:
             rc, o = git("rev-parse", "HEAD", cwd=self.repo)
-        return o.strip()
+        return o.strip() if not rc and re.fullmatch(r"[0-9a-f]{40}", o.strip()) else ""
 
     def sweep_job(self, commit):
         for j in L.list_jobs(True):
@@ -1714,6 +1719,8 @@ class Farm:
             return
         self.last_bd = time.time()
         tip = self.main_tip()
+        if not tip:
+            return                                                # main/HEAD did not resolve: queue nothing
         sp = os.path.join(L.state_dir(), "baseline", "auto.json")
         seen = L.read_json(sp) if os.path.exists(sp) else {}
         for a in sorted(att):
