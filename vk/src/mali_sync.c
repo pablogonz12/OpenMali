@@ -9,6 +9,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#define MALI_SYNC_EXPORT_WAIT_S 5 /* how long an export waits for a still-queued signal operation */
+
 static uint64_t
 now_ns(void)
 {
@@ -194,6 +196,20 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
    int d = -1;
 
    pthread_mutex_lock(&dev->sync_lock);
+   /* The signal operation may still be queued behind the runtime's submit thread (DEFERRED mode): fd < 0 and not
+    * signalled means "pending", not "already signalled". Exporting -1 then would let the compositor sample a
+    * half-drawn buffer. Wait for the submission (bounded: an export without a pending signal is invalid usage). */
+   if (s->fd < 0 && !s->signaled) {
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts); /* sync_cv is a CLOCK_MONOTONIC condvar (mali_queue.c) */
+      ts.tv_sec += MALI_SYNC_EXPORT_WAIT_S;
+      while (s->fd < 0 && !s->signaled) {
+         if (pthread_cond_timedwait(&dev->sync_cv, &dev->sync_lock, &ts) == ETIMEDOUT) {
+            pthread_mutex_unlock(&dev->sync_lock);
+            return vk_error(vk, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+         }
+      }
+   }
    if (s->fd >= 0) {
       d = fcntl(s->fd, F_DUPFD_CLOEXEC, 3);
       if (d < 0) {

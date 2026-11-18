@@ -501,8 +501,27 @@ mali_present_fence_ok(struct mali_device *dev)
    return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
 }
 
+static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit);
+
+/* A failed submission still signals what it was to signal: waiters (a present's acquire, a fence wait) would
+ * otherwise block on a sync that nothing completes. The queue is lost on these paths, so the waiters then
+ * observe DEVICE_LOST instead of hanging. */
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
+{
+   VkResult res = mali_queue_submit_impl(vq, submit);
+   if (res != VK_SUCCESS) {
+      struct vk_device *vkdev = vq->base.device;
+      for (uint32_t i = 0; i < submit->signal_count; i++) {
+         VkResult sr = vk_sync_signal(vkdev, submit->signals[i].sync, submit->signals[i].signal_value);
+         (void)sr; /* best effort: the queue is lost already */
+      }
+   }
+   return res;
+}
+
+static VkResult
+mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;

@@ -5,6 +5,9 @@
 #include "mali_queue.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include "mali_entrypoints.h"
@@ -24,6 +27,19 @@ errno_to_vk(struct mali_device *dev, int e)
    if (e == -EMFILE || e == -ENFILE)
       return vk_error(dev, VK_ERROR_TOO_MANY_OBJECTS);
    return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+}
+
+/* True when fd is an open dma-buf. DMA_BUF_IOCTL_SYNC with no direction flags is EINVAL on a dma-buf and ENOTTY on
+ * anything else (no side effect either way). The fake backend's "dma-bufs" are memfds: only check the fd is open. */
+static bool
+mali_fd_is_dmabuf(struct mali_device *dev, int fd)
+{
+   if (fd < 0 || fcntl(fd, F_GETFD) < 0)
+      return false;
+   if (mali_device_pdev(dev)->gpu.fake)
+      return true;
+   struct dma_buf_sync s = {.flags = 0};
+   return ioctl(fd, DMA_BUF_IOCTL_SYNC, &s) < 0 && errno == EINVAL;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -59,8 +75,16 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    if (imp && imp->handleType != 0) {
       if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
          r = -EINVAL;
+      } else if (!mali_fd_is_dmabuf(dev, imp->fd)) {
+         r = -EBADF;
       } else {
-         r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
+         /* the memory may not be larger than the dma-buf behind it (lseek SEEK_END is the dma-buf size) */
+         off_t sz = lseek(imp->fd, 0, SEEK_END);
+         if (sz > 0)
+            lseek(imp->fd, 0, SEEK_SET);
+         r = (sz > 0 && (uint64_t)sz < pAllocateInfo->allocationSize) ? -EINVAL : 0;
+         if (r == 0)
+            r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
          if (r == 0)
             close(imp->fd); /* ownership moves to the memory on success */
       }
@@ -174,6 +198,10 @@ mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
 
    if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+   /* Only memory allocated for export (or imported from a dma-buf) may be exported. */
+   if (!(mem->vk.export_handle_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) &&
+       mem->vk.import_handle_type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    int fd = mali_device_pdev(dev)->backend->bo_export(dev->kdev, &mem->bo);
    if (fd < 0)
       return errno_to_vk(dev, fd);
@@ -187,7 +215,7 @@ mali_GetMemoryFdPropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBi
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
 
-   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT || !mali_fd_is_dmabuf(dev, fd))
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    pProps->memoryTypeBits = (1u << MALI_MEM_TYPE_COUNT) - 1;
    return VK_SUCCESS;
