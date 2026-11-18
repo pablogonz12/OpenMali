@@ -69,7 +69,7 @@ struct mali_compiled {
    uint32_t ubo_count, attribute_count, texture_count, sampler_count;
    uint32_t uses_ld_var, wait_6, wait_7, writes_global;
    /* FS */
-   uint32_t fs_can_discard, fs_writes_depth, fs_writes_stencil, fs_writes_colour, fs_early_fragment_tests, fs_can_early_z, fs_can_fpk, fs_sidefx, fs_reads_frag_coord;
+   uint32_t fs_colour_mask /* bit i: writes colour output i */, fs_can_discard, fs_writes_depth, fs_writes_stencil, fs_writes_colour, fs_early_fragment_tests, fs_can_early_z, fs_can_fpk, fs_sidefx, fs_reads_frag_coord;
    /* VS */
    uint32_t vs_writes_point_size, vs_secondary_enable, vs_secondary_offset, vs_secondary_work_reg_count;
    uint64_t vs_secondary_preload;

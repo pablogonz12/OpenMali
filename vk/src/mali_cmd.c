@@ -492,6 +492,28 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+      /* colour attachments 1..3: per-attachment blend state (each gets its own blend descriptor) */
+      for (unsigned i = 1; i < 4 && i < fr->ncolour; i++) {
+         const struct vk_color_blend_attachment_state *ci = &dyn->cb.attachments[i];
+         struct mali_rtblend *r = &x->rtb[i - 1];
+         r->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && ci->blend_enable;
+         r->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? ci->write_mask : 0xf;
+         if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << i)))
+            r->wmask = 0;
+         r->src_c = ci->src_color_blend_factor; r->dst_c = ci->dst_color_blend_factor;
+         r->src_a = ci->src_alpha_blend_factor; r->dst_a = ci->dst_alpha_blend_factor;
+         r->op_c = ci->color_blend_op; r->op_a = ci->alpha_blend_op;
+         if (r->blend_en) {
+            struct mali_fixed t = *x;
+            t.blend_en = true; t.wmask = r->wmask; t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
+            t.op_c = r->op_c; t.op_a = r->op_a;
+            uint32_t eq; unsigned cm;
+            if (mali_blend_equation(&t, &eq, &cm))
+               unsupported(cmd, "blend equation (fixed function)");
+         }
+      }
+      if (fr->ncolour > 1 && (bp->gfx.blend_va && x->blend_en))
+         unsupported(cmd, "blend shader (logic op / dual source) with several colour attachments");
       if (dyn->cb.logic_op_enable)
          unsupported(cmd, "logic op");
       if (x->blend_en && !bp->gfx.blend_va) {
@@ -817,10 +839,15 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    bool no_col = true;
    for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
       if (ri->pColorAttachments[i].imageView) no_col = false;
-   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
-      unsupported(cmd, "need exactly one colour attachment");
+   if (!no_col && (ri->colorAttachmentCount > 4 || !ri->pColorAttachments[0].imageView)) {
+      unsupported(cmd, "more than 4 colour attachments / null first colour attachment");
       return;
    }
+   for (uint32_t i = 1; !no_col && i < ri->colorAttachmentCount; i++)
+      if (!ri->pColorAttachments[i].imageView) {
+         unsupported(cmd, "null colour attachment between used ones");
+         return;
+      }
    const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
    bool load = false;
    struct mali_preload_src psrc;
@@ -917,6 +944,46 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
+   }
+   f->ncolour = ri->colorAttachmentCount;
+   if (f->ncolour > 1) {
+      /* colour attachments 1..3: same size, single sampled, no LOAD / resolve (not wired for RT>0); the tile colour buffer holds the
+       * sum of the targets' bytes per pixel, capped at the largest single-RT total proven on hardware (16 B) */
+      unsigned bpp = t.rt ? t.rt->alloc : 4u;
+      if (f->samples != 1) {
+         unsupported(cmd, "several colour attachments with MSAA");
+         return;
+      }
+      for (uint32_t i = 1; i < f->ncolour; i++) {
+         const VkRenderingAttachmentInfo *cx = &ri->pColorAttachments[i];
+         struct mali_cmd_target tx;
+         memset(&tx, 0, sizeof tx);
+         if (g_res.image_view(cx->imageView, &tx) || tx.is_zs || tx.samples > 1 || tx.width != t.width || tx.height != t.height) {
+            unsupported(cmd, "colour attachment view (size / samples must match attachment 0)");
+            return;
+         }
+         if (is_load_op(cx->loadOp)) {
+            unsupported(cmd, "colour loadOp LOAD on colour attachment > 0");
+            return;
+         }
+         if (cx->resolveMode != VK_RESOLVE_MODE_NONE) {
+            unsupported(cmd, "resolve of colour attachment > 0");
+            return;
+         }
+         struct mali_att *x = &f->colour_x[i - 1];
+         x->va = tx.va;
+         x->rt = tx.rt;
+         x->row_stride = tx.row_stride;
+         x->clear = cx->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+         x->store = cx->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+         if (x->clear)
+            memcpy(x->clear_color, cx->clearValue.color.float32, sizeof x->clear_color);
+         bpp += tx.rt ? tx.rt->alloc : 4u;
+      }
+      if (bpp > 16) {
+         unsupported(cmd, "colour attachments exceed the 16 bytes per pixel tile buffer budget");
+         return;
+      }
    }
    }
    struct mali_preload_src zsrc;
