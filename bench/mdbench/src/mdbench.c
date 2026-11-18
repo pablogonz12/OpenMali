@@ -354,6 +354,7 @@ static Buf g_sb, g_early;
 static char g_grid[16 * 9 * 6 + 1];
 static int have_ts;
 static double ts_period_ms;
+static uint64_t vmask = ~0ull;   /* timestampValidBits mask */
 static int64_t slot_frame[MAXF];
 
 static uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want)
@@ -787,6 +788,7 @@ int main(int argc, char **argv)
       have_ts = O.gpu_time && CreateQueryPool && CmdWriteTimestamp && CmdResetQueryPool && GetQueryPoolResults && DestroyQueryPool && nq && qf[0].timestampValidBits > 0 && pprops.limits.timestampPeriod > 0;
       if (O.gpu_time == 2 && !have_ts) FAIL("--gpu-time on but no timestamps");
       ts_period_ms = pprops.limits.timestampPeriod / 1e6;
+      vmask = qf[0].timestampValidBits >= 64 ? ~0ull : ((1ull << qf[0].timestampValidBits) - 1);
       if (!(qf[0].queueFlags & VK_QUEUE_GRAPHICS_BIT) || !(qf[0].queueFlags & VK_QUEUE_COMPUTE_BIT)) FAIL("queue family 0 lacks graphics+compute");
    }
    g_ubo_stride = (uint32_t)pprops.limits.minUniformBufferOffsetAlignment;
@@ -1029,7 +1031,7 @@ int main(int argc, char **argv)
          if (GetQueryPoolResults(dev, qpool, (uint32_t)fi * 2, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
             uint64_t mask = pprops.limits.timestampPeriod > 0 ? ~0ull : 0;
             R.gpu[slot_frame[fi]] = (double)((ts[1] - ts[0]) & mask) * ts_period_ms;
-            R.gs[slot_frame[fi]] = (double)ts[0] * ts_period_ms; R.ge[slot_frame[fi]] = (double)ts[1] * ts_period_ms;
+            R.gs[slot_frame[fi]] = (double)(ts[0] & vmask) * ts_period_ms; R.ge[slot_frame[fi]] = (double)(ts[1] & vmask) * ts_period_ms;   /* low timestampValidBits only; a counter narrower than 64 bits wraps (the CSV idle gap is meaningless across a wrap) */
             if (getenv("MDB_TSDBG") && (slot_frame[fi] % 30) == 0) fprintf(stderr, "mdbench: ts frame %ld t0 %llu t1 %llu d %llu wall %.3f ms\n", (long)slot_frame[fi], (unsigned long long)ts[0], (unsigned long long)ts[1], (unsigned long long)(ts[1] - ts[0]), now_ms());
          }
       }
@@ -1189,7 +1191,7 @@ int main(int argc, char **argv)
    /* drain the last timestamps */
    if (have_ts) for (int i = 0; i < F; i++) if (slot_frame[i] >= 0) {
       uint64_t ts[2];
-      if (GetQueryPoolResults(dev, qpool, (uint32_t)i * 2, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) { R.gpu[slot_frame[i]] = (double)(ts[1] - ts[0]) * ts_period_ms; R.gs[slot_frame[i]] = (double)ts[0] * ts_period_ms; R.ge[slot_frame[i]] = (double)ts[1] * ts_period_ms; }
+      if (GetQueryPoolResults(dev, qpool, (uint32_t)i * 2, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) { R.gpu[slot_frame[i]] = (double)(ts[1] - ts[0]) * ts_period_ms; R.gs[slot_frame[i]] = (double)(ts[0] & vmask) * ts_period_ms; R.ge[slot_frame[i]] = (double)(ts[1] & vmask) * ts_period_ms; }
    }
    /* headless: read back the last rendered target once (determinism checksum + proof something was drawn) */
    if (g_headless && frame > 0) {
