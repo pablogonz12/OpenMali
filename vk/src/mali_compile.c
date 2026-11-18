@@ -22,12 +22,14 @@
 #include "mali_descriptor_lower.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -249,6 +251,78 @@ cache_sum(const struct mali_compiled *h, const uint8_t *bin, const struct mali_i
    blake3_hasher_finalize(&s, out, 16);
 }
 
+/* Size limit of the disk cache: $MALI_SHADER_CACHE_MAX_KB (default 1 GiB, 0 = unlimited). Over the limit, the oldest entries (by mtime) go
+ * until the directory is at 90% of it; abandoned temp files (older than an hour) always go. Only our own .bin and .tmp files are touched. */
+#define CACHE_DEFAULT_MAX_KB (1024ull * 1024)
+
+static unsigned long long
+cache_max_bytes(void)
+{
+   const char *e = getenv("MALI_SHADER_CACHE_MAX_KB");
+   unsigned long long kb = CACHE_DEFAULT_MAX_KB;
+   if (e && *e) {
+      char *end;
+      unsigned long long v = strtoull(e, &end, 10);
+      if (!*end) kb = v;
+   }
+   return kb * 1024;
+}
+
+struct trim_ent { time_t mtime; off_t size; char name[256]; };
+
+static int
+trim_cmp(const void *a, const void *b)
+{
+   const struct trim_ent *x = a, *y = b;
+   return (x->mtime > y->mtime) - (x->mtime < y->mtime);
+}
+
+void
+mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
+{
+   DIR *d = opendir(dir);
+   if (!d) return;
+   struct trim_ent *v = NULL;
+   size_t n = 0, cap = 0;
+   unsigned long long total = 0;
+   time_t now = time(NULL);
+   struct dirent *de;
+   while ((de = readdir(d))) {
+      size_t l = strlen(de->d_name);
+      int is_bin = l > 4 && !strcmp(de->d_name + l - 4, ".bin");
+      int is_tmp = strstr(de->d_name, ".bin.tmp") != NULL;
+      if (!is_bin && !is_tmp) continue;
+      char path[1400];
+      struct stat st;
+      snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+      if (stat(path, &st) || !S_ISREG(st.st_mode)) continue;
+      if (is_tmp) {
+         if (now - st.st_mtime > 3600) unlink(path);
+         continue;
+      }
+      if (n == cap) {
+         struct trim_ent *nv = realloc(v, (cap = cap ? cap * 2 : 256) * sizeof *v);
+         if (!nv) break;
+         v = nv;
+      }
+      v[n].mtime = st.st_mtime; v[n].size = st.st_size;
+      snprintf(v[n].name, sizeof v[n].name, "%s", de->d_name);
+      total += st.st_size;
+      n++;
+   }
+   closedir(d);
+   if (max_bytes && total > max_bytes && v) {
+      qsort(v, n, sizeof *v, trim_cmp);
+      unsigned long long goal = max_bytes / 10 * 9;
+      for (size_t i = 0; i < n && total > goal; i++) {
+         char path[1400];
+         snprintf(path, sizeof path, "%s/%s", dir, v[i].name);
+         if (unlink(path) == 0) total -= v[i].size;
+      }
+   }
+   free(v);
+}
+
 static void
 cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
 {
@@ -270,8 +344,10 @@ cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
             fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
             (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm) && fwrite(sum, 16, 1, f) == 1;
    ok = (fclose(f) == 0) && ok;
-   if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
-   else unlink(tmp);
+   if (ok && rename(tmp, path) == 0) {
+      /* the first store of a process and every 16th after it check the size, so a long-running game cannot grow the cache without bound */
+      if (!(atomic_fetch_add(&g_stores, 1) & 15)) mali_compile_cache_trim(dir, cache_max_bytes());
+   } else unlink(tmp);
 }
 
 static int
@@ -293,9 +369,11 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
            (!h.nimm || fread(h.imm, sizeof *h.imm, h.nimm, f) == h.nimm) && fread(sum, 16, 1, f) == 1;
       if (ok) { char x; ok = fread(&x, 1, 1, f) == 0; }   /* no trailing bytes */
       if (ok) {   /* a bit flip inside the code must not reach the GPU */
-         struct mali_compiled z = h;
-         z.bin = NULL; z.imm = NULL; z.cache_hit = 0;
-         cache_sum(&z, h.bin, h.imm, want);
+         uint8_t *bin = h.bin;
+         struct mali_imm *imm = h.imm;
+         h.bin = NULL; h.imm = NULL; h.cache_hit = 0;   /* hash the bytes as read (padding included), like cache_store */
+         cache_sum(&h, bin, imm, want);
+         h.bin = bin; h.imm = imm;
          ok = !memcmp(sum, want, 16);
       }
       if (!ok) { free(h.bin); free(h.imm); }

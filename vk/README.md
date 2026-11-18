@@ -67,7 +67,7 @@ the kbase backend is used (opens `/dev/mali0`; zero devices on machines without 
 the FAU table, sysvals) → Mesa `bi_*` backend → `struct mali_compiled` (binary, work regs, preload, FAU count/reserved + promoted immediates,
 varying slots, VS secondary shader, FS flags). v11 and v13, VS/FS/compute stub (compute: descriptor-free, base ids 0; descriptors = M7).
 Pairing: compile the VS, pass `vs.layout` as `link_vs` of the FS (FS reads the varying buffer); `link_vs = NULL` = R2's attribute-descriptor FS.
-Disk cache: `$MALI_SHADER_CACHE`, else `$XDG_CACHE_HOME`/`~/.cache/mali-gaming/shaders`; `cache_dir=""` disables. Key = blake3(SPIR-V, arch,
+Disk cache: `$MALI_SHADER_CACHE`, else `$XDG_CACHE_HOME`/`~/.cache/mali-gaming/shaders`; `cache_dir=""` disables; size limit `$MALI_SHADER_CACHE_MAX_KB` (default 1 GiB, 0 = none; oldest entries are deleted first). Key = blake3(SPIR-V, arch,
 stage, fau_reserved, push_base, VS layout, entry, Mesa tag, `MALI_COMPILE_VERSION`); atomic write, corrupt entries recompile.
 Test: `tests/build-t_compile.sh [-v]` (x86 Mesa tree, ~1.5 s build, 0.01 s run). `rot.vert`/`var.frag` via SPIR-V are byte-identical to
 `libkbase/tests/shaders_compiled_v11.h` and to `shader/golden_compiled_v13.h` (`shader/gen-golden.sh`); SPIR-V from `shader/gen-spv.sh` (glslang).

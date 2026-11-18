@@ -5,6 +5,8 @@
 #include "../../libkbase/tests/shaders_compiled_v11.h"
 #include "../shader/golden_compiled_v13.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,6 +194,37 @@ test_determinism_and_cache(void)
    mali_compiled_free(&c);
    CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && c.cache_hit == 1, "the recompiled entry replaced the bad one");
    mali_compiled_free(&c);
+   {   /* size limit: oldest entries go first, newest survive, unrelated files stay */
+      char tdir[] = "/tmp/t_compile_trim.XXXXXX";
+      CHECK(mkdtemp(tdir) != NULL, "mkdtemp");
+      char p[600], buf[1000];
+      memset(buf, 7, sizeof buf);
+      for (int i = 0; i < 10; i++) {
+         snprintf(p, sizeof p, "%s/e%d.bin", tdir, i);
+         FILE *f = fopen(p, "wb"); fwrite(buf, 1, sizeof buf, f); fclose(f);
+         struct timespec ts[2] = {{1000000 + i, 0}, {1000000 + i, 0}};
+         utimensat(AT_FDCWD, p, ts, 0);
+      }
+      snprintf(p, sizeof p, "%s/keep.txt", tdir);
+      FILE *f = fopen(p, "wb"); fwrite(buf, 1, sizeof buf, f); fclose(f);
+      mali_compile_cache_trim(tdir, 0);
+      snprintf(p, sizeof p, "%s/e0.bin", tdir);
+      CHECK(access(p, F_OK) == 0, "limit 0 = unlimited");
+      mali_compile_cache_trim(tdir, 5500);   /* 10000 B > 5500: delete oldest until <= 4950 B = 4 entries */
+      int left = 0, newest_ok = 1;
+      for (int i = 0; i < 10; i++) {
+         snprintf(p, sizeof p, "%s/e%d.bin", tdir, i);
+         int ex = access(p, F_OK) == 0;
+         left += ex;
+         if (i >= 6 && !ex) newest_ok = 0;
+         if (i < 6 && ex) newest_ok = 0;
+      }
+      CHECK(left == 4 && newest_ok, "trim keeps the 4 newest of 10 (left %d)", left);
+      snprintf(p, sizeof p, "%s/keep.txt", tdir);
+      CHECK(access(p, F_OK) == 0, "trim leaves foreign files alone");
+      snprintf(buf, sizeof buf, "rm -rf %s", tdir);
+      CHECK(system(buf) == 0, "cleanup");
+   }
    {
       uint8_t u1[16], u2[16], u3[16];
       mali_compile_cache_uuid(0x90930000, u1); mali_compile_cache_uuid(0x90930000, u2); mali_compile_cache_uuid(0xb8020000, u3);
