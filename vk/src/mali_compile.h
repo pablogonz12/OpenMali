@@ -96,6 +96,7 @@ struct mali_blend_opts {
    unsigned rgb_src, rgb_dst, alpha_src, alpha_dst;   /* VkBlendFactor */
    unsigned color_mask;           /* VkColorComponentFlags */
    unsigned src0_type, src1_type;
+   unsigned logic_op_enable, logic_op;   /* VkLogicOp: replaces the equation (colour logic op on the destination) */
 };
 int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 

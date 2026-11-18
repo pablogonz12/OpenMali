@@ -53,6 +53,7 @@ static struct {
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
    int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
+   int logic;                   /* 1 + VkLogicOp: static logicOpEnable */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
 /* stencil test of the next scene (depth test is off then); values are Vulkan's */
@@ -518,6 +519,7 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
+   if (g_fx.on && g_fx.logic) { cbs.logicOpEnable = VK_TRUE; cbs.logicOp = (VkLogicOp)(g_fx.logic - 1); }
    VkDynamicState dyn[9] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
@@ -1433,7 +1435,7 @@ test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx
 }
 
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
-enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15, EXP_ONES, EXP_NOT };
 struct fxcase {
    const char *name;
    int depth, n;                  /* depth attachment, draws */
@@ -1463,6 +1465,13 @@ static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_S
 static void s_d_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_inv_src1a(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_one_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_OP_ADD); }
+/* logicOp (static logicOpEnable, colour logic op in the blend shader): the framebuffer is cleared to 0 before the draw (destination = 0) */
+static void s_lop_clear(void) { g_fx.logic = 1 + VK_LOGIC_OP_CLEAR; }
+static void s_lop_set(void) { g_fx.logic = 1 + VK_LOGIC_OP_SET; }
+static void s_lop_copy(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY; }
+static void s_lop_copy_inv(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY_INVERTED; }
+static void s_lop_xor(void) { g_fx.logic = 1 + VK_LOGIC_OP_XOR; }   /* src ^ 0 = src */
+static void s_lop_invert(void) { g_fx.logic = 1 + VK_LOGIC_OP_INVERT; }   /* ~dst = all ones */
 static void s_mask_r(void) { g_fx.wmask = 1; }
 static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
 static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
@@ -1492,6 +1501,12 @@ static const struct fxcase g_fxcases[] = {
    {"fx_blend_one_srccolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_src},
    {"fx_blend_2srcdst", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_dst_src},
    {"fx_blend_srcalpha", 0, 2, {0.5f, 0.5f}, EXP_SAME, 0, 0, s_src_alpha},
+   {"fx_logic_clear", 0, 1, {0.5f}, EXP_ZERO, 0, 8, s_lop_clear},
+   {"fx_logic_set", 0, 1, {0.5f}, EXP_ONES, 0, 8, s_lop_set},
+   {"fx_logic_copy", 0, 1, {0.5f}, EXP_SAME, 0, 8, s_lop_copy},
+   {"fx_logic_copy_inv", 0, 1, {0.5f}, EXP_NOT, 0, 8, s_lop_copy_inv},
+   {"fx_logic_xor", 0, 1, {0.5f}, EXP_SAME, 0, 8, s_lop_xor},
+   {"fx_logic_invert", 0, 1, {0.5f}, EXP_ONES, 0, 8, s_lop_invert},
    {"fx_dual_src1_color", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_src1c},
    {"fx_dual_inv_src1_alpha", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_inv_src1a},
    {"fx_dual_one_src1_color", 0, 2, {0.5f, 0.5f}, EXP_X15, 0, 4, s_d_one_src1c},
@@ -1568,6 +1583,7 @@ test_fx(void)
       if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_have_dclip) { printf("{\"test\":\"%s\",\"skipped\":\"VK_EXT_depth_clip_enable not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 8) && !g_feat.logicOp) { printf("{\"test\":\"%s\",\"skipped\":\"logicOp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_feat.dualSrcBlend) { printf("{\"test\":\"%s\",\"skipped\":\"dualSrcBlend not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
@@ -1581,6 +1597,8 @@ test_fx(void)
       case EXP_ZERO: e[0] = e[1] = e[2] = e[3] = 0; break;
       case EXP_ADDSQ: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] * e[k] / 255; e[3] = 255; break;
       case EXP_X15: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] / 2; e[3] = 255; break;
+      case EXP_ONES: e[0] = e[1] = e[2] = e[3] = 255; break;
+      case EXP_NOT: for (int k = 0; k < 4; k++) e[k] = 255 - (k == 3 ? 255 : e[k]); break;   /* ~src; the alpha written is 1.0 */
       case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
       }
       if (c->exp != EXP_COV)
@@ -1963,7 +1981,7 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading};
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};

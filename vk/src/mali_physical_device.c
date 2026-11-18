@@ -257,6 +257,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .dualSrcBlend = true,        /* t_vk_draw fx_dual_* (blend shader) */
       .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */
+      .logicOp = true,             /* t_vk_draw fx_logic_* (static logicOpEnable through the blend shader) */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */
    };
    struct vk_properties properties;
