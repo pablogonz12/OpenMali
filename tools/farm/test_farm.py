@@ -159,6 +159,12 @@ class ShellRoute(unittest.TestCase):
         self.assertEqual(rc, 76)
         self.assertFalse(os.path.exists(self.d + "/o2.tsv") and open(self.d + "/o2.tsv").read())
 
+    def test_crash_note_keeps_output_and_qpa_tails(self):
+        n = shellroute.crash_note("#beginTestCaseResult a.b.c\n<Text>x</Text>\n" * 40, "line1\nSIGSEGV in foo\n")
+        self.assertTrue(n.startswith("CRASH out: line1 SIGSEGV in foo | qpa: "))
+        self.assertNotIn("\n", n)
+        self.assertLess(len(n), 800)
+
     def test_parse_notes_keeps_deqp_failure_messages(self):
         sys.path.insert(0, HERE)
         import shellroute

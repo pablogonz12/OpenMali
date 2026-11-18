@@ -158,6 +158,13 @@ def parse_notes(text):
     return out
 
 
+def crash_note(qpa_text, out_tail):
+    """one line for the notes tsv of a case that died or timed out: what dEQP printed last (stdout/stderr tail) and the last QPA bytes"""
+    q = " ".join(qpa_text[-300:].split())
+    o = " ".join(out_tail.split())[-400:]
+    return f"CRASH out: {o} | qpa: {q}"
+
+
 def push_so(src, sha, dst):
     rc, o = adb("push", src, dst, timeout=180)
     if rc != 0:
@@ -235,6 +242,9 @@ def daily(a):
                 got[c] = norm(s)
         if unfinished and unfinished in batch and unfinished not in got:
             got[unfinished] = "Crash"                          # died or timed out inside this case
+            tail = adb("shell", f"tail -c 600 {G}/c.{a.run}.out", timeout=20)[1]
+            with open(os.path.join(L.state_dir(), "logs", f"{a.run}-notes.tsv"), "a") as nf:
+                nf.write(f"{unfinished}\t{crash_note(text, tail)}\n")
         if not got:
             tail = adb("shell", f"tail -c 400 {G}/c.{a.run}.out", timeout=20)[1].strip().replace("\n", " | ")
             print(f"NOPARSE {batch[0]} rc-line={o.strip()[-30:]!r} out: {tail}", flush=True)       # diagnostics for the farm log
