@@ -771,11 +771,30 @@ test_triangle(void)
    return ok;
 }
 
-/* arena bytes asked of hw_alloc so far (the library writes the running total to $MALI_ALLOC_STATS at every submit; set by this test) */
+/* The counter file is per process: a fixed /tmp name was shared by every test run on the machine (other worktrees, parallel check.sh) and
+ * made share_inst / share_dirty fail at random with wrapped or foreign byte totals. */
+static char g_alloc_stats[64];
+static void
+alloc_stats_rm(void)
+{
+   if (g_alloc_stats[0]) unlink(g_alloc_stats);
+}
+static void
+alloc_stats_start(void)   /* fresh counter file; the library writes the running total of hw_alloc bytes to $MALI_ALLOC_STATS at every submit */
+{
+   if (!g_alloc_stats[0]) {
+      snprintf(g_alloc_stats, sizeof g_alloc_stats, "/tmp/mali_alloc_stats.%d.txt", (int)getpid());
+      atexit(alloc_stats_rm);
+   }
+   unlink(g_alloc_stats);
+   setenv("MALI_ALLOC_STATS", g_alloc_stats, 1);
+}
+
+/* arena bytes asked of hw_alloc so far (see alloc_stats_start) */
 static unsigned long long
 alloc_bytes(void)
 {
-   FILE *fp = fopen("/tmp/mali_alloc_stats.txt", "r");
+   FILE *fp = fopen(g_alloc_stats, "r");
    unsigned long long v = 0;
    if (fp) {
       if (fscanf(fp, "%llu", &v) != 1) v = 0;
@@ -793,8 +812,7 @@ test_many(void)
       memset(counts, 0, sizeof counts);
       counts[0] = atoi(getenv("MALI_MANY_COUNTS"));
    }
-   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
-   unlink("/tmp/mali_alloc_stats.txt");
+   alloc_stats_start();
    const int nrep = getenv("MALI_MANY_REPS") ? atoi(getenv("MALI_MANY_REPS")) : 3;
    /* MALI_MANY_DYN=0: plain push-constant triangles; default: dynamic-UBO offset + DrawIndexed per draw (the bench2 triangle shape) */
    g_dyn = !getenv("MALI_MANY_DYN") || atoi(getenv("MALI_MANY_DYN"));
@@ -1594,8 +1612,7 @@ test_share_dyn(void)
 static int
 test_share_inst(void)
 {
-   unlink("/tmp/mali_alloc_stats.txt");
-   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
+   alloc_stats_start();
    float dummy[4][4] = {{0}};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -1641,8 +1658,7 @@ test_share_dirty(void)
       printf("{\"test\":\"share_dirty\",\"skipped\":\"fake backend byte counter\",\"ok\":true}\n");
       return 1;
    }
-   unlink("/tmp/mali_alloc_stats.txt");
-   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
+   alloc_stats_start();
    float same_rot[4][4] = {{0}}, var_rot[4][4] = {{0}};
    for (int i = 0; i < 4; i++) var_rot[i][0] = 0.1f * i;
    VkFence f;
