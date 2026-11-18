@@ -64,6 +64,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxFragmentOutputAttachments = 4,
       .maxFragmentDualSrcAttachments = 1,   /* dualSrcBlend: blend shader, attachment 0 */
       .maxFragmentCombinedOutputResources = 4,
+      .maxClipDistances = 8, .maxCombinedClipAndCullDistances = 8,   /* shaderClipDistance (t_vk_feat clip); maxCullDistances comes with shaderCullDistance */
       .maxComputeSharedMemorySize = 16384,
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
       .maxComputeWorkGroupInvocations = 128,
@@ -72,7 +73,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .subTexelPrecisionBits = 4,
       .mipmapPrecisionBits = 4,
       .maxDrawIndexedIndexValue = 0xffffffffu,
-      .maxDrawIndirectCount = 1,
+      .maxDrawIndirectCount = 0xffffffffu,   /* indirect draws are expanded on the CPU (expand_indirect): no hardware count limit; multiDrawIndirect needs >= 2^16-1 */
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
@@ -84,6 +85,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .minStorageBufferOffsetAlignment = 256,
       .minTexelOffset = -8,
       .maxTexelOffset = 7,
+      .minTexelGatherOffset = -8,   /* required limits; shaderImageGatherExtended is on (t_vk_feat gather) */
+      .maxTexelGatherOffset = 7,
       .maxFramebufferWidth = 4096,
       .maxFramebufferHeight = 4096,
       .maxFramebufferLayers = 256,
@@ -109,11 +112,12 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .nonCoherentAtomSize = 64,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
       /* descriptor indexing: only sampled images and samplers have update-after-bind (t_vk_feat didx); everything else reports 0 */
-      .maxUpdateAfterBindDescriptorsInAllPools = 1024, .shaderSampledImageArrayNonUniformIndexingNative = false,
+      /* UAB sampled images/samplers: a layout holds < 2^20 descriptor slots (mali_get_descriptor_set_layout_support), 1 slot each, so the 500000 required minimum fits (t_vk_info uab) */
+      .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
-      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
-      .maxPerStageUpdateAfterBindResources = 32, .maxDescriptorSetUpdateAfterBindSamplers = 96,
-      .maxDescriptorSetUpdateAfterBindSampledImages = 96,
+      .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
+      .maxPerStageUpdateAfterBindResources = 500000, .maxDescriptorSetUpdateAfterBindSamplers = 500000,
+      .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
    };
 
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,

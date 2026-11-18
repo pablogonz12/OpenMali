@@ -146,6 +146,14 @@ main(int argc, char **argv)
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
+   /* limits that the advertised features require (shaderClipDistance, shaderImageGatherExtended, multiDrawIndirect, update-after-bind) */
+   CHECK(L->maxClipDistances >= 8 && L->maxCombinedClipAndCullDistances >= 8, "clip distances %u/%u", L->maxClipDistances, L->maxCombinedClipAndCullDistances);
+   CHECK(L->minTexelGatherOffset <= -8 && L->maxTexelGatherOffset >= 7, "gather offsets %d/%u", L->minTexelGatherOffset, L->maxTexelGatherOffset);
+   CHECK(L->maxDrawIndirectCount >= 65535, "maxDrawIndirectCount %u", L->maxDrawIndirectCount);
+   CHECK(p12.maxUpdateAfterBindDescriptorsInAllPools >= 500000 && p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 500000 &&
+         p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= 500000 && p12.maxPerStageUpdateAfterBindResources >= 500000 &&
+         p12.maxPerStageUpdateAfterBindResources >= L->maxPerStageResources && p12.maxDescriptorSetUpdateAfterBindSamplers >= 500000 &&
+         p12.maxDescriptorSetUpdateAfterBindSampledImages >= 500000, "UAB limits");
 
    /* ---- features ---- */
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
@@ -360,6 +368,45 @@ main(int argc, char **argv)
       DestroyFence(dev, f, NULL);
       DestroySemaphore(dev, tl, NULL);
       DestroyCommandPool(dev, cp, NULL);
+   }
+   /* uab: the advertised UAB sampled-image/sampler limits are real: a layout, pool and set of that size allocate, and the last element can be written */
+   {
+      PFN_vkCreateDescriptorSetLayout CDSL = (PFN_vkCreateDescriptorSetLayout)gdpa(dev, "vkCreateDescriptorSetLayout");
+      PFN_vkDestroyDescriptorSetLayout DDSL = (PFN_vkDestroyDescriptorSetLayout)gdpa(dev, "vkDestroyDescriptorSetLayout");
+      PFN_vkCreateDescriptorPool CDP = (PFN_vkCreateDescriptorPool)gdpa(dev, "vkCreateDescriptorPool");
+      PFN_vkDestroyDescriptorPool DDP = (PFN_vkDestroyDescriptorPool)gdpa(dev, "vkDestroyDescriptorPool");
+      PFN_vkAllocateDescriptorSets ADS = (PFN_vkAllocateDescriptorSets)gdpa(dev, "vkAllocateDescriptorSets");
+      PFN_vkUpdateDescriptorSets UDS = (PFN_vkUpdateDescriptorSets)gdpa(dev, "vkUpdateDescriptorSets");
+      PFN_vkCreateSampler CS = (PFN_vkCreateSampler)gdpa(dev, "vkCreateSampler");
+      PFN_vkDestroySampler DS = (PFN_vkDestroySampler)gdpa(dev, "vkDestroySampler");
+      const uint32_t N = 500000;
+      VkDescriptorBindingFlags bf[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+                                        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+      VkDescriptorSetLayoutBindingFlagsCreateInfo bfi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 2, .pBindingFlags = bf};
+      VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = N, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                            {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = N, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+      VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi,
+                                             .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, .bindingCount = 2, .pBindings = lb};
+      VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+      CHECK(CDSL(dev, &dli, NULL, &dsl) == VK_SUCCESS, "uab: layout with %u sampled images + %u samplers", N, N);
+      VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, N}, {VK_DESCRIPTOR_TYPE_SAMPLER, N}};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                                        .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+      VkDescriptorPool dp = VK_NULL_HANDLE;
+      CHECK(CDP(dev, &dpi, NULL, &dp) == VK_SUCCESS, "uab: pool");
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+      VkDescriptorSet set = VK_NULL_HANDLE;
+      CHECK(ADS(dev, &dai, &set) == VK_SUCCESS, "uab: allocate set");
+      VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST};
+      VkSampler smp = VK_NULL_HANDLE;
+      CHECK(CS(dev, &si, NULL, &smp) == VK_SUCCESS, "uab: sampler");
+      VkDescriptorImageInfo ii = {.sampler = smp};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .dstArrayElement = N - 1, .descriptorCount = 1,
+                                .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &ii};
+      UDS(dev, 1, &w, 0, NULL);   /* the last element must not overrun the set (ASAN/valgrind catch it; a crash fails the test) */
+      DS(dev, smp, NULL);
+      DDP(dev, dp, NULL);
+      DDSL(dev, dsl, NULL);
    }
    DestroyDevice(dev, NULL);
 
