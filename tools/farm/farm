@@ -85,8 +85,7 @@ def cmd_submit(a):
     job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
                     cases=a.case, repeat=a.repeat, only=a.only, prio=a.prio, keep_old=a.keep_old)
     if batch:
-        job["batch"] = batch
-        L.write_json(L.job_path(job["id"]), job)
+        job = L.update_job(job["id"], lambda x: x.update(batch=batch))
     if dirty:
         print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
     if not a.keep_old:
@@ -123,8 +122,7 @@ def cmd_batch(a):
 def cmd_prio(a):
     j = L.find_job(a.job)
     old = L.job_prio(j)
-    j["prio"] = a.n
-    L.write_json(L.job_path(j["id"]), j)
+    j = L.update_job(j["id"], lambda x: x.update(prio=a.n))
     print(f"{j['id']} ({j['suite']}): priority {old} -> {a.n} (lower runs first; gates 0, bench/menu 10, cases 20)")
 
 
@@ -425,19 +423,22 @@ def cmd_cancel(a):
             print(f"{jid}: no such job")
             continue
         out = []
-        for c, p in j["parts"].items():
-            if p["state"] == "pending":
-                p["state"] = "cancelled"
-                out.append(f"{c} cancelled")
-            elif p["state"] == "running":
-                if a.running:
-                    open(os.path.join(L.state_dir(), "cancel", j["id"]), "w").close()      # farmd stops it within one poll and releases the lock
-                    out.append(f"{c} stop requested")
+
+        def cancel(x):                                    # decided under the job lock on the CURRENT state, never on a stale read
+            out.clear()
+            for c, p in x["parts"].items():
+                if p["state"] == "pending":
+                    p["state"] = "cancelled"
+                    out.append(f"{c} cancelled")
+                elif p["state"] == "running":
+                    if a.running:
+                        open(os.path.join(L.state_dir(), "cancel", x["id"]), "w").close()      # farmd stops it within one poll and releases the lock
+                        out.append(f"{c} stop requested")
+                    else:
+                        out.append(f"{c} RUNNING (use --running)")
                 else:
-                    out.append(f"{c} RUNNING (use --running)")
-            else:
-                out.append(f"{c} {p.get('verdict') or p['state']} (untouched)")
-        L.write_json(L.job_path(j["id"]), j)
+                    out.append(f"{c} {p.get('verdict') or p['state']} (untouched)")
+        L.update_job(j["id"], cancel)
         print(f"{j['id']}: " + ", ".join(out))
 
 
