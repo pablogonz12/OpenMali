@@ -354,6 +354,53 @@ class T(unittest.TestCase):
         self.farmd()                                                           # the queued hold/job run on the phone: it is not idle
         self.assertEqual(self.stopped(), [])
 
+    def git_rev(self, r):
+        return subprocess.run(["git", "-C", HERE, "rev-parse", r], capture_output=True, text=True).stdout.strip()
+
+    def test_submit_in_flight_is_idempotent_and_rerun_forces(self):
+        rc, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        rc, j2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.assertEqual(j1, j2)
+        self.assertIn("already pending", err)
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v13")[1], j1)        # other class: a new job
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--rerun")[1], j1)
+
+    def test_single_case_diagnostic_goes_before_full_cases(self):
+        _, one, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--need", "v11")
+        _, many, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--case", "dEQP-VK.a.c", "--need", "v11")
+        _, forced, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.z", "--need", "v11", "--prio", "30")
+        self.assertEqual((L.job_prio(L.find_job(one)), L.job_prio(L.find_job(many)), L.job_prio(L.find_job(forced))), (L.SINGLE_CASE_PRIO, 20, 30))
+        self.assertLess(L.SINGLE_CASE_PRIO, 10)                                  # also before bench/menu
+
+    def test_batch_passes_as_one_job(self):
+        rc, jid, err = self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")
+        self.assertEqual(rc, 0, err)
+        j = L.find_job(jid)
+        self.assertEqual(j["batch"]["refs"], ["HEAD", "HEAD~1"])
+        self.assertTrue(j["ref"].startswith("batch:"))
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
+        self.assertIn("all branches pass together", self.farm("batch", jid)[1])
+        self.assertEqual(self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")[1], jid)      # same batch: the same merge commit, reused
+
+    def test_batch_failure_bisects_per_branch(self):
+        culprit = self.git_rev("HEAD~1")[:12]
+        rc, jid, err = self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale", "--env", "FAKE_FAIL_COMMIT=" + culprit)
+        self.assertEqual(rc, 0, err)
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "fail")
+        for _ in range(4):                                                       # bisect jobs are created, then run
+            self.farmd()
+        out = self.farm("batch", jid)[1]
+        res = dict((l.split()[0], l.split()[-1]) for l in out.splitlines()[1:] if l.startswith("  H"))
+        self.assertEqual(res, {"HEAD": "pass", "HEAD~1": "fail"}, out)
+
+    def test_batch_needs_two_refs(self):
+        self.assertNotEqual(self.farm("submit", "--batch", "HEAD")[0], 0)
+        self.assertNotEqual(self.farm("submit")[0], 0)
+
     def test_guardlib_parsing(self):
         import guardlib as G
         ci = "  128% 4242/com.example.MediaDeck: 100% user + 28% kernel\n  3.1% 99/system_server: 2% user\n"
@@ -894,7 +941,7 @@ class T(unittest.TestCase):
     def test_cancel(self):
         self.attach("dev-a")
         _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
         out = self.farm("cancel", j1)[1]
         self.assertIn("v11 cancelled", out)
         self.assertEqual(L.job_verdict(L.find_job(j1)), "cancelled")
@@ -1173,10 +1220,10 @@ class T(unittest.TestCase):
     def test_farm_prio_and_submit_prio(self):
         _, a, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.y")
         _, b, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.z", "--prio", "3")
-        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (20, 3))
+        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (L.SINGLE_CASE_PRIO, 3))
         rc, out, _ = self.farm("prio", a, "1")
         self.assertEqual(rc, 0)
-        self.assertIn("20 -> 1", out)
+        self.assertIn("5 -> 1", out)
         self.assertEqual([j["id"] for j in BL.order_jobs(L.list_jobs())], [a, b])
         self.assertEqual(self.farm("prio", "nosuchjob", "1")[0], 1)
         self.nosweep()
@@ -1411,7 +1458,7 @@ class T(unittest.TestCase):
             self.assertEqual(L.find_job(j2).get("build_cached"), j1)
             # archive from before the fix (no t_* stored): the smoke job must rebuild, not run with 0 tests
             shutil.rmtree(f.tests_dir(sha))
-            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
             os.makedirs(f.tree(j3) + "/vk", exist_ok=True)
             open(f.tree(j3) + "/vk/build.sh", "w").write("")
             f.build(L.find_job(j3))
@@ -1587,8 +1634,11 @@ class T(unittest.TestCase):
         rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
         self.assertNotEqual(rc, 0)
         self.assertIn("selects no class", err)
+        self.attach("dev-a")
         _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
-        self.farmd()
+        for _ in range(3):                                      # earlier jobs of this test run first
+            self.farmd()
+        self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
         self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
 
     def test_find_passed_unit(self):

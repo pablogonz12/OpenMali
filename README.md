@@ -27,9 +27,9 @@ How close mali-open gets to the Mali bridge (MediaDeck's, the target) per phone,
 
 | Phone | GPU / arch | Benchmark | Ours first (build, date) | Ours latest (build, date) | Change | Bridge latest fps | Ours % of bridge | PanVK | GPU ms ours / bridge |
 |---|---|---|---|---|---|---|---|---|---|
-| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 54.8 (633f2069a, 2026-11-18) | +19% | 71.4 (p25) | 77% | not measured | 13.04 / 11.31 |
-| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 61.4 (633f2069a, 2026-11-18) | +34% | 70.6 (p25) | 87% | not measured | 13.55 / 11.32 |
-| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 287.5 (633f2069a, 2026-11-18) | +296% | 185.8 (p25) | 155% | not measured | 1.15 / 2.77 |
+| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 60.7 (befc62510, 2026-11-18) | +32% | 71.5 (p25) | 85% | not measured | 13.27 / 11.31 |
+| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 61.6 (befc62510, 2026-11-18) | +34% | 71.1 (p25) | 87% | not measured | 13.12 / 11.31 |
+| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 116.5 (befc62510, 2026-11-18) | +60% | 171.5 (p25) | 68% | not measured | 1.11 / 2.30 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | 76.9 (20e290c1a, 2026-11-17) | 492.8 (453cd8d0c, 2026-11-18) | +541% | 451.6 (p25) | 109% | not measured | 1.55 / 1.32 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | 77.3 (20e290c1a, 2026-11-17) | 496.9 (453cd8d0c, 2026-11-18) | +543% | 454.1 (p25) | 109% | not measured | 1.53 / 1.32 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 601.6 (453cd8d0c, 2026-11-18) | +501% | 347.6 (p25) | 173% | not measured | 1.17 / 1.61 |
@@ -93,9 +93,9 @@ Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DX
 | Driver | Pass | Fail | NotSupported | Crash |
 |---|---|---|---|---|
 | PanVK oracle | 642 | 18 | 721 | 0 |
-| mali-open (latest recheck) | 272 | 136 | 971 | 0 (plus 2 other) |
+| mali-open (v13 daily on main `b0ea148`, farm job 20261118-172114) | 425 | 27 | 929 | 0 |
 
-The oracle passes 97.3 % of the cases it supports. We pass about 67 % of ours on this sample. The earlier 26.8 % figure (782 cases, `api.*` only) is superseded, but the sample is
+The oracle passes 97.3 % of the cases it supports. We pass about 94 % of ours on this sample (425 of 452). The earlier 26.8 % figure (782 cases, `api.*` only) is superseded, but the sample is
 still a subset, not the full CTS. No R3 gate run (95 %) has been done.
 
 ## Build and test
@@ -128,9 +128,9 @@ driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/p
 
 - Performance is not uniform (see the table above): on the Poco X8 (G925) we are at parity or better in `cube-720p` (110 % of the bridge) and `triangle-3k` (162 %), but `cube-native` is only 26 % of the bridge (120 vs 458 fps, GPU ms equal, so the loss is on the present path). The Poco X4 (G610, v10) has no `ours` cube row; its triangle row is 44 % of the bridge.
 - Draw-count scaling (CMF, `bench/README.md`): 5k, 10k and 20k draws per frame now work, but at 10k/20k our CPU ms per frame is above the bridge's. No poco-x8 5k/10k/20k rows have been published yet.
-- Known dEQP fails: `a2r10g10b10` `sample_count_4` fails on v11 and v13 (baseline refreshed, not fixed), plus the 136 sample failures below. `logicOp`, `vertex_attribute_divisor` and part of the Steam/zink gap list are still open (`vk/STEAM-GAPS.md`).
+- Known dEQP fails: `a2r10g10b10` `sample_count_4` fails on v11 and v13 (baseline refreshed, not fixed), plus the 27 sample failures below. `logicOp`, `vertex_attribute_divisor` and part of the Steam/zink gap list are still open (`vk/STEAM-GAPS.md`).
 
-- Not conformant: dEQP numbers above are a sample, 136 sample cases fail.
+- Not conformant: dEQP numbers above are a sample, 27 sample cases fail.
 - v13 coverage is thinner than v11. A geometry-buffer size regression broke v13 draws and was fixed, so recheck draws on every change.
 - No MSAA path, no geometry or tessellation shaders, no GPL, no robustness2 bounds clamping.
 - Firmware support is a fixed list (uAPI 1.21 and 1.30). Other versions are refused on purpose.

@@ -85,6 +85,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .minStorageBufferOffsetAlignment = 256,
       .minTexelOffset = -8,
       .maxTexelOffset = 7,
+      .minTexelGatherOffset = -8,   /* shaderImageGatherExtended: i4 narrow / i8 register texel offset; t_vk_feat gatherlim */
+      .maxTexelGatherOffset = 7,
       .maxFramebufferWidth = 4096,
       .maxFramebufferHeight = 4096,
       .maxFramebufferLayers = 256,

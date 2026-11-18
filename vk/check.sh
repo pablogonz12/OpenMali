@@ -10,7 +10,9 @@
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
 SAN=${MALI_SAN:-0}
-if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san; else OUT=$V/out/native; fi
+if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san
+elif [ "${MALI_COV:-0}" = 1 ]; then export MALI_TARGET=native-cov; OUT=$V/out/native-cov   # gcov build (tools/coverage.sh)
+else OUT=$V/out/native; fi
 build=1; verbose=0; bless=0; deqp_host=0
 for a in "$@"; do
    case $a in --no-build) build=0 ;; -v) verbose=1 ;; --bless) bless=1 ;; --deqp-host) deqp_host=1 ;; *) echo "usage: check.sh [--no-build] [-v] [--bless] [--deqp-host]"; exit 2 ;; esac
@@ -23,6 +25,8 @@ if [ "$SAN" = 1 ]; then
 fi
 # The compile cache (mali_compile.c, ~/.cache by default) must not decide a golden: a stale entry from an older compiler made main's own goldens
 # fail on a clean cache (vk_draw FS FAU 0x40 vs the fresh 0x09000000). Every check run starts from an empty private cache.
+# MALI_OPT_GCM=1 bypasses the cache (mali_compile.c use_cache), which the cold/warm and damaged-entry checks below need active: do not inherit it.
+unset MALI_OPT_GCM
 export MALI_SHADER_CACHE=$OUT/shader-cache; rm -rf "$MALI_SHADER_CACHE"; mkdir -p "$MALI_SHADER_CACHE"
 if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
@@ -132,8 +136,11 @@ done; done
 # teeth: a valid entry (good checksum) holding another shader's code, what a stale entry of an older lowering looks like, must change the warm dump
 CW=$OUT/cw-cache-vk_draw-v11
 set -- "$CW"/*.bin
-if [ $# -ge 2 ]; then cp "$1" "$2"; fi
-if [ $# -ge 2 ] && cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (a wrong-but-valid entry changes the dump)"
+# the largest entry over the smallest one: the swap stays loadable (checksum good) and shows in the dump however the hashes order the file names
+sw1=$(ls -S "$@" | head -1); sw2=$(ls -S "$@" | tail -1)
+[ "$(stat -c %s "$sw1")" != "$(stat -c %s "$sw2")" ] || sw1=
+if [ -n "$sw1" ]; then cp "$sw1" "$sw2"; fi
+if [ -n "$sw1" ] && cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (a wrong-but-valid entry changes the dump)"
 else echo "FAIL  cache cold/warm self-test: a swapped cache entry did not change the vk_draw dump"; fail=1; fi
 # and the checksum must reject a damaged entry: last byte flipped (inside the checksum) -> recompiled, dump identical to cold
 for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done
