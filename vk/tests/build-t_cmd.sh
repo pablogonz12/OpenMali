@@ -12,9 +12,15 @@ MESA=${MESA_SRC:-$D/third_party/mesa}
 B=${MESA_BUILD:-$D/third_party/build-vk}; OUT=$V/out/native/tcmd; GEN=$OUT/gen; mkdir -p "$OUT" "$GEN"
 export PATH=$D/third_party/venv/bin:$PATH
 PY=$D/third_party/venv/bin/python
-[ -f "$GEN/mali_entrypoints.c" ] || "$PY" "$MESA/src/vulkan/util/vk_entrypoints_gen.py" --xml "$MESA/src/vulkan/registry/vk.xml" \
-   --proto --weak --out-h "$GEN/mali_entrypoints.h" --out-c "$GEN/mali_entrypoints.c" \
-   --prefix mali --device-prefix mali_v10 --device-prefix mali_v11 --device-prefix mali_v13 --beta false
+# Regenerate whenever the generator arguments (stamp), the generator or the registry change; a bare "-f" test kept a table
+# generated before mali_v10 existed and broke t_cmd with "mali_v10_device_entrypoints undeclared".
+GENARGS="--proto --weak --prefix mali --device-prefix mali_v10 --device-prefix mali_v11 --device-prefix mali_v13 --beta false"
+if [ ! -f "$GEN/mali_entrypoints.c" ] || [ "$(cat "$GEN/.args" 2>/dev/null)" != "$GENARGS" ] \
+   || [ "$MESA/src/vulkan/util/vk_entrypoints_gen.py" -nt "$GEN/mali_entrypoints.c" ] || [ "$MESA/src/vulkan/registry/vk.xml" -nt "$GEN/mali_entrypoints.c" ]; then
+   "$PY" "$MESA/src/vulkan/util/vk_entrypoints_gen.py" --xml "$MESA/src/vulkan/registry/vk.xml" \
+      --out-h "$GEN/mali_entrypoints.h" --out-c "$GEN/mali_entrypoints.c" $GENARGS
+   echo "$GENARGS" > "$GEN/.args"
+fi
 cd "$B"
 CMDS=$(ninja -t commands src/panfrost/vulkan/libvulkan_panfrost.so)
 CCLINE=$(grep -m1 -- 'panvk_instance\.c$' <<<"$CMDS")
