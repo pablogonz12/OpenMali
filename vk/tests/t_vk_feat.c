@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|spec|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|spec|maint5|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -30,6 +30,13 @@ static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
 static VkBool32 g_mirror, g_bda, g_didx;
+static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
+static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
+static int g_m5;       /* maintenance5 feature advertised */
+static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
+static int test_idx32(void);
+static int test_zinit(void);
+#define BIND_IB(cb, b, off, ty) do { if (g_ib2) g_cbib2(cb, b, off, VK_WHOLE_SIZE, ty); else CmdBindIndexBuffer(cb, b, off, ty); } while (0)
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
@@ -75,6 +82,7 @@ memtype(uint32_t bits, VkMemoryPropertyFlags want)
    return -1;
 }
 
+static uint32_t *g_ml_last; static size_t g_ml_lastsz;
 static VkShaderModule
 load_spv(const char *name)
 {
@@ -88,6 +96,10 @@ load_spv(const char *name)
    uint32_t *buf = malloc(n);
    if (fread(buf, 1, n, f) != (size_t)n) { fclose(f); free(buf); return VK_NULL_HANDLE; }
    fclose(f);
+   if (g_modless) {   /* no module is created: the caller chains the code to the stage; g_code[] owns the words */
+      g_ml_last = buf; g_ml_lastsz = (size_t)n;
+      return (VkShaderModule)(uintptr_t)1;   /* "loaded" marker only: never passed to the driver */
+   }
    VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = n, .pCode = buf};
    VkShaderModule m = VK_NULL_HANDLE;
    if (CreateShaderModule(dev, &ci, NULL, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
@@ -215,16 +227,21 @@ cb_submit(struct tgt *t, VkCommandBuffer cb)
 static int
 make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout dsl, uint32_t pc_size, VkPipelineLayout *lay, VkPipeline *pipe)
 {
-   VkShaderModule v = load_spv(vs), f = load_spv(fs);
+   VkShaderModule v = load_spv(vs);
+   uint32_t *vcode = g_ml_last; size_t vsz = g_ml_lastsz;
+   VkShaderModule f = load_spv(fs);
+   uint32_t *fcode = g_ml_last; size_t fsz = g_ml_lastsz;
    CHECK(v && f, "shader modules %s %s", vs, fs);
+   VkShaderModuleCreateInfo vmci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = vsz, .pCode = vcode};
+   VkShaderModuleCreateInfo fmci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = fsz, .pCode = fcode};
    VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = pc_size};
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = dsl ? 1 : 0, .pSetLayouts = &dsl,
                                      .pushConstantRangeCount = pc_size ? 1 : 0, .pPushConstantRanges = &pcr};
    CHECK(CreatePipelineLayout(dev, &pli, NULL, lay) == VK_SUCCESS, "pipeline layout");
    VkPipelineShaderStageCreateInfo st[2] = {
-      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = v, .pName = "main"},
-      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = f, .pName = "main",
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .pNext = g_modless ? &vmci : NULL, .module = g_modless ? VK_NULL_HANDLE : v, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .pNext = g_modless ? &fmci : NULL, .module = g_modless ? VK_NULL_HANDLE : f, .pName = "main",
        .pSpecializationInfo = g_spec_fs}};
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -245,8 +262,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
-   DestroyShaderModule(dev, v, NULL);
-   DestroyShaderModule(dev, f, NULL);
+   if (g_modless) { free(vcode); free(fcode); }
+   else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
    return 1;
 }
@@ -315,7 +332,7 @@ test_firstinst(void)
    VkCommandBuffer cb = cb_begin(&t);
    CHECK(cb, "cmdbuf");
    begin_pass(cb, &t, pipe);
-   CmdBindIndexBuffer(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
    CmdDrawIndirect(cb, ib.b, 16, 1, 16);                 /* A: firstInstance 0 -> x -1..-0.5 */
    CmdDrawIndirect(cb, ib.b, 32, 1, 16);                 /* B: firstInstance 2 -> x 0..0.5 */
    CmdDrawIndirect(cb, ib.b, 48, 1, 16);                 /* D: instances 3,4 -> x 0.5..1 (4 is off screen) */
@@ -358,7 +375,7 @@ test_idx32(void)
    VkCommandBuffer cb = cb_begin(&t);
    CHECK(cb, "cmdbuf");
    begin_pass(cb, &t, pipe);
-   CmdBindIndexBuffer(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
    CmdDrawIndexed(cb, 3, 1, 0, -0x01000000, 0);          /* indices above 2^24: vertex 0..2, x -1..-0.5 */
    CmdDrawIndexed(cb, 3, 1, 3, -0x7ffffff0, 2);          /* indices near 2^31, firstInstance 2: x 0..0.5 */
    CmdEndRenderPass(cb);
@@ -1116,6 +1133,22 @@ test_spec(void)
    return ok;
 }
 
+/* VK_KHR_maintenance5: the feature bit, vkCmdBindIndexBuffer2KHR (indexed draws, test idx32) and module-less stages (graphics + compute through
+ * the run_comp tests). Same shaders and the same expected pixels as the plain-module runs, so any difference is the new path. */
+static int
+test_maint5(void)
+{
+   CHECK(g_m5, "maintenance5 feature bit not advertised");
+   CHECK(g_cbib2, "vkCmdBindIndexBuffer2KHR missing");
+   g_modless = 1; g_ib2 = 1;
+   int ok = test_idx32();       /* graphics: module-less VS+FS, BindIndexBuffer2 */
+   g_ib2 = 0;
+   ok &= test_zinit();          /* compute: module-less CS */
+   g_modless = 0;
+   printf("{\"test\":\"maint5\",\"ok\":%s%s}\n", ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend (calls and compile ran)\"" : "");
+   return ok;
+}
+
 /* bufferDeviceAddress: push a 64-bit pointer (buffer address + 256) to a compute shader that writes through it. */
 static int
 test_bda(void)
@@ -1402,13 +1435,15 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
    VkShaderModule m = load_spv(spv);
    CHECK(m, "shader %s", spv);
+   VkShaderModuleCreateInfo cmci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = g_ml_lastsz, .pCode = g_ml_last};
    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
    VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
-      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_sgctl ? &rss : NULL,
-                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_modless ? (const void *)&cmci : g_sgctl ? (const void *)&rss : NULL,
+                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = g_modless ? VK_NULL_HANDLE : m, .pName = "main"}};
    VkPipeline pipe;
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
-   DestroyShaderModule(dev, m, NULL);
+   if (g_modless) free(g_ml_last); else DestroyShaderModule(dev, m, NULL);
    CHECK(r == VK_SUCCESS, "pipeline %s = %d", spv, r);
    VkCommandBuffer cb = cb_begin(t);
    CHECK(cb, "cmdbuf");
@@ -1673,7 +1708,7 @@ test_dparams(void)
    VkCommandBuffer cb = cb_begin(&t);
    CHECK(cb, "cmdbuf");
    begin_pass(cb, &t, pipe);
-   CmdBindIndexBuffer(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
    CmdDrawIndirect(cb, ib.b, 16, 3, 16);
    CmdDraw(cb, 3, 1, 9, 100);
    CmdDrawIndexed(cb, 3, 1, 0, 5, 200);
@@ -2150,8 +2185,11 @@ main(int argc, char **argv)
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
    VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &f12};
+   VkPhysicalDeviceMaintenance5FeaturesKHR fm5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &f12};
+   rb2.pNext = &fm5;
    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rb2};
    GetPhysicalDeviceFeatures2(pd, &f2);
+   g_m5 = fm5.maintenance5;
    g_null = rb2.nullDescriptor;
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    f11.pNext = &f13;
@@ -2189,12 +2227,16 @@ main(int argc, char **argv)
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
-   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e11, .nullDescriptor = rb2.nullDescriptor};
+   VkPhysicalDeviceMaintenance5FeaturesKHR em5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &e11, .maintenance5 = g_m5};
+   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
-   const char *dexts[] = {"VK_EXT_robustness2", "VK_EXT_private_data"};
+   const char *dexts[3]; uint32_t ndx = 0;
+   if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
+   if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
+   dexts[ndx++] = "VK_EXT_private_data";
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
-                            .enabledExtensionCount = 1 + (rb2.nullDescriptor ? 1 : 0), .ppEnabledExtensionNames = rb2.nullDescriptor ? dexts : dexts + 1};
+                            .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
@@ -2204,6 +2246,7 @@ main(int argc, char **argv)
    g_pd_set = (PFN_vkSetPrivateData)GetDeviceProcAddr(dev, "vkSetPrivateDataEXT");
    g_pd_get = (PFN_vkGetPrivateData)GetDeviceProcAddr(dev, "vkGetPrivateDataEXT");
    g_pd_de = (PFN_vkDestroyPrivateDataSlot)GetDeviceProcAddr(dev, "vkDestroyPrivateDataSlotEXT");
+   g_cbib2 = (PFN_vkCmdBindIndexBuffer2KHR)GetDeviceProcAddr(dev, "vkCmdBindIndexBuffer2KHR");
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
@@ -2218,6 +2261,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
    if (ok && CASE_ON("spec")) ok &= test_spec();
+   if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
