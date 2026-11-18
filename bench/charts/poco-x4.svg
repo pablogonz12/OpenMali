@@ -155,7 +155,7 @@ L 370.8 57.143912
    <g id="line2d_15">
     <path d="M 50.888281 57.827487 
 L 370.8 57.827487 
-" clip-path="url(#p2d7fcdc09c)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #ff7f0e; stroke-width: 1.5"/>
+" clip-path="url(#p2d7fcdc09c)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #1f77b4; stroke-width: 1.5"/>
    </g>
    <g id="patch_3">
     <path d="M 50.888281 251.065896 
@@ -198,7 +198,7 @@ z
      <path d="M 57.188281 240.634256 
 L 64.188281 240.634256 
 L 71.188281 240.634256 
-" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #ff7f0e; stroke-width: 1.5"/>
+" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #1f77b4; stroke-width: 1.5"/>
     </g>
     <g id="text_10">
      <text style="font-size: 7px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start" x="76.788281" y="243.084256" transform="rotate(-0 76.788281 243.084256)">bridge p22</text>
@@ -328,7 +328,7 @@ L 741.6 50.825757
    <g id="line2d_31">
     <path d="M 421.688281 57.827487 
 L 741.6 57.827487 
-" clip-path="url(#p981a7efe51)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #ff7f0e; stroke-width: 1.5"/>
+" clip-path="url(#p981a7efe51)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #1f77b4; stroke-width: 1.5"/>
    </g>
    <g id="patch_9">
     <path d="M 421.688281 251.065896 
@@ -371,7 +371,7 @@ z
      <path d="M 427.988281 240.634256 
 L 434.988281 240.634256 
 L 441.988281 240.634256 
-" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #ff7f0e; stroke-width: 1.5"/>
+" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #1f77b4; stroke-width: 1.5"/>
     </g>
     <g id="text_20">
      <text style="font-size: 7px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start" x="447.588281" y="243.084256" transform="rotate(-0 447.588281 243.084256)">bridge p22</text>
@@ -543,7 +543,7 @@ z
    <g id="line2d_50">
     <path d="M 792.488281 52.728389 
 L 1112.4 52.728389 
-" clip-path="url(#p2795a7c836)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #ff7f0e; stroke-width: 1.5"/>
+" clip-path="url(#p2795a7c836)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #1f77b4; stroke-width: 1.5"/>
    </g>
    <g id="patch_15">
     <path d="M 792.488281 251.065896 
@@ -598,7 +598,7 @@ L 812.788281 230.133709
      <path d="M 798.788281 240.634256 
 L 805.788281 240.634256 
 L 812.788281 240.634256 
-" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #ff7f0e; stroke-width: 1.5"/>
+" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #1f77b4; stroke-width: 1.5"/>
     </g>
     <g id="text_32">
      <text style="font-size: 7px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start" x="818.388281" y="243.084256" transform="rotate(-0 818.388281 243.084256)">bridge p22</text>

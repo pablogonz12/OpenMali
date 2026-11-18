@@ -27,12 +27,12 @@ How close mali-open gets to the Mali bridge (MediaDeck's, the target) per phone,
 
 | Phone | GPU / arch | Benchmark | Ours first (build, date) | Ours latest (build, date) | Change | Bridge latest fps | Ours % of bridge | PanVK | GPU ms ours / bridge |
 |---|---|---|---|---|---|---|---|---|---|
-| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 46.4 (9a887b23d, 2026-11-18) | +1% | 73.3 (p25) | 63% | not measured | 11.86 / 11.31 |
-| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 46.2 (9a887b23d, 2026-11-18) | +1% | 71.1 (p25) | 65% | not measured | 13.05 / 11.32 |
-| cmf | CMF Mali-G615 (v11) | triangle-3k | 59.2 (e2cd68cd2, 2026-11-18) | 120.6 (9a887b23d, 2026-11-18) | +104% | 188.0 (p25) | 64% | not measured | 0.86 / 2.55 |
-| poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | n/a | n/a | n/a | 436.4 (p22) | n/a | not measured | n/a |
-| poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | n/a | n/a | n/a | 462.8 (p22) | n/a | not measured | n/a |
-| poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 108.4 (531f79fa4, 2026-11-18) | +8% | 362.9 (p22) | 30% | not measured | 1.64 / 1.63 |
+| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 53.3 (0bc0e771d, 2026-11-18) | +16% | 72.5 (p25) | 74% | not measured | 12.89 / 11.26 |
+| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 44.3 (0bc0e771d, 2026-11-18) | -3% | 72.1 (p25) | 62% | not measured | 13.06 / 11.31 |
+| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 127.6 (0bc0e771d, 2026-11-18) | +76% | 148.4 (p25) | 86% | not measured | 0.90 / 2.34 |
+| poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | 76.9 (20e290c1a, 2026-11-17) | 113.1 (6de4ce393, 2026-11-18) | +47% | 325.8 (p25) | 35% | not measured | 1.40 / 1.24 |
+| poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | 77.3 (20e290c1a, 2026-11-17) | 110.7 (6de4ce393, 2026-11-18) | +43% | 325.3 (p25) | 34% | not measured | 1.40 / 1.26 |
+| poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 187.7 (6de4ce393, 2026-11-18) | +88% | 342.2 (p25) | 55% | not measured | 1.22 / 1.62 |
 | poco-x4 | Poco X4 Mali-G610 (v10) | cube-720p | n/a | n/a | n/a | 119.6 (p22) | n/a | not measured | n/a |
 | poco-x4 | Poco X4 Mali-G610 (v10) | cube-native | n/a | n/a | n/a | 115.8 (p22) | n/a | not measured | n/a |
 | poco-x4 | Poco X4 Mali-G610 (v10) | triangle-3k | 149.7 (23edb3f94-dirty, 2026-11-18) | 149.7 (23edb3f94-dirty, 2026-11-18) | n/a | 338.3 (p22) | 44% | not measured | 0.92 / 1.15 |

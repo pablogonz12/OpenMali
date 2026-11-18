@@ -99,6 +99,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | poco-x4 | v10 | bridge | malideck p22 (1.0.0-p22-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 338.3 | 154.3 | 0 | 0.50 | 1.19 | 398.2 | 0.49 | 1.15 | present fifo/4img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | poco-x4 | v10 | ours | 23edb3f94-dirty | triangle-3k | 149.7 | 89.7 | 0 | 4.84 | 1.03 | 210.4 | 4.34 | 0.92 | present mailbox/3img/fif1/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
 
+### mali-open 3cd6b12b8-dirty (2026-11-17)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p19 (0.7.1-bridge0.5.5.3-p10-gs2) | triangle-3k | 135.2 | 63.9 | 0 | 1.26 | 4.08 | 274.6 | 0.74 | 2.60 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-17 |
+| cmf | v11 | ours | 3cd6b12b8-dirty | triangle-3k | 72.6 | 45.4 | 0 | 7.96 | 2.82 | 157.9 | 5.50 | 2.89 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-17 |
+
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |

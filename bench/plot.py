@@ -19,7 +19,7 @@ def drv_kind(d):
 
 def load(path):
     """-> list of clean rows {phone,variant,kind,build,ver,date,fps,gpu,idx}; INVALID/failed/unpublishable rows are dropped"""
-    out = []
+    out, dropped = [], []
     for i, line in enumerate(open(path)):
         if not line.strip():
             continue
@@ -27,13 +27,17 @@ def load(path):
         kind = drv_kind(r.get("driver"))
         pres = r.get("presented")
         if not kind or not isinstance(pres, dict) or not pres.get("fps"):
+            dropped.append((r.get("phone"), r.get("variant"), r.get("driver"), r.get("commit"), "no fps / unknown driver"))
             continue
         if r.get("version") == "fake" or any(BAD.search(str(r.get(k) or "")) for k in ("note", "notes", "status", "best_settings")):
+            dropped.append((r.get("phone"), r.get("variant"), r.get("driver"), r.get("commit"), "invalid/fake/not publishable"))
             continue
         off = r.get("offscreen") if isinstance(r.get("offscreen"), dict) else {}
         build = str(r.get("commit_full") or r.get("commit") or "?")
         out.append({"phone": r["phone"], "variant": r["variant"], "kind": kind, "build": build[:9] + ("-dirty" if build.endswith("-dirty") and "-dirty" not in build[:9] else ""),
                     "ver": r.get("version") or "?", "date": r.get("date") or "", "fps": float(pres["fps"]), "gpu": off.get("gpu_ms"), "idx": i})
+    for d in dropped:                                            # never drop silently: every skipped row is named
+        print("plot: skipped row", *d, file=sys.stderr)
     return out
 
 
@@ -124,7 +128,7 @@ def charts(data, outdir):
                 ax.set_xticks([])
             n = max(len(o), 1)
             for k, (ver, rs) in enumerate(d["bridge"].items()):
-                c = f"C{k + 1}"
+                c = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:gray"][k % 5]      # never green: that is ours
                 pos = {r["build"]: i for i, r in enumerate(o)}
                 hit = [r for r in rs if r["build"] in pos]
                 if len(rs) > 1 and hit:
