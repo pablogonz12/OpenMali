@@ -80,11 +80,12 @@ Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DX
 | Buffers, images, samplers, descriptors, pipeline layout | Done, byte-exact against libkbase golden descriptors |
 | Compiler path (SPIR-V to Bifrost/Valhall binary, disk cache) | Done |
 | Graphics draw path (indexed, textured, UBO, push constants, scissor/viewport) | Done on v11 and v13 hardware |
-| Compute, indirect dispatch | Done on v11 and v13 hardware |
+| Compute, indirect dispatch, dynamic buffer descriptors (dynamic SSBO offsets) | Done on v11 and v13 hardware |
 | Meta ops (copy, blit, clear, resolve), queries, events | Wired, hardware-tested on v11; partial elsewhere |
 | WSI (Wayland, swapchain, dma-heap images) | Passed on v11; v13 pending |
 | BC1-BC7 texture decode (compute emulation) | Offline done; hardware wiring pending |
-| DXVK-required features | 8 of 47 still false (`check.sh`, `DXVK_MISSING=8`) |
+| DXVK-required features | 5 of 47 still false (`check.sh`, `DXVK_MISSING=5`) |
+| EXT/KHR_line_rasterization | `rectangularLines` only (Bresenham and smooth lines not advertised); `t_vk_feat linerast` |
 | MSAA, dualSrcBlend, sampleRateShading, multiViewport, inlineUniformBlock, geometry/tessellation | Not done |
 
 **dEQP-VK** (see `vk/deqp/TRIAGE.md`; daily sample of 1381 cases, G925 phone):
@@ -113,6 +114,10 @@ Vulkan calls: `t_icd --direct`, `t_vk_draw`, `t_vk_feat`, ...) and a guest run (
 Those scripts are specific to the maintainer's lab and are not part of this tree.
 The Mesa sources, Mesa build trees and the CTS are not committed: `third_party/MESA-SOURCE.txt` pins the Mesa tag and commit.
 
+## Contributing: hot files and `patches/`
+
+`vk/src/mali_cmd.c`, `mali_cs_emit.c` and `mali_pipeline.c` are hot files: one worker at a time. Work that needs them without owning them is delivered as `patches/<name>.patch` plus the non-hot parts and a test that skips until the feature is advertised (examples in `vk/patches/` and `vk/STEAM-GAPS.md`). Merge gate and lanes: `.opencode/skills/mali-open/SKILL.md`. The device farm (`tools/farm/README.md`) has `farm hold` / `farm wait` for phone access; a bench run that finds a foreground dialog prints `UI-BLOCKED` and is requeued once as invalid.
+
 ## Shipping in MediaDeck
 
 `vk/package/build-zip.sh` builds an importable zip (`libvulkan_panfrost.so` is our library under the name the importer accepts,
@@ -120,6 +125,10 @@ plus `meta.json`, `icd.json`, `LICENSE`, `NOTICE-MESA.txt`). Variants: `a64-glib
 driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/package/README.md`. Note: on a phone that has a vkBridge, the app uses the bridge and ignores the imported driver.
 
 ## Limitations
+
+- Performance is not uniform (see the table above): on the Poco X8 (G925) we are at parity or better in `cube-720p` (110 % of the bridge) and `triangle-3k` (162 %), but `cube-native` is only 26 % of the bridge (120 vs 458 fps, GPU ms equal, so the loss is on the present path). The Poco X4 (G610, v10) has no `ours` cube row; its triangle row is 44 % of the bridge.
+- Draw-count scaling (CMF, `bench/README.md`): 5k, 10k and 20k draws per frame now work, but at 10k/20k our CPU ms per frame is above the bridge's. No poco-x8 5k/10k/20k rows have been published yet.
+- Known dEQP fails: `a2r10g10b10` `sample_count_4` fails on v11 and v13 (baseline refreshed, not fixed), plus the 136 sample failures below. `logicOp`, `vertex_attribute_divisor` and part of the Steam/zink gap list are still open (`vk/STEAM-GAPS.md`).
 
 - Not conformant: dEQP numbers above are a sample, 136 sample cases fail.
 - v13 coverage is thinner than v11. A geometry-buffer size regression broke v13 draws and was fixed, so recheck draws on every change.

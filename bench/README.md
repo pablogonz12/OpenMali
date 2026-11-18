@@ -13,6 +13,7 @@ Flow per phone: `--sweep` (one short run per settings combination, writes `best.
 Phone access: qsafe lock (`/tmp/qsafe-<lock>.lock`, busy = pending, nothing is retried in a loop; `--wait N` = one blocking flock like
 qsafe), owner disable switch, battery 20/50 % and 43/38 C gate (`tools/farm/gate.py`), focus rule (launcher/settings only), farm adb routing.
 poco-x4 has no guest route (shell route only): it stays pending until it has one. Nothing is installed on a phone.
+A run where a foreground dialog (e.g. a permission prompt) covers the app prints `UI-BLOCKED`: bench2 dismisses permission dialogs, the run is INVALID (no rows) and the farm requeues it once.
 
 ## Workloads (`mdbench/`, one binary, a vendored copy of the mission repo's mdbench + `--draw-idx`)
 * **triangle** (CPU-heavy): `--scene drawcalls --n 3000 --draw-idx 3`: 3000 draws per frame, one triangle each, a dynamic-UBO descriptor
@@ -28,12 +29,24 @@ Present mode mailbox/fifo/immediate x swapchain images 2/3/4, frames in flight 1
 Ranking: triangle presented = fps then CPU ms, offscreen = CPU ms; cube presented = 1 % low then fps, offscreen = GPU ms.
 
 ## Known limits (open driver items; the harness records them, it does not hide them)
-* Frames over ~3000 draws used to fail with `QueueSubmit = VK_ERROR_DEVICE_LOST`: the 32 MiB descriptor arena (~4.6 KB/draw) ran out. Fixed on `perf/draw-path` by retiring in-flight frames and spilling into overflow BOs (test: `t_vk_draw --only many_draws`, 3k-50k draws; phone re-check pending).
+* Frames over ~3000 draws used to fail with `QueueSubmit = VK_ERROR_DEVICE_LOST`: the 32 MiB descriptor arena (~4.6 KB/draw) ran out. Fixed on `perf/draw-path` by retiring in-flight frames and spilling into overflow BOs (test: `t_vk_draw --only many_draws`, 3k-50k draws).
 * Host (fake v11, 3000 dyn-UBO draws, median of 7): 1.43 us/draw before, 0.72 after descriptor sharing between consecutive draws.
-  `tools/bench2 <phone> --variant triangle-20k` runs the large one once the driver can (the bridge handles it).
-* **OPEN DRIVER BUG: `VK_ERROR_DEVICE_LOST` at QueueSubmit above ~3000 draws/frame (ours, CMF).** Repro (needs the phone lock, so qsafe):
-  `tools/bench2 cmf --driver ours --variant triangle-20k --reps 1 --secs 8` (guest command: `mdbench --scene drawcalls --n 20000 --draw-idx 3`).
-  Bisect: n=3000 ok presented+offscreen; 4000 fails offscreen; 6000 fails offscreen; 8000+ fails both. Bigger `MALI_RING`/`MALI_GEOM_SIZE` do not help.
+  `tools/bench2 <phone> --variant triangle-20k` runs the large one once the driver can (5k/10k/20k run on CMF now; no poco-x8 rows yet).
+* **Fixed:** `VK_ERROR_DEVICE_LOST` above ~3000 draws/frame (descriptor arena exhaustion); frames that do not fit spill into pooled overflow BOs. Scaling below.
+
+## Draw-count scaling (triangle, one frame of N draws, offscreen, CMF v11, 2026-11-18)
+
+`tools/bench2 cmf --bench triangle --tri-n N`, best env `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`, one rep per cell (the CMF is bimodal: the 3k row is the best of 5). CPU = record + submit per frame. main = 74a582f (before the draw-path stack), draw-path = `perf/draw-path` with dirty mask + small draw records (5c3daca). The bridge column is the MediaDeck bridge on the same phone.
+
+| draws | main CPU ms | draw-path CPU ms | draw-path fps | draw-path GPU ms | bridge CPU ms | bridge fps |
+|---|---|---|---|---|---|---|
+| 3000 | 4.78 | 0.79 | 893 | 0.73 | 0.80 | 235 |
+| 5000 | QueueSubmit -4 | 1.44 | 456 | 1.40 | 1.34 | 168 |
+| 10000 | QueueSubmit -4 | 5.14 | 141 | 4.20 | 3.27 | 88 |
+| 20000 | QueueSubmit -4 | 10.66 | 76 | 6.46 | 5.61 | 48 |
+
+main's `QueueSubmit` -4 (VK_ERROR_DEVICE_LOST, 32 MiB descriptor arena exhausted at ~7k draws) is fixed by c02338c (a frame that does not fit spills into overflow BOs) and 44fd974 (overflow BOs pooled), merged in 068a170. Above 3k the draw-path rows are slower than the bridge on CPU (10k/20k) because the per-draw cost stops being the limit and CS/heap growth dominates; not yet profiled.
+
 * CMF timings are bimodal: medians of interleaved runs only. The bridge's presented fps is display-paced (about 120): compare CPU/GPU ms.
 * poco-x8 runs MaliDeck p19 (sessions sometimes die early; p21 fixes it but is not installed). A run that fails is retried only via the cache/rerun.
 

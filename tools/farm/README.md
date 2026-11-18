@@ -11,6 +11,7 @@ A class with no attached phone stays pending and is picked up when the phone rea
 `adb reconnect` / `reconnect offline` / `connect <wireless>` (never `kill-server`); after 10 min it is marked down (one line in alerts.log).
 One JSON per run: `runs/<job>-<class>.json` (commit, dirty, .so sha256, env, suite, device, GPU, kbase, battery temp, counts, new failures,
 newly passing, verdict pass|fail|error, wall time). `farm wait` exits 0 pass, 1 fail, 2 error, 3 timeout.
+A bench job whose run printed `UI-BLOCKED` (foreground dialog) is INVALID and requeued once (max_attempts 2).
 
 Suites: smoke = vk/tests/valrun.sh (20 loops, honours --env); daily = qdeqp on lists/daily-sample.txt diffed per case against
 `vk/deqp/ours-daily-sample-<baseline>.tsv` (from the commit, else main; --env goes to deqp-vk); bench = stub (error).
