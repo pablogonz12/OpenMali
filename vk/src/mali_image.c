@@ -267,21 +267,41 @@ image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layou
    struct mali_image_desc d;
    desc_from_ci(ci, &d);
    *is_bc = mali_bc_is_bc(ci->format);
+   /* ETC2 / EAC: the native layout stays (hardware samples it); a decoded shadow is appended after it as the blit source. Linear 2D / 3D only,
+    * anything else keeps the plain layout (no shadow, blits from it are refused as before). */
+   const bool etc2 = !*is_bc && mali_bc_is_etc2(ci->format) && !d.tiled && ci->samples == 1 &&
+                     mali_bc_layout_init(ci->format, ci->imageType, ci->extent, ci->mipLevels, ci->arrayLayers, bc) == 0;
    if (*is_bc) {
       d.tiled = false;
       if (ci->samples != 1 || mali_bc_layout_init(ci->format, ci->imageType, ci->extent, ci->mipLevels, ci->arrayLayers, bc) != 0)
          return -EINVAL;
    }
    int r = mali_image_layout_init(arch, &d, lay);
-   if (r || !*is_bc)
+   if (r || !(*is_bc || etc2))
       return r;
    struct mali_plane_layout *p = &lay->plane[0];
-   p->offset = bc->comp.base;
-   p->array_stride = bc->comp.array_stride;
-   p->size = bc->comp.size;
-   for (unsigned l = 0; l < d.levels; l++) {
-      p->slice[l] = (struct mali_slice){ .offset = bc->comp.lv[l].off, .row_stride = bc->comp.lv[l].row, .surface_stride = bc->comp.lv[l].slice,
-                                         .size = bc->comp.lv[l].size };
+   if (etc2) {
+      /* the compressed region is the native plane: take its offsets and strides into the BC layout, then place the shadow behind it */
+      bc->comp.base = p->offset;
+      bc->comp.array_stride = p->array_stride;
+      bc->comp.size = p->size;
+      for (unsigned l = 0; l < d.levels; l++) {
+         bc->comp.lv[l].off = p->slice[l].offset;
+         bc->comp.lv[l].row = p->slice[l].row_stride;
+         bc->comp.lv[l].slice = p->slice[l].surface_stride;
+         bc->comp.lv[l].size = p->slice[l].size;
+      }
+      bc->shadow.base = align_up(lay->size, MALI_BC_ALIGN);
+      bc->size = bc->shadow.base + bc->shadow.size;
+      *is_bc = true;
+   } else {
+      p->offset = bc->comp.base;
+      p->array_stride = bc->comp.array_stride;
+      p->size = bc->comp.size;
+      for (unsigned l = 0; l < d.levels; l++) {
+         p->slice[l] = (struct mali_slice){ .offset = bc->comp.lv[l].off, .row_stride = bc->comp.lv[l].row, .surface_stride = bc->comp.lv[l].slice,
+                                            .size = bc->comp.lv[l].size };
+      }
    }
    lay->size = bc->size;
    if (bc->alignment > lay->alignment)
@@ -317,6 +337,7 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
       return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
    }
    img->bc = is_bc;
+   img->native_view = is_bc && mali_bc_is_etc2(ci->format);
    if (is_bc) img->bc_lay = bc;
    img->lay = lay;
    img->arch = dev_arch(dev);
@@ -430,7 +451,7 @@ view_refresh(struct mali_image_view *v)
 {
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    if (v->emitted && v->emitted_for_va == img->va) return;
-   const struct mali_image_layout *vl = img->bc ? &img->sh_lay : &img->lay;   /* BC: views sample the decoded shadow */
+   const struct mali_image_layout *vl = img->bc && !img->native_view ? &img->sh_lay : &img->lay;   /* BC: views sample the decoded shadow (ETC2: native) */
    mali_view_emit(v->arch, vl, img->va, &v->vd, v->payload, v->payload_va, &v->tex);
    struct mali_view_desc sd = v->vd;
    sd.storage = true;
@@ -466,7 +487,7 @@ mali_CreateImageView(VkDevice _dev, const VkImageViewCreateInfo *ci, const VkAll
    if (img->lay.d.type == VK_IMAGE_TYPE_3D && v->vd.type != VK_IMAGE_VIEW_TYPE_3D) {
       v->vd.layers = v->vk.layer_count;
    }
-   if (img->bc) {
+   if (img->bc && !img->native_view) {
       v->vd.format = img->bc_lay.fmt->shadow;
       v->vd.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
    }

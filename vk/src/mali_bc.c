@@ -26,21 +26,33 @@ static const struct mali_bc_fmt g_fmt[] = {
    F(BC6H_SFLOAT_BLOCK, "BC6H_SFLOAT", MALI_BC_BC6H, 1, 16, R16G16B16A16_SFLOAT, 8, false),
    F(BC7_UNORM_BLOCK, "BC7_UNORM", MALI_BC_BC7, 0, 16, R8G8B8A8_UNORM, 4, false),
    F(BC7_SRGB_BLOCK, "BC7_SRGB", MALI_BC_BC7, 0, 16, R8G8B8A8_SRGB, 4, true),
+   /* ETC2 / EAC: hardware samples these natively (mali_format.c), the shadow only serves as a blit / copy source (mali_meta_vk.c). mode: etc2.comp */
+   F(ETC2_R8G8B8_UNORM_BLOCK, "ETC2_RGB8_UNORM", MALI_BC_ETC2, 0, 8, R8G8B8A8_UNORM, 4, false),
+   F(ETC2_R8G8B8_SRGB_BLOCK, "ETC2_RGB8_SRGB", MALI_BC_ETC2, 0, 8, R8G8B8A8_SRGB, 4, true),
+   F(ETC2_R8G8B8A1_UNORM_BLOCK, "ETC2_RGB8A1_UNORM", MALI_BC_ETC2, 1, 8, R8G8B8A8_UNORM, 4, false),
+   F(ETC2_R8G8B8A1_SRGB_BLOCK, "ETC2_RGB8A1_SRGB", MALI_BC_ETC2, 1, 8, R8G8B8A8_SRGB, 4, true),
+   F(ETC2_R8G8B8A8_UNORM_BLOCK, "ETC2_RGBA8_UNORM", MALI_BC_ETC2, 2, 16, R8G8B8A8_UNORM, 4, false),
+   F(ETC2_R8G8B8A8_SRGB_BLOCK, "ETC2_RGBA8_SRGB", MALI_BC_ETC2, 2, 16, R8G8B8A8_SRGB, 4, true),
+   F(EAC_R11_UNORM_BLOCK, "EAC_R11_UNORM", MALI_BC_ETC2, 3, 8, R16_UNORM, 2, false),
+   F(EAC_R11_SNORM_BLOCK, "EAC_R11_SNORM", MALI_BC_ETC2, 3 | 8, 8, R16_SNORM, 2, false),
+   F(EAC_R11G11_UNORM_BLOCK, "EAC_RG11_UNORM", MALI_BC_ETC2, 4, 16, R16G16_UNORM, 4, false),
+   F(EAC_R11G11_SNORM_BLOCK, "EAC_RG11_SNORM", MALI_BC_ETC2, 4 | 8, 16, R16G16_SNORM, 4, false),
 };
 #undef F
 
 const struct mali_bc_fmt *
 mali_bc_format(VkFormat f)
 {
-   if (f < VK_FORMAT_BC1_RGB_UNORM_BLOCK || f > VK_FORMAT_BC7_SRGB_BLOCK) return NULL;
+   if (f < VK_FORMAT_BC1_RGB_UNORM_BLOCK || f > VK_FORMAT_EAC_R11G11_SNORM_BLOCK) return NULL;
    return &g_fmt[f - VK_FORMAT_BC1_RGB_UNORM_BLOCK];
 }
-bool mali_bc_is_bc(VkFormat f) { return mali_bc_format(f) != NULL; }
+bool mali_bc_is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
+bool mali_bc_is_etc2(VkFormat f) { return f >= VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK && f <= VK_FORMAT_EAC_R11G11_SNORM_BLOCK; }
 
 VkFormatFeatureFlags
 mali_bc_optimal_features(VkFormat f)
 {
-   if (!mali_bc_format(f)) return 0;
+   if (!mali_bc_is_bc(f)) return 0;
    return VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
           VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 }
@@ -49,7 +61,7 @@ VkResult
 mali_bc_image_supported(VkFormat f, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, uint32_t samples)
 {
    const VkResult no = VK_ERROR_FORMAT_NOT_SUPPORTED;
-   if (!mali_bc_format(f)) return no;
+   if (!mali_bc_is_bc(f)) return no;
    if (type == VK_IMAGE_TYPE_1D || tiling != VK_IMAGE_TILING_OPTIMAL || samples != 1) return no;
    const VkImageUsageFlags ok = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    if (usage & ~ok) return no;
@@ -197,6 +209,7 @@ mali_bc_spirv(enum mali_bc_shader s, size_t *words)
    case MALI_BC_BC4: *words = sizeof bc4_spv / 4; return bc4_spv;
    case MALI_BC_BC6H: *words = sizeof bc6h_spv / 4; return bc6h_spv;
    case MALI_BC_BC7: *words = sizeof bc7_spv / 4; return bc7_spv;
+   case MALI_BC_ETC2: *words = sizeof etc2_spv / 4; return etc2_spv;
    default: *words = 0; return NULL;
    }
 }

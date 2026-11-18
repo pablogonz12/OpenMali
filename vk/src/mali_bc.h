@@ -27,7 +27,7 @@ extern "C" {
 #define MALI_BC_MAX_MIPS 16u
 #define MALI_BC_PUSH_WORDS 12
 
-enum mali_bc_shader { MALI_BC_BC1 = 0, MALI_BC_BC4 = 1, MALI_BC_BC6H = 2, MALI_BC_BC7 = 3, MALI_BC_NSHADERS };
+enum mali_bc_shader { MALI_BC_BC1 = 0, MALI_BC_BC4 = 1, MALI_BC_BC6H = 2, MALI_BC_BC7 = 3, MALI_BC_ETC2 = 4, MALI_BC_NSHADERS };
 
 /* push `mode` words: BC1 shader 0 BC1-RGBA, 1 BC2, 2 BC3, 3 BC1-RGB; BC4 shader bit0 signed bit1 two channels; BC6H bit0 signed; BC7 0. */
 struct mali_bc_fmt {
@@ -41,9 +41,12 @@ struct mali_bc_fmt {
    bool srgb;
 };
 
-/* NULL when `f` is not one of the 18 BC formats. */
+/* NULL when `f` is neither one of the BC formats nor one of the 10 ETC2 / EAC formats (the table holds both: BC first, ETC2 / EAC after). */
 const struct mali_bc_fmt *mali_bc_format(VkFormat f);
+/* BC1..BC7 only: these images are sampled through the shadow (advertisement, views). */
 bool mali_bc_is_bc(VkFormat f);
+/* ETC2 / EAC: sampled natively, the shadow is kept only as a blit source (decoded after every write). */
+bool mali_bc_is_etc2(VkFormat f);
 
 /* ---- advertisement ---- */
 /* optimalTilingFeatures of a BC format: SAMPLED + FILTER_LINEAR + BLIT_SRC + TRANSFER_SRC/DST (the Vulkan minimum for textureCompressionBC);

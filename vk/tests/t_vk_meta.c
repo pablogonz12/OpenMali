@@ -12,6 +12,8 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
+#include "t_etc2_ref.h"
+
 #include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
@@ -458,6 +460,74 @@ case_blit3d(VkFilter filter, uint32_t dd, const char *name)
    return 1;
 }
 
+/* ETC2 / EAC image as a blit source (dEQP all_formats etc2_* / eac_* -> uncompressed): pseudo-random blocks (every ETC2 mode shows up) are
+ * uploaded, blitted 1:1 (nearest) to the matching decoded format, and compared with the software decode (t_etc2_ref.h, = Mesa texcompress_etc.c).
+ * The sRGB / 16 bit unorm round trip through the sampler may be off by one. */
+static int
+case_etc2blit(void)
+{
+   static const struct { VkFormat src, dst; unsigned mode, bs, bpt, tol; const char *name; } T[] = {
+      { VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, 0, 8, 4, 0, "etc2_rgb8" },
+      { VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK, VK_FORMAT_R8G8B8A8_SRGB, 0, 8, 4, 1, "etc2_rgb8_srgb" },
+      { VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, 1, 8, 4, 0, "etc2_rgb8a1" },
+      { VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, 2, 16, 4, 0, "etc2_rgba8" },
+      { VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_R16_UNORM, 3, 8, 2, 1, "eac_r11" },
+      { VK_FORMAT_EAC_R11G11_UNORM_BLOCK, VK_FORMAT_R16G16_UNORM, 4, 16, 4, 1, "eac_rg11" },
+   };
+   const uint32_t w = 16, h = 8, nb = (w / 4) * (h / 4);
+   for (unsigned t = 0; t < sizeof T / sizeof T[0]; t++) {
+      struct buf src = {0}, dst = {0};
+      struct img i1 = {0}, i2 = {0};
+      TRY(mkbuf(&src, nb * T[t].bs, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+      TRY(mkbuf(&dst, w * h * T[t].bpt, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+      VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      TRY(mkimg(&i1, T[t].src, w, h, u, VK_SAMPLE_COUNT_1_BIT));
+      TRY(mkimg(&i2, T[t].dst, w, h, u, VK_SAMPLE_COUNT_1_BIT));
+      VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      uint8_t *ps = src.p, *pd = dst.p;
+      uint32_t st = 0xE7C20000u + t;
+      for (uint32_t i = 0; i < nb * T[t].bs; i++) { st = st * 1664525u + 1013904223u; ps[i] = (uint8_t)(st >> 24); }
+      memset(pd, 0xEE, w * h * T[t].bpt);
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy up = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, src.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {w, h, 1}}, .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {w, h, 1}}};
+      CmdBlitImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_NEAREST);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.b, 1, &dn);
+      CHECK(submit_wait(cb), "%s submit", T[t].name);
+      if (!g_fake) {
+         unsigned bad = 0;
+         for (uint32_t by = 0; by < h / 4; by++)
+            for (uint32_t bx = 0; bx < w / 4; bx++) {
+               uint8_t ref[64];
+               etc2_ref_block(T[t].mode, ps + (by * (w / 4) + bx) * T[t].bs, ref);
+               for (uint32_t y = 0; y < 4; y++)
+                  for (uint32_t x = 0; x < 4; x++) {
+                     const uint8_t *e = ref + (y * 4 + x) * T[t].bpt, *g = pd + ((by * 4 + y) * w + bx * 4 + x) * T[t].bpt;
+                     for (unsigned c = 0; c < T[t].bpt; c += T[t].mode >= 3 ? 2 : 1) {
+                        int ev, gv;
+                        if (T[t].mode >= 3) { ev = e[c] | (e[c + 1] << 8); gv = g[c] | (g[c + 1] << 8); }
+                        else { ev = e[c]; gv = g[c]; }
+                        if (abs(ev - gv) > (int)T[t].tol) {
+                           if (!bad++) fprintf(stderr, "  %s block (%u,%u) texel (%u,%u) ch %u: got %d want %d\n", T[t].name, bx, by, x, y, c, gv, ev);
+                        }
+                     }
+                  }
+            }
+         CHECK(!bad, "%s: %u texel channels differ", T[t].name, bad);
+      }
+      rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
+      report(T[t].name, g_fake ? "results: fake backend" : NULL);
+   }
+   return 1;
+}
+
 /* Copy between a block-compressed and an uncompressed image of equal texel-block size (dEQP image_to_image BC/ETC2 <-> RGBA16/RGBA32 pairs):
  * 4x4 RGBA16_UINT texels -> BC1 16x16 (extent in source texels) -> second RGBA16_UINT (extent in BC texels): the bytes must survive. */
 static int
@@ -853,6 +923,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("blit")) ok &= case_blit();
    if (ok && CASE_ON("blit_e5")) ok &= case_blit_e5();
    if (ok && CASE_ON("copybc")) ok &= case_copybc();
+   if (ok && CASE_ON("etc2blit")) ok &= case_etc2blit();
    if (ok && CASE_ON("blit3d_n1")) ok &= case_blit3d(VK_FILTER_NEAREST, 1, "blit3d_n1");   /* one destination slice: centre of the source range */
    if (ok && CASE_ON("blit3d_l1")) ok &= case_blit3d(VK_FILTER_LINEAR, 1, "blit3d_l1");   /* trilinear */
    if (ok && CASE_ON("blit3d_l3")) ok &= case_blit3d(VK_FILTER_LINEAR, 3, "blit3d_l3");

@@ -1,0 +1,174 @@
+#version 450
+// ETC2 / EAC decode to a linear shadow (the BC decode-to-shadow path, mali_bc.h). One invocation = one 4x4 block.
+// Algorithm and tables: Mesa src/mesa/main/texcompress_etc.c (etc2_rgb8_parse_block / fetch_texel, alpha8, r11), written out here for GLSL.
+// push mode: bits 0..2 kind (0 RGB8, 1 RGB8A1, 2 RGBA8 = EAC alpha block + RGB block, 3 R11, 4 RG11), bit 3 signed (R11 / RG11).
+// Shadow texel: kinds 0..2 R8G8B8A8 (4 B); kind 3 R16 (2 B); kind 4 R16G16 (4 B). sRGB variants differ only in the shadow format.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer S { uint d[]; } src;
+layout(set = 0, binding = 1, std430) buffer D { uint d[]; } dst;
+layout(push_constant) uniform P {
+   uint src_off, src_row, src_slice;
+   uint dst_off, dst_row, dst_slice;
+   uint bw, bh, bz;
+   uint mode;
+   uint pad0, pad1;
+} p;
+
+const int ETC1_MOD[32] = int[32](2, 8, -2, -8, 5, 17, -5, -17, 9, 29, -9, -29, 13, 42, -13, -42,
+                                 18, 60, -18, -60, 24, 80, -24, -80, 33, 106, -33, -106, 47, 183, -47, -183);
+const int EAC_MOD[128] = int[128](
+   -3, -6, -9, -15, 2, 5, 8, 14,   -3, -7, -10, -13, 2, 6, 9, 12,   -2, -5, -8, -13, 1, 4, 7, 12,   -2, -4, -6, -13, 1, 3, 5, 12,
+   -3, -6, -8, -12, 2, 5, 7, 11,   -3, -7, -9, -11, 2, 6, 8, 10,   -4, -7, -8, -11, 3, 6, 7, 10,   -3, -5, -8, -11, 2, 4, 7, 10,
+   -2, -6, -8, -10, 1, 5, 7, 9,    -2, -5, -8, -10, 1, 4, 7, 9,    -2, -4, -8, -10, 1, 3, 7, 9,    -2, -5, -7, -10, 1, 4, 6, 9,
+   -3, -4, -7, -10, 2, 3, 6, 9,    -1, -2, -3, -10, 0, 1, 2, 9,    -4, -6, -8, -9, 3, 5, 7, 8,     -3, -5, -7, -9, 2, 4, 6, 8);
+const int DIST[8] = int[8](3, 6, 11, 16, 23, 32, 41, 64);
+
+uint bt(uvec2 v, uint i) { return ((i < 4u ? v.x : v.y) >> ((i & 3u) * 8u)) & 255u; }
+int lk(uint n) { return n < 4u ? int(n) : int(n) - 8; }
+int cl(int c) { return clamp(c, 0, 255); }
+int ext4(uint x) { return int((x << 4) | x); }
+int ext6(uint x) { return int((x << 2) | (x >> 4)); }
+int ext7(uint x) { return int((x << 1) | (x >> 6)); }
+
+// 3 bits at bit `pos` of the 48 bit big-endian index field of an EAC block (bytes 2..7)
+uint eac_idx(uvec2 v, uint x, uint y) {
+   uint pos = ((3u - y) + (3u - x) * 4u) * 3u;
+   uint lo = (bt(v, 4u) << 24) | (bt(v, 5u) << 16) | (bt(v, 6u) << 8) | bt(v, 7u);
+   uint hi = (bt(v, 2u) << 8) | bt(v, 3u);
+   uint r = pos < 32u ? (lo >> pos) : (hi >> (pos - 32u));
+   if (pos < 32u && pos + 3u > 32u) r |= hi << (32u - pos);
+   return r & 7u;
+}
+
+// EAC 8 bit alpha (RGBA8 kind): block bytes 0..7
+uint eac_alpha(uvec2 v, uint x, uint y) {
+   int base = int(bt(v, 0u)), mult = int(bt(v, 1u) >> 4), tab = int(bt(v, 1u) & 15u);
+   int m = EAC_MOD[tab * 8 + int(eac_idx(v, x, y))];
+   return uint(cl(base + m * mult));
+}
+
+// EAC 11 bit: returns the 16 bit extended value (two's complement for signed) in the low 16 bits
+uint eac11(uvec2 v, uint x, uint y, bool sg) {
+   int mult = int(bt(v, 1u) >> 4), tab = int(bt(v, 1u) & 15u);
+   int m = EAC_MOD[tab * 8 + int(eac_idx(v, x, y))];
+   if (!sg) {
+      int base = int(bt(v, 0u));
+      int c = ((base << 3) | 4) + (mult != 0 ? ((m * mult) << 3) : m);
+      c = clamp(c, 0, 2047);
+      return uint((c << 5) | (c >> 6)) & 0xffffu;
+   }
+   int base = bitfieldExtract(int(bt(v, 0u)), 0, 8);
+   if (base == -128) base = -127;
+   int c = (base << 3) + (mult != 0 ? ((m * mult) << 3) : m);
+   c = clamp(c, -1023, 1023);
+   int a = c < 0 ? -c : c;
+   a = (a << 5) | (a >> 5);
+   return uint(c < 0 ? -a : a) & 0xffffu;
+}
+
+// ETC2 RGB block (bytes 0..7) -> rgba bytes. pt: punchthrough alpha format (the bit at b3 & 2 is "opaque" instead of "diff").
+uvec4 etc2_rgb(uvec2 v, bool pt, uint x, uint y) {
+   uint b0 = bt(v, 0u), b1 = bt(v, 1u), b2 = bt(v, 2u), b3 = bt(v, 3u);
+   uint pix = (bt(v, 4u) << 24) | (bt(v, 5u) << 16) | (bt(v, 6u) << 8) | bt(v, 7u);
+   int R = int(b0 >> 3) + lk(b0 & 7u), G = int(b1 >> 3) + lk(b1 & 7u), B = int(b2 >> 3) + lk(b2 & 7u);
+   bool opaque = true, diffbit = false;
+   if (pt) opaque = (b3 & 2u) != 0u; else diffbit = (b3 & 2u) != 0u;
+   uint bit = y + x * 4u;
+   uint idx = ((pix >> (15u + bit)) & 2u) | ((pix >> bit) & 1u);
+   int kind;   // 0 individual / differential, 1 T, 2 H, 3 planar
+   if (!diffbit && !pt) kind = 0;
+   else if (R < 0 || R > 31) kind = 1;
+   else if (G < 0 || G > 31) kind = 2;
+   else if (B < 0 || B > 31) kind = 3;
+   else kind = 0;
+   bool ind = !diffbit && !pt;
+   if (kind != 3 && pt && !opaque && idx == 2u) return uvec4(0u);
+   const uint a = 255u;
+   if (kind == 0) {
+      uint t1 = (b3 >> 5) & 7u, t2 = (b3 >> 2) & 7u;
+      bool flip = (b3 & 1u) != 0u;
+      bool sub = flip ? (y >= 2u) : (x >= 2u);
+      uint t = sub ? t2 : t1;
+      ivec3 base;
+      if (ind) {
+         // individual: high nibble = sub-block 0, low nibble = sub-block 1
+         uint r = sub ? (b0 & 15u) : (b0 >> 4), g = sub ? (b1 & 15u) : (b1 >> 4), b = sub ? (b2 & 15u) : (b2 >> 4);
+         base = ivec3(ext4(r), ext4(g), ext4(b));
+      } else if (!sub) {
+         base = ivec3(int((b0 & 0xf8u) | (b0 >> 5)), int((b1 & 0xf8u) | (b1 >> 5)), int((b2 & 0xf8u) | (b2 >> 5)));
+      } else {
+         base = ivec3((R << 3) | (R >> 2), (G << 3) | (G >> 2), (B << 3) | (B >> 2));
+      }
+      int m;
+      if (!pt || opaque) m = ETC1_MOD[t * 4u + idx];
+      else m = idx == 1u ? ETC1_MOD[t * 4u + 1u] : (idx == 3u ? -ETC1_MOD[t * 4u + 1u] : 0);
+      return uvec4(uint(cl(base.x + m)), uint(cl(base.y + m)), uint(cl(base.z + m)), a);
+   }
+   if (kind == 1) {
+      ivec3 c0 = ivec3(ext4(((b0 >> 1) & 12u) | (b0 & 3u)), ext4(b1 >> 4), ext4(b1 & 15u));
+      ivec3 c1 = ivec3(ext4(b2 >> 4), ext4(b2 & 15u), ext4(b3 >> 4));
+      int d = DIST[(((b3 >> 2) & 3u) << 1) | (b3 & 1u)];
+      ivec3 c;
+      if (idx == 0u) c = c0;
+      else if (idx == 1u) c = c1 + d;
+      else if (idx == 2u) c = c1;
+      else c = c1 - d;
+      return uvec4(uint(cl(c.x)), uint(cl(c.y)), uint(cl(c.z)), a);
+   }
+   if (kind == 2) {
+      ivec3 c0 = ivec3(ext4((b0 >> 3) & 15u), ext4(((b0 & 7u) << 1) | ((b1 >> 4) & 1u)), ext4((b1 & 8u) | ((b1 & 3u) << 1) | ((b2 >> 7) & 1u)));
+      ivec3 c1 = ivec3(ext4((b2 >> 3) & 15u), ext4(((b2 & 7u) << 1) | ((b3 >> 7) & 1u)), ext4((b3 >> 3) & 15u));
+      int v0 = (c0.x << 16) + (c0.y << 8) + c0.z, v1 = (c1.x << 16) + (c1.y << 8) + c1.z;
+      int d = DIST[(b3 & 4u) | ((b3 & 1u) << 1) | (v0 >= v1 ? 1u : 0u)];
+      ivec3 c = idx < 2u ? c0 : c1;
+      c += (idx & 1u) == 0u ? d : -d;
+      return uvec4(uint(cl(c.x)), uint(cl(c.y)), uint(cl(c.z)), a);
+   }
+   // planar
+   uint b4 = bt(v, 4u), b5 = bt(v, 5u), b6 = bt(v, 6u), b7 = bt(v, 7u);
+   ivec3 o = ivec3(ext6((b0 >> 1) & 0x3fu), ext7(((b0 & 1u) << 6) | ((b1 >> 1) & 0x3fu)), ext6(((b1 & 1u) << 5) | (b2 & 0x18u) | ((b2 & 3u) << 1) | ((b3 >> 7) & 1u)));
+   ivec3 h = ivec3(ext6(((b3 & 0x7cu) >> 1) | (b3 & 1u)), ext7((b4 >> 1) & 0x7fu), ext6(((b4 & 1u) << 5) | ((b5 >> 3) & 0x1fu)));
+   ivec3 vv = ivec3(ext6(((b5 & 7u) << 3) | ((b6 >> 5) & 7u)), ext7(((b6 & 0x1fu) << 2) | ((b7 >> 6) & 3u)), ext6(b7 & 0x3fu));
+   ivec3 c = (int(x) * (h - o) + int(y) * (vv - o) + 4 * o + 2) >> 2;
+   return uvec4(uint(cl(c.x)), uint(cl(c.y)), uint(cl(c.z)), a);
+}
+
+uint pack8(uvec4 c) { return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24); }
+
+void main() {
+   uint i = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * (32768u * 64u);
+   if (i >= p.bw * p.bh * p.bz) return;
+   uint bx = i % p.bw;
+   uint r0 = i / p.bw;
+   uint by = r0 % p.bh;
+   uint z = r0 / p.bh;
+   uint kind = p.mode & 7u;
+   bool sg = (p.mode & 8u) != 0u;
+   bool big = kind == 2u || kind == 4u;                     // 16 byte blocks
+   uint so = (p.src_off + z * p.src_slice + by * p.src_row + bx * (big ? 16u : 8u)) >> 2;
+   uint tb = kind == 3u ? 8u : 16u;                         // dst bytes per block row: 4 texels * (2 or 4 B)
+   uint dof = p.dst_off + z * p.dst_slice + by * 4u * p.dst_row + bx * tb;
+   uvec2 va = uvec2(src.d[so], src.d[so + 1u]);
+   uvec2 vb = big ? uvec2(src.d[so + 2u], src.d[so + 3u]) : va;
+   for (uint y = 0u; y < 4u; y++) {
+      uint o = (dof + y * p.dst_row) >> 2;
+      if (kind <= 2u) {
+         for (uint x = 0u; x < 4u; x++) {
+            uvec4 c;
+            if (kind == 2u) {
+               c = etc2_rgb(vb, false, x, y);
+               c.w = eac_alpha(va, x, y);
+            } else {
+               c = etc2_rgb(va, kind == 1u, x, y);
+            }
+            dst.d[o + x] = pack8(c);
+         }
+      } else if (kind == 3u) {
+         dst.d[o] = eac11(va, 0u, y, sg) | (eac11(va, 1u, y, sg) << 16);
+         dst.d[o + 1u] = eac11(va, 2u, y, sg) | (eac11(va, 3u, y, sg) << 16);
+      } else {
+         for (uint x = 0u; x < 4u; x++)
+            dst.d[o + x] = eac11(va, x, y, sg) | (eac11(vb, x, y, sg) << 16);
+      }
+   }
+}

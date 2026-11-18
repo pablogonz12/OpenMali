@@ -22,8 +22,8 @@
 extern "C" {
 #endif
 
-/* BC decode shaders (mali_bc.h, 4 of them) follow the three built-in ones: id = MALI_META_BC_FIRST + enum mali_bc_shader. */
-enum mali_meta_shader { MALI_META_COPY = 0, MALI_META_BLIT = 1, MALI_META_QCOPY = 2, MALI_META_BC_FIRST = 3, MALI_META_NSHADERS = 7 };
+/* BC decode shaders (mali_bc.h, 5 of them) follow the three built-in ones: id = MALI_META_BC_FIRST + enum mali_bc_shader. */
+enum mali_meta_shader { MALI_META_COPY = 0, MALI_META_BLIT = 1, MALI_META_QCOPY = 2, MALI_META_BC_FIRST = 3, MALI_META_NSHADERS = 8 };
 
 #define MALI_META_PUSH_WORDS 32
 

@@ -8,6 +8,7 @@
 #include "../src/mali_bc.h"
 #include "../src/mali_compile.h"
 #include "t_bc_vec.h"
+#include "t_etc2_ref.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -60,7 +61,9 @@ static void mesa_dec(const struct mali_bc_fmt *f, const uint8_t *b, uint8_t *o)
       }
       break;
    }
-   default: abort();
+   default:
+      if (mali_bc_is_etc2(f->vk)) { etc2_ref_block(f->mode, b, o); break; }
+      abort();
    }
 }
 
@@ -71,6 +74,15 @@ static const VkFormat g_all[16] = {
    VK_FORMAT_BC6H_UFLOAT_BLOCK, VK_FORMAT_BC6H_SFLOAT_BLOCK, VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC7_SRGB_BLOCK,
 };
 
+/* ETC2 / EAC (decoded for blits only): the second half of the table */
+static const VkFormat g_etc2[10] = {
+   VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK, VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK,
+   VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK, VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_EAC_R11_SNORM_BLOCK,
+   VK_FORMAT_EAC_R11G11_UNORM_BLOCK, VK_FORMAT_EAC_R11G11_SNORM_BLOCK,
+};
+#define NEVERY 26
+static VkFormat every(int i) { return i < 16 ? g_all[i] : g_etc2[i - 16]; }
+
 /* ---------- 1. pure ---------- */
 static void t_formats(void)
 {
@@ -79,6 +91,22 @@ static void t_formats(void)
       if (mali_bc_is_bc((VkFormat)(VK_FORMAT_UNDEFINED + f))) n++;
    CHECK(n == 16, "BC format count %d", n);
    CHECK(!mali_bc_is_bc(VK_FORMAT_R8G8B8A8_UNORM) && !mali_bc_is_bc(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK) && !mali_bc_is_bc(VK_FORMAT_UNDEFINED), "non-BC");
+   n = 0;
+   for (int f = 0; f < 400; f++)
+      if (mali_bc_is_etc2((VkFormat)(VK_FORMAT_UNDEFINED + f))) n++;
+   CHECK(n == 10 && !mali_bc_is_etc2(VK_FORMAT_BC7_SRGB_BLOCK) && !mali_bc_is_etc2(VK_FORMAT_ASTC_4x4_UNORM_BLOCK), "ETC2 format count %d", n);
+   for (int i = 0; i < 10; i++) {
+      const struct mali_bc_fmt *f = mali_bc_format(g_etc2[i]);
+      CHECK(f && f->vk == g_etc2[i] && f->sh == MALI_BC_ETC2 && !mali_bc_is_bc(f->vk), "etc2 table order %d", i);
+      if (!f) continue;
+      static const unsigned bs[10] = { 8, 8, 8, 8, 16, 16, 8, 8, 16, 16 }, bpt[10] = { 4, 4, 4, 4, 4, 4, 2, 2, 4, 4 };
+      CHECK(f->block_bytes == bs[i] && f->shadow_bpt == bpt[i], "%s block %u bpt %u", f->name, f->block_bytes, f->shadow_bpt);
+      CHECK(f->srgb == (i < 6 && (i & 1)), "%s srgb", f->name);
+      CHECK(mali_bc_optimal_features(f->vk) == 0 && mali_bc_image_supported(f->vk, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, 0, 1) != VK_SUCCESS,
+            "%s advertisement stays native (mali_format.c)", f->name);
+   }
+   CHECK(mali_bc_format(VK_FORMAT_EAC_R11_SNORM_BLOCK)->shadow == VK_FORMAT_R16_SNORM && mali_bc_format(VK_FORMAT_EAC_R11G11_UNORM_BLOCK)->shadow == VK_FORMAT_R16G16_UNORM &&
+         mali_bc_format(VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK)->shadow == VK_FORMAT_R8G8B8A8_SRGB, "etc2 shadow formats");
    for (int i = 0; i < 16; i++) {
       const struct mali_bc_fmt *f = mali_bc_format(g_all[i]);
       CHECK(f && f->vk == g_all[i], "table order %d", i);
@@ -126,9 +154,9 @@ static void t_layout(void)
    for (uint32_t i = 1; i < 4; i++)
       CHECK(l.comp.lv[i].off > l.comp.lv[i - 1].off && l.shadow.lv[i].off > l.shadow.lv[i - 1].off && !(l.shadow.lv[i].off & 63), "monotonic %u", i);
    /* rows always whole 4-texel multiples for the shaders */
-   for (int i = 0; i < 16; i++) {
+   for (int i = 0; i < NEVERY; i++) {
       struct mali_bc_layout q;
-      CHECK(mali_bc_layout_init(g_all[i], VK_IMAGE_TYPE_2D, (VkExtent3D){ 1, 1, 1 }, 1, 1, &q) == 0, "1x1 layout");
+      CHECK(mali_bc_layout_init(every(i), VK_IMAGE_TYPE_2D, (VkExtent3D){ 1, 1, 1 }, 1, 1, &q) == 0, "1x1 layout");
       CHECK(q.shadow.lv[0].row % 16 == 0 || q.fmt->shadow_bpt < 4, "row pitch %u", q.shadow.lv[0].row);
       CHECK(q.shadow.lv[0].row >= 4u * q.fmt->shadow_bpt && q.shadow.lv[0].slice >= 4ull * q.shadow.lv[0].row, "1x1 shadow holds a whole block");
    }
@@ -241,10 +269,34 @@ static void run_ref(const struct mali_bc_list *jl)
    for (unsigned i = 0; i < jl->n; i++) mali_bc_ref_run(&jl->j[i], mesa_dec);
 }
 
+extern void util_format_etc1_rgb8_unpack_rgba_8unorm(uint8_t *, unsigned, const uint8_t *, unsigned, unsigned, unsigned);
+
+/* the C port of the ETC2 decoder against Mesa's real ETC1 decoder, on every block that is valid ETC1 (individual, or differential in range) */
+static void t_etc1_cross(void)
+{
+   uint32_t st = 0x1234567;
+   unsigned n = 0, bad = 0;
+   for (unsigned it = 0; it < 200000; it++) {
+      uint8_t b[8], a[64], r[64];
+      for (int i = 0; i < 8; i++) { st = st * 1664525u + 1013904223u; b[i] = (uint8_t)(st >> 24); }
+      if (b[3] & 2) {
+         int ok = 1;
+         for (int i = 0; i < 3; i++) { static const int lk[8] = { 0, 1, 2, 3, -4, -3, -2, -1 }; int v = (b[i] >> 3) + lk[b[i] & 7]; if (v < 0 || v > 31) ok = 0; }
+         if (!ok) continue;
+      }
+      util_format_etc1_rgb8_unpack_rgba_8unorm(a, 16, b, 8, 4, 4);
+      etc2_ref_block(0, b, r);
+      n++;
+      if (memcmp(a, r, 64)) bad++;
+   }
+   CHECK(n > 50000 && bad == 0, "ETC2 port vs Mesa ETC1 decoder: %u blocks, %u differ", n, bad);
+}
+
 static void t_ref(void)
 {
-   for (int i = 0; i < 16; i++) {
-      VkFormat f = g_all[i];
+   t_etc1_cross();
+   for (int i = 0; i < NEVERY; i++) {
+      VkFormat f = every(i);
       /* 2D array + mips, odd sizes */
       {
          struct img im = mk_img(f, VK_IMAGE_TYPE_2D, (VkExtent3D){ 21, 11, 1 }, 4, 3, 100 + i);
@@ -460,10 +512,10 @@ static void t_gpu(void)
    struct gpu g;
    if (!gpu_init(&g)) { printf("  (no usable Vulkan device: GPU shader execution SKIPPED)\n"); return; }
    printf("  GPU: %s\n", g.name);
-   for (int i = 0; i < 16; i++) {
-      gpu_case(&g, g_all[i], VK_IMAGE_TYPE_2D, (VkExtent3D){ 21, 11, 1 }, 4, 3, 500 + i, "2Dmip");
-      gpu_case(&g, g_all[i], VK_IMAGE_TYPE_3D, (VkExtent3D){ 9, 6, 3 }, 3, 1, 600 + i, "3D");
-      gpu_case(&g, g_all[i], VK_IMAGE_TYPE_2D, (VkExtent3D){ 256, 256, 1 }, 1, 1, 700 + i, "256sq");
+   for (int i = 0; i < NEVERY; i++) {
+      gpu_case(&g, every(i), VK_IMAGE_TYPE_2D, (VkExtent3D){ 21, 11, 1 }, 4, 3, 500 + i, "2Dmip");
+      gpu_case(&g, every(i), VK_IMAGE_TYPE_3D, (VkExtent3D){ 9, 6, 3 }, 3, 1, 600 + i, "3D");
+      gpu_case(&g, every(i), VK_IMAGE_TYPE_2D, (VkExtent3D){ 256, 256, 1 }, 1, 1, 700 + i, "256sq");
    }
 }
 
@@ -474,7 +526,7 @@ static struct cstat g_cs[2][MALI_BC_NSHADERS];
 static void t_compile(void)
 {
    static const unsigned archs[2] = { 11, 13 };
-   static const char *nm[] = { "bc1", "bc4", "bc6h", "bc7" };
+   static const char *nm[] = { "bc1", "bc4", "bc6h", "bc7", "etc2" };
    for (int a = 0; a < 2; a++)
       for (int s = 0; s < MALI_BC_NSHADERS; s++) {
          struct mali_lbinding b[2];
@@ -524,10 +576,10 @@ static int gen_golden(const char *path)
               " * words, Mesa util_format decoders as the oracle: kind 0 packUnorm4x8, 1 packSnorm4x8, 2 packHalf2x16 x2. */\n"
               "#pragma once\n#include <stdint.h>\n#include <vulkan/vulkan_core.h>\n");
    fprintf(f, "struct bcg_compile { uint32_t bin_size, regs, tls, wls, push; uint64_t hash; };\n");
-   fprintf(f, "static const struct bcg_compile bcg_compile[2][4] = {\n");
+   fprintf(f, "static const struct bcg_compile bcg_compile[2][%d] = {\n", MALI_BC_NSHADERS);
    for (int a = 0; a < 2; a++) {
       fprintf(f, "  {\n");
-      for (int s = 0; s < 4; s++) {
+      for (int s = 0; s < MALI_BC_NSHADERS; s++) {
          const struct cstat *c = &g_cs[a][s];
          fprintf(f, "    { %u, %u, %u, %u, %u, 0x%016llxull },\n", c->bin_size, c->regs, c->tls, c->wls, c->push, (unsigned long long)c->hash);
       }

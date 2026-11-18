@@ -105,6 +105,7 @@ struct mali_image {
    unsigned arch;
    /* R4-M7 BC emulation: `lay` describes the compressed region (planes taken from bc_lay.comp), views are built over sh_lay (decoded shadow) */
    bool bc;
+   bool native_view;   /* ETC2 / EAC: `bc` marks the decoded blit-source shadow, but views and descriptors use the native `lay` */
    struct mali_bc_layout bc_lay;
    struct mali_image_layout sh_lay;
 };
