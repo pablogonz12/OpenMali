@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open ddf33c459 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 188.0 | 69.1 | 0 | 0.84 | 3.40 | 259.3 | 0.83 | 2.54 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | ddf33c459 | triangle-3k | 58.9 | 40.5 | 0 | 8.75 | 2.64 | 188.3 | 4.85 | 2.24 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
+
 ### mali-open 531f79fa4 (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -41,6 +48,15 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
 
 ## cube (GPU-heavy)
+
+### mali-open ddf33c459 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 73.7 | 35.4 | 0 | 0.17 | 12.75 | 87.8 | 0.28 | 11.29 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | ddf33c459 | cube-720p | 49.0 | 38.9 | 0 | 1.90 | 15.19 | 83.4 | 2.06 | 11.95 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.6 | 38.2 | 0 | 0.15 | 12.95 | 87.8 | 0.29 | 11.30 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | ddf33c459 | cube-native | 46.2 | 38.2 | 0 | 1.42 | 18.11 | 75.5 | 2.00 | 13.13 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 
 ### mali-open 531f79fa4 (2026-11-18)
 
