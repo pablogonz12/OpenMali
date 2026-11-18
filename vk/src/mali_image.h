@@ -90,6 +90,7 @@ int mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t im
 void mali_pack_texel_buffer(struct mali_hw_desc *d, const struct mali_fmt *f, uint64_t va, uint64_t range);
 
 /* Sampler descriptor from a runtime sampler (pure given the vk_sampler fields). */
+void mali_border_color_unswizzle(const VkComponentMapping *m, const uint32_t want[4], uint32_t out[4]);
 void mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_sampler *s, struct mali_hw_desc *out);
 uint32_t mali_wrap_mode(VkSamplerAddressMode m);
 
