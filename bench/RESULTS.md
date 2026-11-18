@@ -104,6 +104,8 @@ Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/rig
 
 | phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
 |---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | default | 178.8 | n/a | 44.2 | 22.64 | 120.00000762939453 | 3/0 | passed | 2026-11-18 |
+| cmf | v11 | uncapped | 164.3 | n/a | 41.4 | 24.15 | 120.00000762939453 | 3/0 | passed | 2026-11-18 |
 | poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 120 | 0/3 | INVALID: FAILED after retries: session not READY (SUSPENDED) | 2026-11-18 |
 | poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/3 | INVALID: FAILED after retries: session not READY (STARTING_STEAM); FAILED after retries:  | 2026-11-18 |
 
