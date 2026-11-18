@@ -28,6 +28,7 @@ static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
 static unsigned g_colbpp = 4;
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
+static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
 static int g_dynstr;   /* dynamic VERTEX_INPUT_BINDING_STRIDE with a wrong static stride; the draw binds strides through CmdBindVertexBuffers2 */
 static PFN_vkCmdBindVertexBuffers2 CmdBindVertexBuffers2_;
@@ -526,7 +527,7 @@ scene_create(struct scene *s, int depth)
    }
    if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
                 cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
-   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = g_discard == 2 ? 1 : 2,
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = g_discard == 2 || g_nofs ? 1 : 2,
                                       .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                       .pDepthStencilState = depth ? &dss : NULL, .pColorBlendState = &cbs,
@@ -1208,6 +1209,7 @@ test_dynstride(const char *name)
 static int
 test_nocol(const char *name, int stencil)
 {
+   g_nofs = !strncmp(name, "nofs_", 5);   /* nofs_*: FS-less pipeline; the draw must still be emitted (golden stream), CTS .nocolor reads it back */
    struct scene s = {.mode = MODE_TRI};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -1222,7 +1224,7 @@ test_nocol(const char *name, int stencil)
    int ok = scene_create(&s, 1);
    float one[1][4] = {{1, 0, 0, 0}};
    if (ok) ok = scene_draw(&s, 1, one, f);
-   g_nocol = 0;
+   g_nocol = 0; g_nofs = 0;
    g_st = (struct st_state){0};
    g_depfmt = save;
    printf("{\"test\":\"%s\",\"ok\":%s}\n", name, ok ? "true" : "false");   /* completion (no hang, no error) is the check; dEQP depth/stencil .nocolor reads the result back */
@@ -1994,6 +1996,8 @@ main(int argc, char **argv)
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
    if (ok && CASE_ON("load_depth")) ok &= test_load("load_depth", 0);
    if (ok && CASE_ON("nocol_depth")) ok &= test_nocol("nocol_depth", 0);
+   if (ok && CASE_ON("nofs_depth")) ok &= test_nocol("nofs_depth", 0);
+   if (ok && CASE_ON("nofs_stencil")) ok &= test_nocol("nofs_stencil", 1);
    if (ok && CASE_ON("nocol_stencil")) ok &= test_nocol("nocol_stencil", 1);
    if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride");
    if (ok && CASE_ON("discard_both")) ok &= test_discard("discard_both", 1);
