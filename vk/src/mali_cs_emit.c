@@ -793,14 +793,18 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    for (int i = 0; i < 3; i++)
       if (!cs->local_size[i])
          return -EINVAL;
-   unsigned nres = 1 + d->nsets, res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
+   unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets, res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;   /* dynamic table at MALI_DYN_TABLE as in the draw path */
+   uint64_t va_dyn = 0;
+   uint32_t *dyn = NULL;
 
    spd = A(hw, KB_SPD_SIZE, 32, &va_spd);
    set = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_set);   /* entry MALI_DUMMY_SAMPLER_IDX (all zero) serves texelFetch */
    uint32_t *srt = A(hw, res_alloc, 64, &va_srt);
    fau = A(hw, FAU_BYTES(cs->fau_count), 64, &va_fau);
    tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
-   if (!spd || !set || !srt || !fau || !tsd)
+   if (d->ndyn)
+      dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
+   if (!spd || !set || !srt || !fau || !tsd || (d->ndyn && !dyn))
       return -ENOMEM;
 
    if (v13)
@@ -857,6 +861,10 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    kb_draw_resource(srt, va_set, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
    for (unsigned s = 0; s < d->nsets; s++)
       kb_draw_resource(srt + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
+   if (d->ndyn) {
+      memcpy(dyn, d->dyn_desc, d->ndyn * KB_DESC_SET_STRIDE);
+      kb_draw_resource(srt + MALI_DYN_TABLE * (KB_RES_SIZE / 4), va_dyn, d->ndyn * KB_DESC_SET_STRIDE, 1);
+   }
    kb_draw_fau_imm(fau, (const uint32_t(*)[2])cs->imm, cs->nimm);
    {
       size_t room = FAU_BYTES(cs->fau_count);
@@ -878,7 +886,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
-   M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, 1 + d->nsets));
+   M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
    M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
    M48(&c, CR_SPD, va_spd);
    M48(&c, CR_TSD, va_tsd);
