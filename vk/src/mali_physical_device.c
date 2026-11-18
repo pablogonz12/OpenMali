@@ -111,9 +111,16 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       /* descriptor indexing: only sampled images and samplers have update-after-bind (t_vk_feat didx); everything else reports 0 */
       .maxUpdateAfterBindDescriptorsInAllPools = 1024, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
-      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
-      .maxPerStageUpdateAfterBindResources = 32, .maxDescriptorSetUpdateAfterBindSamplers = 96,
-      .maxDescriptorSetUpdateAfterBindSampledImages = 96,
+      /* UAB limits also bound non-UAB descriptors in the same pipeline layout (the validation layer counts every set), so they must
+         not sit below the base limits even for types without update-after-bind: mirror the base values. */
+      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindUniformBuffers = 12,
+      .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageUpdateAfterBindResources = 128, .maxDescriptorSetUpdateAfterBindSamplers = 96,
+      .maxDescriptorSetUpdateAfterBindUniformBuffers = 72, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
+      .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
+      .maxDescriptorSetUpdateAfterBindSampledImages = 96, .maxDescriptorSetUpdateAfterBindStorageImages = 24,
+      .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,

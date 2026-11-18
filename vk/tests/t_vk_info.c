@@ -141,6 +141,23 @@ main(int argc, char **argv)
    CHECK(L->maxSamplerAnisotropy <= 16.0f && L->maxViewports >= 1 && L->maxViewports <= 16, "aniso/viewports");
    CHECK(L->maxFragmentOutputAttachments <= 8 && L->maxVertexInputAttributes >= 16 && L->maxVertexInputBindings >= 16, "vertex/frag");
    CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
+   /* UAB limits bound every descriptor in a pipeline layout containing a UAB set, so none may be below its base limit
+      (Khronos validation: PipelineLayout-descriptorType-03023.. fire when they are 0) */
+   CHECK(p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= L->maxPerStageDescriptorStorageBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageImages >= L->maxPerStageDescriptorStorageImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindInputAttachments >= L->maxPerStageDescriptorInputAttachments &&
+         p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
+         p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= L->maxPerStageDescriptorSampledImages &&
+         p12.maxPerStageUpdateAfterBindResources >= L->maxPerStageResources, "UAB per-stage limits >= base");
+   CHECK(p12.maxDescriptorSetUpdateAfterBindUniformBuffers >= L->maxDescriptorSetUniformBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic >= L->maxDescriptorSetUniformBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffers >= L->maxDescriptorSetStorageBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic >= L->maxDescriptorSetStorageBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindStorageImages >= L->maxDescriptorSetStorageImages &&
+         p12.maxDescriptorSetUpdateAfterBindInputAttachments >= L->maxDescriptorSetInputAttachments &&
+         p12.maxDescriptorSetUpdateAfterBindSamplers >= L->maxDescriptorSetSamplers &&
+         p12.maxDescriptorSetUpdateAfterBindSampledImages >= L->maxDescriptorSetSampledImages, "UAB set limits >= base");
    CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
