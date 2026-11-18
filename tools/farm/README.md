@@ -1,5 +1,7 @@
 # mali-farm: automatic hardware tests on whichever phone is attached
 
+> Task-oriented user and troubleshooting guide: [GUIDE.md](GUIDE.md).
+
     tools/farm/farm submit <ref> --suite smoke|daily|bench --need v10,v11,v13 [--env "K=V ..."]
     tools/farm/farm status | wait <job> --timeout N | results <job>
     tools/farm/farmd [--once] [--fake]     # the daemon (systemd user unit: mali-farm.service)
