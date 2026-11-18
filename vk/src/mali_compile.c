@@ -304,6 +304,32 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
    return (const struct vk_ycbcr_conversion_state *)l->set[set].ycbcr + b->ycbcr_off + array_index;
 }
 
+/* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
+ * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
+static bool
+gcm_enabled(nir_shader *nir)
+{
+   if (!getenv("MALI_OPT_GCM") || nir->info.stage != MESA_SHADER_COMPUTE)
+      return false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex && nir_tex_instr_has_implicit_derivative(nir_instr_as_tex(instr)))
+               return false;
+            if (instr->type == nir_instr_type_intrinsic) {
+               switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+               case nir_intrinsic_ddx: case nir_intrinsic_ddy: case nir_intrinsic_ddx_fine: case nir_intrinsic_ddy_fine:
+               case nir_intrinsic_ddx_coarse: case nir_intrinsic_ddy_coarse:
+                  return false;
+               default: break;
+               }
+            }
+         }
+      }
+   }
+   return true;
+}
+
 static int
 do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, struct mali_compiled *out,
            char *err, size_t errsz)
@@ -467,7 +493,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    struct pan_shader_info info = {0};
    /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
-   if (getenv("MALI_OPT_GCM")) {
+   if (gcm_enabled(nir)) {
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
