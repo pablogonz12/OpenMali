@@ -584,6 +584,53 @@ class T(unittest.TestCase):
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
 
+    def test_bench_owner_pending_is_gated_not_invalid(self):
+        """bench2 stopping with 'PENDING: focus rule violated' pushed nothing: the .so left on the phone by an earlier job must not make the job
+        INVALID (2026-11-18: three INVALIDs in 21 s used up the v13 attempts). A finished chunk with a foreign .so is still INVALID."""
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod2", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod2", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        f.fake = False
+        f.bench_prepare = lambda job: "/nonexistent/mdbench"
+        f.tree = lambda jid: self.d + "/tree"
+        f.best_file = lambda job: self.d + "/best.json"
+        f.keep_log = lambda *a: None
+        f.shell_route = lambda dev: False
+        f.alive = lambda dev: True
+        f.phone_env = lambda dev, ex=None: {}
+        f.verify_so = lambda job, dev, path, key="so_sha256": (False, "7ce07a55b210")           # the previous job's driver is on the phone
+        job = {"id": "j1", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
+        dev = {"alias": "dev-b", "class": "v13", "lock": "poco"}
+        orig = m.L.run_watched
+        self.addCleanup(setattr, m.L, "run_watched", orig)                                      # farmlib is shared by every test
+        for out, want in (("dev-b: PENDING: focus rule violated (mCurrentFocus=Window{x u0 com.instagram.android/.Main}); the owner is using the phone", "gated"),
+                          ("dev-b: stop: battery 19 %", "gated"),
+                          ("dev-b: CHUNK DONE (time budget 230s); run again", "gated"),
+                          ("dev-b: all done", "invalid")):
+            m.L.run_watched = lambda cmd, tmo, alive, env=None, o=out, **k: (0, o)
+            res = f.suite_bench(job, dev)
+            if want == "gated":
+                self.assertEqual(res, {"gated": True}, out)
+            else:
+                self.assertEqual(res["verdict"], "invalid", out)
+                self.assertIn("7ce07a55b210", res["notes"])
+
+    def test_sweep_leaves_a_guest_phone_alone_while_the_owner_uses_it(self):
+        """the idle sweep starts the app's guest session, which takes the screen: it waits (no lock hold, no recorded case) while the owner is in
+        another app, and walks on once the phone is free"""
+        self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
+        self.attach("dev-a")
+        os.makedirs(self.d + "/state/fake-menu")
+        open(self.d + "/state/fake-menu/dev-a.inuse", "w").write("screen on, foreground com.instagram.android")
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 0)
+        self.assertFalse(os.path.exists(self.d + "/state/sweep/v11-chunks.jsonl"))
+        os.unlink(self.d + "/state/fake-menu/dev-a.inuse")
+        self.farmd()
+        self.assertEqual(S.load("v11")["pos"], 3)
+
     def test_verdict_uses_main_baseline_too(self):
         # branch baseline is stale for 2 cases main passes; they fail in the run -> must be regressions, not silently "pass"
         self.attach("dev-a")
