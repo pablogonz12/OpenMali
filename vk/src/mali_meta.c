@@ -569,12 +569,17 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
          return r;
       }
    }
-   uint64_t set_va;
+   uint64_t set_va, clr_va = 0;
    uint32_t *set = mem_alloc(mem, 64, 64, &set_va);
+   uint32_t *clr = kind == MALI_PRELOAD_COLOUR && (src->arg & 255u) == 19u ? mem_alloc(mem, 16, 16, &clr_va) : NULL;
    pthread_mutex_unlock(&g_lock);
-   if (!set)
+   if (!set || (kind == MALI_PRELOAD_COLOUR && (src->arg & 255u) == 19u && !clr))
       return -ENOMEM;
-   pack_buffer(set, src->va[0], src->bytes[0]);
+   if (clr) {
+      memcpy(clr, src->clear, 16);
+      pack_buffer(set, clr_va, 16);
+   } else
+      pack_buffer(set, src->va[0], src->bytes[0]);
    if (kind == MALI_PRELOAD_ZS)
       pack_buffer(set + 8, src->va[1], src->bytes[1]);
    memset(d, 0, sizeof *d);

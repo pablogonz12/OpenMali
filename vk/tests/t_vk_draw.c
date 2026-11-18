@@ -72,7 +72,7 @@ static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts *
 static const char *g_only, *g_spv = "shader";
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -691,6 +691,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       else
          CmdDraw(cb, 3, 1, 0, 0);
    }
+   if (s->mode == MODE_CLEARQUAD) {   /* CmdClearAttachments AFTER a draw, sub-rectangle: a constant-colour quad (the triangle must survive outside the rect) */
+      VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0, .clearValue = {.color = {{0, 0, 1, 1}}}};
+      VkClearRect cr = {.rect = {{100, 100}, {60, 60}}, .baseArrayLayer = 0, .layerCount = 1};
+      CmdClearAttachments(cb, 1, &ca, 1, &cr);
+   }
    CmdEndRenderPass(cb);
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    g_t_rec += now_us() - t_rec0;
@@ -1258,6 +1263,19 @@ test_mode(const char *name, int mode, double expect, double tol)
             CHECK(c[2] == 255 && c[0] == 0 && c[1] == 0, "corner %u,%u,%u", c[0], c[1], c[2]);
             const uint8_t *t = s.px + 128 * s.pitch + 128 * 4;   /* triangle interior wins over the clear */
             CHECK(t[2] < 250 || t[0] > 5 || t[1] > 5, "triangle not drawn over clear");
+         } else if (mode == MODE_CLEARQUAD) {
+            /* the rect [100,160)^2 is exactly the clear colour (the triangle's pixels inside it are overwritten); nothing outside it is */
+            uint32_t in = 0, out_blue = 0, out_cov = 0;
+            for (int y = 0; y < H; y++)
+               for (int x = 0; x < W; x++) {
+                  const uint8_t *c = s.px + y * s.pitch + x * 4;
+                  int blue = c[0] == 0 && c[1] == 0 && c[2] == 255 && c[3] == 255;
+                  if (x >= 100 && x < 160 && y >= 100 && y < 160) in += blue;
+                  else out_blue += blue, out_cov += c[3] != 0;
+               }
+            CHECK(in == 60 * 60, "clear quad: %u of 3600 px in the rect are the clear colour", in);
+            CHECK(out_blue == 0, "clear quad leaked %u px outside the scissor", out_blue);
+            CHECK(out_cov > 0, "triangle outside the rect vanished");
          } else {
             uint32_t cov = count_cov(&s);
             double err = fabs((double)cov - expect) / expect * 100.0;
@@ -1923,6 +1941,7 @@ main(int argc, char **argv)
       else printf("{\"test\":\"multivp\",\"skipped\":\"multiViewport not advertised\",\"ok\":true}\n");
    }
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
+   if (ok && CASE_ON("clearquad")) ok &= test_mode("clearquad", MODE_CLEARQUAD, 0, 0);
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);

@@ -1034,16 +1034,61 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
 {
    CMD(h);
    struct mali_frame *f = &cmd->cur;
-   if (!cmd->in_render || f->ndraws) {
-      unsupported(cmd, "CmdClearAttachments after a draw (needs a quad draw)");
+   if (!cmd->in_render) {
+      unsupported(cmd, "CmdClearAttachments outside a rendering");
       return;
    }
+   bool partial = false;
    for (uint32_t r = 0; r < nr; r++)
       if (rects[r].rect.offset.x != f->area[0] || rects[r].rect.offset.y != f->area[1] ||
-          (int32_t)rects[r].rect.extent.width != f->area[2] || (int32_t)rects[r].rect.extent.height != f->area[3]) {
-         unsupported(cmd, "partial CmdClearAttachments");
+          (int32_t)rects[r].rect.extent.width != f->area[2] || (int32_t)rects[r].rect.extent.height != f->area[3])
+         partial = true;
+   if (partial || f->ndraws) {
+      /* after a draw, or a sub-rectangle: a constant-colour quad (preload.frag kind 19: the clear words are the format's raw shader output) per rect.
+       * Colour only, single-sampled, layer 0; depth/stencil clears keep the loadOp-patch path above (whole area, before the first draw). */
+      for (uint32_t i = 0; i < na; i++)
+         if (att[i].aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            unsupported(cmd, partial ? "partial CmdClearAttachments of depth/stencil" : "CmdClearAttachments of depth/stencil after a draw (needs a quad draw)");
+            return;
+         }
+      if (!f->has_colour || f->samples != 1) {
+         unsupported(cmd, "CmdClearAttachments quad: no single-sampled colour attachment");
          return;
       }
+      for (uint32_t i = 0; i < na; i++) {
+         if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
+            continue;
+         if (att[i].colorAttachment != 0) {
+            unsupported(cmd, "colour attachment index");
+            return;
+         }
+         for (uint32_t r = 0; r < nr; r++) {
+            if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
+               unsupported(cmd, "CmdClearAttachments quad: layers");
+               return;
+            }
+            struct mali_preload_src ps;
+            memset(&ps, 0, sizeof ps);
+            ps.arg = 19;
+            memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
+            struct mali_draw d;
+            if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
+               unsupported(cmd, "CmdClearAttachments quad (preload shader)");
+               return;
+            }
+            d.dirty = MALI_D_ALL;
+            d.sc[0] = rects[r].rect.offset.x; d.sc[1] = rects[r].rect.offset.y;
+            d.sc[2] = (int32_t)rects[r].rect.extent.width; d.sc[3] = (int32_t)rects[r].rect.extent.height;
+            d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
+            if (mali_frame_add_draw(f, &d)) {
+               vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+               return;
+            }
+         }
+      }
+      cmd->dirty = MALI_D_ALL;   /* the quads are not snapshots of the bound state */
+      return;
+   }
    for (uint32_t i = 0; i < na; i++) {
       if (att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
          if (att[i].colorAttachment != 0) {
