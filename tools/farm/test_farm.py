@@ -703,6 +703,32 @@ class T(unittest.TestCase):
         self.farmd()
         self.assertEqual(S.load("v11")["pos"], 3)
 
+    def test_gated_menu_job_does_not_cool_the_phone(self):
+        """a menu job gated by "owner is using the phone" is deferred by itself; a smoke job queued behind it still runs on the same phone
+        (2026-11-18: a 900 s phone-wide cooldown idled the X8 for 16 min with 6 jobs pending)"""
+        self.nosweep()
+        self.fake_menubench("ok")
+        self.attach("dev-a")
+        os.makedirs(self.d + "/state/fake-menu", exist_ok=True)
+        open(self.d + "/state/fake-menu/dev-a.inuse", "w").write("screen on, launcher foreground")
+        _, menu, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11", "--prio", "0")
+        _, smoke, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--prio", "5", "--allow-stale")
+        self.env["MALI_FARM_FAKE_DEFER"] = "3600"
+        for _ in range(3):
+            self.farmd()
+        self.assertEqual(L.find_job(menu)["parts"]["v11"]["state"], "pending")        # still waiting for the owner
+        self.assertEqual(L.find_job(smoke)["parts"]["v11"]["state"], "done")          # the phone was not blocked
+
+    def test_stale_menu_job_expires(self):
+        self.nosweep()
+        self.attach("dev-a")
+        _, menu, _ = self.farm("submit", "HEAD", "--suite", "menu", "--need", "v11")
+        j = L.find_job(menu)
+        j["created"] = "2020-01-01T00:00:00+01:00"
+        L.write_json(L.job_path(menu), j)
+        self.farmd()
+        self.assertEqual(L.find_job(menu)["parts"]["v11"]["state"], "cancelled")
+
     def test_sweep_leaves_a_guest_phone_alone_while_the_owner_uses_it(self):
         """the idle sweep starts the app's guest session, which takes the screen: it waits (no lock hold, no recorded case) while the owner is in
         another app, and walks on once the phone is free"""
