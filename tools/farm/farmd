@@ -1346,7 +1346,7 @@ class Farm:
         ok = rc == 0 and "PROBLEM" not in out and not ps.strip()
         return ok, (note + (" STILL RUNNING" if ps.strip() else "") + ("" if rc == 0 and "PROBLEM" not in out else f" qrestore rc={rc}: {(out.strip().splitlines() or [''])[-1][:100]}")).strip()
 
-    def run_hold(self, hid, alias):
+    def run_hold(self, hid, alias, adopt=False):
         dev = dict(self.devs[alias])                       # a snapshot: devices.toml edits during the hold must not retarget the cleanup or the lock name
         lock = L.PhoneLock(dev, self.fake)
         h = L.read_json(H.path(hid))
@@ -1356,7 +1356,7 @@ class Farm:
             L.write_json(H.path(hid), h2)
             log(f"{alias}: hold {hid} ended: {reason}" + (f" ({kw['clean_note']})" if kw.get("clean_note") else ""))
             self.wake.set()
-        if H.released(hid) or H.age(hid) > H.HB_STALE:
+        if not adopt and (H.released(hid) or H.age(hid) > H.HB_STALE):
             return done("cancelled while queued" if H.released(hid) else "caller lost while queued")
         if self.is_disabled(dev):
             self.cool[alias] = time.time() + (0 if self.fake else 30)
@@ -1366,23 +1366,28 @@ class Farm:
             return
         touched = False
         try:
-            gs, gwhy, _ = self.gate_check(dev)
-            if gs != "ok":
-                log(f"{alias}: gated ({gs}: {gwhy}); hold {hid} stays queued")
-                self.cool[alias] = time.time() + (0 if self.fake else 60)
-                return
-            h = L.read_json(H.path(hid))
-            if H.released(hid) or H.age(hid) > H.HB_STALE or self.is_disabled(dev):      # cancelled while the gate was being read
-                return done("cancelled while queued" if H.released(hid) else "caller lost or phone disabled while queued")
-            if alias in self.restore_pending:                        # a hold was cut short by a farmd restart: the phone may still be in its state
-                self.hold_cleanup(dev)
-                self.restore_pending.discard(alias)
-                H.clear_restore(alias)
-            touched = True
-            now = time.time()
-            h.update(state="active", started=L.now(), deadline=now + h["max_s"], lock=dev["lock"], serial=self.tid.get(alias) or dev["serial"])
-            L.write_json(H.path(hid), h)
-            log(f"{alias}: hold {hid} active (max {h['max_s']}s, waited {int(now - h['seq'] / 1e9)}s)")
+            if adopt:                                                # M4: farmd restarted under a live hold; its caller's command still runs on the phone
+                touched = True
+                h = L.read_json(H.path(hid))
+                log(f"{alias}: hold {hid} re-adopted after a farmd restart (deadline in {int(h.get('deadline', 0) - time.time())}s)")
+            else:
+                gs, gwhy, _ = self.gate_check(dev)
+                if gs != "ok":
+                    log(f"{alias}: gated ({gs}: {gwhy}); hold {hid} stays queued")
+                    self.cool[alias] = time.time() + (0 if self.fake else 60)
+                    return
+                h = L.read_json(H.path(hid))
+                if H.released(hid) or H.age(hid) > H.HB_STALE or self.is_disabled(dev):      # cancelled while the gate was being read
+                    return done("cancelled while queued" if H.released(hid) else "caller lost or phone disabled while queued")
+                if alias in self.restore_pending:                        # a hold was cut short by a farmd restart: the phone may still be in its state
+                    self.hold_cleanup(dev)
+                    self.restore_pending.discard(alias)
+                    H.clear_restore(alias)
+                touched = True
+                now = time.time()
+                h.update(state="active", started=L.now(), deadline=now + h["max_s"], lock=dev["lock"], serial=self.tid.get(alias) or dev["serial"])
+                L.write_json(H.path(hid), h)
+                log(f"{alias}: hold {hid} active (max {h['max_s']}s, waited {int(now - h['seq'] / 1e9)}s)")
             while True:
                 why = H.end_reason(h, H.age(hid), H.released(hid), disabled=self.is_disabled(dev))
                 if why:
@@ -1888,6 +1893,13 @@ class Farm:
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
         for h in H.list_holds():                                                  # farmd restarted mid-hold: its lock died with it
             if h["state"] == "active" and not any(t.name == "hold/" + h["device"] for t in self.threads.values()):
+                al = h["device"]
+                if (al in self.devs and al not in self.threads and not H.released(h["id"]) and H.age(h["id"]) <= H.HB_STALE
+                        and time.time() < h.get("deadline", 0) and not self.is_disabled(self.devs[al])):
+                    t = threading.Thread(target=self.run_hold, args=(h["id"], al, True), name=f"hold/{al}", daemon=False)   # M4: re-adopt the live hold
+                    self.threads[al] = t
+                    t.start()
+                    continue
                 h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False, clean_note="restore runs before the next job or hold")
                 L.write_json(H.path(h["id"]), h)
                 self.restore_pending.add(h["device"])
