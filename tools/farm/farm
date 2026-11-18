@@ -10,8 +10,12 @@ import benchlib as BL                                  # noqa: E402
 import holdlib as H                                    # noqa: E402
 
 
-def git(*a):
-    r = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), *a], capture_output=True, text=True)
+MERGE_ENV = {**os.environ, "GIT_AUTHOR_NAME": "farm", "GIT_AUTHOR_EMAIL": "farm@localhost", "GIT_COMMITTER_NAME": "farm", "GIT_COMMITTER_EMAIL": "farm@localhost",
+             "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z"}
+
+
+def git(*a, env=None):
+    r = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), *a], capture_output=True, text=True, env=env)
     if r.returncode:
         raise SystemExit("farm: git " + " ".join(a) + ": " + r.stderr.strip())
     return r.stdout.strip()
@@ -27,7 +31,8 @@ def cmd_submit(a):
         if not om:
             raise SystemExit("farm: --merge-with-main needs origin/main (git fetch)")
         tree = git("merge-tree", "--write-tree", commit, om)               # fails (exit 1) on conflicts
-        commit = git("commit-tree", tree.splitlines()[0], "-p", commit, *([] if commit == om else ["-p", om]), "-m", f"farm: {a.ref} merged with origin/main {om[:8]} (gate only)")
+        commit = git("commit-tree", tree.splitlines()[0], "-p", commit, *([] if commit == om else ["-p", om]), "-m", f"farm: {a.ref} merged with origin/main {om[:8]} (gate only)",
+                     env=MERGE_ENV)           # fixed identity and dates: the same REF + origin/main always gives the same commit, so reuse works
         a.ref = f"{a.ref}+main"
     elif om and not a.allow_stale:
         behind = int(git("rev-list", "--count", f"{commit}..{om}"))
@@ -43,7 +48,9 @@ def cmd_submit(a):
         raise SystemExit("farm: --only is for --suite smoke")
     if a.suite == "cases" and not a.case:
         raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
-    if not a.rerun and not dirty:
+    if not need:
+        raise SystemExit("farm: --need selects no class")
+    if not a.rerun and not dirty and a.suite == "smoke":        # reuse only where the verdict does not depend on a moving input: daily judges against main's baseline, menu/bench against the installed MediaDeck
         old = L.find_passed(L.list_jobs(), commit, a.suite, need, L.parse_env(a.env), a.only, a.case, a.repeat)
         if old:
             print(f"farm: same commit/suite/inputs already passed as {old['id']}; not resubmitting (--rerun forces)", file=sys.stderr)

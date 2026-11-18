@@ -224,7 +224,7 @@ def push_so(src, sha, dst):
     rc, o = adb("push", src, dst, timeout=180)
     if rc != 0:
         print("re-push failed: " + o.strip()[-200:], flush=True)
-        sys.exit(79)
+        return False                                                       # the caller reports the driver mismatch (exit 76 path)
     return sha_phone(dst) == sha
 
 

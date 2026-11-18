@@ -1441,6 +1441,8 @@ class T(unittest.TestCase):
         self.assertEqual(gate.next_state("ok", dict(ok, temp_c=50.0), th)[0], "cooling")
 
     def test_submit_idempotent_and_rerun(self):
+        if subprocess.run(["git", "-C", HERE, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=False).stdout.strip():
+            self.skipTest("tracked edits: a dirty HEAD is never reused")
         self.attach("dev-a")
         _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
         self.farmd()
@@ -1448,20 +1450,32 @@ class T(unittest.TestCase):
         rc, again, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
         self.assertEqual((rc, again), (0, jid))
         self.assertIn("already passed", err)
-        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--env", "FOO=1")[1], jid)   # other inputs: new job
-        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")[1], jid)
+        for extra in (["--env", "FOO=1"], ["--rerun"]):                                  # other inputs / forced: a new job
+            rc, other, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", *extra)
+            self.assertEqual(rc, 0, err)
+            self.assertTrue(other)
+            self.assertNotEqual(other, jid)
+        rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("selects no class", err)
+        _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
+        self.farmd()
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
 
     def test_find_passed_unit(self):
         j = {"id": "a", "commit": "c1", "suite": "daily", "env": "", "dirty": False, "parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "done", "verdict": "fail"}}}
+        self.assertIsNone(L.find_passed([j], "c1", "daily", ["v11"], ""))               # the job also asked v13: a different request
+        j = dict(j, parts={"v11": {"state": "done", "verdict": "pass"}})
         self.assertEqual(L.find_passed([j], "c1", "daily", ["v11"], "")["id"], "a")
+        self.assertIsNone(L.find_passed([j], "c1", "daily", [], ""))
         self.assertIsNone(L.find_passed([j], "c1", "daily", ["v11", "v13"], ""))
         self.assertIsNone(L.find_passed([j], "c2", "daily", ["v11"], ""))
         self.assertIsNone(L.find_passed([dict(j, dirty=True)], "c1", "daily", ["v11"], ""))
 
     def test_submit_stale_base_and_merge_with_main(self):
         r = subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
-        if r.returncode:
-            self.skipTest("no origin/main in this checkout")
+        if r.returncode or subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main~8"], capture_output=True, check=False).returncode:
+            self.skipTest("no origin/main with 8 ancestors in this checkout")
         n = int(subprocess.run(["git", "-C", HERE, "rev-list", "--count", "HEAD"], capture_output=True, text=True).stdout)
         if n > 12:
             rc, _, err = self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11")
