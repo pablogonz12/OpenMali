@@ -154,7 +154,7 @@ CPU/GPU and cross-process edges need fences.
 
 Presentation uses Mesa `wsi_common`, initialised in `mali_wsi_init` (`mali_wsi.c:58`) with Wayland (optionally X11,
 see `vk/README.md`). There is no DRM node behind kbase, so `supports_modifiers` is forced and images are linear
-(`mali_wsi_modifier` = `DRM_FORMAT_MOD_LINEAR`, `mali_wsi.c:17-18`).
+(`mali_wsi_modifier` = `MALI_DRM_FORMAT_MOD_LINEAR` (0), `mali_wsi.c:17-18`; `supports_modifiers` set at `:67`).
 
 - **dma-buf path (real GPU).** Swapchain images are ordinary driver images on `MALI_BO_EXPORT` BOs (dma-heap), exported as
   dma-bufs for the compositor (zero copy). `wsi_common` attaches the frame's sync_file to the buffer
@@ -162,7 +162,7 @@ see `vk/README.md`). There is no DRM node behind kbase, so `supports_modifiers` 
 - **Software path.** On the fake backend, or with `MALI_WSI=sw`, wsi copies into a CPU-visible linear buffer
   (`mali_wsi_use_sw`, `mali_wsi.c:47`); `MALI_WSI=dmabuf` forces the first path.
 - Details of the Steam/gamescope present leg and X11 are in `vk/STEAM-GAPS.md`; frame pacing and the in-flight limit
-  interplay is `MALI_MAX_INFLIGHT` plus the wait elision in section 4.
+  interplay is the compile-time `MALI_MAX_INFLIGHT` (3, `mali_queue.c:23`, not an env var) plus the wait elision in section 4.
 
 ## 6. Compiler path
 
