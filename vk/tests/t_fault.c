@@ -13,7 +13,9 @@
 #include <vulkan/vulkan.h>
 
 #include <dirent.h>
-#include <execinfo.h>
+#ifndef __ANDROID__
+#include <execinfo.h>   /* bionic (this NDK API level) has no backtrace(): leak reports there carry no allocation site */
+#endif
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -114,7 +116,9 @@ track(void *p)
    if (!g_in_bt) {
       g_in_bt = 1;
       memset(g_bt[h], 0, sizeof g_bt[h]);
+#ifndef __ANDROID__
       backtrace(g_bt[h], 8);
+#endif
       g_in_bt = 0;
    }
 }
