@@ -99,10 +99,35 @@ fill_plane(unsigned arch, struct mali_fmt *o, unsigned i, enum pipe_format p, Vk
 
 static bool is_pure_int(enum pipe_format p) { return util_format_is_pure_integer(p); }
 
+/* NV12 = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM: two memory planes (R8 luma, R8G8 interleaved Cb/Cr at half width and height). The hardware
+ * only ever sees the two planes as ordinary textures; the YCbCr model/range conversion and the chroma siting are NIR (nir_vk_lower_ycbcr_tex,
+ * mali_compile.c), the same split PanVK uses on the cores without the YUV texture descriptor. Not part of mali_format_count/nth (core 1.0 range). */
+static bool
+format_get_ycbcr(unsigned arch, struct mali_fmt *o)
+{
+   const struct pan_format *pt = fmt_table(arch);
+   if (!(pt[PIPE_FORMAT_R8_UNORM].bind & PAN_BIND_SAMPLER_VIEW) || !(pt[PIPE_FORMAT_R8G8_UNORM].bind & PAN_BIND_SAMPLER_VIEW)) return false;
+   o->vk = MALI_YCBCR_FORMAT;
+   o->pipe = vk_format_to_pipe_format(MALI_YCBCR_FORMAT);
+   o->ycbcr = true;
+   o->bs = 1; o->bw = 1; o->bh = 1;
+   o->nplanes = 2;
+   fill_plane(arch, o, 0, PIPE_FORMAT_R8_UNORM, VK_IMAGE_ASPECT_PLANE_0_BIT);
+   fill_plane(arch, o, 1, PIPE_FORMAT_R8G8_UNORM, VK_IMAGE_ASPECT_PLANE_1_BIT);
+   o->plane[1].ssx = o->plane[1].ssy = 1;
+   o->bind = PAN_BIND_SAMPLER_VIEW;
+   o->linear = o->optimal = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                            VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT | VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
+                            VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+   return true;
+}
+
 bool
 mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *o)
 {
    memset(o, 0, sizeof *o);
+   if (f == MALI_YCBCR_FORMAT) return arch >= 10 && arch <= 14 && format_get_ycbcr(arch, o);
    if (arch < 10 || arch > 14 || f < FMT_FIRST || f > FMT_LAST) return false;
    enum pipe_format p = vk_format_to_pipe_format(f);
    if (fmt_skipped(f, p)) return false;
@@ -255,6 +280,10 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
       VkResult br = mali_bc_image_supported(format, type, tiling, usage, flags, 1);
       if (br != VK_SUCCESS) return br;
    }
+   if (f.ycbcr && (type != VK_IMAGE_TYPE_2D || (flags & (VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT | VK_IMAGE_CREATE_DISJOINT_BIT |
+                                                         VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT)) ||
+                   (usage & ~(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))))
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;   /* NV12: 2D, one level/layer, sampled + transfer, not disjoint */
    if (flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT | VK_IMAGE_CREATE_SPARSE_ALIASED_BIT |
                 VK_IMAGE_CREATE_PROTECTED_BIT))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -300,7 +329,10 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
    out->sampleCounts = VK_SAMPLE_COUNT_1_BIT;
    out->maxResourceSize = 1ull << 31;
 
-   if (tiling == VK_IMAGE_TILING_LINEAR) {
+   if (f.ycbcr) {
+      out->maxMipLevels = 1;
+      out->maxArrayLayers = 1;
+   } else if (tiling == VK_IMAGE_TILING_LINEAR) {
       /* Spec allows restricting linear images to one 2D level/layer, single sampled. */
       if (type != VK_IMAGE_TYPE_2D) {
          memset(out, 0, sizeof *out);   /* on VK_ERROR_FORMAT_NOT_SUPPORTED every field must be 0 (dEQP info.image_format_properties) */
@@ -342,7 +374,7 @@ mali_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, VkFormat format, Vk
       if (st == VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT) {
          VkDrmFormatModifierPropertiesListEXT *l = e;
          /* M14: LINEAR only (our "optimal" layout is linear unless MALI_IMAGE_TILED=1, which never applies to modifier images). */
-         const VkFormatFeatureFlags mf = ok ? (f.linear & f.optimal) : 0;
+         const VkFormatFeatureFlags mf = ok && !f.ycbcr ? (f.linear & f.optimal) : 0;   /* NV12 has two memory planes: not exportable (wsi/dma-buf is single-plane) */
          if (!l->pDrmFormatModifierProperties) {
             l->drmFormatModifierCount = mf ? 1 : 0;
          } else if (l->drmFormatModifierCount) {
@@ -372,7 +404,12 @@ mali_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice pd, const VkPhysic
    VkResult r = mali_image_format_properties(pdev_arch(pd), info->format, info->type, tiling, info->usage, info->flags,
                                              &p->imageFormatProperties);
    if (r != VK_SUCCESS) return r;
+   /* gamescope sizes its descriptor pool from this: NV12 through a conversion is a 3-slot element (luma view, chroma view, sampler) where
+    * a plain combined image sampler is 1 (the pool counts a combined image sampler as 2 slots and apps multiply by this number). */
+   VkSamplerYcbcrConversionImageFormatProperties *yp = vk_find_struct(p->pNext, SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES);
+   if (yp) yp->combinedImageSamplerDescriptorCount = info->format == MALI_YCBCR_FORMAT ? MALI_YCBCR_SLOTS : 1;
    VkExternalImageFormatProperties *eo = vk_find_struct(p->pNext, EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+   if (ext && ext->handleType && info->format == MALI_YCBCR_FORMAT) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    if (eo) {
       eo->externalMemoryProperties = (VkExternalMemoryProperties){ 0 };
       if (ext && ext->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)

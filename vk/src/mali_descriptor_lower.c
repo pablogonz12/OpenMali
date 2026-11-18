@@ -52,7 +52,7 @@ deref_binding(nir_deref_instr *d, unsigned *set, unsigned *binding, uint32_t *im
 
 /* handle of a texture (sampler = false) or sampler (true) deref */
 static nir_def *
-deref_handle(nir_builder *b, struct ctx *c, nir_deref_instr *deref, bool sampler)
+deref_handle(nir_builder *b, struct ctx *c, nir_deref_instr *deref, bool sampler, unsigned plane)
 {
    unsigned set, binding;
    uint32_t imm;
@@ -64,7 +64,8 @@ deref_handle(nir_builder *b, struct ctx *c, nir_deref_instr *deref, bool sampler
    }
    const struct mali_lbinding *bd = find(c, set, binding);
    if (!bd) return nir_imm_int(b, 0);
-   unsigned sub = (sampler && bd->type == MALI_DT_COMBINED_IMAGE_SAMPLER) ? 1 : 0;
+   unsigned sub = (sampler && bd->type == MALI_DT_COMBINED_IMAGE_SAMPLER) ? (bd->ycbcr_planes ? bd->ycbcr_planes : 1) : 0;
+   if (!sampler && bd->ycbcr_planes) sub = plane;   /* YCbCr element: [plane 0 texture, plane 1 texture, sampler] */
    unsigned stride = bd->stride ? bd->stride : 1;
    nir_def *h = nir_imm_int(b, first_handle(c, set, bd) + sub + imm * stride);
    if (ssa) h = nir_iadd(b, h, nir_imul_imm(b, ssa, stride));
@@ -78,10 +79,21 @@ lower_tex(nir_builder *b, nir_tex_instr *tex, struct ctx *c)
    int si = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
    if (ti < 0) return false;
    b->cursor = nir_before_instr(&tex->instr);
-   nir_def *th = deref_handle(b, c, nir_src_as_deref(tex->src[ti].src), false);
-   nir_def *sh = si >= 0 ? deref_handle(b, c, nir_src_as_deref(tex->src[si].src), true)
+   int pi = nir_tex_instr_src_index(tex, nir_tex_src_plane);
+   unsigned plane = 0;
+   if (pi >= 0) {
+      if (!nir_src_is_const(tex->src[pi].src)) {
+         c->failed = true;
+         if (c->err) snprintf(c->err, c->errsz, "non-constant YCbCr plane");
+         return false;
+      }
+      plane = nir_src_as_uint(tex->src[pi].src);
+   }
+   nir_def *th = deref_handle(b, c, nir_src_as_deref(tex->src[ti].src), false, plane);
+   nir_def *sh = si >= 0 ? deref_handle(b, c, nir_src_as_deref(tex->src[si].src), true, 0)
                          : nir_imm_int(b, pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX));
    if (si >= 0) nir_tex_instr_remove_src(tex, si);
+   if (pi >= 0) nir_tex_instr_remove_src(tex, nir_tex_instr_src_index(tex, nir_tex_src_plane));
    nir_tex_instr_remove_src(tex, nir_tex_instr_src_index(tex, nir_tex_src_texture_deref));
    nir_tex_instr_add_src(tex, nir_tex_src_texture_handle, th);
    nir_tex_instr_add_src(tex, nir_tex_src_sampler_handle, sh);
@@ -124,7 +136,7 @@ lower_intr(nir_builder *b, nir_intrinsic_instr *i, struct ctx *c)
    case nir_intrinsic_image_deref_atomic_swap:
    case nir_intrinsic_image_deref_size:
    case nir_intrinsic_image_deref_samples: {
-      nir_def *h = deref_handle(b, c, nir_src_as_deref(i->src[0]), false);
+      nir_def *h = deref_handle(b, c, nir_src_as_deref(i->src[0]), false, 0);
       nir_rewrite_image_intrinsic(i, h, nir_image_intrinsic_type_default);
       return true;
    }

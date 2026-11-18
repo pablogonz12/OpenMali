@@ -7,6 +7,7 @@
 #include "vk_descriptor_set_layout.h"
 #include "vk_descriptor_update_template.h"
 #include "vk_device.h"
+#include "vk_ycbcr_conversion.h"
 #include "mali_pipeline_layout_flat.h"
 
 struct mali_hw_desc { uint32_t w[8]; };   /* one 32-byte hardware descriptor */
@@ -25,6 +26,8 @@ struct mali_desc_res_ops {
    int (*sampler)(VkSampler s, struct mali_hw_desc *out);
    int (*buffer)(VkBuffer b, uint64_t *va, uint64_t *size);           /* base address and size of the whole buffer */
    int (*buffer_view)(VkBufferView v, struct mali_hw_desc *out);      /* texel buffer descriptor */
+   int (*sampler_ycbcr)(VkSampler s, struct vk_ycbcr_conversion_state *out); /* conversion of a sampler: 1 and out filled, else 0 (may be NULL in tests) */
+   int (*image_view_planes)(VkImageView v, struct mali_hw_desc out[2]); /* NV12 view: luma and chroma descriptors -> 2; else 0 (may be NULL in tests) */
 };
 void mali_desc_set_res_ops(const struct mali_desc_res_ops *ops);
 
@@ -40,6 +43,7 @@ struct mali_dsl {
    uint32_t nbindings, slot_count, dyn_count, imm_count;
    struct mali_lbinding *b;     /* nbindings entries */
    VkSampler *imm;              /* immutable samplers */
+   struct vk_ycbcr_conversion_state *ycbcr;   /* conversion of each immutable sampler that has one (index = b->ycbcr_off + element), else NULL */
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dsl, vk.base, VkDescriptorSetLayout, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 

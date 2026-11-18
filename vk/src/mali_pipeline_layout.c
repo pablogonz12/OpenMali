@@ -25,6 +25,7 @@ mali_pipeline_layout_flatten(const struct vk_pipeline_layout *l, struct mali_fla
       out->c.set[i].slot_count = d->slot_count;
       out->c.set[i].dyn_count = d->dyn_count;
       out->c.set[i].b = d->b;
+      out->c.set[i].ycbcr = d->ycbcr;
       dyn += d->dyn_count;
    }
    return VK_SUCCESS;

@@ -33,6 +33,8 @@ mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct ma
    if (!mali_format_get(arch, d->format, &f)) return -EINVAL;
    if (!d->extent.width || !d->extent.height || !d->extent.depth || !d->levels || !d->layers) return -EINVAL;
    if (d->samples != 1 && d->samples != 4) return -EINVAL;
+   if (f.ycbcr && (d->type != VK_IMAGE_TYPE_2D || d->samples != 1 || d->levels != 1 || d->layers != 1 || (d->extent.width | d->extent.height) & 1))
+      return -EINVAL;   /* NV12: 2D, one level and layer, even extent (4:2:0) */
    if (d->type == VK_IMAGE_TYPE_1D && (d->extent.height != 1 || d->extent.depth != 1)) return -EINVAL;
    if (d->type == VK_IMAGE_TYPE_2D && d->extent.depth != 1) return -EINVAL;
    if (d->type == VK_IMAGE_TYPE_3D && d->layers != 1) return -EINVAL;
@@ -57,11 +59,13 @@ mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct ma
       p->bw = f.plane[pi].bw;
       p->bh = f.plane[pi].bh;
       p->hw = f.plane[pi].hw;
+      p->ssx = f.plane[pi].ssx;
+      p->ssy = f.plane[pi].ssy;
       p->offset = align_up(base, MALI_IMAGE_ALIGN);
       uint64_t off = 0;
       for (unsigned l = 0; l < d->levels; l++) {
          struct mali_slice *s = &p->slice[l];
-         const uint32_t w = div_up(minify(d->extent.width, l), p->bw), h = div_up(minify(d->extent.height, l), p->bh);
+         const uint32_t w = div_up(div_up(minify(d->extent.width, l), 1u << p->ssx), p->bw), h = div_up(div_up(minify(d->extent.height, l), 1u << p->ssy), p->bh);
          const uint32_t z = d->type == VK_IMAGE_TYPE_3D ? minify(d->extent.depth, l) : 1;
          if (d->tiled) {
             const uint64_t tile_b = (uint64_t)MALI_TILE_EL * MALI_TILE_EL * p->bs;
@@ -171,7 +175,7 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
       for (unsigned li = 0; li < v->levels; li++) {
          const unsigned lev = v->base_level + li;
          const struct mali_slice *s = &p->slice[lev];
-         const unsigned w = minify(d->extent.width, lev), h = minify(d->extent.height, lev);
+         const unsigned w = div_up(minify(d->extent.width, lev), 1u << p->ssx), h = div_up(minify(d->extent.height, lev), 1u << p->ssy);
          uint64_t va = image_va + p->offset + s->offset, size = s->size, ss = 0;
          const unsigned layer = v->base_layer + ly;
          if (vol) {
@@ -196,7 +200,7 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    unsigned array = v->layers;
    if (dim == 0) array = v->layers / 6 ? v->layers / 6 : 1;   /* cube: array size counts cubes (payload still holds 6 faces each) */
    if (dim == 3) array = 1;
-   const unsigned w0 = minify(d->extent.width, v->base_level), h0 = minify(d->extent.height, v->base_level);
+   const unsigned w0 = div_up(minify(d->extent.width, v->base_level), 1u << p->ssx), h0 = div_up(minify(d->extent.height, v->base_level), 1u << p->ssy);
    const unsigned z0 = d->type == VK_IMAGE_TYPE_3D ? minify(d->extent.depth, v->base_level) : 1;
    unsigned swz = 0x688;   /* identity RGBA */
    if (!v->storage)
@@ -431,6 +435,17 @@ view_refresh(struct mali_image_view *v)
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    if (v->emitted && v->emitted_for_va == img->va) return;
    const struct mali_image_layout *vl = img->bc ? &img->sh_lay : &img->lay;   /* BC: views sample the decoded shadow */
+   if (v->ycbcr) {   /* NV12: two ordinary textures, luma (R8) and chroma (R8G8); the conversion happens in the shader */
+      struct mali_view_desc y = v->vd, c = v->vd;
+      y.format = VK_FORMAT_R8_UNORM; y.aspect = VK_IMAGE_ASPECT_PLANE_0_BIT;
+      c.format = VK_FORMAT_R8G8_UNORM; c.aspect = VK_IMAGE_ASPECT_PLANE_1_BIT;
+      mali_view_emit(v->arch, vl, img->va, &y, v->payload, v->payload_va, &v->tex);
+      mali_view_emit(v->arch, vl, img->va, &c, v->payload_c, v->payload_c_va, &v->tex_c);
+      v->storage = v->tex;
+      v->emitted = true;
+      v->emitted_for_va = img->va;
+      return;
+   }
    mali_view_emit(v->arch, vl, img->va, &v->vd, v->payload, v->payload_va, &v->tex);
    struct mali_view_desc sd = v->vd;
    sd.storage = true;
@@ -470,9 +485,16 @@ mali_CreateImageView(VkDevice _dev, const VkImageViewCreateInfo *ci, const VkAll
       v->vd.format = img->bc_lay.fmt->shadow;
       v->vd.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
    }
+   v->ycbcr = v->vk.format == MALI_YCBCR_FORMAT && (v->vk.aspects & VK_IMAGE_ASPECT_PLANE_0_BIT) && (v->vk.aspects & VK_IMAGE_ASPECT_PLANE_1_BIT);
+   if (v->ycbcr) v->vd.aspect = VK_IMAGE_ASPECT_PLANE_0_BIT;   /* payload sizing only: both planes have the same level/layer counts */
    v->payload_entries = mali_view_payload_entries(&img->lay, &v->vd);
    const size_t sz = (size_t)v->payload_entries * 32;
    v->payload = pay_alloc(&dev->vk, sz, &v->payload_va);
+   if (v->payload && v->ycbcr) {
+      v->payload_c_entries = v->payload_entries;
+      v->payload_c = pay_alloc(&dev->vk, sz, &v->payload_c_va);
+      if (!v->payload_c) pay_free(&dev->vk, v->payload, sz), v->payload = NULL;
+   }
    if (!v->payload) {
       vk_image_view_destroy(&dev->vk, alloc, &v->vk);
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -489,6 +511,7 @@ mali_DestroyImageView(VkDevice _dev, VkImageView h, const VkAllocationCallbacks 
    VK_FROM_HANDLE(mali_image_view, v, h);
    if (!v) return;
    pay_free(&dev->vk, v->payload, (size_t)v->payload_entries * 32);
+   pay_free(&dev->vk, v->payload_c, (size_t)v->payload_c_entries * 32);
    vk_image_view_destroy(&dev->vk, alloc, &v->vk);
 }
 
@@ -500,4 +523,15 @@ mali_image_view_desc(VkImageView h, VkDescriptorType type, struct mali_hw_desc *
    view_refresh(v);
    *out = type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ? v->storage : v->tex;
    return 0;
+}
+
+int
+mali_image_view_planes(VkImageView h, struct mali_hw_desc out[2])
+{
+   VK_FROM_HANDLE(mali_image_view, v, h);
+   if (!v || !v->ycbcr) return 0;
+   view_refresh(v);
+   out[0] = v->tex;
+   out[1] = v->tex_c;
+   return 2;
 }

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Offline tests of mali_compile(). Usage: t_compile [shader_dir] [-v]. Runs in a few seconds, no GPU. */
 #include "../src/mali_compile.h"
+#include "vk_ycbcr_conversion.h"
 #include "../../libkbase/tests/shaders_compiled_v11.h"
 #include "../shader/golden_compiled_v13.h"
 
@@ -206,6 +207,75 @@ test_errors(void)
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
 }
 
+/* YCbCr: the conversion of an immutable NV12 sampler is lowered into the shader (nir_vk_lower_ycbcr_tex: two plane samples, model/range
+ * constants, siting). Compile tex.frag with a plain combined sampler and with converted ones and look at what changed. */
+static int
+imm_has(const struct mali_compiled *c, float want)
+{
+   for (unsigned i = 0; i < c->nimm; i++) {
+      float f;
+      memcpy(&f, &c->imm[i].value, 4);
+      if (f > want - 2e-3f && f < want + 2e-3f) return 1;
+   }
+   return 0;
+}
+
+static int
+ycc_compile(unsigned arch, VkSamplerYcbcrModelConversion model, VkSamplerYcbcrRange range, VkChromaLocation loc, int ycbcr, struct mali_compiled *c)
+{
+   struct spv fs = load("tex.frag.spv");
+   if (!fs.w) return -1;
+   struct vk_ycbcr_conversion_state st;
+   memset(&st, 0, sizeof st);
+   st.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+   st.ycbcr_model = model;
+   st.ycbcr_range = range;
+   for (int i = 0; i < 4; i++) st.mapping[i] = VK_COMPONENT_SWIZZLE_IDENTITY;
+   st.chroma_offsets[0] = st.chroma_offsets[1] = loc;
+   st.chroma_filter = VK_FILTER_LINEAR;
+   st.chroma_reconstruction = loc == VK_CHROMA_LOCATION_COSITED_EVEN;
+   struct mali_lbinding b = {.type = MALI_DT_COMBINED_IMAGE_SAMPLER, .count = 1, .slot = 0, .stride = ycbcr ? 3 : 2, .imm_off = 0,
+                             .ycbcr_planes = ycbcr ? 2 : 0};
+   struct mali_compile_layout l;
+   memset(&l, 0, sizeof l);
+   l.nsets = 1;
+   l.set[0] = (struct mali_lset){.nbindings = 1, .slot_count = b.stride, .b = &b, .ycbcr = ycbcr ? (const void *)&st : NULL};
+   struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n, .layout = &l, .cache_dir = ""};
+   char err[256] = "";
+   int r = mali_compile(&o, c, err, sizeof err);
+   if (r) printf("  compile error: %s\n", err);
+   free(fs.w);
+   return r;
+}
+
+static void
+test_ycbcr(void)
+{
+   printf("ycbcr lowering\n");
+   for (unsigned arch = 10; arch <= 13; arch += 1) {
+      if (arch == 12) continue;
+      struct mali_compiled plain, a, b, c, d;
+      if (ycc_compile(arch, 0, 0, VK_CHROMA_LOCATION_MIDPOINT, 0, &plain)) continue;
+      if (ycc_compile(arch, VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709, VK_SAMPLER_YCBCR_RANGE_ITU_NARROW, VK_CHROMA_LOCATION_MIDPOINT, 1, &a)) continue;
+      if (ycc_compile(arch, VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601, VK_SAMPLER_YCBCR_RANGE_ITU_FULL, VK_CHROMA_LOCATION_MIDPOINT, 1, &b)) continue;
+      if (ycc_compile(arch, VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709, VK_SAMPLER_YCBCR_RANGE_ITU_FULL, VK_CHROMA_LOCATION_COSITED_EVEN, 1, &c)) continue;
+      if (ycc_compile(arch, VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709, VK_SAMPLER_YCBCR_RANGE_ITU_FULL, VK_CHROMA_LOCATION_MIDPOINT, 1, &d)) continue;
+      if (g_verbose)
+         printf("  v%u: plain %u B, 709n %u B, 601f %u B, 709f cosited %u B, 709f midpoint %u B\n", arch, plain.bin_size, a.bin_size, b.bin_size, c.bin_size, d.bin_size);
+      /* the converted sample is two texture fetches plus the matrix: a lot more code than one fetch */
+      CHECK(a.bin_size > plain.bin_size + 32, "v%u converted sample (%u B) is larger than a plain one (%u B)", arch, a.bin_size, plain.bin_size);
+      CHECK(!imm_has(&plain, 1.5748f) && !imm_has(&plain, 1.402f), "v%u plain shader has no conversion constants", arch);
+      CHECK(imm_has(&a, 1.5748f) && !imm_has(&a, 1.402f), "v%u BT.709 constants (Cr->R 1.5748)", arch);
+      CHECK(imm_has(&b, 1.402f) && !imm_has(&b, 1.5748f), "v%u BT.601 constants (Cr->R 1.402)", arch);
+      CHECK(imm_has(&a, 255.0f / 219.0f) || imm_has(&a, 1.1644f), "v%u narrow range luma scale 255/219", arch);
+      CHECK(!imm_has(&b, 255.0f / 219.0f) && !imm_has(&d, 255.0f / 219.0f), "v%u full range has no narrow scale", arch);
+      CHECK(a.bin_size != b.bin_size || memcmp(a.bin, b.bin, a.bin_size), "v%u 709n and 601f differ", arch);
+      CHECK(c.bin_size != d.bin_size || memcmp(c.bin, d.bin, c.bin_size), "v%u cosited siting changes the code", arch);
+      /* the lowered code reads two planes: texture handles of plane 0 and 1 of the same element (handle = slot + plane) */
+      mali_compiled_free(&plain); mali_compiled_free(&a); mali_compiled_free(&b); mali_compiled_free(&c); mali_compiled_free(&d);
+   }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -222,6 +292,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_determinism_and_cache();
+   test_ycbcr();
    test_errors();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;

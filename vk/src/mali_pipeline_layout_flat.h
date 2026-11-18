@@ -33,6 +33,8 @@ struct mali_lbinding {
    uint32_t stride;    /* 32-byte descriptors per array element: combined image sampler 2 (texture, sampler), else 1; dynamic 0 */
    uint32_t dyn_idx;   /* dynamic buffers: index of element 0 among the set's dynamic buffers */
    uint32_t imm_off;   /* index of the first immutable sampler, MALI_NO_IMM_SAMPLER if none */
+   uint32_t ycbcr_planes; /* combined image sampler whose immutable samplers carry a YCbCr conversion: 2 (stride 3: luma, chroma, sampler); else 0 */
+   uint32_t ycbcr_off;    /* index of element 0's conversion in the set's ycbcr array (mali_lset::ycbcr) */
    uint32_t inline_bytes; /* inline uniform block: data size in bytes (type = UNIFORM_BUFFER, count 1, stride 1 + data slots); else 0 */
 };
 
@@ -41,6 +43,7 @@ struct mali_lset {
    uint32_t slot_count;              /* descriptors in the set */
    uint32_t dyn_count;               /* dynamic buffers in the set */
    const struct mali_lbinding *b;    /* nbindings entries */
+   const void *ycbcr;                /* struct vk_ycbcr_conversion_state[] of the immutable YCbCr samplers (opaque here), NULL if none */
 };
 
 struct mali_compile_layout {
