@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|storfmt_rd|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -973,21 +973,28 @@ storfmt_one(struct tgt *t, const struct sfmt *f, int nf)
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    VkImageView view;
    CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "view");
-   VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
-   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   /* nf == 2 (read without format): the image is filled by the unformatted store shader, then read back unformatted into an SSBO (binding 1) */
+   VkDescriptorSetLayoutBinding b[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+                                        {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = nf == 2 ? 2 : 1, .pBindings = b};
    VkDescriptorSetLayout dsl;
    CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
-   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
-   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = nf == 2 ? 2 : 1, .pPoolSizes = ps};
    VkDescriptorPool dp;
    CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
    VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
    VkDescriptorSet ds;
    CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
    VkDescriptorImageInfo dii = {.imageView = view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
-   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &dii};
-   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   struct hbuf rb = {0};
+   if (nf == 2 && !hbuf_create(&rb, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   VkDescriptorBufferInfo dbi = {.buffer = rb.b, .range = 256};
+   VkWriteDescriptorSet w[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &dii},
+                                {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &dbi}};
+   UpdateDescriptorSets(dev, nf == 2 ? 2 : 1, w, 0, NULL);
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
    VkPipelineLayout lay;
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
@@ -1006,6 +1013,17 @@ storfmt_one(struct tgt *t, const struct sfmt *f, int nf)
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
    DestroyShaderModule(dev, m, NULL);
    if (r != VK_SUCCESS) { printf("{\"storfmt\":\"%s\",\"fail\":\"pipeline %d\"}\n", f->q, r); g_fail++; return 0; }
+   VkPipeline rpipe = VK_NULL_HANDLE;
+   if (nf == 2) {
+      snprintf(name, sizeof name, "storrd_%c.comp.spv", f->kind == 'u' ? 'u' : f->kind == 'i' ? 'i' : 'f');
+      VkShaderModule rm = load_spv(name);
+      CHECK(rm, "shader %s", name);
+      cpi.stage.module = rm;
+      r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &rpipe);
+      DestroyShaderModule(dev, rm, NULL);
+      if (r != VK_SUCCESS) { printf("{\"storrd\":\"%s\",\"fail\":\"pipeline %d\"}\n", f->q, r); g_fail++; return 0; }
+      memset(rb.p, 0xA5, 256);
+   }
    struct hbuf ob;
    if (!hbuf_create(&ob, 4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
    memset(ob.p, 0xA5, 4096);
@@ -1019,6 +1037,16 @@ storfmt_one(struct tgt *t, const struct sfmt *f, int nf)
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
    CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
    CmdDispatch(cb, 1, 1, 1);
+   if (nf == 2) {
+      ib.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      ib.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      ib.oldLayout = ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, rpipe);
+      CmdDispatch(cb, 1, 1, 1);
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+   }
    ib.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
    ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
    ib.oldLayout = ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1027,7 +1055,25 @@ storfmt_one(struct tgt *t, const struct sfmt *f, int nf)
    CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, ob.b, 1, &reg);
    if (!cb_submit(t, cb)) return 0;
    int ok = 1;
-   if (!g_fake) {
+   if (nf == 2 && !g_fake) {
+      /* what the unformatted read must return for the texel the store shader wrote (1,0,1,1 / 1,2,3,1 / -1,2,-3,1): the stored channels,
+       * missing channels 0 and a missing alpha 1 (Vulkan: components not in the format read as (0,0,0,1)) */
+      int nc = f->n ? f->n : (!strcmp(f->q, "r11f_g11f_b10f") ? 3 : 4);
+      uint32_t want[4];
+      for (int c = 0; c < 4; c++) {
+         if (f->kind == 'u') want[c] = c < nc ? (uint32_t[]){1, 2, 3, 1}[c] : c == 3;
+         else if (f->kind == 'i') want[c] = c < nc ? (uint32_t[]){(uint32_t)-1, 2, (uint32_t)-3, 1}[c] : c == 3;
+         else { float v = c < nc ? (float[]){1.f, 0.f, 1.f, 1.f}[c] : c == 3 ? 1.f : 0.f; memcpy(&want[c], &v, 4); }
+      }
+      for (int i = 0; i < 16 && ok; i++)
+         if (memcmp(rb.p + i * 16, want, 16)) {
+            ok = 0;
+            uint32_t got[4];
+            memcpy(got, rb.p + i * 16, 16);
+            printf("{\"storrd\":\"%s\",\"fail\":\"texel %d\",\"got\":\"%08x %08x %08x %08x\",\"want\":\"%08x %08x %08x %08x\"}\n", f->q, i,
+                   got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
+         }
+   } else if (!g_fake) {
       uint8_t exp[16];
       int tb = sfmt_expect(f, exp);
       for (int i = 0; i < 16 && ok; i++)
@@ -1049,6 +1095,7 @@ storfmt_one(struct tgt *t, const struct sfmt *f, int nf)
    DestroyImage(dev, img, NULL);
    FreeMemory(dev, mem, NULL);
    hbuf_destroy(&ob);
+   if (nf == 2) { DestroyPipeline(dev, rpipe, NULL); hbuf_destroy(&rb); }
    return ok;
 }
 
@@ -1084,6 +1131,23 @@ test_storfmt_nf(void)
    for (unsigned i = 0; i < sizeof sfmts / sizeof *sfmts; i++) pass += storfmt_one(&t, &sfmts[i], 1);
    for (unsigned i = 0; i < sizeof sfmts_core / sizeof *sfmts_core; i++) pass += storfmt_one(&t, &sfmts_core[i], 1);
    printf("{\"test\":\"storfmt_nf\",\"formats\":%d,\"passed\":%d,\"ok\":%s}\n", n, pass, pass == n ? "true" : "false");
+   tgt_destroy(&t);
+   return pass == n;
+}
+
+/* shaderStorageImageReadWithoutFormat: the same formats, filled through the unformatted store (storfmt_nf) and read back through an imageLoad
+ * with no format qualifier into an SSBO. The texel format can only come from the image view descriptor. */
+static int
+test_storfmt_rd(void)
+{
+   if (!g_feat.shaderStorageImageReadWithoutFormat) { printf("{\"test\":\"storfmt_rd\",\"skipped\":\"shaderStorageImageReadWithoutFormat not advertised\",\"ok\":true}\n"); return 1; }
+   if (!g_feat.shaderStorageImageWriteWithoutFormat) { printf("{\"test\":\"storfmt_rd\",\"skipped\":\"needs shaderStorageImageWriteWithoutFormat to fill the image\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   int pass = 0, n = (int)(sizeof sfmts / sizeof *sfmts + sizeof sfmts_core / sizeof *sfmts_core);
+   for (unsigned i = 0; i < sizeof sfmts / sizeof *sfmts; i++) pass += storfmt_one(&t, &sfmts[i], 2);
+   for (unsigned i = 0; i < sizeof sfmts_core / sizeof *sfmts_core; i++) pass += storfmt_one(&t, &sfmts_core[i], 2);
+   printf("{\"test\":\"storfmt_rd\",\"formats\":%d,\"passed\":%d,\"ok\":%s}\n", n, pass, pass == n ? "true" : "false");
    tgt_destroy(&t);
    return pass == n;
 }
@@ -2531,6 +2595,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("linerast")) ok &= test_linerast();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
+   if (ok && CASE_ON("storfmt_rd")) ok &= test_storfmt_rd();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
    if (ok && CASE_ON("spec")) ok &= test_spec();
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
