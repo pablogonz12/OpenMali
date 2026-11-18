@@ -2,7 +2,7 @@
 /* M12/M13 test: meta copies/blits/clears/resolve, events, timestamps through the ICD. Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|event|ts]
+ *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|event|ts|nocoh]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -43,6 +43,7 @@ static const char *g_only;
 
 #define DEV_FNS(X)                                                                                 \
    X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory)  \
+   X(FlushMappedMemoryRanges) X(InvalidateMappedMemoryRanges)                                    \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) X(BindBufferMemory)            \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                 \
@@ -289,6 +290,137 @@ case_img(int copyimg)
    }
    rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
    report(copyimg ? "copyimg" : "img", g_fake ? "results: fake backend" : NULL);
+   return 1;
+}
+
+/* ---- nocoh: byte-granular meta copies into non-COHERENT_LOCAL image memory (v13 type 2), read back through mapped NON-coherent host memory.
+ * PR #14 (v13 type 2 = DEVICE_LOCAL-only, COHERENT_LOCAL off): the old meta_copy byte path merged bytes with atomicAnd/atomicOr, which are lost on
+ * non-coherent memory; the fix gives every destination word exactly one writer with plain loads/stores. R8/R8G8 images with odd widths put several
+ * rows/elements in one word; a 1-texel-wide column and offset sub-rects make neighbours share words across invocations. Opt-in (--only nocoh): the
+ * default run feeds the golden command streams. Device->host: vkInvalidateMappedMemoryRanges when the readback type is not HOST_COHERENT. */
+static int
+mkbuf_nc(struct buf *o, size_t size, VkBufferUsageFlags usage, int *noncoh)
+{
+   o->size = size;
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = usage, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+   CHECK(CreateBuffer(dev, &bi, NULL, &o->b) == VK_SUCCESS, "CreateBuffer");
+   VkMemoryRequirements mr;
+   GetBufferMemoryRequirements(dev, o->b, &mr);
+   int mt = -1;
+   *noncoh = 0;
+   for (uint32_t i = 0; i < memprops.memoryTypeCount && mt < 0; i++) {   /* prefer host-visible, not coherent */
+      VkMemoryPropertyFlags f = memprops.memoryTypes[i].propertyFlags;
+      if ((mr.memoryTypeBits & (1u << i)) && (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) mt = (int)i, *noncoh = 1;
+   }
+   if (mt < 0) mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(mt >= 0, "no host visible type");
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+   CHECK(AllocateMemory(dev, &ai, NULL, &o->m) == VK_SUCCESS, "AllocateMemory");
+   CHECK(BindBufferMemory(dev, o->b, o->m, 0) == VK_SUCCESS, "BindBufferMemory");
+   CHECK(MapMemory(dev, o->m, 0, VK_WHOLE_SIZE, 0, &o->p) == VK_SUCCESS, "MapMemory");
+   return 1;
+}
+
+static void
+mapped_range(struct buf *b, int inval)
+{
+   VkMappedMemoryRange r = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = b->m, .offset = 0, .size = VK_WHOLE_SIZE};
+   if (inval) InvalidateMappedMemoryRanges(dev, 1, &r); else FlushMappedMemoryRanges(dev, 1, &r);
+}
+
+static int
+nocoh_one(VkFormat fmt, uint32_t bpt, uint32_t w, uint32_t h, int *used_t2)
+{
+   struct buf st = {0}, rb1 = {0}, rb2 = {0};
+   struct img i1 = {0}, i2 = {0};
+   int nc = 0, nc2 = 0, nc3 = 0;
+   const size_t isz = (size_t)w * h * bpt;
+   const uint32_t ax = 3, ay = 2, aw = 5, ah = 4;   /* rect A (offset, not word aligned) */
+   const uint32_t bx = 1;                           /* column B: one texel wide, all rows */
+   const uint32_t cx = 2, cy = 1, cw = 7, ch = 4, dx = 4, dy = 3;   /* image->image: src rect, dst offset */
+   const size_t offA = (isz + 15) & ~(size_t)15, offB = (offA + (size_t)aw * ah * bpt + 15) & ~(size_t)15, tot = offB + (size_t)h * bpt + 16;
+   TRY(mkbuf_nc(&st, tot, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &nc));
+   TRY(mkbuf_nc(&rb1, isz, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &nc2));
+   TRY(mkbuf_nc(&rb2, isz, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &nc3));
+   uint8_t *s = st.p, *r1 = rb1.p, *r2 = rb2.p;
+   uint8_t *m1 = malloc(isz), *m2 = malloc(isz);
+   memset(s, 0, tot);
+   for (size_t i = 0; i < isz; i++) s[i] = 0xA5;
+   for (size_t i = 0; i < (size_t)aw * ah * bpt; i++) s[offA + i] = (uint8_t)(0x11 + i * 7);
+   for (size_t i = 0; i < (size_t)h * bpt; i++) s[offB + i] = (uint8_t)(0xC3 ^ (i * 13));
+   memset(r1, 0xEE, isz); memset(r2, 0xEE, isz);
+   mapped_range(&st, 0); mapped_range(&rb1, 0); mapped_range(&rb2, 0);   /* host -> device */
+   /* CPU model */
+   memset(m1, 0xA5, isz); memset(m2, 0xA5, isz);
+   for (uint32_t y = 0; y < ah; y++) memcpy(m1 + ((size_t)(ay + y) * w + ax) * bpt, s + offA + (size_t)y * aw * bpt, (size_t)aw * bpt);
+   for (uint32_t y = 0; y < h; y++) memcpy(m1 + ((size_t)y * w + bx) * bpt, s + offB + (size_t)y * bpt, bpt);
+   for (uint32_t y = 0; y < ch; y++) memcpy(m2 + ((size_t)(dy + y) * w + dx) * bpt, m1 + ((size_t)(cy + y) * w + cx) * bpt, (size_t)cw * bpt);
+
+   VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkImage *ims[2] = {&i1.i, &i2.i};
+   VkDeviceMemory *mems[2] = {&i1.m, &i2.m};
+   for (int k = 0; k < 2; k++) {
+      VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt, .extent = {w, h, 1}, .mipLevels = 1,
+                              .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = u,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      CHECK(CreateImage(dev, &ci, NULL, ims[k]) == VK_SUCCESS, "CreateImage");
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, *ims[k], &mr);
+      int mt = memtype(mr.memoryTypeBits, 0);
+      CHECK(mt >= 0, "no img type");
+      if (memprops.memoryTypeCount > 2)   /* v13 with the type on (MALI_NOCOH_IMAGES != 0): eligible images must land on the non-coherent type 2 */
+         CHECK(mt == 2 && (mr.memoryTypeBits == 4u), "optimal image not offered the non-coherent type 2 alone: bits %x -> %d", mr.memoryTypeBits, mt);
+      *used_t2 = mt == 2;
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      CHECK(AllocateMemory(dev, &ai, NULL, mems[k]) == VK_SUCCESS, "img alloc");
+      CHECK(BindImageMemory(dev, *ims[k], *mems[k], 0) == VK_SUCCESS, "img bind");
+   }
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy bg = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+   CmdCopyBufferToImage(cb, st.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bg);
+   CmdCopyBufferToImage(cb, st.b, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bg);
+   barrier_all(cb);
+   VkBufferImageCopy A = {.bufferOffset = offA, .imageSubresource = sl, .imageOffset = {ax, ay, 0}, .imageExtent = {aw, ah, 1}};
+   CmdCopyBufferToImage(cb, st.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &A);
+   barrier_all(cb);
+   VkBufferImageCopy B = {.bufferOffset = offB, .imageSubresource = sl, .imageOffset = {bx, 0, 0}, .imageExtent = {1, h, 1}};
+   CmdCopyBufferToImage(cb, st.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &B);
+   layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkImageCopy ic = {.srcSubresource = sl, .srcOffset = {cx, cy, 0}, .dstSubresource = sl, .dstOffset = {dx, dy, 0}, .extent = {cw, ch, 1}};
+   CmdCopyImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+   layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+   CmdCopyImageToBuffer(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb1.b, 1, &dn);
+   CmdCopyImageToBuffer(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb2.b, 1, &dn);
+   CHECK(submit_wait(cb), "submit");
+   mapped_range(&rb1, 1); mapped_range(&rb2, 1);   /* device -> host */
+   int bad = 0;
+   if (!g_fake) {
+      for (size_t i = 0; i < isz && bad < 4; i++)
+         if (r1[i] != m1[i]) { bad++; printf("{\"mismatch\":\"upload\",\"fmt\":%d,\"w\":%u,\"h\":%u,\"byte\":%zu,\"got\":%u,\"want\":%u}\n", fmt, w, h, i, r1[i], m1[i]); }
+      for (size_t i = 0; i < isz && bad < 4; i++)
+         if (r2[i] != m2[i]) { bad++; printf("{\"mismatch\":\"copyimage\",\"fmt\":%d,\"w\":%u,\"h\":%u,\"byte\":%zu,\"got\":%u,\"want\":%u}\n", fmt, w, h, i, r2[i], m2[i]); }
+   }
+   free(m1); free(m2);
+   rmimg(&i1); rmimg(&i2); rmbuf(&st); rmbuf(&rb1); rmbuf(&rb2);
+   CHECK(!bad, "byte copy into non-coherent image memory lost/garbled bytes (fmt %d %ux%u)", fmt, w, h);
+   return 1;
+}
+
+static int
+case_nocoh(void)
+{
+   static const struct { VkFormat f; uint32_t bpt; } fm[] = {{VK_FORMAT_R8_UNORM, 1}, {VK_FORMAT_R8G8_UNORM, 2}};
+   static const uint32_t dim[][2] = {{13, 7}, {37, 21}, {64, 9}};
+   int t2 = 0;
+   for (int l = 0; l < g_loop; l++)
+      for (int a = 0; a < 2; a++)
+         for (int b = 0; b < 3; b++) TRY(nocoh_one(fm[a].f, fm[a].bpt, dim[b][0], dim[b][1], &t2));
+   report(t2 ? "nocoh_type2" : "nocoh_coherent_types", g_fake ? "results: fake backend" : NULL);
    return 1;
 }
 
@@ -938,6 +1070,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("resolve")) ok &= case_resolve();
    if (ok && CASE_ON("event")) ok &= case_event();
    if (ok && CASE_ON("ts")) ok &= case_ts();
+   if (ok && g_only && !strcmp(g_only, "nocoh")) ok &= case_nocoh();   /* opt-in, see case_nocoh */
 
    DeviceWaitIdle(dev);
    DestroyFence(dev, fence, NULL);

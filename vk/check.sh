@@ -89,6 +89,10 @@ for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
+# PR #14: byte copies into non-coherent (v13 type 2) image memory + mapped non-coherent readback (pixels only on hardware; the fake run covers the
+# type-2 eligibility assertion and the Flush/Invalidate path), and the SPIR-V guard: no atomics in meta_copy.
+run "vk_meta nocoh v13" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only nocoh
+run "meta_copy has no atomics" 0 "$V/tests/meta-noatomic.sh"
 
 # Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs
 # (MALI_FAKE_DUMP); the dump is rendered address-normalised and diffed against tests/golden/<test>-<gpu>.txt. BO flag rules run in the
