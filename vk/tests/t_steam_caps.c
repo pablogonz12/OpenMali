@@ -321,6 +321,31 @@ main(int argc, char **argv)
    for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
       CHECK(has(eps, ne, pairs[i].ext) == (int)pairs[i].f, "%s advertised=%d but its feature=%u", pairs[i].ext, has(eps, ne, pairs[i].ext), pairs[i].f);
 
+   /* ext-wishlist: name == feature bit for the extensions that are only a name over an already-true feature, plus the texel-buffer limits
+      the name promises. Own feature chain so it does not depend on the gamescope chain above. */
+   {
+      VkPhysicalDevice16BitStorageFeatures s16 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES};
+      VkPhysicalDevice8BitStorageFeatures s8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES, .pNext = &s16};
+      VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT tba = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT, .pNext = &s8};
+      VkPhysicalDeviceFeatures2 wf2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &tba};
+      GetPhysicalDeviceFeatures2(pd, &wf2);
+      struct { const char *ext; VkBool32 f; } wp[] = {
+         {"VK_KHR_16bit_storage", s16.storageBuffer16BitAccess}, {"VK_KHR_8bit_storage", s8.storageBuffer8BitAccess},
+         {"VK_EXT_texel_buffer_alignment", tba.texelBufferAlignment},
+      };
+      for (unsigned i = 0; i < sizeof(wp) / sizeof(wp[0]); i++)
+         CHECK(has(eps, ne, wp[i].ext) == (int)wp[i].f, "%s advertised=%d but its feature=%u", wp[i].ext, has(eps, ne, wp[i].ext), wp[i].f);
+      VkPhysicalDeviceTexelBufferAlignmentPropertiesEXT tbp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_PROPERTIES};
+      VkPhysicalDeviceProperties2 wp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &tbp};
+      GetPhysicalDeviceProperties2(pd, &wp2);
+      /* the ext limits must agree with the core limit (256) and claim no single-texel relaxation */
+      CHECK(tbp.storageTexelBufferOffsetAlignmentBytes >= wp2.properties.limits.minTexelBufferOffsetAlignment &&
+            tbp.uniformTexelBufferOffsetAlignmentBytes >= wp2.properties.limits.minTexelBufferOffsetAlignment,
+            "texel buffer alignment bytes %llu/%llu below minTexelBufferOffsetAlignment %llu", (unsigned long long)tbp.storageTexelBufferOffsetAlignmentBytes,
+            (unsigned long long)tbp.uniformTexelBufferOffsetAlignmentBytes, (unsigned long long)wp2.properties.limits.minTexelBufferOffsetAlignment);
+      CHECK(!tbp.storageTexelBufferOffsetSingleTexelAlignment && !tbp.uniformTexelBufferOffsetSingleTexelAlignment, "single-texel alignment claimed but offsets are 256-aligned");
+   }
+
    /* gamescope's device request */
    static const char *const gs_exts[] = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf", "VK_KHR_external_semaphore_fd",
                                          "VK_EXT_robustness2", "VK_EXT_image_drm_format_modifier", "VK_EXT_queue_family_foreign", "VK_KHR_maintenance1"};

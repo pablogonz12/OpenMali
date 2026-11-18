@@ -150,6 +150,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
+   p->storageTexelBufferOffsetSingleTexelAlignment = false;   /* offsets must be 256-aligned even for a one-texel-aligned format */
+   p->uniformTexelBufferOffsetSingleTexelAlignment = false;
    p->maxBufferSize = 1u << 30;
    p->lineSubPixelPrecisionBits = 4;   /* == subPixelPrecisionBits; t_vk_feat linerast */
    p->maxCustomBorderColorSamplers = 4000;   /* == maxSamplerAllocationCount: a custom colour costs nothing beyond the descriptor */
@@ -207,6 +209,11 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
+      /* Names for features that are already true (ext-wishlist). 16/8-bit: storageBuffer16/8BitAccess are the only bits set (t_vk_feat int16/int8);
+         the uniform/push-constant/input-output bits stay false, which the extension allows. separateDepthStencilLayouts is NOT done: no
+         code reads an image layout, but t_vk_info demands a pixel test for each advertised 1.2 feature and there is none yet. */
+      .KHR_16bit_storage = true, .KHR_8bit_storage = true,
+      .EXT_texel_buffer_alignment = true,   /* properties: ext alignment == core minTexelBufferOffsetAlignment, no single-texel relaxation */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
@@ -227,6 +234,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .sampleRateShading = mali_experimental_msaa(),   /* MALI_EXPERIMENTAL_MSAA=1 */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
+      .texelBufferAlignment = true,   /* t_steam_caps: name == feature; limits checked there */
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
