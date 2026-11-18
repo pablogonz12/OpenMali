@@ -99,3 +99,7 @@ Run `t_vk_leak` on the guest with `vk/tests/leakrun.sh "--n 300"`; TMPDIR=~/.cac
 - cube_layers: mali_CmdBeginRendering ignores layerCount and mali_CmdClearAttachments ignores VkClearRect baseArrayLayer/layerCount, so a clear aimed at layer N lands on layer 0 of the view. Not integer-specific. Needs per-layer targets (layer stride from the image) for clear-only frames; layered draws need gl_Layer. Open.
 - clear_color_attachment a2r10g10b10 sample_count_4 fails on f3149a2 too (6 of 14 farm runs, v11 only): an msaa-path flake, belongs to feat/msaa (4x resolve/Average on A2-10 formats); not in the clear path.
 - stencil.nocolor: stencil-only passes now run (6db9993); remaining mismatches read back all-zero stencil. Suspect: pipelines without a fragment stage but rasterization enabled (draws are dropped by the discard path) or the S8 writeback.
+## dual_source crash group (2026-11-18)
+The `dual_source` blend cases crash the dEQP context when run as one `cases` batch (33 cases, /tmp/crash7.txt) at 73fd1f7, 89a8bfd, 1772d2b and main alike, also with
+`MALI_INT_NOCOH=0` and with the meta-coh fix; single cases and the daily pass. So it is not a regression but a batch artefact: my reading is state leaking between
+cases in one process (accumulating BOs/queue state until a GPU fault kills the context), not a per-case bug. Not investigated further.
