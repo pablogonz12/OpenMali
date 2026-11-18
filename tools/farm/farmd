@@ -644,7 +644,7 @@ class Farm:
             sha_b, note = self.build_bionic(job, self.tree(job["id"])) if os.path.isdir(self.tree(job["id"])) else (None, "no job tree")
             if not sha_b:
                 return {"verdict": "error", "notes": "no bionic build for the shell route: " + note}
-            job = dict(job, so_sha256_bionic=sha_b)
+            job["so_sha256_bionic"] = sha_b
         run_id = job["id"] + "-" + dev["alias"]
         rc, out = self.run_shellroute(job, dev, "smoke", run_id, ["--only", job["only"]] if job.get("only") else [], 700, nodim=fallback)
         bad = self.shell_rc(rc, out, "shellroute")
