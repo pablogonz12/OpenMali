@@ -140,6 +140,9 @@ class Phone:
         st, why = G.check(self.dev["lock"], h, G.thresholds(self.dev.get("serial")))
         if st != "ok":
             return f"gated ({st}): {why}"
+        why = start_blocked(h, G.thresholds(self.dev.get("serial")))
+        if why:
+            return f"gated (hot): {why}"
         if self.dev.get("require_charging") and not h.get("powered"):
             return "on battery (require_charging)"
         self.h = h
@@ -256,6 +259,12 @@ def plan(variant, driver, mode, best):
 def sweep_sig(variant, driver):
     """fingerprint of the sweep's candidate list (present modes, image counts, fif, ours env sets): a new knob changes it -> stored best is stale"""
     return hashlib.sha1("|".join(label(c) for c in plan(variant, driver, "sweep", None)).encode()).hexdigest()[:12]
+
+
+def start_blocked(h, th):
+    """devices.toml `temp_start` (poco-x4: 40): no new burst while the phone is warmer; the run itself stops at temp_stop. '' = may start"""
+    t, lim = h.get("temp_c"), th.get("temp_start")
+    return f"temp {t}C above the start limit {lim}C" if lim is not None and t is not None and t > lim else ""
 
 
 def best_stale(best_all, alias, driver, variant, today=None):

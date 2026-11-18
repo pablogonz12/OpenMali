@@ -1632,6 +1632,29 @@ class MenuUnit(unittest.TestCase):
         self.assertTrue(ML.owner_in_use(self.PW_ON, "", pkg)[0])
         self.assertEqual(ML.foreground_pkg("  mResumedActivity: ActivityRecord{9 u0 org.x.app/org.x.app.Main t1}"), "org.x.app")
 
+    def test_foreground_launch_opt_in(self):
+        pkg = "com.ludashi.benchmark"
+        home = self.FG % "com.mi.android.globallauncher"
+        self.assertTrue(ML.owner_in_use(self.PW_ON, home, pkg)[0])                                             # lent phone: launcher = owner
+        use, why = ML.owner_in_use(self.PW_ON, home, pkg, launch=True)
+        self.assertFalse(use)
+        self.assertTrue(why.startswith(ML.LAUNCHER_ONLY))
+        self.assertTrue(ML.owner_in_use(self.PW_ON, self.FG % "com.android.chrome", pkg, launch=True)[0])      # another app is still the owner
+        self.assertTrue(ML.owner_in_use("", home, pkg, launch=True)[0])                                        # unreadable: never run blind
+
+    def test_guest_flag_and_start_limit(self):
+        devs = {"x4": {"class": "v10", "route": "shell", "guest": True}, "old": {"class": "v10", "route": "shell"}}
+        st = {a: {"status": "up"} for a in devs}
+        self.assertEqual(BL.available(devs, st, set()), ["x4"])
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("bench2", os.path.join(os.path.dirname(HERE), "bench2"))
+        sp = importlib.util.spec_from_loader("bench2", ld)
+        b2 = importlib.util.module_from_spec(sp)
+        ld.exec_module(b2)
+        self.assertEqual(b2.start_blocked({"temp_c": 40.5}, {"temp_start": 40.0}) != "", True)
+        self.assertEqual(b2.start_blocked({"temp_c": 39.0}, {"temp_start": 40.0}), "")
+        self.assertEqual(b2.start_blocked({"temp_c": 45.0}, {"temp_start": None}), "")
+
     def test_trigger_rule(self):
         self.assertTrue(ML.should_queue(23, 22, False))
         self.assertTrue(ML.should_queue(22, None, False))

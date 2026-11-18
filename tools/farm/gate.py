@@ -12,7 +12,7 @@ CLI (used by qsafe): python3 -I gate.py check <lockname> <adb-transport> [serial
 import json, os, re, subprocess, sys, time, tomllib
 
 DEFAULTS = {"batt_stop": 20, "batt_resume": 50, "temp_stop": 43.0, "temp_resume": 38.0, "thermal_stop": 3, "thermal_resume": 1,
-            "require_charging": False}
+            "require_charging": False, "temp_start": None}
 HEALTH_CMD = ("dumpsys battery | grep -E '^ *(level|temperature|AC powered|USB powered|Wireless powered|Dock powered):'; "
               "dumpsys thermalservice | grep -E 'Thermal Status:|^Cached temperatures|^Current temperatures from HAL|mName=(BATTERY|SKIN),'")
 
