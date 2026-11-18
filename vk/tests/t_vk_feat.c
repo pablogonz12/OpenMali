@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|spec|maint5|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|ycbcr|spec|maint5|cbc|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -32,6 +32,7 @@ static PFN_vkResetFences g_rf;
 static VkBool32 g_mirror, g_bda, g_didx;
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
+static int g_cbc, g_cbc_nofmt; static uint32_t g_cbc_max;   /* EXT_custom_border_color: features and maxCustomBorderColorSamplers */
 static int g_m5;       /* maintenance5 feature advertised */
 static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
 static int test_idx32(void);
@@ -589,6 +590,50 @@ test_mirror(void)
    }
    tex_destroy(&x);
    tgt_destroy(&t);
+   return 1;
+}
+
+/* VK_EXT_custom_border_color: clamp-to-border sampler with a custom colour. 4x1 white texture, u runs -1..1 across the quad (as in test mirror), nearest
+ * filter: u < 0 returns the border colour, u in (0,1) the texel. Float colour (0.25, 0.5, 0.75, 1) -> 64,128,191,255 in R8G8B8A8_UNORM, once with the
+ * view format named in the create info and once with VK_FORMAT_UNDEFINED (customBorderColorWithoutFormat). The descriptor words come from
+ * vk_sampler_state.border_color_value (the runtime fills it from VkSamplerCustomBorderColorCreateInfoEXT) -> sampler descriptor words 4..7. */
+static int
+cbc_one(VkFormat fmt)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   static const uint8_t texel[4][4] = {{255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}};
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 1, 1}};
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 4, 1, 1, 1, 0);
+   VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT,
+                                                 .customBorderColor = {.float32 = {0.25f, 0.5f, 0.75f, 1.0f}}, .format = fmt};
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .pNext = &cb, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                             .borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT, .maxLod = 0.25f};
+   struct tex x;
+   if (!tex_create(&t, &x, &ici, VK_IMAGE_VIEW_TYPE_2D, 1, texel, sizeof texel, &reg, 1, &si)) return 0;
+   const float s[4] = {2.0f, 0.0f, -1.0f, 0.5f};
+   if (!quad_draw(&t, &x, "tex.frag.spv", s)) return 0;
+   if (!g_fake) {
+      const uint8_t *b = pix(&t, 10, 128), *in = pix(&t, 200, 128);
+      CHECK(near(b, 64, 128, 191, 255, 6), "border (format %d): got %u,%u,%u,%u expected 64,128,191,255", (int)fmt, b[0], b[1], b[2], b[3]);
+      CHECK(near(in, 255, 255, 255, 255, 6), "inside (format %d): got %u,%u,%u,%u expected white", (int)fmt, in[0], in[1], in[2], in[3]);
+   }
+   tex_destroy(&x);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_cbc(void)
+{
+   if (!g_cbc) { printf("{\"test\":\"cbc\",\"skipped\":\"customBorderColors not advertised\",\"ok\":true}\n"); return 1; }
+   CHECK(g_cbc_nofmt, "customBorderColorWithoutFormat must go with customBorderColors (one descriptor path)");
+   CHECK(g_cbc_max >= 1, "maxCustomBorderColorSamplers = %u", g_cbc_max);
+   int ok = cbc_one(VK_FORMAT_R8G8B8A8_UNORM) && cbc_one(VK_FORMAT_UNDEFINED);
+   if (!ok) return 0;
+   printf("{\"test\":\"cbc\",\"max\":%u,\"ok\":true%s}\n", g_cbc_max, g_fake ? ",\"skipped\":\"pixels: fake backend (creation and draw ran)\"" : "");
    return 1;
 }
 
@@ -2187,8 +2232,16 @@ main(int argc, char **argv)
    VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &f12};
    VkPhysicalDeviceMaintenance5FeaturesKHR fm5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &f12};
    rb2.pNext = &fm5;
-   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rb2};
+   VkPhysicalDeviceCustomBorderColorFeaturesEXT fcb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = &rb2};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fcb};
    GetPhysicalDeviceFeatures2(pd, &f2);
+   g_cbc = fcb.customBorderColors; g_cbc_nofmt = fcb.customBorderColorWithoutFormat;
+   {
+      VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
+      VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cbp};
+      ((PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2"))(pd, &p2);
+      g_cbc_max = cbp.maxCustomBorderColorSamplers;
+   }
    g_m5 = fm5.maintenance5;
    g_null = rb2.nullDescriptor;
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -2230,7 +2283,11 @@ main(int argc, char **argv)
    VkPhysicalDeviceMaintenance5FeaturesKHR em5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &e11, .maintenance5 = g_m5};
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
-   const char *dexts[3]; uint32_t ndx = 0;
+   VkPhysicalDeviceCustomBorderColorFeaturesEXT ecb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = e2.pNext,
+                                                       .customBorderColors = fcb.customBorderColors, .customBorderColorWithoutFormat = fcb.customBorderColorWithoutFormat};
+   e2.pNext = &ecb;
+   const char *dexts[4]; uint32_t ndx = 0;
+   if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
@@ -2254,6 +2311,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
+   if (ok && CASE_ON("cbc")) ok &= test_cbc();
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
