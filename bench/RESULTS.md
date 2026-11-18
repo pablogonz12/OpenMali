@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open e2cd68cd2 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 189.9 | 68.4 | 0 | 0.85 | 3.30 | 328.6 | 0.62 | 2.07 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | e2cd68cd2 | triangle-3k | 59.2 | 41.1 | 0 | 8.43 | 2.57 | 189.7 | 4.80 | 2.25 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
+
 ### mali-open 20e290c1a (2026-11-17)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -26,6 +33,15 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## cube (GPU-heavy)
 
+### mali-open e2cd68cd2 (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 71.3 | 34.9 | 0 | 0.10 | 12.85 | 87.8 | 0.07 | 11.32 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | e2cd68cd2 | cube-720p | 46.0 | 37.4 | 0 | 1.49 | 18.12 | 75.7 | 2.10 | 13.10 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | bridge | malideck p24 (1.0.0-p24-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.2 | 31.7 | 0 | 0.12 | 12.63 | 87.8 | 0.08 | 11.32 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | e2cd68cd2 | cube-native | 45.9 | 37.5 | 0 | 1.50 | 18.16 | 75.3 | 2.07 | 13.16 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+
 ### mali-open 20e290c1a (2026-11-17)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -43,6 +59,12 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | poco-x8 | | ours + bridge | | all | pending | | | | | | | | offline (no adb route) | |
+
+## Steam menu (realistic metric)
+
+Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/right through the library (`scripts/quick/menubench` in the MediaDeck repo, run by the farm `menu` suite). Render fps from the web helper's present events over 30 s, medians over the reps that passed the self-checks; `default` = as shipped, `uncapped` = frame limits off. It runs on the Mali bridge, not on mali-open: numbers change with the MediaDeck build, not with our commits. An **invalid** row (self-check failed) never replaces a valid one.
+
+No menu run yet.
 
 Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets `default`; `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`; `MALI_HF=0 MALI_NOTF=1`; `MALI_NO_MERGE=1`. Bridge options: none exposed in the guest besides the above.
 Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).
