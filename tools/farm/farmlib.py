@@ -257,7 +257,7 @@ def find_passed(jobs, commit, suite, need, env, only="", cases=None, repeat=1):
                 or (j.get("only") or "") != (only or "") or list(j.get("cases") or []) != list(cases or []) or (j.get("repeat") or 1) != (repeat or 1)):
             continue
         ps = j.get("parts", {})
-        if need and {c for c, p in ps.items() if p.get("state") != "cancelled"} == set(need) and all(ps[c].get("state") == "done" and ps[c].get("verdict") == "pass" for c in need):
+        if need and {c for c, p in ps.items() if p.get("state") not in ("cancelled", "skipped")} == set(need) and all(ps[c].get("state") == "done" and ps[c].get("verdict") == "pass" for c in need):
             return j
     return None
 
@@ -278,13 +278,19 @@ def find_inflight(jobs, commit, suite, need, env, only="", cases=None, repeat=1)
 
 
 STALE_COMMITS = 5
+SKIP_DOWN = "skipped: device down"
+
+
+def skipped_parts(job):
+    """classes whose part was skipped because every phone of the class was down: [(class, note)]"""
+    return [(c, p.get("note") or SKIP_DOWN) for c, p in job["parts"].items() if p["state"] == "skipped"]
 
 
 def job_verdict(job):
     """pending while any part is not finished; then error > fail > pass"""
-    parts = [p for p in job["parts"].values() if p["state"] != "cancelled"]
+    parts = [p for p in job["parts"].values() if p["state"] not in ("cancelled", "skipped")]
     if not parts:
-        return "cancelled"
+        return "skipped" if any(p["state"] == "skipped" for p in job["parts"].values()) else "cancelled"
     if any(p["state"] in ("pending", "running") for p in parts):
         return "pending"
     vs = {p.get("verdict", "error") for p in parts}
