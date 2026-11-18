@@ -84,6 +84,7 @@ elif op == "pull":
         print("error: remote object does not exist"); sys.exit(1)
 elif op == "shell":
     c = a[1]
+    open(R + "/adb-shell.log", "a").write(c + "\n")
     m = re.match(r"sha256sum (\S+)", c)
     if m:
         if os.path.exists(P(m.group(1))):
@@ -142,6 +143,19 @@ class ShellRoute(unittest.TestCase):
         r = subprocess.run([sys.executable, "-I", HERE + "/shellroute.py", mode, "--lock", "shelltest", "--tree", self.tree, "--sha", sha, "--run", "r1", *extra],
                            capture_output=True, text=True, env=dict(self.env, **(env or {})), timeout=60)
         return r.returncode, r.stdout
+
+    def test_smoke_nodim_never_touches_screen_settings(self):
+        """smoke fallback on a locked phone (SHELLROUTE_NODIM): no brightness/screen commands at all; the normal route still dims"""
+        os.makedirs(self.root, exist_ok=True)
+        rc, o = self.run_sr("smoke", "a64-bionic", env={"SHELLROUTE_NODIM": "1"})
+        self.assertEqual(rc, 0, o)
+        log = open(self.root + "/adb-shell.log").read()
+        self.assertNotIn("settings ", log)
+        self.assertNotIn("keyevent", log)
+        self.assertNotIn("dim.state", log)
+        os.unlink(self.root + "/adb-shell.log")
+        self.assertEqual(self.run_sr("smoke", "a64-bionic")[0], 0)           # control: the normal route does read/set the screen state
+        self.assertIn("settings ", open(self.root + "/adb-shell.log").read())
 
     def test_daily_per_run_so_and_resume(self):
         out = self.d + "/o.tsv"
@@ -1489,6 +1503,99 @@ class MenuUnit(unittest.TestCase):
         self.assertEqual(BL.publish(state, origin, report_cmd=rep, log=lambda m: None)["status"], "nothing")
         ML.append_rows(state, [dict(row, valid=False, avg_fps=None)])                                          # an invalid re-run: nothing new to publish
         self.assertEqual(BL.publish(state, origin, report_cmd=rep, log=lambda m: None)["status"], "nothing")
+
+
+class SmokeRoute(unittest.TestCase):
+    """guest smoke -> adb-shell fallback when the app session cannot be READY (locked phone): route choice, log header, harness"""
+    def farm(self, fallback=True, dumpsys="mWakefulness=Dozing\nisKeyguardShowing=true"):
+        import importlib.machinery, importlib.util, threading
+        ld = importlib.machinery.SourceFileLoader("farmd_sr", HERE + "/farmd")
+        spec = importlib.util.spec_from_loader("farmd_sr", ld)
+        self.fd = importlib.util.module_from_spec(spec)
+        ld.exec_module(self.fd)
+        f = object.__new__(self.fd.Farm)
+        self.dev = {"alias": "poco-x8", "class": "v13", "serial": "SER8", "lock": "poco"}
+        if fallback:
+            self.dev["smoke_fallback"] = "shell"
+        f.fake, f.devs, f.tid = False, {"poco-x8": self.dev}, {}
+        self.calls = []
+        f.tree = lambda jid: "/nonexistent-tree"
+        f.harness = lambda tree: self.calls.append("harness")
+        f.alive = lambda dev: True
+        f.adb = lambda dev, *a, **k: (0, dumpsys) if "dumpsys" in a[-1] else (0, "")
+        f.verify_so = lambda job, dev, path, key="so_sha256": (True, job.get(key))
+        f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (self.calls.append(("shell", nodim)) or (0, SMOKE_OUT))
+        f.keep_log = lambda job, dev, part, out, rc: setattr(self, "kept", out)
+        return f
+
+    JOB = {"id": "J1", "env": "", "suite": "smoke", "so_sha256": "g" * 64, "so_sha256_bionic": "b" * 64, "parts": {"v13": {}}}
+
+    def test_locked_phone_uses_shell_route_and_logs_it(self):
+        f = self.farm()
+        self.fd.L.run_watched = lambda *a, **k: self.fail("guest route must not be tried on a locked phone")
+        r = f.suite_smoke(dict(self.JOB), self.dev)
+        self.assertEqual(r["verdict"], "pass", r)
+        self.assertEqual(self.calls, [("shell", True)])                  # shell route, screen untouched
+        first = self.kept.splitlines()[0]
+        self.assertIn("route=shell-fallback", first)
+        self.assertIn("serial=SER8", first)
+        self.assertIn("so_sha256=" + "b" * 64, first)                      # the bionic build that actually ran
+        self.assertIn("Dozing", first)
+        self.assertIn("skipped=", first)
+        self.assertIn("route=shell-fallback", r["notes"])
+        self.assertIn("gamescope", r["notes"])
+
+    def test_session_not_ready_with_awake_screen_falls_back_after_guest(self):
+        f = self.farm(dumpsys="mWakefulness=Awake")
+        self.fd.L.run_watched = lambda *a, **k: (74, "NO RESULT: qdrv wrote no poco valguest result\nDRV poco FAIL session not READY")
+        r = f.suite_smoke(dict(self.JOB), self.dev)
+        self.assertEqual(r["verdict"], "pass", r)
+        self.assertIn("route=shell-fallback", self.kept.splitlines()[0])
+        self.assertIn("session not READY", self.kept.splitlines()[0])
+
+    def test_without_fallback_a_missing_session_is_an_error_not_a_pass(self):
+        f = self.farm(fallback=False)
+        self.fd.L.run_watched = lambda *a, **k: (74, "NO RESULT: qdrv wrote no poco valguest result")
+        r = f.suite_smoke(dict(self.JOB), self.dev)
+        self.assertEqual(r["verdict"], "error", r)
+        self.assertEqual([c for c in self.calls if c != "harness"], [])
+
+    def test_awake_session_ready_uses_guest_and_logs_it(self):
+        f = self.farm(dumpsys="mWakefulness=Awake")
+        self.fd.L.run_watched = lambda *a, **k: (0, SMOKE_OUT)
+        r = f.suite_smoke(dict(self.JOB), self.dev)
+        self.assertEqual(r["verdict"], "pass", r)
+        self.assertIn("route=guest", self.kept.splitlines()[0])
+        self.assertIn("so_sha256=" + "g" * 64, self.kept.splitlines()[0])
+        self.assertNotIn(("shell", True), self.calls)
+
+    def test_shell_route_failing_test_is_a_fail(self):
+        f = self.farm()
+        bad = SMOKE_OUT.replace('"test":"t_vk_draw","rc":0', '"test":"t_vk_draw","rc":1').replace('"ok":true', '"ok":false')
+        f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (0, bad)
+        self.assertEqual(f.suite_smoke(dict(self.JOB), self.dev)["verdict"], "fail")
+
+    def test_pure_helpers(self):
+        import smokeroute as SR
+        self.assertEqual(SR.blocked_reason("mWakefulness=Awake\nisKeyguardShowing=false"), "")
+        self.assertIn("Dozing", SR.blocked_reason("mWakefulness=Dozing"))
+        self.assertEqual(SR.blocked_reason("mWakefulness=Awake\nisKeyguardShowing=true"), "keyguard showing")
+        self.assertEqual(SR.blocked_reason(""), "")
+        self.assertTrue(SR.guest_unusable(74, "") and SR.guest_unusable(1, "DRV poco FAIL session not READY") and not SR.guest_unusable(0, "{}"))
+
+    def test_harness_replaces_valrun_without_the_this_run_fix(self):
+        """a job tree whose valrun.sh has the SO hook but not 4f24ee4's -newer fix read another phone's result (v13 'pass' with G615 lines)"""
+        f = self.farm()
+        f.harness = self.fd.Farm.harness.__get__(f)
+        tree = tempfile.mkdtemp()
+        os.makedirs(tree + "/vk/tests")
+        open(tree + "/vk/tests/valrun.sh", "w").write("VAL_SO_SHA256 old: ls -t | head -1\n")
+        f.harness(tree)
+        self.assertIn('-newer "$M"', open(tree + "/vk/tests/valrun.sh").read())
+
+
+SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
+                      '{"test":"t_vk_meta","rc":0,"fail_lines":0,"pass_lines":1}', '{"test":"summary","ok":true}'])
 
 
 if __name__ == "__main__":
