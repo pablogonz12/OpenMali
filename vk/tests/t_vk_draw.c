@@ -1163,7 +1163,8 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
  * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
  * left half must hold that target's draw colour and the right half its clear colour.
  * clear_att 1: loadOp DONT_CARE + whole-area vkCmdClearAttachments. clear_att 2: after that pass a second pass with loadOp LOAD on every
- * target draws into a 1-pixel scissor only, so every sampled pixel must still hold the first pass's result (colour LOAD on RT>0). */
+ * target draws into a 1-pixel scissor only, so every sampled pixel must still hold the first pass's result (colour LOAD on RT>0).
+ * clear_att 3: after the draw, a sub-rectangle vkCmdClearAttachments on RT 1..n-1 (the clear quad on colour attachment > 0). */
 static int
 test_mrt(const char *name, int nrt, int clear_att)
 {
@@ -1285,6 +1286,15 @@ test_mrt(const char *name, int nrt, int clear_att)
    CmdSetViewport(cb, 0, 1, &vp);
    CmdSetScissor(cb, 0, 1, &sc);
    CmdDraw(cb, 6, 1, 0, 0);
+   if (clear_att == 3) {   /* after the draw, a sub-rectangle (right half, top half) vkCmdClearAttachments on every RT > 0: the clear quad, retargeted to that RT */
+      VkClearAttachment ca[3];
+      for (int i = 1; i < nrt; i++) {
+         ca[i - 1] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i};
+         for (int c = 0; c < 4; c++) ca[i - 1].clearValue.color.float32[c] = 1.0f - clr[i][c];
+      }
+      VkClearRect cr = {.rect = {{W / 2, 0}, {W / 2, H / 2}}, .layerCount = 1};
+      CmdClearAttachments(cb, (uint32_t)(nrt - 1), ca, 1, &cr);
+   }
    CmdEndRenderPass(cb);
    MRT_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -1322,6 +1332,11 @@ test_mrt(const char *name, int nrt, int clear_att)
          for (int y = 8; y < H; y += 40)
             for (int h = 0; h < 2; h++) {
                const float *want = h ? clr[i] : drw[i];
+               float inv[4];
+               if (clear_att == 3 && h && i > 0 && y < H / 2) {   /* inside the post-draw quad: the inverted clear colour; RT0 and the lower half keep the pass clear */
+                  for (int c = 0; c < 4; c++) inv[c] = 1.0f - clr[i][c];
+                  want = inv;
+               }
                const uint8_t *p = px[i] + (size_t)y * pitch[i] + (size_t)(h ? 3 * W / 4 : W / 4) * 4;
                for (int c = 0; c < 4; c++)
                   if (p[c] != (want[c] > 0.5f ? 255 : 0)) {
@@ -2275,6 +2290,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
    if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
    if (ok && CASE_ON("mrt4_load")) ok &= test_mrt("mrt4_load", 4, 2);
+   if (ok && CASE_ON("mrt4_clearquad")) ok &= test_mrt("mrt4_clearquad", 4, 3);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

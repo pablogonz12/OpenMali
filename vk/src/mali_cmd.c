@@ -1252,10 +1252,12 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
       for (uint32_t i = 0; i < na; i++) {
          if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
             continue;
-         if (att[i].colorAttachment != 0) {
+         const uint32_t ci = att[i].colorAttachment;
+         if (ci >= f->ncolour) {
             unsupported(cmd, "colour attachment index");
             return;
          }
+         const struct mali_rtfmt *crt = ci ? f->colour_x[ci - 1].rt : f->colour.rt;   /* RT>0: the quad writes colour output ci (preload arg bits 24..25) */
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
                unsupported(cmd, "CmdClearAttachments quad: layers");
@@ -1263,7 +1265,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             }
             struct mali_preload_src ps;
             memset(&ps, 0, sizeof ps);
-            ps.arg = 19 | (f->colour.rt && f->colour.rt->int_bits ? (f->colour.rt->is_signed ? 2u : 1u) << 16 : 0);   /* the clear words are the raw shader output: integer-typed for integer formats */
+            ps.arg = 19 | (crt && crt->int_bits ? (crt->is_signed ? 2u : 1u) << 16 : 0) | (ci << 24);   /* the clear words are the raw shader output: integer-typed for integer formats */
             memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
             struct mali_draw d;
             if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
