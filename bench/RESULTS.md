@@ -155,7 +155,7 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | 10000 | QueueSubmit -4 | 5.14 | 141 | 4.20 | 3.27 | 88 |
 | 20000 | QueueSubmit -4 | 10.66 | 76 | 6.46 | 5.61 | 48 |
 
-main's `QueueSubmit` -4 (VK_ERROR_DEVICE_LOST, 32 MiB descriptor arena exhausted at ~7k draws) is fixed by c02338c (a frame that does not fit spills into overflow BOs) and 44fd974 (overflow BOs pooled), merged in 068a170. Above 3k the draw-path rows are slower than the bridge on CPU (10k/20k) because the per-draw cost stops being the limit and CS/heap growth dominates; not yet profiled.
+main's `QueueSubmit` -4 (VK_ERROR_DEVICE_LOST, 32 MiB descriptor arena exhausted at ~7k draws) is fixed by c02338c (a frame that does not fit spills into overflow BOs) and 44fd974 (overflow BOs pooled), merged in 068a170. At 10k and 20k the draw-path CPU time is higher than the bridge's (cause not profiled yet).
 
 ## Steam menu (realistic metric)
 
