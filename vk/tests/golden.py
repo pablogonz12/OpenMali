@@ -12,8 +12,8 @@ Rules (each one is a bug that was only found on the phone):
   R-GEOM  tiler context geometry buffer is exactly 64 KiB on both arches (v11 renders nothing with 4 MiB, v13 coverage 0 with 4 MiB;
           67e1aa0/11e6249), lies fully inside its BO and the tiler heap descriptor is the page just before it.
   R-HEAP  the tiler heap descriptor page is written once (c66eb3e: a per-frame rewrite reset firmware-grown chunks, TRANSLATION_FAULT).
-  R-SET   the driver descriptor set (SRT entry 0 of every VS/FS/compute job) has 64 entries of 32 B (794a571: the dummy sampler at
-          entry 63 lay past a one-entry set and texelFetch read zeros).
+  R-SET   the driver descriptor set (SRT entry 0 of every VS/FS/compute job) has 17 entries of 32 B (794a571: the dummy sampler,
+          now at entry 16, lay past a one-entry set and texelFetch read zeros).
   R-CS    decode_stream.py stream rules (INTERMITTENT.md: no RUN before WAIT on FLUSH_CACHE2, bit 38 of RUN_IDVS, FAU count byte,
           descriptor alignment, no TEM pointer in r44/r45 at RUN_FRAGMENT, ...).
 BO flag rules (R-FLAGS) are enforced where the BO is allocated (fake_flag_rule in the fake backend)."""
@@ -28,7 +28,7 @@ ds.OPN[12] = 'RUN_IDVS2'
 
 MASK48 = (1 << 48) - 1
 GEOM_BYTES = 65536
-SET_BYTES = 64 * 32          # MALI_DUMMY_SAMPLER_IDX + 1 entries of KB_DESC_SET_STRIDE
+SET_BYTES = 17 * 32          # MALI_DUMMY_SAMPLER_IDX + 1 entries of KB_DESC_SET_STRIDE
 VA_LO, VA_HI = 0x5f00000000, 0x6000000000   # the fake backend's bump allocator window (header words like 0x5000000019 are not VAs)
 HEAP_LO, HEAP_HI = 0xf0000000, 0xf8000000
 MAPS = {   # (name, first reg, bytes to follow, kind) -- same as cmp_cmd.py
@@ -156,7 +156,7 @@ def render_job(c, e, op_name):
                     sz = en[2]
                     out.append('    %s set%d size=%d' % (nm, i, sz))
                     if i == 0 and sz < SET_BYTES and e['op'] in (4, 6, 12):
-                        c.violate('R-SET', '%s entry 0 (driver set) is %d bytes, want >= %d (64 entries of 32 B: dummy sampler idx 63)' % (nm, sz, SET_BYTES))
+                        c.violate('R-SET', '%s entry 0 (driver set) is %d bytes, want >= %d (17 entries of 32 B: dummy sampler idx 16)' % (nm, sz, SET_BYTES))
                     out += c.words(va, min(sz, 1024) & ~7, '%s.set%d' % (nm, i))
                     rr = c.find(va)
                     if rr and va + sz > rr['va'] + rr['len']:

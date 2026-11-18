@@ -57,6 +57,11 @@ struct st_state {
 };
 static struct st_state g_st;
 static VkPhysicalDeviceFeatures g_feat;
+static double g_t_rec, g_t_sub;   /* scene_draw: record / QueueSubmit microseconds, summed */
+static int g_share;   /* share test: 2 = alternate the scissor halves per draw, 3 = dynamic-UBO offset from g_share_off[] and firstInstance from g_share_fi[] */
+static uint32_t g_share_off[8], g_share_fi[8];
+static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
+static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
@@ -193,7 +198,7 @@ scene_create(struct scene *s, int depth)
    memset(s, 0, sizeof *s);
    s->mode = mode;
    s->depth = depth;
-   const char *vsn = g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
+   const char *vsn = g_inst ? "inst_attr.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
@@ -208,7 +213,7 @@ scene_create(struct scene *s, int depth)
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
    if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD) {
       VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+         .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
       VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                              .bindingCount = 1, .pBindings = &lb};
       CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &s->dsl) == VK_SUCCESS, "dsl");
@@ -403,7 +408,7 @@ scene_create(struct scene *s, int depth)
       for (int i = 0; i < 2; i++) {
          VkDescriptorBufferInfo bi2 = {s->ubo[i], 0, 16};
          VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->dset[i], .dstBinding = 0,
-                                   .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
+                                   .descriptorCount = 1, .descriptorType = g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
          UpdateDescriptorSets(dev, 1, &w, 0, NULL);
       }
    }
@@ -452,9 +457,10 @@ scene_create(struct scene *s, int depth)
        .module = s->fs, .pName = "main"}};
    VkVertexInputBindingDescription bd[2] = {{0, 16, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_VERTEX}};
    VkVertexInputAttributeDescription ad2[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}};
+   if (g_inst) bd[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                                               .vertexBindingDescriptionCount = 2, .pVertexBindingDescriptions = bd,
-                                               .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = ad2};
+                                               .vertexBindingDescriptionCount = g_inst ? 1 : 2, .pVertexBindingDescriptions = bd,
+                                               .vertexAttributeDescriptionCount = g_inst ? 1 : 2, .pVertexAttributeDescriptions = ad2};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -559,6 +565,7 @@ static int
 scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
 {
    VkCommandBuffer cb = s->cb;
+   double t_rec0 = now_us();
    if (!cb || !g_reset) {
       VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s->pool,
                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
@@ -614,24 +621,50 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.wmask);
       CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.ref);
    }
+   if (g_inst) {
+      /* instance k of binding 0 = quad corner k (vertex 3 + k of the position buffer): firstInstance k draws the triangle at corner k */
+      VkDeviceSize base = 3 * 16;
+      CmdBindVertexBuffers(cb, 0, 1, vbs, &base);
+      CmdDraw(cb, 3, 1, 0, 0);                              /* corner 0 */
+      if (g_inst == 1) {
+         CmdDraw(cb, 3, 1, 0, 1);                           /* differs only in firstInstance: corner 1 */
+         VkDeviceSize b2 = base + 2 * 16;
+         CmdBindVertexBuffers(cb, 0, 1, vbs, &b2);
+         CmdDraw(cb, 3, 1, 0, 1);                           /* differs only in the vertex buffer offset: corner 3 */
+         CmdDraw(cb, 3, 1, 0, 0);                           /* differs only in firstInstance: corner 2 */
+      } else {
+         CmdDraw(cb, 3, 1, 0, 0);
+         CmdDraw(cb, 3, 1, 0, 0);
+         CmdDraw(cb, 3, 1, 0, 0);
+      }
+      n = 0;
+   } else
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
-   if (s->mode == MODE_TEX || s->mode == MODE_UBO)
+   if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
+      if (g_share == 2) {
+         VkRect2D sci = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
+         CmdSetScissor(cb, 0, 1, &sci);
+      }
       if (s->mode == MODE_PUSHFS) {
          float pc[8] = {rot[i][0], rot[i][1], rot[i][2], rot[i][3], 0.75f, 0.25f, 0.5f, 1.0f};
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
       } else {
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[i]);
       }
+      if (g_dyn) {
+         uint32_t off = (g_share == 3 ? g_share_off[i] : (uint32_t)(i % 3)) * 256;   /* three colour blocks, 256 B apart */
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 1, &off);
+      }
       if (s->mode == MODE_DESCUPD)
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[i & 1], 0, NULL);
       if (s->mode == MODE_MDI)
          CmdDrawIndexedIndirect(cb, s->ib, 64, 2, 20);   /* multiDrawIndirect: drawCount 2 */
       else if (s->mode >= MODE_PUSHFS)
-         CmdDrawIndexed(cb, 6, 1, 0, 7, 0);
+         CmdDrawIndexed(cb, 6, 1, 0, 7, g_share == 3 ? g_share_fi[i] : 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
       else
@@ -639,8 +672,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    }
    CmdEndRenderPass(cb);
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   g_t_rec += now_us() - t_rec0;
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   double t_sub0 = now_us();
    VkResult r = QueueSubmit(queue, 1, &si, fence);
+   g_t_sub += now_us() - t_sub0;
    CHECK(r == VK_SUCCESS, "submit = %d", r);
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    CHECK(r == VK_SUCCESS, "wait = %d", r);
@@ -715,6 +751,99 @@ test_triangle(void)
    int ok = report("triangle", &s, 8192.0, 1.0, 1);
    printf("{\"test\":\"triangle_loop\",\"n\":%d,\"mean_us\":%.1f,\"loop_reset\":%d,\"ok\":%s}\n", g_loop, dt, g_reset,
           ok ? "true" : "false");
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* arena bytes asked of hw_alloc so far (the library writes the running total to $MALI_ALLOC_STATS at every submit; set by this test) */
+static unsigned long long
+alloc_bytes(void)
+{
+   FILE *fp = fopen("/tmp/mali_alloc_stats.txt", "r");
+   unsigned long long v = 0;
+   if (fp) {
+      if (fscanf(fp, "%llu", &v) != 1) v = 0;
+      fclose(fp);
+   }
+   return v;
+}
+
+/* ---- many draws in ONE frame (10k-50k): arena / CS / heap growth must not run out (was DEVICE_LOST above ~7k draws) ---- */
+static int
+test_many(void)
+{
+   int counts[] = {3000, 10000, 50000};
+   if (getenv("MALI_MANY_COUNTS")) {   /* e.g. "3000": only the 3k frame (host profiling) */
+      memset(counts, 0, sizeof counts);
+      counts[0] = atoi(getenv("MALI_MANY_COUNTS"));
+   }
+   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
+   unlink("/tmp/mali_alloc_stats.txt");
+   const int nrep = getenv("MALI_MANY_REPS") ? atoi(getenv("MALI_MANY_REPS")) : 3;
+   /* MALI_MANY_DYN=0: plain push-constant triangles; default: dynamic-UBO offset + DrawIndexed per draw (the bench2 triangle shape) */
+   g_dyn = !getenv("MALI_MANY_DYN") || atoi(getenv("MALI_MANY_DYN"));
+   struct scene s = {.mode = g_dyn ? MODE_UBO : MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   float (*rot)[4] = malloc(50000 * sizeof *rot);
+   for (int i = 0; i < 50000; i++) memcpy(rot[i], ID, sizeof rot[i]);
+   int ok = 1;
+   for (unsigned c = 0; ok && c < sizeof counts / sizeof *counts && counts[c]; c++) {
+      g_t_rec = g_t_sub = 0;
+      unsigned long long ab0 = alloc_bytes();   /* total at the previous submit: the first rep of a size counts from there */
+      double t0 = now_us();
+      for (int rep = 0; ok && rep < nrep; rep++)
+         ok &= scene_draw(&s, counts[c], (const float (*)[4])rot, f);
+      printf("{\"test\":\"many_draws\",\"draws\":%d,\"dyn_ubo\":%d,\"us_per_draw\":%.3f,\"record_us\":%.3f,\"submit_us\":%.3f,\"alloc_B_per_draw\":%.0f,\"ok\":%s}\n", counts[c], g_dyn,
+             (now_us() - t0) / nrep / counts[c], g_t_rec / nrep / counts[c], g_t_sub / nrep / counts[c],
+             (double)(alloc_bytes() - ab0) / nrep / counts[c], ok ? "true" : "false");
+   }
+   if (ok && !g_dyn) ok = report("many_draws", &s, 8192.0, 1.0, 1);
+   g_dyn = 0;
+   free(rot);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+static uint32_t px_at(struct scene *s, int x, int y);
+
+/* descriptor sharing between consecutive draws: draws that differ in exactly one thing (push constant / viewport-scissor) must each get
+ * their own data. Pixels on hardware only. */
+static int
+test_share(void)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   int ok = 1;
+   /* four quarter-size triangles at (+-.5, +-.5); consecutive duplicates (identical state) are mixed with changes */
+   const float q[4][4] = {{.5f, 0, -.5f, -.5f}, {.5f, 0, .5f, -.5f}, {.5f, 0, -.5f, .5f}, {.5f, 0, .5f, .5f}};
+   float rot[8][4];
+   const int order[8] = {0, 0, 1, 2, 2, 2, 3, 1};
+   for (int i = 0; i < 8; i++) memcpy(rot[i], q[order[i]], sizeof rot[i]);
+   ok &= scene_draw(&s, 8, (const float (*)[4])rot, f);
+   if (ok && !g_fake) {
+      for (int k = 0; k < 4; k++) {
+         int cx = (int)((q[k][2] * .5f + .5f) * W), cy = (int)((q[k][3] * .5f + .5f) * H);
+         CHECK(px_at(&s, cx, cy) != 0, "share: triangle %d (push constant) missing at %d,%d", k, cx, cy);
+      }
+      CHECK(px_at(&s, W / 2, H / 2) == 0 || g_colbpp == 8, "share: stray pixel at the centre");
+      ok &= report("share_push", &s, 8192.0, 2.0, 0);
+   } else if (ok) printf("{\"test\":\"share_push\",\"skipped\":\"fake backend\",\"ok\":true}\n");
+   /* identical draw and push constants, scissor alternates left/right half: both halves must be drawn */
+   g_share = 2;
+   float id[4][4];
+   for (int i = 0; i < 4; i++) memcpy(id[i], ID, sizeof id[i]);
+   ok &= scene_draw(&s, 4, (const float (*)[4])id, f);
+   g_share = 0;
+   if (ok) ok &= report("share_scissor", &s, 8192.0, 1.0, 0);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1405,6 +1534,88 @@ near3(const uint8_t *p, int r, int g, int b, int tol)
    return abs(p[0] - r) <= tol && abs(p[1] - g) <= tol && abs(p[2] - b) <= tol && p[3] == 255;
 }
 
+/* consecutive draws that differ only in the dynamic-UBO offset (and, later, in firstInstance): each must get its own dynamic table, and the
+ * reused static driver set must not leak one draw's data into the next. Pixels on hardware only. Four quarter triangles, last draw wins. */
+static int
+test_share_dyn(void)
+{
+   g_dyn = 1;
+   g_share = 3;
+   struct scene s = {.mode = MODE_UBO};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   int ok = scene_create(&s, 0);
+   const float q[4][4] = {{.5f, 0, -.5f, -.5f}, {.5f, 0, .5f, -.5f}, {.5f, 0, -.5f, .5f}, {.5f, 0, .5f, .5f}};
+   const int pos[8] = {0, 0, 1, 1, 2, 2, 3, 3};
+   const uint32_t off[8] = {0, 1, 1, 2, 2, 2, 0, 1};   /* colour blocks A, B, C */
+   const uint32_t fi_[8] = {0, 0, 0, 0, 0, 0, 1, 1};
+   float rot[8][4];
+   for (int i = 0; i < 8; i++) {
+      memcpy(rot[i], q[pos[i]], sizeof rot[i]);
+      g_share_off[i] = off[i];
+      g_share_fi[i] = fi_[i];
+   }
+   if (ok) ok = scene_draw(&s, 8, (const float (*)[4])rot, f);
+   if (ok && !g_fake) {
+      static const int want[4][3] = {{255, 0, 128}, {0, 255, 0}, {0, 255, 0}, {255, 0, 128}};   /* last colour drawn at each position */
+      for (int k = 0; k < 4; k++) {
+         int cx = (int)((q[k][2] * .5f + .5f) * W), cy = (int)((q[k][3] * .5f + .5f) * H);
+         const uint8_t *c = s.px + cy * s.pitch + cx * g_colbpp;
+         CHECK(near3(c, want[k][0], want[k][1], want[k][2], 2), "share_dyn: triangle %d colour %u,%u,%u,%u", k, c[0], c[1], c[2], c[3]);
+      }
+      printf("{\"test\":\"share_dyn\",\"ok\":true}\n");
+   } else if (ok) printf("{\"test\":\"share_dyn\",\"skipped\":\"fake backend\",\"ok\":true}\n");
+   g_share = 0;
+   g_dyn = 0;
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* firstInstance is baked into the per-instance attribute descriptors (build_draw_descs): a draw that differs only in firstInstance, or only
+ * in the vertex-buffer offset, must not reuse the previous draw's driver set. Host: the frame with changes allocates more than the frame with
+ * four identical draws (the fake backend counts the bytes); hardware: all four corner triangles are drawn. */
+static int
+test_share_inst(void)
+{
+   unlink("/tmp/mali_alloc_stats.txt");
+   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
+   float dummy[4][4] = {{0}};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   unsigned long long ab[3] = {0};
+   int ok = 1;
+   struct scene s;
+   for (int pass = 0; ok && pass < 3; pass++) {
+      g_inst = pass == 1 ? 1 : 2;   /* 2, 1, 2: the second identical frame removes the first-submit warm-up */
+      s = (struct scene){.mode = MODE_TRI};
+      ok = scene_create(&s, 0) && scene_draw(&s, 4, dummy, f);
+      ab[pass] = alloc_bytes();
+      if (ok && pass == 1 && !g_fake) {
+         for (int k = 0; k < 4; k++) {
+            int cx = (int)(((k & 1 ? .5f : -.5f) * .5f + .5f) * W) - 6, cy = (int)(((k & 2 ? .5f : -.5f) * .5f + .5f) * H) - 6;   /* inside the triangle: offset + (-0.1,-0.1) */
+            CHECK(px_at(&s, cx, cy) != 0, "share_inst: corner %d triangle missing at %d,%d", k, cx, cy);
+         }
+         ok &= report("share_inst", &s, 4 * 2048.0, 3.0, 0);
+      }
+      scene_destroy(&s);
+   }
+   g_inst = 0;
+   DestroyFence(dev, f, NULL);
+   if (!ok) return 0;
+   if (!g_fake) {   /* the byte counter is the fake-backend host assertion (the phone library has no /tmp stats file) */
+      printf("{\"test\":\"share_inst_pixels\",\"ok\":true}\n");
+      return 1;
+   }
+   unsigned long long same = ab[2] - ab[1], chg = ab[1] - ab[0];
+   /* same-state frame 0 -> 2 differ by nothing; the changing frame must allocate at least 3 driver sets (3 x 17 x 32 B) more than an identical one */
+   printf("{\"test\":\"share_inst\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", same, chg, chg >= same + 3 * 17 * 32 ? "true" : "false");
+   CHECK(chg >= same + 3 * 17 * 32, "share_inst: draws that differ in firstInstance / vertex buffer reused the driver set (%llu vs %llu bytes)", chg, same);
+   return 1;
+}
+
 /* full-screen quad cases: push-constant-only FS colour, sampled texture, uniform buffer, descriptor updates between draws */
 static int
 test_quad(const char *name, int mode)
@@ -1576,6 +1787,10 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
+   if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
+   if (ok && CASE_ON("share")) ok &= test_share();
+   if (ok && CASE_ON("share")) ok &= test_share_dyn();
+   if (ok && CASE_ON("share")) ok &= test_share_inst();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

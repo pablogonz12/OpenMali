@@ -939,6 +939,8 @@ class Farm:
             rd = os.path.join(wd, "runs", "qdeqp")
             ts = [os.path.join(rd, x) for x in os.listdir(rd) if x.endswith(f"-ours-{tag}.tsv")] if os.path.isdir(rd) else []
             tsv = max(ts, key=os.path.getsize) if ts else ""
+            if tsv and os.path.exists(tsv[:-4] + ".dbg"):       # MALI_*_DBG jobs: the driver's stderr per test case (qdeqp.py QDEQP_DBG_PATH) -> logs/<run>.dbg
+                shutil.copy(tsv[:-4] + ".dbg", os.path.join(L.state_dir(), "logs", f"{rid}.dbg"))
         sok, sgot = None, None
         if rc in (0, 1) or verify_always:
             sok, sgot = self.verify_so(job, dev, so_phone)

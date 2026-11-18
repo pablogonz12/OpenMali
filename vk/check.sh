@@ -65,6 +65,7 @@ for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$O
 # M9: client draws through the ICD (fake backend: API sequence, compile, CS build and submit; pixels only on hardware).
 for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
+   run "vk_draw many $g"  0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only many_draws
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
 done
 
@@ -128,6 +129,7 @@ run "steam_caps v10"   0 $F "$OUT/t_steam_caps" $DL --expect-missing "$STEAM_MIS
 run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
 run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200
+run "vk_draw many v10"  0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only many_draws
 run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200

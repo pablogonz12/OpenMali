@@ -115,6 +115,10 @@ def run_chunk(p, cases, tag, icd, case_timeout, h, wall=540):
          f"echo __HOG mem=$MA load=$LD idle=$((N-LT)); pkill -KILL -x deqp-vk; kill -KILL $P; break; fi; done; "
          f"wait $P; echo __rc=$?; tail -c 400 /tmp/qd/{tag}.out")
     out = guest(p, s, wall + 25)
+    if os.environ.get("QDEQP_DBG_PATH"):                    # MALI_*_DBG jobs: keep the driver's stderr lines per test case (the QPA never carries them)
+        dbg = guest(p, f"grep -a -E '^(Test case|mali)' /tmp/qd/{tag}.out | head -c 60000", 60)
+        with open(os.environ["QDEQP_DBG_PATH"], "a") as f:
+            f.write(f"# chunk {tag}: {len(cases)} case(s)\n{dbg}\n")
     local_q = f"{os.environ.get('QDEQP_TMP', '/tmp')}/qdeqp-{p.serial}-{os.getpid()}.qpa"
     p.adb("pull", qpa, local_q, timeout=120)
     txt = open(local_q, errors="replace").read() if os.path.exists(local_q) else ""
@@ -197,6 +201,8 @@ def main(argv):
     outd = os.path.join(ROOT, "runs", "qdeqp")
     os.makedirs(outd, exist_ok=True)
     base = os.path.join(outd, f"{p.name}-{o['icd']}-{lname}")
+    if "_DBG" in os.environ.get("QDEQP_ENV", ""):
+        os.environ["QDEQP_DBG_PATH"] = base + ".dbg"
     rows = {}
     if os.path.exists(base + ".tsv"):                         # resume
         for l in open(base + ".tsv"):

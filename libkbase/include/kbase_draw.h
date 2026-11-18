@@ -17,6 +17,7 @@
 /* Bump allocator over one BO (descriptors, vertex data, FAU arrays). */
 struct kb_arena { struct kb_bo bo; size_t off; size_t start; int rolling, lapped; };
 void *kb_arena_alloc(struct kb_arena *a, size_t size, size_t align, uint64_t *gpu_va);   /* NULL when full; memory is zeroed */
+void *kb_arena_alloc_nz(struct kb_arena *a, size_t size, size_t align, uint64_t *gpu_va);   /* same, memory NOT cleared (caller writes what the GPU reads) */
 /* Start the descriptors of a new job WITHOUT rewinding: the arena keeps advancing and wraps to offset 0 only when the BO end is
  * reached, so a job's descriptors land on the least recently used VAs instead of the previous job's (whose GPU-written copy may
  * still sit in the GPU L2 cache). A job never overwrites its own allocations (kb_arena_alloc returns NULL instead). Contract: when

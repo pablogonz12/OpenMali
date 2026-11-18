@@ -21,6 +21,7 @@ static double prof_acc[6]; static unsigned prof_n;
 
 /* ---- M9: frame resources ---- */
 #define MALI_MAX_INFLIGHT 3u
+#define MALI_MAX_OVF 64u
 struct mali_hwctx {
    struct mali_device *dev;
    struct mali_bo arena, geo, sync, tls;
@@ -38,6 +39,14 @@ struct mali_hwctx {
    size_t cur_start;
    struct mali_bo old_tls[8];     /* replaced TLS BOs: freed at teardown (in-flight / current frame may still use them) */
    unsigned n_old_tls;
+   /* overflow descriptor memory: a frame that does not fit the rolling arena (even with every frame retired) takes extra BOs, freed once the
+    * submission that used them has retired (tag = retire counter value, 0 = not yet submitted) */
+   struct { struct mali_bo bo; uint64_t tag; } ovf[MALI_MAX_OVF];
+   unsigned n_ovf;
+   struct mali_bo ovf_pool[MALI_MAX_OVF];   /* retired overflow BOs kept for the next big frame (mapping and kbase alloc are slow) */
+   unsigned n_pool;
+   size_t pool_bytes;
+   size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
    struct mali_meta_dev md;
@@ -116,10 +125,87 @@ meta_upload_shader(void *u, const uint8_t *bin, uint32_t size, uint64_t *va)
 #define ARENA_BYTES (32u << 20)   /* per-frame descriptor arena: ~4.5 KB per draw (two 2 KiB driver sets); 1 MiB capped a frame at ~230 draws */
 #define HEAP_CHUNK (2u << 20)
 
+static int hw_wait(struct mali_hwctx *h, uint64_t target);
+static void hw_retire(struct mali_hwctx *h, unsigned max_left);
+
+static void *
+hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
+{
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   struct mali_bo *cur = h->n_ovf && !h->ovf[h->n_ovf - 1].tag ? &h->ovf[h->n_ovf - 1].bo : NULL;
+   size_t o = cur ? (h->ovf_off + al - 1) & ~(al - 1) : 0;
+   if (!cur || o + n > cur->size) {
+      if (h->n_ovf == MALI_MAX_OVF) {   /* all slots taken by submitted ones: wait for them, then reuse */
+         hw_retire(h, 0);
+         if (h->n_ovf == MALI_MAX_OVF)
+            return NULL;
+      }
+      size_t sz = h->ovf_last ? h->ovf_last * 2 : (16u << 20);
+      if (sz < n + al)
+         sz = (n + al + (1u << 20) - 1) & ~((size_t)(1u << 20) - 1);
+      if (sz > (512u << 20))
+         sz = n + al > (512u << 20) ? n + al : (512u << 20);
+      unsigned best = h->n_pool;
+      for (unsigned i = 0; i < h->n_pool; i++)
+         if (h->ovf_pool[i].size >= sz && h->ovf_pool[i].size <= 2 * sz && (best == h->n_pool || h->ovf_pool[i].size < h->ovf_pool[best].size))
+            best = i;
+      if (best < h->n_pool) {
+         h->ovf[h->n_ovf].bo = h->ovf_pool[best];
+         h->pool_bytes -= h->ovf_pool[best].size;
+         h->ovf_pool[best] = h->ovf_pool[--h->n_pool];
+         sz = h->ovf[h->n_ovf].bo.size;
+      } else if (be->bo_alloc(h->dev->kdev, sz, MALI_BO_HOT, &h->ovf[h->n_ovf].bo))
+         return NULL;
+      h->ovf[h->n_ovf].tag = 0;
+      cur = &h->ovf[h->n_ovf++].bo;
+      h->ovf_last = sz;
+      o = 0;
+   }
+   h->ovf_off = o + n;
+   if (zero)
+      memset((char *)cur->cpu + o, 0, n);
+   if (va)
+      *va = cur->gpu_va + o;
+   return (char *)cur->cpu + o;
+}
+
+static uint64_t g_alloc_bytes;   /* test statistic: bytes asked of hw_alloc (MALI_ALLOC_STATS=<file> writes the running total at each submit) */
+
+static void *
+hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
+{
+   struct mali_hwctx *h = u;
+   g_alloc_bytes += n;
+   if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
+      return hw_alloc_ovf(h, n, al, va, zero);
+   void *p = kb_arena_alloc_nz(&h->ar, n, al, va);
+   if (!p && h->nfl) {
+      /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
+      hw_retire(h, 0);
+      h->ar.start = h->cur_start;
+      if (h->ar.off >= h->cur_start) {   /* failed at the end of the BO: wrap to 0, bounded by this submission's own start */
+         h->ar.off = 0;
+         h->ar.lapped = 1;
+      }
+      p = kb_arena_alloc_nz(&h->ar, n, al, va);
+   }
+   if (!p)
+      return hw_alloc_ovf(h, n, al, va, zero);
+   if (zero)
+      memset(p, 0, n);
+   return p;
+}
+
 static void *
 hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
 {
-   return kb_arena_alloc(&((struct mali_hwctx *)u)->ar, n, al, va);
+   return hw_alloc_x(u, n, al, va, true);
+}
+
+static void *
+hw_alloc_nz(void *u, size_t n, size_t al, uint64_t *va)
+{
+   return hw_alloc_x(u, n, al, va, false);
 }
 
 static int
@@ -129,12 +215,31 @@ hw_wait(struct mali_hwctx *h, uint64_t target)
    return be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, target, h->wait_ms);
 }
 
+static void
+hw_ovf_reap(struct mali_hwctx *h, uint64_t counter)
+{
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   unsigned w = 0;
+   for (unsigned i = 0; i < h->n_ovf; i++) {
+      if (h->ovf[i].tag && h->ovf[i].tag <= counter) {
+         if (h->n_pool < MALI_MAX_OVF && h->pool_bytes + h->ovf[i].bo.size <= (256u << 20)) {
+            h->ovf_pool[h->n_pool++] = h->ovf[i].bo;
+            h->pool_bytes += h->ovf[i].bo.size;
+         } else
+            be->bo_free(h->dev->kdev, &h->ovf[i].bo);
+      } else
+         h->ovf[w++] = h->ovf[i];
+   }
+   h->n_ovf = w;
+}
+
 /* Drop retired frames from the in-flight list; block on the oldest while the list is full. */
 static void
 hw_retire(struct mali_hwctx *h, unsigned max_left)
 {
    for (;;) {
       uint64_t c = *(volatile uint64_t *)h->sync.cpu;
+      hw_ovf_reap(h, c);
       unsigned k = 0;
       while (k < h->nfl && h->fl[k].expected <= c)
          k++;
@@ -204,6 +309,14 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
+   {
+      const char *sf = getenv("MALI_ALLOC_STATS");
+      FILE *fp = sf ? fopen(sf, "w") : NULL;
+      if (fp) {
+         fprintf(fp, "%llu\n", (unsigned long long)g_alloc_bytes);
+         fclose(fp);
+      }
+   }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
    if (getenv("MALI_PROF")) {
@@ -217,6 +330,10 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
     * (CS SYNC_ADD64 on the event word) before the next one is built. */
    h->expected += nframes;
+   for (unsigned i = 0; i < h->n_ovf; i++)
+      if (!h->ovf[i].tag)
+         h->ovf[i].tag = h->expected;
+   h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
    if (!getenv("MALI_SYNC_SUBMIT")) {
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
@@ -248,6 +365,12 @@ mali_hw_finish(struct mali_device *dev)
       hw_wait(h, h->expected);
    for (unsigned i = 0; i < h->n_old_tls; i++)
       be->bo_free(dev->kdev, &h->old_tls[i]);
+   for (unsigned i = 0; i < h->n_ovf; i++)
+      be->bo_free(dev->kdev, &h->ovf[i].bo);
+   h->n_ovf = 0;
+   for (unsigned i = 0; i < h->n_pool; i++)
+      be->bo_free(dev->kdev, &h->ovf_pool[i]);
+   h->n_pool = 0;
    pthread_mutex_lock(&g_bind_lock);
    if (g_cur == h) {
       g_cur = h->below;
@@ -308,7 +431,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,

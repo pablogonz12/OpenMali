@@ -49,6 +49,7 @@ struct mali_env {
 struct mali_hw {
    void *user;
    void *(*alloc)(void *user, size_t size, size_t align, uint64_t *va);
+   void *(*alloc_nz)(void *user, size_t size, size_t align, uint64_t *va);   /* optional: like alloc, memory not cleared */
    void (*job_begin)(void *user);
    int (*submit)(void *user, const uint64_t *cs, unsigned ninstr);
    void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
@@ -185,6 +186,7 @@ struct mali_frame {
    unsigned ndraws, cap;
 };
 
+struct mali_draw *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
 int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* 0 or -ENOMEM */
 void mali_frame_finish(struct mali_frame *f);                               /* frees the draw list */
 

@@ -436,38 +436,44 @@ VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
    CMD(h);
-   struct mali_draw d;
    if (!cmd->in_render || !cmd->have_gfx) {
       unsupported(cmd, "draw outside a rendering with a pipeline");
       return;
    }
    if (!vcount || !icount)
       return;
-   snapshot_draw(cmd, &d, vcount, icount, first, first_inst);
-   if (mali_frame_add_draw(&cmd->cur, &d))
+   struct mali_draw *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place: no second copy of the ~1.4 KB draw */
+   if (!sl) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+   snapshot_draw(cmd, sl, vcount, icount, first, first_inst);
+   cmd->cur.ndraws++;
 }
 
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t first, int32_t voff, uint32_t first_inst)
 {
    CMD(h);
-   struct mali_draw d;
    if (!cmd->in_render || !cmd->have_gfx || !cmd->ib_va) {
       unsupported(cmd, "indexed draw outside a rendering, without a pipeline or index buffer");
       return;
    }
    if (!icount || !inst)
       return;
-   snapshot_draw(cmd, &d, icount, inst, (uint32_t)voff, first_inst);
-   d.indexed = true;
-   d.index_va = cmd->ib_va;
-   d.index_cpu = cmd->ib_cpu;
-   d.index_bytes = cmd->ib_bytes;
-   d.index_size = cmd->ib_size;
-   d.first_index = first;
-   if (mali_frame_add_draw(&cmd->cur, &d))
+   struct mali_draw *sl = mali_frame_draw_slot(&cmd->cur);
+   if (!sl) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+   snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst);
+   sl->indexed = true;
+   sl->index_va = cmd->ib_va;
+   sl->index_cpu = cmd->ib_cpu;
+   sl->index_bytes = cmd->ib_bytes;
+   sl->index_size = cmd->ib_size;
+   sl->first_index = first;
+   cmd->cur.ndraws++;
 }
 
 /* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
