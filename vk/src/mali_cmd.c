@@ -273,10 +273,9 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
       struct vk_buffer *buf = vk_buffer_from_handle(bufs[i]);
       uint64_t nva = buf ? vk_buffer_address(buf, offs[i]) : 0;
       uint32_t nsz = buf ? (uint32_t)(buf->size - offs[i]) : 0;
-      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz || cmd->vb_stride[b]) {
+      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz) {
          cmd->vb_va[b] = nva;
-         cmd->vb_size[b] = nsz;
-         cmd->vb_stride[b] = 0;   /* a plain bind clears the dynamic stride */
+         cmd->vb_size[b] = nsz;   /* the dynamic stride (BindVertexBuffers2) is kept: a plain bind does not set it */
          cmd->dirty |= MALI_D_BIND;
       }
    }
@@ -774,6 +773,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    CMD(h);
    struct mali_frame *f = &cmd->cur;
    struct mali_cmd_target t;
+   memset(&t, 0, sizeof t);
 
    if (cmd->in_render || !g_res.image_view) {
       unsupported(cmd, "nested rendering / no image resolver");
@@ -785,8 +785,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->area[2] = (int32_t)ri->renderArea.extent.width;
    f->area[3] = (int32_t)ri->renderArea.extent.height;
    /* no colour attachment (depth/stencil only, or nothing at all): the frame gets a write-disabled dummy render target (as panvk's null RT) */
-   const bool no_col = ri->colorAttachmentCount == 0 || (ri->colorAttachmentCount == 1 && !ri->pColorAttachments[0].imageView);
-   if (!no_col && ri->colorAttachmentCount != 1) {
+   bool no_col = true;
+   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
+      if (ri->pColorAttachments[i].imageView) no_col = false;
+   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
       unsupported(cmd, "need exactly one colour attachment");
       return;
    }

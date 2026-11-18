@@ -32,7 +32,6 @@ cmp_words(const char *what, const uint32_t *a, const uint32_t *b, uint32_t mask0
 
 /* Render-target table: A8B8G8R8 packed 32 has the byte order of R8G8B8A8, so it takes the RGBA8 rows (sweep: renderpass.suballocation.formats a8b8g8r8_*).
  * Non-blendable formats (integer, SNORM, UNORM16, 32-bit float) are RAW tile-buffer rows. */
- * Formats outside the table (snorm, 16-bit unorm, R32G32B32A32_SFLOAT, A1R5G5B5) are not render targets yet: CmdBeginRendering rejects them. */
 static void
 test_rtfmt(unsigned arch)
 {
@@ -73,7 +72,6 @@ test_rtfmt(unsigned arch)
    /* still unsupported: A1R5G5B5 (alpha at bit 15: not a swizzle of the RGB5A1 rows), 3-component, BGRA integer/snorm, A2R10G10B10 integer */
    static const int gap[] = { VK_FORMAT_A1R5G5B5_UNORM_PACK16, VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_B8G8R8A8_SNORM,
                               VK_FORMAT_B8G8R8A8_UINT, VK_FORMAT_A2R10G10B10_UINT_PACK32 };
-   static const int gap[] = { VK_FORMAT_R16_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_A1R5G5B5_UNORM_PACK16 };
    for (unsigned i = 0; i < sizeof gap / sizeof gap[0]; i++) {
       mali_rtfmt_find(gap[i], &ok);
       CHECK(!ok, "format %d unexpectedly a render target (update the gap list in the sweep notes)", gap[i]);
