@@ -188,7 +188,7 @@ mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *o)
    if (e->bind & PAN_BIND_RENDER_TARGET) {
       o->rt = true;
       bool rt_ok;
-      mali_rtfmt_find(f, &rt_ok);   /* COLOR_ATTACHMENT_BLEND only where the render path can really draw to the format (no R8G8B8, A1R5G5B5 yet) */
+      mali_rtfmt_find(f, &rt_ok);   /* COLOR_ATTACHMENT_BLEND only where the render path can really draw to the format (no R8G8B8 yet) */
       if (bt[p].internal && rt_ok) {
          o->blendable = true;
          o->rt_internal = bt[p].internal;
