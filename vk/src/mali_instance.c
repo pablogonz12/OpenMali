@@ -1,8 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <ucontext.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -60,10 +65,48 @@ mali_trace(const char *fmt, ...)
    if (write(mali_trace_fd, buf, n) < 0) {}
 }
 
+/* one address: "<module>+0x<offset>" (dladdr), or the maps line that holds it (JIT / anonymous code) */
 static void
-mali_trace_fatal(int sig)
+mali_trace_addr(const char *what, uintptr_t a)
 {
-   mali_trace("FATAL signal %d", sig);
+   Dl_info di;
+
+   if (dladdr((void *)a, &di) && di.dli_fname)
+      mali_trace("  %s=0x%lx %s+0x%lx%s%s", what, (unsigned long)a, di.dli_fname, (unsigned long)(a - (uintptr_t)di.dli_fbase),
+                 di.dli_sname ? " " : "", di.dli_sname ? di.dli_sname : "");
+   else
+      mali_trace("  %s=0x%lx (no module)", what, (unsigned long)a);
+}
+
+/* The faulting frame itself: glibc's backtrace() from inside the handler stops at the signal trampoline, so it never names the code that
+ * crashed. PC/LR/SP from the ucontext, then a frame-pointer walk (aarch64, bounded, strictly rising, 16-aligned). */
+static void
+mali_trace_fatal(int sig, siginfo_t *si, void *ucv)
+{
+   ucontext_t *uc = ucv;
+
+   mali_trace("FATAL signal %d code=%d addr=%p", sig, si ? si->si_code : 0, si ? si->si_addr : NULL);
+#if defined(__aarch64__)
+   if (uc) {
+      uintptr_t fp = uc->uc_mcontext.regs[29], sp = uc->uc_mcontext.sp;
+      mali_trace_addr("pc", uc->uc_mcontext.pc);
+      mali_trace_addr("lr", uc->uc_mcontext.regs[30]);
+      mali_trace("  sp=0x%lx fp=0x%lx", (unsigned long)sp, (unsigned long)fp);
+      for (int i = 0; i < 24 && fp > sp && !(fp & 15) && fp - sp < (1u << 24); i++) {
+         uintptr_t *f = (uintptr_t *)fp;
+         if (!f[1])
+            break;
+         mali_trace_addr("frame", f[1]);
+         sp = fp;
+         fp = f[0];
+      }
+   }
+#elif defined(__x86_64__)
+   if (uc) {
+      mali_trace_addr("pc", uc->uc_mcontext.gregs[REG_RIP]);
+      mali_trace("  sp=0x%lx", (unsigned long)uc->uc_mcontext.gregs[REG_RSP]);
+   }
+#endif
 #ifdef __GLIBC__
    void *bt[40];
    int cnt = backtrace(bt, 40);
@@ -98,7 +141,7 @@ mali_trace_init(void)
    mali_trace("load %s", name);
    static const int sigs[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
    for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
-      struct sigaction sa = { .sa_handler = mali_trace_fatal, .sa_flags = SA_RESETHAND | SA_NODEFER };
+      struct sigaction sa = { .sa_sigaction = mali_trace_fatal, .sa_flags = SA_SIGINFO | SA_RESETHAND | SA_NODEFER };
       sigaction(sigs[i], &sa, NULL);
    }
 }

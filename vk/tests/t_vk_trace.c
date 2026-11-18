@@ -141,13 +141,15 @@ int main(int argc, char **argv)
       void *l = dlopen(so, RTLD_NOW | RTLD_LOCAL);
       if (!l)
          _exit(3);
-      raise(SIGSEGV);
+      *(volatile int *)0 = 1;   /* a real fault: the handler must name the faulting address and pc */
       _exit(5);
    }
    waitpid(c, &ws, 0);
    CHECK(WIFSIGNALED(ws) && WTERMSIG(ws) == SIGSEGV, "the handler must re-raise: status 0x%x", ws);
    t = slurp(path);
    CHECK(t && strstr(t, "FATAL signal 11"), "no FATAL line:\n%s", t ? t : "(no file)");
+   CHECK(t && (strstr(t, "addr=(nil)") || strstr(t, "addr=0x0")), "FATAL line has no fault address:\n%s", t ? t : "");
+   CHECK(t && strstr(t, "  pc=0x"), "no pc line:\n%s", t ? t : "");
    unlink(path);
 
    printf("%s\n", g_fail ? "FAIL" : "OK t_vk_trace");
