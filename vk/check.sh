@@ -10,7 +10,9 @@
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
 SAN=${MALI_SAN:-0}
-if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san; else OUT=$V/out/native; fi
+if [ "$SAN" = 1 ]; then export MALI_TARGET=native-san; OUT=$V/out/native-san
+elif [ "${MALI_COV:-0}" = 1 ]; then export MALI_TARGET=native-cov; OUT=$V/out/native-cov
+else OUT=$V/out/native; fi
 build=1; verbose=0; bless=0; deqp_host=0
 for a in "$@"; do
    case $a in --no-build) build=0 ;; -v) verbose=1 ;; --bless) bless=1 ;; --deqp-host) deqp_host=1 ;; *) echo "usage: check.sh [--no-build] [-v] [--bless] [--deqp-host]"; exit 2 ;; esac
@@ -50,6 +52,7 @@ run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --di
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
 for g in v11 v13; do run "angle_seq $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_angle_seq" --direct "$OUT/libvulkan_mali.so"; done
 run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
