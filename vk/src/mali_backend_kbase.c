@@ -235,7 +235,9 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    }
    *out = (struct mali_bo){.gpu_va = bo->gpu_va, .cpu = bo->cpu, .size = size, .flags = flags,
                            .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
-   bo->host_lazy = (flags & MALI_BO_HOSTLAZY) != 0;
+   /* Exported VkDeviceMemory (swapchain images) is lazy like every other VkDeviceMemory: the GPU writes it and nothing on the CPU has touched it
+    * until vkMapMemory (bo_host_touch). Before this, 4 swapchain dma-bufs were MEM_SYNCed (a real cache op on an imported dma-buf) at every submit. */
+   bo->host_lazy = (flags & MALI_BO_HOSTLAZY) || ((flags & MALI_BO_EXPORT) && !(flags & MALI_BO_CACHED));
    bo->hot = (flags & MALI_BO_HOT) != 0;
    track_bo(k, bo, true);
    return 0;
@@ -456,7 +458,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
       unsigned n = 0;
-      for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x\n", k->bos[i]->size, k->bos[i]->flags); }
+      for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy && !(k->bos[i]->flags & KB_BO_NOCOH)) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x hot %d dmabuf %d\n", k->bos[i]->size, k->bos[i]->flags, k->bos[i]->hot, k->bos[i]->dmabuf_fd >= 0); }
       fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
    }
    for (unsigned i = 0; i < k->nbos; i++) {
@@ -467,7 +469,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
-      ioctl(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
    }
    pthread_mutex_unlock(&k->bo_lock);
 }

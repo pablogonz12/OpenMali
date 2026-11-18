@@ -93,6 +93,8 @@ struct kb_bo {
 	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
 };
 
+/* ioctl with optional per-request counters: MALI_IOCTL_PROF=1 prints count and time by request (type/nr) at exit */
+int kb_ioctl_fd(int fd, unsigned long req, void *arg);
 int kb_bo_alloc(struct kb_ctx *ctx, size_t size, uint32_t flags, struct kb_bo *out);
 int kb_bo_import_dmabuf(struct kb_ctx *ctx, int dmabuf_fd, size_t size, uint32_t flags, struct kb_bo *out);
 void kb_bo_free(struct kb_bo *bo);

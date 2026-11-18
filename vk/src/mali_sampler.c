@@ -32,8 +32,10 @@ mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_
 {
    (void)arch;
    memset(o, 0, sizeof *o);
-   uint32_t w0 = 1u | (mali_wrap_mode(ci->addressModeU) << 8) | (mali_wrap_mode(ci->addressModeV) << 12) |
-                 (mali_wrap_mode(ci->addressModeW) << 16) | (1u << 21) | (1u << 23) | (1u << 25) | (1u << 26);
+   /* genxml Sampler: Wrap Mode R = bits 8, T = 12, S = 16; Vulkan U -> S, V -> T, W -> R (as panvk_vX_sampler.c). Unnormalised coordinates ignore W. */
+   uint32_t wr = ci->unnormalizedCoordinates ? mali_wrap_mode(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) : mali_wrap_mode(ci->addressModeW);
+   uint32_t w0 = 1u | (wr << 8) | (mali_wrap_mode(ci->addressModeV) << 12) |
+                 (mali_wrap_mode(ci->addressModeU) << 16) | (1u << 21) | (1u << 23) | (1u << 25) | (1u << 26);
    if (ci->minFilter == VK_FILTER_NEAREST) w0 |= 1u << 27;
    if (ci->magFilter == VK_FILTER_NEAREST) w0 |= 1u << 28;
    if (ci->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR) w0 |= 3u << 30;
@@ -43,8 +45,8 @@ mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_
 
    uint32_t w1 = 0;
    if (ci->compareEnable) w1 |= ((uint32_t)ci->compareOp & 7u) << 13;
+   w1 |= lod_fixed(ci->minLod, 0x1fffu);   /* genxml Sampler "Minimum LOD": word 1 bits 0:12, 8.8 fixed (the view's min_lod is a separate clamp) */
    w1 |= lod_fixed(ci->maxLod, 0x1fffu) << 16;
-   /* min LOD lives in the texture descriptor; the sampler clamps from 0 up to max */
    o->w[1] = w1;
 
    int32_t bias = (int32_t)lrintf(fminf(fmaxf(ci->mipLodBias, -16.0f), 15.99f) * 256.0f);

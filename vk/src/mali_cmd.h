@@ -77,6 +77,7 @@ struct mali_cmd_buffer {
    uint64_t cs_va;
    uint8_t push_cs[MALI_PUSH_MAX];
    uint64_t occ_va;             /* M13: active occlusion query counter address (0 = none), copied into every draw */
+   uint32_t dirty;                  /* MALI_D_* accumulated by the state setters since the last draw snapshot */
    unsigned occ_mode;
    struct mali_op *def_ops;     /* M13: ops recorded inside a render pass, pushed after the pass' frame */
    unsigned ndef, capdef;

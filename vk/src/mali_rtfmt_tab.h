@@ -17,6 +17,9 @@ static const struct mali_rtfmt mali_rt_tab[] = {
    { VK_FORMAT_R8G8_SRGB, 1, 17, 2, 4, 0, SW(0, 1, 2, 3), PF(237, 0) | SRGB },
    { VK_FORMAT_R8G8B8A8_SRGB, 1, 19, 4, 4, 0, SW(0, 1, 2, 3), PF(237, 0) | SRGB },
    { VK_FORMAT_B8G8R8A8_UNORM, 1, 19, 4, 4, 0, SW(2, 1, 0, 3), PF(237, 0) },
+   /* A8B8G8R8 packed 32 = R8G8B8A8 byte order on a little-endian target (R in byte 0): the same rows as the RGBA8 formats */
+   { VK_FORMAT_A8B8G8R8_UNORM_PACK32, 1, 19, 4, 4, 0, SW(0, 1, 2, 3), PF(237, 0) },
+   { VK_FORMAT_A8B8G8R8_SRGB_PACK32, 1, 19, 4, 4, 0, SW(0, 1, 2, 3), PF(237, 0) | SRGB },
    { VK_FORMAT_B8G8R8A8_SRGB, 1, 19, 4, 4, 0, SW(2, 1, 0, 3), PF(237, 0) | SRGB },
    { VK_FORMAT_R5G6B5_UNORM_PACK16, 5, 21, 3, 4, 0, SW(2, 1, 0, 3), PF(227, 16) },
    { VK_FORMAT_B5G6R5_UNORM_PACK16, 5, 21, 3, 4, 0, SW(0, 1, 2, 3), PF(227, 16) },

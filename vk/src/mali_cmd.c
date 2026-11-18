@@ -76,6 +76,7 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndyn = 0;
    cmd->occ_va = 0;
    cmd->occ_mode = 0;
+   cmd->dirty = MALI_D_ALL;
    free(cmd->def_ops);
    cmd->def_ops = NULL;
    cmd->ndef = cmd->capdef = 0;
@@ -156,13 +157,20 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
       unsupported(cmd, "bind point");
       return;
    }
-   if (!g_res.pipeline || g_res.pipeline(p, &cmd->gfx)) {
+   struct mali_gfx_state ng;
+   memset(&ng, 0, sizeof ng);
+   if (!g_res.pipeline || g_res.pipeline(p, &ng)) {
       cmd->have_gfx = false;
+      cmd->dirty |= MALI_D_PIPE;
       unsupported(cmd, "pipeline");
       return;
    }
-   if (!cmd->gfx.push_base[0])
-      cmd->gfx.push_base[0] = 40;   /* compile defaults: VS push block at FAU byte 40, FS at 0 */
+   if (!ng.push_base[0])
+      ng.push_base[0] = 40;   /* compile defaults: VS push block at FAU byte 40, FS at 0 */
+   if (memcmp(&ng, &cmd->gfx, sizeof ng)) {   /* rebinding an equal pipeline is not a change */
+      cmd->gfx = ng;
+      cmd->dirty |= MALI_D_PIPE;
+   }
    if (g_res.pipeline_dyn) {
       const struct vk_dynamic_graphics_state *pd;
       if (!g_res.pipeline_dyn(p, &pd))
@@ -199,6 +207,7 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
    if (!cmd->gfx.push_base[0])
       cmd->gfx.push_base[0] = 40;
    cmd->have_gfx = cmd->gfx.vs && cmd->gfx.fs;
+   cmd->dirty |= MALI_D_PIPE;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -228,15 +237,25 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
             }
             struct mali_hw_desc hd;
             mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], dyn[used++]);
-            memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
-            if (start + k + 1 > cmd->ndyn)
+            if (memcmp(cmd->dyn_desc[start + k], hd.w, sizeof hd.w)) {
+               memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
+               cmd->dirty |= MALI_D_DYNBUF;
+            }
+            if (start + k + 1 > cmd->ndyn) {
                cmd->ndyn = start + k + 1;
+               cmd->dirty |= MALI_D_BIND;
+            }
          }
       }
-      cmd->set_va[s] = ds->va;
-      cmd->set_bytes[s] = ds->bytes;
-      if (s + 1 > cmd->nsets)
+      if (cmd->set_va[s] != ds->va || cmd->set_bytes[s] != ds->bytes) {
+         cmd->set_va[s] = ds->va;
+         cmd->set_bytes[s] = ds->bytes;
+         cmd->dirty |= MALI_D_BIND;
+      }
+      if (s + 1 > cmd->nsets) {
          cmd->nsets = s + 1;
+         cmd->dirty |= MALI_D_BIND;
+      }
    }
 }
 
@@ -251,13 +270,13 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
          return;
       }
       struct vk_buffer *buf = vk_buffer_from_handle(bufs[i]);
-      if (!buf) {
-         cmd->vb_va[b] = 0;
-         cmd->vb_size[b] = 0;
-         continue;
+      uint64_t nva = buf ? vk_buffer_address(buf, offs[i]) : 0;
+      uint32_t nsz = buf ? (uint32_t)(buf->size - offs[i]) : 0;
+      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz) {
+         cmd->vb_va[b] = nva;
+         cmd->vb_size[b] = nsz;
+         cmd->dirty |= MALI_D_BIND;
       }
-      cmd->vb_va[b] = vk_buffer_address(buf, offs[i]);
-      cmd->vb_size[b] = (uint32_t)(buf->size - offs[i]);
    }
 }
 
@@ -296,10 +315,14 @@ mali_CmdPushConstants(VkCommandBuffer h, VkPipelineLayout layout, VkShaderStageF
       return;
    }
    /* Per-stage view: bytes written with stageFlags without a stage are invisible to that stage (Vulkan push constant semantics) */
-   if (stages & VK_SHADER_STAGE_VERTEX_BIT)
+   if ((stages & VK_SHADER_STAGE_VERTEX_BIT) && memcmp(cmd->push[0] + off, data, size)) {
       memcpy(cmd->push[0] + off, data, size);
-   if (stages & VK_SHADER_STAGE_FRAGMENT_BIT)
+      cmd->dirty |= MALI_D_PUSH;
+   }
+   if ((stages & VK_SHADER_STAGE_FRAGMENT_BIT) && memcmp(cmd->push[1] + off, data, size)) {
       memcpy(cmd->push[1] + off, data, size);
+      cmd->dirty |= MALI_D_PUSH;
+   }
    if (stages & VK_SHADER_STAGE_COMPUTE_BIT)
       memcpy(cmd->push_cs + off, data, size);
 }
@@ -330,106 +353,152 @@ mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
 }
 
 /* ---- draws ---- */
-static void
-snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_draw *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
+static bool
+snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
 {
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    const int32_t *a = cmd->cur.area;
-
-   memset(d, 0, sizeof *d);
-   d->gfx = cmd->gfx;
-   memcpy(d->vb_va, cmd->vb_va, sizeof d->vb_va);
-   memcpy(d->vb_size, cmd->vb_size, sizeof d->vb_size);
-   memcpy(d->push, cmd->push, sizeof d->push);
-   d->nsets = cmd->nsets;
-   memcpy(d->set_va, cmd->set_va, sizeof d->set_va);
-   memcpy(d->set_bytes, cmd->set_bytes, sizeof d->set_bytes);
-   d->ndyn = cmd->ndyn;
-   memcpy(d->dyn_desc, cmd->dyn_desc, sizeof d->dyn_desc);
-   d->occ_va = cmd->occ_va;
-   d->occ_mode = cmd->occ_mode;
-   d->count = count;
-   d->instance_count = inst;
-   d->first_vertex = first;
-   d->first_instance = first_inst;
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS) && dyn->vp.viewport_count) {
-      const VkViewport *v = &dyn->vp.viewports[0];
-      d->vp[0] = v->x; d->vp[1] = v->y; d->vp[2] = v->width; d->vp[3] = v->height; d->vp[4] = v->minDepth; d->vp[5] = v->maxDepth;
-   } else {
-      d->vp[0] = (float)a[0]; d->vp[1] = (float)a[1]; d->vp[2] = (float)a[2]; d->vp[3] = (float)a[3];
-      d->vp[4] = 0.0f; d->vp[5] = 1.0f;
+   struct mali_frame *fr = &cmd->cur;
+   const struct mali_rec *pv = fr->ndraws ? &fr->draws[fr->ndraws - 1] : NULL;
+   /* dirty mask: setter bits plus the runtime's dynamic-state dirty bits (viewport and scissor apart from everything else) */
+   uint32_t m = cmd->dirty;
+   cmd->dirty = 0;
+   if (!BITSET_IS_EMPTY(dyn->dirty)) {
+      BITSET_DECLARE(t, MESA_VK_DYNAMIC_GRAPHICS_STATE_ENUM_MAX);
+      memcpy(t, dyn->dirty, sizeof t);
+      if (BITSET_TEST(t, MESA_VK_DYNAMIC_VP_VIEWPORTS) || BITSET_TEST(t, MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT))
+         m |= MALI_D_VP;
+      if (BITSET_TEST(t, MESA_VK_DYNAMIC_VP_SCISSORS) || BITSET_TEST(t, MESA_VK_DYNAMIC_VP_SCISSOR_COUNT))
+         m |= MALI_D_SC;
+      BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_VIEWPORTS);
+      BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT);
+      BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_SCISSORS);
+      BITSET_CLEAR(t, MESA_VK_DYNAMIC_VP_SCISSOR_COUNT);
+      if (!BITSET_IS_EMPTY(t))
+         m |= MALI_D_FX;
+      vk_dynamic_graphics_state_clear_dirty((struct vk_dynamic_graphics_state *)dyn);
    }
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_SCISSORS) && dyn->vp.scissor_count) {
-      const VkRect2D *s = &dyn->vp.scissors[0];
-      d->sc[0] = s->offset.x; d->sc[1] = s->offset.y; d->sc[2] = (int32_t)s->extent.width; d->sc[3] = (int32_t)s->extent.height;
-   } else {
-      memcpy(d->sc, a, sizeof d->sc);
+   if (!pv)
+      m = MALI_D_ALL;
+   *d = (struct mali_rec){
+      .dirty = m,
+      .pipe = pv ? pv->pipe : NULL, .bind = pv ? pv->bind : NULL, .push = pv ? pv->push : NULL, .dyn = pv ? pv->dyn : NULL,
+      .occ_va = cmd->occ_va, .occ_mode = cmd->occ_mode,
+      .count = count, .instance_count = inst, .first_vertex = first, .first_instance = first_inst,
+   };
+   if (m & (MALI_D_BIND | MALI_D_DYNBUF)) {
+      struct mali_bdyn *bd = mali_frame_blk(fr, sizeof *bd + cmd->ndyn * sizeof bd->d[0]);
+      if (!bd)
+         return false;
+      bd->n = cmd->ndyn;
+      memcpy(bd->d, cmd->dyn_desc, cmd->ndyn * sizeof bd->d[0]);
+      d->dyn = bd;
    }
-   /* R4: effective fixed-function state (pipeline statics + vkCmdSet*), see mali_CmdBindPipeline */
-   struct mali_fixed *x = &d->fx;
-   x->set = true;
-   x->cull = (dyn->rs.cull_mode & VK_CULL_MODE_FRONT_BIT ? 1 : 0) | (dyn->rs.cull_mode & VK_CULL_MODE_BACK_BIT ? 2 : 0);
-   x->front_ccw = dyn->rs.front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
-   x->depth_clamp = dyn->rs.depth_clamp_enable;
-   x->depth_clip = vk_rasterization_state_depth_clip_enable(&dyn->rs);
-   x->bias_en = dyn->rs.depth_bias.enable;
-   x->bias_const = dyn->rs.depth_bias.constant_factor;
-   x->bias_slope = dyn->rs.depth_bias.slope_factor;
-   x->bias_clamp = dyn->rs.depth_bias.clamp;
-   x->line_width = dyn->rs.line.width;
-   x->st_test = dyn->ds.stencil.test_enable;
-   {
-      const struct vk_stencil_test_face_state *fs[2] = { &dyn->ds.stencil.front, &dyn->ds.stencil.back };
-      for (int k = 0; k < 2; k++) {
-         struct mali_st_face *o = k ? &x->st_b : &x->st_f;
-         o->cmp = fs[k]->op.compare; o->fail = fs[k]->op.fail; o->dfail = fs[k]->op.depth_fail; o->pass = fs[k]->op.pass;
-         o->wmask = fs[k]->write_mask; o->vmask = fs[k]->compare_mask; o->ref = fs[k]->reference;
+   if (m & MALI_D_BIND) {
+      struct mali_bbind *bb = mali_frame_blk(fr, sizeof *bb);
+      if (!bb)
+         return false;
+      memcpy(bb->vb_va, cmd->vb_va, sizeof bb->vb_va);
+      memcpy(bb->vb_size, cmd->vb_size, sizeof bb->vb_size);
+      bb->nsets = cmd->nsets;
+      memcpy(bb->set_va, cmd->set_va, sizeof bb->set_va);
+      memcpy(bb->set_bytes, cmd->set_bytes, sizeof bb->set_bytes);
+      bb->ndyn = cmd->ndyn;
+      d->bind = bb;
+   }
+   if (m & MALI_D_PUSH) {
+      struct mali_bpush *bu = mali_frame_blk(fr, sizeof *bu);
+      if (!bu)
+         return false;
+      memcpy(bu->push, cmd->push, sizeof bu->push);
+      d->push = bu;
+   }
+   if (m & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC)) {
+      struct mali_bpipe *bp = mali_frame_blk(fr, sizeof *bp);
+      if (!bp)
+         return false;
+      d->pipe = bp;
+      bp->gfx = cmd->gfx;
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS) && dyn->vp.viewport_count) {
+         const VkViewport *v = &dyn->vp.viewports[0];
+         bp->vp[0] = v->x; bp->vp[1] = v->y; bp->vp[2] = v->width; bp->vp[3] = v->height; bp->vp[4] = v->minDepth; bp->vp[5] = v->maxDepth;
+      } else {
+         bp->vp[0] = (float)a[0]; bp->vp[1] = (float)a[1]; bp->vp[2] = (float)a[2]; bp->vp[3] = (float)a[3];
+         bp->vp[4] = 0.0f; bp->vp[5] = 1.0f;
+      }
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_SCISSORS) && dyn->vp.scissor_count) {
+         const VkRect2D *s = &dyn->vp.scissors[0];
+         bp->sc[0] = s->offset.x; bp->sc[1] = s->offset.y; bp->sc[2] = (int32_t)s->extent.width; bp->sc[3] = (int32_t)s->extent.height;
+      } else {
+         memcpy(bp->sc, a, sizeof bp->sc);
+      }
+      /* R4: effective fixed-function state (pipeline statics + vkCmdSet*), see mali_CmdBindPipeline */
+      struct mali_fixed *x = &bp->fx;
+      x->set = true;
+      x->cull = (dyn->rs.cull_mode & VK_CULL_MODE_FRONT_BIT ? 1 : 0) | (dyn->rs.cull_mode & VK_CULL_MODE_BACK_BIT ? 2 : 0);
+      x->front_ccw = dyn->rs.front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      x->depth_clamp = dyn->rs.depth_clamp_enable;
+      x->depth_clip = vk_rasterization_state_depth_clip_enable(&dyn->rs);
+      x->bias_en = dyn->rs.depth_bias.enable;
+      x->bias_const = dyn->rs.depth_bias.constant_factor;
+      x->bias_slope = dyn->rs.depth_bias.slope_factor;
+      x->bias_clamp = dyn->rs.depth_bias.clamp;
+      x->line_width = dyn->rs.line.width;
+      x->st_test = dyn->ds.stencil.test_enable;
+      {
+         const struct vk_stencil_test_face_state *fs[2] = { &dyn->ds.stencil.front, &dyn->ds.stencil.back };
+         for (int k = 0; k < 2; k++) {
+            struct mali_st_face *o = k ? &x->st_b : &x->st_f;
+            o->cmp = fs[k]->op.compare; o->fail = fs[k]->op.fail; o->dfail = fs[k]->op.depth_fail; o->pass = fs[k]->op.pass;
+            o->wmask = fs[k]->write_mask; o->vmask = fs[k]->compare_mask; o->ref = fs[k]->reference;
+         }
+      }
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_TEST_ENABLE))
+         bp->gfx.depth_test = dyn->ds.depth.test_enable;
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_WRITE_ENABLE))
+         bp->gfx.depth_write = dyn->ds.depth.write_enable;
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_COMPARE_OP))
+         bp->gfx.depth_func = dyn->ds.depth.compare_op;
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+         switch (dyn->ia.primitive_topology) {
+         case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: bp->gfx.prim = 1; break;
+         case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: bp->gfx.prim = 2; break;
+         case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: bp->gfx.prim = 4; break;
+         case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: bp->gfx.prim = 8; break;
+         case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: bp->gfx.prim = 10; break;
+         case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN: bp->gfx.prim = 12; break;
+         default: unsupported(cmd, "dynamic topology");
+         }
+      }
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE))
+         bp->gfx.prim_restart = dyn->ia.primitive_restart_enable;
+      /* fillModeNonSolid (pipeline polygonMode): the topology above is the API one (dyn->set also covers static state); map triangles */
+      if (bp->gfx.poly_mode && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+         if (bp->gfx.prim >= 8) {
+            if (bp->gfx.poly_mode == 1) { bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
+            else bp->gfx.prim = 1;
+         } else
+            bp->gfx.poly_mode = 0;   /* non-triangle topology: polygonMode does not apply */
+      }
+      /* colour attachment 0 blend */
+      const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
+      x->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cb->blend_enable;
+      x->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cb->write_mask : 0xf;
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & 1))
+         x->wmask = 0;
+      x->src_c = cb->src_color_blend_factor; x->dst_c = cb->dst_color_blend_factor;
+      x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
+      x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
+      memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+      if (dyn->cb.logic_op_enable || dyn->rs.rasterizer_discard_enable)
+         unsupported(cmd, dyn->cb.logic_op_enable ? "logic op" : "rasterizer discard");
+      if (x->blend_en && !bp->gfx.blend_va) {
+         uint32_t eq; unsigned cm;
+         if (mali_blend_equation(x, &eq, &cm))
+            unsupported(cmd, "blend equation (fixed function)");
       }
    }
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_TEST_ENABLE))
-      d->gfx.depth_test = dyn->ds.depth.test_enable;
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_WRITE_ENABLE))
-      d->gfx.depth_write = dyn->ds.depth.write_enable;
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_DS_DEPTH_COMPARE_OP))
-      d->gfx.depth_func = dyn->ds.depth.compare_op;
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
-      switch (dyn->ia.primitive_topology) {
-      case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: d->gfx.prim = 1; break;
-      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: d->gfx.prim = 2; break;
-      case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: d->gfx.prim = 4; break;
-      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: d->gfx.prim = 8; break;
-      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: d->gfx.prim = 10; break;
-      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN: d->gfx.prim = 12; break;
-      default: unsupported(cmd, "dynamic topology");
-      }
-   }
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE))
-      d->gfx.prim_restart = dyn->ia.primitive_restart_enable;
-   /* fillModeNonSolid (pipeline polygonMode): the topology above is the API one (dyn->set also covers static state); map triangles */
-   if (d->gfx.poly_mode && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
-      if (d->gfx.prim >= 8) {
-         if (d->gfx.poly_mode == 1) { d->gfx.poly_prim = d->gfx.prim; d->gfx.prim = 2; }
-         else d->gfx.prim = 1;
-      } else
-         d->gfx.poly_mode = 0;   /* non-triangle topology: polygonMode does not apply */
-   }
-   /* colour attachment 0 blend */
-   const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
-   x->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cb->blend_enable;
-   x->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cb->write_mask : 0xf;
-   if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & 1))
-      x->wmask = 0;
-   x->src_c = cb->src_color_blend_factor; x->dst_c = cb->dst_color_blend_factor;
-   x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
-   x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
-   memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
-   if (dyn->cb.logic_op_enable || dyn->rs.rasterizer_discard_enable)
-      unsupported(cmd, dyn->cb.logic_op_enable ? "logic op" : "rasterizer discard");
-   if (x->blend_en && !d->gfx.blend_va) {
-      uint32_t eq; unsigned cm;
-      if (mali_blend_equation(x, &eq, &cm))
-         unsupported(cmd, "blend equation (fixed function)");
-   }
+   return true;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -442,12 +511,11 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
    }
    if (!vcount || !icount)
       return;
-   struct mali_draw *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place: no second copy of the ~1.4 KB draw */
-   if (!sl) {
+   struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
+   if (!sl || !snapshot_draw(cmd, sl, vcount, icount, first, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
    }
-   snapshot_draw(cmd, sl, vcount, icount, first, first_inst);
    cmd->cur.ndraws++;
 }
 
@@ -461,12 +529,11 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    }
    if (!icount || !inst)
       return;
-   struct mali_draw *sl = mali_frame_draw_slot(&cmd->cur);
-   if (!sl) {
+   struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
+   if (!sl || !snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
    }
-   snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst);
    sl->indexed = true;
    sl->index_va = cmd->ib_va;
    sl->index_cpu = cmd->ib_cpu;
@@ -491,7 +558,7 @@ static void
 record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t n, uint32_t stride)
 {
    CMD(h);
-   struct mali_draw d;
+   struct mali_rec d;
    if (!cmd->in_render || !cmd->have_gfx || (indexed && !cmd->ib_va)) {
       unsupported(cmd, "indirect draw outside a rendering, without a pipeline or index buffer");
       return;
@@ -511,7 +578,10 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       unsupported(cmd, "indirect buffer (no CPU mapping)");
       return;
    }
-   snapshot_draw(cmd, &d, 0, 0, 0, 0);
+   if (!snapshot_draw(cmd, &d, 0, 0, 0, 0)) {
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
    d.indexed = indexed;
    if (indexed) {
       d.index_va = cmd->ib_va;
@@ -523,7 +593,7 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
    d.ind_count = cp;
    d.ind_n = n;
    d.ind_stride = stride;
-   if (mali_frame_add_draw(&cmd->cur, &d))
+   if (mali_frame_add_rec(&cmd->cur, &d))
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
 
@@ -558,17 +628,24 @@ expand_indirect(struct mali_frame *f)
    struct mali_frame o = *f;
    o.draws = NULL;
    o.ndraws = o.cap = 0;
+   uint32_t carry = 0;   /* dirty bits of draws that expand to nothing: the next draw's blocks inherit theirs, so it must renew those groups */
    for (unsigned i = 0; i < f->ndraws; i++) {
-      const struct mali_draw *d = &f->draws[i];
+      const struct mali_rec *d = &f->draws[i];
       int rc = 0;
       if (!d->ind) {
-         rc = mali_frame_add_draw(&o, d);
+         struct mali_rec e = *d;
+         e.dirty |= carry;
+         carry = 0;
+         rc = mali_frame_add_rec(&o, &e);
       } else {
          uint32_t n = d->ind_n;
          if (d->ind_count && *d->ind_count < n)
             n = *d->ind_count;
          for (uint32_t k = 0; k < n && !rc; k++) {
-            struct mali_draw e = *d;
+            struct mali_rec e = *d;
+            if (k)
+               e.dirty = 0;   /* same bound state as the first expanded draw (the per-draw parameters are compared at build) */
+
             const uint32_t *c = (const uint32_t *)(const void *)(d->ind + (size_t)k * d->ind_stride);
             e.ind = NULL;
             e.ind_count = NULL;
@@ -583,8 +660,12 @@ expand_indirect(struct mali_frame *f)
                e.first_vertex = c[2];
                e.first_instance = c[3];
             }
-            if (e.count && e.instance_count)
-               rc = mali_frame_add_draw(&o, &e);
+            if (e.count && e.instance_count) {
+               e.dirty |= carry;
+               carry = 0;
+               rc = mali_frame_add_rec(&o, &e);
+            } else
+               carry |= e.dirty;
          }
       }
       if (rc) {
@@ -838,11 +919,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, pre[pi].what);
          return;
       }
+      d.dirty = MALI_D_ALL;
       for (int i = 0; i < 4; i++) d.sc[i] = f->area[i];
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
+   cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;
 }
 
