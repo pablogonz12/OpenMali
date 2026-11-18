@@ -638,6 +638,9 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       dop.zs_update = 3;
       dop.allow_fpk = 0;
    }
+   /* stencil-only pass (no colour attachment): the stencil update is the draw's only visible effect; forward pixel kill would drop the fragment on a depth fail before the stencil dfail op runs */
+   if (!f->has_colour && f->has_st && d->fx.set && d->fx.st_test)
+      dop.allow_fpk = 0;
    uint32_t dcd_extra = 0, pf_clear = 0;
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
