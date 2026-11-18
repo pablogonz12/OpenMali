@@ -17,7 +17,7 @@ mali_CmdBindVertexBuffers3KHR(VkCommandBuffer h, uint32_t first, uint32_t n, con
       if (b >= MALI_MAX_VB) return;   /* same limit as mali_CmdBindVertexBuffers; its "unsupported" marking is local to mali_cmd.c */
       uint64_t sz = info[i].addressRange.size;
       uint64_t nva = info[i].addressRange.address;
-      uint32_t nst = info[i].setStride ? (uint32_t)info[i].addressRange.stride : 0;   /* dynamic VERTEX_INPUT_BINDING_STRIDE */
+      uint32_t nst = info[i].setStride ? (uint32_t)info[i].addressRange.stride : cmd->vb_stride[b];   /* dynamic VERTEX_INPUT_BINDING_STRIDE; without setStride the earlier value is kept */
       uint32_t nsz = nva ? (uint32_t)(sz > 0xffffffffu ? 0xffffffffu : sz) : 0;
       if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz || cmd->vb_stride[b] != nst) {
          cmd->vb_va[b] = nva; cmd->vb_size[b] = nsz; cmd->vb_stride[b] = nst;

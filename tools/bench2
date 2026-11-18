@@ -332,7 +332,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         for r, i, d in tasks:
             c = plans[d][i]
             key = ("off:" if c.get("off") else "pres:") + label(c)
-            ck = f"{d}|{variant}|{key}|{r}"
+            ck = f"{d}|{variant}|{key}|{c.get('scene')}|{PIN[0].strip()}|{r}"
             if ck in cache:
                 if cache[ck]:
                     res[d].setdefault(key, []).append(cache[ck])
