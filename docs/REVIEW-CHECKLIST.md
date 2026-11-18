@@ -15,7 +15,7 @@ Nothing here is enforced by `check.sh`; a grep for any of these would have false
 ## Tools and farm scripts
 - **Untrusted text.** Sanitise control characters from guest/device output before printing. Normalise `/proc` paths (` (deleted)` suffix).
 - **"Nothing" vs "unavailable".** A failed query is not an empty result: exit nonzero. Reports that swallow failures (`|| true`) must count them and print INCOMPLETE.
-- **CLI inputs.** Resolve optional arguments once and guard each consumer. Validate numeric options (reject `<= 0`). Check every external call (adb, guest) and delete stale outputs at fixed names first.
+- **CLI inputs.** Resolve optional arguments once and guard each consumer. Validate numeric options against their own documented range (reject `<= 0` only where a positive value is required; `farm hold --prio 0` is the valid default). Check every external call (adb, guest) and delete stale outputs at fixed names first.
 - **Docs vs CLI.** Check every command and flag in a doc against the checked-out CLI's `--help` and parser. A restore/enable step must undo only what the recipe itself changed.
 - **Placeholders.** Use `<ip:port>` in docs and examples, and run `tools/private-lint.sh` before pushing.
 - **Time.** Parse ISO timestamps with `fromisoformat`, never by slicing and `mktime`.
