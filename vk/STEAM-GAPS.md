@@ -66,7 +66,7 @@ Host gamescope 3.17.0.
 | **KHR_maintenance5** | hard | **have (round 4)** | done |
 | `have_KHR_maintenance1` extension flag (zink checks the extension, not the version) | base (warns) | **have (round 4)**: name advertised, `vkTrimCommandPoolKHR` called in `t_steam_caps` | done |
 | `logicOp` | base (warns) | missing; Mali blend descriptors have a logic-op mode | M |
-| `EXT_custom_border_color` | base (warns) | missing; sampler descriptors carry the border colour | M |
+| `EXT_custom_border_color` | base (warns) | **have (round 4)**: custom colour + without-format; the runtime fills `border_color_value`, the sampler descriptor words 4..7 are the same path as the fixed colours. `t_vk_feat cbc` (creation + draw on the fake backend; the border pixels are checked on hardware only, NOT yet run) | done (pixel check pending) |
 | `EXT_line_rasterization` | base (warns) | missing; only part of the modes maps to hardware | M |
 | `EXT_physical_device_drm` (render node major/minor) | needed with a DRM render fd: zink 26.2.x `choose_pdev` fails without it (`failed to choose pdev`; 26.3 falls back for a single device). On the phone drisw passes fd=-1 | missing on purpose (no render node) | S |
 | X11 surface (`VK_KHR_xcb_surface`) | only for the kopper route (DRI3); the phone's drisw path needs none | host x86 build lacks it, a64 build has it | S (build flag) |
@@ -74,7 +74,7 @@ Host gamescope 3.17.0.
 
 `t_steam_caps` has this list; `check.sh` pins the count of missing items (`ZINK_MISSING`).
 
-**Order:** (1) maintenance5 (done), (2) the `maintenance1` flag (done), (3) `logicOp`, `custom_border_color`, `line_rasterization` (each only with a test and only when the hardware path works), (4) `EXT_physical_device_drm` once there is a real render node, (5) then whatever the next GL context creation shows.
+**Order:** (1) maintenance5 (done), (2) the `maintenance1` flag (done), (3) `logicOp`, `line_rasterization` (custom_border_color done) (each only with a test and only when the hardware path works), (4) `EXT_physical_device_drm` once there is a real render node, (5) then whatever the next GL context creation shows.
 
 **Host result (fake v10, headless gamescope Xwayland, `LIBGL_KOPPER_DRI2=1` because host Xwayland has no DRI3):** with maintenance5 zink creates its screen (`vkCreateDevice` is reached) and prints the base-requirement warning for `logicOp`, `have_KHR_maintenance1`, `custom_border_color`, `line_rasterization`. `glxinfo` then segfaults in context creation: kopper calls `vkCreateXcbSurfaceKHR` through a NULL pointer (struct sType 1000005000) because the x86 host ICD has no X11 surface extension. That is a host-build limit, not a driver bug.
 
