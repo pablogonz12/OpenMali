@@ -65,6 +65,7 @@ struct mali_compiled {
    uint32_t fau_count, fau_reserved;   /* words; [0,fau_reserved) are filled by the driver */
    uint32_t nimm;
    struct mali_imm *imm;          /* nimm entries, words >= fau_reserved */
+   uint32_t cs_base_wg_set, cs_base_wg_off;   /* CS: shader reads the vkCmdDispatchBase baseGroup (3 u32) at FAU byte cs_base_wg_off */
    uint32_t push_const_bytes;     /* highest API push constant byte used (before push_base), 0 = none */
    uint32_t ubo_count, attribute_count, texture_count, sampler_count;
    uint32_t uses_ld_var, wait_6, wait_7, writes_global;

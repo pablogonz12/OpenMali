@@ -876,6 +876,8 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       if (n > room)
          n = (unsigned)room;
       memcpy((uint8_t *)fau, d->push, n);
+      if (cs->cs_base_wg_set && cs->cs_base_wg_off + sizeof d->base <= room)
+         memcpy((uint8_t *)fau + cs->cs_base_wg_off, d->base, sizeof d->base);
    }
 
    memset(&c, 0, sizeof c);

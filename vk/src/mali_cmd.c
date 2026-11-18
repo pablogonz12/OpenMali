@@ -705,7 +705,7 @@ is_load_op(VkAttachmentLoadOp op)
 }
 
 static void
-record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect_va)
+record_dispatch(struct mali_cmd_buffer *cmd, const uint32_t base[3], uint32_t x, uint32_t y, uint32_t z, uint64_t indirect_va)
 {
    struct mali_frame f;
    if (cmd->in_render || !cmd->cs) {
@@ -727,6 +727,7 @@ record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z,
    f.disp.groups[0] = x;
    f.disp.groups[1] = y;
    f.disp.groups[2] = z;
+   memcpy(f.disp.base, base, sizeof f.disp.base);
    f.disp.indirect_va = indirect_va;
    push_frame(cmd, &f);
 }
@@ -735,9 +736,22 @@ VKAPI_ATTR void VKAPI_CALL
 mali_CmdDispatch(VkCommandBuffer h, uint32_t x, uint32_t y, uint32_t z)
 {
    CMD(h);
+   static const uint32_t zero[3];
    if (!x || !y || !z)
       return;
-   record_dispatch(cmd, x, y, z, 0);
+   record_dispatch(cmd, zero, x, y, z, 0);
+}
+
+/* The runtime's vkCmdDispatch forwards here with base 0 only if the driver does not provide CmdDispatch; we do, so this is the real entry
+ * for baseGroup != 0. The base is a software sysval (mali_compile.c lower_sysvals), the hardware job offset stays 0. */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdDispatchBase(VkCommandBuffer h, uint32_t bx, uint32_t by, uint32_t bz, uint32_t x, uint32_t y, uint32_t z)
+{
+   CMD(h);
+   const uint32_t base[3] = { bx, by, bz };
+   if (!x || !y || !z)
+      return;
+   record_dispatch(cmd, base, x, y, z, 0);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -749,7 +763,7 @@ mali_CmdDispatchIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off)
       unsupported(cmd, "indirect buffer");
       return;
    }
-   record_dispatch(cmd, 0, 0, 0, vk_buffer_address(buf, off));
+   record_dispatch(cmd, (const uint32_t[3]){0}, 0, 0, 0, vk_buffer_address(buf, off));
 }
 
 /* ---- rendering ---- */

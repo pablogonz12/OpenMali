@@ -139,6 +139,8 @@ test_compute(void)
       if (compile(arch, MALI_STAGE_COMPUTE, &cs, NULL, "", &c)) continue;
       CHECK(c.bin_size > 0 && c.bin_size % 8 == 0, "v%u compute binary size %u", arch, c.bin_size);
       CHECK(c.push_const_bytes == 12, "v%u compute push bytes %u", arch, c.push_const_bytes);
+      /* GlobalInvocationID includes the vkCmdDispatchBase baseGroup: read from the 3 FAU words after the 12 push bytes */
+      CHECK(c.cs_base_wg_set == 1 && c.cs_base_wg_off == 12, "v%u compute base wg sysval set %u off %u", arch, c.cs_base_wg_set, c.cs_base_wg_off);
       mali_compiled_free(&c);
    }
    free(cs.w);
