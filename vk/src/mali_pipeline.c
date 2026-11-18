@@ -236,7 +236,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          unsigned loc = u_bit_scan(&v);
          const struct vk_vertex_attribute_state *a = &st.vi->attributes[loc];
          struct mali_fmt f;
-         if (g->nattr != loc || loc >= MALI_MAX_ATTR || !mali_format_get(arch, a->format, &f) || !mali_format_attr_word0(&f) ||
+         if (g->nattr > loc || loc >= MALI_MAX_ATTR || !mali_format_get(arch, a->format, &f) || !mali_format_attr_word0(&f) ||
              !(st.vi->bindings_valid & (1u << a->binding)) ||
              (st.vi->bindings[a->binding].input_rate && st.vi->bindings[a->binding].divisor > 1)) {
             res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* sparse locations, instance rate, non-vertex format: not supported */
@@ -245,7 +245,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const struct vk_vertex_binding_state *vb = &st.vi->bindings[a->binding];
          const bool inst = vb->input_rate == VK_VERTEX_INPUT_RATE_INSTANCE;
          /* instance rate: HW has no zero divisor, panvk uses stride 0 */
-         g->attr[g->nattr++] = (struct mali_attr){f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst};
+         const struct mali_attr cur = {f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst};
+         /* sparse locations (dEQP vertex_input layout_skip): the shader reads attribute slot = location, so the skipped slots are filled with a copy
+          * of this attribute (a valid binding; the shader never reads them) */
+         while (g->nattr < loc)
+            g->attr[g->nattr++] = cur;
+         g->attr[g->nattr++] = cur;
       }
    }
    vk_dynamic_graphics_state_init(&p->dynamic);
