@@ -330,6 +330,26 @@ main(int argc, char **argv)
       for (int i = 0; i < 4; i++) CHECK(res[i * 2 + 1] == 0, "query %d available after reset", i);
       DestroyQueryPool(dev, qpool, NULL);
    }
+   /* EARLY_RETURN_ON_FAILURE, ci.flags form and maintenance5 flags2 form: [0] has no shader (FEATURE_NOT_PRESENT), [1] is garbage SPIR-V
+      (INVALID_SHADER_NV). Early return reports the first failure, a plain batch the last one. */
+   {
+      PFN_vkCreateComputePipelines CCP = (PFN_vkCreateComputePipelines)gdpa(dev, "vkCreateComputePipelines");
+      uint32_t junk[5] = {0xdeadbeef, 0, 0, 0, 0};
+      VkShaderModuleCreateInfo smci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof junk, .pCode = junk};
+      VkPipelineCreateFlags2CreateInfoKHR f2 = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR, .flags = VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR};
+      for (int v = 0; v < 3; v++) {
+         VkComputePipelineCreateInfo pi[2] = {
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &smci, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+         };
+         if (v == 1) pi[0].flags = VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+         if (v == 2) pi[0].pNext = &f2;
+         VkPipeline pp[2] = {(VkPipeline)1, (VkPipeline)1};
+         VkResult rr = CCP(dev, VK_NULL_HANDLE, 2, pi, NULL, pp);
+         CHECK(rr == (v ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV), "early-return variant %d: result %d", v, rr);
+         CHECK(pp[0] == VK_NULL_HANDLE && pp[1] == VK_NULL_HANDLE, "early-return variant %d: handles not nulled", v);
+      }
+   }
    /* synchronization2: submit2 + barrier2 + fence, and timeline signal via submit2 */
    {
       VkCommandPool cp;
