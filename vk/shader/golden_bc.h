@@ -7,13 +7,14 @@
 #include <stdint.h>
 #include <vulkan/vulkan_core.h>
 struct bcg_compile { uint32_t bin_size, regs, tls, wls, push; uint64_t hash; };
-static const struct bcg_compile bcg_compile[2][5] = {
+static const struct bcg_compile bcg_compile[2][6] = {
   {
     { 13824, 64, 0, 0, 40, 0xc060280d216f23ceull },
     { 5760, 64, 0, 0, 40, 0x6a3891177b0765f4ull },
     { 18048, 32, 2432, 0, 40, 0x02250d104eda26d6ull },
     { 14976, 32, 1504, 0, 36, 0x0efa8d15e363d079ull },
     { 27264, 64, 4080, 0, 40, 0x79dd719cc33041d9ull },
+    { 68992, 64, 0, 0, 40, 0x0bb15b9867886471ull },
   },
   {
     { 13824, 64, 0, 0, 40, 0xc060280d216f23ceull },
@@ -21,6 +22,7 @@ static const struct bcg_compile bcg_compile[2][5] = {
     { 18048, 32, 2432, 0, 40, 0x02250d104eda26d6ull },
     { 14976, 32, 1504, 0, 36, 0x0efa8d15e363d079ull },
     { 27264, 64, 4080, 0, 40, 0x79dd719cc33041d9ull },
+    { 68992, 64, 0, 0, 40, 0x0bb15b9867886471ull },
   },
 };
 #define BCG_NTEXELS (20 * 12 + (20 / 2) * (12 / 2))

@@ -213,6 +213,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    const struct vk_features features = {
       .timelineSemaphore = true,
       .textureCompressionBC = true,
+      .textureCompressionASTC_LDR = true,
       .hostQueryReset = true,
       .synchronization2 = true,
       .dynamicRendering = true,
