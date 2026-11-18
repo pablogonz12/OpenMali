@@ -10,10 +10,13 @@ Decisions: MSAA counts stay advertised (dEQP relies on them), maxColorAttachment
 | feature | state | cost to enable |
 |---|---|---|
 | shaderTerminateInvocation | false | cheap in principle: NIR already has discard; needs a t_vk_feat pixel test (OpTerminateInvocation frag) on hardware |
-| pipelineCreationCacheControl | false | cheap: no pipeline cache, so FAIL_ON_PIPELINE_COMPILE_REQUIRED would always return COMPILE_REQUIRED; EARLY_RETURN flag is a no-op. Touches mali_pipeline.c (hot) |
+| pipelineCreationCacheControl | false | cheap: no pipeline cache, so FAIL_ON_PIPELINE_COMPILE_REQUIRED would always return COMPILE_REQUIRED; the EARLY_RETURN_ON_FAILURE flag is already honoured by both batch loops in `mali_pipeline.c` (later pipelines are not created after a failure), so keep that. Touches mali_pipeline.c (hot) |
 | robustImageAccess | false | medium: out-of-bounds image reads must return 0 (descriptor/tex lowering) |
 | shaderIntegerDotProduct | false | medium: compiler support for OpSDot/UDot (lower to mul+add is legal, needs property bits too) |
-| descriptorBindingInlineUniformBlockUpdateAfterBind | false | medium: UAB of inline blocks |
+| descriptorBindingInlineUniformBlockUpdateAfterBind | false | CONDITIONAL, not unconditionally mandatory: required only when `VK_EXT_descriptor_indexing`/`descriptorIndexing` is supported (neither is set today, see the 1.2 list). medium: UAB of inline blocks |
 | textureCompressionASTC_HDR | false | not mandatory (needs one of BC/ETC2/ASTC_LDR; BC is set) |
-## Vulkan 1.2 items to check (spec "required if 1.2")
-drawIndirectCount (maxDrawIndirectCount=1 now), descriptorIndexing as a whole, samplerFilterMinmax, shaderOutputViewportIndex/Layer, shaderSubgroupExtendedTypes, separateDepthStencilLayouts, subgroupBroadcastDynamicId. All false; costs unknown (hardware/compiler work).
+## Vulkan 1.2 items to check (spec "required if 1.2"; status split, best effort from the feature table)
+- Conditional (required only together with an extension/feature we do not set): drawIndirectCount (only if `VK_KHR_draw_indirect_count` is supported; maxDrawIndirectCount=1 now), the descriptorIndexing sub-features (only if `descriptorIndexing`/`VK_EXT_descriptor_indexing` is supported).
+- Unconditional for a 1.2 device: shaderSubgroupExtendedTypes, separateDepthStencilLayouts, subgroupBroadcastDynamicId.
+- Not classified against the spec yet: samplerFilterMinmax, shaderOutputViewportIndex/Layer (check the feature table before enabling).
+All false; costs unknown (hardware/compiler work).
