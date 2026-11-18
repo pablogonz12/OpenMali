@@ -29,7 +29,7 @@ static uint32_t
 first_handle(const struct ctx *c, unsigned set, const struct mali_lbinding *b)
 {
    if (!b->stride)
-      return pan_res_handle(0, MALI_DYN_BUF_START + c->l->dyn_start[set] + b->dyn_idx);
+      return pan_res_handle(MALI_DYN_TABLE, MALI_DYN_BUF_START + c->l->dyn_start[set] + b->dyn_idx);
    return pan_res_handle(set + 1, b->slot);
 }
 

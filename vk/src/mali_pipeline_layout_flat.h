@@ -3,8 +3,8 @@
  * Produced from a vk_pipeline_layout by mali_pipeline_layout_flatten() (mali_pipeline_layout.h), or built by hand in tests.
  *
  * Valhall resource model (v11 and v13 alike):
- *   resource table 0     = driver table: [0..15] VS attributes, [17..] vertex buffers, FS varying attribute, dummy sampler at
- *                          MALI_DUMMY_SAMPLER_IDX, dynamic UBO/SSBO descriptors at MALI_DYN_BUF_START + dyn_idx
+ *   resource table 0     = driver table: [0..15] VS attributes, [17..] vertex buffers, dummy sampler at
+ *                          MALI_DUMMY_SAMPLER_IDX; resource table 9 = dynamic UBO/SSBO descriptors (MALI_DYN_BUF_START + dyn_idx)
  *   resource table n+1   = user descriptor set n (array of 32-byte descriptors); handle = pan_res_handle(table, index)
  *   push constants       = FAU words (mali_compile push_base)
  */
@@ -13,8 +13,9 @@
 
 #define MALI_MAX_SETS            8u     /* tables 1..8 (the hardware has 16; 7 are kept for the driver) */
 #define MALI_DESC_SLOT_SIZE      32u    /* one hardware descriptor (texture, sampler, buffer) */
-#define MALI_DUMMY_SAMPLER_IDX   63u    /* table 0: all-zero sampler for texelFetch / sampler-less sampling */
-#define MALI_DYN_BUF_START       64u    /* table 0: first dynamic-buffer Buffer descriptor */
+#define MALI_DUMMY_SAMPLER_IDX   16u    /* table 0: all-zero sampler for texelFetch / sampler-less sampling (between the attributes 0..15 and the vertex buffers 17..) */
+#define MALI_DYN_TABLE           9u     /* resource table 9 (user sets use 1..8): the dynamic-buffer Buffer descriptors, a small table of its own */
+#define MALI_DYN_BUF_START       0u     /* index of the first dynamic-buffer descriptor in table MALI_DYN_TABLE */
 #define MALI_MAX_PUSH_BYTES      128u
 #define MALI_NO_IMM_SAMPLER      0xffffffffu
 

@@ -210,7 +210,8 @@ apply_blend(uint32_t *bl, const struct mali_fixed *fx)
 
 struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
-   uint8_t *vsset, *fsset;   /* CPU views of the two driver sets (template for the next draw with the same state) */
+   uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
+   uint64_t vsset_va;
    uint32_t *bl_cpu;
 };
 
@@ -248,9 +249,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    const struct mali_gfx_state *g = &d->gfx;
    const struct mali_compiled *vs = g->vs, *fs = g->fs;
    bool v13 = env->arch == 13;
-   uint64_t va_vsset, va_fsset, va_vfau, va_ffau;
-   uint32_t *spd_p, *spd_v = NULL, *spd_f, *vst, *fst, *bl, *zsd, *vfau, *ffau;
-   uint8_t *vsset, *fsset;
+   uint64_t va_vfau, va_ffau;
+   uint32_t *dyn = NULL;
+   uint64_t va_dyn = 0;
+   uint32_t *spd_p, *spd_v = NULL, *spd_f, *vst, *bl, *zsd, *vfau, *ffau;
+   uint8_t *vsset;
 
    if (!vs || !fs || !vs->bin_size || !fs->bin_size)
       return -EINVAL;
@@ -264,18 +267,15 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    if (nvb > MALI_MAX_VB)
       return -EINVAL;
    unsigned vs_entries = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);
-   unsigned nres = 1 + d->nsets;
-   unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
+   const unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;   /* SRT entries: driver set, user sets, (dynamic table at MALI_DYN_TABLE) */
+   const unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
 
    const bool s1 = po && same_static(pd, d);
-   const bool s2 = s1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);   /* whole driver sets reusable */
+   /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
+    * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
+   const bool s2 = s1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);
    const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
                    !memcmp(pd->push, d->push, sizeof d->push);   /* FAUs reusable */
-   vs_entries = vs_entries > MALI_DUMMY_SAMPLER_IDX + 1 ? vs_entries : MALI_DUMMY_SAMPLER_IDX + 1;
-   const unsigned dyn_end = d->ndyn ? MALI_DYN_BUF_START + d->ndyn : 0;
-   if (dyn_end > vs_entries)
-      vs_entries = dyn_end;
-   const unsigned fs_entries = dyn_end > MALI_DUMMY_SAMPLER_IDX + 1 ? dyn_end : MALI_DUMMY_SAMPLER_IDX + 1;
    const unsigned vs_used = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);   /* entries the vertex shader can read below the dummy sampler */
 
    if (s1) {
@@ -291,20 +291,31 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
       o->bl_cpu = bl;
    }
-   if (s2) {
-      o->vsset = po->vsset; o->fsset = po->fsset; o->vst = po->vst; o->fst = po->fst;
-      va_vsset = va_fsset = 0;
-      vsset = fsset = NULL;
-      vst = fst = NULL;
+   if (s1) {
+      o->vsset = po->vsset;
+      o->vsset_va = po->vsset_va;
+      vsset = NULL;
    } else {
-      /* the driver sets are sparse: only the attribute / vertex-buffer entries, the dummy sampler (zero) and the dynamic buffers are
-       * read, so the unread span between them is not touched (it stays whatever the arena held) */
-      vsset = Anz(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &va_vsset);
-      fsset = Anz(hw, fs_entries * KB_DESC_SET_STRIDE, 64, &va_fsset);
-      vst = A(hw, res_alloc, 64, &o->vst);
-      fst = A(hw, res_alloc, 64, &o->fst);
+      /* the driver set is sparse: only the attribute / vertex-buffer entries and the dummy sampler (zero) are read */
+      vsset = Anz(hw, vs_entries * KB_DESC_SET_STRIDE, 64, &o->vsset_va);
       o->vsset = vsset;
-      o->fsset = fsset;
+      if (!vsset)
+         return -ENOMEM;
+   }
+   if (s2) {
+      o->vst = po->vst;
+      o->fst = po->fst;
+      vst = NULL;
+   } else {
+      vst = A(hw, res_alloc, 64, &o->vst);
+      o->fst = o->vst;
+      if (d->ndyn) {
+         dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
+         if (!dyn)
+            return -ENOMEM;
+      }
+      if (!vst)
+         return -ENOMEM;
    }
    if (s3) {
       o->vfau = po->vfau; o->ffau = po->ffau;
@@ -314,7 +325,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       vfau = A(hw, FAU_BYTES(vs->fau_count), 64, &va_vfau);
       ffau = A(hw, FAU_BYTES(fs->fau_count), 64, &va_ffau);
    }
-   if ((!s1 && (!spd_p || (!v13 && !spd_v) || !spd_f || !bl || !zsd)) || (!s2 && (!vsset || !vst || !fsset || !fst)) || (!s3 && (!vfau || !ffau)))
+   if ((!s1 && (!spd_p || (!v13 && !spd_v) || !spd_f || !bl || !zsd)) || (!s3 && (!vfau || !ffau)))
       return -ENOMEM;
    if (!s3) {
       o->vfau = kb_draw_fau_ptr(va_vfau, vs->fau_count);
@@ -337,12 +348,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_spd(spd_f, 2, g->fs_va, fs->work_reg_count, fs->preload);
    }
 
-   if (s2)
-      goto fau;   /* the previous draw's driver sets and resource tables are reused as they are */
-   /* VS driver set: attributes 0..15 (unused ones filled), buffer descriptors from entry 17 (vertex binding b = 17 + b) */
-   if (s1) {
-      memcpy(vsset, po->vsset, vs_used * KB_DESC_SET_STRIDE);   /* same state: the attribute / buffer entries are identical */
-   } else {
+   if (!s1) {
+      /* driver set: attributes 0..15 (unused ones filled), dummy sampler at entry 16 (all zero), buffer descriptors from entry 17 (vertex binding b = 17 + b) */
       memset(vsset, 0, vs_used * KB_DESC_SET_STRIDE);
       for (unsigned i = 0; i < KB_VS_ATTRS; i++) {
          uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
@@ -361,19 +368,17 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       }
       for (unsigned b = 0; b < nvb; b++)
          kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
+      memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
    }
-   memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
-   memset(fsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);
-   /* resource tables: entry 0 = driver set, entries 1.. = bound user descriptor sets (KB_TEX_USER_TABLE) */
-   kb_draw_resource(vst, va_vsset, vs_entries * KB_DESC_SET_STRIDE, 1);
-   for (unsigned i = 0; i < d->ndyn; i++) {
-      memcpy(vsset + (MALI_DYN_BUF_START + i) * KB_DESC_SET_STRIDE, d->dyn_desc[i], 32);
-      memcpy(fsset + (MALI_DYN_BUF_START + i) * KB_DESC_SET_STRIDE, d->dyn_desc[i], 32);
-   }
-   kb_draw_resource(fst, va_fsset, fs_entries * KB_DESC_SET_STRIDE, 1);
-   for (unsigned s = 0; s < d->nsets; s++) {
-      kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
-      kb_draw_resource(fst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
+   if (!s2) {
+      /* resource table: entry 0 = driver set, 1.. = bound user sets, MALI_DYN_TABLE = the dynamic buffers (a table of its own); the entries between are never read */
+      kb_draw_resource(vst, o->vsset_va, vs_entries * KB_DESC_SET_STRIDE, 1);
+      for (unsigned s = 0; s < d->nsets; s++)
+         kb_draw_resource(vst + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
+      if (d->ndyn) {
+         memcpy(dyn, d->dyn_desc, d->ndyn * KB_DESC_SET_STRIDE);
+         kb_draw_resource(vst + MALI_DYN_TABLE * (KB_RES_SIZE / 4), va_dyn, d->ndyn * KB_DESC_SET_STRIDE, 1);
+      }
    }
    if (s1)
       goto fau;
@@ -630,8 +635,8 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    memcpy(&maxz, &d->vp[5], 4);
 
    if (!v13) {
-      M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, 1 + d->nsets));
-      M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, 1 + d->nsets));
+      M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+      M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
       M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
       M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);
       M48(c, KB_IDVS_FRAGMENT_SPD, o->spd_f);
@@ -661,8 +666,8 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_TILER_FLAGS2, 0);
    } else {
       uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
-      M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, 1 + d->nsets));
-      M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, 1 + d->nsets));
+      M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+      M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
       M48(c, KB13_IDVS_VERTEX_SPD, o->spd_p);
       M48(c, KB13_IDVS_FRAGMENT_SPD, o->spd_f);
       M48(c, KB13_IDVS_VERTEX_TSD, va_tsd);

@@ -17,4 +17,4 @@ VkResult mali_pipeline_layout_flatten(const struct vk_pipeline_layout *l, struct
 static inline uint32_t mali_set_table(uint32_t set) { return set + 1; }
 
 /* First dynamic buffer of set `s` in the draw's dynamic-buffer array: vk_pipeline_layout::dynamic_descriptor_offset. Descriptor of
- * dynamic buffer `i` is written at table 0, index MALI_DYN_BUF_START + i. */
+ * dynamic buffer `i` is written at table MALI_DYN_TABLE, index MALI_DYN_BUF_START + i. */

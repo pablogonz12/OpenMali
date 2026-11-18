@@ -187,6 +187,9 @@ for arch in (11, 13):
                 elif k.endswith('.set0') and isinstance(da[k], tuple) and isinstance(db[k], tuple):
                     n = min(len(da[k]), len(db[k]))
                     da[k], db[k] = da[k][:n], db[k][:n]
+            for k in list(da) + list(db):   # the FS shares the VS driver set and SRT (it reads only the all-zero dummy sampler, entry 16): the reference's separate FS set is not comparable
+                if '.SRT_f.set0' in k:
+                    da.pop(k, None); db.pop(k, None)
             for k in sorted(set(da) | set(db)):
                 if da.get(k) != db.get(k):
                     x, y = da.get(k), db.get(k)

@@ -13,6 +13,6 @@
  *   texture/sampler/image derefs -> texture/sampler/image handles pan_res_handle(set + 1, slot [+ index * stride]); a texture
  *   without sampler gets the dummy sampler pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX)
  *   explicit io of UBO/SSBO (load_ubo/load_ssbo with the handle as index).
- * Dynamic buffers use pan_res_handle(0, MALI_DYN_BUF_START + dyn_start[set] + dyn_idx).
+ * Dynamic buffers use pan_res_handle(MALI_DYN_TABLE, MALI_DYN_BUF_START + dyn_start[set] + dyn_idx).
  * Returns false and writes a message to err when the shader uses a set/binding that the layout lacks. */
 bool mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, char *err, size_t errsz);

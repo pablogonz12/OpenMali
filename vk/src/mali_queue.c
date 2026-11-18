@@ -169,10 +169,13 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
    return (char *)cur->cpu + o;
 }
 
+static uint64_t g_alloc_bytes;   /* test statistic: bytes asked of hw_alloc (MALI_ALLOC_STATS=<file> writes the running total at each submit) */
+
 static void *
 hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
 {
    struct mali_hwctx *h = u;
+   g_alloc_bytes += n;
    if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
       return hw_alloc_ovf(h, n, al, va, zero);
    void *p = kb_arena_alloc_nz(&h->ar, n, al, va);
@@ -306,6 +309,14 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
+   {
+      const char *sf = getenv("MALI_ALLOC_STATS");
+      FILE *fp = sf ? fopen(sf, "w") : NULL;
+      if (fp) {
+         fprintf(fp, "%llu\n", (unsigned long long)g_alloc_bytes);
+         fclose(fp);
+      }
+   }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
    if (getenv("MALI_PROF")) {
