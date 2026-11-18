@@ -338,6 +338,24 @@ class T(unittest.TestCase):
         self.assertEqual(run["device"], "dev-b")
         self.assertEqual(len(run["so_sha256"]), 64)
 
+    def test_wait_several_jobs_any_all_compact(self):
+        self.attach("dev-a")                                                   # only v11 present: the v13 part stays pending
+        _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--keep-old")
+        self.farmd()
+        rc, out, _ = self.farm("wait", j1, j2, "--any", "--timeout", "5")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(out.splitlines()), 1)                             # only the finished job
+        self.assertIn(" pass v11:pass", out)
+        rc, out, _ = self.farm("wait", j1, j2, "--all", "--timeout", "1")
+        self.assertEqual(rc, 3)
+        self.assertIn("v13:pending", out)
+        self.attach("dev-a", "dev-b")
+        self.farmd()
+        rc, out, _ = self.farm("wait", j1, j2, "--timeout", "5")               # several jobs = --all
+        self.assertEqual((rc, len(out.splitlines())), (0, 2))
+        self.assertEqual(self.farm("wait", j1)[1], "pass")                     # a single job keeps the one-word output
+
     def test_clean_pass_and_smoke_fail(self):
         self.attach("dev-a", "dev-b")
         _, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
