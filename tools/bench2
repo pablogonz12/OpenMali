@@ -40,6 +40,8 @@ PKG = os.environ.get("DROIDDECK_PACKAGE", "com.ludashi.benchmark")
 # variant -> (benchmark, scene args common to presented/offscreen, size args for presented, offscreen size)
 WORK = {
     "triangle-3k": ("triangle", "--scene drawcalls --n 3000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
+    "triangle-5k": ("triangle", "--scene drawcalls --n 5000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
+    "triangle-10k": ("triangle", "--scene drawcalls --n 10000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
     "triangle-20k": ("triangle", "--scene drawcalls --n 20000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
     "cube-720p": ("cube", "--scene cube --layers 8 --iters 24", "--size 1280x720 --windowed", "--size 1280x720"),
     "cube-native": ("cube", "--scene cube --layers 8 --iters 24", "", "--size 1280x720"),
@@ -256,9 +258,19 @@ def plan(variant, driver, mode, best):
     return cfg
 
 
+RANK_VER = 2    # bump when the winner ranking changes: stored best.json entries swept under the old ranking are stale (v1 ranked cube by 1% low: FIFO's flat 120 fps beat mailbox's 450)
+
+
+def pres_rank(pres, bench, pen=lambda k: 1.0):
+    """sort key for the presented-config winner (min wins): highest median fps; 1% low (cube) or CPU ms (triangle) only break ties"""
+    if bench == "triangle":
+        return lambda k: (-pres[k]["fps"] / pen(k), pres[k]["cpu_ms"] * pen(k))
+    return lambda k: (-pres[k]["fps"] / pen(k), -pres[k]["low1"])
+
+
 def sweep_sig(variant, driver):
     """fingerprint of the sweep's candidate list (present modes, image counts, fif, ours env sets): a new knob changes it -> stored best is stale"""
-    return hashlib.sha1("|".join(label(c) for c in plan(variant, driver, "sweep", None)).encode()).hexdigest()[:12]
+    return hashlib.sha1(f"rank{RANK_VER}|".encode() + "|".join(label(c) for c in plan(variant, driver, "sweep", None)).encode()).hexdigest()[:12]
 
 
 def start_blocked(h, th):
@@ -272,7 +284,7 @@ def best_stale(best_all, alias, driver, variant, today=None):
     e = (best_all.get(alias, {}).get(driver, {}) or {}).get(variant)
     if not e:
         return "no stored best"
-    if e.get("sig") and e["sig"] != sweep_sig(variant, driver):
+    if e.get("sig") != sweep_sig(variant, driver):          # also a missing sig (hand-edited or pre-sig entry): never replay a winner nobody can vouch for
         return "a new knob/candidate appeared since the sweep"
     age = ((today or datetime.date.today()) - datetime.date.fromisoformat(e.get("date") or LEGACY_BEST_DATE)).days
     return f"stored best is {age} days old" if age > BEST_MAX_AGE_DAYS else None
@@ -404,7 +416,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 off = {k: m for k, m in off.items() if envpart(k) == "+".join(BEST_ENV[bench]) or (m.get("gpu_ms") or 0) >= floor}
                 pres = {k: m for k, m in pres.items() if envpart(k) == "+".join(BEST_ENV[bench]) or (m.get("gpu_ms") or 0) >= floor}
             pen = lambda k: 1.0 if (d != "ours" or envpart(k) == "+".join(BEST_ENV[bench])) else 1.05
-            pk = (lambda k: (-pres[k]["fps"] / pen(k), pres[k]["cpu_ms"] * pen(k))) if bench == "triangle" else (lambda k: (-pres[k]["low1"] / pen(k), -pres[k]["fps"]))
+            pk = pres_rank(pres, bench, pen)
             ok_ = (lambda k: off[k]["cpu_ms"] * pen(k)) if bench == "triangle" else (lambda k: (off[k]["gpu_ms"] or 1e9) * pen(k))
             bp, bo = min(pres, key=pk), min(off, key=ok_)
             ps = {label(c): c for c in plan(variant, d, "sweep", None)}
@@ -530,7 +542,7 @@ def main():
     if not sel:
         die(f"no device {a.target} (aliases {list(devs)})")
     drivers = ["ours", "bridge"] if a.driver == "both" else [a.driver]
-    variants = [a.variant] if a.variant else [k for k, v in WORK.items() if a.bench in ("all", v[0]) and k != "triangle-20k"]
+    variants = [a.variant] if a.variant else [k for k, v in WORK.items() if a.bench in ("all", v[0])]
     qcfg = L.load_config()
     pend = {}
     for dev in sel:
