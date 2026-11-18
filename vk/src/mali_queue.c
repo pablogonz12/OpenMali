@@ -417,7 +417,7 @@ mali_hw_init(struct mali_device *dev)
    if (be->bo_alloc(dev->kdev, ARENA_BYTES, MALI_BO_HOT, &h->arena))
       goto fail;
    h->arena_live = true;
-   if (be->bo_alloc(dev->kdev, 4096 + 65536, 0, &h->geo))
+   if (be->bo_alloc(dev->kdev, 4096 + 65536, MALI_BO_COH, &h->geo)   /* tiler heap descriptor: the tiler updates it from several cores; coverage 0 at random without COHERENT_LOCAL (arch 11) */)
       goto fail;
    h->geo_live = true;
    if (be->bo_alloc(dev->kdev, 4096, MALI_BO_EVENT, &h->sync))
