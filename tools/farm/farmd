@@ -1448,7 +1448,7 @@ class Farm:
         touched = False
         try:
             left = int(os.environ.get("MALI_FARM_SWEEP_MAX_CHUNKS", "0")) if self.fake else 0       # test hook: bounded session
-            while not (self.is_disabled(dev) or self.real_pending(cls) or not self.sweep_on(dev) or (not self.fake and alias not in self.attached())):
+            while not (self.is_disabled(dev) or self.real_pending(cls) or self.hold_next(alias) or not self.sweep_on(dev) or (not self.fake and alias not in self.attached())):
                 r = self.sweep_chunk(dev)
                 touched = touched or r is not None
                 left -= 1

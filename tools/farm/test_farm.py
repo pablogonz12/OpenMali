@@ -1865,6 +1865,8 @@ class HoldTests(unittest.TestCase):
         self.env.update(MALI_FARM_HB_STALE="3", MALI_FARM_HB_EVERY="0.3")
         os.environ.pop("MALI_FARM_SWEEP_LIST", None)
         self.env.pop("MALI_FARM_SWEEP_LIST", None)
+        os.makedirs(self.d + "/state/sweep", exist_ok=True)
+        open(self.d + "/state/sweep/off", "w").close()                       # the fake idle sweep would spin on the phone
         self.p = subprocess.Popen([sys.executable, HERE + "/farmd", "--fake", "--poll", "0.3"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.addCleanup(lambda: (self.p.terminate(), self.p.wait(10)))
 
@@ -1906,9 +1908,14 @@ class HoldTests(unittest.TestCase):
         self.assertLess(H.key({"prio": 0, "seq": 1}), H.key({"prio": 0, "seq": 2}))     # FIFO at equal priority
         self.assertLess(H.key({"prio": 0, "seq": 5}), H.key({"prio": 0, "auto": True, "seq": 1}))
         self.daemon()
-        self.assertEqual(self.farm("wait", jid, "--timeout", "30")[1], "pass")
+        t0 = time.time()
+        while time.time() - t0 < 30 and L.job_verdict(L.find_job(jid)) == "pending":
+            H.touch(h["id"], "hb")                                                    # a live caller waiting in the queue
+            time.sleep(0.2)
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
         t0 = time.time()
         while time.time() - t0 < 20 and L.read_json(H.path(h["id"]))["state"] != "active":
+            H.touch(h["id"], "hb")
             time.sleep(0.2)
         self.assertEqual(L.read_json(H.path(h["id"]))["state"], "active")             # the hold got its turn after the job
         H.touch(h["id"], "rel")
@@ -1921,11 +1928,12 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         info = json.loads(out)
         self.assertEqual(L.read_json(H.path(info["hold"]))["state"], "active")
+        sleeper.wait()                                                       # reaped: no zombie keeping /proc/<pid> alive
         t0 = time.time()
         while time.time() - t0 < 30 and L.read_json(H.path(info["hold"]))["state"] != "done":
             time.sleep(0.3)
         h = L.read_json(H.path(info["hold"]))
-        self.assertEqual((h["state"], h["reason"]), ("done", "caller lost (no heartbeat)"))
+        self.assertEqual((h["state"], h.get("reason")), ("done", "caller lost (no heartbeat)"), h)
         # max time: a 1 s hold with a command that sleeps longer is killed (rc 124)
         rc, out, err = self.hold("dev-a", "--max", "0.02", "--", "sleep", "30")
         self.assertEqual(rc, 124, err)

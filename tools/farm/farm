@@ -180,7 +180,7 @@ def cmd_hold(a):
         return 0
     if a.device not in devs:
         raise SystemExit(f"farm hold: unknown device {a.device!r} (have: {', '.join(devs)})")
-    cmd = [c for c in (a.command or []) if c != "--"] if a.command and a.command[0] == "--" else (a.command or [])
+    cmd = a.command or []
     if bool(cmd) == bool(a.lease):
         raise SystemExit("farm hold: give either `-- <command>` or --lease")
     if not a.max or a.max <= 0:
@@ -711,7 +711,7 @@ def main():
     s.add_argument("--release", metavar="ID")
     s.add_argument("--status", metavar="ID")
     s.add_argument("--beat", metavar="ID", help=argparse.SUPPRESS)
-    s.add_argument("command", nargs=argparse.REMAINDER)
+    s.add_argument("command", nargs="*", help=argparse.SUPPRESS)          # filled by main() from what follows `--`
     s.set_defaults(f=lambda a: cmd_hold_beat(a) if a.beat else cmd_hold(a))
 
     s = sp.add_parser("wait")
@@ -763,7 +763,14 @@ def main():
     s.add_argument("job")
     s.add_argument("--checkout", default=".", help="checkout whose vk/deqp/ours-daily-sample-*.tsv are overwritten (default: cwd)")
     s.set_defaults(f=cmd_bless)
-    a = ap.parse_args()
+    argv = sys.argv[1:]
+    cmd = []
+    if argv[:1] == ["hold"] and "--" in argv:                 # argparse cannot mix optionals with a trailing command: split it off ourselves
+        i = argv.index("--")
+        argv, cmd = argv[:i], argv[i + 1:]
+    a = ap.parse_args(argv)
+    if cmd:
+        a.command = cmd
     sys.exit(a.f(a) or 0)
 
 
