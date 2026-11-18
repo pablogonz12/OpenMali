@@ -212,7 +212,7 @@ struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
-   uint32_t *bl_cpu;
+   uint32_t bl23[2];         /* words 2..3 of the blend descriptor (CPU copy: the arena is write-combined, never read back) */
 };
 
 static void *
@@ -299,7 +299,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
 
    if (s1) {
       o->spd_p = po->spd_p; o->spd_v = po->spd_v; o->spd_f = po->spd_f;
-      o->bl = po->bl; o->zsd = po->zsd; o->bl_cpu = po->bl_cpu;
+      o->bl = po->bl; o->zsd = po->zsd; o->bl23[0] = po->bl23[0]; o->bl23[1] = po->bl23[1];
       spd_p = spd_v = spd_f = bl = zsd = NULL;
    } else {
       spd_p = A(hw, KB_SPD_SIZE, 32, &o->spd_p);
@@ -308,7 +308,6 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
       bl = A(hw, KB_BLEND_SIZE, 64, &o->bl);
       zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
-      o->bl_cpu = bl;
    }
    if (s1) {
       o->vsset = po->vsset;
@@ -401,6 +400,9 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
    if (s1)
       goto fau;
+   uint32_t blt[4];   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
+   uint32_t *bl_arena = bl;
+   bl = blt;
    if (f->colour.rt)
       kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
    else
@@ -414,6 +416,9 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       bl[3] = (uint32_t)g->blend_va;
    } else if (apply_blend(bl, &d->fx))
       return -EINVAL;
+   memcpy(bl_arena, blt, sizeof blt);
+   o->bl23[0] = blt[2];
+   o->bl23[1] = blt[3];
 
    /* depth/stencil */
    if (g->depth_test && f->has_zs) {
@@ -481,8 +486,8 @@ fau:;
       memcpy((uint8_t *)fau + g->push_base[st], d->push[st], n);
    }
    if (v13) {
-      ffau[4] = o->bl_cpu[2];
-      ffau[5] = o->bl_cpu[3];
+      ffau[4] = o->bl23[0];
+      ffau[5] = o->bl23[1];
    }
    if (g->blend_va && d->fx.blend_en)
       memcpy(ffau, d->fx.bconst, 16);   /* blend shader constants: FAU words 0..3 */
