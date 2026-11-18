@@ -33,7 +33,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxImageDimensionCube = 4096,
       .maxImageArrayLayers = 256,
       .maxTexelBufferElements = 65536,
-      .maxUniformBufferRange = 16384,
+      .maxUniformBufferRange = 1u << 27,   /* UBOs are generic 32-bit-size Buffer descriptors on v10+ (mali_pack_buffer); same bound as maxStorageBufferRange. Mesa 764198392 (panvk v9+) */
       .maxStorageBufferRange = 1u << 27,
       .maxPushConstantsSize = 128,
       .maxMemoryAllocationCount = 4096,
