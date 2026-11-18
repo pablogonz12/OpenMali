@@ -288,6 +288,13 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .memoryHeapCount = 1,
       .memoryHeaps = {{.size = gpu->heap_bytes, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
    };
+   /* v13: type 2 = DEVICE_LOCAL only, backed by a non-COHERENT_LOCAL BO (no per-submit MEM_SYNC over it). Offered only for optimal images that need no
+    * cross-core coherency (render targets, sampled textures); buffers and storage images stay on the coherent types (atomics, readback). X8 A/B:
+    * overdraw 790-843 -> 976-1016 fps, tex 748-1015 -> 964-1322. MALI_NOCOH_IMAGES=0 turns the type off. */
+   if (gpu->arch_major == 13 && !(getenv("MALI_NOCOH_IMAGES") && getenv("MALI_NOCOH_IMAGES")[0] == '0')) {
+      pdev->memory.memoryTypes[2] = (VkMemoryType){.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .heapIndex = 0};
+      pdev->memory.memoryTypeCount = 3;
+   }
 
    result = mali_wsi_init(pdev);
    if (result != VK_SUCCESS) {

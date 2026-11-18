@@ -12,7 +12,7 @@
 #include "vk_alloc.h"
 #include "vk_util.h"
 
-#define MALI_MEM_TYPE_COUNT 2
+#define MALI_MEM_TYPE_COUNT 3   /* type 2 exists on v13 only (memoryTypeCount decides) */
 #define MALI_MAX_ALLOCS 4096
 #define MALI_LINE 64 /* nonCoherentAtomSize */
 
@@ -34,7 +34,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const struct mali_backend_ops *be = pdev->backend;
 
-   if (pAllocateInfo->memoryTypeIndex >= MALI_MEM_TYPE_COUNT)
+   if (pAllocateInfo->memoryTypeIndex >= pdev->memory.memoryTypeCount)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    if (pAllocateInfo->allocationSize > pdev->gpu.heap_bytes)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -50,7 +50,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    const bool cached = pAllocateInfo->memoryTypeIndex == 1;
-   const uint32_t flags = cached ? MALI_BO_CACHED : 0;
+   const uint32_t flags = cached ? MALI_BO_CACHED : pAllocateInfo->memoryTypeIndex == 2 ? MALI_BO_NOCOH : 0;
    const VkImportMemoryFdInfoKHR *imp =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
    int r;
@@ -189,6 +189,6 @@ mali_GetMemoryFdPropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBi
 
    if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-   pProps->memoryTypeBits = (1u << MALI_MEM_TYPE_COUNT) - 1;
+   pProps->memoryTypeBits = 3;
    return VK_SUCCESS;
 }
