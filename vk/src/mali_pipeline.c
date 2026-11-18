@@ -87,6 +87,22 @@ set_spec(struct mali_compile_opts *o, struct mali_spec_entry *buf, const VkSpeci
 }
 
 
+/* Empty fragment shader (void main() {}): a pipeline without a fragment stage that is not rasterizer-discarded still has depth/stencil
+ * effects (dEQP pipeline.monolithic.{stencil,depth}.nocolor: no FS, no colour attachment), so its draws run with this shader. */
+static const uint32_t null_fs_spv[] = {
+   0x07230203, 0x00010000, 0, 5, 0,
+   0x00020011, 1,                                  /* OpCapability Shader */
+   0x0003000e, 0, 1,                               /* OpMemoryModel Logical GLSL450 */
+   0x0005000f, 4, 1, 0x6e69616d, 0,                /* OpEntryPoint Fragment %1 "main" */
+   0x00030010, 1, 7,                               /* OpExecutionMode %1 OriginUpperLeft */
+   0x00020013, 2,                                  /* %2 = OpTypeVoid */
+   0x00030021, 3, 2,                               /* %3 = OpTypeFunction %2 */
+   0x00050036, 2, 1, 0, 3,                         /* %1 = OpFunction %2 None %3 */
+   0x000200f8, 4,                                  /* %4 = OpLabel */
+   0x000100fd,                                     /* OpReturn */
+   0x00010038,                                     /* OpFunctionEnd */
+};
+
 static VkResult
 create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
@@ -152,9 +168,9 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
    o.stage = MALI_STAGE_FRAGMENT;
    o.strip_psiz = 0;
-   o.spirv = fss ? fcode : vcode;
-   o.spirv_words = fss ? fwords : vwords;
-   o.entry = fss ? fss->pName : vss->pName;
+   o.spirv = fss ? fcode : null_fs_spv;
+   o.spirv_words = fss ? fwords : (uint32_t)(sizeof null_fs_spv / 4);
+   o.entry = fss ? fss->pName : "main";
    set_spec(&o, specbuf, fss ? fss->pSpecializationInfo : NULL);
    /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
    unsigned samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1;
@@ -165,7 +181,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
-   if (fss && mali_compile(&o, &p->fs, err, sizeof err)) {
+   const bool rs_discard = st.rs && st.rs->rasterizer_discard_enable;
+   if ((fss || !rs_discard) && mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -240,7 +257,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->fs = &p->fs;
    g->samples = samples;
    g->dyn_stride = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_VI_BINDING_STRIDES);
-   g->discard = !fss || (st.rs && st.rs->rasterizer_discard_enable);
+   g->discard = rs_discard;   /* FS-less pipelines draw with the null FS (depth/stencil effects) */
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
