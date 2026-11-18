@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* M5 offline tests: format table, image layout, descriptor bytes vs libkbase (hardware-proven). No GPU. Usage: t_image [-v] */
 #include "../src/mali_image.h"
+#include "../src/mali_rtfmt_tab.h"
 #include "../../libkbase/include/kbase_draw.h"
 
 #include <stdio.h>
@@ -27,6 +28,27 @@ cmp_words(const char *what, const uint32_t *a, const uint32_t *b, uint32_t mask0
    }
    if (bad) g_fail++;
    return bad;
+}
+
+/* Render-target table: A8B8G8R8 packed 32 has the byte order of R8G8B8A8, so it takes the RGBA8 rows (sweep: renderpass.suballocation.formats a8b8g8r8_*).
+ * Formats outside the table (pure integer, snorm, 16-bit unorm, R32G32B32A32_SFLOAT, A1R5G5B5) are not render targets yet: CmdBeginRendering rejects them. */
+static void
+test_rtfmt(unsigned arch)
+{
+   bool ok;
+   const struct mali_rtfmt *u = mali_rtfmt_find(VK_FORMAT_A8B8G8R8_UNORM_PACK32, &ok);
+   CHECK(ok && u && u->wb == 19 && u->internal == 1 && u->ncomp == 4 && u->swizzle == SW(0, 1, 2, 3), "A8B8G8R8_UNORM row");
+   const struct mali_rtfmt *s = mali_rtfmt_find(VK_FORMAT_A8B8G8R8_SRGB_PACK32, &ok);
+   const struct mali_rtfmt *r = mali_rtfmt_find(VK_FORMAT_R8G8B8A8_SRGB, &ok);
+   CHECK(ok && s && r && s->wb == r->wb && s->internal == r->internal && s->swizzle == r->swizzle && s->blend_pixfmt == r->blend_pixfmt, "A8B8G8R8_SRGB row = R8G8B8A8_SRGB");
+   struct mali_fmt f;
+   CHECK(mali_format_get(arch, VK_FORMAT_A8B8G8R8_UNORM_PACK32, &f) && f.blendable, "A8B8G8R8_UNORM blendable");
+   CHECK(mali_format_get(arch, VK_FORMAT_A8B8G8R8_SRGB_PACK32, &f) && f.blendable, "A8B8G8R8_SRGB blendable");
+   static const int gap[] = { VK_FORMAT_R8G8_UINT, VK_FORMAT_R16_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R32_SINT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_A1R5G5B5_UNORM_PACK16 };
+   for (unsigned i = 0; i < sizeof gap / sizeof gap[0]; i++) {
+      mali_rtfmt_find(gap[i], &ok);
+      CHECK(!ok, "format %d unexpectedly a render target (update the gap list in the sweep notes)", gap[i]);
+   }
 }
 
 static void
@@ -254,6 +276,7 @@ main(int argc, char **argv)
       printf("arch v%u\n", a);
       test_format_table(a);
       test_rgba8(a);
+      test_rtfmt(a);
       test_attr(a);
       test_depth(a);
       test_layout(a);
