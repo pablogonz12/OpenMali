@@ -117,3 +117,8 @@ tools/bench2 on CMF, 5 interleaved pairs, old ICD 193a1e9c (main) vs new bfc42e9
 | triangle-3k presented | 55.3 / 8.12 | 64.5 / 7.23 |
 | triangle-3k offscreen | 104.4 / 6.49 | 107.8 / 6.37 |
 (the bench2 cube is GPU-bound at 17 ms: unchanged GPU ms.)
+
+## 2026-11-18 frame serialization at present (perf/queue-order)
+Cause (code reading): `mali_queue_submit` CPU-waited on every wait semaphore, including the present's wait on the frame's render-done semaphore, so vkQueuePresent blocked until the GPU finished the frame: fif 2/3 behaved like fif 1 (CMF presented 20.3 ms vs 15.1 ms GPU). Fix: skip that wait for semaphores signalled by this queue (in-order ring) ONLY when a fence travels with the buffer (wsi_common's dma-buf sync_file import probe, kernel >= 6.0: CMF 6.1, poco-x8 6.6). poco-x4 (5.10) returns ENOTTY (vk/DEVICE-poco-x4.md), kbase attaches no implicit fence, so there the wait stays and the change is a no-op. Not yet measured on hardware: the compositor (gamescope) honouring the imported fence must be proven on the CMF/x8 with a tearing check before this counts.
+poco-x4 cube-720p presented, ours, origin/main 54470e3, mailbox/3img/fif3 (2026-11-18): 85.0 fps, cpu 0.86 ms, GPU 9.15 ms, p50 frame 11.4 ms (bridge p22: 119.6 fps, GPU 7.36 ms). Other fif / tiled A/B rows: none (poco-x4 reached 45 C within one run; bench2 stops at 43 C).
+CMF cube-720p presented, ours, perf/memsync-exec b262cdb: 57.7 fps, submit 0.55 ms, GPU 15.13 ms (bridge p25 74.0 fps).
