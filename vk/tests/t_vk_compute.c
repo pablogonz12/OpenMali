@@ -50,7 +50,7 @@ static const char *g_only, *g_spv = "shader";
    X(ResetCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)         \
    X(CmdBindPipeline) X(CmdPushConstants) X(CmdDispatch) X(CmdDispatchIndirect)                    \
    X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout) X(CreateDescriptorPool)             \
-   X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CmdBindDescriptorSets)
+   X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CmdBindDescriptorSets) X(CmdDispatchBase)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -259,6 +259,87 @@ run_case(const char *name, int kind, const char *spv, unsigned local, unsigned g
    return rc;
 }
 
+/* vkCmdDispatchBase: baseGroup (3,2,0), 2x2x1 groups of 8: gl_WorkGroupID / gl_GlobalInvocationID must start at the base (slot y*64+x, x 24..39, y 2..3).
+ * A following plain vkCmdDispatch in the same command buffer must see base 0 again (no stale base), writing x 0..15, y 0. Without the base sysval
+ * the shader sees ids from 0 and writes the wrong slots. */
+static int
+run_base(void)
+{
+   const unsigned N = 256;
+   struct buf out = {0};
+   VkShaderModule sm = load_spv("basegrp.comp.spv");
+   CHECK(sm, "load basegrp.comp.spv");
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayout dsl;
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSet ds;
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "alloc set");
+   VkPushConstantRange pcr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 4};
+   VkPipelineLayout pl;
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+                                     .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipeline pipe;
+   VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main"}};
+   CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, NULL, &pipe) == VK_SUCCESS, "CreateComputePipelines");
+   CHECK(mkbuf(&out, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "out");
+   uint32_t *o = out.p;
+   memset(o, 0xee, N * 4);
+   VkDescriptorBufferInfo bi = {out.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   VkCommandPool pool;
+   VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(cb, &cbi) == VK_SUCCESS, "begin");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &ds, 0, NULL);
+   uint32_t k = 7;
+   CmdPushConstants(cb, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &k);
+   CmdDispatchBase(cb, 3, 2, 0, 2, 2, 1);
+   CmdDispatch(cb, 2, 1, 1);
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+   if (!g_fake) {
+      unsigned bad = 0, first = 0, want_first = 0;
+      for (unsigned i = 0; i < N; i++) {
+         unsigned x = i % 64, y = i / 64, want = 0xeeeeeeeeu;
+         if (y >= 2 && y <= 3 && x >= 24 && x < 40) want = 7 + (x / 8) * 1000 + y * 10000 + x % 8;   /* base dispatch: wg (3..4, 2..3) */
+         else if (y == 0 && x < 16) want = 7 + (x / 8) * 1000 + x % 8;                                 /* plain dispatch: base 0 */
+         if (o[i] != want) { if (!bad) { first = i; want_first = want; } bad++; }
+      }
+      CHECK(bad == 0, "base: %u of %u slots wrong, first %u: got %u want %u", bad, N, first, o[first], want_first);
+   }
+   printf("{\"test\":\"base\",\"ok\":true%s}\n", g_fake ? ",\"skipped\":\"results: fake backend\"" : "");
+   DestroyFence(dev, f, NULL);
+   DestroyCommandPool(dev, pool, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, pl, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyShaderModule(dev, sm, NULL);
+   rmbuf(&out);
+   return 1;
+}
+
 /* Compute with a dynamic storage-buffer descriptor: src is bound with a dynamic offset (256 bytes = 64 words) and dst[i] must be src[64 + i] + 1.
  * Before the fix record_dispatch dropped the dynamic descriptors and the shader read an uninitialised resource table (deqp dynamic_offset.compute). */
 static int
@@ -362,7 +443,7 @@ main(int argc, char **argv)
    if (!gipa || !negotiate || negotiate(&iv)) { printf("{\"fail\":\"icd entry\"}\n"); return 1; }
 
    PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
-   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_0};
+   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_1};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
    const char *iext[] = {"VK_KHR_get_physical_device_properties2", "VK_KHR_external_memory_capabilities",
                          "VK_KHR_external_semaphore_capabilities", "VK_KHR_external_fence_capabilities"};
@@ -395,6 +476,7 @@ main(int argc, char **argv)
 
    int ok = 1;
    if (CASE_ON("dyn")) ok &= run_dyn();
+   if (ok && CASE_ON("base")) ok &= run_base();
    if (ok && CASE_ON("saxpy")) ok &= run_case("saxpy", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 0);
    if (ok && CASE_ON("saxpy_ind")) ok &= run_case("saxpy_ind", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 1);
    if (ok && CASE_ON("atomic")) ok &= run_case("atomic", K_ATOMIC, "atomic.comp.spv", 64, 100, 0);

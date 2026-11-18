@@ -443,7 +443,9 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
       pipeline_destroy(dev, p, alloc);
 }
 
-/* Every submission is serialised by the queue (a frame is built and retired before the next one), so barriers have nothing to do. */
+/* Intentionally a no-op: every dispatch/draw is its own frame (push_frame), and frames are serialised (each flushes L2/LSC and
+ * retires before the next). v1 vkCmdPipelineBarrier forwards here, and event/timestamp ops are ops frames (mali_event_vk.c).
+ * Caveat: a barrier inside a dynamic-rendering pass (self-dependency) is not handled. */
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *info)
 {
