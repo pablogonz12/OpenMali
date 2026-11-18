@@ -41,6 +41,7 @@ void mali_desc_set_mem_ops(const struct mali_desc_mem_ops *ops);
 struct mali_dsl {
    struct vk_descriptor_set_layout vk;
    uint32_t nbindings, slot_count, dyn_count, imm_count;
+   int32_t var_binding;         /* binding with VARIABLE_DESCRIPTOR_COUNT (always the highest-numbered), or -1 */
    struct mali_lbinding *b;     /* nbindings entries */
    VkSampler *imm;              /* immutable samplers */
    struct vk_ycbcr_conversion_state *ycbcr;   /* conversion of each immutable sampler that has one (index = b->ycbcr_off + element), else NULL */
