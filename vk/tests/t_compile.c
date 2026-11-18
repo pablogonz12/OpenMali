@@ -200,11 +200,18 @@ test_errors(void)
    uint32_t junk[8] = {0x12345678, 1, 2, 3, 4, 5, 6, 7};
    struct spv j = { junk, 8 };
    struct mali_compiled c;
-   char err[128];
+   char err[256];
    struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = j.w, .spirv_words = j.n, .cache_dir = "" };
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "junk SPIR-V rejected");
    o.arch = 12;
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
+
+   /* A module that declares a capability Mesa does not implement: the error must name it (not just "spirv_to_nir failed"). */
+   uint32_t badcap[] = {0x07230203, 0x00010500, 0, 1, 0, 0x00020011, 0x7ffffff0u /* OpCapability <unknown> */};
+   o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = badcap, .spirv_words = 7, .cache_dir = "" };
+   err[0] = 0;
+   CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "unknown capability rejected");
+   CHECK(strstr(err, "Unimplemented SPIR-V capability") != NULL, "error names the capability: '%s'", err);
 }
 
 /* YCbCr: the conversion of an immutable NV12 sampler is lowered into the shader (nir_vk_lower_ycbcr_tex: two plane samples, model/range
