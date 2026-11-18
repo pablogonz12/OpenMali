@@ -85,6 +85,28 @@ Host gamescope 3.17.0.
 
 **NV12 modifiers (gamescope):** gamescope asked `vkGetPhysicalDeviceFormatProperties2` for DRM format `0x3231564E` (NV12) and got zero modifiers: NV12 is deliberately not on our list (two memory planes; our dma-buf export is single-plane LINEAR). It matters only when a client hands gamescope NV12 dma-bufs (video). Steam's UI (CEF/ANGLE) is RGB and does not need it, so it is non-fatal for the menu. The fix is a multi-plane modifier layout plus import in `mali_image.c` (L).
 
+## Why zink offers only compat 2.1 / GLES 2.0 (round 5, source analysis; host Mesa 26.2.6 and the checked-out Mesa)
+
+Mesa's GL version is computed in `src/mesa/main/version.c` (`compute_version`, `compute_version_es2`) from the extension flags that `st_extensions.c` derives from zink's caps (`zink_screen.c`, `zink_init_screen_caps`). Checked against our device (host fake v10, `vulkaninfo`, `--show-formats`):
+
+| Level | What decides it | Ours | Blocker | Effort |
+|---|---|---|---|---|
+| GL 2.1 / ES 2.0 | shaders, blend separate, two-sided stencil, sRGB | have | - | what we get today |
+| **GL 3.0** | `EXT_transform_feedback` (`EXT_CAP(EXT_transform_feedback, max_stream_output_buffers)`); zink sets `max_stream_output_buffers` only when `VK_EXT_transform_feedback` (feature `transformFeedback`) is present | **missing** | **`VK_EXT_transform_feedback`** | **L**: Valhall has no hardware stream-out; it needs a vertex-shader lowering to buffer stores (xfb info through NIR), begin/end + counter buffers, and VS-only draws (below); compiler and draw-path files |
+| **ES 3.0** | the same `EXT_transform_feedback`, plus `ARB_instanced_arrays` (zink: `vertex_element_instance_divisor` = `VK_EXT_vertex_attribute_divisor`) | both **missing** | `VK_EXT_transform_feedback` (L), `VK_EXT_vertex_attribute_divisor` (M: instance divisor in the attribute-buffer descriptor emitted by `mali_cs_emit.c`/`mali_pipeline.c`, draw path) | L + M |
+| GL 3.1 / 3.2 | UBO (`maxUniformBufferRange` 16384 ok), 16 vertex texture units (our 16 per-stage samplers ok), depth clamp (`depthClamp` + `VK_EXT_depth_clip_enable`: have), provoking vertex (zink flags it from `VK_EXT_provoking_vertex`, which we lack; not measured whether zink then falls back), sync, multisample (ok) | mostly have | provoking vertex unmeasured | M (draw path) if needed |
+| GL 3.3 | `ARB_instanced_arrays` (same divisor extension), dual-source blend (have), timer query (`timestampValidBits` = 64: have), swizzle (have) | divisor missing | `VK_EXT_vertex_attribute_divisor` | M |
+| GLES 3.1 | compute (have), `maxVertexInputBindingStride` >= 2048 (have, exactly 2048), draw indirect (have), image load/store, SSBO | have in principle | needs ES 3.0 first | - |
+| GLES 3.2 / GL 4.x | geometry + tessellation shaders (`geometryShader`, `tessellationShader` false) | missing | stages absent from the compiler | L each |
+
+**Formats are not the blocker:** every format Mesa's 3.0 checks name is listed by our device (R11G11B10, RGB9E5, D32F, SNORM 8/16, BC4/BC5, A2B10G10R10 UNORM/UINT, sRGB 8888, float16/32, integer formats, ETC2/EAC/ASTC, 4444/565). Missing: `A8_UNORM_KHR` (maintenance5 format, used by zink for GL_ALPHA8; S-M, descriptor swizzle, needs a pixel test on hardware).
+
+**Counts:** blockers for GL 3.0: 1 (L); for ES 3.0: 2 (1 L + 1 M); extra for GL 3.3: 0 beyond the divisor; unmeasured: 1 (provoking vertex). The draw-path prerequisites (rasterizer discard / VS-only pipelines, `mali_cmd.c:426`) are an M item that XFB needs in practice (GL_RASTERIZER_DISCARD).
+
+**Implemented this round: none.** No S item in this list can be advertised honestly: every blocker touches the compiler or the draw-path files, and Steam's web helper (ANGLE/GL ES 3) therefore stays at GLES 2.0 on zink until `VK_EXT_transform_feedback` and the divisor exist. Order: divisor (M, also needed by DXVK, DXVK-GAP.md) -> VS-only pipelines -> transform feedback (L).
+
+**Phone result (round 5, poco-x4, a64-glibc-wl build of aa760ff, Mesa 26.2.4 in the guest):** the ICD loads and gamescope selects it; `vulkaninfo` lists the device. zink still prints `glx: failed to create drisw screen` / `failed to load driver: zink` (glxinfo and Steam's web helper, EGL `failed to create dri2 screen`) with no `MESA: error` line and no GL version: the screen creation fails silently before any context exists, so the GL level above is predicted from the source, not measured on the phone. Steam dies 11 s into the session (`GUEST_EXIT`, no frame). Next measurement: run `glxinfo` in the guest with `VK_LOADER_DEBUG=all` to see whether `vkCreateDevice` is reached (the host run reaches it).
+
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
 ```
