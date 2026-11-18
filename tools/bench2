@@ -314,6 +314,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
     ph.push(MDB, "mdbench")
     ph.push(os.path.join(ph.root, "driver", "libkbase", "out", "reaper-aarch64"), "reaper")
     so_sha = None
+    mdb_sha = sha256(MDB)[:8]
     if "ours" in drivers:
         ph.push(ours_so, "mdb_icd.so")
         so_sha = sha256(ours_so)
@@ -334,11 +335,16 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 return sub
     mode = "sweep" if sweep else "final"
     cp = cache_path(ph, commit, so_sha, mode)
-    cache = {}
+    cache, fails = {}, {}
     if os.path.exists(cp):
         for l in open(cp):
             e = json.loads(l)
-            cache[e["k"]] = e["m"]
+            if e["m"]:
+                cache[e["k"]] = e["m"]
+            else:                                         # a failed run is retried once on the next call (a transient adb/guest hiccup must not be a permanent hole); 2 failures stand
+                fails[e["k"]] = fails.get(e["k"], 0) + 1
+                if fails[e["k"]] >= 2:
+                    cache[e["k"]] = None
     bestf = BESTF[0] or os.path.join(REPO, "bench", "best.json")
     best_all = json.load(open(bestf)) if os.path.exists(bestf) else {}
     rows = []
@@ -351,7 +357,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         for r, i, d in tasks:
             c = plans[d][i]
             key = ("off:" if c.get("off") else "pres:") + label(c)
-            ck = f"{d}|{variant}|{key}|{c.get('scene')}|{PIN[0].strip()}|{r}"
+            ck = f"{d}|{variant}|{key}|{c.get('scene')}|{c.get('wsi')}|{PIN[0].strip()}|{secs}|{mdb_sha}|{r}"      # every input that changes the workload
             if ck in cache:
                 if cache[ck]:
                     res[d].setdefault(key, []).append(cache[ck])
@@ -417,7 +423,8 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 continue
             row = {"date": date, "bench": bench, "variant": variant, "phone": ph.alias, "class": ph.cls, "gpu": getattr(ph, "gpu", None), "driver": d,
                    "version": ver, "commit": commit, "ref": REF[0],
-                   "so_sha256": so_sha[:12] if d == "ours" else None, "reps": reps, "secs": secs,
+                   "so_sha256": so_sha[:12] if d == "ours" else None, "reps": reps, "secs": secs, "mdb_sha256": mdb_sha,
+                   "scene": {"pres": ps[bp[5:]]["scene"], "off": ps[bo[4:]]["scene"]}, "cpu_pin": PIN[0].strip() or None,
                    "presented": dict(pres[bp], cfg=bp[5:]), "offscreen": dict(off[bo], cfg=bo[4:]),
                    "best_settings": f"present {bp[5:]}; offscreen {bo[4:]}", "battery_c": ph.h.get("temp_c")}
             rows.append(("row", row))

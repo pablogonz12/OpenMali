@@ -692,6 +692,14 @@ class T(unittest.TestCase):
         self.assertTrue(BL.publishable(row("ours", 2.5)))
         self.assertEqual(len(BL.merge_rows([], rows)), 3)
 
+    def test_merge_rows_uses_already_published_bridge_as_peer(self):
+        def row(drv, gpu):
+            return {"phone": "poco-x8", "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}
+        # ours-only job: the bridge row of the same commit is already in the file; 1.4 ms is valid (bridge 1.32), not under the 2 ms fallback floor
+        merged = BL.merge_rows([row("bridge", 1.32)], [row("ours", 1.40)])
+        self.assertEqual([r["driver"] for r in merged], ["bridge", "ours"])
+        self.assertEqual(len(BL.merge_rows([row("bridge", 1.32)], [row("ours", 0.4)])), 1)    # still rejects the invalid-winner symptom
+
     def test_bench_owner_pending_is_gated_not_invalid(self):
         """bench2 stopping with 'PENDING: focus rule violated' pushed nothing: the .so left on the phone by an earlier job must not make the job
         INVALID (2026-11-18: three INVALIDs in 21 s used up the v13 attempts). A finished chunk with a foreign .so is still INVALID."""

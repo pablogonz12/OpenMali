@@ -176,7 +176,8 @@ def publishable(r, peers=()):
 def merge_rows(existing, new):
     """-> merged list: later rows replace earlier ones with the same key (and move to the end = newest); relative order otherwise kept"""
     d = {}
-    for r in existing + [x for x in new if publishable(x, new)]:
+    peers = list(existing) + list(new)           # the bridge row of a commit may already be published (ours-only job): without it the absolute 2 ms floor dropped valid X8 rows
+    for r in existing + [x for x in new if publishable(x, peers)]:
         k = row_key(r)
         d.pop(k, None)
         d[k] = r
