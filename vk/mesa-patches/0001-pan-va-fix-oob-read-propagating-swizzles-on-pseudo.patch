@@ -1,5 +1,5 @@
 From ea40598a68bab5690e0d08f845e2776ef9be2db9 Mon Sep 17 00:00:00 2001
-From: Olivia Lee <olivia.lee@collabora.com>
+From: Olivia Lee
 Date: Mon, 26 Oct 2026 23:08:28 -0700
 Subject: [PATCH] pan/va: fix out-of-bounds read propagating swizzles on pseudo
  instructions
@@ -9,8 +9,8 @@ not recorded in the info.srcs array. The array is also statically sized,
 and there may be more than 4 srcs leading to an out-of-bounds access.
 
 Fixes: 67a662ed058a (pan/bi: Propagate MKVEC.v2i8 and V2X8_TO_V2X16 for replicate swizzle)
-Signed-off-by: Olivia Lee <olivia.lee@collabora.com>
-Reviewed-by: Eric R. Smith <eric.smith@collabora.com>
+Signed-off-by: Olivia Lee
+Reviewed-by: Eric R. Smith
 Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/45650>
 ---
  src/panfrost/compiler/bifrost/valhall/va_optimize.c | 4 ++++

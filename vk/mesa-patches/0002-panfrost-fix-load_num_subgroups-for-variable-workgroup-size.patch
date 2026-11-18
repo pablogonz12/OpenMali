@@ -1,5 +1,5 @@
 From 555d65ac9abfbb5aa9b59fcce7d0759eec4e3d9b Mon Sep 17 00:00:00 2001
-From: jiajia Qian <jiajia.qian@nxp.com>
+From: jiajia Qian
 Date: Thu, 22 Oct 2026 16:45:36 +0800
 Subject: [PATCH] panfrost: fix load_num_subgroups for variable workgroup size
 
@@ -12,8 +12,8 @@ get_num_sub_groups() returning 0 when the local size is provided at
 kernel launch time.
 
 Assisted-by: LLM
-Signed-off-by: jiajia Qian <jiajia.qian@nxp.com>
-Reviewed-by: Faith Ekstrand <faith.ekstrand@collabora.com>
+Signed-off-by: jiajia Qian
+Reviewed-by: Faith Ekstrand
 Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/45477>
 ---
  src/panfrost/compiler/bifrost/bifrost_nir.c | 27 +++++++++++++++------
