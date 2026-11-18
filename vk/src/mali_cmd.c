@@ -490,8 +490,8 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
-      if (dyn->cb.logic_op_enable || dyn->rs.rasterizer_discard_enable)
-         unsupported(cmd, dyn->cb.logic_op_enable ? "logic op" : "rasterizer discard");
+      if (dyn->cb.logic_op_enable)
+         unsupported(cmd, "logic op");
       if (x->blend_en && !bp->gfx.blend_va) {
          uint32_t eq; unsigned cm;
          if (mali_blend_equation(x, &eq, &cm))
@@ -499,6 +499,13 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       }
    }
    return true;
+}
+
+/* rasterizer discard (pipeline state or dynamic) / pipeline without a fragment stage: the draw produces no fragments, so it is dropped */
+static bool
+discarded(const struct mali_cmd_buffer *cmd)
+{
+   return cmd->gfx.discard || cmd->vk.dynamic_graphics_state.rs.rasterizer_discard_enable;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -509,6 +516,8 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
       unsupported(cmd, "draw outside a rendering with a pipeline");
       return;
    }
+   if (discarded(cmd))
+      return;
    if (!vcount || !icount)
       return;
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
@@ -527,6 +536,8 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       unsupported(cmd, "indexed draw outside a rendering, without a pipeline or index buffer");
       return;
    }
+   if (discarded(cmd))
+      return;
    if (!icount || !inst)
       return;
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
@@ -563,6 +574,8 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       unsupported(cmd, "indirect draw outside a rendering, without a pipeline or index buffer");
       return;
    }
+   if (discarded(cmd))
+      return;
    uint32_t sz = indexed ? 20 : 16;
    if (!stride)
       stride = sz;
@@ -768,21 +781,30 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->area[1] = ri->renderArea.offset.y;
    f->area[2] = (int32_t)ri->renderArea.extent.width;
    f->area[3] = (int32_t)ri->renderArea.extent.height;
-   if (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView) {
+   /* no colour attachment (depth/stencil only, or nothing at all): the frame gets a write-disabled dummy render target (as panvk's null RT) */
+   const bool no_col = ri->colorAttachmentCount == 0 || (ri->colorAttachmentCount == 1 && !ri->pColorAttachments[0].imageView);
+   if (!no_col && ri->colorAttachmentCount != 1) {
       unsupported(cmd, "need exactly one colour attachment");
       return;
    }
-   const VkRenderingAttachmentInfo *ca = &ri->pColorAttachments[0];
-   int ivr = g_res.image_view(ca->imageView, &t);
-   if (ivr || t.is_zs) {
+   const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
+   bool load = false;
+   struct mali_preload_src psrc;
+   memset(&psrc, 0, sizeof psrc);
+   if (no_col) {
+      f->width = (uint32_t)(f->area[0] + f->area[2]);
+      f->height = (uint32_t)(f->area[1] + f->area[3]);
+      f->samples = 1;
+   }
+   int ivr = no_col ? 0 : g_res.image_view(ca->imageView, &t);
+   if (!no_col && (ivr || t.is_zs)) {
       if (getenv("MALI_PIPE_DBG"))
          fprintf(stderr, "mali_cmd: colour attachment view: resolver rc=%d is_zs=%d\n", ivr, t.is_zs);
       unsupported(cmd, "colour attachment view");
       return;
    }
-   bool load = is_load_op(ca->loadOp);
-   struct mali_preload_src psrc;
-   memset(&psrc, 0, sizeof psrc);
+   if (!no_col)
+      load = is_load_op(ca->loadOp);
    if (load) {
       /* LOAD = a preload draw reading the old contents (linear image) through a storage buffer; any render-target format */
       int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
@@ -815,6 +837,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       psrc.arg = kind | (srgb ? 0x100u : 0u);
       psrc.bpp = bpp;
    }
+   if (!no_col) {
    f->width = t.width;
    f->height = t.height;
    f->has_colour = true;
@@ -854,6 +877,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
    }
+   }
    struct mali_preload_src zsrc;
    memset(&zsrc, 0, sizeof zsrc);
    bool zload = false, sload = false;
@@ -875,6 +899,14 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          zsrc.arg = t.zs_format == 3;
       }
       f->has_zs = true;
+      if (no_col) {
+         f->width = t.width;
+         f->height = t.height;
+         if (t.samples > 1) {
+            unsupported(cmd, "multisampled depth/stencil without a colour attachment");
+            return;
+         }
+      }
       if (da->resolveMode != VK_RESOLVE_MODE_NONE || (t.samples > 1) != (f->samples == 4)) {
          unsupported(cmd, "depth resolve / depth sample count differs from the colour attachment");
          return;
@@ -904,6 +936,14 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          zsrc.bytes[1] = t.s_row_stride * t.height;
       }
       f->has_st = true;
+      if (no_col) {
+         f->width = t.width;
+         f->height = t.height;
+         if (t.samples > 1) {
+            unsupported(cmd, "multisampled depth/stencil without a colour attachment");
+            return;
+         }
+      }
       f->st.va = t.s_va;
       f->st.row_stride = t.s_row_stride;
       f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;

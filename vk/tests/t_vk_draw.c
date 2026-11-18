@@ -27,6 +27,8 @@
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
 static unsigned g_colbpp = 4;
+static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
+static int g_discard;   /* 1: rasterizerDiscardEnable with both stages, 2: vertex-only pipeline + discard */
 static int g_clear_u;   /* clear the colour attachment to the integer value (200,100,50,7) instead of float zeros */
 static int g_load;   /* two-pass LOAD test: store depth/stencil, and build s->rp2 = the same pass with loadOp LOAD */
 static int g_fail, g_fake, g_loop = 1, g_reset;
@@ -317,13 +319,15 @@ scene_create(struct scene *s, int depth)
       ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
       ad[1].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
    }
+   if (g_nocol)
+      ad[0] = ad[1];   /* the depth attachment becomes attachment 0; the colour image is created but not attached */
    VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
    VkAttachmentReference rref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-   VkAttachmentReference dref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
-                              .pColorAttachments = &cref, .pResolveAttachments = g_msaa ? &rref : NULL,
+   VkAttachmentReference dref = {g_nocol ? 0 : 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = g_nocol ? 0 : 1,
+                              .pColorAttachments = g_nocol ? NULL : &cref, .pResolveAttachments = g_msaa ? &rref : NULL,
                               .pDepthStencilAttachment = depth ? &dref : NULL};
-   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = depth || g_msaa ? 2 : 1,
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = g_nocol ? 1 : depth || g_msaa ? 2 : 1,
                                  .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp};
    if (g_load) {
       ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -339,8 +343,10 @@ scene_create(struct scene *s, int depth)
       if (g_st.on) ad[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
       CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp2) == VK_SUCCESS, "render pass (LOAD)");
    }
+   if (g_nocol)
+      atts[0] = atts[1];
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = s->rp,
-                                  .attachmentCount = depth || g_msaa ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
+                                  .attachmentCount = g_nocol ? 1 : depth || g_msaa ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
                                   .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &s->fb) == VK_SUCCESS, "framebuffer");
 
@@ -470,7 +476,7 @@ scene_create(struct scene *s, int depth)
                                             .viewportCount = s->mode == MODE_MVP ? 4 : 1, .scissorCount = s->mode == MODE_MVP ? 4 : 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                 .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
-                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f, .rasterizerDiscardEnable = g_discard != 0};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = g_msaa ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT,
                                               .sampleShadingEnable = g_msaa == 2, .minSampleShading = g_msaa == 2 ? 1.0f : 0.0f};
@@ -503,7 +509,7 @@ scene_create(struct scene *s, int depth)
       cba.colorWriteMask = g_fx.wmask;
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                              .attachmentCount = 1, .pAttachments = &cba};
+                                              .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
    VkDynamicState dyn[9] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
@@ -515,7 +521,7 @@ scene_create(struct scene *s, int depth)
    }
    if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
                 cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
-   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = g_discard == 2 ? 1 : 2,
                                       .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                       .pDepthStencilState = depth ? &dss : NULL, .pColorBlendState = &cbs,
@@ -581,11 +587,13 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   if (g_nocol)
+      cv[0] = cv[1];
    if (g_clear_u)
       cv[0].color.uint32[0] = 200, cv[0].color.uint32[1] = 100, cv[0].color.uint32[2] = 50, cv[0].color.uint32[3] = 7;
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
-                               .clearValueCount = s->depth ? 2 : 1, .pClearValues = cv};
+                               .clearValueCount = g_nocol ? 1 : s->depth ? 2 : 1, .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
@@ -1099,6 +1107,59 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
    CHECK(ok, "%s: pixel %08x want %08x", name, got, want0);
    g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;
    g_colbpp = 4;
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* rasterizer discard: draws produce nothing (both stages present, or a vertex-only pipeline); the next pipeline draws normally */
+static int
+test_discard(const char *name, int mode)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_discard = mode;
+   int ok = scene_create(&s, 0);
+   g_discard = 0;
+   float one[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, one, f);
+   unsigned cov = 0;
+   if (ok && !g_fake) {
+      cov = count_cov(&s);
+      ok = cov == 0;
+   }
+   printf("{\"test\":\"%s\",\"coverage\":%u,\"ok\":%s%s}\n", name, cov, ok ? "true" : "false", g_fake ? ",\"skipped\":\"fake backend\"" : "");
+   CHECK(ok, "%s: coverage %u, want 0", name, cov);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* depth-only render pass (no colour attachment): the draw must complete */
+static int
+test_nocol(const char *name, int stencil)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkFormat save = g_depfmt;
+   if (stencil) {
+      g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT;
+      g_st = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_ALWAYS, .cmp_b = VK_COMPARE_OP_ALWAYS, .fail = VK_STENCIL_OP_KEEP,
+                               .pass = VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = 0xff, .ref = 0, .clear = 0};
+   }
+   g_nocol = 1;
+   int ok = scene_create(&s, 1);
+   float one[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, one, f);
+   g_nocol = 0;
+   g_st = (struct st_state){0};
+   g_depfmt = save;
+   printf("{\"test\":\"%s\",\"ok\":%s}\n", name, ok ? "true" : "false");   /* completion (no hang, no error) is the check; dEQP depth/stencil .nocolor reads the result back */
+   CHECK(ok, "%s: depth-only pass failed", name);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1847,6 +1908,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
    if (ok && CASE_ON("load_depth")) ok &= test_load("load_depth", 0);
+   if (ok && CASE_ON("nocol_depth")) ok &= test_nocol("nocol_depth", 0);
+   if (ok && CASE_ON("nocol_stencil")) ok &= test_nocol("nocol_stencil", 1);
+   if (ok && CASE_ON("discard_both")) ok &= test_discard("discard_both", 1);
+   if (ok && CASE_ON("discard_vs_only")) ok &= test_discard("discard_vs_only", 2);
    if (ok && CASE_ON("int_clear_rgba8ui")) ok &= test_int_clear("int_clear_rgba8ui", VK_FORMAT_R8G8B8A8_UINT, 4, 0x073264c8u);
    if (ok && CASE_ON("int_clear_rg16ui")) ok &= test_int_clear("int_clear_rg16ui", VK_FORMAT_R16G16_UINT, 4, 0x006400c8u);
    if (ok && CASE_ON("int_clear_r8ui")) ok &= test_int_clear("int_clear_r8ui", VK_FORMAT_R8_UINT, 1, 0xc8u);

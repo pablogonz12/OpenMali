@@ -24,6 +24,7 @@ unsigned kb_zs_bytes_per_pixel(enum kb_zs_format f);
 
 struct kb_fb_params {
 	unsigned width, height;       /* pixels, 1..65536 */
+	unsigned rt_none;             /* no colour attachment: the render target is declared but Write Enable is off, no buffer */
 	uint64_t rt_gpu_va;           /* colour buffer, 64-byte aligned */
 	uint32_t row_stride;          /* bytes between rows, multiple of 16 */
 	uint32_t surface_stride;      /* bytes per layer (0 = stride*height) */
