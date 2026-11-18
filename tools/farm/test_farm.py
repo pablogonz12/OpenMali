@@ -1431,6 +1431,51 @@ class T(unittest.TestCase):
         self.assertEqual(self.farm("wait", jid)[1], "error")
 
 
+    def test_gate_start_limit_hysteresis(self):
+        th = dict(gate.DEFAULTS, temp_stop=50.0, temp_resume=38.0, temp_start=40.0)
+        ok = {"level": 80, "temp_c": 45.0, "thermal": 0}
+        self.assertEqual(gate.next_state("ok", ok, th)[0], "ok")                       # a running job is only stopped at temp_stop
+        self.assertEqual(gate.next_state("ok", ok, th, starting=True)[0], "cooling")   # a new one does not start at 45 C
+        self.assertEqual(gate.next_state("cooling", dict(ok, temp_c=39.0), th, starting=True)[0], "cooling")
+        self.assertEqual(gate.next_state("cooling", dict(ok, temp_c=38.0), th, starting=True)[0], "ok")
+        self.assertEqual(gate.next_state("ok", dict(ok, temp_c=50.0), th)[0], "cooling")
+
+    def test_submit_idempotent_and_rerun(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
+        rc, again, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.assertEqual((rc, again), (0, jid))
+        self.assertIn("already passed", err)
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--env", "FOO=1")[1], jid)   # other inputs: new job
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")[1], jid)
+
+    def test_find_passed_unit(self):
+        j = {"id": "a", "commit": "c1", "suite": "daily", "env": "", "dirty": False, "parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "done", "verdict": "fail"}}}
+        self.assertEqual(L.find_passed([j], "c1", "daily", ["v11"], "")["id"], "a")
+        self.assertIsNone(L.find_passed([j], "c1", "daily", ["v11", "v13"], ""))
+        self.assertIsNone(L.find_passed([j], "c2", "daily", ["v11"], ""))
+        self.assertIsNone(L.find_passed([dict(j, dirty=True)], "c1", "daily", ["v11"], ""))
+
+    def test_submit_stale_base_and_merge_with_main(self):
+        r = subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
+        if r.returncode:
+            self.skipTest("no origin/main in this checkout")
+        n = int(subprocess.run(["git", "-C", HERE, "rev-list", "--count", "HEAD"], capture_output=True, text=True).stdout)
+        if n > 12:
+            rc, _, err = self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11")
+            self.assertNotEqual(rc, 0)
+            self.assertIn("behind origin/main", err)
+            self.assertEqual(self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
+        rc, jid, err = self.farm("submit", "origin/main", "--suite", "smoke", "--need", "v11", "--merge-with-main")
+        self.assertEqual(rc, 0, err)
+        j = L.find_job(jid)
+        self.assertTrue(j["ref"].endswith("+main"))
+        parents = subprocess.run(["git", "-C", HERE, "rev-list", "--parents", "-n1", j["commit"]], capture_output=True, text=True).stdout.split()
+        self.assertEqual(len(parents), 3)                                               # a merge commit of REF and origin/main
+
+
 class SweepBackoffUnit(unittest.TestCase):
     def test_backoff_1_to_30_min_and_alert_after_5(self):
         import importlib.machinery, importlib.util, types

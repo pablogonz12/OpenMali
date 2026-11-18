@@ -217,6 +217,14 @@ def push_so(src, sha, dst):
     if rc != 0:
         print("push failed: " + o.strip()[-200:], flush=True)
         sys.exit(79)
+    if sha_phone(dst) == sha:
+        return True
+    print("sha256 mismatch after push; re-pushing once", flush=True)       # farm owns the check: one automatic re-push before giving up
+    adb("shell", f"rm -f {dst}", timeout=30)
+    rc, o = adb("push", src, dst, timeout=180)
+    if rc != 0:
+        print("re-push failed: " + o.strip()[-200:], flush=True)
+        sys.exit(79)
     return sha_phone(dst) == sha
 
 

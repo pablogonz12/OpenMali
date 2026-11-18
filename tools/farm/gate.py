@@ -81,7 +81,7 @@ def thresholds(serial=None):
     return th
 
 
-def next_state(prev, h, th):
+def next_state(prev, h, th, starting=False):
     """pure: (state, reason). Unreadable values never gate (the job itself will fail loudly if the phone is gone)."""
     if th.get("require_charging") and h.get("powered") is not True:      # owner's daily phone: only while on a charger
         return "on_battery", "on battery: paused (require_charging)"
@@ -101,6 +101,9 @@ def next_state(prev, h, th):
         prev = "ok"
     if low:
         return "charging", f"battery {lvl}% < {th['batt_stop']}% (resume at {th['batt_resume']}%)"
+    ts_ = th.get("temp_start")
+    if starting and ts_ is not None and t is not None and t > ts_:      # do not begin a job on a phone that would hit temp_stop minutes in; then it must cool to temp_resume (no flapping)
+        return "cooling", f"temp {t}C > start limit {ts_}C (resume at <= {th['temp_resume']}C)"
     if hot:
         return "cooling", f"temp {t}C thermal {ts} (stop at >= {th['temp_stop']}C or status >= {th['thermal_stop']})"
     return "ok", ""
@@ -127,7 +130,7 @@ def alert(msg):
         f.write(time.strftime("%Y-%m-%dT%H:%M:%S%z ") + msg + "\n")
 
 
-def check(key, health, th):
+def check(key, health, th, starting=False):
     """key: phone lock name (shared by farm and quick). health: dict from parse()/fake. -> (state, reason). Persists + alerts on change."""
     d = state_dir()
     os.makedirs(d, exist_ok=True)
@@ -136,7 +139,7 @@ def check(key, health, th):
         prev = json.load(open(path)).get("state", "ok")
     except (OSError, ValueError):
         prev = "ok"
-    st, why = next_state(prev, health, th)
+    st, why = next_state(prev, health, th, starting)
     if st != prev:
         alert(f"GATE {key} {prev}->{st}: {why or 'recovered'} [batt {health.get('level')}% temp {health.get('temp_c')}C thermal {health.get('thermal')}]")
     json.dump({"state": st, "reason": why, "health": health, "ts": time.time()}, open(path, "w"))

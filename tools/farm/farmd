@@ -76,7 +76,7 @@ class Farm:
         self.sweep_why = {}                            # alias -> last logged reason the sweep is waiting (log on change only)
         self.sweep_bad = {}                            # alias -> consecutive failed sweep chunks (session churn guard)
         self.last_health, self.last_wl = {}, {}
-        self.stop_reason, self.last_pw, self.last_mdns = {}, {}, {}
+        self.stop_reason, self.last_pw, self.last_mdns, self.last_hot = {}, {}, {}, {}
         self.cfg_mtime = self.devices_mtime()
         self.wake = threading.Event()                  # set when a run/sweep ends: schedule the next one immediately, no poll wait
         self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
@@ -172,10 +172,11 @@ class Farm:
             return h
         return gate.read_adb(self.tid.get(dev["alias"]) or dev["serial"])
 
-    def gate_check(self, dev):
-        """-> (state ok|charging|cooling, reason, health); persists hysteresis state + alerts.log line on change"""
+    def gate_check(self, dev, starting=False):
+        """-> (state ok|charging|cooling, reason, health); persists hysteresis state + alerts.log line on change.
+        starting=True (a job is about to begin): a phone above temp_start (devices.toml) is not started even though it is below temp_stop"""
         h = self.health(dev)
-        st, why = gate.check(dev["lock"], h, self.thresholds(dev))
+        st, why = gate.check(dev["lock"], h, self.thresholds(dev), starting=starting)
         return st, why, h
 
     def adopt_route(self, dev, addr):
@@ -509,6 +510,21 @@ class Farm:
         return L.sh([os.path.join(self.quick_root, "scripts", "quick", "qrestore"), dev["lock"]], 90, env=self.phone_env(dev))
 
     # ---------- suites -> dict(verdict, counts, new_failures, newly_passing, notes, extra)
+    def observed_path(self, dev, tip):
+        return os.path.join(L.state_dir(), "baseline", f"{dev['baseline']}-{tip[:8]}.tsv")
+
+    def save_observed(self, dev, cur):
+        """a daily of main's own tip on this phone class: what main really does today (the committed baseline can be stale: 45 v11 dailies
+        failed on one case main no longer passes) -> <state>/baseline/<baseline>-<tip8>.tsv, the reference for later jobs while main stays there"""
+        tip = self.main_tip()
+        p = self.observed_path(dev, tip)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + f".tmp{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.writelines(f"{c}\t{st}\n" for c, st in sorted(cur.items()))
+        os.replace(tmp, p)
+        log(f"{dev['alias']}: observed baseline for main {tip[:8]} saved ({sum(1 for v in cur.values() if v == 'Pass')} Pass)")
+
     def baseline(self, job, dev):
         """-> (merged baseline | None, text). A case counts as Pass if it is Pass in the BRANCH's own committed baseline OR in the
         REFERENCE baseline (main's tip: the newest blessed one), so a branch that predates a fix cannot hide a regression."""
@@ -523,6 +539,15 @@ class Farm:
                     got[kind] = (L.read_tsv(tmp), git("rev-parse", "--short=8", ref, cwd=self.repo)[1].strip())
                 finally:
                     os.unlink(tmp)
+        tip = self.main_tip()
+        op = self.observed_path(dev, tip)
+        if os.path.exists(op) and "ref" in got:                # main's own observed results for this phone class replace its committed (possibly stale) file
+            got["ref"] = (L.read_tsv(op), tip[:8] + " observed")
+            if "branch" in got:                                # a branch that did not edit the baseline file inherits main's stale one: judge it against what main does
+                rc1, bb = git("rev-parse", f"{job['commit']}:{rel}", cwd=self.repo)
+                rc2, mb = git("rev-parse", f"main:{rel}", cwd=self.repo)
+                if rc1 == 0 and rc2 == 0 and bb == mb:
+                    del got["branch"]
         if not got:
             return None, None
         if self.fake:                                   # test hook: the branch baseline is stale for N cases main passes
@@ -559,6 +584,12 @@ class Farm:
             self.last_pw[al] = time.time()
             if self.health(dev).get("powered") is not True:
                 self.stop_reason[al] = "on battery: paused"
+                return "stop"
+        if ok and rj and time.time() - self.last_hot.get(al, 0) >= (0 if self.fake else 30):
+            self.last_hot[al] = time.time()                    # mid-job thermal stop: a job must not run a phone past temp_stop while the owner's steward sees 55 C
+            gst, gwhy, _h = self.gate_check(dev)
+            if gst == "cooling":
+                self.stop_reason[al] = "cooling: " + gwhy
                 return "stop"
         return ok
 
@@ -858,6 +889,8 @@ class Farm:
         verdict = "fail" if nf else ("error" if missing or rc not in (0, 1) and not cur else "pass")
         if rc == 124:
             verdict = "error" if not nf else "fail"
+        if rc in (0, 1) and job["commit"] == self.main_tip() and not self.fake:
+            self.save_observed(dev, {**cur, **{c: "Pass" for c, _f, _r in flk}})
         extra = (f"; {len(n2f)} NotSupported->Fail" if n2f else "") + (f"; {len(ignored)} known-flaky ignored" if ignored else "") + rnote
         return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
                 "flaky": [{"case": c, "fails": f, "runs": r} for c, f, r in flk],
@@ -1334,7 +1367,7 @@ class Farm:
             self.running_job = {}
         self.running_job[alias] = jid
         try:
-            gs, gwhy, h0 = self.gate_check(dev)
+            gs, gwhy, h0 = self.gate_check(dev, starting=True)
             if gs != "ok":
                 log(f"{alias}: gated ({gs}: {gwhy}); {jid}/{cls} stays pending")
                 self.set_dstate(alias, gs, gwhy, batt=h0.get("level"), temp_c=h0.get("temp_c"), thermal=h0.get("thermal"))
@@ -1355,6 +1388,10 @@ class Farm:
             else:
                 job = L.read_json(L.job_path(jid))
                 res = getattr(self, "suite_" + job["suite"])(job, dev)
+                if (res and res.get("verdict") == "invalid" and "driver on the phone" in res.get("notes", "")
+                        and "(fake)" not in res.get("notes", "") and not self.is_disabled(dev)):
+                    log(f"{alias}: {jid}/{cls} driver sha mismatch ({res.get('notes', '')[:80]}); re-pushing and retrying once inside the hold")
+                    res = getattr(self, "suite_" + job["suite"])(job, dev)       # shellroute pushes + verifies afresh; still invalid -> normal requeue
                 if res.get("lost") or (self.fake is False and alias not in self.attached() and res["verdict"] != "pass"):
                     res = None                                  # phone vanished mid-run: do not blame the commit, retry later
         except Exception:
@@ -1380,7 +1417,7 @@ class Farm:
             return
         if res is None and why_stop:                            # owner policy (charger removed / disabled): clean stop, no blame, no retry count
             self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))
-            self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", why_stop)
+            self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "cooling" if why_stop.startswith("cooling") else "on_battery", why_stop)
             log(f"{alias}: {jid}/{cls} stopped ({why_stop}); back to pending, lock released")
             return
         if res is None:
@@ -1586,7 +1623,7 @@ class Farm:
             lock.release()
         why_stop = self.stop_reason.pop(alias, None)
         if why_stop and why_stop != "preempted":
-            self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", why_stop)
+            self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "cooling" if why_stop.startswith("cooling") else "on_battery", why_stop)
             log(f"{alias}: sweep stopped ({why_stop})")
         if sok is False or rc in (76, 77):
             alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
@@ -1670,6 +1707,28 @@ class Farm:
             log(f"auto bench: {a} idle > {idle:.0f}s with no bench row for main {tip[:8]}: {j['id']}")
             break                                                              # one at a time: the oldest missing first
 
+    def auto_daily(self, att, jobs):
+        """once per main tip and phone class: an auto daily of main itself (below explicit jobs) so the farm knows what main really passes
+        (save_observed). Kill switch: <state>/baseline/off. Recorded when queued, so a failure is not retried in a loop."""
+        if self.fake or os.path.exists(os.path.join(L.state_dir(), "baseline", "off")) or time.time() - getattr(self, "last_bd", 0) < 60:
+            return
+        self.last_bd = time.time()
+        tip = self.main_tip()
+        sp = os.path.join(L.state_dir(), "baseline", "auto.json")
+        seen = L.read_json(sp) if os.path.exists(sp) else {}
+        for a in sorted(att):
+            d = self.devs.get(a)
+            if not d or self.is_disabled(d) or self.dstate.get(a, {}).get("status") != "up" or seen.get(d["class"]) == tip:
+                continue
+            if os.path.exists(self.observed_path(d, tip)) or any(j["commit"] == tip and j["suite"] == "daily" and d["class"] in j["parts"] and j["parts"][d["class"]]["state"] != "cancelled" for j in jobs):
+                seen[d["class"]] = tip
+                continue
+            seen[d["class"]] = tip
+            j = L.new_job("main", tip, False, "daily", [d["class"]], "", os.path.basename(self.repo), auto=True, prio=10)
+            log(f"auto baseline: main {tip[:8]} has no observed {d['class']} daily: {j['id']}")
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        L.write_json(sp, seen)
+
     def auto_menu(self, att, jobs):
         """a phone idle > 15 min (health gate ok, owner not using it) whose installed MediaDeck versionCode differs from the last one a menu run
         was queued for -> one auto menu job pinned to it (below explicit jobs, same level as the auto bench). Once per version: the version is
@@ -1711,6 +1770,8 @@ class Farm:
             self.auto_bench(att, jobs)
             jobs = L.list_jobs()
             self.auto_menu(att, jobs)
+            jobs = L.list_jobs()
+            self.auto_daily(att, jobs)
             jobs = L.list_jobs()
         except Exception:
             log("auto bench/menu error: " + traceback.format_exc()[-300:])

@@ -21,6 +21,18 @@ def cmd_submit(a):
     cfg, devs = L.load_devices()
     commit = git("rev-parse", "--verify", a.ref + "^{commit}")
     head = git("rev-parse", "HEAD")
+    om = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-parse", "--verify", "-q", "origin/main^{commit}"], capture_output=True, text=True)
+    om = om.stdout.strip() if om.returncode == 0 else ""
+    if a.merge_with_main:
+        if not om:
+            raise SystemExit("farm: --merge-with-main needs origin/main (git fetch)")
+        tree = git("merge-tree", "--write-tree", commit, om)               # fails (exit 1) on conflicts
+        commit = git("commit-tree", tree.splitlines()[0], "-p", commit, "-p", om, "-m", f"farm: {a.ref} merged with origin/main {om[:8]} (gate only)")
+        a.ref = f"{a.ref}+main"
+    elif om and not a.allow_stale:
+        behind = int(git("rev-list", "--count", f"{commit}..{om}"))
+        if behind > L.STALE_COMMITS:
+            raise SystemExit(f"farm: {a.ref} is {behind} commits behind origin/main (limit {L.STALE_COMMITS}); rebase, use --merge-with-main, or --allow-stale")
     dirty = bool(git("status", "--porcelain", "--untracked-files=no")) and commit == head   # uncommitted edits are NOT tested
     classes = sorted({d["class"] for d in devs.values()})
     need = [c.strip() for c in a.need.split(",") if c.strip()] if a.need else classes
@@ -31,6 +43,12 @@ def cmd_submit(a):
         raise SystemExit("farm: --only is for --suite smoke")
     if a.suite == "cases" and not a.case:
         raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
+    if not a.rerun and not dirty:
+        old = L.find_passed(L.list_jobs(), commit, a.suite, need, L.parse_env(a.env), a.only, a.case, a.repeat)
+        if old:
+            print(f"farm: same commit/suite/inputs already passed as {old['id']}; not resubmitting (--rerun forces)", file=sys.stderr)
+            print(old["id"])
+            return
     job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
                     cases=a.case, repeat=a.repeat, only=a.only, prio=a.prio, keep_old=a.keep_old)
     if dirty:
@@ -734,6 +752,9 @@ def main():
     s.add_argument("--repeat", type=int, default=1, help="(--suite cases) repetitions of the case list")
     s.add_argument("--prio", type=int, default=None, help="queue priority, lower first (default by suite: smoke/daily 0, bench/menu 10, cases 20)")
     s.add_argument("--keep-old", action="store_true", help="smoke/daily: do not cancel pending jobs of older commits of the same branch")
+    s.add_argument("--merge-with-main", action="store_true", help="gate the merge of REF with origin/main (a throwaway merge commit), not REF alone")
+    s.add_argument("--allow-stale", action="store_true", help="accept a base more than 5 commits behind origin/main")
+    s.add_argument("--rerun", action="store_true", help="submit even if the same commit/suite/inputs already passed")
     s.set_defaults(f=cmd_submit)
     s = sp.add_parser("prio", help="change the queue priority of a job (lower runs first; gates 0, bench/menu 10, cases 20)")
     s.add_argument("job")

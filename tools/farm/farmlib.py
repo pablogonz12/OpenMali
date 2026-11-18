@@ -250,6 +250,21 @@ def find_job(jid):
     return m[0]
 
 
+def find_passed(jobs, commit, suite, need, env, only="", cases=None, repeat=1):
+    """idempotent submit: an existing job of the same commit/suite/inputs whose every wanted class is done+pass (non-dirty) -> that job, else None"""
+    for j in reversed(jobs):
+        if (j.get("commit") != commit or j.get("suite") != suite or j.get("dirty") or (j.get("env") or "") != (env or "")
+                or (j.get("only") or "") != (only or "") or list(j.get("cases") or []) != list(cases or []) or (j.get("repeat") or 1) != (repeat or 1)):
+            continue
+        ps = j.get("parts", {})
+        if all(c in ps and ps[c].get("state") == "done" and ps[c].get("verdict") == "pass" for c in need):
+            return j
+    return None
+
+
+STALE_COMMITS = 5
+
+
 def job_verdict(job):
     """pending while any part is not finished; then error > fail > pass"""
     parts = [p for p in job["parts"].values() if p["state"] != "cancelled"]
