@@ -120,3 +120,11 @@ See `R3-PLAN.md` "M12/M13 status" for design, unsupported list, wiring list and 
 
 ## M12/M13 (offline)
 Meta ops (`mali_meta*`), query pools (`mali_query*`), events/ops frames (`mali_event*`). Tests: `tests/build-t_meta.sh`, `build-t_query.sh`, `build-t_qpool.sh`. Occlusion needs `patches/occlusion-cs-emit.patch`; see R3-PLAN.md.
+
+## Known gaps in advertised features (feat-audit, 2026-11-18)
+- **Colour attachments:** `maxColorAttachments`/`maxFragmentOutputAttachments` are the Vulkan minimum (4) but only ONE colour attachment renders; a rendering with more fails `vkEndCommandBuffer` (`mali_cmd.c`, "need exactly one colour attachment"). `independentBlend` is true only because of that.
+- **MSAA:** sample counts 1|4 are advertised always (dEQP relies on it); 4x pipelines need `MALI_EXPERIMENTAL_MSAA=1` (`mali_pipeline.c`), and resolve/LOAD/depth cases are limited.
+- **multiViewport:** `maxViewports`=16 but viewports 1..15 are accepted and ignored (no geometry shader / ViewportIndex output).
+- **Indirect draws** are read on the CPU from a mappable buffer (`mali_cmd.c`); GPU-written indirect arguments are not supported.
+- **driverID** is `MESA_PANVK` on purpose: zink applies PanVK workarounds keyed on it.
+- Device apiVersion is 1.3 (older notes saying 1.0 are stale) but not every 1.3-mandatory feature is set; see `vk/FEATURE-AUDIT.md`.
