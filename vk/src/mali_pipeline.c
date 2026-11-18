@@ -362,12 +362,13 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
       res = VK_ERROR_FEATURE_NOT_PRESENT;
       goto fail;
    }
-   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, p->cs.bin_size, MALI_BO_EXEC, &p->code)) {
+   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, p->cs.bin_size ? p->cs.bin_size : 64, MALI_BO_EXEC, &p->code)) {   /* an empty shader (void main(){}) compiles to 0 bytes: a code BO of its own (dispatches of it are skipped) */
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
    }
    p->have_code = true;
-   memcpy(p->code.cpu, p->cs.bin, p->cs.bin_size);
+   if (p->cs.bin_size)
+      memcpy(p->code.cpu, p->cs.bin, p->cs.bin_size);
    *out = mali_pipeline_to_handle(p);
    return VK_SUCCESS;
 fail:
@@ -447,8 +448,12 @@ res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 static int
 target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, struct mali_cmd_target *out)
 {
-   if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled)
+   if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled) {
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: render target rejected: format %d va=%llx level %u/%u tiled=%d\n", (int)img->vk.format, (unsigned long long)img->va, level,
+                 img->lay.d.levels, (int)img->lay.d.tiled);
       return -EINVAL;
+   }
    if (img->vk.image_type == VK_IMAGE_TYPE_3D)
       return -EINVAL;   /* render to a 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too); rejected until the slice addressing is understood */
    int zs = 0;
@@ -466,8 +471,11 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    default: {
       bool ok;
       out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
-      if (!ok)
+      if (!ok) {
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: render target format %d not renderable\n", (int)img->vk.format);
          return -EINVAL;
+      }
       break;
    }
    }
@@ -504,6 +512,9 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       out->va = out->s_va;
       out->row_stride = out->s_row_stride;
    }
+   if (((out->va & 63) || (out->row_stride & 15)) && getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: render target not aligned: format %d va&63=%u row_stride=%u %ux%u samples %u\n", (int)img->vk.format,
+              (unsigned)(out->va & 63), (unsigned)out->row_stride, out->width, out->height, out->samples);
    return (out->va & 63) || (out->row_stride & 15) ? -EINVAL : 0;
 }
 
@@ -511,11 +522,18 @@ static int
 res_image_view(VkImageView h, struct mali_cmd_target *out)
 {
    struct mali_image_view *v = mali_image_view_from_handle(h);
-   if (!v)
+   if (!v) {
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: image view handle is null\n");
       return -EINVAL;
+   }
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
-   return target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
+   int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
+   if (r && getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: image view rejected rc=%d: format %d aspects 0x%x view aspect 0x%x type %d usage 0x%x samples %u\n", r, (int)img->vk.format,
+              (unsigned)v->vk.aspects, (unsigned)a, (int)img->vk.image_type, (unsigned)img->vk.usage, img->lay.d.samples);
+   return r;
 }
 
 static int
