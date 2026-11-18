@@ -106,6 +106,9 @@ dsl_destroy(struct vk_device *dev, struct vk_descriptor_set_layout *l)
    vk_object_free(dev, NULL, d);
 }
 
+/* Largest binding number a layout accepts (dense table of 1M entries at most). */
+#define MALI_MAX_DSL_BINDING (1u << 20)
+
 VkResult
 mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci, struct mali_dsl **out)
 {
@@ -113,6 +116,9 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
    for (uint32_t i = 0; i < ci->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *b = &ci->pBindings[i];
       if (!type_ok(b->descriptorType)) return VK_ERROR_FEATURE_NOT_PRESENT;   /* inline uniform, accel structs: not supported */
+      /* The binding table is dense (indexed by binding number). A huge binding number would allocate and loop over billions of
+       * entries (found by tools/fuzz: seconds-long hang; 0xffffffff wrapped nb to 0). Report it as out of memory instead. */
+      if (b->binding >= MALI_MAX_DSL_BINDING) return VK_ERROR_OUT_OF_HOST_MEMORY;
       nb = MAX2(nb, b->binding + 1);
       if (b->pImmutableSamplers) nimm += b->descriptorCount;
    }
@@ -210,7 +216,7 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
    uint64_t slots = 0;
    for (uint32_t i = 0; i < ci->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *b = &ci->pBindings[i];
-      if (!type_ok(b->descriptorType)) ok = false;
+      if (!type_ok(b->descriptorType) || b->binding >= MALI_MAX_DSL_BINDING) ok = false;
       else if (b->descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
          ok &= b->descriptorCount <= MALI_MAX_INLINE_BYTES && !(b->descriptorCount & 3);
       else slots += (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;

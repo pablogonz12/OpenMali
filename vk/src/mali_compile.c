@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 21 /* 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 22 /* 22: spirv_header_ok rejects malformed SPIR-V in shader modules (fuzz harness) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -304,6 +304,19 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
    return (const struct vk_ycbcr_conversion_state *)l->set[set].ycbcr + b->ycbcr_off + array_index;
 }
 
+/* The vendored Mesa SPIR-V front end assumes a sane header: on a bad magic/version/schema word it logs through b->options before that
+ * pointer is set (NULL dereference in vtn_log), and the id bound sizes an allocation unchecked (heap overflow in vtn_create_builder).
+ * Both were found by tools/fuzz on mutated modules; vkCreateShaderModule input may be invalid SPIR-V, so reject it here. */
+static bool
+spirv_header_ok(const uint32_t *w, size_t nwords)
+{
+   if (nwords <= 5 || w[0] != 0x07230203u) return false;
+   if (w[1] < 0x10000u || w[1] > 0x10600u) return false;   /* 1.0 .. 1.6 */
+   if (w[4] != 0) return false;
+   /* ids are defined by instructions of >= 2 words, so a bound far beyond the module size is bogus (slack for generators that over-reserve) */
+   return w[3] != 0 && w[3] <= 4 * nwords + 1024;
+}
+
 /* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
  * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
 static bool
@@ -343,6 +356,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                              o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
    const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
 
+   if (!spirv_header_ok(o->spirv, o->spirv_words))
+      return fail(err, errsz, "invalid SPIR-V header");
    struct spirv_to_nir_options so = {
       .environment = NIR_SPIRV_VULKAN,
       .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
