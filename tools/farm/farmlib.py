@@ -377,6 +377,15 @@ def load_flaky():
 FLAKY_RERUNS = 3
 
 
+MAX_LOST_SHARE = 0.03          # a daily where more than 3 % of the cases crashed or have no result, though the baseline has one, is invalid (2026-11-18 v10: 9 %)
+FLAKY_RECORD_MAX = 25          # more newly-flaky cases than this in one run is a burst, not flakiness: they do not go to the flaky list
+
+
+def lost_cases(base, cur, cases):
+    """cases whose result is Crash or missing now although the baseline has a real result for them (a baseline Crash is not news)"""
+    return [c for c in cases if cur.get(c, "Missing") in ("Crash", "Missing") and base.get(c) not in (None, "Crash", "Missing")]
+
+
 def flaky_path():
     return os.path.join(state_dir(), "flaky.tsv")
 

@@ -603,6 +603,8 @@ class Farm:
             return {"gated": True}
         if rc in (76, 77):
             return {"verdict": "invalid", "notes": f"driver on the phone was not this job's build ({what} sha256 check): " + out.strip()[-160:]}
+        if rc == 81:
+            return {"verdict": "invalid", "notes": "device unstable: crash bursts kept coming back after pauses and device re-checks; result discarded: " + out.strip()[-160:]}
         if rc in (78, 79):
             return {"verdict": "error", "notes": f"shell route: {out.strip()[-200:]}"} if rc == 78 else {"lost": True}
         return None
@@ -756,6 +758,8 @@ class Farm:
             n2f = int(next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_NS2F=")), 0))
             for c in [c for c in cases if base[c] == "NotSupported"][:n2f]:
                 cur[c] = "Fail"
+            for c in [c for c in cases if base[c] != "Crash"][:int(next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_CRASH=")), 0))]:
+                cur[c] = "Crash"                                 # test hook: a burst of crashes
             if "FAKE_UNPLUG=1" in env.split():                   # test hook: charger removed during the run
                 L.write_json(os.path.join(L.state_dir(), f"fake-health-{dev['lock']}.json"), {"powered": False})
                 rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
@@ -771,12 +775,12 @@ class Farm:
             rc, out = self.run_shellroute(job, dev, "daily", run_id, ["--list", listf, "--out", out_tsv, "--chunk", "100"],
                                           int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400")))
             so_phone = f"/data/local/tmp/g/icd.{run_id}.so"
-            if rc not in (75, 124, 125, 73, 76):
+            if rc not in (75, 124, 125, 73, 76, 81):
                 ok_s, got = self.verify_so(job, dev, so_phone)
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s and rc in (0, 1):
                     return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
-            if rc == 76:
+            if rc in (76, 81):
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if os.path.exists(out_tsv):
                     os.unlink(out_tsv)                       # results of a run on a foreign driver are discarded
@@ -828,6 +832,11 @@ class Farm:
             shutil.rmtree(shim, ignore_errors=True)
             if not cur:
                 return {"verdict": "error", "counts": {"total": len(cases)}, "notes": f"qdeqp produced no results (rc={rc}): {note}"}
+        lost = L.lost_cases(base, cur, cases)
+        if len(lost) > L.MAX_LOST_SHARE * len(cases) and rc in (0, 1):      # a burst (phone/adb/OOM) or a crash storm: no verdict, no flaky reruns, nothing for the flaky list
+            return {"verdict": "invalid", "counts": L.compare(base, cur, cases)[0], "new_failures": [], "newly_passing": [], "flaky": [],
+                    "notes": f"{bref}; {len(lost)} of {len(cases)} cases ({100 * len(lost) // len(cases)} %) crashed or have no result although the baseline has one "
+                             f"(limit {int(100 * L.MAX_LOST_SHARE)} %): burst or crash storm, result discarded, rerun it (first: {', '.join(lost[:3])})"}
         counts, nf, npass = L.compare(base, cur, cases)
         n2f = L.ns_to_fail(base, cur, cases)
         flaky = L.load_flaky()
@@ -888,10 +897,13 @@ class Farm:
             pending = still
         shutil.rmtree(wd, ignore_errors=True)
         flk = sorted((c, nfail[c], runs[c]) for c in flaky)
-        if flk:
+        burst = len(flk) > L.FLAKY_RECORD_MAX
+        if flk and not burst:
             L.record_flaky(flk, dev["class"])
         left = [[c, status[c]] for c in sorted(status) if c not in flaky]
         note = f"; {len(flk)} flaky (passed in a rerun), {len(left)} still fail after {done_runs} rerun(s)"
+        if burst:
+            note += f"; more than {L.FLAKY_RECORD_MAX} at once looks like a burst: NOT added to the flaky list"
         return left, flk, note, None
 
     def fake_status(self, job, c):

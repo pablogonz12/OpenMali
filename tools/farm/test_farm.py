@@ -91,15 +91,26 @@ elif op == "shell":
             print(hashlib.sha256(open(P(m.group(1)), "rb").read()).hexdigest(), m.group(1))
     elif c.startswith("ls "):
         print("\n".join(os.listdir(P(c[3:].strip()))))
+    elif c == "echo alive":
+        print("alive")
     elif "dumpsys battery" in c:
         print("  AC powered: true\n  level: 80\n  temperature: 300\nThermal Status: 0")
     elif "deqp-vk" in c:
         cf = re.search(r"--deqp-caselist-file=(\S+)", c).group(1)
         qf = re.search(r"--deqp-log-filename=(\S+)", c).group(1)
+        crash = [x for x in os.environ.get("FAKE_ADB_CRASH", "").split(",") if x]       # these cases die mid-case (no result), FAKE_ADB_CRASH_TIMES times each
+        times, rc = int(os.environ.get("FAKE_ADB_CRASH_TIMES", "1")), 0
         with open(P(qf), "w") as f:
             for case in open(P(cf)).read().split():
+                cn = R + "/crashcount-" + case
+                n = int(open(cn).read()) if os.path.exists(cn) else 0
+                if case in crash and n < times:
+                    open(cn, "w").write(str(n + 1))
+                    f.write("#beginTestCaseResult %s\n" % case)
+                    rc = 139
+                    break
                 f.write("#beginTestCaseResult %s\n<Result StatusCode=\"Pass\"/>\n#endTestCaseResult\n" % case)
-        print("rc=0")
+        print("rc=%d" % rc)
     elif "./t_vk_" in c:
         d = re.match(r"cd (\S+)", c).group(1)
         n = re.search(r"\./(t_vk_\w+)", c).group(1)
@@ -167,6 +178,69 @@ class ShellRoute(unittest.TestCase):
         rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/cases.txt", "--out", out])        # resume: nothing left to run
         self.assertEqual(rc, 0)
         self.assertEqual(len(open(out).read().splitlines()), 5)
+
+    def crash_run(self, crash, times, n=12, extra_env=None):
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(n)) + "\n")
+        out = self.d + "/m.tsv"
+        os.path.exists(out) and os.unlink(out)
+        for x in os.listdir(self.root) if os.path.isdir(self.root) else []:
+            x.startswith("crashcount-") and os.unlink(self.root + "/" + x)
+        env = {"FAKE_ADB_CRASH": ",".join(f"dEQP-VK.t.c{i}" for i in crash), "FAKE_ADB_CRASH_TIMES": str(times), "SHELLROUTE_BURST_PAUSE": "0"}
+        env.update(extra_env or {})
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", out, "--chunk", "3"], env)
+        rows = dict(l.split("\t")[:2] for l in open(out).read().splitlines()) if os.path.exists(out) else {}
+        return rc, o, rows
+
+    def test_daily_isolated_crash_gets_a_second_run_and_stays_crash_if_real(self):
+        rc, o, rows = self.crash_run([3], 99)                              # always dies: a real crash
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(rows["dEQP-VK.t.c3"], "Crash")
+        self.assertEqual(sum(1 for v in rows.values() if v == "Pass"), 11)
+        self.assertNotIn("BURST", o)
+        rc, o, rows = self.crash_run([3], 1)                               # died once (transient): the second run passes
+        self.assertEqual(rows["dEQP-VK.t.c3"], "Pass", o)
+        self.assertNotIn("Crash", rows.values())
+
+    def test_daily_burst_pauses_rechecks_and_reruns_instead_of_recording_crashes(self):
+        rc, o, rows = self.crash_run(range(0, 5), 1)                       # 5 chunks in a row die once each: a burst
+        self.assertEqual(rc, 0, o)
+        self.assertIn("BURST: 5 chunks in a row ended in a crash", o)
+        self.assertEqual(set(rows.values()), {"Pass"}, rows)
+        self.assertEqual(len(rows), 12)
+        log = open(self.root + "/adb-shell.log").read()
+        self.assertIn("echo alive", log)                                   # the device was re-checked before the rerun
+
+    def test_daily_burst_that_keeps_coming_back_is_unstable_and_writes_nothing_for_it(self):
+        rc, o, rows = self.crash_run(range(0, 12), 99, extra_env={"SHELLROUTE_BURST_MAX": "1"})
+        self.assertEqual(rc, 81, o)
+        self.assertIn("UNSTABLE", o)
+        self.assertEqual(sorted(rows), [f"dEQP-VK.t.c{i}" for i in range(5)])         # only the second-run crashes of burst 1; burst 2's held cases never reach the TSV
+
+    def test_daily_real_crash_cluster_after_a_pause_is_recorded_not_endless(self):
+        rc, o, rows = self.crash_run(range(0, 5), 99, extra_env={"SHELLROUTE_BURST_MAX": "3"})
+        self.assertEqual(rc, 0, o)                                         # same cases die again after the pause: real crashes
+        self.assertEqual([rows[f"dEQP-VK.t.c{i}"] for i in range(5)], ["Crash"] * 5)
+        self.assertEqual(rows["dEQP-VK.t.c11"], "Pass")
+
+    def test_burst_guard_unit(self):
+        sys.path.insert(0, HERE)
+        import shellroute
+        g = shellroute.BurstGuard(3, 2)
+        for i in range(2):
+            g.chunk_crashed([f"c{i}"])
+        self.assertFalse(g.burst())
+        self.assertEqual(g.release(), ["c0", "c1"])                       # clean chunk: second run, streak over
+        self.assertFalse(g.holds("c0"))                                    # a second crash of c0 is final
+        self.assertTrue(g.holds("c9"))
+        g.chunk_crashed([])                                                # a chunk whose crashes were all second-run ones does not count
+        self.assertEqual(g.streak, 0)
+        for i in range(3):
+            g.chunk_crashed([f"d{i}"])
+        self.assertTrue(g.burst())
+        self.assertEqual(g.start_pause(), ["d0", "d1", "d2"])
+        g.end_pause()
+        self.assertFalse(g.burst())
+        self.assertEqual(g.held, {})
 
     def test_daily_foreign_so_is_refused(self):
         rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/cases.txt", "--out", self.d + "/o2.tsv"], {"FAKE_ADB_CORRUPT": "1"})
@@ -650,6 +724,38 @@ class T(unittest.TestCase):
         _, j2, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_REGRESS=3 FAKE_FLAKY=2 FAKE_FLAKY_PASS_ON=2")
         self.farmd()
         self.assertEqual({v[:2] and (v[0], v[1]) for v in L.load_flaky_db().values()}, {(4, 6)})     # counts accumulate
+
+    def test_daily_crash_burst_is_invalid_and_never_reaches_the_flaky_list(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_CRASH=120 FAKE_FLAKY=120 FAKE_REGRESS=120")
+        self.farmd()
+        inv = json.load(open(self.d + f"/state/runs/{jid}-v11.invalid-1.json"))          # invalid: re-queued, never a pass/fail
+        self.assertEqual(inv["verdict"], "invalid")
+        self.assertIn("crashed or have no result", inv["notes"])
+        self.assertEqual(L.load_flaky_db(), {})                              # no reruns were made, nothing recorded
+
+    def test_daily_few_crashes_are_not_invalid(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_CRASH=5")
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertNotEqual(run["verdict"], "invalid", run["notes"])
+        self.assertGreaterEqual(run["counts"].get("Crash", 0), 1)
+
+    def test_lost_cases_unit(self):
+        base = {"a": "Pass", "b": "NotSupported", "c": "Crash", "d": "Fail", "e": "Pass"}
+        cur = {"a": "Crash", "b": "Crash", "c": "Crash", "d": "Fail"}
+        self.assertEqual(L.lost_cases(base, cur, sorted(base)), ["a", "b", "e"])      # c crashed in the baseline already; e has no result
+
+    def test_flaky_burst_over_the_cap_is_reported_but_not_recorded(self):
+        self.attach("dev-a")
+        n = L.FLAKY_RECORD_MAX + 5
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", f"FAKE_REGRESS={n} FAKE_FLAKY={n}")
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertEqual(len(run["flaky"]), n)
+        self.assertIn("NOT added to the flaky list", run["notes"])
+        self.assertEqual(L.load_flaky_db(), {})
 
     def test_daily_flaky_that_never_passes_stays_new(self):
         self.attach("dev-a")

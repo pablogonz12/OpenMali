@@ -6,7 +6,7 @@ Called by farmd under the phone lock (QSAFE_HELD=<lock>); the transport comes fr
   shellroute.py daily --lock L --tree T --sha S --run ID --list F --out TSV [--chunk 100] [--wall 250] [--env ..]
 Integrity: the job's .so (S = its sha256) goes to a per-run path on the phone and is verified ON THE PHONE before every chunk/test.
 Exit: 0 done, 73 PHONE BUSY (lock not held), 75 gated by the health gate / owner (resume later), 76/77 .so on the phone is not the job's build
-(daily/smoke), 78 phone not staged, 79 phone unreachable. The daily resumes from the TSV (case<TAB>status<TAB>, same as qdeqp)."""
+(daily/smoke), 78 phone not staged, 79 phone unreachable, 81 crash bursts keep coming back (run unstable, discard). The daily resumes from the TSV (case<TAB>status<TAB>, same as qdeqp)."""
 import argparse, json, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -166,6 +166,52 @@ def crash_note(qpa_text, out_tail):
     return f"CRASH out: {o} | qpa: {q}"
 
 
+BURST_STREAK = 5              # this many chunks in a row that each ended in a crash = a burst, not five bad cases (a normal daily has 0-11 crashes in 1381)
+BURST_MAX = 3                 # bursts tolerated per run; one more and the run is unstable (exit 81, farmd: invalid)
+
+
+def BURST_PAUSE():
+    return float(os.environ.get("SHELLROUTE_BURST_PAUSE", "90"))
+
+
+class BurstGuard:
+    """A case that crashes the first time is not written (not in the TSV, not in `done`): it is held back and runs once more. A clean chunk after
+    it ends the streak (release(): the crashes were isolated, second run at once). `streak` consecutive crashing chunks is a burst (phone/adb/OOM/
+    thermal trouble, 2026-11-18: 134 Crash, 78 on the flaky list): the caller pauses and re-checks the device first (start_pause/end_pause).
+    A case that crashes again on its second run is `retried`: a real Crash, written at once, no longer feeds the streak."""
+    def __init__(self, streak=BURST_STREAK, max_bursts=BURST_MAX):
+        self.n, self.max_bursts = streak, max_bursts
+        self.streak, self.bursts = 0, 0
+        self.held, self.retried = {}, set()
+
+    def holds(self, case):
+        return case not in self.retried
+
+    def chunk_crashed(self, cases):
+        for c in cases:
+            self.held[c] = True
+        if cases:
+            self.streak += 1
+
+    def release(self):
+        """held cases -> second run; returns them"""
+        out = list(self.held)
+        self.retried |= set(out)
+        self.held.clear()
+        self.streak = 0
+        return out
+
+    def burst(self):
+        return self.streak >= self.n
+
+    def start_pause(self):
+        self.bursts += 1
+        return list(self.held)
+
+    def end_pause(self):
+        self.release()
+
+
 def push_so(src, sha, dst):
     rc, o = adb("push", src, dst, timeout=180)
     if rc != 0:
@@ -194,12 +240,15 @@ def daily(a):
     envs = " ".join(a.env.split())
     t0, fails = time.time(), 0
     tmp = tempfile.mkdtemp(prefix="shellroute-")
+    guard = BurstGuard(int(os.environ.get("SHELLROUTE_BURST_STREAK", BURST_STREAK)), int(os.environ.get("SHELLROUTE_BURST_MAX", BURST_MAX)))
     while True:
-        todo = [c for c in cases if c not in done]
+        todo = [c for c in cases if c not in done and c not in guard.held]
         if not todo:
-            break
+            if not guard.release():                            # nothing left but held crashes: they get their second run now
+                break
+            continue
         if gated(a.lock):
-            sys.exit(75)
+            sys.exit(75)                                       # held (not yet written) crashes are dropped: a resume runs them again
         if sha_phone(icd) != a.sha:                            # before every chunk, ON THE PHONE
             print("SO MISMATCH on the phone", flush=True)
             sys.exit(76)
@@ -250,13 +299,32 @@ def daily(a):
             tail = adb("shell", f"tail -c 400 {G}/c.{a.run}.out", timeout=20)[1].strip().replace("\n", " | ")
             print(f"NOPARSE {batch[0]} rc-line={o.strip()[-30:]!r} out: {tail}", flush=True)       # diagnostics for the farm log
             got[batch[0]] = "Crash"                            # nothing parsed: first case counts as Crash so we always progress
+        crashed = [c for c in batch if got.get(c) == "Crash"]
         for c in batch:
-            if c in got:
+            if c in got and not (got[c] == "Crash" and guard.holds(c)):
                 done[c] = got[c]
                 f.write(f"{c}\t{got[c]}\t\n")
+        if crashed:
+            guard.chunk_crashed([c for c in crashed if guard.holds(c)])      # first-time crashes wait here until a clean chunk shows they were not a burst
+        else:
+            guard.release()                                    # a clean chunk ends the streak: the held crashes were isolated, they get their second run
         f.flush()
         print(f"# chunk: done {len(done)}/{len(cases)} [{int(time.time() - t0)}s]", flush=True)
         temps(a.run, len(done))
+        if guard.burst():
+            n = guard.start_pause()
+            print(f"BURST: {guard.streak} chunks in a row ended in a crash (cases like {n[0]}); pause {BURST_PAUSE()} s, re-check the device, rerun them "
+                  f"(burst {guard.bursts}/{guard.max_bursts})", flush=True)
+            if guard.bursts > guard.max_bursts:
+                print("UNSTABLE: crash bursts keep coming back; results of the held cases are discarded", flush=True)
+                sys.exit(81)
+            time.sleep(BURST_PAUSE())
+            if gated(a.lock):
+                sys.exit(75)
+            if adb("shell", "echo alive", timeout=30)[1].strip() != "alive":
+                print("phone unreachable after a burst pause", flush=True)
+                sys.exit(79)
+            guard.end_pause()
     adb("shell", f"rm -f {G}/c.{a.run}.cases {G}/c.{a.run}.qpa {G}/c.{a.run}.out", timeout=20)
     print(f"SO_ON_PHONE {icd}", flush=True)                    # farmd verifies it once more, then removes it
     print("DONE", flush=True)
