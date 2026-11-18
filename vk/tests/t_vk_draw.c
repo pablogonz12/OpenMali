@@ -1175,7 +1175,9 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
 
 /* multiple render targets: nrt (2 or 4) RGBA8 colour attachments, one draw of a left-half quad whose fragment shader
  * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
- * left half must hold that target's draw colour and the right half its clear colour. */
+ * left half must hold that target's draw colour and the right half its clear colour.
+ * clear_att 1: loadOp DONT_CARE + whole-area vkCmdClearAttachments. clear_att 2: after that pass a second pass with loadOp LOAD on every
+ * target draws into a 1-pixel scissor only, so every sampled pixel must still hold the first pass's result (colour LOAD on RT>0). */
 static int
 test_mrt(const char *name, int nrt, int clear_att)
 {
@@ -1187,12 +1189,12 @@ test_mrt(const char *name, int nrt, int clear_att)
    uint8_t *px[4] = {0};
    uint32_t pitch[4] = {0};
    VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv(nrt == 2 ? "mrt2.frag.spv" : "mrt4.frag.spv");
-   VkRenderPass rp = VK_NULL_HANDLE;
+   VkRenderPass rp = VK_NULL_HANDLE, rp2 = VK_NULL_HANDLE;
    VkFramebuffer fb = VK_NULL_HANDLE;
    VkPipelineLayout pl = VK_NULL_HANDLE;
    VkPipeline pipe = VK_NULL_HANDLE;
    VkCommandPool pool = VK_NULL_HANDLE;
-   VkFence fence = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE, fence2 = VK_NULL_HANDLE;
    int ok = 0;
    unsigned bad = 0;
 #define MRT_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
@@ -1225,7 +1227,7 @@ test_mrt(const char *name, int nrt, int clear_att)
    VkAttachmentReference ar[4];
    for (int i = 0; i < nrt; i++) {
       ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                        .loadOp = clear_att ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .loadOp = clear_att == 1 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
       ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -1234,6 +1236,13 @@ test_mrt(const char *name, int nrt, int clear_att)
    VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = (uint32_t)nrt, .pAttachments = ad,
                                  .subpassCount = 1, .pSubpasses = &sp};
    MRT_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass with %d colour attachments", nrt);
+   if (clear_att == 2) {
+      for (int i = 0; i < nrt; i++) {
+         ad[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+         ad[i].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      }
+      MRT_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "LOAD render pass");
+   }
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = (uint32_t)nrt,
                                   .pAttachments = iv, .width = W, .height = H, .layers = 1};
    MRT_CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer");
@@ -1277,7 +1286,7 @@ test_mrt(const char *name, int nrt, int clear_att)
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
                                .renderArea = {{0, 0}, {W, H}}, .clearValueCount = (uint32_t)nrt, .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-   if (clear_att) {   /* the loadOp is DONT_CARE: whole-area vkCmdClearAttachments before the first draw on every RT (RT>0 patches its descriptor) */
+   if (clear_att == 1) {   /* the loadOp is DONT_CARE: whole-area vkCmdClearAttachments before the first draw on every RT (RT>0 patches its descriptor) */
       VkClearAttachment ca[4];
       for (int i = 0; i < nrt; i++)
          ca[i] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i, .clearValue = cv[i]};
@@ -1299,6 +1308,28 @@ test_mrt(const char *name, int nrt, int clear_att)
    MRT_CHECK(r == VK_SUCCESS, "submit = %d", r);
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    MRT_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   if (clear_att == 2) {   /* pass 2: LOAD every target, draw 1 pixel at the bottom right corner only */
+      VkCommandBuffer cb2;
+      MRT_CHECK(AllocateCommandBuffers(dev, &cai, &cb2) == VK_SUCCESS, "alloc cb2");
+      MRT_CHECK(BeginCommandBuffer(cb2, &bi) == VK_SUCCESS, "begin 2");
+      VkRenderPassBeginInfo rb2 = rb;
+      rb2.renderPass = rp2;
+      rb2.clearValueCount = 0;
+      CmdBeginRenderPass(cb2, &rb2, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb2, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkRect2D sc2 = {{W - 1, H - 1}, {1, 1}};
+      CmdSetViewport(cb2, 0, 1, &vp);
+      CmdSetScissor(cb2, 0, 1, &sc2);
+      CmdDraw(cb2, 6, 1, 0, 0);
+      CmdEndRenderPass(cb2);
+      MRT_CHECK(EndCommandBuffer(cb2) == VK_SUCCESS, "end 2 (colour LOAD on every target)");
+      MRT_CHECK(CreateFence(dev, &fi, NULL, &fence2) == VK_SUCCESS, "fence 2");
+      VkSubmitInfo si2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb2};
+      r = QueueSubmit(queue, 1, &si2, fence2);
+      MRT_CHECK(r == VK_SUCCESS, "submit 2 = %d", r);
+      r = WaitForFences(dev, 1, &fence2, VK_TRUE, 20000000000ull);
+      MRT_CHECK(r == VK_SUCCESS, "wait 2 = %d", r);
+   }
    ok = 1;
    if (!g_fake) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
       for (int i = 0; i < nrt; i++)
@@ -1320,11 +1351,13 @@ test_mrt(const char *name, int nrt, int clear_att)
 out:
    DeviceWaitIdle(dev);
    if (fence) DestroyFence(dev, fence, NULL);
+   if (fence2) DestroyFence(dev, fence2, NULL);
    if (pool) DestroyCommandPool(dev, pool, NULL);
    if (pipe) DestroyPipeline(dev, pipe, NULL);
    if (pl) DestroyPipelineLayout(dev, pl, NULL);
    if (fb) DestroyFramebuffer(dev, fb, NULL);
    if (rp) DestroyRenderPass(dev, rp, NULL);
+   if (rp2) DestroyRenderPass(dev, rp2, NULL);
    for (int i = 0; i < 4; i++) {
       if (iv[i]) DestroyImageView(dev, iv[i], NULL);
       if (im[i]) DestroyImage(dev, im[i], NULL);
@@ -2313,6 +2346,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2, 0);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
    if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
+   if (ok && CASE_ON("mrt4_load")) ok &= test_mrt("mrt4_load", 4, 2);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
