@@ -234,10 +234,13 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
             pc = perf_cmd or ["python3", "-I", os.path.join(clone, "bench", "plot.py"), "--root", clone]
             try:
                 pr = subprocess.run(pc, cwd=clone, capture_output=True, text=True, timeout=120)
-                if pr.returncode:
-                    log("publish: plot failed (ignored): " + (pr.stdout + pr.stderr).strip()[-200:])
+                ok, why = pr.returncode == 0, (pr.stdout + pr.stderr).strip()[-200:]
             except Exception as e:                                              # missing interpreter, timeout, ...
-                log(f"publish: plot failed (ignored): {e}")
+                ok, why = False, str(e)
+            if not ok:                                                          # keep README + charts exactly as on origin: never stage a half-written report
+                log("publish: plot failed (ignored): " + why)
+                _git(clone, "checkout", "-q", "--", "README.md", "bench/charts")
+                _git(clone, "clean", "-qfd", "--", "bench/charts")
         if changed:
             phones = ",".join(sorted({r["phone"] for r in changed}))
             short = (changed[-1].get("commit_full") or changed[-1].get("commit") or "?")[:9]

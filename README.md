@@ -37,7 +37,7 @@ How close mali-open gets to the Mali bridge (MediaDeck's, the target) per phone,
 | poco-x4 | Poco X4 Mali-G610 (v10) | cube-native | n/a | n/a | n/a | 115.8 (p22) | n/a | not measured | n/a |
 | poco-x4 | Poco X4 Mali-G610 (v10) | triangle-3k | 149.7 (23edb3f94-dirty, 2026-11-18) | 149.7 (23edb3f94-dirty, 2026-11-18) | n/a | 338.3 (p22) | 44% | not measured | 0.92 / 1.15 |
 
-fps = presented fps (best settings per row); GPU ms = offscreen GPU time. Ours is the latest build per phone, the bridge its latest MediaDeck build. PanVK (Mesa) has no rows yet: `not measured`. Source: `bench/results.jsonl` via `bench/plot.py` (regenerated on every bench publish).
+fps = presented fps (best settings per row); GPU ms = offscreen GPU time. Ours is the latest build per phone, the bridge its latest MediaDeck build. `not measured` = no PanVK (Mesa) result for that row. Source: `bench/results.jsonl` via `bench/plot.py` (best effort: refreshed when a bench publish adds benchmark rows).
 
 Charts (ours over builds; dashed = Mali bridge per MediaDeck version; PanVK is drawn once it is measured):
 
