@@ -112,7 +112,7 @@ int mali_meta_shader_get(enum mali_meta_shader sh, const struct mali_compiled **
 int mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, struct mali_dispatch *out);
 
 /* R4: fills a draw (full-viewport triangle) that re-emits the old contents of a linear attachment. kind: colour (any render-target format:
- * arg = format kind | 0x100 sRGB, bpp = bytes per texel, see preload.frag), depth (arg 0 = D32F, 1 = D16), stencil, or depth+stencil
+ * arg = format kind | 0x100 sRGB | (colour output type << 16: 0 float, 1 uint, 2 sint), bpp = bytes per texel, see preload.frag), depth (arg 0 = D32F, 1 = D16), stencil, or depth+stencil
  * (va[0] depth, va[1] stencil). vp/sc are left to the caller. 0 or -errno. */
 enum mali_preload_kind { MALI_PRELOAD_COLOUR, MALI_PRELOAD_Z, MALI_PRELOAD_S, MALI_PRELOAD_ZS, MALI_PRELOAD_KINDS };
 struct mali_preload_src { uint64_t va[2]; uint32_t bytes[2], row[2], arg, bpp; uint32_t clear[4]; };   /* arg 19 (MALI_PRELOAD_COLOUR): constant colour quad of the 4 clear words (CmdClearAttachments), va[0] unused */
