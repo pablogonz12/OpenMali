@@ -260,6 +260,43 @@ dset_free(struct vk_device *dev, struct mali_dset *s)
    vk_object_free(dev, NULL, s);
 }
 
+static void write_immutable(struct mali_dset *s);
+
+/* VK_KHR_push_descriptor: a standalone set (no pool) per push call. A new set every time keeps the sets already recorded draws point at
+ * unchanged; `prev` (same layout) is the content to start from. Freed by mali_push_set_destroy when the command buffer resets. */
+VkResult
+mali_push_set_create(struct vk_device *dev, unsigned arch, struct mali_dsl *l, const struct mali_dset *prev, struct mali_dset **out)
+{
+   uint32_t bytes = l->slot_count * MALI_DESC_SLOT_SIZE;
+   struct mali_dset *s = vk_object_zalloc(dev, NULL, sizeof *s, VK_OBJECT_TYPE_DESCRIPTOR_SET);
+   if (!s) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   if (bytes) {
+      s->cpu = mem_alloc(dev, bytes, &s->va);
+      if (!s->cpu) {
+         vk_object_free(dev, NULL, s);
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
+   }
+   s->layout = (struct mali_dsl *)vk_descriptor_set_layout_ref(&l->vk);
+   s->bytes = bytes;
+   s->arch = arch;
+   if (!bytes) {                       /* empty layout: no GPU memory, nothing to seed (memcpy/memset on NULL is UB) */
+   } else if (prev && prev->layout == l && prev->bytes == bytes) memcpy(s->cpu, prev->cpu, bytes);
+   else {
+      memset(s->cpu, 0, bytes);
+      write_immutable(s);
+   }
+   *out = s;
+   return VK_SUCCESS;
+}
+
+void
+mali_push_set_destroy(struct vk_device *dev, struct mali_dset *s)
+{
+   if (s->cpu) mem_free(dev, s->cpu, s->bytes);
+   dset_free(dev, s);
+}
+
 static void
 pool_clear(struct vk_device *dev, struct mali_dpool *p)
 {

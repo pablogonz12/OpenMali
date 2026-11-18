@@ -74,6 +74,14 @@ reset_state(struct mali_cmd_buffer *cmd)
    memset(cmd->vb_stride, 0, sizeof cmd->vb_stride);
    memset(cmd->push, 0, sizeof cmd->push);
    cmd->nsets = 0;
+   {
+      struct vk_device *dev = cmd->vk.base.device;
+      for (unsigned i = 0; i < cmd->npush_all; i++) mali_push_set_destroy(dev, cmd->push_all[i]);
+      free(cmd->push_all);
+      cmd->push_all = NULL;
+      cmd->npush_all = cmd->cappush_all = 0;
+      memset(cmd->push_cur, 0, sizeof cmd->push_cur);
+   }
    cmd->ndyn = 0;
    cmd->occ_va = 0;
    cmd->occ_mode = 0;
@@ -225,6 +233,7 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          return;
       }
       struct mali_dset *ds = mali_dset_from_handle(sets[i]);
+      cmd->push_cur[s] = NULL;
       if (ds->layout && ds->layout->dyn_count) {
          /* dynamic buffers: this set's dyn_start = dynamic descriptors of the lower sets of the pipeline layout (matches mali_pipeline_layout_flatten) */
          unsigned start = 0;
@@ -345,6 +354,89 @@ mali_CmdBindDescriptorSets2KHR(VkCommandBuffer h, const VkBindDescriptorSetsInfo
    if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
       mali_CmdBindDescriptorSets(h, VK_PIPELINE_BIND_POINT_GRAPHICS, info->layout, info->firstSet, info->descriptorSetCount,
                                  info->pDescriptorSets, info->dynamicOffsetCount, info->pDynamicOffsets);
+}
+
+/* ---- VK_KHR_push_descriptor ---- */
+/* Fresh set per call (draws recorded earlier keep the previous set's VA), seeded from the previous push of the same index, then bound like a
+ * normal set. Returns NULL (and flags the command buffer) on failure. */
+static struct mali_dset *
+push_begin(struct mali_cmd_buffer *cmd, VkPipelineLayout layout, uint32_t set)
+{
+   VK_FROM_HANDLE(vk_pipeline_layout, pl, layout);
+   if (set >= MALI_CMD_SETS || !pl || set >= pl->set_count || !pl->set_layouts[set]) {
+      unsupported(cmd, "push descriptor set index");
+      return NULL;
+   }
+   struct mali_dsl *l = (struct mali_dsl *)pl->set_layouts[set];
+   struct vk_device *dev = cmd->vk.base.device;
+   if (l->dyn_count) {
+      unsupported(cmd, "push descriptor layout with dynamic buffers");
+      return NULL;
+   }
+   if (cmd->npush_all == cmd->cappush_all) {
+      unsigned nc = cmd->cappush_all ? cmd->cappush_all * 2 : 8;
+      struct mali_dset **na = realloc(cmd->push_all, nc * sizeof *na);
+      if (!na) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return NULL;
+      }
+      cmd->push_all = na;
+      cmd->cappush_all = nc;
+   }
+   struct mali_dset *ds;
+   VkResult r = mali_push_set_create(dev, mali_device_pdev(container_of(dev, struct mali_device, vk))->gpu.arch_major, l, cmd->push_cur[set], &ds);
+   if (r != VK_SUCCESS) {
+      vk_command_buffer_set_error(&cmd->vk, r);
+      return NULL;
+   }
+   cmd->push_all[cmd->npush_all++] = ds;
+   return ds;
+}
+
+static void
+push_bind(struct mali_cmd_buffer *cmd, uint32_t set, struct mali_dset *ds)
+{
+   cmd->push_cur[set] = ds;
+   cmd->set_va[set] = ds->va;
+   cmd->set_bytes[set] = ds->bytes;
+   if (set + 1 > cmd->nsets) cmd->nsets = set + 1;
+   cmd->dirty |= MALI_D_BIND;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSetKHR(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipelineLayout layout, uint32_t set, uint32_t nw,
+                             const VkWriteDescriptorSet *w)
+{
+   CMD(h);
+   struct mali_dset *ds = push_begin(cmd, layout, set);
+   if (!ds) return;
+   for (uint32_t i = 0; i < nw; i++) mali_dset_write(ds, &w[i]);
+   push_bind(cmd, set, ds);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer h, VkDescriptorUpdateTemplate t, VkPipelineLayout layout, uint32_t set,
+                                         const void *data)
+{
+   CMD(h);
+   struct mali_dset *ds = push_begin(cmd, layout, set);
+   if (!ds) return;
+   mali_dset_update_template(ds, vk_descriptor_update_template_from_handle(t), data);
+   push_bind(cmd, set, ds);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSet2KHR(VkCommandBuffer h, const VkPushDescriptorSetInfoKHR *info)
+{
+   /* graphics and compute share one set table here, so the stage flags only select whether it is bound at all */
+   mali_CmdPushDescriptorSetKHR(h, VK_PIPELINE_BIND_POINT_GRAPHICS, info->layout, info->set, info->descriptorWriteCount,
+                                info->pDescriptorWrites);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSetWithTemplate2KHR(VkCommandBuffer h, const VkPushDescriptorSetWithTemplateInfoKHR *info)
+{
+   mali_CmdPushDescriptorSetWithTemplateKHR(h, info->descriptorUpdateTemplate, info->layout, info->set, info->pData);
 }
 
 VKAPI_ATTR void VKAPI_CALL

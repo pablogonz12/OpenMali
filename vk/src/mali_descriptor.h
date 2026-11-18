@@ -75,6 +75,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dpool, base, VkDescriptorPool, VK_OBJECT_TYP
 VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci, struct mali_dsl **out);
 
 /* Pure core, used by the entrypoints below and by tests. */
+VkResult mali_push_set_create(struct vk_device *dev, unsigned arch, struct mali_dsl *l, const struct mali_dset *prev, struct mali_dset **out);
+void mali_push_set_destroy(struct vk_device *dev, struct mali_dset *s);
 void mali_dset_write(struct mali_dset *set, const VkWriteDescriptorSet *w);
 void mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src);
 void mali_dset_update_template(struct mali_dset *set, const struct vk_descriptor_update_template *t, const void *data);
