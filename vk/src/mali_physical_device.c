@@ -196,6 +196,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
          The runtime aliases the KHR/EXT entry points onto the core ones. t_steam_caps checks name == feature bit. */
       .KHR_dynamic_rendering = true, .KHR_synchronization2 = true, .KHR_maintenance4 = true, .EXT_private_data = true,
       .KHR_buffer_device_address = true, .EXT_scalar_block_layout = true, .EXT_host_query_reset = true, .KHR_uniform_buffer_standard_layout = true,
+      /* zink 26.0.8 (the guest's Mesa) refuses a device without these two NAMES (zink_device_info.py: required=True, silent in release builds).
+         Both are runtime behaviour: vk_common_CreateRenderPass2/CmdBeginRenderPass2 build on dynamic rendering, the imageless framebuffer's views come
+         from VkRenderPassAttachmentBeginInfo. t_vk_feat imageless (pixels on hardware), t_steam_caps by-name list. */
+      .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
    };
@@ -207,6 +211,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .hostQueryReset = true,
       .synchronization2 = true,
       .dynamicRendering = true,
+      .imagelessFramebuffer = true,   /* t_vk_feat imageless */
       .maintenance4 = true,
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
