@@ -88,6 +88,7 @@ class Farm:
         self.cfg_mtime = self.devices_mtime()
         self.wake = threading.Event()                  # set when a run/sweep ends: schedule the next one immediately, no poll wait
         self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
+        self.cleanup_later = set()
         self.idle_since = {}                           # alias -> when it last stopped doing real (non-sweep) work or became healthy
         self.last_auto = 0
         self.restore_pending = set()                    # phones whose last hold was cut short by a restart: restore before the next use
@@ -1534,7 +1535,11 @@ class Farm:
 
     def skip_down_parts(self, jobs):
         """a gate part (smoke/daily) whose class has no phone that is not 'down' is marked skipped ('skipped: device down') so the gate
-        does not wait for a phone that is not coming back soon; the digest and `farm wait` show it. Other suites stay pending."""
+        does not wait for a phone that is not coming back soon; the digest and `farm wait` show it. Other suites stay pending.
+        A device that is attached right now is never skipped, even if self.dstate is still 'down' (recover() may have just brought it back
+        in this tick; the status is only refreshed on the next watch_devices). A skipped auto baseline daily forgets its 'seen' marker so
+        it is queued again when the phone returns; a job whose last pending part was skipped is finalized (worktree removed)."""
+        now_att = None                                               # looked up lazily, only when some part is a candidate (adb calls)
         for j in jobs:
             if j.get("suite") not in L.GATE_SUITES:
                 continue
@@ -1542,10 +1547,40 @@ class Farm:
                 if p["state"] != "pending":
                     continue
                 devs = [al for al, d in self.devs.items() if d["class"] == cls]
-                if devs and all(self.dstate.get(al, {}).get("status") == "down" for al in devs):
-                    self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="skipped", note=L.SKIP_DOWN))
+                if not devs or not all(self.dstate.get(al, {}).get("status") == "down" for al in devs):
+                    continue
+                if now_att is None:
+                    try:
+                        now_att = self.attached()
+                    except Exception:
+                        return                                       # cannot tell what is attached: skip nothing
+                if not any(al in now_att for al in devs):
+                    nj = self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="skipped", note=L.SKIP_DOWN))
                     p["state"] = "skipped"
                     log(f"{j['id']}/{cls} {L.SKIP_DOWN} ({','.join(devs)}); gate not blocked")
+                    if j.get("auto") and j["suite"] == "daily":
+                        self.forget_auto_baseline(cls, j["commit"])
+                    if L.job_verdict(nj) != "pending" and not any(t.name.startswith(j["id"] + "/") for t in self.threads.values()):
+                        self.cleanup_later.add(j["id"])
+        self.run_cleanup_later()
+
+    def forget_auto_baseline(self, cls, commit):
+        """auto_daily records main's tip in baseline/auto.json when it queues; a skipped (never run) auto daily must not suppress the retry"""
+        sp = os.path.join(L.state_dir(), "baseline", "auto.json")
+        seen = L.read_json(sp) if os.path.exists(sp) else {}
+        if seen.get(cls) == commit:
+            seen.pop(cls)
+            L.write_json(sp, seen)
+
+    def run_cleanup_later(self):
+        """remove the worktree of jobs finished by skipping (no worker is left to do it), but not while the prebuild thread may be building it"""
+        if not getattr(self, "cleanup_later", None):
+            return
+        if self.prebuild_t and self.prebuild_t.is_alive():
+            return                                                   # retried on the next tick, when the build is over
+        for jid in list(self.cleanup_later):
+            self.cleanup_tree(jid)
+            self.cleanup_later.discard(jid)
 
     # ---------- idle sweep (full dEQP-VK list on phones with nothing queued)
     def real_pending(self, cls):

@@ -487,6 +487,64 @@ class T(unittest.TestCase):
         mixed = {"parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "skipped"}}}
         self.assertEqual(L.job_verdict(mixed), "pass")                        # does not block the gate
 
+    def _farm_obj(self, name="farmd_skip"):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader(name, HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, ld))
+        ld.exec_module(m)
+        return m.Farm(True, True, 1)
+
+    def test_skip_down_not_applied_to_a_device_that_is_attached_again(self):
+        """recover() can bring a 'down' phone back in the same tick, before dstate is refreshed: its gate part must stay pending"""
+        _, g, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
+        f = self._farm_obj()
+        f.dstate["dev-b"] = {"status": "down", "since": 0, "note": ""}
+        self.attach("dev-b")                                              # attached again, status still the stale 'down'
+        f.skip_down_parts(L.list_jobs())
+        self.assertEqual(L.find_job(g)["parts"]["v13"]["state"], "pending")
+        self.attach()                                                     # really gone: now it is skipped
+        f.skip_down_parts(L.list_jobs())
+        self.assertEqual(L.find_job(g)["parts"]["v13"]["state"], "skipped")
+
+    def test_skip_down_auto_baseline_retryable_and_job_cleaned(self):
+        """a skipped auto baseline daily must not leave main's tip in baseline/auto.json (it would never be queued again), and the job it
+        finished has no worker left to remove its worktree"""
+        tip = "a" * 40
+        j = L.new_job("main", tip, False, "daily", ["v13"], "", "repo", auto=True, prio=10)
+        sp = os.path.join(L.state_dir(), "baseline", "auto.json")
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        L.write_json(sp, {"v13": tip, "v11": tip})
+        f = self._farm_obj("farmd_skip2")
+        tree = f.tree(j["id"])
+        os.makedirs(tree + "-shim")
+        f.dstate["dev-b"] = {"status": "down", "since": 0, "note": ""}
+        self.attach()
+        import threading
+        gate = threading.Event()
+        f.prebuild_t = threading.Thread(target=gate.wait, daemon=True)
+        f.prebuild_t.start()                                              # a prebuild may be building this very tree: no cleanup yet
+        f.skip_down_parts(L.list_jobs())
+        self.assertEqual(L.find_job(j["id"])["parts"]["v13"]["state"], "skipped")
+        self.assertEqual(L.read_json(sp), {"v11": tip})                   # only the skipped class is forgotten
+        self.assertTrue(os.path.isdir(tree + "-shim"))
+        gate.set()
+        f.prebuild_t.join()
+        f.skip_down_parts(L.list_jobs())
+        self.assertFalse(os.path.exists(tree + "-shim"))
+
+    def test_digest_skipped_rows_share_the_line_budget(self):
+        for i in range(30):
+            self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
+        self.attach()
+        self.farmd()
+        self.backdate("dev-b", 5)
+        self.farmd()
+        out = self.farm("digest")[1]
+        n = out.count("SKIPPED ")
+        self.assertLess(n, 30)
+        self.assertIn("older SKIPPED rows omitted", out)
+        self.assertLessEqual(len(out.splitlines()), 45)
+
     def test_compare(self):
         c, nf, npass = L.compare({"a": "Pass", "b": "Pass", "c": "Fail"}, {"a": "Pass", "b": "Crash", "c": "Pass"})
         self.assertEqual((nf, npass), ([["b", "Crash"]], ["c"]))

@@ -440,9 +440,17 @@ def cmd_digest(a):
         ps = [f"{c}#{pos[(j['id'], c)]}" for c in j["parts"] if (j["id"], c) in pos]
         if ps:
             print(f"  pending {j['id']} {j['suite']:5} p{L.job_prio(j):<2} {j['ref'][:22]:22} " + " ".join(ps))
-    for j in jobs[-30:]:
-        for c, n in L.skipped_parts(j):
-            print(f"  SKIPPED {j['id']} {j['suite']:5} {j['ref'][:22]:22} {c}: {n}")
+    bl = BL.digest_lines(BL.load_rows(L.state_dir())) + BL.menu_digest_lines(L.state_dir())          # latest bench per phone always shown (not cut by the room limit)
+    sk = [f"  SKIPPED {j['id']} {j['suite']:5} {j['ref'][:22]:22} {c}: {n}" for j in jobs[-30:] for c, n in L.skipped_parts(j)]
+    room = max(0, 40 - 4 - len(devs) - len(bl))
+    # ONE line budget for skipped rows and result rows: the newest skipped rows get at most half of it, the result rows (printed last) the rest.
+    # Cut rows are counted, never silently dropped.
+    sk_n = min(len(sk), room // 2)
+    if len(sk) > sk_n:
+        print(f"  ... {len(sk) - sk_n} older SKIPPED rows omitted")
+    for ln in sk[len(sk) - sk_n:]:
+        print(ln)
+    room -= sk_n
     print("queue: " + ", ".join(f"{n} {k}" for k, n in sorted(st.items())) + ("; running " + "; ".join(run_now) if run_now else ""))
     classes = sorted({d["class"] for d in devs.values()})
     def latest(ref, suite, cls):
@@ -479,8 +487,6 @@ def cmd_digest(a):
                                      f"new Fails against main: {len(new)}" + (f" ({len(worse) - len(new)} on the flaky list)" if len(new) != len(worse) else ""))
                     else:
                         lines.append(f"    vs main {m['commit'][:7]}: new Fails against main: 0")
-    bl = BL.digest_lines(BL.load_rows(L.state_dir())) + BL.menu_digest_lines(L.state_dir())          # latest bench per phone always shown (not cut by the room limit)
-    room = 40 - 4 - len(devs) - len(bl)
     print("\n".join(bl + lines[:room]) + (f"\n... {len(lines) - room} more lines (older refs)" if len(lines) > room else ""))
 
 
