@@ -339,6 +339,43 @@ test_spec(void)
    }
 }
 
+/* StorageImageReadWithoutFormat: OpImageRead on an Unknown-format image (storrd_*.comp, gen-storage.sh) must compile for every component type
+ * on every arch, through the descriptor-lowered path (storage image + SSBO): the texel format is not known at compile time, so the load has to
+ * go through the format-agnostic texture path. The binaries are the SAME for no two component types (float/uint/int convert differently). */
+static void
+test_storage_read(void)
+{
+   printf("storage image read without format\n");
+   static const char *const names[3] = {"storrd_f.comp.spv", "storrd_u.comp.spv", "storrd_i.comp.spv"};
+   struct mali_lbinding b[2] = {
+      {.type = MALI_DT_STORAGE_IMAGE, .count = 1, .slot = 0, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER},
+      {.type = MALI_DT_STORAGE_BUFFER, .count = 1, .slot = 1, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER}};
+   struct mali_compile_layout l;
+   memset(&l, 0, sizeof l);
+   l.nsets = 1;
+   l.set[0] = (struct mali_lset){.nbindings = 2, .slot_count = 2, .b = b};
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct mali_compiled c[3] = {0};
+      int ok[3] = {0};
+      for (int i = 0; i < 3; i++) {
+         struct spv s = load(names[i]);
+         if (!s.w) continue;
+         struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n, .layout = &l};
+         char err[256] = "";
+         ok[i] = !mali_compile(&o, &c[i], err, sizeof err);
+         CHECK(ok[i], "v%u %s compiles (Unknown-format OpImageRead): %s", arch, names[i], err);
+         if (ok[i]) CHECK(c[i].bin_size > 0 && c[i].bin_size % 8 == 0, "v%u %s binary size %u", arch, names[i], c[i].bin_size);
+         free(s.w);
+      }
+      for (int i = 0; i < 3; i++)
+         for (int j = i + 1; j < 3; j++)
+            if (ok[i] && ok[j])
+               CHECK(c[i].bin_size != c[j].bin_size || memcmp(c[i].bin, c[j].bin, c[i].bin_size), "v%u %s and %s produce identical code", arch, names[i], names[j]);
+      for (int i = 0; i < 3; i++) if (ok[i]) mali_compiled_free(&c[i]);
+   }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -357,6 +394,7 @@ main(int argc, char **argv)
    test_determinism_and_cache();
    test_ycbcr();
    test_spec();
+   test_storage_read();
    test_errors();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;
