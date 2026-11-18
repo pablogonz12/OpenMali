@@ -46,6 +46,10 @@ vec4 raw_kind(uint k, uint off, uint bpp, uint nc) {
    return k <= 13u ? uintBitsToFloat(u) : fv;
 }
 void main() {
+   if ((p.flags & 255u) == 19u) {   // CmdClearAttachments quad: the clear value words (float / int bits as the format's shader output) sit in the source buffer
+      o = uintBitsToFloat(uvec4(src.d[0], src.d[1], src.d[2], src.d[3]));
+      return;
+   }
    uvec2 f = uvec2(gl_FragCoord.xy);
    uint off = f.y * p.row_bytes + f.x * p.bpp;
    uint w = src.d[off >> 2];
