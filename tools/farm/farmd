@@ -1073,7 +1073,7 @@ class Farm:
                 return {"verdict": "error", "notes": "fake bench failure"}
             n = B.append_rows(L.state_dir(), self.fake_bench_rows(job, dev), job, alias)
             return {"verdict": "pass", "counts": {"rows": n}, "new_failures": [], "newly_passing": [], "notes": "fake bench"}
-        if self.shell_route(dev):
+        if self.shell_route(dev) and dev.get("guest") is not True:
             return {"verdict": "error", "notes": "bench needs the in-app guest route; this phone is shell-route only"}
         mdb = self.bench_prepare(job)
         if not mdb:
@@ -1133,8 +1133,16 @@ class Farm:
         _, pw = self.adb(dev, "shell", "dumpsys power | grep -m1 mWakefulness=")
         _, act = self.adb(dev, "shell", "dumpsys activity activities | grep -m2 -E 'topResumedActivity|mResumedActivity'")
         _, pk = self.adb(dev, "shell", f"dumpsys package {pkg} | grep -m1 versionCode")
-        use, why = M.owner_in_use(pw, act, pkg)
+        use, why = M.owner_in_use(pw, act, pkg, launch=dev.get("foreground_launch") is True)
         return M.installed_vc(pk), use, why
+
+    def bring_front(self, dev, why):
+        """devices.toml `foreground_launch = true`: only the launcher is showing -> start MediaDeck's launcher activity (no-op otherwise)"""
+        if dev.get("foreground_launch") is not True or not why.startswith(M.LAUNCHER_ONLY) or self.fake:
+            return
+        pkg = os.environ.get("DROIDDECK_PACKAGE", M.PKG_DEFAULT)
+        self.adb(dev, "shell", f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1", timeout=30)
+        log(f"{dev['alias']}: {why}: MediaDeck brought to the front")
 
     def suite_menu(self, job, dev):
         """menubench <alias> --profile both --reps 3 (it takes the qsafe lock, honours the health gate, resumes its plan on exit 75), then one row per
@@ -1150,6 +1158,7 @@ class Farm:
             self.cool[alias] = time.time() + (0 if self.fake else 900)
             log(f"{alias}: owner is using the phone ({why}); {job['id']} menu stays pending")
             return {"gated": True}
+        self.bring_front(dev, why)
         results = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(mb)))), "results", "menubench.jsonl")
         since = job["created"]
         base = [mb, alias, "--profile", "both", "--reps", "3", "--lockwait", "30"]

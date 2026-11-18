@@ -82,6 +82,9 @@ For a phone with no in-app (guest) route, e.g. the Poco X4 GT (class v10): `farm
 - the sha256 of the job's .so is checked on the phone before every chunk/test and once more by farmd afterwards; a mismatch is `invalid` and re-queued.
 - same lock guard (exit 73), health gate before every chunk (exit 75 = paused, resumes from its TSV) and owner kill switch as the other routes.
 
+## Guest on a shell-route phone (`guest = true`, `foreground_launch = true`)
+`route = "shell"` keeps smoke and dEQP daily on the fast adb-shell route. `guest = true` additionally lets the in-app guest (MediaDeck) serve what only it can: `bench` (auto triggers and `--suite bench`) and `menu`. `foreground_launch = true` (our own test phone, never the lent one): a screen-on phone with only the launcher in front is not "the owner"; before a menu run farmd starts MediaDeck itself (`monkey -p <pkg> -c LAUNCHER`). Any other foreground app still pauses the job. Heat keys per device: `temp_stop`/`temp_resume` (farm gate) and `temp_start` (bench2 starts no burst above it).
+
 ## Smoke fallback on a locked guest-route phone (`smoke_fallback = "shell"` in devices.toml)
 The guest smoke (valrun.sh -> qdrv -> `t_vk_*` in the MediaDeck app's Linux guest, glibc build) needs a READY app session; with the screen off or the keyguard
 showing it stays SUSPENDED. For a phone with `smoke_fallback = "shell"` (the Poco X8, v13) farmd reads `dumpsys power` (read-only) and, when the phone is not Awake

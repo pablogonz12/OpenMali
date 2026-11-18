@@ -112,9 +112,18 @@ def foreground_pkg(out):
     return m.group(1) if m else None
 
 
-def owner_in_use(power_out, activity_out, pkg=PKG_DEFAULT):
+def is_launcher(fg):
+    """home-screen package (com.mi.android.globallauncher, com.android.launcher3, com.miui.home ...)"""
+    return bool(fg) and ("launcher" in fg.lower() or fg.endswith(".home"))
+
+
+LAUNCHER_ONLY = "launcher only"
+
+
+def owner_in_use(power_out, activity_out, pkg=PKG_DEFAULT, launch=False):
     """-> (in_use, why). In use = screen awake with a foreground app that is not MediaDeck (home screen / lock screen count). Unreadable
-    output counts as in use: never run blind."""
+    output counts as in use: never run blind. launch=True (devices.toml `foreground_launch = true`, our own test phone only): the bare home
+    screen is not the owner, the farm brings MediaDeck to the front itself (why starts with LAUNCHER_ONLY); any other app still is."""
     m = re.search(r"mWakefulness=(\w+)", power_out or "")
     if not m:
         return True, "unreadable power state"
@@ -125,6 +134,8 @@ def owner_in_use(power_out, activity_out, pkg=PKG_DEFAULT):
         return True, "screen on, foreground app unreadable"
     if fg == pkg:
         return False, "MediaDeck in the foreground"
+    if launch and is_launcher(fg):
+        return False, f"{LAUNCHER_ONLY} ({fg})"
     return True, f"screen on, foreground {fg}"
 
 
