@@ -1605,6 +1605,10 @@ test_share_inst(void)
    g_inst = 0;
    DestroyFence(dev, f, NULL);
    if (!ok) return 0;
+   if (!g_fake) {   /* the byte counter is the fake-backend host assertion (the phone library has no /tmp stats file) */
+      printf("{\"test\":\"share_inst_pixels\",\"ok\":true}\n");
+      return 1;
+   }
    unsigned long long same = ab[2] - ab[1], chg = ab[1] - ab[0];
    /* same-state frame 0 -> 2 differ by nothing; the changing frame must allocate at least 3 driver sets (3 x 17 x 32 B) more than an identical one */
    printf("{\"test\":\"share_inst\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", same, chg, chg >= same + 3 * 17 * 32 ? "true" : "false");

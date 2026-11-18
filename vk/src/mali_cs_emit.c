@@ -360,7 +360,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
                /* Attribute Frequency = Instance (word1[7:6]), offset enable off; first_instance shifts the start (panvk) */
                ((uint32_t *)e)[0] &= ~(1u << 8);
                ((uint32_t *)e)[1] |= 1u << 6;
-               ((uint32_t *)e)[2] += d->first_instance * g->attr[i].stride;
+               /* no first_instance shift: the hardware adds the draw's INSTANCE_OFFSET itself (hardware: with the shift, firstInstance k drew instance 2k on v10 and v13) */
             }
          }
          else
