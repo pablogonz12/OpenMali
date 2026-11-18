@@ -91,7 +91,7 @@ class Farm:
         self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
         self.idle_since = {}                           # alias -> when it last stopped doing real (non-sweep) work or became healthy
         self.last_auto = 0
-        self.restore_pending = set()                    # phones whose last hold was cut short by a restart: restore before the next use
+        self.restore_pending = H.load_restore()           # persisted (holdlib): survives further restarts; phones whose last hold was cut short by a restart: restore before the next use
         self.menu_next = {}                            # alias -> next time to probe its MediaDeck versionCode
 
     # ---------- devices
@@ -1377,6 +1377,7 @@ class Farm:
             if alias in self.restore_pending:                        # a hold was cut short by a farmd restart: the phone may still be in its state
                 self.hold_cleanup(dev)
                 self.restore_pending.discard(alias)
+                H.clear_restore(alias)
             touched = True
             now = time.time()
             h.update(state="active", started=L.now(), deadline=now + h["max_s"], lock=dev["lock"], serial=self.tid.get(alias) or dev["serial"])
@@ -1459,6 +1460,7 @@ class Farm:
             if alias in self.restore_pending and not menu:      # an earlier hold was cut short by a farmd restart
                 self.hold_cleanup(dev)
                 self.restore_pending.discard(alias)
+                H.clear_restore(alias)
             touched = not menu                                  # menubench restores the phone itself
             self.upd(jid, lambda x: x["parts"][cls].update(state="running", device=alias))
             sha, why = self.build(job)
@@ -1889,12 +1891,22 @@ class Farm:
                 h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False, clean_note="restore runs before the next job or hold")
                 L.write_json(H.path(h["id"]), h)
                 self.restore_pending.add(h["device"])
+                H.mark_restore(h["device"])
         H.gc()
         for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
                 if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls) for t in self.threads.values()):
-                    self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="pending"))   # farmd restarted mid-run
-                    p["state"] = "pending"
+                    def lost(x, c=cls):                                  # farmd restarted mid-run: the part counts an attempt, or a job that kills farmd loops forever
+                        q = x["parts"][c]
+                        q["attempts"] = q.get("attempts", 0) + 1
+                        q["state"] = "pending" if q["attempts"] < RETRIES else "done"
+                        if q["state"] == "done":
+                            q["verdict"] = "error"
+                    self.upd(j["id"], lost)
+                    p["state"] = "pending" if p.get("attempts", 0) + 1 < RETRIES else "done"      # same rule as lost(): the loop below must not run an exhausted part
+                    if j["suite"] != "menu" and p.get("device"):         # the phone may still be in the dead run's state
+                        self.restore_pending.add(p["device"])
+                        H.mark_restore(p["device"])
                 if p["state"] != "pending":
                     continue
                 if j["suite"] == "menu" and self.menu_stale(j):

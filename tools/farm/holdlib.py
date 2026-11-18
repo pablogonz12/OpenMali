@@ -98,3 +98,27 @@ def gc(keep_s=86400):
                     os.unlink(path(h["id"], e))
                 except OSError:
                     pass
+
+
+# ---- restore-pending marks: a phone whose hold/job was cut short by a farmd restart must be restored before its next use; the mark is a
+# file so it survives further restarts (an in-memory set was lost by the very restart it was meant to cover)
+def restore_dir():
+    d = os.path.join(L.state_dir(), "restore-pending")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def mark_restore(alias):
+    with open(os.path.join(restore_dir(), alias), "a"):
+        pass
+
+
+def clear_restore(alias):
+    try:
+        os.unlink(os.path.join(restore_dir(), alias))
+    except OSError:
+        pass
+
+
+def load_restore():
+    return set(os.listdir(restore_dir()))

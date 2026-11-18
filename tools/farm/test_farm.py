@@ -2117,7 +2117,7 @@ class SmokeRoute(unittest.TestCase):
 
 class HoldTests(unittest.TestCase):
     """farm hold: server-side FIFO queue of agent holds, fair with jobs, lease + heartbeat, same flock underneath"""
-    setUp, attach, farm = T.setUp, T.attach, T.farm
+    setUp, attach, farm, farmd = T.setUp, T.attach, T.farm, T.farmd
 
     def daemon(self):
         self.env.update(MALI_FARM_HB_STALE="3", MALI_FARM_HB_EVERY="0.3")
@@ -2227,6 +2227,22 @@ class HoldTests(unittest.TestCase):
         p = os.path.join(os.environ["FARM_STATE_DIR"] if "FARM_STATE_DIR" in os.environ else L.state_dir(), "wj.json")
         L.write_json(p, {"a": 1})
         self.assertEqual(L.read_json(p), {"a": 1})
+
+
+    def test_restart_marks_persist_and_lost_running_part_counts_an_attempt(self):
+        self.attach("dev-a")
+        H.mark_restore("dev-a")
+        self.assertEqual(H.load_restore(), {"dev-a"})                     # a file, not memory: a second restart still sees it
+        H.clear_restore("dev-a")
+        self.assertEqual(H.load_restore(), set())
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        j = L.find_job(jid)
+        j["parts"]["v11"].update(state="running", device="dev-a", attempts=2)
+        L.write_json(L.job_path(jid), j)
+        self.farmd()                                                       # fresh daemon: nothing owns the "running" part
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual((p["state"], p.get("verdict")), ("done", "error"), p)   # the retry budget is spent, not an endless loop
+        self.assertEqual(H.load_restore(), {"dev-a"})                      # and the phone is marked for restore before its next use
 
     def test_end_reason(self):
         h = {"deadline": 100}
