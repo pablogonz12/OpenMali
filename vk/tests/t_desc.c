@@ -262,6 +262,38 @@ test_compile(unsigned arch)
    vk_descriptor_set_layout_unref(&g_dev, &l1->vk);
 }
 
+/* VK_KHR_push_descriptor: each push is a new set (the one earlier draws bound must not change), seeded from the previous push. */
+static void
+test_push(unsigned arch)
+{
+   printf("push descriptor sets, v%u\n", arch);
+   VkDescriptorSetLayoutBinding b[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+   };
+   struct mali_dsl *l = mk_layout(arch, 2, b);
+   struct mali_dset *s1 = NULL, *s2 = NULL;
+   CHECK(mali_push_set_create(&g_dev, arch, l, NULL, &s1) == VK_SUCCESS && s1, "create first");
+   VkDescriptorBufferInfo b0 = { (VkBuffer)(uintptr_t)1, 0x40, 256 }, b1 = { (VkBuffer)(uintptr_t)1, 0x80, 64 };
+   VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &b0 };
+   mali_dset_write(s1, &w);
+   CHECK(mali_push_set_create(&g_dev, arch, l, s1, &s2) == VK_SUCCESS && s2, "create second");
+   CHECK(s1->va != s2->va && s2->bytes == s1->bytes && s1->bytes == 2 * MALI_DESC_SLOT_SIZE, "distinct memory, 2 slots");
+   w.dstBinding = 1; w.pBufferInfo = &b1;
+   mali_dset_write(s2, &w);
+   struct mali_hw_desc e0, e1;
+   mali_pack_buffer(arch, &e0, g_buf_va + 0x40, 256);
+   CHECK(!memcmp(s1->cpu, &e0, sizeof e0), "first set binding 0 written");
+   CHECK(!memcmp(s2->cpu, s1->cpu, MALI_DESC_SLOT_SIZE), "second set inherits binding 0");
+   static const uint8_t zero[MALI_DESC_SLOT_SIZE];
+   CHECK(!memcmp(s1->cpu + MALI_DESC_SLOT_SIZE, zero, sizeof zero), "first set binding 1 untouched by the later push");
+   CHECK(memcmp(s2->cpu + MALI_DESC_SLOT_SIZE, zero, sizeof zero), "second set binding 1 written");
+   (void)e1;
+   mali_push_set_destroy(&g_dev, s1);
+   mali_push_set_destroy(&g_dev, s2);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -276,6 +308,8 @@ main(int argc, char **argv)
    test_bytes(11);
    test_bytes(13);
    test_pool();
+   test_push(11);
+   test_push(13);
    test_compile(11);
    test_compile(13);
    clock_gettime(CLOCK_MONOTONIC, &b);
