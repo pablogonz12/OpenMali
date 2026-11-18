@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 21 /* 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 22   /* 22: OOM handling only, output unchanged (the compile guard requires a bump for any edit here). 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -533,8 +533,14 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       if (BITSET_TEST(info.fau.is_const, i))
          out->nimm++;
    out->imm = malloc((out->nimm ? out->nimm : 1) * sizeof *out->imm);
+   if (!out->imm) {
+      free(out->bin);
+      out->bin = NULL;
+      ralloc_free(nir);
+      return fail(err, errsz, "out of memory");
+   }
    unsigned k = 0;
-   for (unsigned i = info.fau.reserved; i < info.fau.count && out->imm; i++)
+   for (unsigned i = info.fau.reserved; i < info.fau.count; i++)
       if (BITSET_TEST(info.fau.is_const, i)) {
          out->imm[k].word = i;
          out->imm[k].value = info.fau.words[i].constant;
