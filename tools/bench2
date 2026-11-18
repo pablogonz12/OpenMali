@@ -286,7 +286,7 @@ def cache_path(ph, commit, so_sha, mode):
     return os.path.join(RAW, f"{ph.alias}-{commit}-{(so_sha or 'x')[:8]}-{mode}.jsonl")
 
 
-DIALOG_RE = re.compile(r"permissioncontroller|GrantPermissions|permission", re.I)
+DIALOG_RE = re.compile(r"permissioncontroller[^ ]*/[^ ]*GrantPermissionsActivity")
 
 
 def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
