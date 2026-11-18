@@ -868,7 +868,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             unsupported(cmd, "colour loadOp LOAD of this format");
             return;
          }
-         kind = rk | (rnc << 12);
+         kind = rk | (rnc << 12) | ((rk == 12 || rk == 17) ? 1u << 16 : (rk == 13 || rk == 18) ? 2u << 16 : 0);   /* bits 16..17: integer-typed colour output (uint / sint) */
          bpp = rbpp;
       }
       }
@@ -1119,7 +1119,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             }
             struct mali_preload_src ps;
             memset(&ps, 0, sizeof ps);
-            ps.arg = 19;
+            ps.arg = 19 | (f->colour.rt && f->colour.rt->int_bits ? (f->colour.rt->is_signed ? 2u : 1u) << 16 : 0);   /* the clear words are the raw shader output: integer-typed for integer formats */
             memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
             struct mali_draw d;
             if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {

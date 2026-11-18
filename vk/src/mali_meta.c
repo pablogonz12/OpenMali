@@ -502,11 +502,11 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
 /* R4: loadOp LOAD. A graphics "preload" draw (full-viewport triangle) re-emits the old contents of the (linear) attachment(s), read as storage
  * buffers, into the tile before the application's draws: colour through a colour output, depth/stencil through gl_FragDepth /
  * gl_FragStencilRefARB (force-late ZS, see mali_cs_emit.c). One compiled FS per kind, compiled once per process (arch of the installed device). */
-static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[MALI_PRELOAD_KINDS];
+static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[MALI_PRELOAD_KINDS + 2];   /* + colour with an unsigned / signed integer colour output (arg bits 16..17 = 1 / 2) */
 static struct { bool ok; struct mali_compiled vs; uint64_t vs_va; } g_pre_vs;
 
 static int
-preload_compile(unsigned kind)
+preload_compile(unsigned kind)   /* kind < MALI_PRELOAD_KINDS: enum mali_preload_kind; MALI_PRELOAD_KINDS + 0/1: integer-output colour variants (U / S) */
 {
    char err[256] = "";
    struct mali_lbinding b[2] = { { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER, 0 }, { MALI_DT_STORAGE_BUFFER, 1, 1, 1, 0, MALI_NO_IMM_SAMPLER, 0 } };
@@ -531,9 +531,9 @@ preload_compile(unsigned kind)
          return -ENOMEM;
       g_pre_vs.ok = true;
    }
-   const uint32_t *spv = kind == MALI_PRELOAD_COLOUR ? preload_frag_spv : kind == MALI_PRELOAD_Z ? preload_z_frag_spv :
+   const uint32_t *spv = kind == MALI_PRELOAD_KINDS ? preload_uint_frag_spv : kind == MALI_PRELOAD_KINDS + 1 ? preload_sint_frag_spv : kind == MALI_PRELOAD_COLOUR ? preload_frag_spv : kind == MALI_PRELOAD_Z ? preload_z_frag_spv :
                          kind == MALI_PRELOAD_S ? preload_s_frag_spv : preload_zs_frag_spv;
-   size_t words = kind == MALI_PRELOAD_COLOUR ? sizeof preload_frag_spv : kind == MALI_PRELOAD_Z ? sizeof preload_z_frag_spv :
+   size_t words = kind == MALI_PRELOAD_KINDS ? sizeof preload_uint_frag_spv : kind == MALI_PRELOAD_KINDS + 1 ? sizeof preload_sint_frag_spv : kind == MALI_PRELOAD_COLOUR ? sizeof preload_frag_spv : kind == MALI_PRELOAD_Z ? sizeof preload_z_frag_spv :
                   kind == MALI_PRELOAD_S ? sizeof preload_s_frag_spv : sizeof preload_zs_frag_spv;
    memset(&o, 0, sizeof o);
    o.arch = g_dev.arch;
@@ -562,8 +562,9 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
       pthread_mutex_unlock(&g_lock);
       return -ENODEV;
    }
-   if (!g_pre[kind].ok) {
-      int r = preload_compile(kind);
+   unsigned slot = kind == MALI_PRELOAD_COLOUR && ((src->arg >> 16) & 3) ? MALI_PRELOAD_KINDS - 1 + ((src->arg >> 16) & 3) : (unsigned)kind;
+   if (!g_pre[slot].ok) {
+      int r = preload_compile(slot);
       if (r) {
          pthread_mutex_unlock(&g_lock);
          return r;
@@ -584,9 +585,9 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
       pack_buffer(set + 8, src->va[1], src->bytes[1]);
    memset(d, 0, sizeof *d);
    d->gfx.vs = &g_pre_vs.vs;
-   d->gfx.fs = &g_pre[kind].fs;
+   d->gfx.fs = &g_pre[slot].fs;
    d->gfx.vs_va = g_pre_vs.vs_va;
-   d->gfx.fs_va = g_pre[kind].fs_va;
+   d->gfx.fs_va = g_pre[slot].fs_va;
    d->gfx.push_base[0] = 40;
    d->gfx.push_base[1] = g_dev.arch == 13 ? 24 : 0;
    d->gfx.depth_func = 7;   /* ALWAYS */
