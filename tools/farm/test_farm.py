@@ -1508,6 +1508,7 @@ class MenuUnit(unittest.TestCase):
 class SmokeRoute(unittest.TestCase):
     """guest smoke -> adb-shell fallback when the app session cannot be READY (locked phone): route choice, log header, harness"""
     def setUp(self):
+        self.adb_rc = 0
         self.orig_rw = L.run_watched                                   # farmd_sr shares this farmlib: restore after each test
 
     def tearDown(self):
@@ -1528,7 +1529,7 @@ class SmokeRoute(unittest.TestCase):
         f.tree = lambda jid: "/nonexistent-tree"
         f.harness = lambda tree: self.calls.append("harness")
         f.alive = lambda dev: True
-        f.adb = lambda dev, *a, **k: (0, dumpsys) if "dumpsys" in a[-1] else (0, "")
+        f.adb = lambda dev, *a, **k: (self.adb_rc, dumpsys) if "dumpsys" in a[-1] else (0, "")
         f.verify_so = lambda job, dev, path, key="so_sha256": (True, job.get(key))
         f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (self.calls.append(("shell", nodim)) or (0, SMOKE_OUT))
         f.keep_log = lambda job, dev, part, out, rc: setattr(self, "kept", out)
@@ -1550,6 +1551,14 @@ class SmokeRoute(unittest.TestCase):
         self.assertIn("skipped=", first)
         self.assertIn("route=shell-fallback", r["notes"])
         self.assertIn("gamescope", r["notes"])
+
+    def test_dozing_with_nonzero_grep_rc_still_counts_as_locked(self):
+        """the keyguard grep finds nothing on this phone (rc 1) while mWakefulness=Dozing was printed: must still skip the guest route"""
+        f = self.farm(dumpsys="mWakefulness=Dozing\n")
+        self.adb_rc = 1
+        self.fd.L.run_watched = lambda *a, **k: self.fail("guest route must not be tried")
+        self.assertEqual(f.suite_smoke(dict(self.JOB), self.dev)["verdict"], "pass")
+        self.assertIn("Dozing", self.kept.splitlines()[0])
 
     def test_session_not_ready_with_awake_screen_falls_back_after_guest(self):
         f = self.farm(dumpsys="mWakefulness=Awake")

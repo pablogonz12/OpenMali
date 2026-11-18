@@ -581,7 +581,7 @@ class Farm:
     def session_blocked(self, dev):
         """read-only: why the app guest session cannot be READY on this phone right now ('' = it can). The phone's screen state is only read."""
         rc, o = self.adb(dev, "shell", "dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'; dumpsys window | grep -m1 -o 'mShowingLockscreen=[a-z]*\\|isKeyguardShowing=[a-z]*'", timeout=30)
-        return smokeroute.blocked_reason(o) if rc == 0 else ""
+        return smokeroute.blocked_reason(o)          # not rc-gated: the last grep finds nothing on phones without that flag (rc 1) though the first one answered
 
     def run_shellroute(self, job, dev, mode, run_id, extra, tmo, nodim=False):
         """shellroute.py under the phone lock (QSAFE_HELD), killed when the phone goes away or the owner says stop -> (rc, out)"""
