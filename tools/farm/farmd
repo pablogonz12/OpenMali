@@ -9,7 +9,8 @@ import argparse, hashlib, json, os, re, shutil, subprocess, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import farmlib as L                                    # noqa: E402
+import farmlib as L
+import smokeroute                                    # noqa: E402
 import gate                                            # noqa: E402
 import benchlib as B                                   # noqa: E402
 import sweeplib as S                                   # noqa: E402
@@ -338,7 +339,7 @@ class Farm:
                 os.symlink(os.path.realpath(tp), os.path.join(tree, "third_party"))
             self.borrow_deqp(tree)
             var = self.variant(job)                   # bench jobs: the WSI (Wayland) variant a64-glibc-wl, everything else a64-glibc
-            need_bionic = job["suite"] == "smoke" and any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values())
+            need_bionic = self.needs_bionic(job)
             if not job.get("dirty") and not need_bionic:          # build cache per commit: an earlier job of the same commit already built this .so
                 for o in L.list_jobs(True):
                     art = os.path.join(L.state_dir(), "artifacts", (o.get("so_sha256") or "x") + ".so")
@@ -362,7 +363,7 @@ class Farm:
             sha = hashlib.sha256(open(so, "rb").read()).hexdigest()
             shutil.copy2(so, os.path.join(L.state_dir(), "artifacts", sha + ".so"))
             self.archive_tests(sha, os.path.dirname(so))
-            if any(self.shell_route(dv) and dv["class"] in job["parts"] for dv in self.devs.values()) and job["suite"] == "smoke":
+            if self.needs_bionic(job):
                 bb = os.path.join(tree, "third_party", "build-vk-a64-bionic")
                 import glob as _g                       # cross/build-cross.sh: bionic needs liblog/libsync and the libdrm objects of Mesa's wrap
                 objs = " ".join(sorted(_g.glob(os.path.join(bb, "subprojects", "libdrm-*", "libdrm.so.p", "*.o"))))
@@ -413,9 +414,11 @@ class Farm:
         """older commits predate the transport/env hooks of valrun.sh and qdeqp.py: install the farm checkout's copy of those two
         harness scripts into the scratch tree when the hook is missing (the code under test is untouched)"""
         base = os.path.dirname(os.path.dirname(HERE))
-        for rel, hook in (("vk/tests/valrun.sh", "VAL_SO_SHA256"), ("vk/deqp/qdeqp.py", "QDEQP_SO_SHA256"), ("tools/dev-serial", "ADB_SERIAL")):
+        # valrun.sh also needs the "this run's result only" fix of 4f24ee4 (-newer "$M"): a tree that has the SO hook but not that fix reported another
+        # phone's old valguest result as this phone's smoke (v13 "pass" with Mali-G615 lines and "session not READY")
+        for rel, hooks in (("vk/tests/valrun.sh", ("VAL_SO_SHA256", '-newer "$M"')), ("vk/deqp/qdeqp.py", ("QDEQP_SO_SHA256",)), ("tools/dev-serial", ("ADB_SERIAL",))):
             dst, src = os.path.join(tree, rel), os.path.join(base, rel)
-            if os.path.exists(src) and (not os.path.exists(dst) or hook not in open(dst).read()):
+            if os.path.exists(src) and (not os.path.exists(dst) or any(h not in open(dst).read() for h in hooks)):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
 
@@ -424,7 +427,7 @@ class Farm:
         need = [("third_party/build-vk-a64-glibc", "Mesa a64-glibc build tree (vk/README.md one-time setup)")]
         if suite == "bench":
             need = [("third_party/build-vk-a64-glibc-wl", "Mesa a64-glibc-wl (Wayland WSI) build tree: vk/cross/build-cross.sh glibc-wl")]
-        if suite == "smoke" and any(self.shell_route(dv) for dv in self.devs.values()):
+        if suite == "smoke" and any(self.shell_route(dv) or self.smoke_fallback(dv) for dv in self.devs.values()):
             need.append(("third_party/build-vk-a64-bionic", "Mesa a64-bionic build tree (shell-route smoke)"))
         if suite in ("daily", "cases", "sweep"):
             need += [("vk/deqp/out/a64-glibc", "dEQP build (vk/deqp/build.sh)"), ("vk/deqp/lists/daily-sample.txt", "dEQP case list")]
@@ -560,7 +563,20 @@ class Farm:
     def shell_route(self, dev):
         return dev.get("route") == "shell"
 
-    def run_shellroute(self, job, dev, mode, run_id, extra, tmo):
+    def smoke_fallback(self, dev):
+        """devices.toml `smoke_fallback = "shell"`: a guest-route phone whose smoke falls back to the adb-shell route (bionic t_vk_*) while its
+        app session cannot be READY (locked screen: the session stays SUSPENDED)"""
+        return dev.get("smoke_fallback") == "shell" and not self.shell_route(dev)
+
+    def needs_bionic(self, job):
+        return job["suite"] == "smoke" and any((self.shell_route(dv) or self.smoke_fallback(dv)) and dv["class"] in job["parts"] for dv in self.devs.values())
+
+    def session_blocked(self, dev):
+        """read-only: why the app guest session cannot be READY on this phone right now ('' = it can). The phone's screen state is only read."""
+        rc, o = self.adb(dev, "shell", "dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'; dumpsys window | grep -m1 -o 'mShowingLockscreen=[a-z]*\\|isKeyguardShowing=[a-z]*'", timeout=30)
+        return smokeroute.blocked_reason(o) if rc == 0 else ""
+
+    def run_shellroute(self, job, dev, mode, run_id, extra, tmo, nodim=False):
         """shellroute.py under the phone lock (QSAFE_HELD), killed when the phone goes away or the owner says stop -> (rc, out)"""
         sha = job.get("so_sha256_bionic" if mode == "smoke" else "so_sha256") or ""
         cmd = [sys.executable, "-I", os.path.join(HERE, "shellroute.py"), mode, "--lock", dev["lock"], "--tree", self.tree(job["id"]),
@@ -568,6 +584,8 @@ class Farm:
         ex = {"SHELLROUTE_SERIAL": dev["serial"]}
         if run_id.startswith("sweep-"):
             ex["SHELLROUTE_KEEP_DIM"] = "1"
+        if nodim:
+            ex["SHELLROUTE_NODIM"] = "1"
         return L.run_watched(cmd, tmo, lambda: self.alive(dev), env=self.phone_env(dev, ex))
 
     def shell_rc(self, rc, out, what):
@@ -612,6 +630,44 @@ class Farm:
         else:
             open(p, "w").write(txt)
 
+    def smoke_shell(self, job, dev, fallback=False):
+        """adb-shell route (bionic t_vk_*): -> (rc, out) or a result dict. fallback = a guest-route phone whose session is not READY: the screen
+        is not touched (no dim/undim) and the log says which route ran"""
+        if not job.get("so_sha256_bionic"):
+            return {"verdict": "error", "notes": "no bionic build for the shell route"}
+        run_id = job["id"] + "-" + dev["alias"]
+        rc, out = self.run_shellroute(job, dev, "smoke", run_id, ["--only", job["only"]] if job.get("only") else [], 700, nodim=fallback)
+        bad = self.shell_rc(rc, out, "shellroute")
+        if bad:
+            return bad
+        ok_s, got = self.verify_so(job, dev, f"/data/local/tmp/farm/{run_id}/libvulkan_mali.so", "so_sha256_bionic")
+        self.adb(dev, "shell", f"rm -rf /data/local/tmp/farm/{run_id}")
+        if not ok_s:
+            return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256_bionic'))[:12]})"}
+        return rc, out
+
+    def smoke_guest(self, job, dev, tree, env):
+        """valrun.sh in the app guest -> (rc, out), a result dict, or {"_session": why} when the session gave no result (fallback candidate)"""
+        if dev["lock"] not in ("cmf", "poco"):
+            return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
+        self.harness(tree)
+        rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20", job.get("only") or ""], 340, lambda: self.alive(dev),
+                                env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
+        if rc == 125:
+            return {"lost": True}
+        if rc == 73:                                                   # our own harness refused: the phone lock is not held by this tree
+            return {"gated": True}
+        if rc == 77:
+            return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
+        if smokeroute.guest_unusable(rc, out):                         # qdrv produced no result for this run: never judge the driver on it
+            if self.smoke_fallback(dev):
+                return {"_session": "app session not READY (" + out.strip()[-80:].replace("\n", " ") + ")"}
+            return {"verdict": "error", "notes": "no result from the phone session (valrun: qdrv wrote none): " + out.strip()[-200:]}
+        ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
+        if not ok_s:
+            return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]})"}
+        return rc, out
+
     def suite_smoke(self, job, dev):
         env = job["env"]
         sw = self.fake_swap(job) if self.fake else None
@@ -623,35 +679,26 @@ class Farm:
             return {"verdict": "fail" if bad else "pass", "counts": {"tests": 3, "failed": 1 if bad else 0},
                     "new_failures": [["t_vk_draw", "rc=1"]] if bad else [], "newly_passing": [], "notes": "fake"}
         tree = self.tree(job["id"])
-        if self.shell_route(dev):
-            if not job.get("so_sha256_bionic"):
-                return {"verdict": "error", "notes": "no bionic build for the shell route"}
-            run_id = job["id"] + "-" + dev["alias"]
-            rc, out = self.run_shellroute(job, dev, "smoke", run_id, ["--only", job["only"]] if job.get("only") else [], 700)
-            bad = self.shell_rc(rc, out, "shellroute")
-            if bad:
-                return bad
-            ok_s, got = self.verify_so(job, dev, f"/data/local/tmp/farm/{run_id}/libvulkan_mali.so", "so_sha256_bionic")
-            self.adb(dev, "shell", f"rm -rf /data/local/tmp/farm/{run_id}")
-            if not ok_s:
-                return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256_bionic'))[:12]})"}
-        else:
-            if dev["lock"] not in ("cmf", "poco"):
-                return {"verdict": "error", "notes": "valrun.sh only knows phones cmf|poco"}
-            self.harness(tree)
-            rc, out = L.run_watched(["bash", os.path.join(tree, "vk", "tests", "valrun.sh"), env, "20", job.get("only") or ""], 340, lambda: self.alive(dev),
-                                    env=self.phone_env(dev, {"PHONE": dev["lock"], "VAL_SO_SHA256": job.get("so_sha256") or ""}))
-            if rc == 125:
-                return {"lost": True}
-            if rc == 73:                                                   # our own harness refused: the phone lock is not held by this tree
-                return {"gated": True}
-            if rc == 77:
-                return {"verdict": "invalid", "notes": "driver on the phone was not this job's build (valrun sha256 check): " + out.strip()[-160:]}
-            if rc == 74:                                                   # qdrv produced no result for this run: never judge the driver on it
-                return {"verdict": "error", "notes": "no result from the phone session (valrun: qdrv wrote none): " + out.strip()[-200:]}
-            ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/val_libvulkan_mali.so")
-            if not ok_s:
-                return {"verdict": "invalid", "notes": f"driver on the phone changed during the run (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]})"}
+        route, why = "shell" if self.shell_route(dev) else "guest", ""
+        if route == "guest" and self.smoke_fallback(dev):
+            why = self.session_blocked(dev)                                 # read-only: no point asking a locked phone for its session
+            if why:
+                route = "shell-fallback"
+        if route == "guest":
+            res = self.smoke_guest(job, dev, tree, env)
+            if isinstance(res, dict) and res.get("_session") and self.smoke_fallback(dev):
+                route, why = "shell-fallback", res["_session"]
+            elif isinstance(res, dict):
+                return res
+            else:
+                rc, out = res
+        if route != "guest":
+            res = self.smoke_shell(job, dev, fallback=route == "shell-fallback")
+            if isinstance(res, dict):
+                return res
+            rc, out = res
+        sha = job.get("so_sha256_bionic" if route != "guest" else "so_sha256")
+        out = smokeroute.header(route, self.tid.get(dev["alias"]) or dev["serial"], sha, why) + "\n" + out
         recs = []
         for l in out.splitlines():
             if l.startswith("{"):
@@ -668,7 +715,8 @@ class Farm:
             return {"verdict": "error", "counts": counts, "new_failures": failed, "newly_passing": [],
                     "notes": f"no summary (rc={rc}): {out.strip()[-200:]!r}"}
         ok = summ.get("ok") and not failed
-        return {"verdict": "pass" if ok else "fail", "counts": counts, "new_failures": failed, "newly_passing": [], "notes": ""}
+        note = "" if route == "guest" else f"route={route}" + (f" ({why})" if why else "") + (" skipped: " + "; ".join(smokeroute.SKIPPED) if route == "shell-fallback" else "")
+        return {"verdict": "pass" if ok else "fail", "counts": counts, "new_failures": failed, "newly_passing": [], "notes": note}
 
     def suite_daily(self, job, dev):
         base, bref = self.baseline(job, dev)

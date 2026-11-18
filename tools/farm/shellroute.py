@@ -342,11 +342,13 @@ def main():
     if a.mode == "undim":
         undim()
         return
-    dim()
+    nodim = bool(os.environ.get("SHELLROUTE_NODIM"))           # smoke fallback on a locked guest-route phone: its screen/settings are not touched at all
+    if not nodim:
+        dim()
     try:
         {"smoke": smoke, "daily": daily}[a.mode](a)
     finally:
-        if not os.environ.get("SHELLROUTE_KEEP_DIM"):            # the idle sweep keeps the screen dark between chunks; farmd undims when it stops
+        if not nodim and not os.environ.get("SHELLROUTE_KEEP_DIM"):            # the idle sweep keeps the screen dark between chunks; farmd undims when it stops
             undim()
 
 
