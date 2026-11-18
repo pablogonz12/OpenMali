@@ -69,12 +69,95 @@ fx(float f, unsigned ib, unsigned fb)
    return unorm(f, ib) << fb;
 }
 
+/* RAW tile buffer, the formats that are not plain per-channel integers: the clear value as the pixel the memory format stores (SNORM, UNORM16,
+ * 32-bit float, A2B10G10R10 integer), replicated like pan_pack_raw. Returns false for every other format. */
+static bool
+raw_special_words(int fmt, const float c[4], uint32_t w[4])
+{
+   uint32_t px[4] = {0, 0, 0, 0}, u[4];
+   unsigned n, bits, bytes;
+   int kind;   /* 0 snorm, 1 unorm, 2 f32, 3 a2b10g10r10 integer */
+   memcpy(u, c, sizeof u);
+   switch (fmt) {
+   case VK_FORMAT_R8_SNORM: n = 1; bits = 8; kind = 0; break;
+   case VK_FORMAT_R8G8_SNORM: n = 2; bits = 8; kind = 0; break;
+   case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_A8B8G8R8_SNORM_PACK32: n = 4; bits = 8; kind = 0; break;
+   case VK_FORMAT_R16_SNORM: n = 1; bits = 16; kind = 0; break;
+   case VK_FORMAT_R16G16_SNORM: n = 2; bits = 16; kind = 0; break;
+   case VK_FORMAT_R16G16B16A16_SNORM: n = 4; bits = 16; kind = 0; break;
+   case VK_FORMAT_R16_UNORM: n = 1; bits = 16; kind = 1; break;
+   case VK_FORMAT_R16G16_UNORM: n = 2; bits = 16; kind = 1; break;
+   case VK_FORMAT_R16G16B16A16_UNORM: n = 4; bits = 16; kind = 1; break;
+   case VK_FORMAT_R32_SFLOAT: n = 1; bits = 32; kind = 2; break;
+   case VK_FORMAT_R32G32_SFLOAT: n = 2; bits = 32; kind = 2; break;
+   case VK_FORMAT_R32G32B32A32_SFLOAT: n = 4; bits = 32; kind = 2; break;
+   case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_A2B10G10R10_SINT_PACK32: n = 4; bits = 10; kind = 3; break;
+   default: return false;
+   }
+   if (kind == 3) {
+      px[0] = (u[0] & 0x3ff) | (u[1] & 0x3ff) << 10 | (u[2] & 0x3ff) << 20 | (u[3] & 3u) << 30;
+      bytes = 4;
+   } else {
+      bytes = n * bits / 8;
+      const uint32_t mask = bits == 32 ? ~0u : (1u << bits) - 1;
+      for (unsigned i = 0; i < n; i++) {
+         uint32_t v;
+         if (kind == 2)
+            v = u[i];
+         else if (kind == 1)
+            v = (uint32_t)lrintf(fminf(fmaxf(c[i] != c[i] ? 0.0f : c[i], 0.0f), 1.0f) * (float)mask);
+         else {
+            const float m = (float)(mask >> 1);
+            v = (uint32_t)(int32_t)lrintf(fminf(fmaxf(c[i] != c[i] ? 0.0f : c[i], -1.0f), 1.0f) * m) & mask;
+         }
+         unsigned bit = i * bits;
+         px[bit / 32] |= (v & mask) << (bit % 32);
+      }
+   }
+   if (bytes == 1)
+      px[0] |= px[0] << 8, px[0] |= px[0] << 16;
+   else if (bytes == 2)
+      px[0] |= px[0] << 16;
+   if (bytes <= 4)
+      w[0] = w[1] = w[2] = w[3] = px[0];
+   else if (bytes == 8) {
+      w[0] = w[2] = px[0]; w[1] = w[3] = px[1];
+   } else
+      memcpy(w, px, 16);
+   return true;
+}
+
 /* Clear words in the tile buffer's internal format (pan_clear.c pan_pack_color), all four words filled. */
 void
 mali_rtfmt_clear_words(const struct mali_rtfmt *rt, const float cin[4], uint32_t w[4])
 {
    uint32_t a, b;
    float c[4] = { cin[0], cin[1], cin[2], cin[3] };
+   if (rt && rt->internal >= 32 && raw_special_words(rt->vk_format, cin, w))
+      return;
+   if (rt && rt->int_bits) {
+      /* integer colour: the clear value's raw 32-bit words (VkClearColorValue uint32/int32), channels packed as stored, replicated per
+       * pan_pack_raw (<=4 B: the word repeats, 8 B: two words twice, 16 B: as is) */
+      uint32_t v[4], px[4] = {0, 0, 0, 0};
+      memcpy(v, cin, sizeof v);
+      const unsigned bits = rt->int_bits, bytes = rt->ncomp * bits / 8;
+      const uint32_t mask = bits == 32 ? ~0u : (1u << bits) - 1;
+      for (unsigned i = 0; i < rt->ncomp; i++) {
+         unsigned bit = i * bits;
+         px[bit / 32] |= (v[i] & mask) << (bit % 32);
+      }
+      if (bytes == 1)
+         px[0] |= px[0] << 8, px[0] |= px[0] << 16;
+      else if (bytes == 2)
+         px[0] |= px[0] << 16;
+      if (bytes <= 4)
+         w[0] = w[1] = w[2] = w[3] = px[0];
+      else if (bytes == 8) {
+         w[0] = w[2] = px[0]; w[1] = w[3] = px[1];
+      } else
+         memcpy(w, px, 16);
+      return;
+   }
    if (rt && !rt->is_float && (rt->blend_pixfmt & (1u << 20)))
       for (unsigned i = 0; i < 3; i++)
          c[i] = lin2srgb(c[i]);

@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+  path_filters:
+    - "!third_party/**"
+    - "!runs/**"
+    - "!**/build/**"
+    - "!**/out/**"
+    - "!vk/deqp/**"
+    - "!vk/package/dist/**"
+    - "!bench/raw/**"
+    - "!**/*.apk"
+    - "!**/*.so"
+    - "!**/*.a"
+    - "!**/*.o"
+    - "!**/*.zip"
+    - "!**/*.log"
+    - "!**/__pycache__/**"

@@ -449,6 +449,8 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
 {
    if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled)
       return -EINVAL;
+   if (img->vk.image_type == VK_IMAGE_TYPE_3D)
+      return -EINVAL;   /* render to a 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too); rejected until the slice addressing is understood */
    int zs = 0;
    bool has_d = true;   /* the format has a depth plane we can attach */
    out->rt = NULL;

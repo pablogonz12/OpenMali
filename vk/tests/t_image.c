@@ -31,7 +31,7 @@ cmp_words(const char *what, const uint32_t *a, const uint32_t *b, uint32_t mask0
 }
 
 /* Render-target table: A8B8G8R8 packed 32 has the byte order of R8G8B8A8, so it takes the RGBA8 rows (sweep: renderpass.suballocation.formats a8b8g8r8_*).
- * Formats outside the table (pure integer, snorm, 16-bit unorm, R32G32B32A32_SFLOAT, A1R5G5B5) are not render targets yet: CmdBeginRendering rejects them. */
+ * Non-blendable formats (integer, SNORM, UNORM16, 32-bit float) are RAW tile-buffer rows. */
 static void
 test_rtfmt(unsigned arch)
 {
@@ -44,7 +44,34 @@ test_rtfmt(unsigned arch)
    struct mali_fmt f;
    CHECK(mali_format_get(arch, VK_FORMAT_A8B8G8R8_UNORM_PACK32, &f) && f.blendable, "A8B8G8R8_UNORM blendable");
    CHECK(mali_format_get(arch, VK_FORMAT_A8B8G8R8_SRGB_PACK32, &f) && f.blendable, "A8B8G8R8_SRGB blendable");
-   static const int gap[] = { VK_FORMAT_R8G8_UINT, VK_FORMAT_R16_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R32_SINT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_A1R5G5B5_UNORM_PACK16 };
+   /* every RAW (non-blendable) row: the blend unit's opaque conversion word is the format's texture word (hw >> 12 / hw & 0xfff), the tile-buffer
+    * internal format is 32 + log2(bytes) and the writeback is RAW8/16/32/64/128 = 0/1/3/5/7 */
+   unsigned nraw = 0;
+   for (int v = 1; v < 1000; v++) {
+      const struct mali_rtfmt *row = mali_rtfmt_find(v, &ok);
+      if (!ok || !row || row->internal < 32)
+         continue;
+      nraw++;
+      struct mali_fmt q;
+      CHECK(mali_format_get(arch, v, &q) && q.rt, "RAW row %d has no format caps", v);
+      CHECK(row->blend_pixfmt == (q.hw & 0xfffffu), "RAW row %d blend word %08x vs texture word %08x", v, row->blend_pixfmt, q.hw & 0xfffffu);
+      unsigned lg = row->internal - 32;
+      static const uint8_t wb_of[5] = { 0, 1, 3, 5, 7 };
+      CHECK(lg < 5 && row->wb == wb_of[lg] && row->alloc == (1u << lg), "RAW row %d internal %u wb %u alloc %u", v, row->internal, row->wb, row->alloc);
+      CHECK(!q.blendable, "RAW row %d marked blendable", v);
+   }
+   CHECK(nraw >= 30, "only %u RAW rows", nraw);
+   static const int snorm[] = { VK_FORMAT_R8_SNORM, VK_FORMAT_R8G8_SNORM, VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_A8B8G8R8_SNORM_PACK32, VK_FORMAT_R16_UNORM, VK_FORMAT_R16G16_UNORM,
+                                VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16_SNORM, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT,
+                                VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_A8B8G8R8_UINT_PACK32, VK_FORMAT_A8B8G8R8_SINT_PACK32, VK_FORMAT_A2B10G10R10_UINT_PACK32,
+                                VK_FORMAT_A2B10G10R10_SINT_PACK32, VK_FORMAT_R8G8_UINT, VK_FORMAT_R32_SINT };
+   for (unsigned i = 0; i < sizeof snorm / sizeof snorm[0]; i++) {
+      const struct mali_rtfmt *row = mali_rtfmt_find(snorm[i], &ok);
+      CHECK(ok && row && row->internal >= 32, "format %d should be a RAW render target", snorm[i]);
+   }
+   /* still unsupported: A1R5G5B5 (alpha at bit 15: not a swizzle of the RGB5A1 rows), 3-component, BGRA integer/snorm, A2R10G10B10 integer */
+   static const int gap[] = { VK_FORMAT_A1R5G5B5_UNORM_PACK16, VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_B8G8R8A8_SNORM,
+                              VK_FORMAT_B8G8R8A8_UINT, VK_FORMAT_A2R10G10B10_UINT_PACK32 };
    for (unsigned i = 0; i < sizeof gap / sizeof gap[0]; i++) {
       mali_rtfmt_find(gap[i], &ok);
       CHECK(!ok, "format %d unexpectedly a render target (update the gap list in the sweep notes)", gap[i]);

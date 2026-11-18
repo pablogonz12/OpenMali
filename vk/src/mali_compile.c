@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 19
+#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -146,6 +146,8 @@ type_size(const struct glsl_type *t, bool bindless)
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
    uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
+   /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
+   uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
    char mesa[24];
 };
 
@@ -164,6 +166,11 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.sample_shading = o->sample_shading != 0;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
+   k.max_sets = MALI_MAX_SETS;
+   k.dyn_table = MALI_DYN_TABLE;
+   k.dyn_buf_start = MALI_DYN_BUF_START;
+   k.dummy_sampler_idx = MALI_DUMMY_SAMPLER_IDX;
+   k.max_push_bytes = MALI_MAX_PUSH_BYTES;
    snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
    blake3_hasher h;
    blake3_hasher_init(&h);
