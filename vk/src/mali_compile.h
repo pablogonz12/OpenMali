@@ -30,6 +30,9 @@ struct mali_varying_slot {
    uint32_t alu_type;   /* nir_alu_type of the stored value */
 };
 
+/* One VkSpecializationMapEntry: constant id, byte offset into spec_data, byte size. */
+struct mali_spec_entry { uint32_t id, offset, size; };
+
 struct mali_compile_opts {
    unsigned arch;                 /* 11 or 13 */
    enum mali_stage stage;
@@ -44,6 +47,9 @@ struct mali_compile_opts {
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
    int sample_shading;            /* FS: pipeline sampleShadingEnable with minSampleShading * samples > 1 (PanVK: nir->info.fs.uses_sample_shading) */
    int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
+   unsigned nspec;                         /* VkSpecializationInfo: mapEntryCount (0 = none) */
+   const struct mali_spec_entry *spec;     /* pMapEntries */
+   const void *spec_data;                  /* pData; every entry must lie inside it (caller checks dataSize) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
 };
 

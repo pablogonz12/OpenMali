@@ -276,6 +276,69 @@ test_ycbcr(void)
    }
 }
 
+/* Specialization constants: the same SPIR-V compiled with different VkSpecializationInfo gives different code (the value is folded in),
+ * a missing entry keeps the SPIR-V default, and the disk cache key separates the variants. */
+static int
+spec_compile(unsigned arch, const char *spv, enum mali_stage st, const struct mali_spec_entry *e, unsigned n, const void *data, const char *cache, struct mali_compiled *c)
+{
+   struct spv s = load(spv);
+   if (!s.w) return -1;
+   struct mali_lbinding b = {.type = MALI_DT_STORAGE_BUFFER, .count = 1, .slot = 0, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER};
+   struct mali_compile_layout l;
+   memset(&l, 0, sizeof l);
+   l.nsets = 1;
+   l.set[0] = (struct mali_lset){.nbindings = 1, .slot_count = 1, .b = &b};
+   struct mali_compile_opts o = {.arch = arch, .stage = st, .spirv = s.w, .spirv_words = s.n, .nspec = n, .spec = e, .spec_data = data, .cache_dir = cache,
+                                 .layout = st == MALI_STAGE_COMPUTE ? &l : NULL};
+   char err[256] = "";
+   int r = mali_compile(&o, c, err, sizeof err);
+   if (r) printf("  compile error: %s\n", err);
+   free(s.w);
+   return r;
+}
+
+static void
+test_spec(void)
+{
+   printf("specialization constants\n");
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct mali_compiled fd, fo, fp, cd, co;
+      struct { float r; uint32_t mode, blue; } fdata = {0.75f, 2, 1};
+      struct mali_spec_entry fe[3] = {{0, 0, 4}, {3, 4, 4}, {5, 8, 4}};
+      struct mali_spec_entry fe1[1] = {{0, 0, 4}};
+      if (spec_compile(arch, "spec.frag.spv", MALI_STAGE_FRAGMENT, NULL, 0, NULL, "", &fd)) continue;
+      if (spec_compile(arch, "spec.frag.spv", MALI_STAGE_FRAGMENT, fe, 3, &fdata, "", &fo)) continue;
+      if (spec_compile(arch, "spec.frag.spv", MALI_STAGE_FRAGMENT, fe1, 1, &fdata, "", &fp)) continue;
+      CHECK(imm_has(&fd, 0.25f) && !imm_has(&fd, 0.75f), "v%u FS default R = 0.25", arch);
+      CHECK(imm_has(&fo, 0.75f) && !imm_has(&fo, 0.25f), "v%u FS overridden R = 0.75", arch);
+      CHECK(imm_has(&fp, 0.75f), "v%u FS partial override: R from the data, MODE/BLUE default", arch);
+      CHECK(fo.bin_size != fd.bin_size || memcmp(fo.bin, fd.bin, fd.bin_size), "v%u FS default and overridden binaries differ", arch);
+      CHECK(fo.bin_size != fp.bin_size || memcmp(fo.bin, fp.bin, fo.bin_size), "v%u FS partial override differs from the full one", arch);
+      struct { float f; uint32_t wg, b, a; } cdat = {3.5f, 4, 1, 9};
+      struct mali_spec_entry ce[4] = {{1, 12, 4}, {2, 0, 4}, {4, 4, 4}, {7, 8, 4}};
+      if (spec_compile(arch, "spec.comp.spv", MALI_STAGE_COMPUTE, NULL, 0, NULL, "", &cd)) continue;
+      if (spec_compile(arch, "spec.comp.spv", MALI_STAGE_COMPUTE, ce, 4, &cdat, "", &co)) continue;
+      CHECK(cd.local_size[0] == 1 && co.local_size[0] == 4, "v%u CS workgroup size from local_size_x_id: default %u, overridden %u", arch, cd.local_size[0], co.local_size[0]);
+      CHECK(cd.bin_size != co.bin_size || memcmp(cd.bin, co.bin, cd.bin_size), "v%u CS binaries differ", arch);
+      /* disk cache: the variants must not alias */
+      char dir[] = "/tmp/t_compile_spec_XXXXXX";
+      if (mkdtemp(dir)) {
+         struct mali_compiled x1, x2, x3;
+         if (!spec_compile(arch, "spec.frag.spv", MALI_STAGE_FRAGMENT, NULL, 0, NULL, dir, &x1) &&
+             !spec_compile(arch, "spec.frag.spv", MALI_STAGE_FRAGMENT, fe, 3, &fdata, dir, &x2) &&
+             !spec_compile(arch, "spec.frag.spv", MALI_STAGE_FRAGMENT, NULL, 0, NULL, dir, &x3)) {
+            CHECK(imm_has(&x1, 0.25f) && imm_has(&x2, 0.75f) && imm_has(&x3, 0.25f), "v%u cache keeps default and overridden variants apart", arch);
+            mali_compiled_free(&x1); mali_compiled_free(&x2); mali_compiled_free(&x3);
+         }
+         char cmd[128];
+         snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+         if (system(cmd)) {}
+      }
+      mali_compiled_free(&fd); mali_compiled_free(&fo); mali_compiled_free(&fp); mali_compiled_free(&cd); mali_compiled_free(&co);
+   }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -293,6 +356,7 @@ main(int argc, char **argv)
    test_compute();
    test_determinism_and_cache();
    test_ycbcr();
+   test_spec();
    test_errors();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;

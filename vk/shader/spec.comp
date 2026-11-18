@@ -1,0 +1,13 @@
+#version 450
+// specialization constants (t_vk_feat spec, t_compile spec): uint, float, bool and the workgroup size
+layout(constant_id = 1) const uint A = 7;
+layout(constant_id = 2) const float F = 2.5;
+layout(constant_id = 7) const bool B = false;
+layout(local_size_x_id = 4) in;
+layout(set = 0, binding = 0) buffer O { uint o[]; };
+void main() {
+  o[0] = A;
+  o[1] = floatBitsToUint(F);
+  o[2] = B ? 1u : 0u;
+  o[4 + gl_LocalInvocationIndex] = 100u + gl_WorkGroupSize.x;
+}
