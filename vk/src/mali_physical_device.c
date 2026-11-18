@@ -17,7 +17,9 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;   /* as on main; 4x draws stay behind MALI_EXPERIMENTAL_MSAA=1 */
+   /* KNOWN GAP (feat-audit): 1x|4x is advertised unconditionally (dEQP relies on it; the multisample lane is making 4x real), but 4x pipelines
+    * are still rejected unless MALI_EXPERIMENTAL_MSAA=1 (mali_pipeline.c) and resolve/LOAD/depth cases are limited (vk/README.md "Known gaps"). */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -93,7 +95,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .framebufferDepthSampleCounts = samples_1_4,
       .framebufferStencilSampleCounts = samples_1_4,
       .framebufferNoAttachmentsSampleCounts = samples_1_4,
-      .maxColorAttachments = 4,
+      .maxColorAttachments = 4,   /* the Vulkan minimum; KNOWN GAP: only ONE colour attachment renders (mali_cmd.c "need exactly one colour attachment"), see vk/README.md "Known gaps" */
       .sampledImageColorSampleCounts = samples_1_4,
       .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .sampledImageDepthSampleCounts = samples_1_4,
@@ -145,6 +147,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxMemoryAllocationSize = 1u << 30;
 
    /* ---- Vulkan 1.2 ---- driverID has no Mali-open value; PanVK is the nearest sibling (same compiler). */
+   /* Deliberate: zink keys real workarounds on this id (implicit_sync off, renderpass optimisation for tilers, invalid linear modifier,
+    * no msrtss); an unregistered id would lose them. Revisit only if a PanVK quirk turns out wrong for us. */
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
    snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
