@@ -79,7 +79,6 @@ void kb_leaks(const struct kb_ctx *ctx, struct kb_leaks *out);      /* live obje
 #define KB_BO_CSF_EVENT    (1u << 4) /* CQS / sync-object memory (kernel-visible, uncached) */
 #define KB_BO_GPU_UNCACHED (1u << 5)
 #define KB_BO_NOCOH        (1u << 6) /* do not add kb_bo_extra_flags (COHERENT_LOCAL): render targets / textures never need GPU L1 coherence */
-#define KB_BO_COH          (1u << 7) /* force COHERENT_LOCAL (0x800) on this BO even when kb_bo_extra_flags is 0 (per-class bisect: MALI_COH_ON) */
 
 struct kb_bo {
 	struct kb_ctx *ctx;
