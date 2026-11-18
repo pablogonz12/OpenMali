@@ -162,6 +162,28 @@ main(int argc, char **argv)
    VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
    VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
    GetPhysicalDeviceFeatures2(pd, &g2);
+   /* uab limits: each UAB limit >= its non-UAB twin; the types with UAB features (samplers, sampled images) reach the 500000 minimum */
+   CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
+         p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= L->maxPerStageDescriptorStorageBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= L->maxPerStageDescriptorSampledImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageImages >= L->maxPerStageDescriptorStorageImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindInputAttachments >= L->maxPerStageDescriptorInputAttachments &&
+         p12.maxPerStageUpdateAfterBindResources >= L->maxPerStageResources, "uab per-stage >= non-UAB");
+   CHECK(p12.maxDescriptorSetUpdateAfterBindSamplers >= L->maxDescriptorSetSamplers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffers >= L->maxDescriptorSetUniformBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic >= L->maxDescriptorSetUniformBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffers >= L->maxDescriptorSetStorageBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic >= L->maxDescriptorSetStorageBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindSampledImages >= L->maxDescriptorSetSampledImages &&
+         p12.maxDescriptorSetUpdateAfterBindStorageImages >= L->maxDescriptorSetStorageImages &&
+         p12.maxDescriptorSetUpdateAfterBindInputAttachments >= L->maxDescriptorSetInputAttachments, "uab per-set >= non-UAB");
+   if (f12.descriptorBindingSampledImageUpdateAfterBind) {
+      CHECK(p12.maxUpdateAfterBindDescriptorsInAllPools >= 500000 && p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= 500000 &&
+            p12.maxDescriptorSetUpdateAfterBindSampledImages >= 500000 && p12.maxPerStageUpdateAfterBindResources >= 500000,
+            "uab sampled image limits >= 500000");
+      CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 500000 && p12.maxDescriptorSetUpdateAfterBindSamplers >= 500000, "uab sampler limits >= 500000");
+   }
    eq("timelineSemaphore", f12.timelineSemaphore, ftl.timelineSemaphore);
    eq("hostQueryReset", f12.hostQueryReset, fhq.hostQueryReset);
    eq("synchronization2", f13.synchronization2, fs2.synchronization2);
