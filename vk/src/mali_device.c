@@ -83,11 +83,14 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
    result = mali_hw_init(dev);
    if (result != VK_SUCCESS) {
+      /* Log against the device while it still exists: vk_error() on the physical device asserts (obj->device is NULL) for
+       * OUT_OF_DEVICE_MEMORY / TOO_MANY_OBJECTS / MEMORY_MAP_FAILED, which is what a failing BO allocation returns. */
+      result = vk_error(dev, result);
       pdev->backend->device_destroy(dev->kdev);
       mali_queue_device_finish(dev);
       vk_device_finish(&dev->vk);
       vk_free2(&pdev->vk.instance->alloc, pAllocator, dev);
-      return vk_error(pdev, result);
+      return result;
    }
 
    /* One queue family with one queue (see mali_GetPhysicalDeviceQueueFamilyProperties2). */

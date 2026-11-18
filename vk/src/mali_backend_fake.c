@@ -212,6 +212,9 @@ dump_kick(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 static int
 fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
 {
+   const char *ce = getenv("MALI_FAKE_DEVICE_CREATE_ERR");   /* errno: make device_create fail with -errno (tests/t_vk_edge.c) */
+   if (ce && atoi(ce) > 0)
+      return -atoi(ce);
    struct mali_kdev *k = calloc(1, sizeof(*k));
    if (!k)
       return -ENOMEM;
