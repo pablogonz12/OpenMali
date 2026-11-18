@@ -108,6 +108,32 @@ for g in v11 v13; do
    golden vk_feat $g --spv-dir "$V/shader"
    golden vk_meta $g
 done
+# Shader cache, cold vs warm: the same test on an empty private cache and again on the cache that run left must give byte-identical decoded
+# streams (a cached shader that yields different GPU state than a fresh compile would hide behind every host run that has a warm cache; see
+# tests/compile-guard.sh for the cause that was found). The warm run must really hit the cache (no new entry) and a damaged entry must be seen.
+cwdump() { # test, gpu, cache dir, out name
+   rm -f "$GDIR/$4.jsonl" "$GDIR/$4.txt"
+   MALI_SHADER_CACHE=$3 MALI_FAKE_DUMP="$GDIR/$4.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$2 "$OUT/t_$1" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" >/dev/null 2>&1 || return 1
+   GOLDEN_ARCH=${2#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$4.jsonl" "$GDIR/$4.txt" >/dev/null 2>&1
+}
+for t in vk_draw vk_feat; do for g in v11 v13; do
+   CW=$OUT/cw-cache-$t-$g; rm -rf "$CW"; mkdir -p "$CW"
+   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; fail=1; continue; fi
+   n0=$(ls "$CW" | wc -l); sum0=$(cat "$CW"/*.bin 2>/dev/null | sha256sum)
+   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; fail=1; continue; fi
+   if [ "$n0" -gt 0 ] && [ "$n0" = "$(ls "$CW" | wc -l)" ] && [ "$sum0" = "$(cat "$CW"/*.bin | sha256sum)" ] && cmp -s "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt"; then
+      echo "ok    shader cache cold == warm $t $g ($n0 entries)"
+   else echo "FAIL  shader cache cold != warm $t $g (entries $n0 -> $(ls "$CW" | wc -l)):"; diff -u "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt" | head -20 | sed 's/^/        /'; fail=1; fi
+done; done
+# teeth: an entry whose immediates differ (what a stale entry of an older lowering looks like) must change the warm dump
+CW=$OUT/cw-cache-vk_draw-v11
+for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done
+if cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (damaged entries change the dump)"
+else echo "FAIL  cache cold/warm self-test: damaged cache entries did not change the vk_draw dump"; fail=1; fi
+rm -rf "$OUT"/cw-cache-* "$GDIR"/cw-*
+# The cache key knows only MALI_COMPILE_VERSION: lowering sources and the recorded version must move together.
+if [ $bless = 1 ]; then "$V/tests/compile-guard.sh" --bless
+elif out=$("$V/tests/compile-guard.sh" 2>&1); then echo "ok    $out"; else echo "FAIL  compile guard:"; echo "$out" | sed 's/^/        /'; fail=1; fi
 # The rules must have teeth: each one is made to fire on a deliberately damaged dump / fault-injected backend.
 out=$(MALI_GEOM_SIZE=4194304 MALI_FAKE_DUMP="$GDIR/geom.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=v13 timeout 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" 2>&1 >/dev/null)
 out=$(GOLDEN_ARCH=13 python3 -I "$V/tests/golden.py" "$GDIR/geom.jsonl" "$GDIR/geom.txt" 2>&1)

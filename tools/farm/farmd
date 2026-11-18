@@ -72,6 +72,7 @@ class Farm:
         self.dstate = L.read_json(self.st_path) if os.path.exists(self.st_path) else {}
         self.last_try = {}
         self.cool = {}
+        self.sweep_why = {}                            # alias -> last logged reason the sweep is waiting (log on change only)
         self.sweep_bad = {}                            # alias -> consecutive failed sweep chunks (session churn guard)
         self.last_health, self.last_wl = {}, {}
         self.stop_reason, self.last_pw, self.last_mdns = {}, {}, {}
@@ -1092,13 +1093,15 @@ class Farm:
             if "CHUNK DONE" not in out:
                 break
         self.keep_log(job, dev, "bench", out, rc)
+        if "CHUNK DONE" in out or "PENDING:" in out or "stop:" in out:         # budget used up / owner using the phone / gated: resume later from bench/raw in wd
+            # decided BEFORE the sha check: a "PENDING:" chunk (owner in the foreground) returns before bench2 pushes anything, so the .so on the
+            # phone is a previous job's and would be judged INVALID (3 attempts burnt in 30 s on 2026-11-18). The final, complete chunk is verified below.
+            self.cool[alias] = time.time() + 300
+            return {"gated": True}
         ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/mdb_icd.so")
         if not ok_s:
             shutil.rmtree(wd, ignore_errors=True)
             return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
-        if "CHUNK DONE" in out or "PENDING:" in out or "stop:" in out:         # budget used up / owner using the phone / gated: resume later from bench/raw in wd
-            self.cool[alias] = time.time() + 300
-            return {"gated": True}
         jl = os.path.join(wd, "results.jsonl")
         rows = [json.loads(l) for l in open(jl)] if os.path.exists(jl) else []
         rows = [r for r in rows if r.get("commit") == job["commit"][:9] and "bench" in r]
@@ -1371,6 +1374,28 @@ class Farm:
             alert(f"SWEEP-CHURN {alias}: {n} sweep chunks in a row aborted or died fast (rc={rc}); sessions restart with backoff up to 30 min")
         return wait
 
+    def sweep_blocked(self, dev):
+        """'' = the idle sweep may take this phone now. Power first (sweeplib.power_blocked: charger only unless the phone opts in, temperature cap),
+        then, on a guest-route phone the sweep starts the app's guest session, which takes the screen: it is
+        left alone while the owner is using it (screen awake with another app in front) or while its session cannot be READY (locked screen):
+        before this, each 5-minute chunk held the phone lock while qdeqp waited for a focus it never got, then recorded the first case as a
+        timeout (2026-11-18: 13 chunks of '1 case in 301s')"""
+        why = S.power_blocked(self.health(dev), dev)
+        if why:
+            return why
+        if self.fake and not os.path.isdir(os.path.join(L.state_dir(), "fake-menu")):
+            return ""
+        if self.shell_route(dev):
+            return ""
+        _, use, why = self.menu_probe(dev)
+        if use:
+            return f"owner is using the phone ({why})"
+        if not self.fake:
+            why = self.session_blocked(dev)
+            if why:
+                return f"guest session cannot be READY ({why})"
+        return ""
+
     def sweep_chunk(self, dev):
         """one chunk of the walk -> True (continue), False (stop this sweep session), None (stopped before touching the phone)"""
         alias, cls = dev["alias"], dev["class"]
@@ -1379,6 +1404,14 @@ class Farm:
             self.cool[alias] = time.time() + 600
             log(f"{alias}: sweep: no dEQP-VK mustpass list under the main checkout; not sweeping")
             return None
+        why = self.sweep_blocked(dev)
+        if why:                                             # read-only probe, before anything is built or locked
+            self.cool[alias] = time.time() + 300
+            if self.sweep_why.get(alias) != why:
+                self.sweep_why[alias] = why
+                log(f"{alias}: sweep waits: {why}")
+            return None
+        self.sweep_why.pop(alias, None)
         st = S.load(cls)
         tip = self.main_tip()
         rc, mv = git("rev-list", "--count", f"{st['commit']}..{tip}", cwd=self.repo) if st.get("commit") else (1, "0")
