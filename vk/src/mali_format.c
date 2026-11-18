@@ -302,7 +302,10 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
 
    if (tiling == VK_IMAGE_TILING_LINEAR) {
       /* Spec allows restricting linear images to one 2D level/layer, single sampled. */
-      if (type != VK_IMAGE_TYPE_2D) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+      if (type != VK_IMAGE_TYPE_2D) {
+         memset(out, 0, sizeof *out);   /* on VK_ERROR_FORMAT_NOT_SUPPORTED every field must be 0 (dEQP info.image_format_properties) */
+         return VK_ERROR_FORMAT_NOT_SUPPORTED;
+      }
       out->maxMipLevels = 1;
       out->maxArrayLayers = 1;
    } else if (type == VK_IMAGE_TYPE_2D && !(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && !f.compressed &&
