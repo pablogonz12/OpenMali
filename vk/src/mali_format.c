@@ -368,7 +368,12 @@ mali_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, VkFormat format, Vk
       p3->optimalTilingFeatures = ok ? f.optimal : 0;
       p3->bufferFeatures = ok ? f.buffer : 0;
       /* 1.3 *_WITHOUT_FORMAT bits: the storage path is format-agnostic for all _I formats. */
-      if (ok && (f.optimal & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) p3->optimalTilingFeatures |= 0x80000000ull | 0x100000000ull;
+      const uint64_t nf = 0x80000000ull | 0x100000000ull;   /* STORAGE_{READ,WRITE}_WITHOUT_FORMAT */
+      if (ok && (f.optimal & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) p3->optimalTilingFeatures |= nf;
+      if (ok && (f.linear & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) p3->linearTilingFeatures |= nf;
+      if (ok && (f.buffer & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT)) p3->bufferFeatures |= nf;
+      /* 1.3: sampled depth formats report SAMPLED_IMAGE_DEPTH_COMPARISON (the sampler has compareOp, mali_sampler.c) */
+      if (ok && f.has_depth && (f.optimal & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) p3->optimalTilingFeatures |= 0x200000000ull;
    }
    vk_foreach_struct(st, e, p->pNext) {
       if (st == VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT) {
