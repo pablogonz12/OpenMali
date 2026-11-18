@@ -336,6 +336,19 @@ test_leaks(void)
    CHECK(mali_fake_live_bos(ma->kdev) == base, "A BOs freed via A: %u vs %u", mali_fake_live_bos(ma->kdev), base);
    CHECK(mali_fake_live_bos(mb->kdev) == bbase, "B untouched");
 
+   /* create on A while B is the bound device, destroy B first, then free A's objects (no dangling owner, BOs go back to A) */
+   CHECK(cev(A, &eci, NULL, &ev) == VK_SUCCESS, "event while B bound");
+   CHECK(cqp(A, &qci, NULL, &qp) == VK_SUCCESS, "qpool while B bound");
+   CHECK(mali_fake_live_bos(ma->kdev) > base, "BOs live on A (B bound)");
+   CHECK(mali_fake_live_bos(mb->kdev) == bbase, "nothing allocated on B");
+   dd(B, NULL);
+   B = VK_NULL_HANDLE;
+   dev_(A, ev, NULL);
+   dqp(A, qp, NULL);
+   CHECK(mali_fake_live_bos(ma->kdev) == base, "A BOs freed after B destroyed: %u vs %u", mali_fake_live_bos(ma->kdev), base);
+   CHECK(cd(pd, &dci, NULL, &B) == VK_SUCCESS, "device B again");
+   mb = mali_device_from_handle(B);
+
    /* wrong-pool free must not unlink/free/decrement */
    VkDescriptorSetLayoutBinding bd = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL};
    VkDescriptorSetLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &bd};
