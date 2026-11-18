@@ -5,7 +5,7 @@
 --fake (or MALI_FARM_FAKE=1): no adb, no build, no phone: attached devices = aliases listed in <state>/fake-attached,
 suites return synthetic results (env FAKE_FAIL=1 / FAKE_REGRESS=N / FAKE_FIX=N steer them). For tests of queue/resume/JSON logic."""
 import sys; sys.dont_write_bytecode = True
-import argparse, fcntl, hashlib, json, os, re, shutil, subprocess, sys, threading, time, traceback
+import argparse, datetime, fcntl, hashlib, json, os, re, shutil, subprocess, sys, threading, time, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1207,7 +1207,7 @@ class Farm:
 
     def menu_stale(self, j):
         try:
-            return time.time() - time.mktime(time.strptime(j["created"][:19], "%Y-%m-%dT%H:%M:%S")) > self.MENU_EXPIRE_H * 3600
+            return time.time() - datetime.datetime.fromisoformat(j["created"]).timestamp() > self.MENU_EXPIRE_H * 3600      # offset-aware, daemon timezone irrelevant
         except (ValueError, KeyError, TypeError):
             return False
 
@@ -1826,9 +1826,17 @@ class Farm:
                     continue
                 if j["suite"] == "menu" and self.menu_stale(j):
                     self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="cancelled"))
+                    sp = os.path.join(B.bench_dir(L.state_dir()), "menu-auto.json")           # forget the queued-version marker so auto-menu re-evaluates a still-current version
+                    seen = L.read_json(sp) if os.path.exists(sp) else {}
+                    for al2, d2 in self.devs.items():
+                        if d2["class"] == cls:
+                            seen.pop(al2, None)
+                    if os.path.exists(sp):
+                        L.write_json(sp, seen)
                     log(f"menu job {j['id']} expired (pending > {self.MENU_EXPIRE_H:g} h); cancelled")
                     continue
-                if time.time() < p.get("defer_until", 0):
+                fresh = (L.find_job(j["id"]) or j)["parts"].get(cls, p)                    # a worker may have just persisted defer_until
+                if time.time() < fresh.get("defer_until", 0):
                     continue                                                       # deferred individually (menu gate); the phone may run other jobs
                 for al, d in self.devs.items():
                     if d["class"] == cls and al in att and B.pin_ok(j, al) and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
