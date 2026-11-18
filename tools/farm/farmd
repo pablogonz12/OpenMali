@@ -685,6 +685,8 @@ class Farm:
             regs, fixes = [c for c in cases if base[c] == "Pass"][:reg], [c for c in cases if base[c] != "Pass"][:fix]
             for c in regs:
                 cur[c] = "Fail"
+            nfl = int(next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_FLAKY=")), 0))
+            self.fake_flaky = {c: int(next((t.split("=")[1] for t in env.split() if t.startswith("FAKE_FLAKY_PASS_ON=")), 1)) for c in regs[:nfl]}
             for c in fixes:
                 cur[c] = "Pass"
             rc, note = 0, "fake"
@@ -771,13 +773,66 @@ class Farm:
         flaky = L.load_flaky()
         ignored = [x for x in nf if x[0] in flaky]
         nf = [x for x in nf if x[0] not in flaky]
+        flk, rnote = [], ""
+        if nf and rc in (0, 1):
+            nf, flk, rnote, bad = self.flaky_rerun(job, dev, nf, f"{job['id']}-{dev['alias']}")
+            if bad:
+                return bad
+        for c, _f, _r in flk:                                    # counts keep the first run's statuses minus the cases that passed a rerun
+            counts[cur.get(c, "Missing")] = counts.get(cur.get(c, "Missing"), 1) - 1
+            counts["Pass"] = counts.get("Pass", 0) + 1
         missing = counts.get("Missing", 0)
         verdict = "fail" if nf else ("error" if missing or rc not in (0, 1) and not cur else "pass")
         if rc == 124:
             verdict = "error" if not nf else "fail"
-        extra = (f"; {len(n2f)} NotSupported->Fail" if n2f else "") + (f"; {len(ignored)} known-flaky ignored" if ignored else "")
+        extra = (f"; {len(n2f)} NotSupported->Fail" if n2f else "") + (f"; {len(ignored)} known-flaky ignored" if ignored else "") + rnote
         return {"verdict": verdict, "counts": counts, "new_failures": nf, "newly_passing": npass, "ns_to_fail": n2f, "flaky_ignored": ignored,
+                "flaky": [{"case": c, "fails": f, "runs": r} for c, f, r in flk],
                 "notes": f"{bref}; qdeqp rc={rc}{extra}; {note if verdict != 'pass' else ''}".strip()}
+
+    def flaky_rerun(self, job, dev, fails, rid):
+        """fails: [[case, status]] that passed in the baseline. Reruns just those cases in this job, up to L.FLAKY_RERUNS more times (only the
+        ones still failing each time). A case that passes in any rerun is flaky (fail/run counts), not a new Fail; it goes to the flaky list.
+        -> (still_failing, [(case, fails, runs)], note, early_result | None)"""
+        status = {c: s for c, s in fails}
+        nfail = {c: 1 for c in status}
+        runs = {c: 1 for c in status}
+        flaky = {}
+        pending = sorted(status)
+        wd = os.path.join(L.state_dir(), "work", f"{job['id']}-{dev['alias']}-flaky")
+        shutil.rmtree(wd, ignore_errors=True)
+        done_runs = 0
+        for i in range(L.FLAKY_RERUNS):
+            if not pending:
+                break
+            rrid = f"{rid}-flk{i}"
+            rc, out, got, sok, sgot = self.exec_list(job, dev, pending, rrid, wd, 900, f"flk{i}")
+            if sok is False:
+                shutil.rmtree(wd, ignore_errors=True)
+                return None, None, None, {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(sgot)[:12]}) during flaky reruns; result discarded"}
+            if rc not in (0, 1):                                 # phone lost / gated / timeout: keep what we know, do not guess
+                log(f"{dev['alias']}: flaky rerun {i} of {job['id']} stopped (rc={rc}); remaining failures stay new")
+                break
+            done_runs += 1
+            still = []
+            for c in pending:
+                s = got.get(c, ("Missing", ""))[0]
+                s = "Pass" if s in L.PASSLIKE else s
+                runs[c] += 1
+                if s == "Pass":
+                    flaky[c] = (nfail[c], runs[c])
+                else:
+                    nfail[c] += 1
+                    status[c] = s
+                    still.append(c)
+            pending = still
+        shutil.rmtree(wd, ignore_errors=True)
+        flk = sorted((c, nfail[c], runs[c]) for c in flaky)
+        if flk:
+            L.record_flaky(flk, dev["class"])
+        left = [[c, status[c]] for c in sorted(status) if c not in flaky]
+        note = f"; {len(flk)} flaky (passed in a rerun), {len(left)} still fail after {done_runs} rerun(s)"
+        return left, flk, note, None
 
     def fake_status(self, job, c):
         if "FAKE_CASE_NS=1" in job["env"].split():
@@ -795,6 +850,12 @@ class Farm:
                 rc, out = L.run_watched(["sleep", os.environ["FAKE_SWEEP_SLOW"]], 60, lambda: self.alive(dev), poll=0.2)
                 if rc == 125:
                     return rc, out, {}, True, None
+            if tag.startswith("flk"):                              # test hook: FAKE_FLAKY cases pass from rerun FAKE_FLAKY_PASS_ON (1 = first)
+                fl = getattr(self, "fake_flaky", {})
+                return 0, "", {c: ("Pass" if c in fl and int(tag[3:]) + 1 >= fl[c] else "Fail", "") for c in cases}, True, None
+            if tag.startswith("rep") and "FAKE_FLAKY_CASES=1" in job["env"].split():    # test hook: every requested case fails its repetitions, passes a rerun
+                self.fake_flaky = {c: 1 for c in cases}
+                return 0, "", {c: ("Fail", "") for c in cases}, True, None
             return 0, "", {c: (self.fake_status(job, c), "") for c in cases}, True, None
         tree = self.tree(job["id"])
         self.harness(tree)
@@ -853,13 +914,28 @@ class Farm:
                 s = got.get(c, ("Missing", ""))[0]
                 stat[c][s] = stat[c].get(s, 0) + 1
         shutil.rmtree(wd, ignore_errors=True)
+        flk, rnote = [], ""
+        try:
+            base = self.baseline(job, dev)[0] or {}
+        except Exception:
+            base = {}
+        again = [[c, next(iter(v))] for c, v in stat.items() if base.get(c) == "Pass" and "Pass" not in v and v]      # failed every repetition, passed in main's baseline
+        if again:
+            left, flk, rnote, bad = self.flaky_rerun(job, dev, again, f"{job['id']}-{dev['alias']}-c")
+            if bad:
+                return bad
+            for c, f, r in flk:                                  # the reruns count as runs of the case
+                stat[c]["Pass"] = stat[c].get("Pass", 0) + 1
+                stat[c][next(k for k in stat[c] if k != "Pass")] += f - 1 if f > 1 else 0
+        flakyset = {c for c, _f, _r in flk}
         tot = {}
         for c in cases:
             for s, k in stat[c].items():
                 tot[s] = tot.get(s, 0) + k
-        bad = [[c, ", ".join(f"{k} {s}" for s, k in sorted(v.items()))] for c, v in stat.items() if set(v) != {"Pass"}]
+        bad = [[c, ", ".join(f"{k} {s}" for s, k in sorted(v.items()))] for c, v in stat.items() if set(v) != {"Pass"} and c not in flakyset]
         return {"verdict": "fail" if bad else "pass", "counts": tot, "case_counts": stat, "new_failures": bad, "newly_passing": [],
-                "notes": f"{n} repetitions of {len(cases)} case(s)"}
+                "flaky": [{"case": c, "fails": f, "runs": r} for c, f, r in flk],
+                "notes": f"{n} repetitions of {len(cases)} case(s){rnote}"}
 
     def best_file(self, job):
         """the farm's persistent best-settings file (bench2 re-sweeps stale entries into it); seeded from the job tree's bench/best.json"""
@@ -1134,7 +1210,7 @@ class Farm:
                "battery_temp_c": info.get("battery_temp_c"), "battery_pct_start": h0.get("level"), "battery_pct_end": h1.get("level"),
                "temp_c_start": h0.get("temp_c"), "temp_c_end": h1.get("temp_c"), "counts": res.get("counts", {}),
                "new_failures": res.get("new_failures", []), "newly_passing": res.get("newly_passing", []),
-               "ns_to_fail": res.get("ns_to_fail", []), "case_counts": res.get("case_counts"), "flaky_ignored": res.get("flaky_ignored", []),
+               "ns_to_fail": res.get("ns_to_fail", []), "case_counts": res.get("case_counts"), "flaky_ignored": res.get("flaky_ignored", []), "flaky": res.get("flaky", []),
                "verdict": res["verdict"], "notes": res.get("notes", ""), "started": started, "wall_s": round(time.time() - t0, 1)}
         L.write_json(L.run_path(jid, cls), run)
         j = self.upd(jid, lambda x: x["parts"][cls].update(state="done", verdict=run["verdict"], device=alias))

@@ -609,6 +609,88 @@ class T(unittest.TestCase):
         self.farmd()
         self.assertIn("2 NotSupported of 2 (0% pass)", self.farm("results", j2)[1])
 
+    # ---- flaky reruns
+    def main_pass_cases(self, n):
+        repo = os.path.dirname(os.path.dirname(HERE))
+        out = subprocess.run(["git", "-C", repo, "show", "main:vk/deqp/ours-daily-sample-cmf.tsv"], capture_output=True, text=True).stdout
+        return [l.split("\t")[0] for l in out.splitlines() if l.split("\t")[1:2] == ["Pass"]][:n]
+
+    def test_daily_flaky_rerun(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_REGRESS=3 FAKE_FLAKY=2 FAKE_FLAKY_PASS_ON=2")
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertEqual(run["verdict"], "fail")
+        self.assertEqual(len(run["new_failures"]), 1)                       # 3 failed, 2 passed in a rerun
+        self.assertEqual(len(run["flaky"]), 2)
+        self.assertEqual({(f["fails"], f["runs"]) for f in run["flaky"]}, {(2, 3)})        # failed run 1 + rerun 1, passed rerun 2
+        self.assertIn("2 flaky", run["notes"])
+        self.assertEqual(len(L.load_flaky_db()), 2)
+        self.assertEqual(sum(1 for (c, g) in L.load_flaky_db() if g == "v11"), 2)
+        self.assertIn("(+1 new, 2 flaky)", self.farm("digest")[1])
+        self.assertIn("(+1 new, 2 flaky)", self.farm("status")[1])
+        out = self.farm("flaky")[1]
+        self.assertIn("2/3", out)
+        self.assertIn("v11", out)
+        self.farmd()
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_REGRESS=3 FAKE_FLAKY=2 FAKE_FLAKY_PASS_ON=2")
+        self.farmd()
+        self.assertEqual({v[:2] and (v[0], v[1]) for v in L.load_flaky_db().values()}, {(4, 6)})     # counts accumulate
+
+    def test_daily_flaky_that_never_passes_stays_new(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--env", "FAKE_REGRESS=2 FAKE_FLAKY=1 FAKE_FLAKY_PASS_ON=5")
+        self.farmd()
+        run = json.loads(self.farm("results", jid)[1])["runs"]["v11"]
+        self.assertEqual((len(run["new_failures"]), len(run["flaky"])), (2, 0))      # passes only in rerun 5: only 3 reruns are made
+        self.assertIn("(+2 new, 0 flaky)", self.farm("digest")[1])
+        self.assertEqual(L.load_flaky_db(), {})
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.farmd()
+        self.assertIn("(+0 new, 0 flaky)", self.farm("digest")[1])
+        self.assertEqual(self.farm("flaky")[1], "flaky list is empty")
+
+    def test_cases_suite_flaky_rerun(self):
+        self.attach("dev-a")
+        cs = self.main_pass_cases(2)
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "cases", *sum([["--case", c] for c in cs], []), "--need", "v11", "--env", "FAKE_FLAKY_CASES=1")
+        self.farmd()
+        run = json.loads(self.farm("results", jid, "--json")[1])["runs"]["v11"]
+        self.assertEqual(run["verdict"], "pass")
+        self.assertEqual(run["new_failures"], [])
+        self.assertEqual(len(run["flaky"]), 2)
+        self.assertEqual(run["case_counts"][cs[0]], {"Fail": 1, "Pass": 1})
+        self.assertEqual(len(L.load_flaky_db()), 2)
+
+    def test_flip_scan_and_seed(self):
+        def fake_run(jid, ref, commit, so, started, tsv, cls="v11", dirty=False, verdict="fail"):
+            j = {"id": jid, "ref": ref, "commit": commit, "suite": "daily", "parts": {cls: {"state": "done", "verdict": verdict, "device": "dev-a"}}, "seq": 1}
+            L.write_json(L.job_path(jid), j)
+            L.write_json(L.run_path(jid, cls), {"job": jid, "suite": "daily", "class": cls, "device": "dev-a", "commit": commit, "so_sha256": so, "env": "",
+                                               "dirty": dirty, "verdict": verdict, "started": started})
+            open(os.path.join(L.state_dir(), "logs", f"{jid}-dev-a-daily.tsv"), "w").write("".join(f"{c}\t{s}\t\n" for c, s in tsv.items()))
+        t = lambda h: time.strftime("%Y-%m-%dT", time.localtime()) + f"{h:02d}:00:00+00:00"
+        old = time.strftime("%Y-%m-%dT00:00:00+00:00", time.localtime(time.time() - 10 * 86400))
+        fake_run("20260101-000001-aaaa", "br1", "a" * 40, "s1", t(1), {"x.flip": "Pass", "x.steady": "Pass", "x.dead": "Fail", "x.ns": "NotSupported"})
+        fake_run("20260101-000002-aaaa", "br1", "a" * 40, "s1", t(2), {"x.flip": "Fail", "x.steady": "Pass", "x.dead": "Fail", "x.ns": "Pass"})
+        fake_run("20260101-000003-bbbb", "br2", "b" * 40, "s2", t(3), {"x.dirty": "Pass"}, dirty=True)           # dirty tree, other binary
+        fake_run("20260101-000004-bbbb", "br2", "b" * 40, "s2", t(4), {"x.dirty": "Fail"}, dirty=True)           # same binary: counts
+        fake_run("20260101-000005-m1", "main", "c" * 40, "s3", t(5), {"x.fix": "Fail", "x.noise": "Pass"})
+        fake_run("20260101-000006-m2", "main", "d" * 40, "s4", t(6), {"x.fix": "Pass", "x.noise": "Fail"})       # main: one change = a fix / regression
+        fake_run("20260101-000007-m3", "main", "e" * 40, "s5", t(7), {"x.fix": "Pass", "x.noise": "Pass"})       # noise: Pass -> Fail -> Pass
+        fake_run("20260101-000008-old", "br3", "f" * 40, "s6", old, {"x.old": "Pass"})
+        fake_run("20260101-000009-old", "br3", "f" * 40, "s6", old, {"x.old": "Fail"})
+        got = L.flip_scan(3)
+        self.assertEqual(sorted(c for c, _ in got), ["x.dirty", "x.flip", "x.noise"])
+        self.assertEqual(got[("x.flip", "v11")][:2], [1, 2])
+        rc, out, _ = self.farm("flaky", "--seed")
+        self.assertEqual(rc, 0)
+        self.assertIn("v11: 3 flipped case(s)", out)
+        self.farm("flaky", "--seed")                                   # idempotent
+        db = L.load_flaky_db()
+        self.assertEqual(len(db), 3)
+        self.assertEqual(db[("x.flip", "v11")][:2], [1, 2])
+
     # ---- bench suite, auto triggers, priorities
     def test_bench_pure_trigger_and_idle_logic(self):
         self.assertTrue(BL.touches_driver(["README.md", "vk/src/mali_cmd.c"]))

@@ -58,7 +58,13 @@ def cmd_status(a):
         jobs = jobs[-15:]
     for j in jobs:
         parts = " ".join(f"{c}:{p['state'] if p['state'] != 'done' else p.get('verdict')}" for c, p in j["parts"].items())
-        print(f"{j['id']}  {j['suite']:5} {L.job_verdict(j):8} {j['ref'][:24]:24} {parts}")
+        extra = ""
+        if j["suite"] in ("daily", "cases"):
+            for c, p in j["parts"].items():
+                if p["state"] == "done":
+                    rp = L.run_path(j["id"], c)
+                    extra += f" [{c}{flaky_str(L.read_json(rp)) if os.path.exists(rp) else ''}]"
+        print(f"{j['id']}  {j['suite']:5} {L.job_verdict(j):8} {j['ref'][:24]:24} {parts}{extra}")
 
 
 def cmd_disable(a):
@@ -175,6 +181,13 @@ def cmd_cancel(a):
         print(f"{j['id']}: " + ", ".join(out))
 
 
+def flaky_str(run):
+    """`(+N new, M flaky)`: new Fails against the baseline (main's last daily for that GPU version) after the flaky reruns, and cases that failed once but passed a rerun"""
+    if run.get("suite") not in ("daily", "cases") or "new_failures" not in run:
+        return ""
+    return f" (+{len(run['new_failures'])} new, {len(run.get('flaky') or [])} flaky)"
+
+
 def counts_str(run):
     c = run.get("counts") or {}
     if "Pass" in c or "Fail" in c:
@@ -224,7 +237,7 @@ def cmd_digest(a):
             for tag, j in (("smoke", sm), ("daily", dl)):
                 if j:
                     run = L.read_json(L.run_path(j["id"], cls)) if os.path.exists(L.run_path(j["id"], cls)) else {}
-                    seg.append(f"{tag} {j['parts'][cls]['verdict']} {counts_str(run)} [{j['id'][9:15]}-{j['commit'][:7]}]")
+                    seg.append(f"{tag} {j['parts'][cls]['verdict']} {counts_str(run)}{flaky_str(run) if tag == 'daily' else ''} [{j['id'][9:15]}-{j['commit'][:7]}]")
             lines.append(f"{ref[:22]:22} {cls:4} " + " | ".join(seg))
             m = mains.get(cls)
             if dl and m and ref != "main":
@@ -232,11 +245,51 @@ def cmd_digest(a):
                 if a1 and b1:
                     worse = [c for c, s in a1.items() if s == "Pass" and b1.get(c, "Missing") != "Pass"]
                     ns = [c for c in worse if b1.get(c) == "NotSupported"]
+                    known = {c for (c, g) in L.load_flaky_db() if g == cls}
+                    new = [c for c in worse if c not in known]
                     if worse:
-                        lines.append(f"    vs main {m['commit'][:7]}: {len(worse)} regressed ({len(ns)} ->NS): {names(worse)}")
+                        lines.append(f"    vs main {m['commit'][:7]}: {len(worse)} regressed ({len(ns)} ->NS): {names(worse)}; "
+                                     f"new Fails against main: {len(new)}" + (f" ({len(worse) - len(new)} on the flaky list)" if len(new) != len(worse) else ""))
+                    else:
+                        lines.append(f"    vs main {m['commit'][:7]}: new Fails against main: 0")
     bl = BL.digest_lines(BL.load_rows(L.state_dir())) + BL.menu_digest_lines(L.state_dir())          # latest bench per phone always shown (not cut by the room limit)
     room = 40 - 4 - len(devs) - len(bl)
     print("\n".join(bl + lines[:room]) + (f"\n... {len(lines) - room} more lines (older refs)" if len(lines) > room else ""))
+
+
+def group_of(case, depth=5):
+    return ".".join(case.split(".")[:depth])
+
+
+def cmd_flaky(a):
+    if a.seed:
+        found = L.flip_scan(a.days)
+        for g in sorted({g for _, g in found}):
+            L.record_flaky([(c, f, r) for (c, gg), (f, r, t0, t1) in sorted(found.items()) if gg == g], g, seed=True)
+        db = L.load_flaky_db()
+        for (c, g), (f, r, t0, t1) in found.items():            # seed with the real first/last seen times
+            if (c, g) in db:
+                db[(c, g)][2:] = [t0, t1]
+        L.write_flaky_db(db)
+        for g in sorted({g for _, g in found}):
+            grp = {}
+            for (c, gg) in found:
+                if gg == g:
+                    grp[group_of(c)] = grp.get(group_of(c), 0) + 1
+            print(f"{g}: {sum(grp.values())} flipped case(s) in the last {a.days} days; top groups: "
+                  + ", ".join(f"{k.replace('dEQP-VK.', '')} {n}" for k, n in sorted(grp.items(), key=lambda kv: -kv[1])[:8]))
+        if not found:
+            print(f"no case flipped Pass/Fail on the same build in the last {a.days} days")
+        return
+    db = L.load_flaky_db()
+    rows = sorted(((g, c, v) for (c, g), v in db.items() if not a.cls or g == a.cls), key=lambda r: (r[0], -r[2][0], r[1]))
+    if not rows:
+        print("flaky list is empty")
+        return
+    print(f"{'gpu':4} {'fails/runs':>10}  {'first seen':19}  {'last seen':19}  case")
+    for g, c, (f, r, t0, t1) in rows:
+        print(f"{g:4} {f:>4}/{r:<5}  {t0[:19]:19}  {t1[:19]:19}  {c}")
+    print(f"{len(rows)} case(s) in {L.flaky_path()}")
 
 
 def cmd_diff(a):
@@ -516,6 +569,11 @@ def main():
     s.set_defaults(f=cmd_bench)
     s = sp.add_parser("digest", help="one screen: devices, queue, latest result per ref/class and its difference vs main's latest daily")
     s.set_defaults(f=cmd_digest)
+    s = sp.add_parser("flaky", help="the flaky list (cases that failed but passed a rerun, or flipped between dailies): case, GPU version, fails/runs, first/last seen")
+    s.add_argument("--class", dest="cls", default="")
+    s.add_argument("--seed", action="store_true", help="add cases that flipped Pass/Fail on the same commit or on main across stored dailies (see --days)")
+    s.add_argument("--days", type=int, default=3)
+    s.set_defaults(f=cmd_flaky)
     s = sp.add_parser("diff", help="case-level status changes between two jobs")
     s.add_argument("a")
     s.add_argument("b")

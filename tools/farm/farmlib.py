@@ -320,6 +320,107 @@ def load_flaky():
         return set()
 
 
+FLAKY_RERUNS = 3
+
+
+def flaky_path():
+    return os.path.join(state_dir(), "flaky.tsv")
+
+
+def load_flaky_db():
+    """flaky list (<state>/flaky.tsv: case, gpu version, fails, runs, first seen, last seen) -> {(case, gpu): [fails, runs, first, last]}"""
+    out = {}
+    try:
+        for l in open(flaky_path()):
+            x = l.rstrip("\n").split("\t")
+            if len(x) >= 6 and x[0] and not x[0].startswith("#"):
+                out[(x[0], x[1])] = [int(x[2]), int(x[3]), x[4], x[5]]
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def write_flaky_db(db):
+    with open(flaky_path() + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        tmp = flaky_path() + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("# case\tgpu\tfails\truns\tfirst_seen\tlast_seen\n")
+            for (c, g), (a, b, t0, t1) in sorted(db.items()):
+                f.write(f"{c}\t{g}\t{a}\t{b}\t{t0}\t{t1}\n")
+        os.replace(tmp, flaky_path())
+
+
+def record_flaky(entries, gpu, when=None, seed=False):
+    """entries: [(case, fails, runs)]. Adds the counts to the list (seed=True: replaces counts only for new entries, so a re-seed is idempotent)."""
+    when = when or now()
+    with open(flaky_path() + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        db = load_flaky_db()
+        for case, fails, runs in entries:
+            e = db.get((case, gpu))
+            if e is None:
+                db[(case, gpu)] = [fails, runs, when, when]
+            elif not seed:
+                e[0] += fails
+                e[1] += runs
+                e[3] = when
+        tmp = flaky_path() + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("# case\tgpu\tfails\truns\tfirst_seen\tlast_seen\n")
+            for (c, g), (a, b, t0, t1) in sorted(db.items()):
+                f.write(f"{c}\t{g}\t{a}\t{b}\t{t0}\t{t1}\n")
+        os.replace(tmp, flaky_path())
+
+
+def flip_scan(days=3, since=None):
+    """cases that flipped between Pass and Fail on the SAME build across stored dailies of the last `days` days: same commit (clean tree) or the same driver binary (so_sha256), same env,
+    or main's dailies pooled per class (main moves: only cases that changed status at least twice in time order count). -> {(case, class): [fails, runs, first, last]}"""
+    cutoff = since or (datetime.datetime.now().astimezone() - datetime.timedelta(days=days)).isoformat(timespec="seconds")
+    groups = {}                                                   # (class, key) -> [(started, {case: status})]
+    for j in list_jobs():
+        if j.get("suite") != "daily":
+            continue
+        for cls, p in j["parts"].items():
+            rp = run_path(j["id"], cls)
+            run = read_json(rp) if os.path.exists(rp) else None
+            if not run or run.get("verdict") in ("error", "invalid") or (run.get("started") or "") < cutoff:
+                continue
+            f = os.path.join(state_dir(), "logs", f"{j['id']}-{p.get('device')}-daily.tsv")
+            if not os.path.exists(f):
+                continue
+            tsv = read_tsv(f)
+            if not tsv:
+                continue
+            keys = {("so", run["so_sha256"], run.get("env") or "")} if run.get("so_sha256") else set()      # the identical driver binary (dirty trees too)
+            if not run.get("dirty"):
+                keys.add(("commit", j["commit"], run.get("env") or ""))
+            if j.get("ref") == "main" and not run.get("dirty"):
+                keys.add(("main",))
+            for key in keys:
+                groups.setdefault((cls, key), []).append((run.get("started") or "", tsv))
+    out = {}
+    for (cls, key), runs in groups.items():
+        if len(runs) < 2:
+            continue
+        seen = {}
+        for t, tsv in runs:
+            for c, st in tsv.items():
+                if st in ("NotSupported", "Missing"):
+                    continue
+                seen.setdefault(c, []).append((t, st == "Pass"))
+        for c, v in seen.items():
+            v.sort()
+            npass = sum(1 for _, ok in v if ok)
+            flips = sum(1 for a, b in zip(v, v[1:]) if a[1] != b[1])
+            if 0 < npass < len(v) and (key != ("main",) or flips >= 2):       # on main one Pass->Fail (or Fail->Pass) change is a regression/fix, not noise
+                e = out.setdefault((c, cls), [0, 0, v[0][0], v[0][0]])
+                if e[1] < len(v):                              # keep the largest group's counts for a case seen via both keys
+                    e[0], e[1] = len(v) - npass, len(v)
+                e[2], e[3] = min(e[2], min(t for t, _ in v)), max(e[3], max(t for t, _ in v))
+    return out
+
+
 def ns_to_fail(base, cur, cases=None):
     """cases that were NotSupported in the baseline and now run and fail (Fail/Crash/...): invisible to new_failures, which only lists
     baseline passes. -> [[case, status]]"""

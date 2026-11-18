@@ -113,3 +113,11 @@ When a phone is up, passes its health gates and its class has no queued part, fa
   - Auto trigger: a phone idle > 15 min (gate ok) whose installed MediaDeck versionCode differs from the last one queued for it (recorded in `bench/menu-auto.json` when queued, so at most once per version; an error is not retried: resubmit by hand). Auto jobs sit below explicit jobs, level with the auto bench, above the sweep. Kill switch: `touch <state>/bench/menu-off`; per phone `menu = false` in devices.toml.
   - Owner in use: never started (and not queued) while `dumpsys power` shows mWakefulness=Awake with a resumed activity that is not MediaDeck (home/lock screen included; unreadable = in use). Stays pending, retried after 15 min.
   - Published with the bench rows: `bench/menu.jsonl` + a "Steam menu" section of `bench/RESULTS.md` (one block per MediaDeck version, newest first), one `menu` line per phone in `farm digest`.
+
+## Flaky reruns
+A daily (and a `cases` job) reruns just the cases that Fail but passed in the baseline (main's last daily for that GPU version), in the same job, up to 3 more times.
+A case that passes in any rerun is flaky (`flaky: [{case, fails, runs}]` in the run JSON; not in `new_failures`) and goes to `<state>/flaky.tsv`
+(case, GPU version, fails, runs, first/last seen). Digest/status show `daily pass 342/80/958 (+0 new, 2 flaky)`; digest also prints `new Fails against main: N`.
+`farm flaky [--class v11]` prints the list; `farm flaky --seed [--days 3]` adds cases that flipped Pass/Fail on the same commit or driver binary, or on main
+(two or more changes in time order), across stored dailies. Test hooks: `FAKE_FLAKY=N FAKE_FLAKY_PASS_ON=K`, `FAKE_FLAKY_CASES=1`.
+
