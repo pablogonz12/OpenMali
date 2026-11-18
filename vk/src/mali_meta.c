@@ -672,6 +672,13 @@ ref_copy(const struct mali_meta_job *j, const struct rb *src, const struct rb *d
    uint32_t ex = p[6], ey = p[7], ez = p[8], bpt = p[9];
    uint64_t total = (uint64_t)ex * ey * ez;
    uint64_t inv = (uint64_t)j->groups[0] * j->groups[1] * 64;   /* invocations launched: the shader needs i < total only */
+   bool bytep = !(p[10] & 1);
+   if (bytep) {
+      /* Byte path launches one invocation per destination word (p[11]); the element loop below gives the same bytes. */
+      if (p[11] > inv)
+         mali_meta_ref_oob++;
+      inv = total;
+   }
    for (uint64_t i = 0; i < inv && i < total; i++) {
       uint32_t x = (uint32_t)(i % ex), r = (uint32_t)(i / ex), y = r % ey, z = r / ey;
       uint32_t so = p[0] + z * p[2] + y * p[1] + x * bpt, dof = p[3] + z * p[5] + y * p[4] + x * bpt;
