@@ -97,14 +97,14 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(f, 13, 0, 32, ubits_f(p->clear_depth));          /* Z Clear (float) */
 		/* ZS Target (v11.xml "ZS Target"; pan_desc.c pan_emit_linear_zs_attachment) */
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
-		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
+		put(x, 0, 4, 4, p->zs_block_format ? 1 : 2);        /* Block Format: 2 linear, 1 tiled u-interleaved */
 		put(x, 0, 8, 2, 0);                                  /* MSAA single */
 		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */
-		put(x, 10, 27, 5, ((uint64_t)zs_row * p->height) >> 32);   /* Surface Stride hi */
-		put(x, 11, 0, 32, (uint32_t)((uint64_t)zs_row * p->height));   /* (per-sample plane; MSAA samples are consecutive) */   /* Surface Stride */
+		put(x, 10, 27, 5, ((uint64_t)zs_row * (p->zs_block_format ? (p->height + 15) / 16 : p->height)) >> 32);   /* Surface Stride hi */
+		put(x, 11, 0, 32, (uint32_t)((uint64_t)zs_row * (p->zs_block_format ? (p->height + 15) / 16 : p->height)));   /* (per-sample plane; MSAA samples are consecutive) */   /* Surface Stride */
 	}
 	/* word 13: Z clear = 0. Words 14..15: Tiler Context pointer (0 = none). Words 16..17: VRS (0). */
 	put(f, 14, 0, 32, (uint32_t)p->tiler_va);

@@ -71,21 +71,32 @@ set_groups(struct mali_meta_job *j, uint64_t total)
 }
 
 /* ---------------------------------------------------------------- copy / const */
+/* End (exclusive, from va) of the bytes a rectangle touches: linear rows, or whole tile rows for a tiled surface. */
+static uint64_t
+surf_end(const struct mali_meta_surf *s, uint32_t bpt, uint32_t ex, uint32_t ey, uint32_t ez)
+{
+   if (s->tiled) {
+      uint64_t trows = ((uint64_t)s->y0 + ey + 15) / 16;
+      return s->off + (uint64_t)(ez - 1) * s->slice + trows * s->row;   /* a row stride spans a whole row of tiles */
+   }
+   return s->off + (uint64_t)(ez - 1) * s->slice + (uint64_t)(ey - 1) * s->row + (uint64_t)ex * bpt;
+}
+
 static int
 plan_rect(struct mali_meta_list *l, const struct mali_meta_surf *dst, const struct mali_meta_surf *src, uint32_t bpt, uint32_t ex,
           uint32_t ey, uint32_t ez, const uint32_t *cst)
 {
-   if (!ex || !ey || !ez || !bpt || (cst && bpt > 16))
+   if (!ex || !ey || !ez || !bpt || (cst && bpt > 16) || (cst && dst->tiled && (dst->x0 || dst->y0)))
       return -EINVAL;
    uint64_t doff, soff = 0;
    struct mali_meta_bind db, sb = {0};
-   uint64_t dend = dst->off + (uint64_t)(ez - 1) * dst->slice + (uint64_t)(ey - 1) * dst->row + (uint64_t)ex * bpt;
+   uint64_t dend = surf_end(dst, bpt, ex, ey, ez);
    int r = bind_surf(dst, dend, &doff, &db);
    if (r)
       return r;
    bool word = !(doff & 3) && !(bpt & 3) && (ey == 1 || !(dst->row & 3)) && (ez == 1 || !(dst->slice & 3));
    if (!cst) {
-      uint64_t send = src->off + (uint64_t)(ez - 1) * src->slice + (uint64_t)(ey - 1) * src->row + (uint64_t)ex * bpt;
+      uint64_t send = surf_end(src, bpt, ex, ey, ez);
       r = bind_surf(src, send, &soff, &sb);
       if (r)
          return r;
@@ -107,9 +118,15 @@ plan_rect(struct mali_meta_list *l, const struct mali_meta_surf *dst, const stru
    p[7] = ey;
    p[8] = ez;
    p[9] = bpt;
-   p[10] = (word ? 1u : 0u) | (cst ? 2u : 0u);
-   if (cst)
+   p[10] = (word ? 1u : 0u) | (cst ? 2u : 0u) | ((!cst && src->tiled) ? 4u : 0u) | (dst->tiled ? 8u : 0u);
+   if (cst) {
       memcpy(&p[12], cst, 16);
+   } else {   /* words 12..15 are free for a copy: tiled origins (src x0 y0, dst x0 y0) */
+      p[12] = src->x0;
+      p[13] = src->y0;
+      p[14] = dst->x0;
+      p[15] = dst->y0;
+   }
    j->push_bytes = 64;
    j->bind[0] = sb;
    j->bind[1] = db;
@@ -655,6 +672,22 @@ wr8(const struct rb *b, uint32_t o, uint32_t v)
    wr32(b, o & ~3u, (w & ~(0xffu << sh)) | (v << sh));
 }
 
+/* u-interleaved offset inside a 16x16 tile: per bit i, bit 2i = x_i ^ y_i, bit 2i+1 = y_i */
+static uint32_t
+u_index(uint32_t x, uint32_t y)
+{
+   uint32_t r = 0;
+   for (unsigned i = 0; i < 4; i++)
+      r |= ((((x >> i) ^ (y >> i)) & 1u) << (2 * i)) | (((y >> i) & 1u) << (2 * i + 1));
+   return r;
+}
+
+static uint32_t
+tiled_off(uint32_t base, uint32_t row, uint32_t bpt, uint32_t x, uint32_t y)
+{
+   return base + (y >> 4) * row + (x >> 4) * 256u * bpt + u_index(x & 15u, y & 15u) * bpt;
+}
+
 static void
 ref_copy(const struct mali_meta_job *j, const struct rb *src, const struct rb *dst)
 {
@@ -665,6 +698,8 @@ ref_copy(const struct mali_meta_job *j, const struct rb *src, const struct rb *d
    for (uint64_t i = 0; i < inv && i < total; i++) {
       uint32_t x = (uint32_t)(i % ex), r = (uint32_t)(i / ex), y = r % ey, z = r / ey;
       uint32_t so = p[0] + z * p[2] + y * p[1] + x * bpt, dof = p[3] + z * p[5] + y * p[4] + x * bpt;
+      if (p[10] & 4) so = tiled_off(p[0] + z * p[2], p[1], bpt, p[12] + x, p[13] + y);
+      if (p[10] & 8) dof = tiled_off(p[3] + z * p[5], p[4], bpt, (p[10] & 2) ? x : p[14] + x, (p[10] & 2) ? y : p[15] + y);
       if (p[10] & 1) {
          for (uint32_t w = 0; w < bpt / 4; w++)
             wr32(dst, dof + w * 4, (p[10] & 2) ? p[12 + (w & 3)] : rd32(src, so + w * 4));

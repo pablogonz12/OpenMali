@@ -210,6 +210,7 @@ struct mali_att {
    uint32_t surface_stride;               /* MSAA (frame.samples 4): bytes per sample plane of the multisampled image (samples consecutive) */
    uint64_t resolve_va;                   /* colour, MSAA: single-sample resolve target (hardware "Average" writeback); 0 = store the samples (Layered) */
    uint32_t resolve_row_stride;
+   bool tiled;                            /* 16x16 u-interleaved surface: row_stride = bytes per row of tiles (colour RGBA8-class and depth; no LOAD/resolve) */
 };
 
 struct mali_frame {

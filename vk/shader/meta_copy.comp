@@ -10,7 +10,7 @@ layout(push_constant) uniform P {
    uint dst_off, dst_row, dst_slice;
    uint ex, ey, ez;
    uint bpt;
-   uint flags;          // bit0: word path, bit1: constant source
+   uint flags;          // bit0: word path, bit1: constant source, bit2: src tiled, bit3: dst tiled
    uint pad;
    uvec4 cst;
 } p;
@@ -20,6 +20,14 @@ void st8(uint o, uint v) {
    uint sh = (o & 3u) * 8u;
    atomicAnd(dst.d[o >> 2], ~(0xffu << sh));
    atomicOr(dst.d[o >> 2], v << sh);
+}
+
+// 16x16 u-interleaved tile: per bit i, bit 2i = x_i ^ y_i, bit 2i+1 = y_i
+// (copy: cst = src x0, src y0, dst x0, dst y0 of tiled surfaces; a constant fill has no source and tiled dst origin 0.. see plan)
+uint toff(uint base, uint row, uint x, uint y) {
+   uint ix = x & 15u, iy = y & 15u, u = 0u;
+   for (uint i = 0u; i < 4u; i++) u |= ((((ix >> i) ^ (iy >> i)) & 1u) << (2u * i)) | (((iy >> i) & 1u) << (2u * i + 1u));
+   return base + (y >> 4) * row + (x >> 4) * 256u * p.bpt + u * p.bpt;
 }
 
 uint cw(uint k) { k &= 3u; return k == 0u ? p.cst.x : (k == 1u ? p.cst.y : (k == 2u ? p.cst.z : p.cst.w)); }
@@ -34,6 +42,8 @@ void main() {
    uint z = r / p.ey;
    uint so = p.src_off + z * p.src_slice + y * p.src_row + x * p.bpt;
    uint dof = p.dst_off + z * p.dst_slice + y * p.dst_row + x * p.bpt;
+   if ((p.flags & 4u) != 0u) so = toff(p.src_off + z * p.src_slice, p.src_row, p.cst.x + x, p.cst.y + y);
+   if ((p.flags & 8u) != 0u) dof = toff(p.dst_off + z * p.dst_slice, p.dst_row, (p.flags & 2u) != 0u ? x : p.cst.z + x, (p.flags & 2u) != 0u ? y : p.cst.w + y);
    bool cst = (p.flags & 2u) != 0u;
    if ((p.flags & 1u) != 0u) {
       for (uint w = 0u; w < p.bpt / 4u; w++)

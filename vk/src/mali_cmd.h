@@ -33,6 +33,7 @@ struct mali_cmd_target {
    uint32_t s_row_stride;
    unsigned samples;     /* image sample count (1 or 4) */
    uint32_t surface_stride;   /* bytes per sample plane (MSAA images: samples consecutive) */
+   bool tiled;      /* u-interleaved image: row_stride is bytes per row of 16x16 tiles, surface_stride per surface */
    bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */
 };
 

@@ -137,11 +137,12 @@ buf_surf(struct mali_meta_surf *s, struct vk_buffer *b, uint64_t off)
    *s = (struct mali_meta_surf){ vk_buffer_address(b, 0), b->size, off, 0, 0 };
 }
 
-/* The image subresource at texel offset `o`; false for tiled or unbound images. */
+/* The image subresource at texel offset `o`; false for unbound images. allow_tiled: a tiled image yields a tiled surface (copy / const only). */
 static bool
-img_surf(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresourceLayers sub, VkOffset3D o, const struct mali_plane_layout **pl)
+img_surf_t(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresourceLayers sub, VkOffset3D o, const struct mali_plane_layout **pl,
+           bool allow_tiled)
 {
-   if (img->lay.d.tiled || !img->va) {
+   if ((img->lay.d.tiled && (!allow_tiled || img->bc)) || !img->va) {
       if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: img_surf rejects tiled=%d va=%d fmt=%d\n", (int)img->lay.d.tiled, img->va != 0, (int)img->vk.format);
       return false;
    }
@@ -151,6 +152,16 @@ img_surf(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresou
    bool is3d = img->lay.d.type == VK_IMAGE_TYPE_3D;
    const struct mali_slice *sl = &p->slice[sub.mipLevel];
    uint64_t off = mali_image_subresource_offset(p, sub.mipLevel, is3d ? 0 : sub.baseArrayLayer);
+   if (img->lay.d.tiled) {
+      if (p->bw != 1 || p->bh != 1)
+         return false;
+      if (is3d)
+         off += (uint64_t)o.z * sl->surface_stride;
+      *s = (struct mali_meta_surf){ img->va, img->lay.size, off, sl->row_stride, (uint32_t)(is3d ? sl->surface_stride : p->array_stride), true, (uint32_t)o.x, (uint32_t)o.y };
+      if (pl)
+         *pl = p;
+      return true;
+   }
    off += (uint64_t)(o.x / p->bw) * p->bs + (uint64_t)(o.y / p->bh) * sl->row_stride;
    if (is3d)
       off += (uint64_t)o.z * sl->surface_stride;
@@ -158,6 +169,12 @@ img_surf(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresou
    if (pl)
       *pl = p;
    return true;
+}
+
+static bool
+img_surf(struct mali_meta_surf *s, const struct mali_image *img, VkImageSubresourceLayers sub, VkOffset3D o, const struct mali_plane_layout **pl)
+{
+   return img_surf_t(s, img, sub, o, pl, false);
 }
 
 static uint32_t
@@ -240,7 +257,7 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
          }
          struct mali_meta_surf s, d;
          const struct mali_plane_layout *sp, *dp;
-         if (!img_surf(&s, si, ss, g->srcOffset, &sp) || !img_surf(&d, di, ds, g->dstOffset, &dp) ||
+         if (!img_surf_t(&s, si, ss, g->srcOffset, &sp, true) || !img_surf_t(&d, di, ds, g->dstOffset, &dp, true) ||
              sp->bs != dp->bs) {
             r = -EINVAL;
             break;
@@ -274,7 +291,7 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
       const struct mali_plane_layout *p;
-      if (!img_surf(&d, img, g->imageSubresource, g->imageOffset, &p)) {
+      if (!img_surf_t(&d, img, g->imageSubresource, g->imageOffset, &p, true)) {
          r = -EINVAL;
          break;
       }
@@ -303,7 +320,7 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
       const struct mali_plane_layout *p;
-      if (!img_surf(&s, img, g->imageSubresource, g->imageOffset, &p)) {
+      if (!img_surf_t(&s, img, g->imageSubresource, g->imageOffset, &p, true)) {
          r = -EINVAL;
          break;
       }
@@ -487,7 +504,7 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
       if (s3 && sdz != ddz)
          return -EINVAL;
       VkOffset3D so0 = { so[0].x, so[0].y, sdz < 0 ? so[1].z : so[0].z }, do0 = { dof[0].x, dof[0].y, ddz < 0 ? dof[1].z : dof[0].z };
-      if (!img_surf(&s, si, ss, so0, NULL) || !img_surf(&d, di, ds, do0, NULL))
+      if (!img_surf_t(&s, si, ss, so0, NULL, true) || !img_surf_t(&d, di, ds, do0, NULL, true))
          return -EINVAL;
       uint32_t w = (uint32_t)(b.s[2] > b.s[0] ? b.s[2] - b.s[0] : b.s[0] - b.s[2]), hh = (uint32_t)(b.s[3] > b.s[1] ? b.s[3] - b.s[1] : b.s[1] - b.s[3]);
       return mali_meta_plan_copy(l, &d, &s, sp->bs, w, hh, s3 ? (uint32_t)abs(sdz) : ss.layerCount);
@@ -583,7 +600,7 @@ clear_range(struct mali_meta_list *l, const struct mali_image *img, VkImageAspec
       struct mali_meta_surf d;
       const struct mali_plane_layout *p;
       VkOffset3D z = { 0, 0, 0 };
-      if (!img_surf(&d, img, sub, z, &p))
+      if (!img_surf_t(&d, img, sub, z, &p, true))
          return -EINVAL;
       VkExtent3D e = { lvl(img->lay.d.extent.width, sub.mipLevel), lvl(img->lay.d.extent.height, sub.mipLevel), lvl(img->lay.d.extent.depth, sub.mipLevel) };
       if (p->bw != 1 || p->bh != 1 || p->bs > 16)

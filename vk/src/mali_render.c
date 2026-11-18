@@ -120,6 +120,10 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    p.height = f->height;
    p.rt_gpu_va = f->colour.va;
    p.row_stride = f->colour.row_stride ? f->colour.row_stride : f->width * 4;
+   if (f->colour.tiled) {
+      p.block_format = 1;
+      p.surface_stride = f->colour.surface_stride;
+   }
    if (f->colour.rt) {
       const struct mali_rtfmt *rt = f->colour.rt;
       p.rt_internal = rt->internal;
@@ -159,6 +163,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.zs_format = (enum kb_zs_format)f->zs.zs_format;
       p.zs_gpu_va = f->zs.va;
       p.zs_row_stride = f->zs.row_stride;
+      p.zs_block_format = f->zs.tiled;
       p.clear_depth = f->zs.clear ? f->zs.clear_depth : 0.0f;
       p.zs_no_store = !f->zs.store;
    }

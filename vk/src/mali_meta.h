@@ -45,7 +45,10 @@ void mali_meta_list_free(struct mali_meta_list *l);
 
 /* A linear surface: byte `off` from `va` is the first texel, rows `row` bytes apart, slices (z or array layer) `slice` bytes apart.
  * size = bytes bound at va (bounds for the descriptor). */
-struct mali_meta_surf { uint64_t va, size, off; uint32_t row, slice; };
+struct mali_meta_surf { uint64_t va, size, off; uint32_t row, slice;
+   /* tiled (16x16 u-interleaved) image subresource, copy/const only: `off` is the subresource base (not the origin), `row` the stride of a
+    * row of tiles, `slice` the layer/z stride, (x0, y0) the first element; (x,y) -> tile row*(y>>4) + (x>>4)*256*bpt + u_index(x&15,y&15)*bpt */
+   bool tiled; uint32_t x0, y0; };
 
 /* All planners: 0 or -ENOMEM / -ERANGE (span over 4 GiB) / -EINVAL. */
 /* Rectangle ex x ey x ez of `bpt`-byte elements, src -> dst. Any alignment (byte path when not 4-aligned). */
