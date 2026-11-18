@@ -401,7 +401,13 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_image, img, b[i].image);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);
-      if (!mem) continue;   /* swapchain-aliased images (BindImageMemorySwapchainInfoKHR) are not supported: wsi_common has no lookup in this Mesa */
+      if (!mem) {
+         /* Swapchain-aliased binds (VkBindImageMemorySwapchainInfoKHR, memory == VK_NULL_HANDLE) are not implemented: wsi_common has no lookup
+            in this Mesa. Say so instead of returning VK_SUCCESS for an image that stayed unbound. */
+         if (vk_find_struct_const(b[i].pNext, BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR))
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+         continue;
+      }
       img->mem = mem;
       img->mem_off = b[i].memoryOffset;
       img->va = mem->bo.gpu_va + b[i].memoryOffset;

@@ -321,6 +321,7 @@ main(int argc, char **argv)
       {"VK_KHR_shader_draw_parameters", f11.shaderDrawParameters}, {"VK_EXT_shader_demote_to_helper_invocation", f13.shaderDemoteToHelperInvocation},
       {"VK_EXT_subgroup_size_control", f13.subgroupSizeControl}, {"VK_EXT_inline_uniform_block", f13.inlineUniformBlock},
       {"VK_KHR_zero_initialize_workgroup_memory", f13.shaderZeroInitializeWorkgroupMemory}, {"VK_KHR_vulkan_memory_model", f12.vulkanMemoryModel},
+      {"VK_KHR_sampler_mirror_clamp_to_edge", f12.samplerMirrorClampToEdge},
    };
    for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
       CHECK(has(eps, ne, pairs[i].ext) == (int)pairs[i].f, "%s advertised=%d but its feature=%u", pairs[i].ext, has(eps, ne, pairs[i].ext), pairs[i].f);
