@@ -114,7 +114,8 @@ int mali_blend_equation(const struct mali_fixed *f, uint32_t *eq, unsigned *cons
 #define MALI_D_BIND   0x08u   /* vertex buffers, descriptor sets, their count, the dynamic-descriptor count */
 #define MALI_D_DYNBUF 0x10u   /* dynamic buffer descriptor values (dynamic offsets) */
 #define MALI_D_PUSH   0x20u   /* push constants */
-#define MALI_D_ALL    0x3fu
+#define MALI_D_SC     0x40u   /* scissor (a per-draw register: only the pipe block is renewed, the descriptor tables are unaffected) */
+#define MALI_D_ALL    0x7fu
 
 struct mali_draw {
    uint32_t dirty;                        /* MALI_D_* since the previous draw */
@@ -142,6 +143,34 @@ struct mali_draw {
    const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
    uint32_t ind_n, ind_stride;
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
+};
+
+/* What a draw records (struct mali_rec): a small header plus pointers to immutable state blocks in the frame pool. A block is renewed only when
+ * its dirty bits are set, otherwise the pointer is the previous draw's. mali_draw_expand rebuilds the full struct mali_draw at submit. */
+struct mali_bpipe { struct mali_fixed fx; struct mali_gfx_state gfx; float vp[6]; int32_t sc[4]; };           /* PIPE|FX|VP|SC */
+struct mali_bbind { uint64_t vb_va[MALI_MAX_VB]; uint32_t vb_size[MALI_MAX_VB]; unsigned nsets; uint64_t set_va[MALI_CMD_SETS];
+                    uint32_t set_bytes[MALI_CMD_SETS]; unsigned ndyn; };                                         /* BIND */
+struct mali_bpush { uint8_t push[2][MALI_PUSH_MAX]; };                                                           /* PUSH */
+struct mali_bdyn { uint32_t n; uint32_t d[][8]; };                                                               /* BIND|DYNBUF: n entries */
+
+struct mali_rec {
+   uint32_t dirty;
+   const struct mali_bpipe *pipe;
+   const struct mali_bbind *bind;
+   const struct mali_bpush *push;
+   const struct mali_bdyn *dyn;
+   bool indexed;
+   uint64_t index_va;
+   const uint8_t *index_cpu;
+   uint32_t index_bytes;
+   unsigned index_size;
+   uint32_t first_index;
+   uint32_t count, instance_count, first_vertex, first_instance, draw_id;
+   uint64_t occ_va;
+   const uint8_t *ind;
+   const uint32_t *ind_count;
+   uint32_t ind_n, ind_stride;
+   unsigned occ_mode;
 };
 
 /* A compute dispatch (M11): one per frame record, executed with RUN_COMPUTE. */
@@ -193,12 +222,17 @@ struct mali_frame {
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
    unsigned nops;
-   struct mali_draw *draws;
+   struct mali_rec *draws;
    unsigned ndraws, cap;
+   struct mali_pool *pool;                /* state blocks of the recorded draws (freed with the frame) */
 };
 
-struct mali_draw *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
-int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* 0 or -ENOMEM */
+struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
+int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* full draw (preload): new blocks, dirty ALL. 0 or -ENOMEM */
+int mali_frame_add_rec(struct mali_frame *f, const struct mali_rec *r);     /* 0 or -ENOMEM */
+void *mali_frame_blk(struct mali_frame *f, size_t n);                       /* zeroed block from the frame pool, NULL on ENOMEM */
+/* Updates the running full draw `x` (zero-initialised before the first rec of a frame) with the groups rec `r` renewed. */
+void mali_draw_expand(struct mali_draw *x, const struct mali_rec *r);
 void mali_frame_finish(struct mali_frame *f);                               /* frees the draw list */
 
 /* Allocates + fills the descriptors via hw->alloc and returns the CS in a malloc'd array (caller frees). 0 or -errno:

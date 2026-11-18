@@ -654,6 +654,10 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdSetCullMode(cb, (i & 1) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
       else if (g_dirty == 3)
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+      else if (g_dirty == 4) {
+         VkRect2D si = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
+         CmdSetScissor(cb, 0, 1, &si);
+      }
       if (g_share == 2) {
          VkRect2D sci = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
          CmdSetScissor(cb, 0, 1, &sci);
@@ -1642,13 +1646,14 @@ test_share_dirty(void)
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
-   static const char *names[4] = {"push", "viewport", "cullmode", "rebind_pipeline"};
+   static const char *names[5] = {"push", "viewport", "cullmode", "rebind_pipeline", "scissor"};
    int ok = 1;
-   for (int k = 0; ok && k < 4; k++) {
+   for (int k = 0; ok && k < 5; k++) {
       unsigned long long ab[3];
       for (int pass = 0; ok && pass < 3; pass++) {
          g_dirty = pass == 2 ? (k == 0 ? 0 : k) : (k == 0 ? 0 : 0);
          if (k == 3) g_dirty = pass == 2 ? 3 : 0;
+         else if (k == 4) g_dirty = pass == 2 ? 4 : 0;
          else if (k == 1) g_dirty = pass == 2 ? 1 : 0;
          else if (k == 2) g_dirty = pass == 2 ? 2 : 0;
          struct scene s = {.mode = MODE_TRI};
@@ -1659,7 +1664,7 @@ test_share_dirty(void)
       g_dirty = 0;
       if (!ok) break;
       unsigned long long same = ab[1] - ab[0], chg = ab[2] - ab[1];
-      int want_more = k != 3;
+      int want_more = k < 3;   /* rebinding an equal pipeline and the scissor (a register) must not rebuild any table */
       int good = want_more ? chg >= same + 3 * 64 : chg <= same;
       printf("{\"test\":\"share_dirty\",\"bit\":\"%s\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", names[k], same, chg, good ? "true" : "false");
       CHECK(good, "share_dirty %s: %llu bytes for the changing frame vs %llu for the identical one", names[k], chg, same);

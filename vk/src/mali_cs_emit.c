@@ -1001,18 +1001,27 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
       if (f->samples == 4 && v13)
          tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
-      const struct mali_draw *pdr = NULL;   /* previous draw (descriptor blocks are shared between draws of equal state) */
+      struct mali_draw x, pv;   /* the running full draw (updated by the groups each record renewed) and what build_draw_descs needs of the previous one */
+      memset(&x, 0, sizeof x);
+      memset(&pv, 0, sizeof pv);
       for (unsigned i = 0; i < f->ndraws; i++) {
-         const struct mali_draw *dr = &f->draws[i];
+         mali_draw_expand(&x, &f->draws[i]);
+         const struct mali_draw *dr = &x;
          if (dr->gfx.poly_mode == 1) {
             if (!mod && !(mod = calloc(f->ndraws, sizeof *mod))) { rc = -ENOMEM; goto out; }
             if ((rc = poly_lines(hw, dr, &mod[i])))
                goto out;
             dr = &mod[i];
          }
-         if ((rc = build_draw_descs(hw, f, dr, &dd[i], i ? pdr : NULL, i ? &dd[i - 1] : NULL)))
+         if ((rc = build_draw_descs(hw, f, dr, &dd[i], i ? &pv : NULL, i ? &dd[i - 1] : NULL)))
             goto out;
-         pdr = dr;
+         if (check_dirty())
+            pv = *dr;
+         else {
+            pv.first_instance = dr->first_instance;
+            pv.first_vertex = dr->first_vertex;
+            pv.draw_id = dr->draw_id;
+         }
       }
    }
    if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))
@@ -1030,8 +1039,11 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
    if (geometry) {
+      struct mali_draw x;
+      memset(&x, 0, sizeof x);
       for (unsigned i = 0; i < f->ndraws; i++) {
-         const struct mali_draw *d = mod && f->draws[i].gfx.poly_mode == 1 ? &mod[i] : &f->draws[i];
+         mali_draw_expand(&x, &f->draws[i]);
+         const struct mali_draw *d = mod && x.gfx.poly_mode == 1 ? &mod[i] : &x;
          emit_draw_regs(&c, env, f, d, &dd[i], va_tsd, va_tctx);
          if (i == 0) {
             M48(&c, R->heap, env->heap_ctx_va);
@@ -1100,12 +1112,39 @@ mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f)
    return rc;
 }
 
-struct mali_draw *
+/* ---- frame pool: immutable state blocks of the recorded draws ---- */
+struct mali_pool {
+   struct mali_pool *next;
+   size_t used, size;
+   _Alignas(16) uint8_t mem[];
+};
+
+void *
+mali_frame_blk(struct mali_frame *f, size_t n)
+{
+   n = (n + 15) & ~(size_t)15;
+   struct mali_pool *p = f->pool;
+   if (!p || p->used + n > p->size) {
+      size_t sz = n > (64u << 10) ? n : (64u << 10);
+      struct mali_pool *np = calloc(1, sizeof *np + sz);
+      if (!np)
+         return NULL;
+      np->size = sz;
+      np->next = p;
+      f->pool = p = np;
+   }
+   void *r = p->mem + p->used;
+   p->used += n;
+   memset(r, 0, n);   /* the pool is calloc'd per chunk, but blocks are small: keep padding deterministic */
+   return r;
+}
+
+struct mali_rec *
 mali_frame_draw_slot(struct mali_frame *f)
 {
    if (f->ndraws == f->cap) {
       unsigned nc = f->cap ? f->cap * 2 : 8;
-      struct mali_draw *nd = realloc(f->draws, nc * sizeof *nd);
+      struct mali_rec *nd = realloc(f->draws, nc * sizeof *nd);
       if (!nd)
          return NULL;
       f->draws = nd;
@@ -1115,20 +1154,84 @@ mali_frame_draw_slot(struct mali_frame *f)
 }
 
 int
-mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
+mali_frame_add_rec(struct mali_frame *f, const struct mali_rec *r)
 {
-   struct mali_draw *s = mali_frame_draw_slot(f);
+   struct mali_rec *s = mali_frame_draw_slot(f);
    if (!s)
       return -ENOMEM;
-   *s = *d;
+   *s = *r;
    f->ndraws++;
    return 0;
+}
+
+/* A full draw (the preload draws): own blocks for every group. */
+int
+mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
+{
+   struct mali_bpipe *bp = mali_frame_blk(f, sizeof *bp);
+   struct mali_bbind *bb = mali_frame_blk(f, sizeof *bb);
+   struct mali_bpush *bu = mali_frame_blk(f, sizeof *bu);
+   struct mali_bdyn *bd = mali_frame_blk(f, sizeof *bd + d->ndyn * sizeof bd->d[0]);
+   if (!bp || !bb || !bu || !bd)
+      return -ENOMEM;
+   bp->fx = d->fx; bp->gfx = d->gfx;
+   memcpy(bp->vp, d->vp, sizeof bp->vp); memcpy(bp->sc, d->sc, sizeof bp->sc);
+   memcpy(bb->vb_va, d->vb_va, sizeof bb->vb_va); memcpy(bb->vb_size, d->vb_size, sizeof bb->vb_size);
+   bb->nsets = d->nsets; bb->ndyn = d->ndyn;
+   memcpy(bb->set_va, d->set_va, sizeof bb->set_va); memcpy(bb->set_bytes, d->set_bytes, sizeof bb->set_bytes);
+   memcpy(bu->push, d->push, sizeof bu->push);
+   bd->n = d->ndyn;
+   memcpy(bd->d, d->dyn_desc, d->ndyn * sizeof bd->d[0]);
+   struct mali_rec r = {
+      .dirty = MALI_D_ALL, .pipe = bp, .bind = bb, .push = bu, .dyn = bd,
+      .indexed = d->indexed, .index_va = d->index_va, .index_cpu = d->index_cpu, .index_bytes = d->index_bytes, .index_size = d->index_size,
+      .first_index = d->first_index, .count = d->count, .instance_count = d->instance_count, .first_vertex = d->first_vertex,
+      .first_instance = d->first_instance, .draw_id = d->draw_id, .occ_va = d->occ_va, .ind = d->ind, .ind_count = d->ind_count,
+      .ind_n = d->ind_n, .ind_stride = d->ind_stride, .occ_mode = d->occ_mode,
+   };
+   return mali_frame_add_rec(f, &r);
+}
+
+void
+mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
+{
+   const uint32_t m = r->dirty;
+   if (m & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC)) {
+      x->fx = r->pipe->fx;
+      x->gfx = r->pipe->gfx;
+      memcpy(x->vp, r->pipe->vp, sizeof x->vp);
+      memcpy(x->sc, r->pipe->sc, sizeof x->sc);
+   }
+   if (m & MALI_D_BIND) {
+      const struct mali_bbind *b = r->bind;
+      memcpy(x->vb_va, b->vb_va, sizeof x->vb_va);
+      memcpy(x->vb_size, b->vb_size, sizeof x->vb_size);
+      x->nsets = b->nsets;
+      memcpy(x->set_va, b->set_va, sizeof x->set_va);
+      memcpy(x->set_bytes, b->set_bytes, sizeof x->set_bytes);
+      x->ndyn = b->ndyn;
+   }
+   if (m & (MALI_D_BIND | MALI_D_DYNBUF))
+      memcpy(x->dyn_desc, r->dyn->d, r->dyn->n * sizeof r->dyn->d[0]);
+   if (m & MALI_D_PUSH)
+      memcpy(x->push, r->push->push, sizeof x->push);
+   x->dirty = m;
+   x->indexed = r->indexed; x->index_va = r->index_va; x->index_cpu = r->index_cpu; x->index_bytes = r->index_bytes;
+   x->index_size = r->index_size; x->first_index = r->first_index;
+   x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
+   x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
+   x->ind_stride = r->ind_stride; x->occ_mode = r->occ_mode;
 }
 
 void
 mali_frame_finish(struct mali_frame *f)
 {
    free(f->draws);
+   for (struct mali_pool *p = f->pool, *n; p; p = n) {
+      n = p->next;
+      free(p);
+   }
+   f->pool = NULL;
    free(f->ops);
    f->ops = NULL;
    f->nops = 0;
