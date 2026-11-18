@@ -7,9 +7,9 @@ Read-only: no lock, never starts or stops a session, never changes prefs/env.
 It only calls the read subcommands of droiddeckctl (state, env list, guest,
 cdp eval, pacing) and reads sysfs over adb.
 
-  tools/inspect-session --serial 192.168.3.116:5555
-  tools/inspect-session --serial 192.168.3.116:5555 --json
-  tools/inspect-session --serial 192.168.3.116:5555 --watch 5
+  tools/inspect-session --serial <ip:port>
+  tools/inspect-session --serial <ip:port> --json
+  tools/inspect-session --serial <ip:port> --watch 5
 
 Verdict per process, from /proc/<pid>/maps and environ inside the guest:
   OURS      libvulkan_mali* mapped (our driver)
@@ -274,7 +274,7 @@ def render(r):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--serial", help="adb serial, e.g. 192.168.3.116:5555")
+    ap.add_argument("--serial", help="adb serial, e.g. <ip:port>")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--watch", type=float, metavar="N", help="repeat every N seconds")
     a = ap.parse_args()
