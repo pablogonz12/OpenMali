@@ -13,6 +13,18 @@ Own ICD on Mesa's `vk_*` runtime. Plan and milestones: `../R3-PLAN.md`. State: M
 
 `-Dplatforms=` is empty until M14 (WSI), which reconfigures with `-Dplatforms=wayland`.
 
+### X11 WSI (round 6, optional)
+
+For `VK_KHR_xcb_surface` / `xlib_surface` (zink/GLX, Steam's X11 clients without the gamescope layer) Mesa must be configured with the x11 platform
+(`wsi_common_x11`). Host (`build.sh` picks this tree for `native`/`native-san` when it exists; otherwise the X11 tests skip):
+
+    cd ../third_party
+    PATH=$PWD/venv/bin:$PATH meson setup build-vk-x86-x11 mesa <same options as above> -Dplatforms=wayland,x11
+    PATH=$PWD/venv/bin:$PATH ninja -C build-vk-x86-x11 src/panfrost/vulkan/libvulkan_panfrost.so
+
+Guest (aarch64 glibc, Wayland + X11): `./cross/build-cross.sh glibc-wsi` -> `out/a64-glibc-wsi/` (not part of `all`). Present path: see `MALI_WSI` in
+`STEAM-GAPS.md` "X11 WSI". Tests: `tests/xwsi-host.sh` (in `check.sh`), `tests/x11guest.sh` (hardware, via qdrv; pushes `x11wsi_libvulkan_mali.so`, `x11wsi_t_vk_xcb`).
+
 The PanVK target is built only because it pulls in every static library we link (runtime, WSI, NIR, SPIR-V, panfrost
 compiler and lib) and gives `build.sh` a reference compile/link line. No PanVK object, header or symbol ends up in our
 library (`check.sh` verifies that).
