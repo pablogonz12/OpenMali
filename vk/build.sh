@@ -47,6 +47,15 @@ CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 # MALI_SAN=1: ASAN+UBSAN driver objects (use with LD_PRELOAD=$(gcc -print-file-name=libasan.so) and MALI_TARGET=native-san)
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
 
+# ccache (opt-out: MALI_NO_CCACHE=1). Only object compiles are wrapped; link steps and the compile-and-link test
+# one-liners run uncached, so outputs are byte-identical. Cache lives under ~/.cache (not TMPDIR; ccache keeps its own tmp inside it).
+CCP=""
+if [ "${MALI_NO_CCACHE:-0}" = 0 ] && command -v ccache >/dev/null 2>&1; then
+   export CCACHE_DIR=${CCACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/ccache}
+   export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-5G}
+   mkdir -p "$CCACHE_DIR" && CCP=ccache
+fi
+
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c
@@ -63,12 +72,12 @@ KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
 OBJS=""
 for s in $KBSRCS; do
    o=$OBJ/kb_$(basename "$s" .c).o
-   eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
+   eval "$CCP $CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
    OBJS="$OBJS $o"
 done
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   eval "$CCP $CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
 
@@ -103,7 +112,7 @@ $CXX -o "$OUT/libvulkan_mali.so" -shared -fPIC -Wl,--as-needed -Wl,--no-undefine
    -Wl,--build-id=sha1 $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
 # 4b. t_resources: M5/M7 end-to-end, linked statically with the driver objects (white-box, reads descriptor memory).
-eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
+eval "$CCP $CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
 # shellcheck disable=SC2086
 $CXX -o "$OUT/t_resources" $OBJ/t_resources.o $OBJS \
    -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
