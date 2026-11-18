@@ -255,6 +255,31 @@ main(int argc, char **argv)
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
    }
+   /* FormatProperties3 without-format / depth-comparison bits must agree with the advertised features and the storage/sampled bits of the same tiling */
+   {
+      const uint64_t RD = 0x80000000ull, WR = 0x100000000ull, DC = 0x200000000ull;
+      VkBool32 feat_rd = VK_FALSE, feat_wr = VK_FALSE;
+      feat_rd = f2.features.shaderStorageImageReadWithoutFormat; feat_wr = f2.features.shaderStorageImageWriteWithoutFormat;
+      unsigned nwr = 0, ndc = 0;
+      for (unsigned fmt = 1; fmt <= 184; fmt++) {
+         VkFormatProperties3 f3 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+         VkFormatProperties2 f2p = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &f3};
+         GetPhysicalDeviceFormatProperties2(pd, (VkFormat)fmt, &f2p);
+         const uint64_t t[3] = {f3.linearTilingFeatures, f3.optimalTilingFeatures, f3.bufferFeatures};
+         const uint64_t st[3] = {VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT, VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT, VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT};
+         for (int k = 0; k < 3; k++) {
+            CHECK(!(t[k] & RD) || feat_rd, "format %u set %d: READ_WITHOUT_FORMAT but shaderStorageImageReadWithoutFormat is false", fmt, k);
+            CHECK(!(t[k] & WR) || (feat_wr && (t[k] & st[k])), "format %u set %d: WRITE_WITHOUT_FORMAT without feature or without the storage bit", fmt, k);
+            CHECK(!(t[k] & RD) || (t[k] & st[k]), "format %u set %d: READ_WITHOUT_FORMAT without the storage bit", fmt, k);
+            if ((t[k] & st[k]) && feat_wr) { CHECK(t[k] & WR, "format %u set %d: storage bit without WRITE_WITHOUT_FORMAT", fmt, k); nwr++; }
+         }
+         CHECK(!(f3.optimalTilingFeatures & DC) || (f3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT), "format %u: DEPTH_COMPARISON without SAMPLED_IMAGE", fmt);
+         CHECK(!((f3.linearTilingFeatures | f3.bufferFeatures) & DC), "format %u: DEPTH_COMPARISON on linear/buffer", fmt);
+         ndc += (f3.optimalTilingFeatures & DC) != 0;
+      }
+      CHECK(nwr > 0 && ndc > 0, "format sweep saw no storage-capable (%u) or depth-comparison (%u) format", nwr, ndc);
+      CHECK(f2.features.shaderStorageImageWriteWithoutFormat, "writeWithoutFormat advertised");
+   }
 
    /* ---- device + probes ---- */
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
