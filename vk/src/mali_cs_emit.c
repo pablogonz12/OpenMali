@@ -403,9 +403,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    uint32_t blt[4] = {0, 0, 0, 0};   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
    uint32_t *bl_arena = bl;
    bl = blt;
-   if (f->colour.rt)
+   if (f->colour.rt) {
       kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
-   else
+      if (f->colour.rt->int_bits)
+         bl[0] &= ~(1u << 11);   /* no rounding for integer targets */
+   } else
       kb_draw_blend_opaque_rgba8(bl);
    if (g->blend_va && d->fx.blend_en) {
       /* blend shader (mode 0): word0 = load dest | enable | round-to-FB-precision (no sRGB RT formats are exposed), word3 = shader PC

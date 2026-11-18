@@ -33,6 +33,25 @@ static const struct mali_rtfmt mali_rt_tab[] = {
    { VK_FORMAT_R16G16_SFLOAT, 17, 17, 2, 4, 1, SW(0, 1, 2, 3), PF(207, 0) },
    { VK_FORMAT_R16G16B16A16_SFLOAT, 18, 19, 4, 8, 1, SW(0, 1, 2, 3), PF(223, 0) },
    { VK_FORMAT_B10G11R11_UFLOAT_PACK32, 20, 20, 3, 4, 1, SW(0, 1, 2, 3), PF(89, 0) },
+   /* integer colour formats: RAW tile buffer (internal 32 + log2 bytes, writeback RAW8/16/32/64/128), opaque conversion = the texture format word */
+   { VK_FORMAT_R8_UINT, 32, 0, 1, 1, 0, SW(0, 1, 2, 3), PF(131, 16), 8, 0 },
+   { VK_FORMAT_R8G8_UINT, 33, 1, 2, 2, 0, SW(0, 1, 2, 3), PF(139, 16), 8, 0 },
+   { VK_FORMAT_R8G8B8A8_UINT, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(155, 0), 8, 0 },
+   { VK_FORMAT_R16_UINT, 33, 1, 1, 2, 0, SW(0, 1, 2, 3), PF(132, 16), 16, 0 },
+   { VK_FORMAT_R16G16_UINT, 34, 3, 2, 4, 0, SW(0, 1, 2, 3), PF(140, 16), 16, 0 },
+   { VK_FORMAT_R16G16B16A16_UINT, 35, 5, 4, 8, 0, SW(0, 1, 2, 3), PF(156, 0), 16, 0 },
+   { VK_FORMAT_R32_UINT, 34, 3, 1, 4, 0, SW(0, 1, 2, 3), PF(133, 16), 32, 0 },
+   { VK_FORMAT_R32G32_UINT, 35, 5, 2, 8, 0, SW(0, 1, 2, 3), PF(141, 16), 32, 0 },
+   { VK_FORMAT_R32G32B32A32_UINT, 36, 7, 4, 16, 0, SW(0, 1, 2, 3), PF(157, 0), 32, 0 },
+   { VK_FORMAT_R8_SINT, 32, 0, 1, 1, 0, SW(0, 1, 2, 3), PF(195, 16), 8, 1 },
+   { VK_FORMAT_R8G8_SINT, 33, 1, 2, 2, 0, SW(0, 1, 2, 3), PF(203, 16), 8, 1 },
+   { VK_FORMAT_R8G8B8A8_SINT, 34, 3, 4, 4, 0, SW(0, 1, 2, 3), PF(219, 0), 8, 1 },
+   { VK_FORMAT_R16_SINT, 33, 1, 1, 2, 0, SW(0, 1, 2, 3), PF(196, 16), 16, 1 },
+   { VK_FORMAT_R16G16_SINT, 34, 3, 2, 4, 0, SW(0, 1, 2, 3), PF(204, 16), 16, 1 },
+   { VK_FORMAT_R16G16B16A16_SINT, 35, 5, 4, 8, 0, SW(0, 1, 2, 3), PF(220, 0), 16, 1 },
+   { VK_FORMAT_R32_SINT, 34, 3, 1, 4, 0, SW(0, 1, 2, 3), PF(197, 16), 32, 1 },
+   { VK_FORMAT_R32G32_SINT, 35, 5, 2, 8, 0, SW(0, 1, 2, 3), PF(205, 16), 32, 1 },
+   { VK_FORMAT_R32G32B32A32_SINT, 36, 7, 4, 16, 0, SW(0, 1, 2, 3), PF(221, 0), 32, 1 },
 };
 
 /* NULL + *supported true for R8G8B8A8_UNORM (the proven default); *supported false = not a render target we can draw to. */

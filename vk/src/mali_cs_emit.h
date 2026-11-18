@@ -193,6 +193,7 @@ struct mali_rtfmt {
    uint8_t internal, wb, ncomp, alloc, is_float;   /* FBD Internal Format, writeback format, components, colour allocation (>>10), 16F/11F clear */
    uint16_t swizzle;                               /* RT swizzle (12 bits) */
    uint32_t blend_pixfmt;                          /* blend conversion format word */
+   uint8_t int_bits, is_signed;                    /* integer colour formats (RAW tile buffer): bits per channel (0 = not integer), SINT */
 };
 const struct mali_rtfmt *mali_rtfmt_lookup(int vk_format, bool *supported);
 void mali_rtfmt_clear_words(const struct mali_rtfmt *rt, const float c[4], uint32_t w[4]);
