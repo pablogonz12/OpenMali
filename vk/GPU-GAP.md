@@ -122,3 +122,14 @@ tools/bench2 on CMF, 5 interleaved pairs, old ICD 193a1e9c (main) vs new bfc42e9
 Cause (code reading): `mali_queue_submit` CPU-waited on every wait semaphore, including the present's wait on the frame's render-done semaphore, so vkQueuePresent blocked until the GPU finished the frame: fif 2/3 behaved like fif 1 (CMF presented 20.3 ms vs 15.1 ms GPU). Fix: skip that wait for semaphores signalled by this queue (in-order ring) ONLY when a fence travels with the buffer (wsi_common's dma-buf sync_file import probe, kernel >= 6.0: CMF 6.1, poco-x8 6.6). poco-x4 (5.10) returns ENOTTY (vk/DEVICE-poco-x4.md), kbase attaches no implicit fence, so there the wait stays and the change is a no-op. Not yet measured on hardware: the compositor (gamescope) honouring the imported fence must be proven on the CMF/x8 with a tearing check before this counts.
 poco-x4 cube-720p presented, ours, origin/main 54470e3, mailbox/3img/fif3 (2026-11-18): 85.0 fps, cpu 0.86 ms, GPU 9.15 ms, p50 frame 11.4 ms (bridge p22: 119.6 fps, GPU 7.36 ms). Other fif / tiled A/B rows: none (poco-x4 reached 45 C within one run; bench2 stops at 43 C).
 CMF cube-720p presented, ours, perf/memsync-exec b262cdb: 57.7 fps, submit 0.55 ms, GPU 15.13 ms (bridge p25 74.0 fps).
+
+## 2026-11-18 CMF proof for perf/queue-order (cube-720p presented, mailbox/3img, 6-8 s, 3 interleaved pairs, main = 54470e3 vs branch 92168ce, both a64-glibc-wl)
+| fif | main fps (3 runs) | branch fps (3 runs) | median |
+|---|---|---|---|
+| 1 | 42.9 / 40.9 / 42.4 | 40.3 / 45.3 / 41.9 | 42.4 / 41.9 (no change, as expected) |
+| 2 | 38.1 / 38.1 / 39.9 | 48.4 / 47.1 / 47.9 | 38.1 / 47.9 |
+| 3 | 40.6 / 43.0 / 40.7 | 49.1 / 48.8 / 49.7 | 40.7 / 49.1 |
+GPU time p50 14.2-15.8 ms on both (mean ~20 ms: the compositor shares the GPU); the branch moves the wait from vkQueuePresent (present_acquire) to the fence wait. Frame p50 19 -> 16.6 ms at fif2.
+Ordering on hardware (`t_queue --only gpufence`, real GPU, 64 MB copy frames): with MALI_PRESENT_FENCE=1 the present returned before the frame finished 40/40 times and the present semaphore's sync_file never signalled before the frame's fence (0 violations, 2 runs); with =0 the present returns after the frame (0/40 early).
+gamescope (patches 0123/0124): the commit waits on the client dma-buf fd (epoll POLLIN = all fences incl. the imported sync_file; `commit_fence_ready_now` is a poll(POLLIN)); the 50-screenshot tearing series was NOT run, so the branch stays unmerged.
+MALI_IMAGE_TILED=1 cannot be measured: the cube harness fails with EndCommandBuffer = -8 (meta copy/blit/clear reject tiled images, mali_meta_vk.c). An experiment that tiles only the pure attachments (depth) fails the same way in the frame's command buffer. The tiled A/B needs the meta paths first.
