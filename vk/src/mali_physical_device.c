@@ -185,6 +185,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
+      .EXT_private_data = true,              /* privateData feature + vk_private_data (common runtime); dEQP object_management.private_data enables it by name */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
