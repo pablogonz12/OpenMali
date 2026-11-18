@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|storfmt|storfmt_nf|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -734,7 +734,7 @@ sfmt_expect(const struct sfmt *f, uint8_t *out)
 }
 
 static int
-storfmt_one(struct tgt *t, const struct sfmt *f)
+storfmt_one(struct tgt *t, const struct sfmt *f, int nf)
 {
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f->f, .extent = {4, 4, 1},
                            .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -770,7 +770,10 @@ storfmt_one(struct tgt *t, const struct sfmt *f)
    VkPipelineLayout lay;
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
    char name[64];
-   snprintf(name, sizeof name, "stor_%s.comp.spv", f->q);
+   if (nf)   /* no format qualifier in the shader: one shader per component type */
+      snprintf(name, sizeof name, "stornf_%c.comp.spv", f->kind == 'u' ? 'u' : f->kind == 'i' ? 'i' : 'f');
+   else
+      snprintf(name, sizeof name, "stor_%s.comp.spv", f->q);
    VkShaderModule m = load_spv(name);
    CHECK(m, "shader %s", name);
    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
@@ -834,8 +837,31 @@ test_storfmt(void)
    struct tgt t;
    if (!tgt_create(&t)) return 0;
    int pass = 0, n = (int)(sizeof sfmts / sizeof *sfmts);
-   for (int i = 0; i < n; i++) pass += storfmt_one(&t, &sfmts[i]);
+   for (int i = 0; i < n; i++) pass += storfmt_one(&t, &sfmts[i], 0);
    printf("{\"test\":\"storfmt\",\"formats\":%d,\"passed\":%d,\"ok\":%s}\n", n, g_fake ? n : pass, pass == n ? "true" : "false");
+   tgt_destroy(&t);
+   return pass == n;
+}
+
+/* shaderStorageImageWriteWithoutFormat (gamescope's composite shaders): the same texel through an imageStore with no format qualifier
+ * (SPIR-V Unknown + StorageImageWriteWithoutFormat), into the extended formats above and the core storage formats. The texel format
+ * can only come from the image view descriptor. */
+static const struct sfmt sfmts_core[] = {
+   {"rgba8", 37, 4, 8, 'U'}, {"rgba8_snorm", 38, 4, 8, 'S'}, {"rgba8ui", 41, 4, 8, 'u'}, {"rgba8i", 42, 4, 8, 'i'},
+   {"r32ui", 98, 1, 32, 'u'}, {"r32i", 99, 1, 32, 'i'}, {"r32f", 100, 1, 32, 'F'},
+   {"rgba32ui", 107, 4, 32, 'u'}, {"rgba32i", 108, 4, 32, 'i'}, {"rgba32f", 109, 4, 32, 'F'},
+};
+
+static int
+test_storfmt_nf(void)
+{
+   if (!g_feat.shaderStorageImageWriteWithoutFormat) { printf("{\"test\":\"storfmt_nf\",\"skipped\":\"shaderStorageImageWriteWithoutFormat not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   int pass = 0, n = (int)(sizeof sfmts / sizeof *sfmts + sizeof sfmts_core / sizeof *sfmts_core);
+   for (unsigned i = 0; i < sizeof sfmts / sizeof *sfmts; i++) pass += storfmt_one(&t, &sfmts[i], 1);
+   for (unsigned i = 0; i < sizeof sfmts_core / sizeof *sfmts_core; i++) pass += storfmt_one(&t, &sfmts_core[i], 1);
+   printf("{\"test\":\"storfmt_nf\",\"formats\":%d,\"passed\":%d,\"ok\":%s}\n", n, pass, pass == n ? "true" : "false");
    tgt_destroy(&t);
    return pass == n;
 }
@@ -1937,6 +1963,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
+   if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
