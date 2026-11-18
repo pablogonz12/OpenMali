@@ -1205,6 +1205,19 @@ class Farm:
         log(f"{dev['alias']}: {why}: MediaDeck brought to the front")
         return ""
 
+    def menu_stale(self, j):
+        try:
+            return time.time() - time.mktime(time.strptime(j["created"][:19], "%Y-%m-%dT%H:%M:%S")) > self.MENU_EXPIRE_H * 3600
+        except (ValueError, KeyError, TypeError):
+            return False
+
+    def defer_part(self, job, dev, secs):
+        """a part that cannot run now (menu: the owner has the phone) waits by itself; the scheduler skips it until then, the phone is NOT cooled"""
+        until = time.time() + (float(os.environ.get("MALI_FARM_FAKE_DEFER", "0")) if self.fake else secs)
+        self.upd(job["id"], lambda x, c=dev["class"]: x["parts"][c].update(defer_until=until))      # in the job file: survives a farmd restart
+
+    MENU_EXPIRE_H = float(os.environ.get("MALI_FARM_MENU_EXPIRE_H", "6"))      # a menu job still pending after this long is stale (the version it was queued for is old)
+
     def suite_menu(self, job, dev):
         """menubench <alias> --profile both --reps 3 (it takes the qsafe lock, honours the health gate, resumes its plan on exit 75), then one row per
         MediaDeck versionCode and profile from results/menubench.jsonl into <state>/bench/menu.jsonl. Skipped (stays pending) while the owner uses the phone."""
@@ -1216,13 +1229,13 @@ class Farm:
             return {"verdict": "error", "notes": "menubench not found: set `menubench = \"/path/to/MediaDeck/scripts/quick/menubench\"` in ~/.config/mali-farm/farm.toml"}
         vc, use, why = self.menu_probe(dev, launch=True)
         if use:
-            self.cool[alias] = time.time() + (0 if self.fake else 900)
-            log(f"{alias}: owner is using the phone ({why}); {job['id']} menu stays pending")
+            self.defer_part(job, dev, 900)                       # only THIS menu job waits: other jobs and holds on the phone keep running
+            log(f"{alias}: owner is using the phone ({why}); {job['id']} menu deferred")
             return {"gated": True}
         wait = self.bring_front(dev, why)
         if wait:
-            self.cool[alias] = time.time() + (0 if self.fake else 900)
-            log(f"{alias}: {wait}; {job['id']} menu stays pending")
+            self.defer_part(job, dev, 900)
+            log(f"{alias}: {wait}; {job['id']} menu deferred")
             return {"gated": True}
         results = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(mb)))), "results", "menubench.jsonl")
         since = job["created"]
@@ -1241,7 +1254,7 @@ class Farm:
                 break
         self.keep_log(job, dev, "menu", out, rc)
         if rc in (75, 124, 125, 126) or "PHONE BUSY" in out:   # more reps pending / lock busy / gated / chunk timeout: resume later (menubench keeps its plan)
-            self.cool[alias] = time.time() + (0 if self.fake else 300)
+            self.defer_part(job, dev, 300)
             return {"gated": True}
         rows = M.aggregate(M.load_rows(results), alias, dev["class"], job["id"], since)
         if rc != 0 or not rows:
@@ -1811,6 +1824,12 @@ class Farm:
                     p["state"] = "pending"
                 if p["state"] != "pending":
                     continue
+                if j["suite"] == "menu" and self.menu_stale(j):
+                    self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="cancelled"))
+                    log(f"menu job {j['id']} expired (pending > {self.MENU_EXPIRE_H:g} h); cancelled")
+                    continue
+                if time.time() < p.get("defer_until", 0):
+                    continue                                                       # deferred individually (menu gate); the phone may run other jobs
                 for al, d in self.devs.items():
                     if d["class"] == cls and al in att and B.pin_ok(j, al) and self.dstate.get(al, {}).get("status") == "up" and al not in self.threads and time.time() >= self.cool.get(al, 0):
                         hn = self.hold_next(al)
