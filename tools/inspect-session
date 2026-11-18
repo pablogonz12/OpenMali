@@ -3,6 +3,10 @@
 """inspect-session: which GPU driver does each process of a running DroidDeck /
 MediaDeck guest session really use, and how fast does it render?
 
+Needs droiddeckctl: default path ~/Projects/mali-gaming/tools/droiddeckctl, override with
+DROIDDECKCTL=<path>. If it is missing or the state query fails the output says "state unavailable"
+(exit 1), which is not the same as "no session".
+
 Read-only: no lock, never starts or stops a session, never changes prefs/env.
 It only calls the read subcommands of droiddeckctl (state, env list, guest,
 cdp eval, pacing) and reads sysfs over adb.
@@ -21,6 +25,7 @@ first match in the order SOFTWARE-by-env, OURS, BRIDGE, SOFTWARE-by-maps.
 """
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -92,6 +97,8 @@ for pid, (ppid, args) in sorted(procs.items()):
             if len(parts) < 6:
                 continue
             path = parts[5]
+            if path.endswith(" (deleted)"):
+                path = path[:-len(" (deleted)")]
             if path.startswith("/dmabuf") and "mali" in path:
                 dmabuf = True
             elif path.startswith("/") and LIB.search(os.path.basename(path)):
@@ -150,6 +157,7 @@ def verdict(proc):
           else "SOFTWARE" if any("lvp" in l for l in libs) else None)
     gallium = any("gallium" in l or "libGLX_mesa" in l for l in libs)
     llvm = any("libLLVM" in l for l in libs)
+    swrast = any("swrast" in l for l in libs)
     drv = env.get("GALLIUM_DRIVER", "")
     sw_env = (drv in ("llvmpipe", "softpipe", "swrast")
               or env.get("LIBGL_ALWAYS_SOFTWARE") == "1")
@@ -157,7 +165,7 @@ def verdict(proc):
         v = "SOFTWARE"
     elif vk in ("OURS", "BRIDGE"):
         v = vk
-    elif vk == "SOFTWARE" or (gallium and llvm):
+    elif vk == "SOFTWARE" or swrast or (gallium and llvm):
         v = "SOFTWARE"
     else:
         v = "NONE"
@@ -173,9 +181,12 @@ def collect(serial):
     r = {"time": time.strftime("%H:%M:%S"), "serial": serial}
     st, err = run_ctl(["state"], serial)
     sess = (st or {}).get("session") or {}
-    if not st or not sess.get("running"):
-        r["state"] = {"running": False, "error": err or None,
-                      "phase": sess.get("phase") if sess else None}
+    if not st:
+        # the query itself failed: say so, do not claim there is no session
+        r["state"] = {"running": None, "unavailable": True, "error": err or "state query failed"}
+        return r
+    if not sess.get("running"):
+        r["state"] = {"running": False, "error": None, "phase": sess.get("phase")}
         return r
     r["state"] = {k: sess.get(k) for k in ("id", "mode", "phase", "program", "refreshHz",
                                            "output", "suspended")}
@@ -241,9 +252,17 @@ def collect(serial):
     return r
 
 
+def clean(text):
+    """Guest and device strings are untrusted: drop control characters (ANSI escapes) before printing."""
+    return "".join(c if c.isprintable() else "?" for c in str(text))
+
+
 def render(r):
     L = ["== inspect-session %s  %s ==" % (r["serial"], r["time"])]
     s = r["state"]
+    if s.get("unavailable"):
+        L.append("state unavailable: %s" % s["error"])
+        return "\n".join(L)
     if not s.get("running"):
         L.append("no session (phase=%s)%s" % (s.get("phase"), "  [%s]" % s["error"] if s.get("error") else ""))
         return "\n".join(L)
@@ -277,18 +296,24 @@ def render(r):
     return "\n".join(L)
 
 
+def clean_lines(text):
+    return "\n".join(clean(l) for l in text.split("\n"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--serial", help="adb serial, e.g. <ip:port>")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--watch", type=float, metavar="N", help="repeat every N seconds")
     a = ap.parse_args()
+    if a.watch is not None and not (math.isfinite(a.watch) and a.watch > 0):
+        ap.error("--watch needs a finite interval greater than 0")
     while True:
         r = collect(a.serial)
         r["serial"] = r["serial"] or "(auto)"
-        print(json.dumps(r, indent=2) if a.json else render(r), flush=True)
+        print(json.dumps(r, indent=2) if a.json else clean_lines(render(r)), flush=True)
         if not a.watch:
-            return 0
+            return 1 if r["state"].get("unavailable") else 0
         print()
         time.sleep(a.watch)
 
