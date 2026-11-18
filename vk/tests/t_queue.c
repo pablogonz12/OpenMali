@@ -63,7 +63,8 @@ now_us(void)
    X(ResetFences) X(WaitForFences) X(GetFenceStatus) X(CreateSemaphore) X(DestroySemaphore)        \
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
-   X(ImportSemaphoreFdKHR) X(GetFenceFdKHR)
+   X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
+   X(BindBufferMemory) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -257,6 +258,130 @@ test_binary(void)
    DestroySemaphore(dev, s2, NULL);
    printf("{\"test\":\"binary\",\"chains\":200,\"ok\":true}\n");
    return 1;
+}
+
+/* Present ordering. A = the frame (signals S and fence FA), P = the present (waits S, signals FP; wsi_common commits the
+ * buffer right after P's vkQueueSubmit returns). MALI_FAKE_SLOW_US makes fences complete late. Mode "wait"
+ * (MALI_PRESENT_FENCE=0, kernels without dma-buf sync_file import): the commit must not precede the frame's completion, so
+ * FA is signalled when P returns. Mode "fence" (=1): P returns at once (pipelining) (the ordering of the fence that travels with the buffer is proven on hardware by --only gpufence). */
+static int
+test_order(int fence_mode)
+{
+   VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkSemaphore s;
+   VkFence fa, fp;
+   CHECK(CreateSemaphore(dev, &sci, NULL, &s) == VK_SUCCESS, "sem");
+   CHECK(CreateFence(dev, &fi, NULL, &fa) == VK_SUCCESS, "fence");
+   CHECK(CreateFence(dev, &fi, NULL, &fp) == VK_SUCCESS, "fence");
+   VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   for (int i = 0; i < 5; i++) {
+      VkSubmitInfo a = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = 1, .pSignalSemaphores = &s};
+      VkSubmitInfo p = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &s,
+                        .pWaitDstStageMask = &st};
+      CHECK(QueueSubmit(queue, 1, &a, fa) == VK_SUCCESS, "frame submit");
+      CHECK(QueueSubmit(queue, 1, &p, fp) == VK_SUCCESS, "present submit");
+      VkResult fa_done = GetFenceStatus(dev, fa);   /* the moment wsi_common would commit */
+      if (fence_mode) {
+         CHECK(fa_done == VK_NOT_READY, "iter %d: present returned only after the frame finished (no pipelining)", i);
+         CHECK(WaitForFences(dev, 1, &fp, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fp wait");
+         /* "FP never completes before FA" is hardware ordering (the fake completes each submission on its own timer): see --only gpufence */
+      } else {
+         CHECK(fa_done == VK_SUCCESS, "iter %d: present returned before the frame finished (commit would show a half-drawn buffer)", i);
+      }
+      CHECK(WaitForFences(dev, 1, &fp, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fp wait");
+      ResetFences(dev, 1, &fa);
+      ResetFences(dev, 1, &fp);
+   }
+   CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "idle");
+   DestroyFence(dev, fa, NULL);
+   DestroyFence(dev, fp, NULL);
+   DestroySemaphore(dev, s, NULL);
+   printf("{\"test\":\"order\",\"fence_mode\":%d,\"ok\":true}\n", fence_mode);
+   return 1;
+}
+
+/* Hardware ordering probe (real GPU, no fake): a heavy frame A (buffer copies, ~ms) signals S; the present P waits S and signals an
+ * exportable semaphore whose sync_file is what wsi_common imports into the dma-buf for the compositor. The sync_file must not
+ * signal before A's fence does: that is "the compositor cannot show a half-drawn frame". With MALI_PRESENT_FENCE=1 P returns without
+ * a CPU wait, so the sync_file (not the CPU) is the only thing ordering the commit. Prints how often P returned while A still ran. */
+static int
+test_gpufence(void)
+{
+   VkExportSemaphoreCreateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+   VkSemaphoreCreateInfo sx = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ex};
+   VkSemaphoreCreateInfo sp = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkSemaphore s, s2;
+   VkFence fa;
+   CHECK(CreateSemaphore(dev, &sp, NULL, &s) == VK_SUCCESS, "sem");
+   CHECK(CreateSemaphore(dev, &sx, NULL, &s2) == VK_SUCCESS, "exportable sem");
+   CHECK(CreateFence(dev, &fi, NULL, &fa) == VK_SUCCESS, "fence");
+   const VkDeviceSize sz = 64u << 20;
+   VkBuffer b[2];
+   VkDeviceMemory m[2];
+   for (int i = 0; i < 2; i++) {
+      VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+      CHECK(CreateBuffer(dev, &bi, NULL, &b[i]) == VK_SUCCESS, "buffer");
+      VkMemoryRequirements mr;
+      GetBufferMemoryRequirements(dev, b[i], &mr);
+      uint32_t t = 0;
+      while (!(mr.memoryTypeBits & (1u << t))) t++;
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = t};
+      CHECK(AllocateMemory(dev, &ai, NULL, &m[i]) == VK_SUCCESS, "alloc");
+      CHECK(BindBufferMemory(dev, b[i], m[i], 0) == VK_SUCCESS, "bind");
+   }
+   VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkCommandPool pool;
+   CHECK(CreateCommandPool(dev, &pi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBufferAllocateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb;
+   CHECK(AllocateCommandBuffers(dev, &ci, &cb) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "begin");
+   VkBufferCopy rg = {.size = sz};
+   for (int k = 0; k < 4; k++) {
+      CmdFillBuffer(cb, b[0], 0, sz, 0x01010101u * (k + 1));
+      CmdCopyBuffer(cb, b[0], b[1], 1, &rg);
+      CmdCopyBuffer(cb, b[1], b[0], 1, &rg);
+   }
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   int n = 40, early_return = 0, viol = 0;
+   double sum_gpu = 0;
+   for (int i = 0; i < n; i++) {
+      VkSubmitInfo a = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb,
+                        .signalSemaphoreCount = 1, .pSignalSemaphores = &s};
+      VkSubmitInfo p = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &s,
+                        .pWaitDstStageMask = &st, .signalSemaphoreCount = 1, .pSignalSemaphores = &s2};
+      double t0 = now_us();
+      CHECK(QueueSubmit(queue, 1, &a, fa) == VK_SUCCESS, "frame submit");
+      CHECK(QueueSubmit(queue, 1, &p, VK_NULL_HANDLE) == VK_SUCCESS, "present submit");
+      int ret_early = GetFenceStatus(dev, fa) == VK_NOT_READY;
+      early_return += ret_early;
+      VkSemaphoreGetFdInfoKHR gs = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, .semaphore = s2,
+                                    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+      int fd = -2;
+      CHECK(GetSemaphoreFdKHR(dev, &gs, &fd) == VK_SUCCESS, "present semaphore fd");
+      if (fd >= 0) {
+         struct pollfd pf = {fd, POLLIN, 0};
+         CHECK(poll(&pf, 1, 10000) == 1, "present sync_file never signalled");
+         VkResult fs = GetFenceStatus(dev, fa);   /* the sync_file is signalled: the frame must be finished */
+         if (fs != VK_SUCCESS) viol++;
+         CHECK(fs == VK_SUCCESS, "iter %d: present sync_file signalled while the frame was still running", i);
+         close(fd);
+      }
+      sum_gpu += now_us() - t0;
+      CHECK(WaitForFences(dev, 1, &fa, VK_TRUE, 10000000000ull) == VK_SUCCESS, "frame wait");
+      ResetFences(dev, 1, &fa);
+   }
+   CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "idle");
+   printf("{\"test\":\"gpufence\",\"iters\":%d,\"present_returned_before_frame_done\":%d,\"violations\":%d,\"ms_per_frame\":%.2f,\"ok\":%s}\n",
+          n, early_return, viol, sum_gpu / n / 1000, viol ? "false" : "true");
+   return !viol;
 }
 
 struct pp {
@@ -490,6 +615,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
    if (ok && CASE_ON("syncfile")) ok &= test_syncfile();
+   if (ok && g_only && !strcmp(g_only, "gpufence")) ok &= test_gpufence();
+   if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
 
