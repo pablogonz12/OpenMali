@@ -6,6 +6,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## triangle (CPU-heavy)
 
+### mali-open 9a887b23d (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 185.5 | 70.8 | 0 | 0.87 | 3.62 | 314.7 | 0.70 | 2.19 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 9a887b23d | triangle-3k | 119.4 | 79.3 | 0 | 2.13 | 2.58 | 742.8 | 0.89 | 0.91 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
+
 ### mali-open 6de4ce393 (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -19,13 +26,6 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 187.0 | 71.8 | 0 | 0.87 | 3.36 | 306.0 | 0.73 | 2.27 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | cmf | v11 | ours | 6bfa1cc9f | triangle-3k | 111.8 | 72.8 | 0 | 3.96 | 2.29 | 338.7 | 2.49 | 1.76 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
-
-### mali-open 9a887b23d (2026-11-18)
-
-| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 188.0 | 71.3 | 0 | 0.84 | 3.29 | 289.1 | 0.69 | 2.55 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-18 |
-| cmf | v11 | ours | 9a887b23d | triangle-3k | 120.6 | 81.4 | 0 | 2.04 | 2.54 | 758.0 | 0.88 | 0.86 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-18 |
 
 ### mali-open 54470e3d8 (2026-11-18)
 
@@ -98,6 +98,15 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 ## cube (GPU-heavy)
 
+### mali-open 9a887b23d (2026-11-18)
+
+| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 72.4 | 34.7 | 0 | 0.12 | 12.85 | 87.8 | 0.08 | 11.31 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 9a887b23d | cube-720p | 45.7 | 37.6 | 0 | 1.89 | 15.92 | 75.1 | 2.02 | 13.19 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.5 | 31.5 | 0 | 0.13 | 12.65 | 87.8 | 0.08 | 11.31 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+| cmf | v11 | ours | 9a887b23d | cube-native | 46.5 | 38.8 | 0 | 1.43 | 17.93 | 75.8 | 1.97 | 13.08 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
+
 ### mali-open 6de4ce393 (2026-11-18)
 
 | phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
@@ -115,15 +124,6 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 | cmf | v11 | ours | 6bfa1cc9f | cube-720p | 48.1 | 37.2 | 0 | 1.94 | 15.36 | 68.1 | 1.29 | 14.57 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 73.8 | 33.9 | 0 | 0.15 | 12.65 | 88.2 | 0.09 | 11.25 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 | cmf | v11 | ours | 6bfa1cc9f | cube-native | 49.9 | 38.9 | 0 | 1.94 | 15.06 | 84.0 | 2.11 | 11.85 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
-
-### mali-open 9a887b23d (2026-11-18)
-
-| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-720p | 73.3 | 34.5 | 0 | 0.17 | 12.82 | 87.9 | 0.08 | 11.31 | present mailbox/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
-| cmf | v11 | ours | 9a887b23d | cube-720p | 46.4 | 37.3 | 0 | 1.89 | 15.46 | 84.0 | 1.67 | 11.86 | present mailbox/3img/fif1; offscreen mailbox/0img/fif2 | 2026-11-18 |
-| cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | cube-native | 71.1 | 33.7 | 0 | 0.12 | 12.83 | 87.8 | 0.07 | 11.32 | present fifo/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
-| cmf | v11 | ours | 9a887b23d | cube-native | 46.2 | 37.6 | 0 | 1.50 | 17.95 | 75.9 | 1.96 | 13.05 | present mailbox/2img/fif2; offscreen mailbox/0img/fif2 | 2026-11-18 |
 
 ### mali-open 54470e3d8 (2026-11-18)
 
