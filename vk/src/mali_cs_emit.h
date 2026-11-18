@@ -65,6 +65,7 @@ struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* p
 struct mali_gfx_state {
    const struct mali_compiled *vs, *fs;   /* compiled with arch == env.arch */
    unsigned samples;                      /* rasterizationSamples: 1 or 4 */
+   bool discard;                          /* no fragment stage / rasterizerDiscardEnable: draws are skipped */
    bool per_sample;                       /* sampleRateShading: the fragment shader runs per sample (DCD0 evaluate-per-sample) */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
