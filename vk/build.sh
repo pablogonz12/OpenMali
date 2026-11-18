@@ -71,6 +71,7 @@ KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
 OBJS=""
 # Compile in parallel (MALI_JOBS, default nproc); any failed compile fails the build.
 JOBS=${MALI_JOBS:-$(nproc 2>/dev/null || echo 4)}
+case $JOBS in ''|*[!0-9]*|0) echo "MALI_JOBS must be a positive integer (got '$JOBS')"; exit 1;; esac
 cfail=0; running=0
 reap() { wait -n || cfail=1; running=$((running - 1)); }
 for s in $KBSRCS; do
