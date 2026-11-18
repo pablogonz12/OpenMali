@@ -385,15 +385,15 @@ static const struct { const uint32_t *spv; size_t words; unsigned nbind, push; }
    [MALI_META_QCOPY] = { meta_qcopy_spv, sizeof meta_qcopy_spv / 4, 2, 20 },
 };
 
-/* Descriptor-set layout the meta shaders are compiled against: set 0 = two storage buffers. */
+/* Descriptor-set layout the meta shaders are compiled against: set 0 = two storage buffers (three for the ASTC decoder: + its tables). */
 static void
-meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[2], unsigned push)
+meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[3], unsigned push, unsigned nb)
 {
    memset(lay, 0, sizeof *lay);
-   for (unsigned i = 0; i < 2; i++)
+   for (unsigned i = 0; i < nb; i++)
       b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER };
    lay->nsets = 1;
-   lay->set[0] = (struct mali_lset){ 2, 2, 0, b };
+   lay->set[0] = (struct mali_lset){ nb, nb, 0, b };
    lay->push_size = push;
 }
 
@@ -404,7 +404,7 @@ shader_get_locked(enum mali_meta_shader sh, const struct mali_compiled **c, uint
       return -ENODEV;
    if (!g_sh[sh].ok) {
       struct mali_compile_layout lay;
-      struct mali_lbinding b[2];
+      struct mali_lbinding b[3];
       char err[256] = "";
       const uint32_t *spv = g_src[sh].spv;
       size_t words = g_src[sh].words, push = g_src[sh].push;
@@ -414,7 +414,7 @@ shader_get_locked(enum mali_meta_shader sh, const struct mali_compiled **c, uint
          if (!spv)
             return -EINVAL;
       }
-      meta_layout(&lay, b, push);
+      meta_layout(&lay, b, push, sh == MALI_META_BC_FIRST + MALI_BC_ASTC ? 3 : 2);
       struct mali_compile_opts o = { 0 };
       o.arch = g_dev.arch;
       o.stage = MALI_STAGE_COMPUTE;
@@ -462,7 +462,8 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
 {
    const struct mali_compiled *c;
    uint64_t cs_va;
-   struct mali_meta_bind bind[2] = { j->bind[0], j->bind[1] };
+   struct mali_meta_bind bind[3] = { j->bind[0], j->bind[1] };
+   unsigned nbind = j->nbind;
    int r;
 
    pthread_mutex_lock(&g_lock);
@@ -481,12 +482,26 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
       memcpy(p, j->inline_data, j->inline_len);
       bind[0].va = va;
    }
+   if (j->sh == MALI_META_BC_FIRST + MALI_BC_ASTC) {   /* binding 2: the decoder's tables (a copy per job; the arena frees it with the command buffer) */
+      size_t lb;
+      const uint32_t *lut = mali_bc_astc_lut(&lb);
+      uint64_t va;
+      void *p = mem_alloc(mem, (lb + 63) & ~(size_t)63, 64, &va);
+      if (!p) {
+         pthread_mutex_unlock(&g_lock);
+         return -ENOMEM;
+      }
+      memcpy(p, lut, lb);
+      bind[2] = (struct mali_meta_bind){ va, (uint32_t)lb };
+      nbind = 3;
+   }
    uint64_t set_va;
-   uint32_t *set = mem_alloc(mem, 64, 64, &set_va);
+   uint32_t *set = mem_alloc(mem, 128, 64, &set_va);
    pthread_mutex_unlock(&g_lock);
    if (!set)
       return -ENOMEM;
-   for (unsigned i = 0; i < j->nbind; i++)
+   memset(set, 0, 128);
+   for (unsigned i = 0; i < nbind; i++)
       pack_buffer(set + i * 8, bind[i].va, bind[i].size);
    memset(out, 0, sizeof *out);
    out->cs = c;
@@ -494,7 +509,7 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    memcpy(out->push, j->push, j->push_bytes);
    out->nsets = 1;
    out->set_va[0] = set_va;
-   out->set_bytes[0] = j->nbind * 32;
+   out->set_bytes[0] = nbind * 32;
    memcpy(out->groups, j->groups, sizeof out->groups);
    return 0;
 }

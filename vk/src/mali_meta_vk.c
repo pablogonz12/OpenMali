@@ -182,12 +182,13 @@ bc_decode(struct mali_meta_list *l, const struct mali_image *img, VkImageSubreso
    int r;
    if (!img->va)
       return -EINVAL;
-   /* texel extent rounded to whole blocks, clamped to the level (the planner accepts "multiple of 4 or reaching the level edge") */
+   /* texel extent rounded to whole blocks, clamped to the level (the planner accepts "multiple of the block size or reaching the level edge") */
    VkExtent3D lv = { lvl(img->lay.d.extent.width, sub.mipLevel), lvl(img->lay.d.extent.height, sub.mipLevel), lvl(img->lay.d.extent.depth, sub.mipLevel) };
-   VkOffset3D o4 = { o.x & ~3, o.y & ~3, o.z };
+   const int tw = img->bc_lay.fmt->bw, th = img->bc_lay.fmt->bh;   /* block size (4x4 for BC / ETC2, up to 12x12 for ASTC) */
+   VkOffset3D o4 = { o.x - o.x % tw, o.y - o.y % th, o.z };
    VkExtent3D e4 = e;
-   e4.width = ((uint32_t)(o.x - o4.x) + e.width + 3) & ~3u;
-   e4.height = ((uint32_t)(o.y - o4.y) + e.height + 3) & ~3u;
+   e4.width = ((uint32_t)(o.x - o4.x) + e.width + tw - 1) / tw * tw;
+   e4.height = ((uint32_t)(o.y - o4.y) + e.height + th - 1) / th * th;
    if ((uint32_t)o4.x + e4.width > lv.width) e4.width = lv.width - (uint32_t)o4.x;
    if ((uint32_t)o4.y + e4.height > lv.height) e4.height = lv.height - (uint32_t)o4.y;
    if (is3d) {

@@ -9,6 +9,7 @@
 #include "../src/mali_compile.h"
 #include "t_bc_vec.h"
 #include "t_etc2_ref.h"
+#include "util/format/u_formats.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -38,8 +39,33 @@ static int g_fail, g_verbose, g_checks;
 #define CHECK(c, ...) do { g_checks++; if (!(c)) { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 /* one block -> 16 shadow texels row-major */
+extern void _mesa_unpack_astc_2d_ldr(uint8_t *dst_row, unsigned dst_stride, const uint8_t *src_row, unsigned src_stride, unsigned src_width,
+                                     unsigned src_height, enum pipe_format format);
+/* ASTC LDR pipe formats in VkFormat order (UNORM, SRGB per block size) */
+static const enum pipe_format g_astc_pipe[28] = {
+#define AP(w, h) PIPE_FORMAT_ASTC_##w##x##h, PIPE_FORMAT_ASTC_##w##x##h##_SRGB
+   AP(4, 4), AP(5, 4), AP(5, 5), AP(6, 5), AP(6, 6), AP(8, 5), AP(8, 6), AP(8, 8), AP(10, 5), AP(10, 6), AP(10, 8), AP(10, 10), AP(12, 10), AP(12, 12)
+#undef AP
+};
+
 static void mesa_dec(const struct mali_bc_fmt *f, const uint8_t *b, uint8_t *o)
 {
+   if (mali_bc_is_astc(f->vk)) {
+      /* one block: Mesa's reference decoder (the decoder the driver shader is ported from, independently written for the CPU) */
+      _mesa_unpack_astc_2d_ldr(o, f->bw * 4, b, 16, f->bw, f->bh, g_astc_pipe[f->vk - VK_FORMAT_ASTC_4x4_UNORM_BLOCK]);
+      /* Mesa's CPU decoder is lenient on three invalid void-extent encodings that the ASTC spec (and the driver shader) decode as the error colour:
+       * reserved bits 11:10 != 11, an inverted / empty extent (unless all ones), and the HDR flag (bit 9) in an LDR format. */
+      if (b[0] == 0xfc && (b[1] & 1)) {
+         uint64_t ext = 0;
+         for (int i = 0; i < 8; i++) ext |= (uint64_t)b[i] << (8 * i);
+         ext >>= 12;
+         unsigned s0 = ext & 0x1fff, s1 = (ext >> 13) & 0x1fff, t0 = (ext >> 26) & 0x1fff, t1 = (ext >> 39) & 0x1fff;
+         int all_ones = s0 == 0x1fff && s1 == 0x1fff && t0 == 0x1fff && t1 == 0x1fff;
+         if (((b[1] >> 2) & 3) != 3 || (b[1] & 2) || (!all_ones && (s0 >= s1 || t0 >= t1)))
+            for (unsigned i = 0; i < f->bw * f->bh; i++) memcpy(o + i * 4, "\xff\x00\xff\xff", 4);
+      }
+      return;
+   }
    switch (f->vk) {
    case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK: util_format_dxt1_rgb_unpack_rgba_8unorm(o, 16, b, 8, 4, 4); break;
    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: util_format_dxt1_rgba_unpack_rgba_8unorm(o, 16, b, 8, 4, 4); break;
@@ -80,8 +106,8 @@ static const VkFormat g_etc2[10] = {
    VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK, VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_EAC_R11_SNORM_BLOCK,
    VK_FORMAT_EAC_R11G11_UNORM_BLOCK, VK_FORMAT_EAC_R11G11_SNORM_BLOCK,
 };
-#define NEVERY 26
-static VkFormat every(int i) { return i < 16 ? g_all[i] : g_etc2[i - 16]; }
+#define NEVERY 54
+static VkFormat every(int i) { return i < 16 ? g_all[i] : i < 26 ? g_etc2[i - 16] : (VkFormat)(VK_FORMAT_ASTC_4x4_UNORM_BLOCK + (i - 26)); }
 
 /* ---------- 1. pure ---------- */
 static void t_formats(void)
@@ -172,6 +198,49 @@ static void t_layout(void)
    CHECK(mali_bc_layout_init(VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_TYPE_2D, (VkExtent3D){ 16384, 16384, 1 }, 1, 8, &l) == -ERANGE, "range");
 }
 
+/* ASTC table + planner: block sizes, per-texel invocations, block-aligned regions */
+static void t_astc(void)
+{
+   static const unsigned dim[14][2] = { { 4, 4 }, { 5, 4 }, { 5, 5 }, { 6, 5 }, { 6, 6 }, { 8, 5 }, { 8, 6 }, { 8, 8 }, { 10, 5 }, { 10, 6 }, { 10, 8 }, { 10, 10 }, { 12, 10 }, { 12, 12 } };
+   int n = 0;
+   for (int f = 0; f < 400; f++) n += mali_bc_is_astc((VkFormat)f);
+   CHECK(n == 28 && !mali_bc_is_astc(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK) && !mali_bc_is_astc(VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK) && !mali_bc_is_bc(VK_FORMAT_ASTC_4x4_UNORM_BLOCK),
+         "ASTC LDR format count %d", n);
+   for (int i = 0; i < 28; i++) {
+      VkFormat vf = (VkFormat)(VK_FORMAT_ASTC_4x4_UNORM_BLOCK + i);
+      const struct mali_bc_fmt *f = mali_bc_format(vf);
+      CHECK(f && f->vk == vf && f->sh == MALI_BC_ASTC && f->block_bytes == 16, "astc table %d", i);
+      if (!f) continue;
+      CHECK(f->bw == dim[i / 2][0] && f->bh == dim[i / 2][1] && f->srgb == (i & 1), "%s block %ux%u srgb %d", f->name, f->bw, f->bh, f->srgb);
+      CHECK(f->mode == (f->bw | f->bh << 8 | (i & 1) << 16), "%s mode %x", f->name, f->mode);
+      CHECK(f->shadow == (f->srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM) && f->shadow_bpt == 4, "%s shadow", f->name);
+      CHECK(mali_bc_optimal_features(vf) == mali_bc_optimal_features(VK_FORMAT_BC7_UNORM_BLOCK), "%s features", f->name);
+      CHECK(mali_bc_image_supported(vf, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, 1) == VK_SUCCESS &&
+            mali_bc_image_supported(vf, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT, 0, 1) != VK_SUCCESS &&
+            mali_bc_image_supported(vf, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_SAMPLED_BIT, 0, 1) != VK_SUCCESS, "%s image support", f->name);
+      /* layout: 37x23 level 0: whole blocks, shadow row padded to whole blocks */
+      struct mali_bc_layout l;
+      CHECK(mali_bc_layout_init(vf, VK_IMAGE_TYPE_2D, (VkExtent3D){ 37, 23, 1 }, 1, 1, &l) == 0, "%s layout", f->name);
+      const unsigned bw = (37 + f->bw - 1) / f->bw, bh = (23 + f->bh - 1) / f->bh;
+      CHECK(l.comp.lv[0].bw == bw && l.comp.lv[0].bh == bh && l.comp.lv[0].row == bw * 16, "%s comp %u x %u row %u", f->name, l.comp.lv[0].bw, l.comp.lv[0].bh, l.comp.lv[0].row);
+      CHECK(l.shadow.lv[0].row >= bw * f->bw * 4 && l.shadow.lv[0].row % 64 == 0 && l.shadow.lv[0].slice == (uint64_t)l.shadow.lv[0].row * bh * f->bh,
+            "%s shadow row %u slice %llu", f->name, l.shadow.lv[0].row, (unsigned long long)l.shadow.lv[0].slice);
+      /* planner: one invocation per texel, block-multiple offsets only */
+      struct mali_bc_list jl = { 0 };
+      CHECK(mali_bc_plan_decode(&jl, &l, 0, 0, 0, 1, (VkOffset3D){ 0, 0, 0 }, (VkExtent3D){ 37, 23, 1 }) == 0 && jl.n == 1, "%s plan", f->name);
+      if (jl.n) {
+         const uint64_t texels = (uint64_t)bw * bh * f->bw * f->bh;
+         CHECK(jl.j[0].push[6] == bw && jl.j[0].push[7] == bh && jl.j[0].push[9] == f->mode && jl.j[0].groups[0] == (texels + 63) / 64,
+               "%s blocks %u x %u mode %x groups %u (want %llu)", f->name, jl.j[0].push[6], jl.j[0].push[7], jl.j[0].push[9], jl.j[0].groups[0], (unsigned long long)((texels + 63) / 64));
+      }
+      mali_bc_list_free(&jl);
+      if (f->bw > 4)
+         CHECK(mali_bc_plan_decode(&jl, &l, 0, 0, 0, 1, (VkOffset3D){ 4, 0, 0 }, (VkExtent3D){ f->bw, f->bh, 1 }) == -EINVAL, "%s: offset 4 is not block aligned", f->name);
+      CHECK(mali_bc_plan_decode(&jl, &l, 0, 0, 0, 1, (VkOffset3D){ (int)f->bw, (int)f->bh, 0 }, (VkExtent3D){ f->bw > 37 - f->bw ? 37 - f->bw : f->bw, f->bh > 23 - f->bh ? 23 - f->bh : f->bh, 1 }) == 0, "%s aligned region", f->name);
+      mali_bc_list_free(&jl);
+   }
+}
+
 static void t_planner(void)
 {
    struct mali_bc_layout l;
@@ -247,11 +316,11 @@ static unsigned verify(const struct img *im, unsigned x0, unsigned y0, unsigned 
             for (uint32_t y = 0; y < c->h; y++)
                for (uint32_t x = 0; x < c->w; x++) {
                   if (x < x0 || y < y0 || x >= x1 || y >= y1) continue;
-                  const uint8_t *blk = im->mem + l->comp.base + a * l->comp.array_stride + c->off + z * c->slice + (uint64_t)(y / 4) * c->row + (uint64_t)(x / 4) * bs;
-                  uint8_t exp[16 * 8];
+                  const uint8_t *blk = im->mem + l->comp.base + a * l->comp.array_stride + c->off + z * c->slice + (uint64_t)(y / l->fmt->bh) * c->row + (uint64_t)(x / l->fmt->bw) * bs;
+                  uint8_t exp[144 * 8];
                   mesa_dec(l->fmt, blk, exp);
                   const uint8_t *got = im->mem + l->shadow.base + a * l->shadow.array_stride + s->off + z * s->slice + (uint64_t)y * s->row + (uint64_t)x * bpt;
-                  if (memcmp(got, exp + ((y & 3) * 4 + (x & 3)) * bpt, bpt)) bad++;
+                  if (memcmp(got, exp + ((y % l->fmt->bh) * l->fmt->bw + (x % l->fmt->bw)) * bpt, bpt)) bad++;
                }
       }
    return bad;
@@ -322,33 +391,36 @@ static void t_ref(void)
          mali_bc_list_free(&jl);
          free(im.mem);
       }
-      /* sub-region: blocks (1..3, 1..2) of level 1, layer 1 only; everything else must keep the 0xaa pattern */
+      /* sub-region: 2x1 blocks at block (1,1) of level 1, layer 1 only; everything else must keep the 0xaa pattern. Level 1 is 16x12 for the 4x4
+       * formats (the ASTC formats use a bigger image so that the level holds the region) */
       {
-         struct img im = mk_img(f, VK_IMAGE_TYPE_2D, (VkExtent3D){ 32, 24, 1 }, 2, 2, 300 + i);
+         const unsigned tw = mali_bc_format(f)->bw, th = mali_bc_format(f)->bh, big = mali_bc_is_astc(f) ? 4u : 1u;
+         struct img im = mk_img(f, VK_IMAGE_TYPE_2D, (VkExtent3D){ 32 * big, 24 * big, 1 }, 2, 2, 300 + i);
          struct mali_bc_list jl = { 0 };
          struct mali_bc_layout *l = &im.lay;
-         /* level 1 is 16x12: region x 4..12, y 4..8 */
-         CHECK(mali_bc_plan_decode(&jl, l, (uint64_t)(uintptr_t)im.mem, 1, 1, 1, (VkOffset3D){ 4, 4, 0 }, (VkExtent3D){ 8, 4, 1 }) == 0, "%s region plan", l->fmt->name);
+         const unsigned rx0 = tw, ry0 = th, rx1 = 3 * tw, ry1 = 2 * th;
+         CHECK(mali_bc_plan_decode(&jl, l, (uint64_t)(uintptr_t)im.mem, 1, 1, 1, (VkOffset3D){ (int)rx0, (int)ry0, 0 }, (VkExtent3D){ rx1 - rx0, ry1 - ry0, 1 }) == 0,
+               "%s region plan", l->fmt->name);
          unsigned sh_before = count_pattern(&im, l->shadow.base, l->size);
          run_ref(&jl);
-         unsigned bad = verify(&im, 4, 4, 12, 8, 1, 1, 1);
+         unsigned bad = verify(&im, rx0, ry0, rx1, ry1, 1, 1, 1);
          CHECK(bad == 0, "%s region: %u mismatches", l->fmt->name, bad);
          /* texels outside: layer 0, level 0, and the rest of level 1 of layer 1 are untouched */
          const struct mali_bc_level *s1 = &l->shadow.lv[1];
          uint64_t o1 = l->shadow.base + l->shadow.array_stride + s1->off;
          for (uint32_t y = 0; y < s1->h; y++)
             for (uint32_t x = 0; x < s1->w; x++) {
-               if (x >= 4 && x < 12 && y >= 4 && y < 8) continue;
+               if (x >= rx0 && x < rx1 && y >= ry0 && y < ry1) continue;
                const uint8_t *g = im.mem + o1 + (uint64_t)y * s1->row + (uint64_t)x * l->fmt->shadow_bpt;
                int ok = 1;
                for (unsigned k = 0; k < l->fmt->shadow_bpt; k++) ok &= g[k] == 0xaa;
                CHECK(ok, "%s region leaked to (%u,%u)", l->fmt->name, x, y);
                if (!ok) goto done;
             }
-         /* exactly 2x1 blocks... = 8x4 texels * bpt bytes changed in shadow (a 0xaa texel byte in decoded data is possible: count with slack) */
+         /* exactly 2x1 blocks changed in shadow (a 0xaa texel byte in decoded data is possible: count with slack) */
          {
             unsigned after = count_pattern(&im, l->shadow.base, l->size);
-            unsigned expect_changed = 8 * 4 * l->fmt->shadow_bpt;
+            unsigned expect_changed = (rx1 - rx0) * (ry1 - ry0) * l->fmt->shadow_bpt;
             CHECK(sh_before - after <= expect_changed && sh_before - after + expect_changed / 4 + 8 >= expect_changed, "%s changed bytes %u (expected ~%u)", l->fmt->name, sh_before - after, expect_changed);
          }
       done:
@@ -401,9 +473,10 @@ static int gpu_init(struct gpu *g)
    VkDeviceCreateInfo di = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, NULL, 0, 1, &qi };
    VKC(vkCreateDevice(g->pd, &di, NULL, &g->dev));
    vkGetDeviceQueue(g->dev, g->qf, 0, &g->q);
-   VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
-                                         { 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL } };
-   VkDescriptorSetLayoutCreateInfo dl = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 2, b };
+   VkDescriptorSetLayoutBinding b[3] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+                                         { 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+                                         { 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL } };   /* 2 = ASTC tables */
+   VkDescriptorSetLayoutCreateInfo dl = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 3, b };
    VKC(vkCreateDescriptorSetLayout(g->dev, &dl, NULL, &g->dsl));
    VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 48 };
    VkPipelineLayoutCreateInfo pli = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 1, &g->dsl, 1, &pcr };
@@ -418,7 +491,7 @@ static int gpu_init(struct gpu *g)
                                          { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", NULL }, g->pl };
       VKC(vkCreateComputePipelines(g->dev, VK_NULL_HANDLE, 1, &pi, NULL, &g->pipe[s]));
    }
-   VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096 };
+   VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6144 };
    VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, 2048, 1, &ps };
    VKC(vkCreateDescriptorPool(g->dev, &dpi, NULL, &g->pool));
    VkCommandPoolCreateInfo cpi = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, g->qf };
@@ -429,7 +502,11 @@ static int gpu_init(struct gpu *g)
 /* Run the jobs over `mem` (the whole allocation image, size bytes): upload, dispatch, download in place. */
 static int gpu_run(struct gpu *g, const struct mali_bc_list *jl, uint8_t *mem, size_t size, uint64_t image_va)
 {
-   VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE };
+   /* the ASTC tables live after the image in the same buffer (binding 2) */
+   size_t lut_bytes;
+   const uint32_t *lut = mali_bc_astc_lut(&lut_bytes);
+   const size_t lut_off = (size + 255) & ~(size_t)255;
+   VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, lut_off + lut_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE };
    VkBuffer buf;
    VKC(vkCreateBuffer(g->dev, &bi, NULL, &buf));
    VkMemoryRequirements mr;
@@ -446,6 +523,7 @@ static int gpu_run(struct gpu *g, const struct mali_bc_list *jl, uint8_t *mem, s
    void *map;
    VKC(vkMapMemory(g->dev, dm, 0, VK_WHOLE_SIZE, 0, &map));
    memcpy(map, mem, size);
+   memcpy((uint8_t *)map + lut_off, lut, lut_bytes);
    VkCommandBufferAllocateInfo ca = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g->cp, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
    VkCommandBuffer cb;
    VKC(vkAllocateCommandBuffers(g->dev, &ca, &cb));
@@ -456,15 +534,17 @@ static int gpu_run(struct gpu *g, const struct mali_bc_list *jl, uint8_t *mem, s
       const struct mali_bc_job *j = &jl->j[i];
       VkDescriptorSetAllocateInfo da = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, g->pool, 1, &g->dsl };
       VKC(vkAllocateDescriptorSets(g->dev, &da, &sets[i]));
-      VkDescriptorBufferInfo bb[2];
+      VkDescriptorBufferInfo bb[3];
       for (int k = 0; k < 2; k++) {
          uint64_t off = j->bind[k].va - image_va;
          if (off % g->align) { printf("  bind offset %llu not %u aligned\n", (unsigned long long)off, g->align); g_fail++; return 0; }
          bb[k] = (VkDescriptorBufferInfo){ buf, off, j->bind[k].size };
       }
-      VkWriteDescriptorSet w[2] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sets[i], 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &bb[0], NULL },
-                                    { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sets[i], 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &bb[1], NULL } };
-      vkUpdateDescriptorSets(g->dev, 2, w, 0, NULL);
+      bb[2] = (VkDescriptorBufferInfo){ buf, lut_off, lut_bytes };
+      VkWriteDescriptorSet w[3] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sets[i], 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &bb[0], NULL },
+                                    { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sets[i], 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &bb[1], NULL },
+                                    { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, sets[i], 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &bb[2], NULL } };
+      vkUpdateDescriptorSets(g->dev, 3, w, 0, NULL);
       vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pipe[j->sh]);
       vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pl, 0, 1, &sets[i], 0, NULL);
       vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 48, j->push);
@@ -526,14 +606,15 @@ static struct cstat g_cs[2][MALI_BC_NSHADERS];
 static void t_compile(void)
 {
    static const unsigned archs[2] = { 11, 13 };
-   static const char *nm[] = { "bc1", "bc4", "bc6h", "bc7", "etc2" };
+   static const char *nm[] = { "bc1", "bc4", "bc6h", "bc7", "etc2", "astc" };
    for (int a = 0; a < 2; a++)
       for (int s = 0; s < MALI_BC_NSHADERS; s++) {
-         struct mali_lbinding b[2];
+         struct mali_lbinding b[3];
+         const unsigned nb = s == MALI_BC_ASTC ? 3 : 2;   /* ASTC: + the tables (binding 2) */
          struct mali_compile_layout lay;
          memset(&lay, 0, sizeof lay);
-         for (unsigned i = 0; i < 2; i++) b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER };
-         lay.nsets = 1; lay.set[0] = (struct mali_lset){ 2, 2, 0, b }; lay.push_size = 48;
+         for (unsigned i = 0; i < nb; i++) b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER };
+         lay.nsets = 1; lay.set[0] = (struct mali_lset){ nb, nb, 0, b }; lay.push_size = 48;
          size_t w;
          const uint32_t *spv = mali_bc_spirv((enum mali_bc_shader)s, &w);
          struct mali_compile_opts o = { 0 };
@@ -548,8 +629,9 @@ static void t_compile(void)
          cs->hash = bcv_fnv(c.bin, c.bin_size, BCV_FNV0);
          printf("  v%u %-5s %6u B  work_regs %2u  tls %5u  wls %u  push %u  local %ux%ux%u\n", archs[a], nm[s], c.bin_size, c.work_reg_count, c.tls_size, c.wls_size,
                 c.push_const_bytes, c.local_size[0], c.local_size[1], c.local_size[2]);
-         CHECK(c.stage == MALI_STAGE_COMPUTE && c.bin_size > 0 && c.bin_size < 64 * 1024, "%s bin size %u", nm[s], c.bin_size);
+         CHECK(c.stage == MALI_STAGE_COMPUTE && c.bin_size > 0 && c.bin_size < (s == MALI_BC_ASTC ? 128u : 64u) * 1024, "%s bin size %u", nm[s], c.bin_size);
          CHECK(c.wls_size == 0, "%s uses workgroup memory (%u)", nm[s], c.wls_size);
+         if (s == MALI_BC_ASTC) CHECK(c.tls_size == 0, "astc spills to TLS (%u B/thread): the tables must stay in the storage buffer", c.tls_size);
          CHECK(c.work_reg_count <= 64, "%s work registers %u > 64", nm[s], c.work_reg_count);
          CHECK(c.push_const_bytes <= 48, "%s push %u > 48", nm[s], c.push_const_bytes);
          CHECK(c.local_size[0] == 64 && c.local_size[1] == 1 && c.local_size[2] == 1, "%s local size", nm[s]);
@@ -632,8 +714,25 @@ static int gen_golden(const char *path)
    return 0;
 }
 
+static void astc_known_answers(void)
+{
+   const struct mali_bc_fmt *fm = mali_bc_format(VK_FORMAT_ASTC_4x4_UNORM_BLOCK);
+   uint8_t blk[16], out[16 * 4];
+   for (unsigned k = 1; k <= 5; k += 2) {
+      bcv_fill(VK_FORMAT_ASTC_4x4_UNORM_BLOCK, 1, blk, 1, 16, 0);
+      uint8_t all[8 * 16];
+      bcv_fill(VK_FORMAT_ASTC_4x4_UNORM_BLOCK, 1, all, 8, 16, 0);
+      mesa_dec(fm, all + k * 16, out);
+      static const uint8_t col[4] = {0x80, 0x40, 0xc0, 0xff}, err[4] = {0xff, 0x00, 0xff, 0xff};
+      int ok = 1;
+      for (int t = 0; t < 16; t++) if (memcmp(out + t * 4, k == 1 ? col : err, 4)) ok = 0;
+      CHECK(ok, "ASTC known answer block %u (%s)", k, k == 1 ? "void-extent LDR colour" : k == 3 ? "HDR void-extent -> error colour" : "bad reserved bits -> error colour");
+   }
+}
+
 int main(int argc, char **argv)
 {
+   astc_known_answers();
    int no_gpu = 0;
    const char *gold = NULL;
    for (int i = 1; i < argc; i++) {
@@ -644,6 +743,7 @@ int main(int argc, char **argv)
    printf("t_bc: formats\n");   t_formats();
    printf("t_bc: layout\n");    t_layout();
    printf("t_bc: planner\n");   t_planner();
+   printf("t_bc: astc\n");      t_astc();
    printf("t_bc: reference vs Mesa decoders\n"); t_ref();
    if (!no_gpu) { printf("t_bc: shaders on the host GPU\n"); t_gpu(); }
    printf("t_bc: shader compile (v11, v13)\n"); t_compile();

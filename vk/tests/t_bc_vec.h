@@ -3,6 +3,7 @@
 #ifndef T_BC_VEC_H
 #define T_BC_VEC_H
 #include <stddef.h>
+#include <string.h>
 #include <stdint.h>
 #include <vulkan/vulkan_core.h>
 
@@ -27,6 +28,20 @@ static inline void bcv_fill(VkFormat f, uint64_t seed, uint8_t *b, size_t n, uns
       if (f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK) {
          unsigned m = (unsigned)(k % 8);
          p[0] = (uint8_t)((p[0] & ~((2u << m) - 1u)) | (1u << m));
+      } else if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+         /* random 128 bits are mostly invalid ASTC (error colour on both sides): make every 2nd block a void-extent block (low 12 bits 0xdfc = LDR,
+          * coordinates either all ones = "no extent" or random), the others stay random */
+         if (k % 2 == 0) {
+            p[0] = 0xfc; p[1] = (uint8_t)((p[1] & 0xf0) | 0x0d);
+            if (bcv_rng(&s) & 1) { p[1] |= 0xf0; memset(p + 2, 0xff, 6); }
+         }
+         /* known-answer blocks: k%8==1 constant LDR void-extent (r,g,b,a = 0x8000,0x4000,0xc000,0xffff -> 0x80,0x40,0xc0,0xff),
+          * k%8==3 HDR void-extent (spec: error colour), k%8==5 reserved bits 11:10 wrong (error colour) */
+         else if (k % 8 == 1 || k % 8 == 3 || k % 8 == 5) {
+            memset(p, 0, 16);
+            p[0] = 0xfc; p[1] = (uint8_t)(0xf1 | (k % 8 == 5 ? 0x04 : 0x0c) | (k % 8 == 3 ? 0x02 : 0)); memset(p + 2, 0xff, 6);
+            p[8] = 0x00; p[9] = 0x80; p[10] = 0x00; p[11] = 0x40; p[12] = 0x00; p[13] = 0xc0; p[14] = 0xff; p[15] = 0xff;
+         }
       } else if (f == VK_FORMAT_BC6H_UFLOAT_BLOCK || f == VK_FORMAT_BC6H_SFLOAT_BLOCK) {
          uint8_t c = bc6[k % 14];
          unsigned nb = c < 2 ? 2 : 5;

@@ -169,12 +169,14 @@ main(int argc, char **argv)
    eq("maintenance4", f13.maintenance4, fm4.maintenance4);
    eq("privateData", f13.privateData, fpd.privateData);
    CHECK(f2.features.textureCompressionBC == g2.features.textureCompressionBC && f2.features.textureCompressionBC, "BC");
+   CHECK(f2.features.textureCompressionASTC_LDR == g2.features.textureCompressionASTC_LDR && f2.features.textureCompressionASTC_LDR, "ASTC_LDR");
 
    /* Allow-list: any VkBool32 in the core structs that is true and not listed fails. */
    {
       const VkBool32 *c = (const VkBool32 *)&f2.features;
       const unsigned nc = sizeof(f2.features) / 4;
       unsigned bc_idx = (unsigned)((const VkBool32 *)&f2.features.textureCompressionBC - c);
+      unsigned astc_idx = (unsigned)((const VkBool32 *)&f2.features.textureCompressionASTC_LDR - c);
       /* multiDrawIndirect: backed by t_vk_draw --only mdi (drawCount 2, pixel-checked on the Poco) */
       unsigned mdi_idx = (unsigned)((const VkBool32 *)&f2.features.multiDrawIndirect - c);
       CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
@@ -205,7 +207,7 @@ main(int argc, char **argv)
       CHECK(f2.features.depthClamp && f2.features.independentBlend, "depthClamp / independentBlend advertised");
       for (unsigned i = 0; i < nc; i++)
       {
-         int listed = i == bc_idx || i == mdi_idx || i == dc_idx || i == ib_idx;
+         int listed = i == bc_idx || i == astc_idx || i == mdi_idx || i == dc_idx || i == ib_idx;
          for (unsigned k = 0; k < sizeof tested / sizeof *tested; k++) listed |= tested[k] == i * 4u;
          CHECK(!c[i] || listed, "core feature #%u advertised without a test", i);
       }
@@ -255,6 +257,11 @@ main(int argc, char **argv)
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
+      for (int f = VK_FORMAT_ASTC_4x4_UNORM_BLOCK; f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK; f++) {
+         GetPhysicalDeviceFormatProperties2(pd, (VkFormat)f, &fp);
+         CHECK((fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) &&
+               !(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "ASTC format %d sampled, not renderable", f);
+      }
    }
 
    /* ---- device + probes ---- */

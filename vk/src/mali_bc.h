@@ -27,7 +27,7 @@ extern "C" {
 #define MALI_BC_MAX_MIPS 16u
 #define MALI_BC_PUSH_WORDS 12
 
-enum mali_bc_shader { MALI_BC_BC1 = 0, MALI_BC_BC4 = 1, MALI_BC_BC6H = 2, MALI_BC_BC7 = 3, MALI_BC_ETC2 = 4, MALI_BC_NSHADERS };
+enum mali_bc_shader { MALI_BC_BC1 = 0, MALI_BC_BC4 = 1, MALI_BC_BC6H = 2, MALI_BC_BC7 = 3, MALI_BC_ETC2 = 4, MALI_BC_ASTC = 5, MALI_BC_NSHADERS };
 
 /* push `mode` words: BC1 shader 0 BC1-RGBA, 1 BC2, 2 BC3, 3 BC1-RGB; BC4 shader bit0 signed bit1 two channels; BC6H bit0 signed; BC7 0. */
 struct mali_bc_fmt {
@@ -39,14 +39,19 @@ struct mali_bc_fmt {
    VkFormat shadow;          /* decoded format the views use */
    uint8_t shadow_bpt;       /* bytes per decoded texel: 4, 1, 2, 8 */
    bool srgb;
+   uint8_t bw, bh;           /* block size in texels (4x4 for BC / ETC2 / EAC, 4x4..12x12 for ASTC) */
 };
 
-/* NULL when `f` is neither one of the BC formats nor one of the 10 ETC2 / EAC formats (the table holds both: BC first, ETC2 / EAC after). */
+/* NULL when `f` is not one of the BC / ETC2 / EAC / ASTC LDR formats (one table, in VkFormat order). */
 const struct mali_bc_fmt *mali_bc_format(VkFormat f);
 /* BC1..BC7 only: these images are sampled through the shadow (advertisement, views). */
 bool mali_bc_is_bc(VkFormat f);
 /* ETC2 / EAC: sampled natively, the shadow is kept only as a blit source (decoded after every write). */
 bool mali_bc_is_etc2(VkFormat f);
+/* ASTC LDR (UNORM / SRGB, 2D, VkFormat 157..184): sampled through the shadow like BC (the hardware has no ASTC plane descriptor). */
+bool mali_bc_is_astc(VkFormat f);
+/* The ASTC decode shader reads its tables (Mesa/Granite LUTs, 25 KB) from a third storage buffer (set 0 binding 2): copied per job by mali_meta_materialize(). */
+const uint32_t *mali_bc_astc_lut(size_t *bytes);
 
 /* ---- advertisement ---- */
 /* optimalTilingFeatures of a BC format: SAMPLED + FILTER_LINEAR + BLIT_SRC + TRANSFER_SRC/DST (the Vulkan minimum for textureCompressionBC);
@@ -103,7 +108,7 @@ struct mali_bc_job {
 struct mali_bc_list { struct mali_bc_job *j; unsigned n, cap; };
 void mali_bc_list_free(struct mali_bc_list *l);
 
-/* Decode the compressed region (level, layers [layer0, layer0+nlayers), texel offset/extent; offset x,y multiples of 4, extent x,y multiples of 4
+/* Decode the compressed region (level, layers [layer0, layer0+nlayers), texel offset/extent; offset x,y multiples of the block size, extent x,y multiples of it
  * or reaching the level edge) into the shadow. `image_va` = GPU address of the allocation start. 3D images: nlayers must be 1 and z comes from off/ext;
  * array images: z is the layer and off.z = 0, ext.depth = 1. One job. 0, -EINVAL (bounds/alignment), -ENOMEM, -ERANGE. */
 int mali_bc_plan_decode(struct mali_bc_list *l, const struct mali_bc_layout *lay, uint64_t image_va, uint32_t level, uint32_t layer0,
@@ -111,8 +116,8 @@ int mali_bc_plan_decode(struct mali_bc_list *l, const struct mali_bc_layout *lay
 /* Whole image: every level, every layer (one job per level). */
 int mali_bc_plan_decode_all(struct mali_bc_list *l, const struct mali_bc_layout *lay, uint64_t image_va);
 
-/* Software reference of the jobs: bind VAs are host pointers. `dec` decodes ONE block (block_bytes of input) to 4 rows of 4 shadow texels
- * (out stride 4*shadow_bpt bytes per row, 16 texels row-major). Replicates the shader addressing (so planner bugs show). */
+/* Software reference of the jobs: bind VAs are host pointers. `dec` decodes ONE block (block_bytes of input) to bh rows of bw shadow texels
+ * (out stride bw*shadow_bpt bytes per row, row-major). Replicates the shader addressing (so planner bugs show). */
 typedef void (*mali_bc_block_fn)(const struct mali_bc_fmt *f, const uint8_t *block, uint8_t *out);
 void mali_bc_ref_run(const struct mali_bc_job *j, mali_bc_block_fn dec);
 
