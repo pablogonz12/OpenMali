@@ -10,6 +10,7 @@ import sweeplib as S  # noqa: E402
 import gate  # noqa: E402
 import benchlib as BL  # noqa: E402
 import menulib as ML  # noqa: E402
+import holdlib as H  # noqa: E402
 
 TOML = """quick_root = "/nonexistent"
 [[device]]
@@ -336,6 +337,26 @@ class T(unittest.TestCase):
         self.assertEqual(len(run["newly_passing"]), 1)
         self.assertEqual(run["device"], "dev-b")
         self.assertEqual(len(run["so_sha256"]), 64)
+
+    def test_wait_several_jobs_any_all_compact(self):
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)                          # an earlier sweep test leaves it behind: farmd would sweep forever
+        self.env.pop("MALI_FARM_SWEEP_LIST", None)
+        self.attach("dev-a")                                                   # only v11 present: the v13 part stays pending
+        _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--keep-old")
+        self.farmd()
+        rc, out, _ = self.farm("wait", j1, j2, "--any", "--timeout", "5")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(out.splitlines()), 1)                             # only the finished job
+        self.assertIn(" pass v11:pass", out)
+        rc, out, _ = self.farm("wait", j1, j2, "--all", "--timeout", "1")
+        self.assertEqual(rc, 3)
+        self.assertIn("v13:pending", out)
+        self.attach("dev-a", "dev-b")
+        self.farmd()
+        rc, out, _ = self.farm("wait", j1, j2, "--timeout", "5")               # several jobs = --all
+        self.assertEqual((rc, len(out.splitlines())), (0, 2))
+        self.assertEqual(self.farm("wait", j1)[1], "pass")                     # a single job keeps the one-word output
 
     def test_clean_pass_and_smoke_fail(self):
         self.attach("dev-a", "dev-b")
@@ -1854,6 +1875,119 @@ class SmokeRoute(unittest.TestCase):
         open(tree + "/vk/tests/valrun.sh", "w").write("VAL_SO_SHA256 old: ls -t | head -1\n")
         f.harness(tree)
         self.assertIn('-newer "$M"', open(tree + "/vk/tests/valrun.sh").read())
+
+
+class HoldTests(unittest.TestCase):
+    """farm hold: server-side FIFO queue of agent holds, fair with jobs, lease + heartbeat, same flock underneath"""
+    setUp, attach, farm = T.setUp, T.attach, T.farm
+
+    def daemon(self):
+        self.env.update(MALI_FARM_HB_STALE="3", MALI_FARM_HB_EVERY="0.3")
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)
+        self.env.pop("MALI_FARM_SWEEP_LIST", None)
+        os.makedirs(self.d + "/state/sweep", exist_ok=True)
+        open(self.d + "/state/sweep/off", "w").close()                       # the fake idle sweep would spin on the phone
+        self.p = subprocess.Popen([sys.executable, HERE + "/farmd", "--fake", "--poll", "0.3"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(lambda: (self.p.terminate(), self.p.wait(10)))
+
+    def hold(self, *a, timeout=60):
+        r = subprocess.run([sys.executable, HERE + "/farm", "hold", *a], capture_output=True, text=True, env=self.env, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr
+
+    def test_hold_runs_command_under_the_flock_env_and_restores(self):
+        self.attach("dev-a")
+        self.daemon()
+        rc, out, err = self.hold("dev-a", "--max", "1", "--", "sh", "-c", "echo $QSAFE_HELD $ANDROID_SERIAL $FARM_HOLD_DEVICE; exit 7")
+        self.assertEqual(rc, 7, err)                                       # the command's own exit code
+        self.assertEqual(out, "cmf SERIAL-A dev-a")
+        self.assertIn("restored clean", err)
+        h = H.list_holds()[-1]
+        self.assertEqual((h["state"], h["reason"], h["clean"]), ("done", "released", True))
+        lk = L.PhoneLock(self.devs()["dev-a"], fake=True)
+        t0 = time.time()
+        while not lk.acquire() and time.time() - t0 < 10:                              # farmd unlocks right after it writes `done`
+            time.sleep(0.1)
+        self.assertIsNotNone(lk.fd)                                                    # the lock is free again
+        lk.release()
+
+    def devs(self):
+        return L.load_devices()[1]
+
+    def test_hold_blocks_the_flock_for_old_scripts_and_wins_over_a_later_priority_job(self):
+        self.attach("dev-a")
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--prio", "5")
+        h = H.new_hold("dev-a", 60, prio=0)                                  # both queued before the daemon exists: the order is the scheduler's alone
+        self.daemon()
+        t0 = time.time()
+        while time.time() - t0 < 20 and L.read_json(H.path(h["id"]))["state"] != "active":
+            H.touch(h["id"], "hb")
+            time.sleep(0.2)
+        self.assertEqual(L.read_json(H.path(h["id"]))["state"], "active")
+        lk = L.PhoneLock(self.devs()["dev-a"], fake=True)
+        self.assertFalse(lk.acquire())                                       # an old flock user sees the phone busy
+        for _ in range(8):                                                   # the job stays pending the whole time the hold owns the phone
+            H.touch(h["id"], "hb")
+            self.assertEqual(L.job_verdict(L.find_job(jid)), "pending")
+            time.sleep(0.25)
+        H.touch(h["id"], "rel")
+        self.assertEqual(self.farm("wait", jid, "--timeout", "30")[1], "pass")        # then the job runs
+        self.assertEqual(L.read_json(H.path(h["id"]))["state"], "done")
+
+    def test_job_with_better_priority_goes_before_a_queued_hold(self):
+        self.attach("dev-a")
+        h = H.new_hold("dev-a", 60, prio=10)
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--prio", "0")
+        self.assertLess(H.key({"prio": 0, "seq": 2}), H.key(h))
+        self.assertLess(H.key({"prio": 0, "seq": 1}), H.key({"prio": 0, "seq": 2}))     # FIFO at equal priority
+        self.assertLess(H.key({"prio": 0, "seq": 5}), H.key({"prio": 0, "auto": True, "seq": 1}))
+        self.daemon()
+        t0 = time.time()
+        while time.time() - t0 < 30 and L.job_verdict(L.find_job(jid)) == "pending":
+            H.touch(h["id"], "hb")                                                    # a live caller waiting in the queue
+            time.sleep(0.2)
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
+        t0 = time.time()
+        while time.time() - t0 < 20 and L.read_json(H.path(h["id"]))["state"] != "active":
+            H.touch(h["id"], "hb")
+            time.sleep(0.2)
+        self.assertEqual(L.read_json(H.path(h["id"]))["state"], "active")             # the hold got its turn after the job
+        H.touch(h["id"], "rel")
+
+    def test_lease_dies_with_its_watched_pid_and_max_time_expires(self):
+        self.attach("dev-a")
+        self.daemon()
+        sleeper = subprocess.Popen(["sleep", "2"])
+        rc, out, err = self.hold("dev-a", "--max", "1", "--lease", "--watch-pid", str(sleeper.pid))
+        self.assertEqual(rc, 0, err)
+        info = json.loads(out)
+        self.assertEqual(L.read_json(H.path(info["hold"]))["state"], "active")
+        sleeper.wait()                                                       # reaped: no zombie keeping /proc/<pid> alive
+        t0 = time.time()
+        while time.time() - t0 < 30 and L.read_json(H.path(info["hold"]))["state"] != "done":
+            time.sleep(0.3)
+        h = L.read_json(H.path(info["hold"]))
+        self.assertEqual((h["state"], h.get("reason")), ("done", "caller lost (no heartbeat)"), h)
+        # max time: a 1 s hold with a command that sleeps longer is killed (rc 124)
+        rc, out, err = self.hold("dev-a", "--max", "0.02", "--", "sleep", "30")
+        self.assertEqual(rc, 124, err)
+
+    def test_dead_caller_while_queued_and_release_cancel(self):
+        self.attach("dev-a")
+        h = H.new_hold("dev-a", 60)
+        os.utime(H.path(h["id"], "hb"), (0, 0))                             # a caller that died in the queue
+        self.daemon()
+        t0 = time.time()
+        while time.time() - t0 < 20 and L.read_json(H.path(h["id"]))["state"] != "done":
+            time.sleep(0.2)
+        self.assertIn("caller lost", L.read_json(H.path(h["id"]))["reason"])
+
+    def test_end_reason(self):
+        h = {"deadline": 100}
+        self.assertEqual(H.end_reason(h, 1, False, now=50), "")
+        self.assertEqual(H.end_reason(h, 1, True, now=50), "released")
+        self.assertEqual(H.end_reason(h, 1, False, now=101), "max time reached")
+        self.assertIn("caller lost", H.end_reason(h, H.HB_STALE + 1, False, now=50))
+        self.assertEqual(H.end_reason(h, 1, False, now=50, disabled=True), "disabled by owner")
 
 
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
