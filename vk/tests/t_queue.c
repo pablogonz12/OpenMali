@@ -259,6 +259,48 @@ test_binary(void)
    return 1;
 }
 
+/* Present ordering. A = the frame (signals S and fence FA), P = the present (waits S, signals FP; wsi_common commits the
+ * buffer right after P's vkQueueSubmit returns). MALI_FAKE_SLOW_US makes fences complete late. Mode "wait"
+ * (MALI_PRESENT_FENCE=0, kernels without dma-buf sync_file import): the commit must not precede the frame's completion, so
+ * FA is signalled when P returns. Mode "fence" (=1): P returns at once (pipelining) and the fence that travels with the
+ * buffer (FP) must not complete before the frame's (FA). */
+static int
+test_order(int fence_mode)
+{
+   VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkSemaphore s;
+   VkFence fa, fp;
+   CHECK(CreateSemaphore(dev, &sci, NULL, &s) == VK_SUCCESS, "sem");
+   CHECK(CreateFence(dev, &fi, NULL, &fa) == VK_SUCCESS, "fence");
+   CHECK(CreateFence(dev, &fi, NULL, &fp) == VK_SUCCESS, "fence");
+   VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   for (int i = 0; i < 5; i++) {
+      VkSubmitInfo a = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = 1, .pSignalSemaphores = &s};
+      VkSubmitInfo p = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &s,
+                        .pWaitDstStageMask = &st};
+      CHECK(QueueSubmit(queue, 1, &a, fa) == VK_SUCCESS, "frame submit");
+      CHECK(QueueSubmit(queue, 1, &p, fp) == VK_SUCCESS, "present submit");
+      VkResult fa_done = GetFenceStatus(dev, fa);   /* the moment wsi_common would commit */
+      if (fence_mode) {
+         CHECK(fa_done == VK_NOT_READY, "iter %d: present returned only after the frame finished (no pipelining)", i);
+         CHECK(WaitForFences(dev, 1, &fp, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fp wait");
+         CHECK(GetFenceStatus(dev, fa) == VK_SUCCESS, "iter %d: present fence completed before the frame's", i);
+      } else {
+         CHECK(fa_done == VK_SUCCESS, "iter %d: present returned before the frame finished (commit would show a half-drawn buffer)", i);
+      }
+      CHECK(WaitForFences(dev, 1, &fp, VK_TRUE, 5000000000ull) == VK_SUCCESS, "fp wait");
+      ResetFences(dev, 1, &fa);
+      ResetFences(dev, 1, &fp);
+   }
+   CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "idle");
+   DestroyFence(dev, fa, NULL);
+   DestroyFence(dev, fp, NULL);
+   DestroySemaphore(dev, s, NULL);
+   printf("{\"test\":\"order\",\"fence_mode\":%d,\"ok\":true}\n", fence_mode);
+   return 1;
+}
+
 struct pp {
    VkSemaphore t;
    int n;
@@ -490,6 +532,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
    if (ok && CASE_ON("syncfile")) ok &= test_syncfile();
+   if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
 
