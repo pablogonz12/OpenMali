@@ -45,6 +45,8 @@ struct mali_kdev {
 #define DBG_PAD128  0x20u /* 128-byte submissions (ring accounting with another size) */
 #define DBG_VERBOSE 0x80u /* on a failed submit print queue state and the ring around CS_EXTRACT */
 
+static bool k_int_nocoh_default;   /* arch 11: driver-internal BOs without COHERENT_LOCAL/MEM_SYNC */
+static int int_nocoh = -1;
 static const char *
 product_name(unsigned arch_major)
 {
@@ -118,6 +120,7 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    /* M11: v11 compute needs it: without it SSBO atomics are done in each core's L1 and updates from different cores are lost
     * (CMF, 2 cores: atomicAdd count ~half). So it is the default on arch 11; MALI_BO_COHERENT_LOCAL=0/1 overrides on any arch. */
    const char *cl = getenv("MALI_BO_COHERENT_LOCAL");
+   k_int_nocoh_default = gpu->arch_major == 11;
    if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
    const char *fi = getenv("MALI_FAULT_INJECT");
@@ -190,6 +193,17 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       return -ENOMEM;
    size = (size + 4095) & ~(size_t)4095;
 
+   /* MALI_INT_NOCOH=1 (experiment): driver-internal BOs (arena, descriptors, CS, heaps: no HOSTLAZY/EXPORT, i.e. not VkDeviceMemory) without COHERENT_LOCAL.
+    * Only VkDeviceMemory (SSBO atomics from the app) needs the cross-core coherency; internal data is written by the CPU (WC) and read by the GPU. */
+   if (int_nocoh < 0) {
+      const char *ie = getenv("MALI_INT_NOCOH");   /* default: on for arch 11 only (v10/v13 keep it: the v13 tiler bins nothing without it); =0/1 overrides */
+      int_nocoh = ie ? ie[0] == '1' : k_int_nocoh_default;
+   }
+   if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED)))
+      flags |= MALI_BO_NOCOH;
+   /* Why this is safe: CPU-side these BOs are write-combined (not CPU_CACHED), so kbase_sync_now() is a no-op for them (it returns early for
+    * regions without KBASE_REG_CPU_CACHED); the WC buffer drains before the doorbell, and every frame CS starts with FLUSH_CACHE2 + WAIT. */
+
    int r;
    if (flags & MALI_BO_EXPORT) {
       /* dma-heap buffer imported into the GPU: the heap decides cacheability (system = cached,
@@ -207,7 +221,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       r = kb_bo_alloc(k->ctx, size, KB_BO_GPU_RD | KB_BO_GPU_EX, bo);
    } else {
       r = kb_bo_alloc(k->ctx, size,
-                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0), bo);
+                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) | ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0), bo);
    }
    if (r != 0) {
       free(bo);
@@ -447,7 +461,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (hot_only && !b->hot))
+      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot))
          continue;
       struct {
          uint64_t handle, user_addr, size;

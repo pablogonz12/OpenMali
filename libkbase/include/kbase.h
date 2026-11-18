@@ -78,6 +78,7 @@ void kb_leaks(const struct kb_ctx *ctx, struct kb_leaks *out);      /* live obje
 #define KB_BO_GPU_EX       (1u << 3) /* executable (shader code); then no GPU_WR, no SAME_VA */
 #define KB_BO_CSF_EVENT    (1u << 4) /* CQS / sync-object memory (kernel-visible, uncached) */
 #define KB_BO_GPU_UNCACHED (1u << 5)
+#define KB_BO_NOCOH        (1u << 6) /* do not add kb_bo_extra_flags (COHERENT_LOCAL): driver-internal CPU(WC)->GPU data */
 
 struct kb_bo {
 	struct kb_ctx *ctx;
