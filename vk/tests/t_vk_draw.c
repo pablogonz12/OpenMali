@@ -60,6 +60,7 @@ static VkPhysicalDeviceFeatures g_feat;
 static double g_t_rec, g_t_sub;   /* scene_draw: record / QueueSubmit microseconds, summed */
 static int g_share;   /* share test: 2 = alternate the scissor halves per draw, 3 = dynamic-UBO offset from g_share_off[] and firstInstance from g_share_fi[] */
 static uint32_t g_share_off[8], g_share_fi[8];
+static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
@@ -197,7 +198,7 @@ scene_create(struct scene *s, int depth)
    memset(s, 0, sizeof *s);
    s->mode = mode;
    s->depth = depth;
-   const char *vsn = g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
+   const char *vsn = g_inst ? "inst_attr.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
@@ -456,9 +457,10 @@ scene_create(struct scene *s, int depth)
        .module = s->fs, .pName = "main"}};
    VkVertexInputBindingDescription bd[2] = {{0, 16, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_VERTEX}};
    VkVertexInputAttributeDescription ad2[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}};
+   if (g_inst) bd[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                                               .vertexBindingDescriptionCount = 2, .pVertexBindingDescriptions = bd,
-                                               .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = ad2};
+                                               .vertexBindingDescriptionCount = g_inst ? 1 : 2, .pVertexBindingDescriptions = bd,
+                                               .vertexAttributeDescriptionCount = g_inst ? 1 : 2, .pVertexAttributeDescriptions = ad2};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -619,6 +621,24 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.wmask);
       CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.ref);
    }
+   if (g_inst) {
+      /* instance k of binding 0 = quad corner k (vertex 3 + k of the position buffer): firstInstance k draws the triangle at corner k */
+      VkDeviceSize base = 3 * 16;
+      CmdBindVertexBuffers(cb, 0, 1, vbs, &base);
+      CmdDraw(cb, 3, 1, 0, 0);                              /* corner 0 */
+      if (g_inst == 1) {
+         CmdDraw(cb, 3, 1, 0, 1);                           /* differs only in firstInstance: corner 1 */
+         VkDeviceSize b2 = base + 2 * 16;
+         CmdBindVertexBuffers(cb, 0, 1, vbs, &b2);
+         CmdDraw(cb, 3, 1, 0, 1);                           /* differs only in the vertex buffer offset: corner 3 */
+         CmdDraw(cb, 3, 1, 0, 0);                           /* differs only in firstInstance: corner 2 */
+      } else {
+         CmdDraw(cb, 3, 1, 0, 0);
+         CmdDraw(cb, 3, 1, 0, 0);
+         CmdDraw(cb, 3, 1, 0, 0);
+      }
+      n = 0;
+   } else
    CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
    if (s->mode == MODE_IDX16) CmdBindIndexBuffer(cb, s->ib, 0, VK_INDEX_TYPE_UINT16);
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
@@ -1553,6 +1573,45 @@ test_share_dyn(void)
    return ok;
 }
 
+/* firstInstance is baked into the per-instance attribute descriptors (build_draw_descs): a draw that differs only in firstInstance, or only
+ * in the vertex-buffer offset, must not reuse the previous draw's driver set. Host: the frame with changes allocates more than the frame with
+ * four identical draws (the fake backend counts the bytes); hardware: all four corner triangles are drawn. */
+static int
+test_share_inst(void)
+{
+   unlink("/tmp/mali_alloc_stats.txt");
+   setenv("MALI_ALLOC_STATS", "/tmp/mali_alloc_stats.txt", 1);
+   float dummy[4][4] = {{0}};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   unsigned long long ab[3] = {0};
+   int ok = 1;
+   struct scene s;
+   for (int pass = 0; ok && pass < 3; pass++) {
+      g_inst = pass == 1 ? 1 : 2;   /* 2, 1, 2: the second identical frame removes the first-submit warm-up */
+      s = (struct scene){.mode = MODE_TRI};
+      ok = scene_create(&s, 0) && scene_draw(&s, 4, dummy, f);
+      ab[pass] = alloc_bytes();
+      if (ok && pass == 1 && !g_fake) {
+         for (int k = 0; k < 4; k++) {
+            int cx = (int)(((k & 1 ? .5f : -.5f) * .5f + .5f) * W) - 6, cy = (int)(((k & 2 ? .5f : -.5f) * .5f + .5f) * H) - 6;   /* inside the triangle: offset + (-0.1,-0.1) */
+            CHECK(px_at(&s, cx, cy) != 0, "share_inst: corner %d triangle missing at %d,%d", k, cx, cy);
+         }
+         ok &= report("share_inst", &s, 4 * 2048.0, 3.0, 0);
+      }
+      scene_destroy(&s);
+   }
+   g_inst = 0;
+   DestroyFence(dev, f, NULL);
+   if (!ok) return 0;
+   unsigned long long same = ab[2] - ab[1], chg = ab[1] - ab[0];
+   /* same-state frame 0 -> 2 differ by nothing; the changing frame must allocate at least 3 driver sets (3 x 17 x 32 B) more than an identical one */
+   printf("{\"test\":\"share_inst\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", same, chg, chg >= same + 3 * 17 * 32 ? "true" : "false");
+   CHECK(chg >= same + 3 * 17 * 32, "share_inst: draws that differ in firstInstance / vertex buffer reused the driver set (%llu vs %llu bytes)", chg, same);
+   return 1;
+}
+
 /* full-screen quad cases: push-constant-only FS colour, sampled texture, uniform buffer, descriptor updates between draws */
 static int
 test_quad(const char *name, int mode)
@@ -1727,6 +1786,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
+   if (ok && CASE_ON("share")) ok &= test_share_inst();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
