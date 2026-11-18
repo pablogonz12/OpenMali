@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define W 256
 #define H 256
@@ -39,6 +40,8 @@ static const VkPipelineVertexInputStateCreateInfo *g_vi;   /* make_pipe: vertex 
 static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
 static int test_idx32(void);
 static int test_zinit(void);
+static int test_dslbind(void);
+static int test_badspv(void);
 #define BIND_IB(cb, b, off, ty) do { if (g_ib2) g_cbib2(cb, b, off, VK_WHOLE_SIZE, ty); else CmdBindIndexBuffer(cb, b, off, ty); } while (0)
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1786,6 +1789,69 @@ test_ubostd(void)
    return 1;
 }
 
+/* tools/fuzz finding: a descriptor set layout with a huge binding number allocated/looped over billions of entries (multi-second hang,
+ * and binding 0xffffffff wrapped the table size to 0). It must fail fast with an out-of-memory error; a normal layout must still work. */
+static int
+test_dslbind(void)
+{
+   static const uint32_t huge[] = {0x7fffffffu, 0xffffffffu, 0x00100000u};
+   for (unsigned k = 0; k < sizeof huge / sizeof *huge; k++) {
+      VkDescriptorSetLayoutBinding b = {.binding = huge[k], .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                        .stageFlags = VK_SHADER_STAGE_ALL};
+      VkDescriptorSetLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+      VkDescriptorSetLayout l = VK_NULL_HANDLE;
+      struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+      VkResult r = CreateDescriptorSetLayout(dev, &ci, NULL, &l);
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+      CHECK(r == VK_ERROR_OUT_OF_HOST_MEMORY && l == VK_NULL_HANDLE, "binding 0x%x: result %d (want OUT_OF_HOST_MEMORY)", huge[k], r);
+      CHECK(ms < 1000.0, "binding 0x%x took %.0f ms", huge[k], ms);
+   }
+   VkDescriptorSetLayoutBinding b = {.binding = 1000, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL};
+   VkDescriptorSetLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   VkDescriptorSetLayout l;
+   CHECK(CreateDescriptorSetLayout(dev, &ci, NULL, &l) == VK_SUCCESS, "sparse binding 1000 layout");
+   DestroyDescriptorSetLayout(dev, l, NULL);
+   printf("{\"test\":\"dslbind\",\"ok\":true}\n");
+   return 1;
+}
+
+/* tools/fuzz finding: a SPIR-V header with a bad magic/version/schema word crashed the vendored Mesa front end (NULL b->options in vtn_log),
+ * and a huge id bound overflowed an allocation. Each corrupted copy of a real module must make pipeline creation fail without crashing. */
+static int
+test_badspv(void)
+{
+   char path[512]; snprintf(path, sizeof path, "%s/zeroinit.comp.spv", g_spv);
+   FILE *f = fopen(path, "rb");
+   CHECK(f, "open %s", path);
+   fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+   uint32_t *good = malloc(n), *w = malloc(n);
+   CHECK(fread(good, 1, n, f) == (size_t)n && n >= 24, "read %s", path);
+   fclose(f);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "pipeline layout");
+   static const struct { int word; uint32_t val; const char *what; } bad[] = {
+      {0, 0x07230202u, "magic"}, {1, 0, "version 0"}, {1, 0xffffffffu, "version huge"}, {3, 0xffffffffu, "bound 0xffffffff"},
+      {3, 0x40000000u, "bound 2^30"}, {3, 0, "bound 0"}, {4, 1, "schema"},
+   };
+   for (unsigned k = 0; k < sizeof bad / sizeof *bad; k++) {
+      memcpy(w, good, n); w[bad[k].word] = bad[k].val;
+      VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = n, .pCode = w};
+      VkShaderModule m = VK_NULL_HANDLE; VkPipeline p = VK_NULL_HANDLE;
+      if (CreateShaderModule(dev, &mi, NULL, &m) != VK_SUCCESS) continue;   /* rejecting at module creation is fine too */
+      VkComputePipelineCreateInfo cp = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+      VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cp, NULL, &p);
+      CHECK(r != VK_SUCCESS, "corrupted header (%s): pipeline creation succeeded", bad[k].what);
+      DestroyShaderModule(dev, m, NULL);
+   }
+   DestroyPipelineLayout(dev, lay, NULL);
+   free(good); free(w);
+   printf("{\"test\":\"badspv\",\"cases\":%zu,\"ok\":true}\n", sizeof bad / sizeof *bad);
+   return 1;
+}
+
 static int
 test_zinit(void)
 {
@@ -2481,6 +2547,8 @@ main(int argc, char **argv)
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
+   if (ok && CASE_ON("badspv")) ok &= test_badspv();
+   if (ok && CASE_ON("dslbind")) ok &= test_dslbind();
    if (ok && CASE_ON("imageless")) ok &= test_imageless();
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
