@@ -233,7 +233,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          for (unsigned i = 0; i < 4; i++)
             if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
                uses_src1 = true;
-         if (!bo.src0_type || (uses_src1 && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
+         if (!bo.src0_type || (uses_src1 && !logic && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
             res = VK_ERROR_FEATURE_NOT_PRESENT;
             goto fail;
          }

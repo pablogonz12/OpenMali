@@ -610,7 +610,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
-   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   const int lop = g_fx.on && g_fx.logic;   /* logic-op cases need a nonzero destination: (51,102,153,204) */
+   VkClearValue cv[2] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
    if (g_clear_f)
       memcpy(cv[0].color.float32, g_clear_f, 16);
    if (g_nocol)
@@ -1493,7 +1494,7 @@ test_poly_dyn(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, in
 }
 
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
-enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15, EXP_ONES, EXP_NOT };
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15, EXP_ONES, EXP_NOT, EXP_XOR, EXP_INV };
 struct fxcase {
    const char *name;
    int depth, n;                  /* depth attachment, draws */
@@ -1523,13 +1524,13 @@ static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_S
 static void s_d_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_inv_src1a(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_one_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_OP_ADD); }
-/* logicOp (static logicOpEnable, colour logic op in the blend shader): the framebuffer is cleared to 0 before the draw (destination = 0) */
+/* logicOp (static logicOpEnable, colour logic op in the blend shader): the framebuffer is cleared to 0 before the draw (destination = 51,102,153,204) */
 static void s_lop_clear(void) { g_fx.logic = 1 + VK_LOGIC_OP_CLEAR; }
 static void s_lop_set(void) { g_fx.logic = 1 + VK_LOGIC_OP_SET; }
 static void s_lop_copy(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY; }
 static void s_lop_copy_inv(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY_INVERTED; }
-static void s_lop_xor(void) { g_fx.logic = 1 + VK_LOGIC_OP_XOR; }   /* src ^ 0 = src */
-static void s_lop_invert(void) { g_fx.logic = 1 + VK_LOGIC_OP_INVERT; }   /* ~dst = all ones */
+static void s_lop_xor(void) { g_fx.logic = 1 + VK_LOGIC_OP_XOR; }   /* src ^ dst */
+static void s_lop_invert(void) { g_fx.logic = 1 + VK_LOGIC_OP_INVERT; }   /* ~dst */
 static void s_mask_r(void) { g_fx.wmask = 1; }
 static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
 static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
@@ -1563,8 +1564,8 @@ static const struct fxcase g_fxcases[] = {
    {"fx_logic_set", 0, 1, {0.5f}, EXP_ONES, 0, 8, s_lop_set},
    {"fx_logic_copy", 0, 1, {0.5f}, EXP_SAME, 0, 8, s_lop_copy},
    {"fx_logic_copy_inv", 0, 1, {0.5f}, EXP_NOT, 0, 8, s_lop_copy_inv},
-   {"fx_logic_xor", 0, 1, {0.5f}, EXP_SAME, 0, 8, s_lop_xor},
-   {"fx_logic_invert", 0, 1, {0.5f}, EXP_ONES, 0, 8, s_lop_invert},
+   {"fx_logic_xor", 0, 1, {0.5f}, EXP_XOR, 0, 8, s_lop_xor},
+   {"fx_logic_invert", 0, 1, {0.5f}, EXP_INV, 0, 8, s_lop_invert},
    {"fx_dual_src1_color", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_src1c},
    {"fx_dual_inv_src1_alpha", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_inv_src1a},
    {"fx_dual_one_src1_color", 0, 2, {0.5f, 0.5f}, EXP_X15, 0, 4, s_d_one_src1c},
@@ -1657,6 +1658,8 @@ test_fx(void)
       case EXP_X15: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] / 2; e[3] = 255; break;
       case EXP_ONES: e[0] = e[1] = e[2] = e[3] = 255; break;
       case EXP_NOT: for (int k = 0; k < 4; k++) e[k] = 255 - (k == 3 ? 255 : e[k]); break;   /* ~src; the alpha written is 1.0 */
+      case EXP_XOR: { const int d[4] = {51, 102, 153, 204}; for (int k = 0; k < 4; k++) e[k] = (k == 3 ? 255 : e[k]) ^ d[k]; break; }   /* src ^ dst */
+      case EXP_INV: e[0] = 255 - 51; e[1] = 255 - 102; e[2] = 255 - 153; e[3] = 255 - 204; break;   /* ~dst */
       case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
       }
       if (c->exp != EXP_COV)

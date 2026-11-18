@@ -756,7 +756,8 @@ mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, c
    rt->equation.alpha_dst_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->alpha_dst);
    rt->equation.color_mask = o->color_mask & 0xf;
    st.logicop_enable = o->logic_op_enable != 0;
-   st.logicop_func = vk_logic_op_to_pipe((VkLogicOp)o->logic_op);
+   if (st.logicop_enable)   /* an unused logicOp may hold any value (spec): convert only when it applies */
+      st.logicop_func = vk_logic_op_to_pipe((VkLogicOp)o->logic_op);
 
    nir_shader *nir = arch == 13   ? pan_blend_create_shader_v13(&st, o->src0_type, o->src1_type, 0)
                      : arch == 10 ? pan_blend_create_shader_v10(&st, o->src0_type, o->src1_type, 0)
