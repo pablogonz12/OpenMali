@@ -1507,6 +1507,12 @@ class MenuUnit(unittest.TestCase):
 
 class SmokeRoute(unittest.TestCase):
     """guest smoke -> adb-shell fallback when the app session cannot be READY (locked phone): route choice, log header, harness"""
+    def setUp(self):
+        self.orig_rw = L.run_watched                                   # farmd_sr shares this farmlib: restore after each test
+
+    def tearDown(self):
+        L.run_watched = self.orig_rw
+
     def farm(self, fallback=True, dumpsys="mWakefulness=Dozing\nisKeyguardShowing=true"):
         import importlib.machinery, importlib.util, threading
         ld = importlib.machinery.SourceFileLoader("farmd_sr", HERE + "/farmd")
