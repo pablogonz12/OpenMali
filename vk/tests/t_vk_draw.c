@@ -27,6 +27,7 @@
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
 static unsigned g_colbpp = 4;
+static int g_clear_u;   /* clear the colour attachment to the integer value (200,100,50,7) instead of float zeros */
 static int g_load;   /* two-pass LOAD test: store depth/stencil, and build s->rp2 = the same pass with loadOp LOAD */
 static int g_fail, g_fake, g_loop = 1, g_reset;
 /* R4 fixed-function state of the next scene_create()/scene_draw() (all zero = the old tests' state) */
@@ -580,6 +581,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   if (g_clear_u)
+      cv[0].color.uint32[0] = 200, cv[0].color.uint32[1] = 100, cv[0].color.uint32[2] = 50, cv[0].color.uint32[3] = 7;
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = s->depth ? 2 : 1, .pClearValues = cv};
@@ -1085,6 +1088,35 @@ test_load(const char *name, int kind)
          printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"cov\":%u,\"ok\":%s}\n", name, got, ref, cgot, ok ? "true" : "false");
       }
    }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* integer render target (RGBA8UI, RG16UI, R8UI): the render pass clears to raw integer words, one triangle is drawn; the corner pixels must hold the words */
+static int
+test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_colfmt = fmt;
+   g_colbpp = bpp;
+   g_clear_u = 1;
+   int ok = scene_create(&s, 0);
+   float one[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, one, f);   /* a triangle in the middle; the corners keep the clear value */
+   g_clear_u = 0;
+   uint32_t got = 0, mask = bpp >= 4 ? ~0u : (1u << (8 * bpp)) - 1;
+   if (ok && !g_fake) {
+      got = px_at(&s, 5, 5) & mask;
+      ok = got == want0 && (px_at(&s, 250, 250) & mask) == want0;
+   }
+   printf("{\"test\":\"%s\",\"px\":\"%08x\",\"want\":\"%08x\",\"ok\":%s%s}\n", name, got, want0, ok ? "true" : "false", g_fake ? ",\"skipped\":\"fake backend\"" : "");
+   CHECK(ok, "%s: pixel %08x want %08x", name, got, want0);
+   g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;
+   g_colbpp = 4;
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1831,6 +1863,9 @@ main(int argc, char **argv)
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
    if (ok && CASE_ON("load_depth")) ok &= test_load("load_depth", 0);
+   if (ok && CASE_ON("int_clear_rgba8ui")) ok &= test_int_clear("int_clear_rgba8ui", VK_FORMAT_R8G8B8A8_UINT, 4, 0x073264c8u);
+   if (ok && CASE_ON("int_clear_rg16ui")) ok &= test_int_clear("int_clear_rg16ui", VK_FORMAT_R16G16_UINT, 4, 0x006400c8u);
+   if (ok && CASE_ON("int_clear_r8ui")) ok &= test_int_clear("int_clear_r8ui", VK_FORMAT_R8_UINT, 1, 0xc8u);
    if (ok && CASE_ON("load_depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_load("load_depth16", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
    if (ok && CASE_ON("load_stencil")) ok &= test_load("load_stencil", 1);
    if (ok && CASE_ON("load_colour_f16")) { g_colfmt = VK_FORMAT_R16G16B16A16_SFLOAT; g_colbpp = 8; ok &= test_load("load_colour_f16", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }

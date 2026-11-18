@@ -75,6 +75,29 @@ mali_rtfmt_clear_words(const struct mali_rtfmt *rt, const float cin[4], uint32_t
 {
    uint32_t a, b;
    float c[4] = { cin[0], cin[1], cin[2], cin[3] };
+   if (rt && rt->int_bits) {
+      /* integer colour: the clear value's raw 32-bit words (VkClearColorValue uint32/int32), channels packed as stored, replicated per
+       * pan_pack_raw (<=4 B: the word repeats, 8 B: two words twice, 16 B: as is) */
+      uint32_t v[4], px[4] = {0, 0, 0, 0};
+      memcpy(v, cin, sizeof v);
+      const unsigned bits = rt->int_bits, bytes = rt->ncomp * bits / 8;
+      const uint32_t mask = bits == 32 ? ~0u : (1u << bits) - 1;
+      for (unsigned i = 0; i < rt->ncomp; i++) {
+         unsigned bit = i * bits;
+         px[bit / 32] |= (v[i] & mask) << (bit % 32);
+      }
+      if (bytes == 1)
+         px[0] |= px[0] << 8, px[0] |= px[0] << 16;
+      else if (bytes == 2)
+         px[0] |= px[0] << 16;
+      if (bytes <= 4)
+         w[0] = w[1] = w[2] = w[3] = px[0];
+      else if (bytes == 8) {
+         w[0] = w[2] = px[0]; w[1] = w[3] = px[1];
+      } else
+         memcpy(w, px, 16);
+      return;
+   }
    if (rt && !rt->is_float && (rt->blend_pixfmt & (1u << 20)))
       for (unsigned i = 0; i < 3; i++)
          c[i] = lin2srgb(c[i]);
