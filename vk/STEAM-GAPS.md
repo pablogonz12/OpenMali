@@ -26,8 +26,8 @@ Effort: S < 1 day, M 1-3 days, L > 3 days. "HW" = Mali can do it (PanVK is the o
 | KHR_swapchain, swapchain_mutable_format, external_fence_fd | soft | hard | soft | hard | have | - |
 | KHR_dynamic_rendering, synchronization2, maintenance4, EXT_private_data, KHR_buffer_device_address, EXT_scalar_block_layout, EXT_host_query_reset, KHR_uniform_buffer_standard_layout (names of promoted features) | | | soft (checks the name) | soft | have (this branch; feature bit true and probed, name==bit checked by `t_steam_caps`) | S |
 | instance KHR_wayland_surface, KHR_xcb_surface | | hard | | | have in the a64-glibc-wl Mesa build; NOT in the x86 native build, so WSI cannot be tested on the host | S (host build flag) |
-| **core.shaderStorageImageWriteWithoutFormat** | **hard: vkCreateDevice returns -8 without it** | | soft | hard | missing. Format feature bits already report `STORAGE_WRITE_WITHOUT_FORMAT`; the compiler path for `image_store` with `PIPE_FORMAT_NONE` (format taken from the descriptor) is untested: `t_vk_feat storfmt` shaders all carry an explicit format. Needs a lowering in `mali_descriptor_lower.c`/`mali_compile.c` (per-format store emulation or a texture-descriptor driven ST_CVT) and a hardware pixel test. Cannot be proven on the fake backend | M |
-| **vk11.samplerYcbcrConversion** | **hard: gamescope always creates the immutable NV12 sampler in its composite layout, and precompiles the ycbcr variants of its compute shaders at init** | | | | missing. Needs `nir_vk_lower_ycbcr_tex`, immutable-sampler plumbing in `mali_pipeline_layout.c`/`mali_sampler.c`, multi-plane NV12 images (`mali_image.c`, `mali_format.c`), plane-wise texture descriptors | M-L |
+| core.shaderStorageImageWriteWithoutFormat | hard (was: vkCreateDevice -8) | | soft | hard | **have** (round 2): the descriptor carries the texel format, Mesa's `pan_nir_lower_image` reads it there; `t_vk_feat storfmt_nf` stores unformatted into 39 formats (smoke set, both farm routes) | done |
+| vk11.samplerYcbcrConversion | hard (immutable NV12 sampler in the composite layout, ycbcr variants of the compute shaders) | | | | **have, NV12 only** (round 2, see below); `t_compile ycbcr` (lowering) and `t_vk_feat ycbcr` (pixels, smoke set) | done |
 | EXT_physical_device_drm | soft (warns only) | | | | missing on purpose: we have no DRM render node; PanVK on the same ROM reports `/dev/mali0` as the render node via BL_DRM_STANDIN. Advertise only together with real major/minor reporting | S |
 | KHR_maintenance5, EXT_vertex_attribute_divisor, EXT_custom_border_color | | | soft | soft | missing, see DXVK-GAP.md | M each |
 | EXT_extended_dynamic_state 1/2/3 | | | soft | soft | missing; each dynamic state must be read in the `mali_cmd.c` snapshot | M (1,2) / M (3) |
@@ -40,10 +40,16 @@ MALI_BACKEND=fake MALI_FAKE_GPU=v11 VK_DRIVER_FILES=<out>/native/mali_icd.json g
 ```
 Host gamescope 3.17.0.
 - Before this branch: `vkCreateDevice failed (VkResult: -8)`, plus "does not support foreign queues, disabling modifier support" and "doesn't support VK_EXT_physical_device_drm".
-- After this branch: the foreign-queue warning is gone and the extension list is accepted; `vkCreateDevice` still fails with -8 because of the two hard features above. Those are the first blockers, in this order:
-  1. `shaderStorageImageWriteWithoutFormat`
-  2. `samplerYcbcrConversion`
-- Beyond them (untested because the device is not created): gamescope compiles its compute pipelines at start (composite, blur, ycbcr variants, `image_store` without format). Expect the compiler to be the next failure; the first one will show on a real device (below).
+- After round 1: the foreign-queue warning is gone and the extension list is accepted; `vkCreateDevice` still failed with -8 because of two hard features.
+- After round 2 (both features in): `vkCreateDevice` succeeds, `t_steam_caps --expect-missing 0` passes. See "Round 2 result".
+
+## Round 2 result (headless gamescope 3.17.0, fake v11, 80 s)
+- `vkCreateDevice` succeeds; gamescope selects the device, lists the DRM formats and starts Xwayland; its pipeline thread compiles the compute pipelines with no `vkCreateComputePipelines failed`. All ten composite shaders (BLIT, BLUR, BLUR_COND, BLUR_FIRST_PASS, RCAS, EASU, NIS, NIS_HDR_LINEAR, RGB_TO_NV12, SGSR) compile: **our compiler rejects none of them.** (11 disk-cache entries: see the next item for why not hundreds.)
+- Remaining errors in the log (neither stops it):
+  1. `vkGetPhysicalDeviceFormatProperties2 returned zero modifiers for DRM format 0x3231564E` (NV12): NV12 is deliberately not on the DRM-modifier list (two memory planes; our WSI/dma-buf export is single-plane LINEAR), so NV12 clients cannot be imported as dma-bufs. Plain NV12 sampling of images gamescope itself creates works. Needs: multi-plane modifier plane layout + import in `mali_image.c` (L).
+  2. `wlserver: Failed to get DRM FD from renderer`: no DRM render node on the fake backend (and `VK_EXT_physical_device_drm` missing on purpose, see table).
+- **New gap found, not fixed: specialization constants are ignored.** `mali_compile.c` calls `spirv_to_nir(..., NULL spec, ...)`, and `mali_pipeline.c` never reads `pSpecializationInfo`. gamescope's composite shaders are driven by spec constants (`layerCount`, `ycbcrMask`, `debug`, blur layers, colourspace mask, output EOTF, ITM): every pipeline compiles to the same default variant (hence 11 cache entries, not one per variant). On hardware gamescope would composite with the SPIR-V default constants. Plan: `struct mali_spec { uint32_t id, offset, size; }` + data in `mali_compile_opts` (hashed into the cache key), forwarded to `spirv_to_nir` as `nir_spirv_specialization`; `mali_pipeline.c` fills it from `pSpecializationInfo` for vs/fs/cs (that file is forbidden to this branch: patch in `patches/`).
+- ycbcr scope: NV12 only, 2D, one level/layer, even extent, SAMPLED|TRANSFER only, not exportable, no DISJOINT. Models 709/601, ranges full/narrow, chroma siting midpoint or cosited-even, linear chroma filter (`forceExplicitReconstruction` = false). Other multi-planar formats are not advertised.
 
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
@@ -56,7 +62,7 @@ To exercise gamescope alone on hardware first, run it headless under the farm's 
 ## Needs in files this branch may not touch (other workers)
 - `mali_cmd.c`: honouring the dynamic states of EXT_extended_dynamic_state 1/2/3; index conversion for `index_type_uint8`; `CmdBindIndexBuffer2` (maintenance5).
 - `mali_cs_emit.c`: nothing is required for the Steam menu itself; dual-source blend and sample mask (ds3) land here later.
-- `mali_pipeline.c`: module-less stages (maintenance5), vertex attribute divisor > 1 (line ~176), immutable ycbcr samplers when pipelines are built.
+- `mali_pipeline.c`: pass `pSpecializationInfo` to `mali_compile` (gamescope needs it, see Round 2 result); module-less stages (maintenance5), vertex attribute divisor > 1 (line ~176), immutable ycbcr samplers when pipelines are built.
 - BO allocator: tiled/AFBC modifier images need dma-buf export of non-linear BOs and a stride/modifier plane layout; LINEAR works today.
 
 ## Risks
