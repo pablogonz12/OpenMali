@@ -27,9 +27,9 @@ How close mali-open gets to the Mali bridge (MediaDeck's, the target) per phone,
 
 | Phone | GPU / arch | Benchmark | Ours first (build, date) | Ours latest (build, date) | Change | Bridge latest fps | Ours % of bridge | PanVK | GPU ms ours / bridge |
 |---|---|---|---|---|---|---|---|---|---|
-| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 54.8 (633f2069a, 2026-11-18) | +19% | 71.4 (p25) | 77% | not measured | 13.04 / 11.31 |
-| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 61.4 (633f2069a, 2026-11-18) | +34% | 70.6 (p25) | 87% | not measured | 13.55 / 11.32 |
-| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 287.5 (633f2069a, 2026-11-18) | +296% | 185.8 (p25) | 155% | not measured | 1.15 / 2.77 |
+| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 55.2 (253b6c893, 2026-11-18) | +20% | 74.3 (p25) | 74% | not measured | 11.91 / 11.29 |
+| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 70.1 (253b6c893, 2026-11-18) | +53% | 72.1 (p25) | 97% | not measured | 19.21 / 11.34 |
+| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 321.9 (253b6c893, 2026-11-18) | +343% | 194.8 (p25) | 165% | not measured | 1.48 / 2.88 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | 76.9 (20e290c1a, 2026-11-17) | 492.8 (453cd8d0c, 2026-11-18) | +541% | 451.6 (p25) | 109% | not measured | 1.55 / 1.32 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | 77.3 (20e290c1a, 2026-11-17) | 496.9 (453cd8d0c, 2026-11-18) | +543% | 454.1 (p25) | 109% | not measured | 1.53 / 1.32 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 601.6 (453cd8d0c, 2026-11-18) | +501% | 347.6 (p25) | 173% | not measured | 1.17 / 1.61 |
