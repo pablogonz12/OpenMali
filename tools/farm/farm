@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """farm: submit / status / wait / results for the mali-open phone farm. State lives in ~/.local/state/mali-farm/."""
 import sys; sys.dont_write_bytecode = True
-import argparse, json, os, re, subprocess, sys, time
+import argparse, json, math, os, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import farmlib as L                                    # noqa: E402
@@ -114,6 +114,15 @@ def cmd_enable(a):
     print(f"{a.device}: enabled")
 
 
+def pid_alive(pid):
+    """alive and not a zombie (an exited child keeps its /proc entry until its parent reaps it)"""
+    try:
+        st = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return st not in ("Z", "X")
+
+
 def hold_beat(hid, watch_pid=0):
     """heartbeat loop (the hold command's own thread, or the detached --lease helper): until released, finished, or the watched pid is gone"""
     while True:
@@ -123,7 +132,7 @@ def hold_beat(hid, watch_pid=0):
             return
         if h["state"] == "done" or H.released(hid):
             return
-        if watch_pid and not os.path.exists(f"/proc/{watch_pid}"):
+        if watch_pid and not pid_alive(watch_pid):
             return
         H.touch(hid, "hb")
         time.sleep(H.HB_EVERY)
@@ -141,7 +150,7 @@ def hold_wait_active(hid, wait_max):
         if time.time() - t0 > wait_max:
             H.touch(hid, "rel")
             raise SystemExit(f"farm hold: still queued after {int(wait_max)}s, cancelled (queue position {last})")
-        pos = len([x for x in H.queued(H.list_holds(), h["device"]) if x["seq"] < h["seq"]])
+        pos = len([x for x in H.queued(H.list_holds(), h["device"]) if H.key(x) < H.key(h)])
         if pos != last:
             print(f"farm hold: {hid} queued on {h['device']}, {pos} hold(s) ahead", file=sys.stderr, flush=True)
             last = pos
@@ -183,8 +192,8 @@ def cmd_hold(a):
     cmd = a.command or []
     if bool(cmd) == bool(a.lease):
         raise SystemExit("farm hold: give either `-- <command>` or --lease")
-    if not a.max or a.max <= 0:
-        raise SystemExit("farm hold: --max <minutes> is required")
+    if not a.max or not math.isfinite(a.max) or a.max <= 0 or not math.isfinite(a.wait_max) or a.wait_max <= 0:
+        raise SystemExit("farm hold: --max <minutes> is required (a finite number > 0); --wait-max must be finite too")
     h = H.new_hold(a.device, a.max * 60, a.prio, bool(a.lease), who=os.environ.get("FARM_WHO", ""))
     hid = h["id"]
     import signal, threading
@@ -206,7 +215,12 @@ def cmd_hold(a):
         import ctypes
         ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)
         os.setsid()
-    p = subprocess.Popen(cmd, env=hold_env(h), preexec_fn=child_setup)
+    try:
+        p = subprocess.Popen(cmd, env=hold_env(h), preexec_fn=child_setup)
+    except OSError as e:                                  # the command never started: give the phone back, keep the error for the caller
+        print(f"farm hold: cannot run {cmd[0]!r}: {e}", file=sys.stderr)
+        hold_finish(hid)
+        return 127
     try:
         while True:
             try:
@@ -214,7 +228,7 @@ def cmd_hold(a):
                 break
             except subprocess.TimeoutExpired:
                 cur = L.read_json(H.path(hid))
-                if cur["state"] == "done" or time.time() > cur["deadline"]:
+                if cur["state"] != "active" or time.time() > cur["deadline"]:
                     print(f"farm hold: {hid} ended while the command ran ({cur.get('reason') or 'max time'}): killing it", file=sys.stderr)
                     os.killpg(p.pid, signal.SIGKILL)
                     p.wait()
@@ -223,6 +237,10 @@ def cmd_hold(a):
     except KeyboardInterrupt:
         os.killpg(p.pid, signal.SIGKILL)
         rc = 130
+    try:
+        os.killpg(p.pid, signal.SIGKILL)                   # background workers the command left behind must not touch the phone after the release
+    except OSError:
+        pass
     hold_finish(hid)
     return rc
 

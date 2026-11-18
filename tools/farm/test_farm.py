@@ -1903,22 +1903,35 @@ class HoldTests(unittest.TestCase):
         self.assertIn("restored clean", err)
         h = H.list_holds()[-1]
         self.assertEqual((h["state"], h["reason"], h["clean"]), ("done", "released", True))
-        self.assertTrue(L.PhoneLock(self.devs()["dev-a"], fake=True).acquire())      # the lock is free again
+        lk = L.PhoneLock(self.devs()["dev-a"], fake=True)
+        t0 = time.time()
+        while not lk.acquire() and time.time() - t0 < 10:                              # farmd unlocks right after it writes `done`
+            time.sleep(0.1)
+        self.assertIsNotNone(lk.fd)                                                    # the lock is free again
+        lk.release()
 
     def devs(self):
         return L.load_devices()[1]
 
-    def test_hold_blocks_the_flock_for_old_scripts_and_job_waits_fifo(self):
+    def test_hold_blocks_the_flock_for_old_scripts_and_wins_over_a_later_priority_job(self):
         self.attach("dev-a")
-        self.daemon()
         _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--prio", "5")
-        # hold prio 0 beats the prio-5 job: the command sees the lock held (flock from another process fails) and the job is still pending
-        code = ("import fcntl,sys,os;f=open(sys.argv[1],'a')\ntry:\n fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB);print('FREE')\n"
-                "except OSError:\n print('BUSY')\nprint(open(sys.argv[2]).read().count('pending'))")
-        lock = self.d + "/state/fake-locks/dev-a.lock"
-        rc, out, err = self.hold("dev-a", "--max", "1", "--", sys.executable, "-c", code, lock, "/dev/null")
-        self.assertEqual((rc, out.splitlines()[0]), (0, "BUSY"), err)
+        h = H.new_hold("dev-a", 60, prio=0)                                  # both queued before the daemon exists: the order is the scheduler's alone
+        self.daemon()
+        t0 = time.time()
+        while time.time() - t0 < 20 and L.read_json(H.path(h["id"]))["state"] != "active":
+            H.touch(h["id"], "hb")
+            time.sleep(0.2)
+        self.assertEqual(L.read_json(H.path(h["id"]))["state"], "active")
+        lk = L.PhoneLock(self.devs()["dev-a"], fake=True)
+        self.assertFalse(lk.acquire())                                       # an old flock user sees the phone busy
+        for _ in range(8):                                                   # the job stays pending the whole time the hold owns the phone
+            H.touch(h["id"], "hb")
+            self.assertEqual(L.job_verdict(L.find_job(jid)), "pending")
+            time.sleep(0.25)
+        H.touch(h["id"], "rel")
         self.assertEqual(self.farm("wait", jid, "--timeout", "30")[1], "pass")        # then the job runs
+        self.assertEqual(L.read_json(H.path(h["id"]))["state"], "done")
 
     def test_job_with_better_priority_goes_before_a_queued_hold(self):
         self.attach("dev-a")

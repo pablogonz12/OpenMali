@@ -82,6 +82,7 @@ class Farm:
         self.sweeping, self.sweep_run, self.prebuild_t, self._cl = {}, set(), None, None
         self.idle_since = {}                           # alias -> when it last stopped doing real (non-sweep) work or became healthy
         self.last_auto = 0
+        self.restore_pending = set()                    # phones whose last hold was cut short by a restart: restore before the next use
         self.menu_next = {}                            # alias -> next time to probe its MediaDeck versionCode
 
     # ---------- devices
@@ -1232,10 +1233,11 @@ class Farm:
             note = f"killed leftover: {left[0].strip()[:60]}"
         rc, out = self.qrestore(dev)
         _, ps = self.adb(dev, "shell", bad, timeout=30)
-        return (not ps.strip()) and "PROBLEM" not in out, note + (" STILL RUNNING" if ps.strip() else "")
+        ok = rc == 0 and "PROBLEM" not in out and not ps.strip()
+        return ok, (note + (" STILL RUNNING" if ps.strip() else "") + ("" if rc == 0 and "PROBLEM" not in out else f" qrestore rc={rc}: {(out.strip().splitlines() or [''])[-1][:100]}")).strip()
 
     def run_hold(self, hid, alias):
-        dev = self.devs[alias]
+        dev = dict(self.devs[alias])                       # a snapshot: devices.toml edits during the hold must not retarget the cleanup or the lock name
         lock = L.PhoneLock(dev, self.fake)
         h = L.read_json(H.path(hid))
         def done(reason, **kw):
@@ -1260,6 +1262,11 @@ class Farm:
                 self.cool[alias] = time.time() + (0 if self.fake else 60)
                 return
             h = L.read_json(H.path(hid))
+            if H.released(hid) or H.age(hid) > H.HB_STALE or self.is_disabled(dev):      # cancelled while the gate was being read
+                return done("cancelled while queued" if H.released(hid) else "caller lost or phone disabled while queued")
+            if alias in self.restore_pending:                        # a hold was cut short by a farmd restart: the phone may still be in its state
+                self.hold_cleanup(dev)
+                self.restore_pending.discard(alias)
             touched = True
             now = time.time()
             h.update(state="active", started=L.now(), deadline=now + h["max_s"], lock=dev["lock"], serial=self.tid.get(alias) or dev["serial"])
@@ -1270,13 +1277,19 @@ class Farm:
                 if why:
                     break
                 time.sleep(0.2 if self.fake else 2)
-            clean, note = self.hold_cleanup(dev)
+            h = L.read_json(H.path(hid))
+            h.update(state="ending", reason=why)                     # the caller kills its command NOW: cleanup must not race a live command
+            L.write_json(H.path(hid), h)
+            if self.is_disabled(dev):
+                clean, note = False, "restore deferred: disabled by owner"
+            else:
+                clean, note = self.hold_cleanup(dev)
             done(why, clean=clean, clean_note=note)
         except Exception:
             log(f"{alias}: hold {hid} error: " + traceback.format_exc()[-300:])
             if touched:
                 try:
-                    clean, note = self.hold_cleanup(dev)
+                    clean, note = (False, "restore deferred: disabled by owner") if self.is_disabled(dev) else self.hold_cleanup(dev)
                 except Exception:
                     clean, note = False, "cleanup failed"
                 done("farmd error", clean=clean, clean_note=note)
@@ -1331,6 +1344,9 @@ class Farm:
                 log(f"{alias}: {why}; {jid}/{cls} stays pending")
                 self.cool[alias] = time.time() + 120      # the finally below runs qrestore
                 return
+            if alias in self.restore_pending and not menu:      # an earlier hold was cut short by a farmd restart
+                self.hold_cleanup(dev)
+                self.restore_pending.discard(alias)
             touched = not menu                                  # menubench restores the phone itself
             self.upd(jid, lambda x: x["parts"][cls].update(state="running", device=alias))
             sha, why = self.build(job)
@@ -1711,8 +1727,9 @@ class Farm:
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
         for h in H.list_holds():                                                  # farmd restarted mid-hold: its lock died with it
             if h["state"] == "active" and not any(t.name == "hold/" + h["device"] for t in self.threads.values()):
-                h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False)
+                h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False, clean_note="restore runs before the next job or hold")
                 L.write_json(H.path(h["id"]), h)
+                self.restore_pending.add(h["device"])
         H.gc()
         for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
