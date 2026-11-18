@@ -233,17 +233,47 @@ def cmd_hold_beat(a):
     return 0
 
 
+def wait_line(j):
+    """one compact line for a job: id suite commit verdict, then per class `v11:pass` / `v13:fail(2 new)` / `v10:pending`"""
+    parts = []
+    for c, p in j["parts"].items():
+        if p["state"] == "done":
+            rp = L.run_path(j["id"], c)
+            run = L.read_json(rp) if os.path.exists(rp) else {}
+            nf = len(run.get("new_failures") or [])
+            parts.append(f"{c}:{p.get('verdict')}" + (f"({nf} new)" if nf else "") + (f" [{run['notes'][:60]}]" if run.get("notes") and p.get("verdict") != "pass" else ""))
+        else:
+            parts.append(f"{c}:{p['state']}")
+    return f"{j['id']} {j['suite']} {j['commit'][:7]} {L.job_verdict(j)} " + " ".join(parts)
+
+
 def cmd_wait(a):
-    j = L.find_job(a.job)
+    ids = [L.find_job(x)["id"] for x in a.job]
+    multi = len(ids) > 1 or a.any or a.all
+    if a.any and a.all:
+        raise SystemExit("farm wait: --any and --all are exclusive")
     t0 = time.time()
     while True:
-        j = L.find_job(j["id"])
-        v = L.job_verdict(j)
-        if v != "pending":
-            print(v)
-            return {"pass": 0, "fail": 1}.get(v, 2)
+        js = [L.find_job(i) for i in ids]
+        vs = [L.job_verdict(j) for j in js]
+        done = [v != "pending" for v in vs]
+        if not multi:
+            if done[0]:
+                print(vs[0])
+                return {"pass": 0, "fail": 1}.get(vs[0], 2)
+        elif (any(done) if a.any else all(done)):
+            for j, d in zip(js, done):
+                if d or not a.any:
+                    print(wait_line(j))
+            worst = [v for v, d in zip(vs, done) if d]
+            return 0 if all(v == "pass" for v in worst) else (1 if all(v in ("pass", "fail") for v in worst) else 2)
         if time.time() - t0 > a.timeout:
-            print("timeout: " + " ".join(f"{c}:{p['state']}" for c, p in j["parts"].items()))
+            if not multi:
+                print("timeout: " + " ".join(f"{c}:{p['state']}" for c, p in js[0]["parts"].items()))
+            else:
+                print(f"timeout after {int(a.timeout)}s:")
+                for j in js:
+                    print("  " + wait_line(j))
             return 3
         time.sleep(min(a.poll, max(0.1, a.timeout - (time.time() - t0))))
 
@@ -714,8 +744,10 @@ def main():
     s.add_argument("command", nargs="*", help=argparse.SUPPRESS)          # filled by main() from what follows `--`
     s.set_defaults(f=lambda a: cmd_hold_beat(a) if a.beat else cmd_hold(a))
 
-    s = sp.add_parser("wait")
-    s.add_argument("job")
+    s = sp.add_parser("wait", help="block until a job (or several: --any first verdict / --all every verdict) has its verdict; one call, no polling loops")
+    s.add_argument("job", nargs="+")
+    s.add_argument("--any", action="store_true", help="return as soon as one of the jobs has a verdict")
+    s.add_argument("--all", action="store_true", help="return when every job has a verdict (default for several jobs)")
     s.add_argument("--timeout", type=float, default=1800)
     s.add_argument("--poll", type=float, default=5)
     s.set_defaults(f=cmd_wait)
