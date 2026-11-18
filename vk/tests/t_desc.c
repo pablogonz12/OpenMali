@@ -262,6 +262,45 @@ test_compile(unsigned arch)
    vk_descriptor_set_layout_unref(&g_dev, &l1->vk);
 }
 
+static void
+test_variable_count(void)
+{
+   printf("variableDescriptorCount: sized by the allocate-time count\n");
+   VkDescriptorSetLayoutBinding b[2] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1, .stageFlags = 0x1f },
+      { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1000, .stageFlags = 0x1f } };
+   VkDescriptorBindingFlags fl[2] = { 0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT };
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bf = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = 2, .pBindingFlags = fl };
+   VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bf, .bindingCount = 2, .pBindings = b };
+   struct mali_dsl *l = NULL;
+   CHECK(mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS, "layout");
+   VkDescriptorSetVariableDescriptorCountLayoutSupport vs = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT };
+   VkDescriptorSetLayoutSupport sup = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT, .pNext = &vs };
+   mali_get_descriptor_set_layout_support(&ci, &sup);
+   CHECK(sup.supported && vs.maxVariableDescriptorCount >= 1000, "support reports max variable count (%u)", vs.maxVariableDescriptorCount);
+   VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5 };   /* 1 fixed + 4 variable */
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 4, .poolSizeCount = 1, .pPoolSizes = &ps };
+   VkDescriptorPool pool;
+   CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, &pool) == VK_SUCCESS, "pool");
+   VkDescriptorSetLayout hl = mali_dsl_to_handle(l);
+   uint32_t cnt = 4;
+   VkDescriptorSetVariableDescriptorCountAllocateInfo vc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+                                                             .descriptorSetCount = 1, .pDescriptorCounts = &cnt };
+   VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .pNext = &vc, .descriptorPool = pool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &hl };
+   VkDescriptorSet s = VK_NULL_HANDLE;
+   CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s) == VK_SUCCESS, "alloc with 4 of 1000 fits a pool of 5");
+   if (s) CHECK(mali_dset_from_handle(s)->bytes == 5 * MALI_DESC_SLOT_SIZE, "set is 5 slots (%u bytes)", mali_dset_from_handle(s)->bytes);
+   mali_reset_descriptor_pool(&g_dev, pool);
+   cnt = 1001;
+   CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s) == VK_ERROR_OUT_OF_POOL_MEMORY, "1001 > layout count must fail");
+   cnt = 1000;
+   CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s) == VK_ERROR_OUT_OF_POOL_MEMORY, "1000 does not fit the small pool");
+   mali_destroy_descriptor_pool(&g_dev, pool);
+   vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -276,6 +315,7 @@ main(int argc, char **argv)
    test_bytes(11);
    test_bytes(13);
    test_pool();
+   test_variable_count();
    test_compile(11);
    test_compile(13);
    clock_gettime(CLOCK_MONOTONIC, &b);

@@ -127,6 +127,9 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
    d->nbindings = nb;
+   d->var_binding = -1;
+   const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
+      vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
    for (uint32_t i = 0; i < nb; i++)
       d->b[i].type = MALI_DT_NONE;
    /* Slots are assigned in binding-number order so that the layout does not depend on the order in pBindings. */
@@ -150,6 +153,9 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
+      if (bf && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
+          n == nb - 1)   /* spec: only the highest-numbered binding; its slots are last in the set */
+         d->var_binding = n;
       /* Immutable samplers with a YCbCr conversion: the element holds one texture descriptor per image plane, then the sampler. */
       if (b->type == MALI_DT_COMBINED_IMAGE_SAMPLER && src->pImmutableSamplers && g_res && g_res->sampler_ycbcr) {
          uint32_t first = nycbcr;
@@ -216,6 +222,25 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
       else slots += (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
    }
    s->supported = ok && slots < (1u << 20);
+   VkDescriptorSetVariableDescriptorCountLayoutSupport *vs =
+      vk_find_struct(s->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);
+   if (vs) {
+      const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
+         vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+      vs->maxVariableDescriptorCount = 0;
+      if (bf && bf->pBindingFlags && ci->bindingCount) {
+         uint32_t hi = 0;
+         for (uint32_t i = 1; i < ci->bindingCount; i++)
+            if (ci->pBindings[i].binding > ci->pBindings[hi].binding) hi = i;
+         const VkDescriptorSetLayoutBinding *b = &ci->pBindings[hi];
+         if ((bf->pBindingFlags[hi] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) && type_ok(b->descriptorType) &&
+             b->descriptorType != VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK && mali_desc_stride(b->descriptorType)) {
+            uint64_t fixed = slots - (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
+            uint64_t room = (1u << 20) - 1 - fixed;
+            vs->maxVariableDescriptorCount = (uint32_t)(room / mali_desc_stride(b->descriptorType));
+         }
+      }
+   }
 }
 
 /* ---- pools and sets ---- */
@@ -308,9 +333,15 @@ write_immutable(struct mali_dset *s)
 
 /* first fit between the sets (list sorted by offset) */
 static VkResult
-alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struct mali_dset **out)
+alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, uint32_t var_count, struct mali_dset **out)
 {
-   uint32_t bytes = l->slot_count * MALI_DESC_SLOT_SIZE;
+   uint32_t slots = l->slot_count;
+   if (l->var_binding >= 0) {   /* the variable binding is last: shrink it from count to var_count elements */
+      const struct mali_lbinding *vb = &l->b[l->var_binding];
+      if (var_count > vb->count) return VK_ERROR_OUT_OF_POOL_MEMORY;
+      slots -= (vb->count - var_count) * vb->stride;
+   }
+   uint32_t bytes = slots * MALI_DESC_SLOT_SIZE;
    if (p->nsets >= p->max_sets) return VK_ERROR_OUT_OF_POOL_MEMORY;
    struct mali_dset **link = &p->sets;
    uint32_t at = 0;
@@ -358,9 +389,12 @@ mali_allocate_descriptor_sets(struct vk_device *dev, const VkDescriptorSetAlloca
    struct mali_dpool *p = mali_dpool_from_handle(ai->descriptorPool);
    uint32_t i;
    VkResult r = VK_SUCCESS;
+   const VkDescriptorSetVariableDescriptorCountAllocateInfo *vc =
+      vk_find_struct_const(ai->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO);
    for (i = 0; i < ai->descriptorSetCount; i++) {
       struct mali_dset *s;
-      r = alloc_set(dev, p, mali_dsl_from_handle(ai->pSetLayouts[i]), &s);
+      uint32_t n = vc && vc->pDescriptorCounts && i < vc->descriptorSetCount ? vc->pDescriptorCounts[i] : 0;
+      r = alloc_set(dev, p, mali_dsl_from_handle(ai->pSetLayouts[i]), n, &s);
       if (r != VK_SUCCESS) break;
       out[i] = mali_dset_to_handle(s);
    }
