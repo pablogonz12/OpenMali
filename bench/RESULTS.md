@@ -100,7 +100,12 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (ours cannot yet do 1
 
 Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/right through the library (`scripts/quick/menubench` in the MediaDeck repo, run by the farm `menu` suite). Render fps from the web helper's present events over 30 s, medians over the reps that passed the self-checks; `default` = as shipped, `uncapped` = frame limits off. It runs on the Mali bridge, not on mali-open: numbers change with the MediaDeck build, not with our commits. An **invalid** row (self-check failed) never replaces a valid one.
 
-No menu run yet.
+### MediaDeck vc 25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) (2026-11-18)
+
+| phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
+|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 120 | 0/3 | INVALID: FAILED after retries: session not READY (SUSPENDED) | 2026-11-18 |
+| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/3 | INVALID: FAILED after retries: session not READY (STARTING_STEAM); FAILED after retries:  | 2026-11-18 |
 
 Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets `default`; `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`; `MALI_HF=0 MALI_NOTF=1`; `MALI_NO_MERGE=1`. Bridge options: none exposed in the guest besides the above.
 Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).
