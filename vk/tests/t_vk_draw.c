@@ -30,6 +30,7 @@ static unsigned g_colbpp = 4;
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
+static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
 static int g_dynstr;   /* dynamic VERTEX_INPUT_BINDING_STRIDE with a wrong static stride; the draw binds strides through CmdBindVertexBuffers2 */
 static PFN_vkCmdBindVertexBuffers2 CmdBindVertexBuffers2_;
@@ -719,7 +720,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if (s->mode == MODE_CLEARQUAD) {   /* CmdClearAttachments AFTER a draw, sub-rectangle: a constant-colour quad (the triangle must survive outside the rect) */
       VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0, .clearValue = {.color = {{0, 0, 1, 1}}}};
       VkClearRect cr = {.rect = {{100, 100}, {60, 60}}, .baseArrayLayer = 0, .layerCount = 1};
-      CmdClearAttachments(cb, 1, &ca, 1, &cr);
+      VkClearAttachment cas[2] = {ca, {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .clearValue = {.depthStencil = {1.0f, 0}}}};
+      CmdClearAttachments(cb, g_clearzs && s->depth ? 2 : 1, cas, 1, &cr);
    }
    CmdEndRenderPass(cb);
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
@@ -1351,7 +1353,7 @@ test_mode(const char *name, int mode, double expect, double tol)
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
-   if (!scene_create(&s, 0)) return 0;
+   if (!scene_create(&s, g_clearzs)) return 0;
    s.mode = mode;
    float rot[1][4] = {{1, 0, 0, 0}};
    int ok = 1;
@@ -2058,6 +2060,7 @@ main(int argc, char **argv)
    }
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
    if (ok && CASE_ON("clearquad")) ok &= test_mode("clearquad", MODE_CLEARQUAD, 0, 0);
+   if (ok && CASE_ON("clearquad_zs")) { g_clearzs = 1; ok &= test_mode("clearquad_zs", MODE_CLEARQUAD, 0, 0); g_clearzs = 0; }
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
