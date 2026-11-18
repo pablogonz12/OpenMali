@@ -51,6 +51,7 @@ run "loader v11"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT
 run "loader v13"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --expect-name "Mali-G925"
 run "direct v11"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-name "Mali-G615"
 run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-name "Mali-G925"
+for g in v11 v13; do run "ext_sync_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_ext_sync_caps" --direct "$OUT/libvulkan_mali.so"; done
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
