@@ -11,6 +11,9 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #define MALI_DRM_FORMAT_MOD_LINEAR 0ull
 const uint64_t mali_wsi_modifier = MALI_DRM_FORMAT_MOD_LINEAR;
 
@@ -31,12 +34,33 @@ mali_wsi_destroy_query_pool(VkDevice dev, VkQueryPool pool, const VkAllocationCa
       mali_real_destroy_query_pool(dev, pool, a);
 }
 
+/* X11 WSI (wsi_common_x11, see STEAM-GAPS.md "X11 WSI"): two present paths, chosen once per device.
+ *   dma-buf (default on hardware): images are the linear exportable BOs above; the X server imports them through DRI3
+ *     (Present). Needs an X server that can import our dma-bufs: Xwayland with glamor on a render node. DroidDeck's
+ *     Xwayland on Mali has no DRM node, hence no DRI3 (docs/development/mali-venus.md).
+ *   software (fake backend, or MALI_WSI=sw): wsi_common copies each frame into a CPU-visible linear buffer and the X server
+ *     gets it by MIT-SHM / PutImage (what lavapipe does, and what the vendor bridge does for X11). Needs no dma-buf at all,
+ *     so it also works on the fake backend (whose BO fds are not dma-bufs). The device-wide switch also moves the Wayland
+ *     platform to wl_shm: do not use it in a process whose Wayland swapchains must stay zero-copy (the gamescope layer's).
+ * MALI_WSI=dmabuf forces the first path on the fake backend (it then fails at swapchain creation; for tests). */
+static bool
+mali_wsi_use_sw(const struct mali_physical_device *pdev)
+{
+   const char *e = getenv("MALI_WSI");
+   if (e && !strcmp(e, "sw"))
+      return true;
+   if (e && !strcmp(e, "dmabuf"))
+      return false;
+   return pdev->gpu.fake;
+}
+
 VkResult
 mali_wsi_init(struct mali_physical_device *pdev)
 {
+   bool sw = mali_wsi_use_sw(pdev);
    VkResult r = wsi_device_init(&pdev->wsi, mali_physical_device_to_handle(pdev), mali_wsi_proc_addr,
                                 &pdev->vk.instance->alloc, -1, NULL,
-                                &(struct wsi_device_options){.sw_device = false});
+                                &(struct wsi_device_options){.sw_device = sw});
    if (r != VK_SUCCESS)
       return r;
    /* No DRM node behind kbase: wsi sees no render/primary device and assumes the compositor is on our GPU. */
