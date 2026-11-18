@@ -194,11 +194,19 @@ test_sampler(unsigned arch)
    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
    ci.magFilter = VK_FILTER_LINEAR;
    ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+   ci.minLod = 3.0f;
    ci.maxLod = 4.0f;
    ci.compareEnable = VK_TRUE;
    ci.compareOp = VK_COMPARE_OP_LESS;
    mali_sampler_pack(arch, &ci, &s, &o);
-   CHECK(((o.w[0] >> 8) & 15) == 8 && ((o.w[0] >> 12) & 15) == 12 && ((o.w[0] >> 16) & 15) == 9, "wrap modes %08x", o.w[0]);
+   /* U -> Wrap Mode S (bits 16), V -> T (12), W -> R (8) */
+   CHECK(((o.w[0] >> 16) & 15) == 8 && ((o.w[0] >> 12) & 15) == 12 && ((o.w[0] >> 8) & 15) == 9, "wrap modes %08x", o.w[0]);
+   CHECK((o.w[1] & 0x1fff) == 768, "min lod %u", o.w[1] & 0x1fff);
+   ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(((o.w[0] >> 8) & 15) == 11 && ((o.w[0] >> 16) & 15) == 8, "W border -> R field, U unchanged %08x", o.w[0]);
+   ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+   mali_sampler_pack(arch, &ci, &s, &o);
    CHECK((o.w[0] >> 27 & 1) == 1 && (o.w[0] >> 28 & 1) == 0, "filters %08x", o.w[0]);
    CHECK((o.w[0] >> 30) == 3, "mipmap mode");
    CHECK(((o.w[1] >> 13) & 7) == 1, "compare func %u", (o.w[1] >> 13) & 7);
