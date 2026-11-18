@@ -93,3 +93,8 @@ so `vkCreateEvent` (and meta allocations) returned OUT_OF_DEVICE_MEMORY (api.com
 (re-bind clears the shader cache). Regression test `t_vk_leak --only second` fails before (CreateEvent=-2), passes after. (2) harness: `qdeqp.py` pulled the QPA to hard-coded /tmp (full tmpfs) => "no QPA"; now QDEQP_TMP.
 Daily sample after: 283 pass / 126 fail / 971 NS / 0 crash / 1 other (baseline 280/128/971/0); 0 regressions, 3 newly passing (buffer_view r8_unorm, r16g16b16a16_uint, submit_twice_secondary).
 Run `t_vk_leak` on the guest with `vk/tests/leakrun.sh "--n 300"`; TMPDIR=~/.cache/mali-tmp for the build while /tmp is full.
+
+## dual_source crash group (2026-11-18)
+The `dual_source` blend cases crash the dEQP context when run as one `cases` batch (33 cases, /tmp/crash7.txt) at 73fd1f7, 89a8bfd, 1772d2b and main alike, also with
+`MALI_INT_NOCOH=0` and with the meta-coh fix; single cases and the daily pass. So it is not a regression but a batch artefact: my reading is state leaking between
+cases in one process (accumulating BOs/queue state until a GPU fault kills the context), not a per-case bug. Not investigated further.
