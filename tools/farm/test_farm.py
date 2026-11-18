@@ -584,6 +584,16 @@ class T(unittest.TestCase):
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
 
+    def test_bench_cube_ours_plausibility_follows_the_bridge(self):
+        def row(drv, gpu, ph="poco-x8"):
+            return {"phone": ph, "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}
+        rows = [row("bridge", 1.32), row("ours", 1.50), row("ours", 0.4), row("bridge", 11.3, "cmf"), row("ours", 1.9, "cmf")]
+        got = [BL.publishable(r, rows) for r in rows]
+        self.assertEqual(got, [True, True, False, True, False])         # X8: 1.50 ms is valid (bridge 1.32), 0.4 is not; CMF: 1.9 ms << 11.3/2
+        self.assertFalse(BL.publishable(row("ours", 1.9)))              # no bridge row to compare with: the old 2 ms floor
+        self.assertTrue(BL.publishable(row("ours", 2.5)))
+        self.assertEqual(len(BL.merge_rows([], rows)), 3)
+
     def test_bench_owner_pending_is_gated_not_invalid(self):
         """bench2 stopping with 'PENDING: focus rule violated' pushed nothing: the .so left on the phone by an earlier job must not make the job
         INVALID (2026-11-18: three INVALIDs in 21 s used up the v13 attempts). A finished chunk with a foreign .so is still INVALID."""

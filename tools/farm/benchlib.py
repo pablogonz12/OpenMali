@@ -155,20 +155,28 @@ def row_key(r):
     return (r.get("phone"), r.get("driver"), r.get("version"), r.get("variant"), r.get("commit_full") or r.get("commit"))
 
 
-def publishable(r):
-    """fake rows and implausible ones (ours cube under 2 ms GPU = no real work, the invalid-winner symptom) are never published"""
+def publishable(r, peers=()):
+    """fake rows and implausible ones (the invalid-winner symptom: ours cube with no real work) are never published.
+    "Implausible" = ours cube offscreen GPU time below half of the bridge's for the same phone, variant and commit (`peers` = rows to look the
+    bridge up in); with no bridge row to compare with, below 2 ms. The fixed 2 ms alone dropped every valid ours cube row of the Poco X8
+    (G925: bridge 1.32 ms, ours 1.40-1.53 ms), so RESULTS.md never had one."""
     if r.get("version") == "fake" or "presented" not in r or "offscreen" not in r:
         return False
     if r.get("bench") == "cube" and r.get("driver") == "ours":
         g = (r["offscreen"] or {}).get("gpu_ms")
-        return g is None or g >= 2.0
+        if g is None:
+            return True
+        ref = [p["offscreen"]["gpu_ms"] for p in peers if p.get("driver") == "bridge" and p.get("bench") == "cube" and p.get("phone") == r.get("phone")
+               and p.get("variant") == r.get("variant") and (p.get("commit_full") or p.get("commit")) == (r.get("commit_full") or r.get("commit"))
+               and isinstance(p.get("offscreen"), dict) and p["offscreen"].get("gpu_ms")]
+        return g >= (0.5 * min(ref) if ref else 2.0)
     return True
 
 
 def merge_rows(existing, new):
     """-> merged list: later rows replace earlier ones with the same key (and move to the end = newest); relative order otherwise kept"""
     d = {}
-    for r in existing + [x for x in new if publishable(x)]:
+    for r in existing + [x for x in new if publishable(x, new)]:
         k = row_key(r)
         d.pop(k, None)
         d[k] = r
@@ -184,7 +192,8 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
     """merge <state>/bench/results.jsonl into bench/results.jsonl of a clone owned by the farm, regenerate RESULTS.md, commit
     "bench: <phones> rows for <short commit>" and push to `remote` <branch>. Never touches any other checkout. A rejected push
     (somebody ff-merged meanwhile) is retried from a fresh fetch. -> {"status": "pushed|nothing|error", "n": rows changed, "msg": ...}"""
-    rows = [r for r in load_rows(state) if publishable(r)]
+    allrows = load_rows(state)
+    rows = [r for r in allrows if publishable(r, allrows)]
     mrows = [r for r in M.load_rows(M.menu_path(state)) if M.publishable(r)]
     if not rows and not mrows:
         return {"status": "nothing", "n": 0, "msg": "no publishable rows in the farm state"}
