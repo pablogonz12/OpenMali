@@ -13,6 +13,7 @@
 
 #include <dlfcn.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,11 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL;
+   char logpath[] = "/tmp/t_vk_mem_cache.XXXXXX";
+   int lfd = mkstemp(logpath);
+   if (lfd < 0) { printf("mkstemp\n"); return 1; }
+   close(lfd);
+   setenv("MALI_FAKE_CACHE_LOG", logpath, 1);
    for (int i = 1; i < argc; i++)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
    if (!icd) { printf("usage: t_vk_mem --direct <icd.so>\n"); return 2; }
@@ -100,6 +106,20 @@ main(int argc, char **argv)
    CHECK(GetDeviceMemoryOpaqueCaptureAddress(dev, &oci) == 0, "opaque capture address");
    FreeMemory(dev, m, NULL);
 
+   /* a coherent type never reaches the backend cache ops */
+   {
+      VkMappedMemoryRange cr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = VK_NULL_HANDLE, .size = 64};
+      VkDeviceMemory cm;
+      CHECK(AllocateMemory(dev, &mai, NULL, &cm) == VK_SUCCESS, "alloc coherent for flush");
+      cr.memory = cm;
+      CHECK(FlushMappedMemoryRanges(dev, 1, &cr) == VK_SUCCESS && InvalidateMappedMemoryRanges(dev, 1, &cr) == VK_SUCCESS, "coherent flush");
+      FILE *z = fopen(logpath, "r");
+      char b[8] = "";
+      if (z) { size_t got = fread(b, 1, sizeof b - 1, z); b[got] = 0; fclose(z); }
+      CHECK(b[0] == 0, "coherent flush/invalidate must not reach the backend, got '%s'", b);
+      FreeMemory(dev, cm, NULL);
+   }
+
    /* ---- cached type: flush/invalidate are legal and keep the data ---- */
    mai.memoryTypeIndex = t_cached;
    VkDeviceMemory c;
@@ -111,8 +131,16 @@ main(int argc, char **argv)
       {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = c, .offset = 64, .size = VK_WHOLE_SIZE},
       {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = c, .offset = 65536 - 64, .size = 64},
    };
+   VkMappedMemoryRange odd = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = c, .offset = 10, .size = 20};
    CHECK(FlushMappedMemoryRanges(dev, 3, r) == VK_SUCCESS, "flush");
    CHECK(InvalidateMappedMemoryRanges(dev, 3, r) == VK_SUCCESS, "invalidate");
+   CHECK(FlushMappedMemoryRanges(dev, 1, &odd) == VK_SUCCESS, "flush unaligned");
+   /* the backend saw whole cache lines, in order: flush x3, invalidate x3, then the unaligned one rounded out to line 0 */
+   char log[4096] = "";
+   FILE *lf = fopen(logpath, "r");
+   if (lf) { size_t got = fread(log, 1, sizeof log - 1, lf); log[got] = 0; fclose(lf); }
+   CHECK(!strcmp(log, "F 0 128\nF 64 65472\nF 65472 64\nI 0 128\nI 64 65472\nI 65472 64\nF 0 64\n"),
+         "backend cache ops:\n%s", log);
    CHECK(p[0] == 0x77 && p[65535] == 0x77, "data after flush/invalidate");
    UnmapMemory(dev, c);
    FreeMemory(dev, c, NULL);
@@ -143,6 +171,7 @@ main(int argc, char **argv)
 
    DestroyDevice(dev, NULL);
    DestroyInstance(inst, NULL);
+   unlink(logpath);
    printf(g_fail ? "FAILED\n" : "OK\n");
    return g_fail;
 }

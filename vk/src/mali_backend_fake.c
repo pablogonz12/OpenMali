@@ -322,6 +322,15 @@ fake_bo_free(struct mali_kdev *k, struct mali_bo *bo)
 static void
 fake_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t len, bool invalidate)
 {
+   /* MALI_FAKE_CACHE_LOG=path: append "F|I off len" per cache op so a test can see the rounded range (tests/t_vk_mem.c) */
+   const char *log = getenv("MALI_FAKE_CACHE_LOG");
+   if (log) {
+      FILE *f = fopen(log, "a");
+      if (f) {
+         fprintf(f, "%c %zu %zu\n", invalidate ? 'I' : 'F', off, len);
+         fclose(f);
+      }
+   }
    __sync_synchronize();
 }
 
