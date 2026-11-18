@@ -186,6 +186,19 @@ Nothing here is confirmed on hardware yet.
 - A JSON whose `library_path` is on `/storage/emulated/0/...` fails with `ZINK: vkCreateInstance failed (VK_ERROR_INCOMPATIBLE_DRIVER)` (noexec fuse mount); the library must sit in the guest's own filesystem (`/tmp/x11wsi` persists across sessions).
 **Steam burst: not on our driver.** `droiddeckctl env set` of `VK_DRIVER_FILES` is overwritten by the session script, and `BL_VK_DRIVER=/tmp/x11wsi/icd.json` is read (`== vulkan driver: imported /tmp/x11wsi/libvulkan_mali.so`) but the session then prints `== vulkan driver: Mali bridge` and gamescope, Steam and the web helpers run on the bridge (no process maps our library). Killing the session's `steam` ends the session. A real burst needs the bridge preference (`vkBridge`) off for that session: not tried.
 
+## Round 10: Steam on our driver, poco-x4 hardware (2026-11-18, three bursts, `vkBridge` off, `MALI_WSI=sw`, glibc-wsi ICD)
+Hardware-confirmed (bursts 1 and 2, head 7551451; burst 3 was the same stack):
+- gamescope (Wayland backend) selects `Mali-G610 MC6 (mali-own)` and maps our `.so`; the Steam client (`steamrtarm64/steam`) maps it too (`/proc/<pid>/maps`).
+- The Steam update UI, through zink plus the gamescope WSI layer, created a swapchain on our driver (3 images, 1638x720). `steamsysinfo` reports "Mali-G610 MC6 (mali-own)" / MesaPanVK. xdg-desktop-portal-gtk also ran zink on it.
+- **Not reached: the Steam UI.** Every burst stayed in STARTING_STEAM ("Waiting for Steam's first frame"); nothing drawn, so no fps.
+- **Blocker:** the web helper (`steamwebhelper`, `--use-angle=vulkan` GPU process) dies and is respawned about every 10 s: `GPU process exited unexpectedly: exit_code=8704`, then "Applying workarounds due to GPU process restarts: gpu:3" and "Triggering shutdown due to GPU process restarts"; also `shared_image_interface_proxy.cc(130) Buffer handle is null` and `one_copy_raster_buffer_provider.cc(348) Creation of StagingBuffer's SharedImage failed`. The GPU process lives under 2 s, so it was never sampled in `/proc`; the renderers never map our `.so`. `exit_code=8704` also occurs on the bridge baseline and recovers there, so the code alone is not proof of our driver; what differs is that on our driver the helper never recovers (12 reaps vs 0 on the bridge).
+- Cause: **unknown.** ANGLE's init gates (vk_renderer.cpp @5d4df51d1d7d: instance/device >= 1.1, device count, queue family and memory type counts) do not fail for our 1.3 device on paper. Not verified on hardware.
+- gamescope also logs (not fatal in these runs): `vkGetPhysicalDeviceFormatProperties2 returned zero modifiers for DRM format NV12`, `doesn't support VK_EXT_physical_device_drm` / `Failed to get DRM FD from renderer`, and zink's base-requirement warning (`logicOp`, `EXT_line_rasterization`; warning-only in zink 26.0.8).
+
+Diagnostics added: `MALI_TRACE=<file>` (5aefcf1): load/unload, `vkCreateInstance`/`vkCreateDevice` with results, fatal signals with a backtrace; `t_vk_trace` checks it on the host. **Burst 3 with it produced no trace**: the file stayed empty. Unconfirmed why: my guest step that refreshes `/tmp/x11wsi/libvulkan_mali.so` printed no sha (its reply parsed wrongly), so the guest most likely still ran the previous ICD (no trace code). The next burst must verify the guest sha first. Burst 3 also stayed in STARTING_STEAM (screenshot: DroidDeck "Starting Steam" screen).
+
+Next (needs a burst): refresh and sha-check the guest lib, rerun with `MALI_TRACE`; if the GPU process never loads our ICD, find why the web helper does not see `VK_DRIVER_FILES`; try `BL_STEAM_SOFT_COMPOSITING=1` (software CEF compositing) as a workaround.
+
 ## Phone experiment (not run: phones busy)
 After the two features are in and `t_steam_caps --expect-missing 0` passes, start the MediaDeck session on our ICD (`droiddeck-session`, lines ~202 and ~293):
 ```
