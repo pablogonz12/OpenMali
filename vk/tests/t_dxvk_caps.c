@@ -152,6 +152,23 @@ main(int argc, char **argv)
       CHECK(adv == 1 && uil.unifiedImageLayouts == 1, "VK_KHR_unified_image_layouts advertised=%d unifiedImageLayouts=%u (want 1/1)", adv, uil.unifiedImageLayouts);
       CHECK(uil.unifiedImageLayoutsVideo == 0, "unifiedImageLayoutsVideo must stay false (no video)");
    }
+   /* VK_KHR_shader_expect_assume: name and feature bit move together; the device accepts both (the SPIR-V capability is on in spirv_to_nir). */
+   {
+      VkPhysicalDeviceShaderExpectAssumeFeaturesKHR sea = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_EXPECT_ASSUME_FEATURES_KHR};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sea};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_KHR_shader_expect_assume");
+      CHECK(adv == 1 && sea.shaderExpectAssume == 1, "VK_KHR_shader_expect_assume advertised=%d shaderExpectAssume=%u (want 1/1)", adv, sea.shaderExpectAssume);
+      VkPhysicalDeviceFeatures2 f2q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sea};
+      VkDeviceQueueCreateInfo sq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
+      const char *sx = "VK_KHR_shader_expect_assume";
+      VkDeviceCreateInfo sd = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2q, .queueCreateInfoCount = 1, .pQueueCreateInfos = &sq,
+                               .enabledExtensionCount = 1, .ppEnabledExtensionNames = &sx};
+      VkDevice sdev = NULL;
+      CHECK(CreateDevice(pd, &sd, NULL, &sdev) == VK_SUCCESS, "device with shader_expect_assume + feature");
+      if (sdev) ((PFN_vkDestroyDevice)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkDestroyDevice"))(sdev, NULL);
+   }
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e11};
    e2.features = f2.features; e11 = f11; e11.pNext = &e12; e12 = f12; e12.pNext = &e13; e13 = f13; e13.pNext = &m6;   /* m6 -> dce, queried above */
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,

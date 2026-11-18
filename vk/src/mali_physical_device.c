@@ -199,6 +199,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_swapchain_mutable_format = true,
       .EXT_image_drm_format_modifier = true, /* LINEAR only */
       .EXT_depth_clip_enable = true,         /* t_dxvk_caps; pixels: t_vk_draw fx_dclip_* */
+      .KHR_shader_expect_assume = true,      /* t_dxvk_caps: spirv_to_nir default caps include ExpectAssumeKHR (OpExpectKHR passthrough, OpAssumeTrueKHR dropped) */
       .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
@@ -259,6 +260,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .maintenance5 = true,        /* t_vk_feat maint5 */
+      .shaderExpectAssume = true,  /* t_dxvk_caps */
       .maintenance6 = true,
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
