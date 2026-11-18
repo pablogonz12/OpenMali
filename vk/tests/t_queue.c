@@ -63,7 +63,8 @@ now_us(void)
    X(ResetFences) X(WaitForFences) X(GetFenceStatus) X(CreateSemaphore) X(DestroySemaphore)        \
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
-   X(ImportSemaphoreFdKHR) X(GetFenceFdKHR)
+   X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
+   X(BindBufferMemory) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -301,6 +302,89 @@ test_order(int fence_mode)
    return 1;
 }
 
+/* Hardware ordering probe (real GPU, no fake): a heavy frame A (buffer copies, ~ms) signals S; the present P waits S and signals an
+ * exportable semaphore whose sync_file is what wsi_common imports into the dma-buf for the compositor. The sync_file must not
+ * signal before A's fence does: that is "the compositor cannot show a half-drawn frame". With MALI_PRESENT_FENCE=1 P returns without
+ * a CPU wait, so the sync_file (not the CPU) is the only thing ordering the commit. Prints how often P returned while A still ran. */
+static int
+test_gpufence(void)
+{
+   VkExportSemaphoreCreateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+   VkSemaphoreCreateInfo sx = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ex};
+   VkSemaphoreCreateInfo sp = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkSemaphore s, s2;
+   VkFence fa;
+   CHECK(CreateSemaphore(dev, &sp, NULL, &s) == VK_SUCCESS, "sem");
+   CHECK(CreateSemaphore(dev, &sx, NULL, &s2) == VK_SUCCESS, "exportable sem");
+   CHECK(CreateFence(dev, &fi, NULL, &fa) == VK_SUCCESS, "fence");
+   const VkDeviceSize sz = 64u << 20;
+   VkBuffer b[2];
+   VkDeviceMemory m[2];
+   for (int i = 0; i < 2; i++) {
+      VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+      CHECK(CreateBuffer(dev, &bi, NULL, &b[i]) == VK_SUCCESS, "buffer");
+      VkMemoryRequirements mr;
+      GetBufferMemoryRequirements(dev, b[i], &mr);
+      uint32_t t = 0;
+      while (!(mr.memoryTypeBits & (1u << t))) t++;
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = t};
+      CHECK(AllocateMemory(dev, &ai, NULL, &m[i]) == VK_SUCCESS, "alloc");
+      CHECK(BindBufferMemory(dev, b[i], m[i], 0) == VK_SUCCESS, "bind");
+   }
+   VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkCommandPool pool;
+   CHECK(CreateCommandPool(dev, &pi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBufferAllocateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb;
+   CHECK(AllocateCommandBuffers(dev, &ci, &cb) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "begin");
+   VkBufferCopy rg = {.size = sz};
+   for (int k = 0; k < 4; k++) {
+      CmdFillBuffer(cb, b[0], 0, sz, 0x01010101u * (k + 1));
+      CmdCopyBuffer(cb, b[0], b[1], 1, &rg);
+      CmdCopyBuffer(cb, b[1], b[0], 1, &rg);
+   }
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   int n = 40, early_return = 0, viol = 0;
+   double sum_gpu = 0;
+   for (int i = 0; i < n; i++) {
+      VkSubmitInfo a = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb,
+                        .signalSemaphoreCount = 1, .pSignalSemaphores = &s};
+      VkSubmitInfo p = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &s,
+                        .pWaitDstStageMask = &st, .signalSemaphoreCount = 1, .pSignalSemaphores = &s2};
+      double t0 = now_us();
+      CHECK(QueueSubmit(queue, 1, &a, fa) == VK_SUCCESS, "frame submit");
+      CHECK(QueueSubmit(queue, 1, &p, VK_NULL_HANDLE) == VK_SUCCESS, "present submit");
+      int ret_early = GetFenceStatus(dev, fa) == VK_NOT_READY;
+      early_return += ret_early;
+      VkSemaphoreGetFdInfoKHR gs = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, .semaphore = s2,
+                                    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+      int fd = -2;
+      CHECK(GetSemaphoreFdKHR(dev, &gs, &fd) == VK_SUCCESS, "present semaphore fd");
+      if (fd >= 0) {
+         struct pollfd pf = {fd, POLLIN, 0};
+         CHECK(poll(&pf, 1, 10000) == 1, "present sync_file never signalled");
+         VkResult fs = GetFenceStatus(dev, fa);   /* the sync_file is signalled: the frame must be finished */
+         if (fs != VK_SUCCESS) viol++;
+         CHECK(fs == VK_SUCCESS, "iter %d: present sync_file signalled while the frame was still running", i);
+         close(fd);
+      }
+      sum_gpu += now_us() - t0;
+      CHECK(WaitForFences(dev, 1, &fa, VK_TRUE, 10000000000ull) == VK_SUCCESS, "frame wait");
+      ResetFences(dev, 1, &fa);
+   }
+   CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "idle");
+   printf("{\"test\":\"gpufence\",\"iters\":%d,\"present_returned_before_frame_done\":%d,\"violations\":%d,\"ms_per_frame\":%.2f,\"ok\":%s}\n",
+          n, early_return, viol, sum_gpu / n / 1000, viol ? "false" : "true");
+   return !viol;
+}
+
 struct pp {
    VkSemaphore t;
    int n;
@@ -532,6 +616,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
    if (ok && CASE_ON("syncfile")) ok &= test_syncfile();
+   if (ok && g_only && !strcmp(g_only, "gpufence")) ok &= test_gpufence();
    if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
