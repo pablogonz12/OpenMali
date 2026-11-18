@@ -61,6 +61,7 @@ def git(*a, cwd=HERE, timeout=120):
 
 
 class Farm:
+    dst_lock = threading.RLock()                       # set_dstate is called from workers and the tick (class level: tests build Farm without __init__)
     def __init__(self, fake, once, poll):
         self.fake, self.once, self.poll = fake, once, poll
         self.cfg, self.devs = L.load_devices()
@@ -154,14 +155,15 @@ class Farm:
         return "usb" if t == self.devs[alias]["serial"] else ("mdns" if t.startswith("adb-") else "wireless") if t else ""
 
     def set_dstate(self, alias, status, note="", **extra):
-        cur = self.dstate.get(alias, {})
-        if cur.get("status") != status:
-            keep = {k: cur[k] for k in ("batt", "temp_c", "thermal", "wireless") if k in cur}
-            self.dstate[alias] = dict(keep, status=status, since=time.time(), note=note, since_iso=L.now())
-        else:
-            cur["note"] = note
-        self.dstate[alias].update(extra)
-        L.write_json(self.st_path, self.dstate)
+        with self.dst_lock:                              # workers and the tick call this concurrently: serialise mutation and dump
+            cur = self.dstate.get(alias, {})
+            if cur.get("status") != status:
+                keep = {k: cur[k] for k in ("batt", "temp_c", "thermal", "wireless") if k in cur}
+                self.dstate[alias] = dict(keep, status=status, since=time.time(), note=note, since_iso=L.now())
+            else:
+                cur["note"] = note
+            self.dstate[alias].update(extra)
+            L.write_json(self.st_path, json.loads(json.dumps(self.dstate)))
 
     # ---------- health gates
     def is_disabled(self, dev):
@@ -1395,6 +1397,8 @@ class Farm:
             done(why, clean=clean, clean_note=note)
         except Exception:
             log(f"{alias}: hold {hid} error: " + traceback.format_exc()[-300:])
+            if not touched:
+                self.cool[alias] = time.time() + (0 if self.fake else 30)      # do not re-tick and retry at full speed
             if touched:
                 try:
                     clean, note = (False, "restore deferred: disabled by owner") if self.is_disabled(dev) else self.hold_cleanup(dev)
@@ -1468,7 +1472,7 @@ class Farm:
                         and "(fake)" not in res.get("notes", "") and not self.is_disabled(dev)):
                     log(f"{alias}: {jid}/{cls} driver sha mismatch ({res.get('notes', '')[:80]}); re-pushing and retrying once inside the hold")
                     res = getattr(self, "suite_" + job["suite"])(job, dev)       # shellroute pushes + verifies afresh; still invalid -> normal requeue
-                if res.get("lost") or (self.fake is False and alias not in self.attached() and res["verdict"] != "pass"):
+                if res.get("lost") or (self.fake is False and alias not in self.attached() and res.get("verdict") != "pass"):
                     res = None                                  # phone vanished mid-run: do not blame the commit, retry later
         except Exception:
             res = {"verdict": "error", "notes": "farmd exception: " + traceback.format_exc()[-300:]}

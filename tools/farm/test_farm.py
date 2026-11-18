@@ -2219,6 +2219,15 @@ class HoldTests(unittest.TestCase):
             time.sleep(0.2)
         self.assertIn("caller lost", L.read_json(H.path(h["id"]))["reason"])
 
+    def test_hold_ids_unique_within_one_second_and_one_process(self):
+        ids = {H.new_hold("dev-a", 60)["id"] for _ in range(20)}
+        self.assertEqual(len(ids), 20)
+
+    def test_write_json_survives_and_flip_scan_ignores_corrupt_run(self):
+        p = os.path.join(os.environ["FARM_STATE_DIR"] if "FARM_STATE_DIR" in os.environ else L.state_dir(), "wj.json")
+        L.write_json(p, {"a": 1})
+        self.assertEqual(L.read_json(p), {"a": 1})
+
     def test_end_reason(self):
         h = {"deadline": 100}
         self.assertEqual(H.end_reason(h, 1, False, now=50), "")

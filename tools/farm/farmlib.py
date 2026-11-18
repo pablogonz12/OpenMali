@@ -210,6 +210,8 @@ def write_json(path, obj):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
     with os.fdopen(fd, "w") as f:
         json.dump(obj, f, indent=1, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -476,7 +478,10 @@ def flip_scan(days=3, since=None):
             continue
         for cls, p in j["parts"].items():
             rp = run_path(j["id"], cls)
-            run = read_json(rp) if os.path.exists(rp) else None
+            try:
+                run = read_json(rp) if os.path.exists(rp) else None
+            except (ValueError, OSError):
+                run = None                                         # one corrupt run file must not abort the scan
             if not run or run.get("verdict") in ("error", "invalid") or (run.get("started") or "") < cutoff:
                 continue
             f = os.path.join(state_dir(), "logs", f"{j['id']}-{p.get('device')}-daily.tsv")
