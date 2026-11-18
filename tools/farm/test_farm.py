@@ -339,6 +339,8 @@ class T(unittest.TestCase):
         self.assertEqual(len(run["so_sha256"]), 64)
 
     def test_wait_several_jobs_any_all_compact(self):
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)                          # an earlier sweep test leaves it behind: farmd would sweep forever
+        self.env.pop("MALI_FARM_SWEEP_LIST", None)
         self.attach("dev-a")                                                   # only v11 present: the v13 part stays pending
         _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
         _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--keep-old")
