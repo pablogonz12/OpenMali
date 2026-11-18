@@ -1458,6 +1458,38 @@ test_gather(void)
    return 1;
 }
 
+static PFN_vkCreatePrivateDataSlot g_pd_cr;
+static PFN_vkSetPrivateData g_pd_set;
+static PFN_vkGetPrivateData g_pd_get;
+static PFN_vkDestroyPrivateDataSlot g_pd_de;
+
+/* VK_EXT_private_data (dEQP api.object_management.private_data enables it by name): the device was created with it, a slot stores a value per object */
+static int
+test_privdata(void)
+{
+   PFN_vkCreatePrivateDataSlot cr = g_pd_cr;
+   PFN_vkSetPrivateData set = g_pd_set;
+   PFN_vkGetPrivateData get = g_pd_get;
+   PFN_vkDestroyPrivateDataSlot de = g_pd_de;
+   CHECK(cr && set && get && de, "privdata: EXT entry points missing");
+   VkPrivateDataSlotCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PRIVATE_DATA_SLOT_CREATE_INFO};
+   VkPrivateDataSlot slot;
+   CHECK(cr(dev, &ci, NULL, &slot) == VK_SUCCESS, "privdata: create slot");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "privdata: fence");
+   uint64_t v = 7;
+   get(dev, VK_OBJECT_TYPE_FENCE, (uint64_t)(uintptr_t)f, slot, &v);
+   CHECK(v == 0, "privdata: unset value %llu", (unsigned long long)v);
+   CHECK(set(dev, VK_OBJECT_TYPE_FENCE, (uint64_t)(uintptr_t)f, slot, 0x1234abcdull) == VK_SUCCESS, "privdata: set");
+   get(dev, VK_OBJECT_TYPE_FENCE, (uint64_t)(uintptr_t)f, slot, &v);
+   CHECK(v == 0x1234abcdull, "privdata: got %llx", (unsigned long long)v);
+   DestroyFence(dev, f, NULL);
+   de(dev, slot, NULL);
+   printf("{\"test\":\"privdata\",\"ok\":true}\n");
+   return 1;
+}
+
 /* fragmentStoresAndAtomics: see fsstore.frag. Checks the SSBO (stores + atomicAdd/atomicMax), and the storage image (copied back). */
 static int
 test_fsstore(void)
@@ -1881,14 +1913,19 @@ main(int argc, char **argv)
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &e11, .nullDescriptor = rb2.nullDescriptor};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
-   const char *dexts[] = {"VK_EXT_robustness2"};
+   const char *dexts[] = {"VK_EXT_robustness2", "VK_EXT_private_data"};
+   e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
-                            .enabledExtensionCount = rb2.nullDescriptor ? 1 : 0, .ppEnabledExtensionNames = dexts};
+                            .enabledExtensionCount = 1 + (rb2.nullDescriptor ? 1 : 0), .ppEnabledExtensionNames = rb2.nullDescriptor ? dexts : dexts + 1};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    g_gsl = (PFN_vkGetImageSubresourceLayout)GetDeviceProcAddr(dev, "vkGetImageSubresourceLayout");
    g_rf = (PFN_vkResetFences)GetDeviceProcAddr(dev, "vkResetFences");
+   g_pd_cr = (PFN_vkCreatePrivateDataSlot)GetDeviceProcAddr(dev, "vkCreatePrivateDataSlotEXT");
+   g_pd_set = (PFN_vkSetPrivateData)GetDeviceProcAddr(dev, "vkSetPrivateDataEXT");
+   g_pd_get = (PFN_vkGetPrivateData)GetDeviceProcAddr(dev, "vkGetPrivateDataEXT");
+   g_pd_de = (PFN_vkDestroyPrivateDataSlot)GetDeviceProcAddr(dev, "vkDestroyPrivateDataSlotEXT");
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
@@ -1918,6 +1955,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
+   if (ok && CASE_ON("privdata")) ok &= test_privdata();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
