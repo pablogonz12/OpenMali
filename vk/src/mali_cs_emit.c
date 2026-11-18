@@ -400,7 +400,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
    if (s1)
       goto fau;
-   uint32_t blt[4];   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
+   uint32_t blt[4] = {0, 0, 0, 0};   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
    uint32_t *bl_arena = bl;
    bl = blt;
    if (f->colour.rt)
