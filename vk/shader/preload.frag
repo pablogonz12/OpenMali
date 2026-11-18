@@ -3,7 +3,18 @@
 // push: row_bytes, kind (low byte, see below) | 0x100 = sRGB, bytes per texel.
 layout(set = 0, binding = 0, std430) readonly buffer S { uint d[]; } src;
 layout(push_constant) uniform P { uint row_bytes; uint flags; uint bpp; uint pad; } p;
+// Output type: the BLEND/tile conversion follows the NIR type of the colour output, so integer formats need an integer output (a float output is
+// converted BY VALUE: bit-cast integers come out as 0). Variants (gen-meta-spv.sh): none = float, -DOUT_U = uvec4, -DOUT_S = ivec4.
+#if defined(OUT_U) || defined(OUT_S)
+#define OUT_INT
+#endif
+#ifdef OUT_U
+layout(location = 0) out uvec4 o;
+#elif defined(OUT_S)
+layout(location = 0) out ivec4 o;
+#else
 layout(location = 0) out vec4 o;
+#endif
 float dec(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 float f11(uint v, uint mbits) {   // unsigned small float: 5 exponent bits, mbits mantissa bits
    uint m = v & ((1u << mbits) - 1u), e = (v >> mbits) & 31u;
@@ -12,8 +23,8 @@ float f11(uint v, uint mbits) {   // unsigned small float: 5 exponent bits, mbit
    if (e == 31u) return m != 0u ? uintBitsToFloat(0x7fc00000u) : uintBitsToFloat(0x7f800000u);
    return (1.0 + fm) * exp2(float(e) - 15.0);
 }
-// RAW render-target kinds (integer / SNORM / UNORM16 / float32 formats): the tile row converts the shader output with the format's opaque
-// conversion, so integers are written as raw 32-bit values (bit-cast into the float output), SNORM/UNORM16 as floats.
+// RAW render-target kinds (integer / SNORM / UNORM16 / float32 formats): integers come out of the integer-typed variants (OUT_U / OUT_S) as raw
+// values, SNORM / UNORM16 / float32 out of the float variant as floats.
 // flags: kind 12 UINT, 13 SINT, 14 SNORM, 15 UNORM16, 16 FLOAT32, 17 A2B10G10R10 UINT, 18 A2B10G10R10 SINT; bits 12..14 = components.
 uint ldc(uint byteoff, uint cb) {   // one component of cb (1, 2 or 4) bytes
    uint w = src.d[byteoff >> 2];
@@ -21,32 +32,53 @@ uint ldc(uint byteoff, uint cb) {   // one component of cb (1, 2 or 4) bytes
    uint v = w >> ((byteoff & 3u) * 8u);
    return v & (cb == 1u ? 0xffu : 0xffffu);
 }
-vec4 raw_kind(uint k, uint off, uint bpp, uint nc) {
+#ifdef OUT_INT
+uvec4 raw_int(uint k, uint off, uint bpp, uint nc) {   // 12 UINT, 13 SINT, 17 A2B10G10R10 UINT, 18 SINT: raw component values
    uint cb = bpp / nc;
    uvec4 u = uvec4(0u, 0u, 0u, 1u);
    if (k >= 17u) {
       uint w = src.d[off >> 2];
       uvec4 v = uvec4(w & 1023u, (w >> 10) & 1023u, (w >> 20) & 1023u, w >> 30);
-      if (k == 18u) {
-         ivec4 s = ivec4(bitfieldExtract(int(v.x), 0, 10), bitfieldExtract(int(v.y), 0, 10), bitfieldExtract(int(v.z), 0, 10), bitfieldExtract(int(v.w), 0, 2));
-         return uintBitsToFloat(uvec4(s));
-      }
-      return uintBitsToFloat(v);
+      if (k == 18u)
+         return uvec4(ivec4(bitfieldExtract(int(v.x), 0, 10), bitfieldExtract(int(v.y), 0, 10), bitfieldExtract(int(v.z), 0, 10), bitfieldExtract(int(v.w), 0, 2)));
+      return v;
    }
+   for (uint i = 0u; i < 4u; i++) {
+      if (i >= nc) break;
+      uint v = ldc(off + i * cb, cb);
+      u[i] = k == 12u ? v : uint(bitfieldExtract(int(v), 0, int(cb * 8u)));
+   }
+   return u;
+}
+void main() {
+   uvec4 r;
+   if ((p.flags & 255u) == 19u) {   // CmdClearAttachments quad: the clear words (the format's raw shader output) sit in the source buffer
+      r = uvec4(src.d[0], src.d[1], src.d[2], src.d[3]);
+   } else {
+      uvec2 f = uvec2(gl_FragCoord.xy);
+      r = raw_int(p.flags & 255u, f.y * p.row_bytes + f.x * p.bpp, p.bpp, max((p.flags >> 12) & 7u, 1u));
+   }
+#ifdef OUT_U
+   o = r;
+#else
+   o = ivec4(r);
+#endif
+}
+#else
+vec4 raw_flt(uint k, uint off, uint bpp, uint nc) {   // 14 SNORM, 15 UNORM16, 16 FLOAT32
+   uint cb = bpp / nc;
    vec4 fv = vec4(0.0, 0.0, 0.0, 1.0);
    for (uint i = 0u; i < 4u; i++) {
       if (i >= nc) break;
       uint v = ldc(off + i * cb, cb);
-      if (k == 12u) u[i] = v;
-      else if (k == 13u) u[i] = uint(bitfieldExtract(int(v), 0, int(cb * 8u)));
-      else if (k == 14u) fv[i] = max(float(bitfieldExtract(int(v), 0, int(cb * 8u))) / float((1 << (cb * 8u - 1u)) - 1), -1.0);
+      if (k == 14u) fv[i] = max(float(bitfieldExtract(int(v), 0, int(cb * 8u))) / float((1 << (cb * 8u - 1u)) - 1), -1.0);
       else if (k == 15u) fv[i] = float(v) / 65535.0;
       else fv[i] = uintBitsToFloat(v);
    }
-   return k <= 13u ? uintBitsToFloat(u) : fv;
+   return fv;
 }
 void main() {
-   if ((p.flags & 255u) == 19u) {   // CmdClearAttachments quad: the clear value words (float / int bits as the format's shader output) sit in the source buffer
+   if ((p.flags & 255u) == 19u) {   // CmdClearAttachments quad (float formats): the clear value floats sit in the source buffer
       o = uintBitsToFloat(uvec4(src.d[0], src.d[1], src.d[2], src.d[3]));
       return;
    }
@@ -55,7 +87,7 @@ void main() {
    uint w = src.d[off >> 2];
    uint sh = (off & 3u) * 8u;
    uint k = p.flags & 255u;
-   if (k >= 12u) { o = raw_kind(k, off, p.bpp, max((p.flags >> 12) & 7u, 1u)); return; }
+   if (k >= 14u) { o = raw_flt(k, off, p.bpp, max((p.flags >> 12) & 7u, 1u)); return; }
    vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
    if (k <= 1u) {                                     // 0 = UNORM8 (R8/RG8/RGBA8), 1 = BGRA8
       uint v = w >> sh;
@@ -92,3 +124,4 @@ void main() {
    if ((p.flags & 0x100u) != 0u) c.rgb = vec3(dec(c.r), dec(c.g), dec(c.b));
    o = c;
 }
+#endif
