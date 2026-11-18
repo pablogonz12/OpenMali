@@ -269,7 +269,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
 
    const bool s1 = po && same_static(pd, d);
    const bool s2 = s1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);   /* whole driver sets reusable */
-   const bool s3 = s2 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
+   const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
                    !memcmp(pd->push, d->push, sizeof d->push);   /* FAUs reusable */
    vs_entries = vs_entries > MALI_DUMMY_SAMPLER_IDX + 1 ? vs_entries : MALI_DUMMY_SAMPLER_IDX + 1;
    const unsigned dyn_end = d->ndyn ? MALI_DYN_BUF_START + d->ndyn : 0;
@@ -320,7 +320,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       o->vfau = kb_draw_fau_ptr(va_vfau, vs->fau_count);
       o->ffau = kb_draw_fau_ptr(va_ffau, fs->fau_count);
    }
-   if (s3)
+   if (s2 && s3)
       return 0;
    (void)vs_used;
 
@@ -430,6 +430,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
 
 fau:;
+   if (s3)
+      return 0;   /* FAUs are independent of the dynamic offsets: shared with the previous draw even when its driver sets are not */
    /* FAU: VS = immediates + viewport sysvals (words 0..5) + push block; FS = immediates + push block */
    const float *vp = d->vp;
    kb_draw_fau_imm(vfau, (const uint32_t(*)[2])vs->imm, vs->nimm);
