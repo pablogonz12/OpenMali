@@ -3,8 +3,8 @@
  * (vk_common_CmdBindVertexBuffers2EXT builds VkBindVertexBuffer3InfoKHR and calls it); without this entry point a 1.3 client such as zink
  * (which always uses the 2-form) jumped through NULL on its first draw. The binding itself is the same as mali_CmdBindVertexBuffers: address +
  * size per slot.
- * NOT handled: pBindingInfos[].setStride (dynamic VERTEX_INPUT_BINDING_STRIDE). The strides still come from the pipeline's attribute
- * descriptors (mali_pipeline.c / mali_cs_emit.c, other worker's files): patches/zink-dynamic-vertex-stride.NOTE.md. */
+ * setStride: the stride is stored per binding (cmd->vb_stride) and replaces the pipeline's stride when the pipeline has
+ * VERTEX_INPUT_BINDING_STRIDE dynamic (gfx.dyn_stride; mali_cs_emit.c). */
 #include "mali_cmd.h"
 #include "mali_entrypoints.h"
 
@@ -16,7 +16,12 @@ mali_CmdBindVertexBuffers3KHR(VkCommandBuffer h, uint32_t first, uint32_t n, con
       unsigned b = first + i;
       if (b >= MALI_MAX_VB) return;   /* same limit as mali_CmdBindVertexBuffers; its "unsupported" marking is local to mali_cmd.c */
       uint64_t sz = info[i].addressRange.size;
-      cmd->vb_va[b] = info[i].addressRange.address;
-      cmd->vb_size[b] = info[i].addressRange.address ? (uint32_t)(sz > 0xffffffffu ? 0xffffffffu : sz) : 0;
+      uint64_t nva = info[i].addressRange.address;
+      uint32_t nst = info[i].setStride ? (uint32_t)info[i].addressRange.stride : cmd->vb_stride[b];   /* dynamic VERTEX_INPUT_BINDING_STRIDE; without setStride the earlier value is kept */
+      uint32_t nsz = nva ? (uint32_t)(sz > 0xffffffffu ? 0xffffffffu : sz) : 0;
+      if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz || cmd->vb_stride[b] != nst) {
+         cmd->vb_va[b] = nva; cmd->vb_size[b] = nsz; cmd->vb_stride[b] = nst;
+         cmd->dirty |= MALI_D_BIND;   /* the stride is part of the BIND block (shared driver set) */
+      }
    }
 }

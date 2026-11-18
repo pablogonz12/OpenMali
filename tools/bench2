@@ -30,6 +30,7 @@ JSONL = os.path.join(REPO, "bench", "results.jsonl")
 MD = os.path.join(REPO, "bench", "RESULTS.md")
 MENU = os.path.join(REPO, "bench", "menu.jsonl")     # Steam menu rows (farm menu suite), rendered as a section of RESULTS.md
 RAW = os.path.join(REPO, "bench", "raw")
+PIN = [""]   # "taskset -c 4-7 " (--cpus): the CMF scheduler moves the single render thread between 2.0 GHz little and 2.5 GHz big cores (fps bimodal 150 / 345)
 PENDING = os.path.join(REPO, "bench", "pending.json")
 COMMIT, REF = [None], [None]          # --commit / --ref overrides (farm bench jobs test a ref in a scratch worktree)
 MDB = os.path.join(REPO, "bench", "mdbench", "out", "mdbench-aarch64")
@@ -180,9 +181,11 @@ class Phone:
         icd = "--icd /tmp/mdb/mdb_icd.so" if driver == "ours" else ""
         envs = " ".join(args.get("env", []))
         cmd = (f"mkdir -p /tmp/mdb; cd /tmp/mdb; for x in mdbench reaper mdb_icd.so; do [ -f {DL}/$x ] && cp {DL}/$x /tmp/mdb/$x; done; chmod +x mdbench reaper; "
-               f"{envs} /tmp/mdb/reaper SteamLaunch AppId=769 -- /tmp/mdb/mdbench {args['scene']} {icd} {args['wsi']} --mode {args.get('mode', 'mailbox')} "
+               f"{envs} {PIN[0]}/tmp/mdb/reaper SteamLaunch AppId=769 -- /tmp/mdb/mdbench {args['scene']} {icd} {args['wsi']} --mode {args.get('mode', 'mailbox')} "
                f"--images {args.get('images', 0)} --frames-in-flight {args.get('fif', 2)} --seconds {secs} --warmup 60 --label {tag}; echo __rc=$?")
         rc, o = self.ctl("guest", "--timeout", str(int(secs) + 70), "--", "sh", "-c", cmd, timeout=int(secs) + 110)
+        if os.environ.get("BENCH2_DUMP"):
+            open(os.environ["BENCH2_DUMP"], "a").write(f"== {tag}\n{o}\n")
         try:
             d, _ = json.JSONDecoder().raw_decode(o[o.index("{"):])
             s = d.get("stdout", {})
@@ -210,7 +213,7 @@ def metrics(r, driver_kind):
             "frame_p50": m["frame_time_ms"]["all"]["p50"], "frame_p99": m["frame_time_ms"]["all"]["p99"],
             "mode": m["present_mode"], "images": m["swapchain_images"], "size": f"{m['width']}x{m['height']}", "fif": m["config"]["frames_in_flight"],
             "drv": (m["device"].get("driver_info") or m["device"].get("driver_name") or "")[:60],
-            "cksum": (m.get("readback") or {}).get("checksum")}
+            "cksum": (m.get("readback") or {}).get("checksum"), "draws": (m.get("load") or {}).get("draws")}
 
 
 def med(v):
@@ -242,7 +245,9 @@ def plan(variant, driver, mode, best):
                     out += [O(env), P(env)]
         return out
     b = (best or {}).get(variant, {})
-    cfg = [b.get("pres") or P(), b.get("off") or O()]
+    # the stored best pair carries the scene string it was swept with: take the CURRENT scene (--tri-n) and keep its present mode/env
+    pres, off = b.get("pres") or P(), b.get("off") or O()
+    cfg = [{**pres, "scene": f"{scene} {psize}"}, {**off, "scene": f"{scene} {osize}"}]
     if driver == "ours":          # stored winners are re-validated here (farm path too): a non-base env on cube was an invalid winner (0.18 ms GPU), so it is never replayed
         cfg = [dict(c, env=base_env) if c.get("env") != base_env and bench == "cube" else c for c in cfg]
     return cfg
@@ -327,7 +332,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         for r, i, d in tasks:
             c = plans[d][i]
             key = ("off:" if c.get("off") else "pres:") + label(c)
-            ck = f"{d}|{variant}|{key}|{r}"
+            ck = f"{d}|{variant}|{key}|{c.get('scene')}|{PIN[0].strip()}|{r}"
             if ck in cache:
                 if cache[ck]:
                     res[d].setdefault(key, []).append(cache[ck])
@@ -472,11 +477,14 @@ def main():
     ap.add_argument("--mdb", help="mdbench-aarch64 binary (default bench/mdbench/out/mdbench-aarch64)")
     ap.add_argument("--commit", help="commit label recorded in the rows (default: HEAD of this checkout)")
     ap.add_argument("--ref", default=None, help="ref name recorded in the rows (farm: the submitted ref)")
+    ap.add_argument("--cpus", default=None, help="pin the benchmark to these CPUs (taskset -c LIST), e.g. 4-7 = the CMF big cores; steadier numbers")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
     WAIT[0] = a.wait
+    if a.cpus:
+        PIN[0] = f"taskset -c {a.cpus} "
     global JSONL, MD, RAW, MDB, PENDING
     if a.out:
         os.makedirs(a.out, exist_ok=True)

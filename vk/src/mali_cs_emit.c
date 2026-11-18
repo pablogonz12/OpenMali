@@ -245,7 +245,8 @@ same_static(const struct mali_draw *a, const struct mali_draw *b)
       return false;
    if (a->nsets != b->nsets || a->ndyn != b->ndyn || a->first_instance != b->first_instance)
       return false;
-   if (memcmp(a->vb_va, b->vb_va, sizeof a->vb_va) || memcmp(a->vb_size, b->vb_size, sizeof a->vb_size))
+   if (memcmp(a->vb_va, b->vb_va, sizeof a->vb_va) || memcmp(a->vb_size, b->vb_size, sizeof a->vb_size) ||
+       (a->gfx.dyn_stride && memcmp(a->vb_stride, b->vb_stride, sizeof a->vb_stride)))   /* a stride change between draws rebuilds the shared driver set */
       return false;
    return !memcmp(a->set_va, b->set_va, b->nsets * sizeof b->set_va[0]) && !memcmp(a->set_bytes, b->set_bytes, b->nsets * sizeof b->set_bytes[0]);
 }
@@ -373,7 +374,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
          if (i < g->nattr)
          {
-            kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset, g->attr[i].stride);
+            kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset,
+                            g->dyn_stride && !g->attr[i].zero_div ? d->vb_stride[g->attr[i].binding] : g->attr[i].stride);
             if (g->attr[i].instance) {
                /* Attribute Frequency = Instance (word1[7:6]), offset enable off; first_instance shifts the start (panvk) */
                ((uint32_t *)e)[0] &= ~(1u << 8);
@@ -630,12 +632,15 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    unsigned pk = ((g->depth_test && f->has_zs) || (f->has_st && d->fx.set && d->fx.st_test)) ? 0 : 2;
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
    /* a Z/S-only fragment shader (gl_FragDepth / stencil export, no colour output): no render target is written (panvk rt_written = 0: DCD render-target and write masks, blend count) */
-   const bool nort = g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil) && !g->fs->fs_writes_colour;
+   const bool nort = !f->has_colour || (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil) && !g->fs->fs_writes_colour);   /* no colour attachment: the colour output has no render target (panvk rt_written = 0) */
    if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
       dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
       dop.zs_update = 3;
       dop.allow_fpk = 0;
    }
+   /* stencil-only pass (no colour attachment): the stencil update is the draw's only visible effect; forward pixel kill would drop the fragment on a depth fail before the stencil dfail op runs */
+   if (!f->has_colour && f->has_st && d->fx.set && d->fx.st_test)
+      dop.allow_fpk = 0;
    uint32_t dcd_extra = 0, pf_clear = 0;
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
@@ -977,7 +982,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       return build_compute(hw, f, out, nout);
    *out = NULL;
    *nout = 0;
-   if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !f->has_colour)
+   if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
       return -EINVAL;
    memset(&c, 0, sizeof c);
    bool geometry = f->ndraws > 0;
@@ -1183,7 +1188,7 @@ mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
       return -ENOMEM;
    bp->fx = d->fx; bp->gfx = d->gfx;
    memcpy(bp->vp, d->vp, sizeof bp->vp); memcpy(bp->sc, d->sc, sizeof bp->sc);
-   memcpy(bb->vb_va, d->vb_va, sizeof bb->vb_va); memcpy(bb->vb_size, d->vb_size, sizeof bb->vb_size);
+   memcpy(bb->vb_va, d->vb_va, sizeof bb->vb_va); memcpy(bb->vb_size, d->vb_size, sizeof bb->vb_size); memcpy(bb->vb_stride, d->vb_stride, sizeof bb->vb_stride);
    bb->nsets = d->nsets; bb->ndyn = d->ndyn;
    memcpy(bb->set_va, d->set_va, sizeof bb->set_va); memcpy(bb->set_bytes, d->set_bytes, sizeof bb->set_bytes);
    memcpy(bu->push, d->push, sizeof bu->push);
@@ -1213,6 +1218,7 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
       const struct mali_bbind *b = r->bind;
       memcpy(x->vb_va, b->vb_va, sizeof x->vb_va);
       memcpy(x->vb_size, b->vb_size, sizeof x->vb_size);
+      memcpy(x->vb_stride, b->vb_stride, sizeof x->vb_stride);
       x->nsets = b->nsets;
       memcpy(x->set_va, b->set_va, sizeof x->set_va);
       memcpy(x->set_bytes, b->set_bytes, sizeof x->set_bytes);

@@ -117,7 +117,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    const uint32_t *vcode = NULL, *fcode = NULL;
    uint32_t vwords = 0, fwords = 0;
-   if (!vss || !fss || !stage_spirv(vss, &vcode, &vwords) || !stage_spirv(fss, &fcode, &fwords)) {
+   if (!vss || !stage_spirv(vss, &vcode, &vwords) || (fss && !stage_spirv(fss, &fcode, &fwords))) {
       res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) pipelines: later */
       goto fail;
    }
@@ -149,12 +149,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
+   /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
    o.stage = MALI_STAGE_FRAGMENT;
    o.strip_psiz = 0;
-   o.spirv = fcode;
-   o.spirv_words = fwords;
-   o.entry = fss->pName;
-   set_spec(&o, specbuf, fss->pSpecializationInfo);
+   o.spirv = fss ? fcode : vcode;
+   o.spirv_words = fss ? fwords : vwords;
+   o.entry = fss ? fss->pName : vss->pName;
+   set_spec(&o, specbuf, fss ? fss->pSpecializationInfo : NULL);
    /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
    unsigned samples = st.ms && st.ms->rasterization_samples ? st.ms->rasterization_samples : 1;
    if (samples != 1 && (samples != 4 || !mali_experimental_msaa() || BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES))) {
@@ -164,7 +165,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
-   if (mali_compile(&o, &p->fs, err, sizeof err)) {
+   if (fss && mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -172,7 +173,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
 
    /* dualSrcBlend: SRC1 factors (VkBlendFactor 15..18) on attachment 0 need a blend shader (fixed function cannot read SRC1) */
    bool has_blend = false;
-   if (st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
+   if (fss && st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
       const struct vk_color_blend_attachment_state *a = &st.cb->attachments[0];
       const unsigned f[4] = {a->src_color_blend_factor, a->dst_color_blend_factor, a->src_alpha_blend_factor, a->dst_alpha_blend_factor};
       for (unsigned i = 0; i < 4; i++)
@@ -227,7 +228,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    p->have_code = true;
    memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
-   memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
+   if (p->fs.bin_size)
+      memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
    if (has_blend)
       memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
@@ -237,6 +239,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->vs = &p->vs;
    g->fs = &p->fs;
    g->samples = samples;
+   g->dyn_stride = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_VI_BINDING_STRIDES);
+   g->discard = !fss || (st.rs && st.rs->rasterizer_discard_enable);
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
@@ -283,7 +287,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const struct vk_vertex_binding_state *vb = &st.vi->bindings[a->binding];
          const bool inst = vb->input_rate == VK_VERTEX_INPUT_RATE_INSTANCE;
          /* instance rate: HW has no zero divisor, panvk uses stride 0 */
-         g->attr[g->nattr++] = (struct mali_attr){f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst};
+         g->attr[g->nattr++] = (struct mali_attr){f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst, inst && vb->divisor == 0};
       }
    }
    vk_dynamic_graphics_state_init(&p->dynamic);
@@ -362,12 +366,13 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
       res = VK_ERROR_FEATURE_NOT_PRESENT;
       goto fail;
    }
-   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, p->cs.bin_size, MALI_BO_EXEC, &p->code)) {
+   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, p->cs.bin_size ? p->cs.bin_size : 64, MALI_BO_EXEC, &p->code)) {   /* an empty shader (void main(){}) compiles to 0 bytes: a code BO of its own (dispatches of it are skipped) */
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
    }
    p->have_code = true;
-   memcpy(p->code.cpu, p->cs.bin, p->cs.bin_size);
+   if (p->cs.bin_size)
+      memcpy(p->code.cpu, p->cs.bin, p->cs.bin_size);
    *out = mali_pipeline_to_handle(p);
    return VK_SUCCESS;
 fail:
@@ -447,8 +452,12 @@ res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 static int
 target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, struct mali_cmd_target *out)
 {
-   if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled)
+   if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled) {
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: render target rejected: format %d va=%llx level %u/%u tiled=%d\n", (int)img->vk.format, (unsigned long long)img->va, level,
+                 img->lay.d.levels, (int)img->lay.d.tiled);
       return -EINVAL;
+   }
    if (img->vk.image_type == VK_IMAGE_TYPE_3D)
       return -EINVAL;   /* render to a 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too); rejected until the slice addressing is understood */
    int zs = 0;
@@ -466,8 +475,11 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    default: {
       bool ok;
       out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
-      if (!ok)
+      if (!ok) {
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: render target format %d not renderable\n", (int)img->vk.format);
          return -EINVAL;
+      }
       break;
    }
    }
@@ -504,6 +516,9 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       out->va = out->s_va;
       out->row_stride = out->s_row_stride;
    }
+   if (((out->va & 63) || (out->row_stride & 15)) && getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: render target not aligned: format %d va&63=%u row_stride=%u %ux%u samples %u\n", (int)img->vk.format,
+              (unsigned)(out->va & 63), (unsigned)out->row_stride, out->width, out->height, out->samples);
    return (out->va & 63) || (out->row_stride & 15) ? -EINVAL : 0;
 }
 
@@ -511,11 +526,18 @@ static int
 res_image_view(VkImageView h, struct mali_cmd_target *out)
 {
    struct mali_image_view *v = mali_image_view_from_handle(h);
-   if (!v)
+   if (!v) {
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: image view handle is null\n");
       return -EINVAL;
+   }
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
-   return target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
+   int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
+   if (r && getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: image view rejected rc=%d: format %d aspects 0x%x view aspect 0x%x type %d usage 0x%x samples %u\n", r, (int)img->vk.format,
+              (unsigned)v->vk.aspects, (unsigned)a, (int)img->vk.image_type, (unsigned)img->vk.usage, img->lay.d.samples);
+   return r;
 }
 
 static int
