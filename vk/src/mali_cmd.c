@@ -910,10 +910,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, "MSAA colour loadOp LOAD");
          return;
       }
-      if (f->colour.resolve_va && f->colour.store) {
-         unsupported(cmd, "MSAA colour storeOp STORE together with a resolve (hardware writes the average or the samples, not both)");
-         return;
-      }
+      /* storeOp STORE together with a resolve: the hardware writes the average or the samples, not both, so mali_cmd_submit
+       * builds the frame twice (Average into the resolve image, then Layered into the sample image). */
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
@@ -1290,10 +1288,15 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          res = VK_ERROR_OUT_OF_HOST_MEMORY;
          break;
       }
+      /* MSAA colour STORE + resolve: pass 0 resolves (Average), pass 1 stores the samples (Layered) */
+      bool both = fr.samples == 4 && fr.colour.resolve_va && fr.colour.store;
+      for (int pass = 0; pass < (both ? 2 : 1); pass++) {
+      if (pass)
+         fr.colour.resolve_va = 0;
       uint64_t *cs = NULL;
       unsigned n = 0;
       int rc = mali_frame_build(&g_hw, &fr, &cs, &n);
-      if (ind)
+      if (ind && (rc || pass == (both ? 1 : 0)))
          free(fr.draws);
       if (rc) {
          if (rc == -ENOMEM)
@@ -1315,6 +1318,9 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       nall += n;
       counted++;
       free(cs);
+      }
+      if (res != VK_SUCCESS)
+         break;
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();

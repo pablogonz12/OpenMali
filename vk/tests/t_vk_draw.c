@@ -317,7 +317,7 @@ scene_create(struct scene *s, int depth)
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
    if (g_msaa) {
       ad[0].samples = VK_SAMPLE_COUNT_4_BIT;
-      ad[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      ad[0].storeOp = g_msaa == 3 ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;   /* 3: STORE + resolve = two frames (Average, then Layered) */
       ad[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
       ad[1] = ad[0];
       ad[1].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2063,6 +2063,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("clearquad_zs")) { g_clearzs = 1; ok &= test_mode("clearquad_zs", MODE_CLEARQUAD, 0, 0); g_clearzs = 0; }
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
+   if (ok && CASE_ON("msaa_store_resolve")) ok &= test_msaa("msaa_store_resolve", 3);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
