@@ -4,6 +4,7 @@
 #include "../src/mali_meta.h"
 #include "../src/mali_compile.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

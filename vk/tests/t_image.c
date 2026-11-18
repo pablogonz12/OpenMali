@@ -230,6 +230,14 @@ test_format_table(unsigned arch)
             VK_ERROR_FORMAT_NOT_SUPPORTED, "undefined format accepted");
    CHECK(mali_image_format_properties(arch, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &p) == VK_ERROR_FORMAT_NOT_SUPPORTED, "D32 as colour attachment accepted");
+   /* a rejected combination returns all-zero properties: linear 1D / 3D */
+   for (int t = 0; t < 2; t++) {
+      memset(&p, 0xAB, sizeof p);
+      CHECK(mali_image_format_properties(arch, VK_FORMAT_A8B8G8R8_UINT_PACK32, t ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_1D, VK_IMAGE_TILING_LINEAR,
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 0, &p) == VK_ERROR_FORMAT_NOT_SUPPORTED, "linear 1D/3D accepted");
+      CHECK(p.maxExtent.width == 0 && p.maxExtent.height == 0 && p.maxExtent.depth == 0 && p.maxMipLevels == 0 && p.maxArrayLayers == 0 &&
+               p.sampleCounts == 0 && p.maxResourceSize == 0, "linear %s: properties not zeroed", t ? "3D" : "1D");
+   }
    if (g_verbose) printf("  arch %u: %u formats\n", arch, n);
 }
 
