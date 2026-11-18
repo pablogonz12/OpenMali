@@ -15,7 +15,8 @@ import smokeroute                                    # noqa: E402
 import gate                                            # noqa: E402
 import benchlib as B                                   # noqa: E402
 import sweeplib as S                                   # noqa: E402
-import menulib as M                                    # noqa: E402
+import menulib as M
+import guardlib as G                                    # noqa: E402
 
 RETRIES = 3
 RECOVER_EVERY = 45            # s between adb recovery attempts while a wanted device is missing
@@ -34,6 +35,12 @@ def log(msg):
 
 def alert(msg):
     with open(os.path.join(L.state_dir(), "alerts.log"), "a") as f:
+        f.write(f"{L.now()} {msg}\n")
+
+
+def user_alert(msg):
+    """the owner-facing file <state>/ALERTS (one line per event, needs a human); alerts.log keeps the machine-read history"""
+    with open(os.path.join(L.state_dir(), "ALERTS"), "a") as f:
         f.write(f"{L.now()} {msg}\n")
 
 
@@ -76,6 +83,7 @@ class Farm:
         self.sweep_why = {}                            # alias -> last logged reason the sweep is waiting (log on change only)
         self.sweep_bad = {}                            # alias -> consecutive failed sweep chunks (session churn guard)
         self.last_health, self.last_wl = {}, {}
+        self.hot = {}
         self.stop_reason, self.last_pw, self.last_mdns, self.last_hot = {}, {}, {}, {}
         self.cfg_mtime = self.devices_mtime()
         self.wake = threading.Event()                  # set when a run/sweep ends: schedule the next one immediately, no poll wait
@@ -171,6 +179,46 @@ class Farm:
                 h.update(L.read_json(p))
             return h
         return gate.read_adb(self.tid.get(dev["alias"]) or dev["serial"])
+
+    def runaway_check(self, dev):
+        """idle phone (no job, no hold) + foreground app above the CPU limit for the time limit -> `am force-stop`, alerts.log + ALERTS line.
+        On by default only for our own test phones (foreground_launch = true); `runaway_guard = true|false` overrides, `runaway_cpu`/`runaway_secs` tune."""
+        al = dev["alias"]
+        on = dev.get("runaway_guard", dev.get("foreground_launch") is True)
+        if not on or al in self.threads or self.hold_next(al) or any(h["device"] == al and h["state"] == "active" for h in H.list_holds()):
+            self.hot.pop(al, None)
+            return
+        cpu_max = float(dev.get("runaway_cpu", os.environ.get("MALI_FARM_RUNAWAY_CPU", G.CPU_DEFAULT)))
+        secs = float(dev.get("runaway_secs", os.environ.get("MALI_FARM_RUNAWAY_SECS", G.SECS_DEFAULT)))
+        try:
+            if self.fake:
+                f = os.path.join(L.state_dir(), "fake-runaway", al)
+                if not os.path.exists(f):
+                    self.hot.pop(al, None)
+                    return
+                pkg, cpu = open(f).read().split()[:2]
+                cpu = float(cpu)
+            else:
+                _, act = self.adb(dev, "shell", "dumpsys activity activities | grep -m2 -E 'topResumedActivity|mResumedActivity'")
+                pkg = G.candidate(act)
+                cpu = None
+                if pkg:
+                    _, ci = self.adb(dev, "shell", f"dumpsys cpuinfo | grep -F {pkg}", timeout=30)
+                    cpu = G.cpu_of(ci, pkg)
+            over = G.verdict(self.hot.setdefault(al, {}), pkg, cpu, time.time(), cpu_max, secs)
+            if over is None:
+                return
+            if self.fake:
+                os.unlink(f)
+                open(f + ".stopped", "a").write(pkg + "\n")
+            else:
+                self.adb(dev, "shell", f"am force-stop {pkg}")
+            self.hot.pop(al, None)
+            msg = f"RUNAWAY-APP {al}: {pkg} at {cpu:.0f}% CPU for {int(over)}s on an idle phone: force-stopped"
+            log(msg)
+            alert(msg)
+        except Exception:
+            log(f"runaway check {al}: " + traceback.format_exc()[-300:])
 
     def gate_check(self, dev, starting=False):
         """-> (state ok|charging|cooling, reason, health); persists hysteresis state + alerts.log line on change.
@@ -277,6 +325,7 @@ class Farm:
                         self.ensure_wireless(d)
                     if st.get("status") != "up":
                         log(f"device {al} is up")
+                    self.runaway_check(d)
                     self.set_dstate(al, "up", batt=h.get("level"), temp_c=h.get("temp_c"), thermal=h.get("thermal"), via=self.via(al))
                 elif st.get("status") not in ("up", "charging", "cooling", "on_battery"):
                     self.set_dstate(al, "up")
@@ -292,6 +341,7 @@ class Farm:
             if st["status"] == "missing" and age >= DOWN_AFTER:
                 self.set_dstate(al, "down", "no recovery after %ds" % DOWN_AFTER)
                 alert(f"DEVICE-DOWN {al} (class {d['class']}) not back after {DOWN_AFTER}s; jobs for it stay pending")
+                user_alert(f"DEVICE-DOWN {al} unreachable for {DOWN_AFTER // 60 if DOWN_AFTER >= 60 else DOWN_AFTER}{'min' if DOWN_AFTER >= 60 else 's'}; jobs stay pending. " + L.RECOVER_HINT)
             every = RECOVER_EVERY if st["status"] == "missing" else 300
             if time.time() - self.last_try.get(al, 0) >= every:
                 self.last_try[al] = time.time()

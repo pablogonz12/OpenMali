@@ -314,6 +314,68 @@ class T(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
+    def runaway(self, pkg_cpu, secs="0", guard=True, age=0):
+        if guard and "runaway_guard" not in open(self.d + "/devices.toml").read():
+            t = open(self.d + "/devices.toml").read().replace('baseline = "cmf"', 'baseline = "cmf"\nrunaway_guard = true', 1)
+            open(self.d + "/devices.toml", "w").write(t)
+        self.env["MALI_FARM_RUNAWAY_SECS"] = secs
+        self.attach("dev-a")
+        os.makedirs(self.d + "/state/fake-runaway", exist_ok=True)
+        if pkg_cpu:
+            open(self.d + "/state/fake-runaway/dev-a", "w").write(pkg_cpu)
+
+    def stopped(self):
+        p = self.d + "/state/fake-runaway/dev-a.stopped"
+        return open(p).read().split() if os.path.exists(p) else []
+
+    def test_runaway_app_on_an_idle_phone_is_force_stopped_and_logged(self):
+        self.runaway("com.example.MediaDeck 128")
+        self.farmd()
+        self.assertEqual(self.stopped(), ["com.example.MediaDeck"])
+        self.assertFalse(os.path.exists(self.d + "/state/fake-runaway/dev-a"))
+        line = open(self.d + "/state/alerts.log").read()
+        self.assertIn("RUNAWAY-APP dev-a: com.example.MediaDeck at 128% CPU", line)
+        self.assertIn("force-stopped", line)
+
+    def test_runaway_guard_waits_for_the_time_threshold_and_ignores_cool_apps(self):
+        self.runaway("com.example.MediaDeck 128", secs="3600")
+        self.farmd()
+        self.assertEqual(self.stopped(), [])                                   # above the CPU limit, but not for long enough yet
+        self.runaway("com.example.MediaDeck 12")
+        self.farmd()
+        self.assertEqual(self.stopped(), [])                                   # a quiet app is left alone
+        self.assertFalse(os.path.exists(self.d + "/state/alerts.log") and "RUNAWAY" in open(self.d + "/state/alerts.log").read())
+
+    def test_runaway_guard_never_touches_a_phone_with_a_hold_or_a_job(self):
+        self.runaway("com.example.MediaDeck 128")
+        h = H.new_hold("dev-a", 60)
+        self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.assertIsNotNone(self.hold_next_for_test("dev-a"))
+        self.farmd()                                                           # the queued hold/job run on the phone: it is not idle
+        self.assertEqual(self.stopped(), [])
+
+    def test_guardlib_parsing(self):
+        import guardlib as G
+        ci = "  128% 4242/com.example.MediaDeck: 100% user + 28% kernel\n  3.1% 99/system_server: 2% user\n"
+        self.assertEqual(G.cpu_of(ci, "com.example.MediaDeck"), 128.0)
+        self.assertIsNone(G.cpu_of(ci, "com.other"))
+        act = "topResumedActivity=ActivityRecord{1 u0 com.mi.android.globallauncher/.Home t1}"
+        self.assertIsNone(G.candidate(act))                                  # the launcher is never stopped
+        self.assertEqual(G.candidate(act.replace("com.mi.android.globallauncher", "com.x")), "com.x")
+        hot = {}
+        self.assertIsNone(G.verdict(hot, "p", 100, 0, 90, 60))
+        self.assertEqual(G.verdict(hot, "p", 100, 61, 90, 60), 61)
+        self.assertIsNone(G.verdict(hot, "p", 10, 70, 90, 60))              # a dip resets the clock
+        self.assertEqual(hot, {})
+
+    def test_runaway_guard_is_off_unless_the_phone_opts_in(self):
+        self.runaway("com.example.MediaDeck 128", guard=False)
+        self.farmd()
+        self.assertEqual(self.stopped(), [])
+
+    def hold_next_for_test(self, alias):
+        return H.queued(H.list_holds(), alias) or None
+
     def test_pending_resume_and_json(self):
         rc, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11,v13", "--env", "FAKE_REGRESS=2 FAKE_FIX=1")
         self.assertEqual(rc, 0)
@@ -378,18 +440,33 @@ class T(unittest.TestCase):
         self.farmd()
         self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
 
+    def backdate(self, alias, secs):
+        """age a device state by `secs` instead of sleeping (a sleep races the loaded CI/full-suite run)"""
+        p = self.d + "/state/devices-state.json"
+        st = json.load(open(p))
+        st[alias]["since"] -= secs
+        json.dump(st, open(p, "w"))
+
     def test_down_alert(self):
         self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
         self.attach()
         self.farmd()                                            # becomes 'missing'
-        import time
-        time.sleep(1.2)
+        self.backdate("dev-b", 5)
         self.farmd()                                            # > DOWN_AFTER -> down + one alert line
         self.farmd()
         lines = open(self.d + "/state/alerts.log").read().strip().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertIn("dev-b", lines[0])
         self.assertNotIn("SERIAL", lines[0])
+        al = open(self.d + "/state/ALERTS").read().strip().splitlines()          # the owner-facing file, one line with the recovery steps
+        self.assertEqual(len(al), 1)
+        self.assertIn("DEVICE-DOWN dev-b", al[0])
+        self.assertIn("adb tcpip 5555", al[0])
+        self.assertIn("adb connect", al[0])
+        out = self.farm("status")[1]
+        self.assertIn("dev-b is unreachable", out)
+        self.assertIn("adb tcpip 5555", out)
+        self.assertNotIn("dev-a is unreachable", out)
 
     def test_compare(self):
         c, nf, npass = L.compare({"a": "Pass", "b": "Pass", "c": "Fail"}, {"a": "Pass", "b": "Crash", "c": "Pass"})

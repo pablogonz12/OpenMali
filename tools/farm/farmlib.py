@@ -618,3 +618,6 @@ def sh(cmd, timeout, **kw):
         return 124, ((e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else "") + "\nTIMEOUT"
     except FileNotFoundError as e:
         return 127, str(e)
+
+
+RECOVER_HINT = "recover: over usb run `adb tcpip 5555`, then `adb connect <phone-ip>:5555` (ip: phone Settings > Wi-Fi, or `adb shell ip route`)"

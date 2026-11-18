@@ -92,6 +92,8 @@ def print_devices(devs):
         elif st == "on_battery":
             h = "on battery: paused"
         print(f"device {al:10} class {d['class']:4} {st:8} {h} {('via ' + s['via'] + ' ') if s.get('via') and st in ('up', 'charging', 'cooling') else ''}{s.get('note', '') if st not in ('disabled', 'on_battery') else ''}")
+        if st == "down":
+            print(f"    ! {al} is unreachable: {L.RECOVER_HINT}")
 
 
 def cmd_status(a):
