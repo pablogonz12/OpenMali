@@ -168,12 +168,14 @@ main(int argc, char **argv)
    eq("maintenance4", f13.maintenance4, fm4.maintenance4);
    eq("privateData", f13.privateData, fpd.privateData);
    CHECK(f2.features.textureCompressionBC == g2.features.textureCompressionBC && f2.features.textureCompressionBC, "BC");
+   CHECK(f2.features.textureCompressionETC2 == g2.features.textureCompressionETC2 && f2.features.textureCompressionETC2, "ETC2");
 
    /* Allow-list: any VkBool32 in the core structs that is true and not listed fails. */
    {
       const VkBool32 *c = (const VkBool32 *)&f2.features;
       const unsigned nc = sizeof(f2.features) / 4;
       unsigned bc_idx = (unsigned)((const VkBool32 *)&f2.features.textureCompressionBC - c);
+      unsigned etc2_idx = (unsigned)((const VkBool32 *)&f2.features.textureCompressionETC2 - c);   /* format feature bits below + dEQP texture.compressed.etc2* */
       /* multiDrawIndirect: backed by t_vk_draw --only mdi (drawCount 2, pixel-checked on the Poco) */
       unsigned mdi_idx = (unsigned)((const VkBool32 *)&f2.features.multiDrawIndirect - c);
       CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
@@ -204,7 +206,7 @@ main(int argc, char **argv)
       CHECK(f2.features.depthClamp && f2.features.independentBlend, "depthClamp / independentBlend advertised");
       for (unsigned i = 0; i < nc; i++)
       {
-         int listed = i == bc_idx || i == mdi_idx || i == dc_idx || i == ib_idx;
+         int listed = i == bc_idx || i == etc2_idx || i == mdi_idx || i == dc_idx || i == ib_idx;
          for (unsigned k = 0; k < sizeof tested / sizeof *tested; k++) listed |= tested[k] == i * 4u;
          CHECK(!c[i] || listed, "core feature #%u advertised without a test", i);
       }
@@ -254,6 +256,14 @@ main(int argc, char **argv)
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
+      /* textureCompressionETC2 mandates every ETC2 and EAC format: sampled + blit src + linear filter + transfer src/dst, no attachment */
+      const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+         VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+      for (int f = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK; f <= VK_FORMAT_EAC_R11G11_SNORM_BLOCK; f++) {
+         GetPhysicalDeviceFormatProperties2(pd, (VkFormat)f, &fp);
+         CHECK((fp.formatProperties.optimalTilingFeatures & need) == need, "ETC2/EAC format %d mandatory features", f);
+         CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "ETC2/EAC format %d not renderable", f);
+      }
    }
 
    /* ---- device + probes ---- */
