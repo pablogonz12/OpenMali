@@ -21,6 +21,9 @@ if [ "$SAN" = 1 ]; then
    export ASAN_OPTIONS=detect_leaks=${MALI_SAN_LEAKS:-0}:abort_on_error=0:halt_on_error=1
    export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 fi
+# The compile cache (mali_compile.c, ~/.cache by default) must not decide a golden: a stale entry from an older compiler made main's own goldens
+# fail on a clean cache (vk_draw FS FAU 0x40 vs the fresh 0x09000000). Every check run starts from an empty private cache.
+export MALI_SHADER_CACHE=$OUT/shader-cache; rm -rf "$MALI_SHADER_CACHE"; mkdir -p "$MALI_SHADER_CACHE"
 if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
 fail=0
