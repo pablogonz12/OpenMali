@@ -69,7 +69,7 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    mali_queue_device_init(dev);
    result = pdev->backend->device_create(&pdev->gpu, &dev->kdev);
    if (result != 0) {
-      result = vk_error(dev, result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
+      result = vk_error(pdev, result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
                                                 : VK_ERROR_INITIALIZATION_FAILED);
       mali_queue_device_finish(dev);
       vk_device_finish(&dev->vk);
@@ -83,11 +83,14 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
    result = mali_hw_init(dev);
    if (result != VK_SUCCESS) {
+      /* no vk_error() for OUT_OF_DEVICE_MEMORY here: the runtime logs it against the failing object's device, and there is none yet */
+      if (result != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+         result = vk_error(pdev, result);
       pdev->backend->device_destroy(dev->kdev);
       mali_queue_device_finish(dev);
       vk_device_finish(&dev->vk);
       vk_free2(&pdev->vk.instance->alloc, pAllocator, dev);
-      return vk_error(pdev, result);
+      return result;
    }
 
    /* One queue family with one queue (see mali_GetPhysicalDeviceQueueFamilyProperties2). */
@@ -95,7 +98,7 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
       const VkDeviceQueueCreateInfo *qinfo = &pCreateInfo->pQueueCreateInfos[i];
 
       if (qinfo->queueFamilyIndex != 0 || qinfo->queueCount != 1 || dev->has_queue) {
-         result = vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
+         result = vk_error(pdev, VK_ERROR_INITIALIZATION_FAILED);
          goto fail;
       }
 

@@ -127,8 +127,9 @@ static int load_props(struct kb_ctx *c)
 	struct kbase_ioctl_get_gpuprops gp = { 0 };
 	int sz = ioctl(c->fd, KBASE_IOCTL_GET_GPUPROPS, &gp);
 	if (sz <= 0) {
-		kb_set_error("GET_GPUPROPS size query failed: %s", strerror(errno));
-		return -errno ? -errno : -EIO;
+		int e = sz < 0 && errno ? errno : EIO;
+		kb_set_error("GET_GPUPROPS size query failed: %s", strerror(e));
+		return -e;
 	}
 	uint8_t *buf = malloc((size_t)sz);
 	if (!buf)
@@ -153,8 +154,9 @@ static int load_csf(struct kb_ctx *c)
 	union kbase_ioctl_cs_get_glb_iface gi;
 	memset(&gi, 0, sizeof gi);
 	if (ioctl(c->fd, KBASE_IOCTL_CS_GET_GLB_IFACE, &gi) < 0) {
-		kb_set_error("CS_GET_GLB_IFACE failed: %s", strerror(errno));
-		return -errno;
+		int e = errno ? errno : EIO;
+		kb_set_error("CS_GET_GLB_IFACE failed: %s", strerror(e));
+		return -e;
 	}
 	struct kb_gpu_props *g = &c->props;
 	g->csf_glb_version = gi.out.glb_version;

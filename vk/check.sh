@@ -68,6 +68,9 @@ run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
+# Fault injection (host-allocator and BO-allocation sweeps over every create/allocate path): proper VK_ERROR_*, nothing leaked. --self-test proves the leak detector fires.
+for g in v11 v13; do run "fault sweep $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_fault" --direct "$OUT/libvulkan_mali.so" --spv "$V/shader/comp.comp.spv"; done
+run "fault sweep self-test" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_fault" --direct "$OUT/libvulkan_mali.so" --spv "$V/shader/comp.comp.spv" --self-test
 
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done

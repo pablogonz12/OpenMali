@@ -160,7 +160,7 @@ reg_bo(struct mali_kdev *k, uint64_t va, size_t size, uint32_t flags, int kind, 
       static const uint8_t zero[4096];
       uint64_t zh = page_hash(zero);   /* all-zero pages are never dumped (a reader's Mem reads unmapped bytes as 0 anyway) */
       size_t np = size / 4096 ? size / 4096 : 1;
-      b->phash = malloc(np * sizeof(uint64_t));
+      b->phash = malloc(np * sizeof(uint64_t));   /* NULL = page hashing off for this BO (dump tool only); every user checks */
       for (size_t i = 0; b->phash && i < np; i++)
          b->phash[i] = zh;
    }
@@ -254,9 +254,30 @@ fake_map(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct mali_b
    return 0;
 }
 
+/* MALI_FAKE_FAIL_BO=n: the n-th BO allocation or import of the process (1-based, counted from the setenv) fails with -ENOMEM; the
+ * value is "n" or "n.tag"; the counter restarts whenever the string changes (the fault-injection test sweeps n with a fresh tag). The stand-in for a failing GPU_MEM_ALLOC ioctl. */
+static int
+fake_fail_bo(void)
+{
+   static char last[32];
+   static unsigned long seen;
+   const char *e = getenv("MALI_FAKE_FAIL_BO");
+   if (!e || !*e) {
+      last[0] = 0;
+      return 0;
+   }
+   if (strcmp(e, last)) {
+      snprintf(last, sizeof last, "%s", e);
+      seen = 0;
+   }
+   return ++seen == strtoul(e, NULL, 10);
+}
+
 static int
 fake_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
 {
+   if (fake_fail_bo())
+      return -ENOMEM;
    if (getenv("MALI_FAKE_BADFLAGS"))   /* self-test of the flag rules: every BO asks for a combination the kernel would silently downgrade */
       flags |= MALI_BO_EVENT | MALI_BO_CACHED;
    const char *rule = fake_flag_rule(size, flags);
@@ -290,6 +311,8 @@ fake_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *
 static int
 fake_bo_import(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct mali_bo *out)
 {
+   if (fake_fail_bo())
+      return -ENOMEM;
    size = (size + 4095) & ~(size_t)4095;
    struct stat st;
    if (fstat(fd, &st) || (size_t)st.st_size < size)
@@ -309,7 +332,11 @@ fake_bo_free(struct mali_kdev *k, struct mali_bo *bo)
    pthread_mutex_lock(&k->lock);
    for (unsigned i = 0; i < k->nbos; i++)
       if (k->bos[i].live && k->bos[i].kind == 0 && k->bos[i].va == bo->gpu_va)
+      {
          k->bos[i].live = false;
+         free(k->bos[i].phash);   /* a freed BO is never dumped again */
+         k->bos[i].phash = NULL;
+      }
    pthread_mutex_unlock(&k->lock);
    if (bo->cpu)
       munmap(bo->cpu, bo->size);
@@ -425,6 +452,8 @@ fake_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t targ
 static int
 fake_heap_create(struct mali_kdev *k, uint32_t chunk, uint32_t initial, uint32_t max, struct mali_heap *out)
 {
+   if (fake_fail_bo())
+      return -ENOMEM;
    *out = (struct mali_heap){.ctx_va = 0xf0000000ull, .first_chunk_va = 0xf1000000ull, .chunk_size = chunk};
    pthread_mutex_lock(&k->lock);
    reg_bo(k, out->ctx_va, 4096, 0, 1, NULL);

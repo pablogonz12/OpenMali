@@ -103,7 +103,7 @@ Not yet: ASTC/YUV, sparse, DRM modifiers, hardware runs.
 ## M4: memory, sync, queue submit
 
 `src/mali_memory.c` (heaps/types over kbase BOs, dma-buf export/import), `src/mali_sync.c` (binary sync_file vk_sync, emulated timeline), `src/mali_queue.c` (submit = empty CS flush + signal). Test: `out/<target>/t_queue [--direct lib.so] [--only mem|dmabuf|idle|binary|timeline|syncfile|submits|fault] [--submits N] [--burst N]`.
-Env: `MALI_FAULT_INJECT=n` (n-th submit fails -> DEVICE_LOST), `MALI_FAKE_SLOW_US` (late fake fences), `MALI_BO_COHERENT_LOCAL=1` (BO flag 0x800).
+Env: `MALI_FAULT_INJECT=n` (n-th submit fails -> DEVICE_LOST), `MALI_FAKE_SLOW_US` (late fake fences), `MALI_BO_COHERENT_LOCAL=1` (BO flag 0x800). `MALI_FAKE_FAIL_BO=n[.tag]` makes the n-th fake BO alloc/import/heap_create fail with -ENOMEM (the tag restarts the counter); `vk/tests/t_fault.c` sweeps it, a failing `VkAllocationCallbacks` and an interposed libc malloc over Create/Allocate paths and checks result codes, null handles and no leaks (`--self-test` is its mutation check).
 `--burst N` = unwaited submits in `idle`; `MALI_SUBMIT_DBG=0x80` dumps queue state and ring on a failed submit (0x20: 128-byte submissions).
 Status: offline all green; CMF all cases pass incl. 10000 unwaited and 10000 waited submits (2026-11-16). The ring must never be completely full
 (`insert - extract == size` gives CS_CONFIG_FAULT): one 64-byte unit stays free, see R3-PLAN.md. Cached allocations are zeroed at alloc.
