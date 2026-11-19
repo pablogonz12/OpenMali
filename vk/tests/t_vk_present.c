@@ -604,8 +604,8 @@ int main(int argc, char **argv)
                          .pWaitDstStageMask = &wst, .commandBufferCount = 1, .pCommandBuffers = &cb,
                          .signalSemaphoreCount = 1, .pSignalSemaphores = &done[fi]};
       VK(QueueSubmit(queue, 1, &si, fen[fi]));
-      /* VK_KHR_incremental_present: alternate a damage rect, an empty region (rectangleCount 0 == whole image) and a NULL pRegions entry */
-      VkRectLayerKHR rect = {.offset = {0, 0}, .extent = {S.w / 2, S.h / 2}, .layer = 0};
+      /* VK_KHR_incremental_present: alternate a full-frame damage rect (whole frame changes), an empty region (rectangleCount 0 == whole image) and a NULL pRegions entry */
+      VkRectLayerKHR rect = {.offset = {0, 0}, .extent = {S.w, S.h}, .layer = 0};
       VkPresentRegionKHR reg = {.rectangleCount = (frames % 3 == 0) ? 1 : 0, .pRectangles = &rect};
       VkPresentRegionsKHR prg = {.sType = VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR, .swapchainCount = 1, .pRegions = (frames % 3 == 2) ? NULL : &reg};
       VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &prg, .waitSemaphoreCount = 1, .pWaitSemaphores = &done[fi],
