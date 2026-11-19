@@ -41,6 +41,7 @@ void mali_desc_set_mem_ops(const struct mali_desc_mem_ops *ops);
 struct mali_dsl {
    struct vk_descriptor_set_layout vk;
    uint32_t nbindings, slot_count, dyn_count, imm_count;
+   bool uab_pool;               /* created with UPDATE_AFTER_BIND_POOL (only set with MALI_DESCIDX_FLAGS=1) */
    struct mali_lbinding *b;     /* nbindings entries */
    VkSampler *imm;              /* immutable samplers */
    struct vk_ycbcr_conversion_state *ycbcr;   /* conversion of each immutable sampler that has one (index = b->ycbcr_off + element), else NULL */
@@ -72,6 +73,8 @@ struct mali_dpool {
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dpool, base, VkDescriptorPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL)
 
 /* Create the layout. dev->... arch is passed per object; `arch` = 11 or 13. */
+/* Test seam: 1/0 forces the descriptor-indexing flags stage on/off, -1 = follow MALI_DESCIDX_FLAGS. */
+void mali_desc_set_descidx(int v);
 VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci, struct mali_dsl **out);
 
 /* Pure core, used by the entrypoints below and by tests. */
