@@ -545,7 +545,7 @@ test_logicop(void)
          if (!blend_bin(archs[ai], fm[f].fmt, fm[f].type, 0, 0, &off0)) {
             CHECK(!blend_bin(archs[ai], fm[f].fmt, fm[f].type, 0, 0x7fff, &offbad) && same_bin(&off0, &offbad),
                   "arch %u %s: invalid unused logicOp changes or breaks the blend compile", archs[ai], fm[f].name);
-            if (fm[f].applies && ok[3])
+            if (fm[f].applies && ok[10])
                CHECK(!same_bin(&off0, &c[10]), "arch %u %s: INVERT equals no logic op", archs[ai], fm[f].name);
          }
          (void)eq;
