@@ -65,6 +65,7 @@ struct mali_cmd_buffer {
    uint32_t vb_size[MALI_MAX_VB];
    uint32_t vb_stride[MALI_MAX_VB];   /* stride from vkCmdBindVertexBuffers2/3KHR setStride (used when the pipeline's VERTEX_INPUT_BINDING_STRIDE is dynamic) */
    uint8_t push[2][MALI_PUSH_MAX];
+   unsigned push_hi;                    /* high-water mark of pushed bytes (the rest of push[] is zero): snapshots copy only this much */
    unsigned nsets;
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];

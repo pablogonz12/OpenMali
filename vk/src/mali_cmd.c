@@ -73,6 +73,7 @@ reset_state(struct mali_cmd_buffer *cmd)
    memset(cmd->vb_size, 0, sizeof cmd->vb_size);
    memset(cmd->vb_stride, 0, sizeof cmd->vb_stride);
    memset(cmd->push, 0, sizeof cmd->push);
+   cmd->push_hi = 0;
    cmd->nsets = 0;
    cmd->ndyn = 0;
    cmd->occ_va = 0;
@@ -315,6 +316,8 @@ mali_CmdPushConstants(VkCommandBuffer h, VkPipelineLayout layout, VkShaderStageF
       unsupported(cmd, "push constant range");
       return;
    }
+   if (off + size > cmd->push_hi)
+      cmd->push_hi = off + size;
    /* Per-stage view: bytes written with stageFlags without a stage are invisible to that stage (Vulkan push constant semantics) */
    if ((stages & VK_SHADER_STAGE_VERTEX_BIT) && memcmp(cmd->push[0] + off, data, size)) {
       memcpy(cmd->push[0] + off, data, size);
@@ -403,8 +406,8 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       memcpy(bb->vb_size, cmd->vb_size, sizeof bb->vb_size);
       memcpy(bb->vb_stride, cmd->vb_stride, sizeof bb->vb_stride);
       bb->nsets = cmd->nsets;
-      memcpy(bb->set_va, cmd->set_va, sizeof bb->set_va);
-      memcpy(bb->set_bytes, cmd->set_bytes, sizeof bb->set_bytes);
+      memcpy(bb->set_va, cmd->set_va, cmd->nsets * sizeof bb->set_va[0]);   /* block is zeroed */
+      memcpy(bb->set_bytes, cmd->set_bytes, cmd->nsets * sizeof bb->set_bytes[0]);
       bb->ndyn = cmd->ndyn;
       d->bind = bb;
    }
@@ -412,7 +415,9 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       struct mali_bpush *bu = mali_frame_blk(fr, sizeof *bu);
       if (!bu)
          return false;
-      memcpy(bu->push, cmd->push, sizeof bu->push);
+      /* the block is zeroed and push[] is zero above push_hi */
+      memcpy(bu->push[0], cmd->push[0], cmd->push_hi);
+      memcpy(bu->push[1], cmd->push[1], cmd->push_hi);
       d->push = bu;
    }
    if (m & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC)) {
