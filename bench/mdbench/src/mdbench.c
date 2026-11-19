@@ -1007,6 +1007,7 @@ int main(int argc, char **argv)
    mat4 view, proj, vp;
    (void)step_first;
    size_t first_meas = 0; int first_meas_set = 0; uint32_t hitch_seq = 0; unsigned hitch_made = 0;
+   size_t hitch_k = (size_t)-1;   /* row that last received a creation batch: an out-of-date retry replays the same k and must not start a second batch */
    while (1) {
       double t0 = now_ms();
       if (!auto_done) {
@@ -1022,8 +1023,9 @@ int main(int argc, char **argv)
       if (k) R.ft[k - 1] = t0 - R.t0[k - 1];
 
       /* pipehitch: create unique pipelines between frames; the time lands in this frame's frame time (what an app sees as a shader-compile hitch) */
-      if (O.scene == SC_PIPEHITCH && !R.warm[k] && (int)hitch_made < O.hitch_count && (!first_meas_set || (k - first_meas) % (size_t)O.hitch_every == 0)) {
+      if (O.scene == SC_PIPEHITCH && !R.warm[k] && k != hitch_k && (int)hitch_made < O.hitch_count && (!first_meas_set || (k - first_meas) % (size_t)O.hitch_every == 0)) {
          if (!first_meas_set) { first_meas = k; first_meas_set = 1; }
+         hitch_k = k;
          int nb = O.hitch_count - (int)hitch_made < O.hitch_batch ? O.hitch_count - (int)hitch_made : O.hitch_batch;
          double hc0 = now_ms();
          for (int b = 0; b < nb; b++) {
