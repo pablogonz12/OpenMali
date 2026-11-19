@@ -971,6 +971,84 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    return 0;
 }
 
+/* One compute job of a geometry-shader draw (MALI_GS_EXPERIMENTAL): the VS-record kernel or the GS body. Same
+ * RUN_COMPUTE sequence as build_compute, but appended to an existing frame stream and with the descriptor sets of
+ * the draw (the app VS may read uniforms). Ends with the L2 flush + WAIT that makes its globals visible to the
+ * next job. 0 or -errno. */
+static int
+emit_gs_compute(const struct mali_hw *hw, struct cs *c, const struct regs *R, const struct mali_compiled *k,
+                uint64_t kva, const uint8_t *push, const struct mali_draw *d, const uint32_t groups[3])
+{
+   const struct mali_env *env = &hw->env;
+   bool v13 = env->arch == 13;
+   uint64_t va_spd, va_set, va_srt, va_fau, va_tsd, va_dyn = 0;
+   uint32_t *spd, *set, *srt, *fau, *tsd, *dyn = NULL;
+
+   if (!k || !k->bin_size || !kva)
+      return -EINVAL;
+   if (!k->local_size[0] || !k->local_size[1] || !k->local_size[2])
+      return -EINVAL;
+   if (k->tls_size || k->wls_size)
+      return -ENOTSUP;   /* the GS kernels have no thread-local storage */
+
+   unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets, res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
+   spd = A(hw, KB_SPD_SIZE, 32, &va_spd);
+   set = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_set);
+   srt = A(hw, res_alloc, 64, &va_srt);
+   fau = A(hw, FAU_BYTES(k->fau_count), 64, &va_fau);
+   tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
+   if (d->ndyn)
+      dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
+   if (!spd || !set || !srt || !fau || !tsd || (d->ndyn && !dyn))
+      return -ENOMEM;
+
+   if (v13)
+      kb_v13_spd(spd, 1, kva, k->work_reg_count, k->preload, 0);
+   else {
+      kb_draw_spd(spd, 1, kva, k->work_reg_count, k->preload);
+      spd[0] &= ~(3u << 8);
+   }
+   kb_draw_local_storage_none(tsd);
+   kb_draw_resource(srt, va_set, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
+   for (unsigned s = 0; s < d->nsets; s++)
+      kb_draw_resource(srt + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
+   if (d->ndyn) {
+      memcpy(dyn, d->dyn_desc, d->ndyn * KB_DESC_SET_STRIDE);
+      kb_draw_resource(srt + MALI_DYN_TABLE * (KB_RES_SIZE / 4), va_dyn, d->ndyn * KB_DESC_SET_STRIDE, 1);
+   }
+   kb_draw_fau_imm(fau, (const uint32_t(*)[2])k->imm, k->nimm);
+   {
+      size_t room = FAU_BYTES(k->fau_count);
+      unsigned n = k->push_const_bytes > MALI_PUSH_MAX ? MALI_PUSH_MAX : k->push_const_bytes;
+      if (n > room)
+         n = (unsigned)room;
+      memcpy((uint8_t *)fau, push, n);
+   }
+
+   M48(c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
+   M64(c, CR_FAU, kb_draw_fau_ptr(va_fau, k->fau_count));
+   M48(c, CR_SPD, va_spd);
+   M48(c, CR_TSD, va_tsd);
+   M32(c, CR_GAO, 0);
+   M32(c, CR_WG_SIZE, (k->local_size[0] - 1) | ((k->local_size[1] - 1) << 10) | ((k->local_size[2] - 1) << 20) |
+                         (k->allow_merge ? 1u << 31 : 0));
+   M32(c, CR_JOB_OFFSET, 0);
+   M32(c, CR_JOB_OFFSET + 1, 0);
+   M32(c, CR_JOB_OFFSET + 2, 0);
+   M32(c, CR_JOB_SIZE, groups[0]);
+   M32(c, CR_JOB_SIZE + 1, groups[1]);
+   M32(c, CR_JOB_SIZE + 2, groups[2]);
+   E(c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
+   E(c, kb_cs_req_res(KB_CS_RES_COMPUTE));
+   E(c, run_compute_instr(1, 0));
+   E(c, kb_cs_wait(1u << env->slot));
+   E(c, kb_cs_req_res(0));
+   M32(c, R->flush_id, 0);
+   E(c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
+   E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   return c->err;
+}
+
 int
 mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **out, unsigned *nout)
 {
@@ -980,6 +1058,8 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    struct cs c;
    struct ddesc *dd = NULL;
    struct mali_draw *mod = NULL;   /* polygonMode LINE draws rewritten to line lists */
+   struct mali_draw *gmd = NULL;   /* GS draws: the draw with the params tail written into its push block */
+   struct mali_gs_draw_plan *gpl = NULL;
    int rc = 0;
    uint64_t va_smp = 0, va_tctx = 0, va_fbd = 0, va_tsd = 0;
 
@@ -1026,6 +1106,39 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
          const struct mali_draw *dr = &x;
+         if (x.gs) {
+            /* Geometry stage: the record/index arena of this draw, the restart padding, and the params tail in a
+             * private copy of the draw's push block (app constants at 0, struct mali_gs_params at pc_off). */
+            struct mali_gs_draw_plan pl;
+            if (mali_gs_plan_draw(x.gs, x.gs_vcount, &pl) || pl.empty) { rc = -EINVAL; goto out; }
+            if (!gmd && !(gmd = calloc(f->ndraws, sizeof *gmd))) { rc = -ENOMEM; goto out; }
+            if (!gpl && !(gpl = calloc(f->ndraws, sizeof *gpl))) { rc = -ENOMEM; goto out; }
+            uint64_t va_vs = 0, va_rec = 0, va_idx = 0;
+            void *vsrec = Anz(hw, pl.vs_records_bytes ? pl.vs_records_bytes : 64, 64, &va_vs);
+            void *rec = Anz(hw, pl.records_bytes ? pl.records_bytes : 64, 64, &va_rec);
+            uint32_t *idx = A(hw, pl.indices_bytes ? pl.indices_bytes : 64, 64, &va_idx);
+            if (!vsrec || !rec || !idx) { rc = -ENOMEM; goto out; }
+            mali_gs_pad_indices(idx, pl.prims, pl.index_stride);
+            struct mali_gs_params pr = {
+               .vs_records = va_vs, .records = va_rec, .indices = va_idx,
+               .vertex_count = pl.vcount, .instance_count = 1,
+               .vs_record_capacity = pl.vcount, .cap_slots = pl.prims,
+               .primitive_restart = 1, .prim = pl.out_prim,
+               .first_vertex = x.first_vertex,
+            };
+            for (unsigned b = 0; b < MALI_GS_MAX_VB; b++)
+               pr.vb_va[b] = x.vb_va[b];
+            gpl[i] = pl;
+            gmd[i] = x;
+            memcpy(gmd[i].push[0] + x.gs->pc_off, &pr, sizeof pr);
+            gmd[i].indexed = true;
+            gmd[i].index_va = va_idx;
+            gmd[i].index_cpu = NULL;
+            gmd[i].index_bytes = pl.indices_bytes;
+            gmd[i].index_size = 4;
+            gmd[i].first_index = 0;
+            dr = &gmd[i];
+         }
          if (dr->gfx.poly_mode == 1) {
             if (!mod && !(mod = calloc(f->ndraws, sizeof *mod))) { rc = -ENOMEM; goto out; }
             if ((rc = poly_lines(hw, dr, &mod[i])))
@@ -1057,12 +1170,24 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
+   if (geometry && gmd) {
+      /* both kernels before the tiler job: VS records first, then the GS body that reads them */
+      for (unsigned i = 0; i < f->ndraws; i++) {
+         if (!gmd[i].gs)
+            continue;
+         const struct mali_gs_pipe *p = gmd[i].gs;
+         if ((rc = emit_gs_compute(hw, &c, R, &p->vs_k, p->vs_k_va, gmd[i].push[0], &gmd[i], gpl[i].vs_dispatch)))
+            goto out;
+         if ((rc = emit_gs_compute(hw, &c, R, &p->gs_k, p->gs_k_va, gmd[i].push[0], &gmd[i], gpl[i].dispatch)))
+            goto out;
+      }
+   }
    if (geometry) {
       struct mali_draw x;
       memset(&x, 0, sizeof x);
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
-         const struct mali_draw *d = mod && x.gfx.poly_mode == 1 ? &mod[i] : &x;
+         const struct mali_draw *d = gmd && gmd[i].gs ? &gmd[i] : (mod && x.gfx.poly_mode == 1 ? &mod[i] : &x);
          emit_draw_regs(&c, env, f, d, &dd[i], va_tsd, va_tctx);
          if (i == 0) {
             M48(&c, R->heap, env->heap_ctx_va);
@@ -1093,6 +1218,8 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
 out:
    free(dd);
    free(mod);
+   free(gmd);
+   free(gpl);
    if (rc) {
       free(c.v);
       return rc;
@@ -1207,6 +1334,7 @@ mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d)
       .first_index = d->first_index, .count = d->count, .instance_count = d->instance_count, .first_vertex = d->first_vertex,
       .first_instance = d->first_instance, .draw_id = d->draw_id, .occ_va = d->occ_va, .ind = d->ind, .ind_count = d->ind_count,
       .ind_n = d->ind_n, .ind_stride = d->ind_stride, .occ_mode = d->occ_mode,
+      .gs = d->gs, .gs_vcount = d->gs_vcount,
    };
    return mali_frame_add_rec(f, &r);
 }
@@ -1241,6 +1369,8 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
    x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
    x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
    x->ind_stride = r->ind_stride; x->occ_mode = r->occ_mode;
+   x->gs = r->gs;
+   x->gs_vcount = r->gs_vcount;
 }
 
 void

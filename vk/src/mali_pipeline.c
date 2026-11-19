@@ -26,6 +26,8 @@ struct mali_pipeline {
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
    struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_gs_pipe gs;        /* MALI_GS_EXPERIMENTAL: geometry stage kernels + passthrough VS (have_gs) */
+   bool have_gs;
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -43,6 +45,8 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   if (p->have_gs)
+      mali_gs_pipe_free(&p->gs);
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -120,20 +124,23 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    p->dev = dev;
 
-   const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL;
+   const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL, *gss = NULL;
    for (uint32_t i = 0; i < ci->stageCount; i++) {
       if (ci->pStages[i].stage == VK_SHADER_STAGE_VERTEX_BIT)
          vss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
          fss = &ci->pStages[i];
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT && mali_gs_enabled())
+         gss = &ci->pStages[i];   /* MALI_GS_EXPERIMENTAL=1: lowered to compute kernels (mali_gs.h); not advertised */
       else {
-         res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation / geometry: not supported */
+         res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation: not supported */
          goto fail;
       }
    }
-   const uint32_t *vcode = NULL, *fcode = NULL;
-   uint32_t vwords = 0, fwords = 0;
-   if (!vss || !stage_spirv(vss, &vcode, &vwords) || (fss && !stage_spirv(fss, &fcode, &fwords))) {
+   const uint32_t *vcode = NULL, *fcode = NULL, *gcode = NULL;
+   uint32_t vwords = 0, fwords = 0, gwords = 0;
+   if (!vss || !stage_spirv(vss, &vcode, &vwords) || (fss && !stage_spirv(fss, &fcode, &fwords)) ||
+       (gss && !stage_spirv(gss, &gcode, &gwords))) {
       res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) pipelines: later */
       goto fail;
    }
@@ -160,7 +167,53 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv_words = vwords;
    o.entry = vss->pName;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   if (mali_compile(&o, &p->vs, err, sizeof err)) {
+   if (gss) {
+      /* Geometry stage (MALI_GS_EXPERIMENTAL): the app VS becomes the VS-record kernel, the GS body the second
+       * kernel, and the draw runs a generated passthrough VS (mali_gs_pipe_build). */
+      struct mali_gs_vs_attr attrs[MALI_GS_MAX_ATTR];
+      unsigned nattrs = 0;
+      bool bad_attr = false;
+      if (st.vi) {
+         uint32_t v = st.vi->attributes_valid;
+         while (v) {
+            unsigned loc = u_bit_scan(&v);
+            const struct vk_vertex_attribute_state *a = &st.vi->attributes[loc];
+            const struct vk_vertex_binding_state *vb = st.vi->bindings_valid & (1u << a->binding) ? &st.vi->bindings[a->binding] : NULL;
+            unsigned nc = 0;
+            switch (a->format) {
+            case VK_FORMAT_R32_SFLOAT: nc = 1; break;
+            case VK_FORMAT_R32G32_SFLOAT: nc = 2; break;
+            case VK_FORMAT_R32G32B32_SFLOAT: nc = 3; break;
+            case VK_FORMAT_R32G32B32A32_SFLOAT: nc = 4; break;
+            default: bad_attr = true; break;   /* the record kernel fetches float32 components only */
+            }
+            if (!vb || vb->input_rate != VK_VERTEX_INPUT_RATE_VERTEX || nattrs >= MALI_GS_MAX_ATTR || loc >= MALI_MAX_ATTR)
+               bad_attr = true;
+            if (bad_attr)
+               break;
+            attrs[nattrs++] = (struct mali_gs_vs_attr){.location = loc, .binding = a->binding, .offset = a->offset,
+                                                       .stride = vb->stride, .ncomps = nc};
+         }
+      }
+      if (bad_attr) {
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: GS pipeline: vertex input the record kernel cannot fetch (per-vertex float32 only)\n");
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
+      struct mali_compile_opts ov = o, og = o;
+      og.stage = MALI_STAGE_COMPUTE;
+      og.spirv = gcode;
+      og.spirv_words = gwords;
+      og.entry = gss->pName;
+      set_spec(&og, specbuf, gss->pSpecializationInfo);
+      if (mali_gs_pipe_build(&ov, &og, attrs, nattrs, layout ? flat.c.push_size : 0, &p->gs, err, sizeof err)) {
+         fprintf(stderr, "mali_vk: GS pipeline failed: %s\n", err);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
+      p->have_gs = true;
+   } else if (mali_compile(&o, &p->vs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -179,8 +232,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       goto fail;
    }
    o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
-   o.link_vs = &p->vs.layout;
-   o.clip_distances = p->vs.vs_clip_distances;
+   o.link_vs = p->have_gs ? &p->gs.pt.layout : &p->vs.layout;
+   o.clip_distances = p->have_gs ? p->gs.pt.vs_clip_distances : p->vs.vs_clip_distances;
    const bool rs_discard = st.rs && st.rs->rasterizer_discard_enable;
    if ((fss || !rs_discard) && mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
@@ -235,8 +288,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       }
    }
 
-   /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned; blend shader after it, 16-aligned */
-   size_t fs_off = (p->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+   /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned; blend shader after it, 16-aligned.
+    * GS pipeline: VS-record kernel, GS kernel and passthrough VS first, each 256-aligned, then the FS. */
+   size_t vs_sz = p->have_gs ? p->gs.vs_k.bin_size : p->vs.bin_size;
+   size_t gsk_off = (vs_sz + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+   size_t pt_off = (gsk_off + (p->have_gs ? p->gs.gs_k.bin_size : 0) + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+   size_t fs_off = (pt_off + (p->have_gs ? p->gs.pt.bin_size : 0) + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
    size_t bl_off = (fs_off + p->fs.bin_size + 15) & ~(size_t)15;
    size_t code_sz = has_blend ? bl_off + p->blend.bin_size : fs_off + p->fs.bin_size;
    if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
@@ -244,7 +301,14 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       goto fail;
    }
    p->have_code = true;
-   memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
+   if (p->have_gs) {
+      memcpy(p->code.cpu, p->gs.vs_k.bin, p->gs.vs_k.bin_size);
+      memcpy((char *)p->code.cpu + gsk_off, p->gs.gs_k.bin, p->gs.gs_k.bin_size);
+      memcpy((char *)p->code.cpu + pt_off, p->gs.pt.bin, p->gs.pt.bin_size);
+      p->gs.vs_k_va = p->code.gpu_va;
+      p->gs.gs_k_va = p->code.gpu_va + gsk_off;
+   } else
+      memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
    if (p->fs.bin_size)
       memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
    if (has_blend)
@@ -253,23 +317,29 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    struct mali_gfx_state *g = &p->gfx;
    if (has_blend)
       g->blend_va = p->code.gpu_va + bl_off;
-   g->vs = &p->vs;
+   g->vs = p->have_gs ? &p->gs.pt : &p->vs;
    g->fs = &p->fs;
    g->samples = samples;
    g->dyn_stride = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_VI_BINDING_STRIDES);
    g->discard = rs_discard;   /* FS-less pipelines draw with the null FS (depth/stencil effects) */
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
-   g->vs_va = p->code.gpu_va;
+   g->vs_va = p->have_gs ? p->code.gpu_va + pt_off : p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
-   g->push_base[0] = 40;
+   g->push_base[0] = p->have_gs ? 0 : 40;   /* the passthrough VS reads params at pc_off from byte 0 */
    g->push_base[1] = arch == 13 ? 24 : 0;   /* v13: FAU words 4,5 hold the blend descriptor */
+   if (p->have_gs) {
+      g->gs = &p->gs;
+      g->nattr = 0;              /* the generated draw fetches no vertex attributes */
+      g->prim = p->gs.out_prim;
+      g->prim_restart = true;    /* restart pads unwritten index slots */
+   }
    g->depth_func = VK_COMPARE_OP_ALWAYS;
    if (st.ds) {
       g->depth_test = st.ds->depth.test_enable;
       g->depth_write = st.ds->depth.write_enable;
       g->depth_func = st.ds->depth.compare_op;
    }
-   if (ci->pInputAssemblyState) {
+   if (ci->pInputAssemblyState && !p->have_gs) {
       switch (ci->pInputAssemblyState->topology) {
       case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: g->prim = 1; break;
       case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: g->prim = 2; break;
@@ -289,7 +359,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          g->poly_mode = 1; g->poly_prim = g->prim; g->prim = 2;
       }
    }
-   if (st.vi) {
+   if (st.vi && !p->have_gs) {
       uint32_t v = st.vi->attributes_valid;
       while (v) {
          unsigned loc = u_bit_scan(&v);

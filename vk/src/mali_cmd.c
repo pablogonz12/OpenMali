@@ -522,6 +522,33 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
       return;
    if (!vcount || !icount)
       return;
+   if (cmd->gfx.gs) {
+      /* Geometry stage (MALI_GS_EXPERIMENTAL): the two kernels run at frame build over vcount vertices, then the
+       * generated draw walks the restart-padded index buffer. Instancing would need one kernel sweep per instance:
+       * refused instead of drawing wrong. */
+      struct mali_gs_draw_plan pl;
+      if (icount != 1) {
+         unsupported(cmd, "geometry stage with instancing");
+         return;
+      }
+      if (mali_gs_plan_draw(cmd->gfx.gs, vcount, &pl) || pl.empty)
+         return;   /* no input primitive or no vertex: nothing emitted, no dispatch, no fragments */
+      struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
+      if (!sl || !snapshot_draw(cmd, sl, pl.index_count, 1, first, first_inst)) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+      sl->indexed = true;
+      sl->index_va = 0;             /* records + indices are allocated in the frame arena at build time */
+      sl->index_cpu = NULL;
+      sl->index_bytes = pl.indices_bytes;
+      sl->index_size = 4;
+      sl->first_index = 0;
+      sl->gs = cmd->gfx.gs;
+      sl->gs_vcount = vcount;
+      cmd->cur.ndraws++;
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
    if (!sl || !snapshot_draw(cmd, sl, vcount, icount, first, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -542,6 +569,10 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       return;
    if (!icount || !inst)
       return;
+   if (cmd->gfx.gs) {
+      unsupported(cmd, "indexed draw with a geometry stage");
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
    if (!sl || !snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -574,6 +605,10 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
    struct mali_rec d;
    if (!cmd->in_render || !cmd->have_gfx || (indexed && !cmd->ib_va)) {
       unsupported(cmd, "indirect draw outside a rendering, without a pipeline or index buffer");
+      return;
+   }
+   if (cmd->gfx.gs) {
+      unsupported(cmd, "indirect draw with a geometry stage");
       return;
    }
    if (discarded(cmd))

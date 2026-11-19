@@ -101,6 +101,10 @@ int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *ou
 
 /* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
+/* Same back end for a driver-built NIR shader (stage VERTEX or COMPUTE; the NIR is consumed, also on failure). Used by the geometry
+ * shader path (mali_gs.c): the GS kernels and the passthrough VS. Not disk-cached. */
+struct nir_shader;
+int mali_compile_nir(const struct mali_compile_opts *o, struct nir_shader *nir, struct mali_compiled *out, char *err, size_t errsz);
 void mali_compiled_free(struct mali_compiled *c);
 
 /* Cache statistics of this process. */

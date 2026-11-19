@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 21 /* 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 22 /* 22: lower_noperspective_varyings_pan inlined to 0 for driver-built vertex shaders; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -67,6 +67,12 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
    case nir_intrinsic_load_draw_id:         off = 32; break;
    case nir_intrinsic_load_base_global_invocation_id:   /* compute stub: no vkCmdDispatchBase, base is 0 */
    case nir_intrinsic_load_base_workgroup_id:
+   case nir_intrinsic_load_noperspective_varyings_pan:
+      /* bifrost_postprocess_nir's pan_nir_lower_noperspective_vs inserts this for every VS that writes
+       * gl_Position.w; PanVK inlines the linked FS's mask here. This driver does not track noperspective
+       * qualifiers (the FS side is not lowered either), so the mask is 0: every varying stays
+       * perspective-correct. Needed by the generated GS passthrough VS, whose store_outputs are visible to
+       * that pass (app VSs still store to variables at this point). */
       b->cursor = nir_before_instr(&i->instr);
       nir_def_replace(&i->def, nir_imm_zero(b, i->def.num_components, i->def.bit_size));
       return true;
@@ -330,9 +336,19 @@ gcm_enabled(nir_shader *nir)
    return true;
 }
 
+/* strip_psiz for a driver-built VS (store_output intrinsics, no variables) */
+static bool
+drop_psiz_store(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_store_output || nir_intrinsic_io_semantics(i).location != VARYING_SLOT_PSIZ)
+      return false;
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
 static int
 do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, struct mali_compiled *out,
-           char *err, size_t errsz)
+           char *err, size_t errsz, nir_shader *pre)
 {
    pthread_once(&g_once, init_once);
    unsigned arch = o->arch;
@@ -364,7 +380,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       spec.num_entries = o->nspec;
       spec.entries = se;
    }
-   nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
+   /* pre != NULL (mali_compile_nir): the shader was built by the driver (GS kernels, passthrough VS), already in `stage` */
+   nir_shader *nir = pre ? pre : spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
    free(se);
    if (!nir)
       return fail(err, errsz, "spirv_to_nir failed");
@@ -383,6 +400,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       if (has_clip)
          NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
    }
+   if (o->strip_psiz && stage == MESA_SHADER_VERTEX && pre)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, drop_psiz_store, nir_metadata_control_flow, NULL);
    if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
       nir_foreach_shader_out_variable(var, nir)
          if (var->data.location == VARYING_SLOT_PSIZ) {
@@ -624,10 +643,25 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       }
    }
    atomic_fetch_add(&g_misses, 1);
-   int r = do_compile(o, fau_reserved, push_base, out, err, errsz);
+   int r = do_compile(o, fau_reserved, push_base, out, err, errsz, NULL);
    if (r == 0 && use_cache)
       cache_store(dir, hex, out);
    return r;
+}
+
+int
+mali_compile_nir(const struct mali_compile_opts *o, struct nir_shader *nir, struct mali_compiled *out, char *err, size_t errsz)
+{
+   if (!o || !out || !nir)
+      return fail(err, errsz, "bad arguments");
+   if (o->arch != 10 && o->arch != 11 && o->arch != 13)
+      return fail(err, errsz, "arch must be 10, 11 or 13");
+   if (o->stage != MALI_STAGE_VERTEX && o->stage != MALI_STAGE_COMPUTE)
+      return fail(err, errsz, "driver-built shaders: vertex or compute only");
+   unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : 8);
+   unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : 0);
+   /* never cached: the NIR is not hashed (the builders are cheap) */
+   return do_compile(o, fau_reserved, push_base, out, err, errsz, nir);
 }
 
 void

@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include "mali_compile.h"
+#include "mali_gs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +80,9 @@ struct mali_gfx_state {
    unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 */
    unsigned poly_prim;                    /* LINE: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
+   /* MALI_GS_EXPERIMENTAL: the pipeline has a geometry stage. vs/vs_va are then the generated passthrough
+    * VS, prim/prim_restart the generated draw's mode, and the draw runs two compute kernels first (mali_gs.h). */
+   const struct mali_gs_pipe *gs;
 };
 
 /* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply
@@ -146,6 +150,10 @@ struct mali_draw {
    const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
    uint32_t ind_n, ind_stride;
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
+   /* geometry stage (MALI_GS_EXPERIMENTAL): the generated draw runs the two kernels (gfx.gs) over vcount
+    * vertices first; index_va/index_bytes/index_size are filled at frame build (arena). */
+   const struct mali_gs_pipe *gs;
+   uint32_t gs_vcount;
 };
 
 /* What a draw records (struct mali_rec): a small header plus pointers to immutable state blocks in the frame pool. A block is renewed only when
@@ -174,6 +182,9 @@ struct mali_rec {
    const uint32_t *ind_count;
    uint32_t ind_n, ind_stride;
    unsigned occ_mode;
+   /* geometry stage: gs_vcount vertices, the records/indices are allocated in the arena at build time */
+   const struct mali_gs_pipe *gs;
+   uint32_t gs_vcount;
 };
 
 /* A compute dispatch (M11): one per frame record, executed with RUN_COMPUTE. */

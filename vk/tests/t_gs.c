@@ -203,13 +203,14 @@ exec_instr(struct ex *e, nir_instr *instr)
       nir_const_value dst[NIR_MAX_VEC_COMPONENTS];
       memset(dst, 0, sizeof dst);
       unsigned bs = nir_alu_type_get_type_size(nir_op_infos[alu->op].output_type);
-      if (!bs)
-         bs = nir_op_infos[alu->op].num_inputs ? alu->src[0].src.ssa->bit_size : alu->def.bit_size;
+      if (bs < 32)
+         bs = alu->def.bit_size;   /* comparisons: def is a bool, the operands set the width */
+      if (bs < 32)
+         bs = nir_op_infos[alu->op].num_inputs ? alu->src[0].src.ssa->bit_size : 32;
       /* nir_eval_const_opcode takes the *destination* bit size for the opcode's output, sources are typed. */
-      nir_eval_const_opcode(alu->op, dst, NULL, n, alu->def.bit_size, sp, 0);
+      nir_eval_const_opcode(alu->op, dst, NULL, n, bs, sp, 0);
       for (unsigned c = 0; c < n; c++)
          e->v[alu->def.index][c] = dst[c];
-      (void)bs;
       break;
    }
    case nir_instr_type_intrinsic: {
@@ -606,6 +607,333 @@ test_truncation(unsigned arch)
    printf("  truncation v%u: 4th vertex dropped, neighbour slot intact (mutation detected)\n", arch);
 }
 
+/* ---- slice 3: the driver's pipeline-level path (mali_gs_pipe_build, mali_gs_plan_draw, padding) ---- */
+
+#define VB_STRIDE 32
+
+struct pinerun {
+   struct mali_gs_pipe p;
+   struct mali_gs_draw_plan pl;
+   uint8_t *vs_rec, *rec;
+   uint32_t *idx;
+   uint8_t push[128];
+};
+
+static const struct mali_gs_vs_attr pipe_attr[2] = {
+   { .location = 0, .binding = 0, .offset = 0, .stride = VB_STRIDE, .ncomps = 3 },
+   { .location = 1, .binding = 0, .offset = 16, .stride = VB_STRIDE, .ncomps = 3 },
+};
+
+static void
+pipe_params(struct pinerun *r, const uint8_t *vb)
+{
+   memset(r->push, 0, sizeof r->push);
+   struct mali_gs_params pr = {
+      .vs_records = (uintptr_t)r->vs_rec, .records = (uintptr_t)r->rec, .indices = (uintptr_t)r->idx,
+      .vertex_count = r->pl.vcount, .instance_count = 1, .vs_record_capacity = r->pl.vcount,
+      .cap_slots = r->pl.prims, .primitive_restart = 1, .prim = r->pl.out_prim,
+   };
+   pr.vb_va[0] = (uintptr_t)vb;
+   memcpy(r->push + r->p.pc_off, &pr, sizeof pr);
+}
+
+/* Build the pipeline exactly as vkCreateGraphicsPipelines does (mali_gs_pipe_build), plan the draw, then run the
+ * two kernels on the CPU interpreter. mutate 1: pad the index buffer with 0 instead of the restart value (the
+ * padding mutation). 0 on success. */
+static int
+pipe_run(const char *vsname, const char *gsname, unsigned arch, const uint8_t *vb, unsigned vcount,
+         struct pinerun *r)
+{
+   char err[256] = "";
+   struct spv vs = load(vsname), gs = load(gsname);
+   if (!vs.w || !gs.w) {
+      free(vs.w); free(gs.w);
+      return -1;
+   }
+   memset(r, 0, sizeof *r);
+   struct mali_compile_opts ov = { .arch = arch, .stage = MALI_STAGE_VERTEX, .spirv = vs.w, .spirv_words = vs.n };
+   struct mali_compile_opts og = { .arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = gs.w, .spirv_words = gs.n };
+   int rc = -1;
+   if (mali_gs_pipe_build(&ov, &og, pipe_attr, 2, 0, &r->p, err, sizeof err)) {
+      printf("  pipe build: %s\n", err);
+      goto done;
+   }
+   if (mali_gs_plan_draw(&r->p, vcount, &r->pl)) {
+      printf("  pipe plan: overflow\n");
+      goto done;
+   }
+   r->vs_rec = calloc(r->pl.vs_records_bytes + 16, 1);
+   r->rec = calloc(r->pl.records_bytes + 16, 1);
+   r->idx = calloc(r->pl.indices_bytes + 16, 1);
+   if (!r->vs_rec || !r->rec || !r->idx)
+      goto done;
+   mali_gs_pad_indices(r->idx, r->pl.prims, r->pl.index_stride);
+   pipe_params(r, vb);
+
+   uint64_t vso = 0;
+   nir_shader *vk = mali_gs_vs_kernel_nir(&ov, pipe_attr, 2, r->p.pc_off, &vso, err, sizeof err);
+   nir_shader *gk = vk ? mali_gs_kernel_nir(&og, &r->p.info, vso, r->p.pc_off, 0, err, sizeof err) : NULL;
+   if (!vk || !gk) {
+      printf("  pipe kernel: %s\n", err);
+      ralloc_free(vk);
+      goto done;
+   }
+   struct ex e = { .push = r->push };
+   for (uint32_t g = 0; g < r->pl.vcount + 2; g++) {   /* two extra threads: the bounds check must hold */
+      memset(&e.out, 0, sizeof e.out);
+      e.gid[0] = g;
+      run_shader(vk, &e);
+      if (e.bad)
+         goto kern;
+   }
+   for (uint32_t g = 0; g < r->pl.prims + 2; g++) {
+      memset(&e.out, 0, sizeof e.out);
+      e.gid[0] = g;
+      run_shader(gk, &e);
+      if (e.bad)
+         goto kern;
+   }
+   rc = 0;
+kern:
+   ralloc_free(vk);
+   ralloc_free(gk);
+done:
+   free(vs.w);
+   free(gs.w);
+   return rc;
+}
+
+static void
+pipe_free(struct pinerun *r)
+{
+   mali_gs_pipe_free(&r->p);
+   free(r->vs_rec);
+   free(r->rec);
+   free(r->idx);
+}
+
+static unsigned pipe_draw_n(struct pinerun *r, unsigned arch, struct vtx *tris, unsigned max_tris,
+                            unsigned *nverts_out, unsigned count);
+
+/* Index walk + passthrough VS of a pipeline-level run: same strip walk as draw_strip, with the passthrough
+ * NIR built from the pipeline's info/pc_off. */
+static unsigned
+pipe_draw(struct pinerun *r, unsigned arch, struct vtx *tris, unsigned max_tris, unsigned *nverts_out)
+{
+   return pipe_draw_n(r, arch, tris, max_tris, nverts_out, 0);
+}
+static unsigned
+pipe_draw_n(struct pinerun *r, unsigned arch, struct vtx *tris, unsigned max_tris, unsigned *nverts_out, unsigned count)
+{
+   const struct nir_shader_compiler_options *o = pan_get_nir_shader_compiler_options(arch, MESA_SHADER_VERTEX, false);
+   nir_shader *pt = mali_gs_passthrough_nir(o, &r->p.info, r->p.pc_off);
+   unsigned total = count ? count : r->pl.index_count, nt = 0, nv = 0, run = 0;
+   struct vtx strip[8];
+   for (unsigned i = 0; i < total; i++) {
+      uint32_t idx = r->idx[i];
+      if (idx == 0xffffffffu) {
+         run = 0;
+         continue;
+      }
+      struct ex e = { .push = r->push, .vertex_id = idx };
+      memset(&e.out, 0, sizeof e.out);
+      run_shader(pt, &e);
+      if (e.bad) {
+         nt = 0;
+         break;
+      }
+      struct vtx v;
+      memcpy(v.pos, e.out[VARYING_SLOT_POS], 16);
+      memcpy(v.var, e.out[VARYING_SLOT_VAR0], 16);
+      nv++;
+      strip[run % 3] = v;
+      run++;
+      if (run >= 3 && nt < max_tris) {   /* strip: alternate winding */
+         unsigned a = (run - 3) % 3, b = (run - 2) % 3, c = (run - 1) % 3;
+         if (run & 1) { tris[nt * 3] = strip[a]; tris[nt * 3 + 1] = strip[b]; }
+         else { tris[nt * 3] = strip[b]; tris[nt * 3 + 1] = strip[a]; }
+         tris[nt * 3 + 2] = strip[c];
+         nt++;
+      }
+   }
+   ralloc_free(pt);
+   *nverts_out = nv;
+   return nt;
+}
+
+static unsigned
+live_idx(const struct pinerun *r)
+{
+   unsigned n = 0;
+   for (uint32_t i = 0; i < r->pl.prims * r->pl.index_stride; i++)
+      n += r->idx[i] != 0xffffffffu;
+   return n;
+}
+
+static void
+put_vb(uint8_t *vb, unsigned v, float px, float py, float r, float g, float b)
+{
+   float p[3] = { px, py, 0.0f }, c[3] = { r, g, b };
+   memcpy(vb + v * VB_STRIDE, p, sizeof p);
+   memcpy(vb + v * VB_STRIDE + 16, c, sizeof c);
+}
+
+/* Coverage of a triangle list: fills `cov` with the pixel-centre colours seen. */
+static int
+cover_pixels(const struct vtx *tris, unsigned nt, unsigned *covered, float centre[4])
+{
+   unsigned n = 0;
+   for (int y = 0; y < FB; y++)
+      for (int x = 0; x < FB; x++) {
+         float got[4];
+         for (unsigned t = 0; t < nt; t++)
+            if (raster_px(&tris[t * 3], x + 0.5f, y + 0.5f, got)) {
+               n++;
+               if (x == FB / 2 && y == FB / 2)
+                  memcpy(centre, got, 16);
+               break;
+            }
+      }
+   *covered = n;
+   return 0;
+}
+
+/* triangle in -> quad out through the pipeline path (VS-record kernel + GS kernel + generated indexed draw
+ * with the passthrough VS): the quad is red (in_col[0]) and covers pixels. */
+static void
+test_pipe_triangle_quad(unsigned arch)
+{
+   uint8_t vb[3 * VB_STRIDE] = {0};
+   put_vb(vb, 0, -0.8f, -0.8f, 1, 0, 0);
+   put_vb(vb, 1, 0.8f, -0.8f, 0, 1, 0);
+   put_vb(vb, 2, 0.0f, 0.8f, 0, 0, 1);
+   struct pinerun r;
+   if (pipe_run("gs/pixels.vert.spv", "gs/quad.geom.spv", arch, vb, 3, &r)) {
+      g_fail++;
+      return;
+   }
+   CHECK(r.pl.prims == 1 && r.pl.vcount == 3, "pipe tri-quad: plan %u prims / %u verts", r.pl.prims, r.pl.vcount);
+   CHECK(r.pl.index_count == r.pl.prims * r.pl.index_stride, "pipe tri-quad: index_count %u != padded", r.pl.index_count);
+   CHECK(live_idx(&r) == 4, "pipe tri-quad: %u live indices != 4", live_idx(&r));
+   struct vtx tris[8];
+   unsigned nv = 0, nt = pipe_draw(&r, arch, tris, 8, &nv);
+   CHECK(nv == 4 && nt == 2, "pipe tri-quad: %u vertices / %u triangles", nv, nt);
+   unsigned cov = 0;
+   float centre[4] = {0, 0, 0, 0};
+   cover_pixels(tris, nt, &cov, centre);
+   CHECK(cov > 100, "pipe tri-quad: %u covered pixels", cov);
+   CHECK(near(centre[0], 1) && near(centre[1], 0) && near(centre[2], 0),
+         "pipe tri-quad: centre colour %g %g %g != red (in_col[0])", centre[0], centre[1], centre[2]);
+   printf("  pipe tri->quad v%u: %u live indices, %u pixels, centre red\n", arch, live_idx(&r), cov);
+   pipe_free(&r);
+}
+
+/* point in -> quad out (points.geom): uv interpolation through the generated draw. */
+static void
+test_pipe_points_quad(unsigned arch)
+{
+   uint8_t vb[VB_STRIDE] = {0};
+   put_vb(vb, 0, 0.25f, -0.25f, 1, 1, 1);
+   struct pinerun r;
+   if (pipe_run("gs/pixels.vert.spv", "gs/points.geom.spv", arch, vb, 1, &r)) {
+      g_fail++;
+      return;
+   }
+   CHECK(r.pl.prims == 1, "pipe points-quad: %u prims != 1", r.pl.prims);
+   CHECK(live_idx(&r) == 4, "pipe points-quad: %u live indices != 4", live_idx(&r));
+   struct vtx tris[8];
+   unsigned nv = 0, nt = pipe_draw(&r, arch, tris, 8, &nv);
+   CHECK(nv == 4 && nt == 2, "pipe points-quad: %u vertices / %u triangles", nv, nt);
+   const float s = 0.02f;
+   /* every covered pixel's uv must be the linear mapping of its own position inside the quad */
+   unsigned cov = 0, bad = 0;
+   for (int y = 0; y < FB; y++)
+      for (int x = 0; x < FB; x++) {
+         float px = x + 0.5f, py = y + 0.5f, got[4];
+         if (!nt || !raster_px(tris, px, py, got))
+            continue;
+         cov++;
+         float nx = (px / FB - 0.5f) * 2, ny = (py / FB - 0.5f) * 2;
+         if (!near(got[0], (nx - (0.25f - s)) / (2 * s)) || !near(got[1], (ny - (-0.25f - s)) / (2 * s)))
+            bad++;
+      }
+   CHECK(cov >= 1, "pipe points-quad: %u covered pixels", cov);
+   CHECK(!bad, "pipe points-quad: %u/%u pixels with wrong uv", bad, cov);
+   printf("  pipe points->quad v%u: %u pixels uv-correct through the generated draw\n", arch, cov);
+   pipe_free(&r);
+}
+
+/* A GS that emits nothing: every index stays restart, the draw covers no pixel. */
+static void
+test_pipe_empty(unsigned arch)
+{
+   uint8_t vb[3 * VB_STRIDE] = {0};
+   put_vb(vb, 0, -0.8f, -0.8f, 1, 0, 0);
+   put_vb(vb, 1, 0.8f, -0.8f, 0, 1, 0);
+   put_vb(vb, 2, 0.0f, 0.8f, 0, 0, 1);
+   struct pinerun r;
+   if (pipe_run("gs/pixels.vert.spv", "gs/empty.geom.spv", arch, vb, 3, &r)) {
+      g_fail++;
+      return;
+   }
+   CHECK(live_idx(&r) == 0, "pipe empty: %u live indices != 0", live_idx(&r));
+   struct vtx tris[8];
+   unsigned nv = 0, nt = pipe_draw(&r, arch, tris, 8, &nv);
+   unsigned cov = 0;
+   float centre[4];
+   cover_pixels(tris, nt, &cov, centre);
+   CHECK(nv == 0 && nt == 0 && cov == 0, "pipe empty: %u verts / %u tris / %u pixels", nv, nt, cov);
+   /* 2 vertices are not a triangle: the plan is empty, so nothing is dispatched or drawn */
+   struct mali_gs_draw_plan pl;
+   CHECK(mali_gs_plan_draw(&r.p, 2, &pl) == 0 && pl.empty && pl.index_count == 0,
+         "pipe empty: 2-vertex triangle draw is not planned empty");
+   pipe_free(&r);
+   printf("  pipe empty v%u: no live indices, no pixels\n", arch);
+}
+
+/* Plan mutation: a draw that walks only prims * vertices_out indices (the unpadded count) loses the restart
+ * padding and the second slot's quad (which starts after it), so the pixels it should produce vanish. */
+static void
+test_pipe_plan_mutation(unsigned arch)
+{
+   uint8_t vb[6 * VB_STRIDE] = {0};
+   put_vb(vb, 0, -0.6f, -0.5f, 1, 0, 0);   /* left triangle: emits nothing */
+   put_vb(vb, 1, -0.2f, -0.5f, 1, 0, 0);
+   put_vb(vb, 2, -0.4f, 0.0f, 1, 0, 0);
+   put_vb(vb, 3, 0.2f, -0.5f, 0, 1, 0);    /* right triangle: emits the quad */
+   put_vb(vb, 4, 0.6f, -0.5f, 0, 1, 0);
+   put_vb(vb, 5, 0.4f, 0.0f, 0, 1, 0);
+   struct pinerun r;
+   if (pipe_run("gs/pixels.vert.spv", "gs/skipfirst.geom.spv", arch, vb, 6, &r)) {
+      g_fail++;
+      return;
+   }
+   CHECK(r.pl.prims == 2 && r.pl.index_stride == 8, "pipe plan: %u prims / stride %u", r.pl.prims, r.pl.index_stride);
+   CHECK(live_idx(&r) == 4, "pipe plan: %u live indices != 4 (slot 1 only)", live_idx(&r));
+   struct vtx tris[8];
+   unsigned nv = 0, nt = pipe_draw(&r, arch, tris, 8, &nv);
+   unsigned cov = 0;
+   float centre[4];
+   cover_pixels(tris, nt, &cov, centre);
+   CHECK(cov > 100, "pipe plan: %u covered pixels from the second slot", cov);
+   /* a pixel inside the quad (centred on gl_in[0] = (0.2, -0.5), +-0.25 in NDC) is green: in_col[0] of the
+    * right triangle */
+   float got[4] = {0, 0, 0, 0};
+   for (unsigned t = 0; t < nt; t++)
+      if (raster_px(&tris[t * 3], 76.5f, 32.5f, got))
+         break;
+   CHECK(near(got[0], 0) && near(got[1], 1), "pipe plan: quad colour %g %g != green", got[0], got[1]);
+   /* mutation: the unpadded count (prims * vertices_out) ends before slot 1 */
+   unsigned mut = r.pl.prims * r.p.info.vertices_out;
+   nv = 0; nt = pipe_draw_n(&r, arch, tris, 8, &nv, mut);
+   cov = 0;
+   cover_pixels(tris, nt, &cov, centre);
+   CHECK(nv == 0 && cov == 0, "pipe plan mutation NOT detected: %u verts / %u pixels with count %u", nv, cov, mut);
+   printf("  pipe plan v%u: padded count %u draws slot 1; unpadded %u drops it (mutation detected)\n",
+          arch, r.pl.index_count, mut);
+   pipe_free(&r);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -618,6 +946,10 @@ main(int argc, char **argv)
       test_passthrough(arch);
       test_e2e_basic(arch);
       test_e2e_points(arch);
+      test_pipe_triangle_quad(arch);
+      test_pipe_points_quad(arch);
+      test_pipe_empty(arch);
+      test_pipe_plan_mutation(arch);
       test_truncation(arch);
    }
    test_layout();
