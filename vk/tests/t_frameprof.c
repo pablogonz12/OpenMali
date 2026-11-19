@@ -28,7 +28,7 @@ static int g_fail;
          printf(__VA_ARGS__);                                                                      \
          printf("\"}\n");                                                                          \
          g_fail = 1;                                                                               \
-         return 0;                                                                                 \
+         return EXIT_FAILURE;                                                                      \
       }                                                                                            \
    } while (0)
 

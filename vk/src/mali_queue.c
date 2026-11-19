@@ -344,7 +344,8 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
          fclose(fp);
       }
    }
-   /* M15 (MALI_FRAME_PROF): `pending` is what the GPU had *not* retired at the kick, read at the kick (lag-free). */
+   /* M15 (MALI_FRAME_PROF): `pending` is what the GPU had *not* retired at the kick, read at the kick (lag-free).
+    * submit_us below covers only the backend kick; the command stream was built before this call. */
    if (h->fp.on) {
       uint64_t done = *(volatile uint64_t *)h->sync.cpu;
       mali_fprof_kick(&h->fp, h->dev, h->expected + nframes, h->expected > done ? (unsigned)(h->expected - done) : 0);

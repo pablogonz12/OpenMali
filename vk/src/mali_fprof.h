@@ -23,8 +23,9 @@ struct mali_fprof_fl {
    uint64_t expected;   /* retire-counter value that ends this submission */
    uint64_t kick_ticks; /* GPU timestamp at the kick */
    uint64_t kick_cpu_ns;
+   double frame_ms;     /* kick-to-kick interval in force when this was kicked (0: unknown) */
    unsigned pending;    /* frames not retired yet when this one was kicked (>0: the GPU had queued work) */
-   double submit_us;    /* CPU time the submission itself took */
+   double submit_us;    /* CPU time the backend kick took */
 };
 
 /* MALI_FRAME_PROF=1 (or "stderr") -> lines on stderr; any other value -> a file path the lines are appended to. */
@@ -51,7 +52,8 @@ void mali_fprof_finish(struct mali_fprof *p);
 /* A submission is about to be kicked: `expected` is the retire-counter value after it, `pending` the number of
  * earlier frames whose retire counter had not moved yet. */
 void mali_fprof_kick(struct mali_fprof *p, struct mali_device *dev, uint64_t expected, unsigned pending);
-/* The submission has been kicked: CPU time it cost (build + kick + signal). */
+/* The submission has been kicked: CPU time the backend kick (be->submit_cs) cost. Command-stream construction
+ * happens before hw_submit_multi and is not included; nor is the wait for an older frame. */
 void mali_fprof_kicked(struct mali_fprof *p, double submit_ms);
 /* The retire counter now reads `counter`: close every submission it ends (one GPU-clock sample for the whole call). */
 void mali_fprof_retired(struct mali_fprof *p, struct mali_device *dev, uint64_t counter);

@@ -24,13 +24,17 @@ def parse(lines):
     summary = None
     for ln in lines:
         ln = ln.strip()
-        if "FRAMEPROF summary " in ln:
-            summary = ln.split("FRAMEPROF summary ", 1)[1]
+        at = ln.find("FRAMEPROF ")
+        if at < 0:
             continue
-        if not ln.startswith("FRAMEPROF f="):
+        ln = ln[at + len("FRAMEPROF "):]
+        if ln.startswith("summary "):
+            summary = ln[len("summary "):]
+            continue
+        if not ln.startswith("f="):
             continue
         row = {}
-        for tok in ln.split()[1:]:
+        for tok in ln.split():
             if "=" in tok:
                 k, v = tok.split("=", 1)
                 row[k] = v
@@ -41,6 +45,8 @@ def parse(lines):
 def pct(vals, p):
     if not vals:
         return 0.0
+    if p == 50:
+        return st.median(vals)
     s = sorted(vals)
     i = min(len(s) - 1, max(0, int(round((len(s) - 1) * p / 100.0))))
     return s[i]

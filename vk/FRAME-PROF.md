@@ -30,8 +30,8 @@ Printed per frame (`MALI_FRAME_PROF=1` -> stderr, `MALI_FRAME_PROF=<path>` -> ap
 FRAMEPROF f=17 submit_us=142.3 gpu_ms=6.42 est=sat depth=1 present_ms=16.71 frame_ms=16.90 bound=gpu
 ```
 
-* `submit_us` — CPU time inside one submission (`mali_cmd_submit`: CS build + kick). It does *not* include the wait
-  for an older in-flight frame (`hw_retire`), so it is the CPU's own work, not the frame's CPU wall time.
+* `submit_us` — CPU time the backend kick (`be->submit_cs`) took. Command-stream construction happens before
+  `hw_submit_multi` and is *not* included, nor is the wait for an older in-flight frame (`hw_retire`).
 * `frame_ms` — wall time between two frame kicks (submit-to-submit): the rate the app actually runs at.
 * `present_ms` — interval between two present-shaped submits. The driver sees no present entrypoint; it counts a
   submit with **no command buffers, at least one wait and at least one signal**, which is what `vk_common`'s
@@ -59,8 +59,10 @@ retire counter move: at the next frame's `job_begin`, or at `hw_wait` when the d
   boundary inside a frame exists anywhere in the data: a frame is one submission and one retire.
 * The counter advances while the GPU is idle, so every span is an **upper bound** on the work inside it.
 * The retire timestamp is the CPU's observation, so with the GPU idle at the kick (`est=idle`) it can be up to one
-  frame late: `est=idle` values are an upper bound (and get clamped to `frame_ms`). `est=sat` values are unbiased in
-  the mean, because the same observation lag applies to both retires that are subtracted.
+  frame late: `est=idle` values are an upper bound (and get clamped to `frame_ms`). `est=sat` subtracts the same
+  observation lag at both ends, so in the steady state it cancels; but when one observation closes several queued
+  retirements they share one timestamp, and the observed span is divided evenly over that batch. Individual durations
+  are then estimates (the aggregate is preserved), and clamping to `frame_ms` can also under-report a long frame.
 * `bound=gpu` (queued work at the kick) is the reliable part: it only needs the retire counter, read at the kick.
 * A vsync/mailbox wait on the compositor looks like idle GPU time, so a present-paced app can read `bound=cpu`
   while it is really display-limited. Cross-check with `present_ms` against the refresh period.
