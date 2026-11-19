@@ -13,14 +13,31 @@ PATTERNS = [  # order matters: first hit wins; checked against loaded-ICD eviden
     ("panvk", r"panvk|libvulkan_panfrost|panfrost"),
 ]
 
+def _name(line):
+    for name, pat in PATTERNS:
+        if re.search(pat, line, re.I):
+            return name
+    return None
+
 def classify_driver(text):
-    """Return (driver, evidence-line) from loaded-ICD evidence, or ('unknown', None)."""
+    """Return (driver, evidence-line). Loaded-driver records (driverName/driverInfo/library_path/.so/vkBridge) outrank configuration hints
+    (VK_DRIVER_FILES=, VK_ICD_FILENAMES=); records that disagree with each other, or with a hint, give ('conflict', line) instead of the first hit."""
+    loaded, hints = [], []
     for line in text.splitlines():
-        if re.search(r"driverName|driverInfo|library_path|\.so\b|VK_(DRIVER_FILES|ICD_FILENAMES)=.+|vkBridge", line, re.I):
-            for name, pat in PATTERNS:
-                if re.search(pat, line, re.I):
-                    return name, line.strip()
-    return "unknown", None
+        n = _name(line)
+        if not n:
+            continue
+        if re.search(r"driverName|driverInfo|library_path|\.so\b|vkBridge", line, re.I):
+            loaded.append((n, line.strip()))
+        elif re.search(r"VK_(DRIVER_FILES|ICD_FILENAMES)=.+", line, re.I):
+            hints.append((n, line.strip()))
+    recs = loaded or hints
+    if not recs:
+        return "unknown", None
+    names = {n for n, _ in recs} | ({n for n, _ in hints} if loaded else set())
+    if len(names) > 1:
+        return "conflict", "; ".join(sorted({l for _, l in recs + (hints if loaded else [])}))[:300]
+    return recs[0]
 
 def pacing_stats(p, gap_ms=25):
     """fps, 1% low and gap counts from the present-to-present histogram (bins are integer ms)."""
@@ -40,11 +57,15 @@ def pacing_stats(p, gap_ms=25):
             "gaps_gt25": sum(v for k, v in h.items() if k > gap_ms),
             "max_gap_ms": max(h), "offCadencePercent": p.get("offCadencePercent")}
 
-def temps(d):
+def temps(d, problems):
     out = {}
     for k in ("thermal_pre", "thermal_post"):
         f = d / f"{k}.json"
-        out[k] = json.loads(f.read_text()).get("batteryC") if f.exists() else None
+        try:
+            out[k] = json.loads(f.read_text()).get("batteryC") if f.exists() else None
+        except (ValueError, AttributeError, OSError) as e:
+            out[k] = None
+            problems.append(f"damaged {f.name}: {type(e).__name__}")
     t = [v for v in out.values() if v is not None]
     out["max_c"] = max(t) if t else None
     return out
@@ -58,15 +79,22 @@ def load_run(d):
     rd["driver"], rd["driver_evidence"] = classify_driver(ev)
     pf = d / "pacing.json"
     if pf.exists():
-        p = json.loads(pf.read_text())
-        rd.update(pacing_stats(p))
-        if not p.get("ok", True):
-            rd["problems"].append("pacing not ok")
+        try:
+            p = json.loads(pf.read_text())
+            rd.update(pacing_stats(p))
+            if not p.get("ok", True):
+                rd["problems"].append("pacing not ok")
+            if not rd.get("intervals"):
+                rd["problems"].append("no measured intervals in pacing.json")
+        except (ValueError, AttributeError, TypeError, OSError) as e:
+            rd["problems"].append(f"damaged pacing.json: {type(e).__name__}")
     else:
         rd["problems"].append("no pacing.json")
-    rd.update(temps(d))
+    rd.update(temps(d, rd["problems"]))
     if rd["driver"] == "unknown":
         rd["problems"].append("NO DRIVER EVIDENCE: do not attribute this run to any driver")
+    elif rd["driver"] == "conflict":
+        rd["problems"].append("CONFLICTING DRIVER EVIDENCE: " + (rd["driver_evidence"] or ""))
     elif rd["expected"] and rd["expected"] != rd["driver"]:
         rd["problems"].append(f"driver mismatch: expected {rd['expected']}, evidence says {rd['driver']}")
     if rd.get("fps") is not None and rd["fps"] < 5:

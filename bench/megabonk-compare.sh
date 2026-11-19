@@ -15,10 +15,11 @@ case "${1:-}" in
     d=${2:?ours|bridge|panvk}; case $d in ours|bridge|panvk) ;; *) echo "bad driver $d" >&2; exit 2;; esac
     "$MG/scripts/bench.sh" "cmp-$d" "${3:-90}" "${4:-30}" || exit $?
     out=$(ls -dt "$MG"/runs/*-cmp-"$d" | head -1)
-    echo "$d" > "$out/label.txt"
-    PYTHONPATH=$MG/tools python3 -I - "$out" "$MG/tools/droiddeckctl" <<'PY'
+    echo "$d" > "$out/label.txt" || exit $?
+    python3 -I - "$out" "$MG/tools/droiddeckctl" "$MG/tools" <<'PY' || exit $?
 import sys, json, subprocess
 from pathlib import Path
+sys.path.insert(0, sys.argv[3])   # -I ignores PYTHONPATH: add the tools dir explicitly
 import fpsdip_snapshot as s
 out, ctl = Path(sys.argv[1]), sys.argv[2]
 r = subprocess.run(["python3", "-I", ctl, "guest", "--", "sh", "-c", s.GUEST_DRIVER_SCRIPT], capture_output=True, text=True)

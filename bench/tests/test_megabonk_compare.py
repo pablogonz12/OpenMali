@@ -24,4 +24,16 @@ class T(unittest.TestCase):
     def test_table_and_missing_files(self):
         self.assertIn("| ours |", m.table([m.load_run(F / "ours")]).replace("  ", " ").replace("megabonk/", ""))
         r = m.load_run(F / "does-not-exist"); self.assertIn("no pacing.json", r["problems"])
+    def test_hint_does_not_override_loaded_record(self):
+        self.assertEqual(m.classify_driver("VK_DRIVER_FILES=/opt/mali_open_icd.json\ndriverName = panvk")[0], "conflict")
+        self.assertEqual(m.classify_driver("VK_DRIVER_FILES=/opt/mali_open_icd.json\ndriverName = mali-open")[0], "ours")
+        self.assertEqual(m.classify_driver("VK_DRIVER_FILES=/opt/mali_open_icd.json")[0], "ours")
+    def test_damaged_and_empty_artifacts(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); (d / "pacing.json").write_text("{"); (d / "thermal_pre.json").write_text("{"); (d / "driver-identity.txt").write_text("driverName = mali-open")
+            r = m.load_run(d)
+            self.assertTrue(any("damaged pacing.json" in p for p in r["problems"])); self.assertTrue(any("damaged thermal_pre.json" in p for p in r["problems"]))
+            (d / "pacing.json").write_text('{"ok":true,"fpsOnScreen":58,"presentToPresentMs":{}}')
+            self.assertTrue(any("no measured intervals" in p for p in m.load_run(d)["problems"]))
 if __name__ == "__main__": unittest.main()
