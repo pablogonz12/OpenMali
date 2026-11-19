@@ -90,10 +90,33 @@ implementation is therefore opt-in (`MALI_DEVICE_LOCAL=1`) until a phone A/B exi
 
 `kbase_fence_wait` calls `mem_sync_all(k, 2)` after **every** successful wait
 (`mali_backend_kbase.c:510`), and `kbase_wait_counter` does the same (`:616-619`). `mem_sync_bos`
-(`:452-475`) takes `bo_lock` and issues one `MEM_SYNC` ioctl for **every live BO** that is not
-`host_lazy` and not `NOCOH` — the number scales with allocations, not with what the GPU wrote or
-what the CPU will read. This is the next real submit-path cost and is tracked separately (per-BO
-write tracking, PR that follows this one).
+(`:551-575`) takes `bo_lock` and issued one `MEM_SYNC` ioctl for **every live BO** that is not
+`host_lazy` and not `NOCOH` — the number scaled with allocations, not with what the GPU wrote or
+what the CPU will read. M15 replaces that sweep with per-BO write tracking:
+
+- The front end marks every GPU write (`mali_cmd_mark_written`, `mali_cmd.h`): render targets,
+  depth/stencil attachments, clears, copy destinations (`mali_meta_vk.c`), and storage descriptors
+  when the set is bound (`mali_dset_mark_write`). Marks reach the backend at submit
+  (`mali_cmd_submit`), before the fence is created.
+- `kb_bo` carries two monotonic counters, `gpu_writes` (marks) and `synced_writes` (what the last
+  device->CPU `MEM_SYNC` covered). A wait syncs a BO only when they differ, so a mark made while an
+  earlier frame is still in flight is synced (again) rather than lost, and a BO already covered is
+  not synced twice.
+- Escape hatches: `MALI_SYNC_ALL=1` restores the old sweep; `MALI_SYNC_TRACK=0` disables tracking.
+  A write the front end cannot place (`bo_wrote(NULL)`, more than 64 BOs or 8 storage descriptors
+  per set) triggers one full sweep at the next wait.
+- **Measured on the host fake kernel** (`t_memsync`: 300 fence waits, 5 app-mapped BOs, one BO
+  written per frame): 1500 -> 300 `MEM_SYNC` ioctls (5.0x fewer), 1.54-1.66 -> 0.36-0.39 us per
+  wait (4.3-5.2x). That is a host function-call count; the ioctl cost on a phone is **unverified**.
+- Correctness: the fake kernel can model a non-coherent GPU now (`kb_fake_gpu_write` writes a
+  shadow that only `MEM_SYNC` type 2 reveals), so an unmarked GPU write reads back as stale data.
+  `t_memsync` asserts that stale case on purpose, then that marking the BO makes the data visible,
+  that unmarked BOs of the same device are not synced, and that two marks before one wait are both
+  covered. Dropping the mark in `kbase_bo_wrote` makes five of those checks fail.
+
+Residual risk, **unverified on hardware**: a GPU write path that never marks (a command added later,
+or a write mechanism not in the list above) would leave stale data; `MALI_SYNC_ALL=1` isolates such a
+report.
 
 ## 5. Summary
 

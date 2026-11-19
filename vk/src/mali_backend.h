@@ -94,6 +94,10 @@ struct mali_backend_ops {
     * pieces (64-byte multiples), each waiting for ring space (the CS is a linear stream; registers persist across pieces).
     * arch 13: MEM_SYNC of the BOs allocated through bo_alloc first when COHERENT_LOCAL BOs are enabled. 0 or -errno. */
    void (*host_sync)(struct mali_kdev *kdev);   /* CPU -> device MEM_SYNC of every BO (call once per queue submit) */
+   /* M15: the GPU will write this BO (copy destination, render target, clear, storage descriptor). Marks are
+    * monotonic per BO, so a mark made for a frame that is still in flight is never lost. NULL = the front end
+    * cannot enumerate the writes: the next device->CPU sync must sweep every BO (conservative fallback). */
+   void (*bo_wrote)(struct mali_kdev *kdev, struct mali_bo *bo);
    void (*bo_host_touch)(struct mali_kdev *kdev, struct mali_bo *bo);
    int (*submit_cs)(struct mali_kdev *kdev, const uint64_t *cs, unsigned ninstr);
    /* Wait until *counter_cpu >= target (a CQS word the CS increments). 0, -ETIMEDOUT, -EIO (GPU fault). */

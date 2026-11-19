@@ -91,6 +91,8 @@ struct kb_bo {
 	bool same_va;
 	bool hot;        /* driver-level: CPU rewrites it every frame (synced on every CS submit, others once per queue submit) */
 	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
+	uint64_t gpu_writes;   /* driver-level: GPU-write marks (kb_bo_wrote) since allocation */
+	uint64_t synced_writes; /* driver-level: gpu_writes value the last device->CPU MEM_SYNC covered */
 };
 
 /* ioctl with optional per-request counters: MALI_IOCTL_PROF=1 prints count and time by request (type/nr) at exit */

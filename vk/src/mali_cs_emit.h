@@ -47,6 +47,8 @@ struct mali_env {
    unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
 };
 
+struct mali_bo;   /* M15: bo_wrote only stores the pointer */
+
 struct mali_hw {
    void *user;
    void *(*alloc)(void *user, size_t size, size_t align, uint64_t *va);
@@ -56,6 +58,7 @@ struct mali_hw {
    void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
    int (*submit_multi)(void *user, const uint64_t *cs, unsigned ninstr, unsigned nframes);   /* nframes concatenated frame streams, one kick */
    void (*drain)(void *user);   /* wait until every submitted frame has retired */
+   void (*bo_wrote)(void *user, struct mali_bo *bo);   /* M15: per-BO GPU-write mark (NULL bo = sweep everything next sync) */
    struct mali_env env;
 };
 

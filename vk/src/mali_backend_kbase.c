@@ -43,6 +43,7 @@ struct mali_kdev {
    pthread_mutex_t bo_lock;
    struct kb_bo **bos;
    unsigned nbos, capbos;
+   bool sync_all_pending;   /* M15: a write the front end could not pin to a BO: next device->CPU sync sweeps everything */
 
    /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
     * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
@@ -275,6 +276,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       if (hit) {
          hit->host_lazy = true;   /* the next user has not touched it yet; contents are stale (Vulkan allows it) */
          hit->hot = false;
+         hit->gpu_writes = hit->synced_writes = 0;   /* a pooled BO starts with no pending write marks */
          *out = (struct mali_bo){.gpu_va = hit->gpu_va, .cpu = hit->cpu, .size = size, .flags = flags,
                                  .dmabuf_fd = hit->dmabuf_fd, .priv = hit};
          track_bo(k, hit, true);
@@ -337,6 +339,21 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    bo->hot = (flags & MALI_BO_HOT) != 0;
    track_bo(k, bo, true);
    return 0;
+}
+
+static void
+kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
+{
+   if (!k)
+      return;
+   if (!b) {
+      /* the front end could not enumerate the writes: one full sweep at the next device->CPU sync */
+      __atomic_store_n(&k->sync_all_pending, true, __ATOMIC_RELAXED);
+      return;
+   }
+   struct kb_bo *bo = b->priv;
+   if (bo)
+      __atomic_add_fetch(&bo->gpu_writes, 1, __ATOMIC_RELAXED);
 }
 
 static void
@@ -559,7 +576,16 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
    if (!(kb_bo_extra_flags & 0x800))
       return;
+   /* M15: a device->CPU sync only has to cover BOs the GPU wrote since the last one. The front end marks every
+    * GPU write (copy destinations, render targets, clears, storage descriptors) with bo_wrote, whose counter is
+    * monotonic per BO: a BO also marked by a frame that is still in flight is synced again at the next wait
+    * instead of being skipped. MALI_SYNC_ALL=1 restores the old full sweep for A/B; a mark the front end could
+    * not place (bo_wrote(NULL)) sweeps everything once. The CPU->device direction (op 1) is unchanged. */
+   const bool dev2cpu = op == 2;
+   const char *e = getenv("MALI_SYNC_ALL"), *t = getenv("MALI_SYNC_TRACK");   /* read per call: the tests flip them */
    pthread_mutex_lock(&k->bo_lock);
+   bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
+   k->sync_all_pending = false;
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
       unsigned n = 0;
@@ -570,11 +596,19 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       struct kb_bo *b = k->bos[i];
       if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (sel == SYNC_HOT && !b->hot) || (sel == SYNC_COLD && b->hot))
          continue;
+      uint64_t wrote = 0;
+      if (dev2cpu) {
+         wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
+         if (!sweep_all && wrote == b->synced_writes)
+            continue;
+      }
       struct {
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
       kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      if (dev2cpu)
+         b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
    }
    pthread_mutex_unlock(&k->bo_lock);
 }
@@ -691,6 +725,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .gpu_timestamp = kbase_gpu_timestamp,
    .host_sync = kbase_host_sync,
    .bo_host_touch = kbase_bo_host_touch,
+   .bo_wrote = kbase_bo_wrote,
    .submit_cs = kbase_submit_cs,
    .wait_counter = kbase_wait_counter,
    .heap_create = kbase_heap_create,
