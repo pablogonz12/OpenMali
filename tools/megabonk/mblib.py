@@ -63,16 +63,17 @@ def pref_kind(s):
 
 def classify(d):
     """The driver pref is only the SELECTION: it can contradict the proof (conflict) but never prove `ours` alone.
-    Proof = a loaded ICD path or a driverName (vulkaninfo / DXVK "Found device") naming mali-open."""
-    proof = {k for k in [kind_text(d["icd"])] + [kind_text(n) for n in d["driverNames"]] if k}
+    Proof = an OBSERVED driverName (vulkaninfo / DXVK "Found device") naming mali-open."""
+    proof = {k for k in [kind_text(n) for n in d["driverNames"]] if k}
     pref = pref_kind(d["driver_pref"])
-    votes = proof | ({pref} if pref else set())
+    cfg = kind_text(d["icd"])        # a CONFIGURED ICD path (env) is intent like the pref: it can contradict the proof, never prove
+    votes = proof | ({pref} if pref else set()) | ({cfg} if cfg else set())
     if len(votes) > 1:
         kind = "conflict"
     elif proof:
         kind = proof.pop()
-    elif pref in ("bridge", "panvk"):
-        kind = pref
+    elif {pref, cfg} & {"bridge", "panvk"}:
+        kind = "bridge" if "bridge" in {pref, cfg} else "panvk"
     elif d["vkBridge"] is True and not d["icd"]:
         kind = "bridge"
     else:

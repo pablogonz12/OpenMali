@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# tools/megabonk/run.sh <alias> [--wait 90] [--secs 60] [--cull] [--farm] [--dry-run] [--out DIR]
+# tools/megabonk/run.sh <alias> [--wait 90] [--secs 60] [--no-gs] [--no-cull] [--no-descidx] [--farm] [--dry-run] [--out DIR]
 # Megabonk (Steam appid 3405340) on OUR driver on one phone; prints fps only when the evidence says "ours". See README.md.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -8,24 +8,28 @@ APPID=${MB_APPID:-3405340}
 QUICK_ROOT=${MB_QUICK_ROOT:-$HOME/Projects/mali-gaming}      # farm.toml quick_root: tools/droiddeckctl
 STATE=${MALI_FARM_STATE:-$HOME/.local/state/mali-farm}
 TEMP_MAX=${MB_TEMP_MAX:-38}
-WAIT=90 SECS=60 DRY=0 FARM=0 CULL=${MB_CULL:-0} ALIAS="" OUT=""
+WAIT=90 SECS=60 DRY=0 FARM=0 GS=1 CULL=1 DESCIDX=1 ALIAS="" OUT=""
 ARGS=("$@")
 usage() { sed -n 3,4p "$0" | sed 's/^# \?//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --wait) WAIT=${2:?}; shift 2 ;; --secs) SECS=${2:?}; shift 2 ;; --out) OUT=${2:?}; shift 2 ;;
-    --cull) CULL=1; shift ;; --farm) FARM=1; shift ;; --dry-run) DRY=1; shift ;; -h|--help) usage ;;
+    --no-gs) GS=0; shift ;; --no-cull) CULL=0; shift ;; --no-descidx) DESCIDX=0; shift ;;
+    --farm) FARM=1; shift ;; --dry-run) DRY=1; shift ;; -h|--help) usage ;;
     -*) echo "unknown option $1" >&2; usage ;; *) ALIAS=$1; shift ;;
   esac
 done
 [ -n "$ALIAS" ] || usage
-[ -n "$OUT" ] || OUT=${TMPDIR:-/tmp}/megabonk-$ALIAS-$(date +%Y%m%d-%H%M%S)
+if [ -z "$OUT" ]; then   # live: private dir from mktemp (no predictable path); dry-run only prints a name
+  if [ $DRY = 1 ]; then OUT=${TMPDIR:-/tmp}/megabonk-$ALIAS-DRYRUN; else OUT=$(mktemp -d "${TMPDIR:-/tmp}/megabonk-$ALIAS-XXXXXX") || exit 1; fi
+fi
 PY=${MB_PYTHON:-python3}
 
 # every phone-touching command goes through run/cap: --dry-run prints it and does nothing
 run() { if [ $DRY = 1 ]; then printf '+ %s\n' "$*"; else "$@"; fi; }
 cap() { local f=$1; shift; if [ $DRY = 1 ]; then printf '+ %s > %s\n' "$*" "$f"; : > /dev/null; else "$@" > "$f" 2>&1; fi; }
 say() { echo "[megabonk] $*"; }
+must() { run "$@" || { say "FAILED (rc=$?): $*"; exit 7; }; }     # required step: stop here, the EXIT trap (once armed) still restores
 
 # --farm: take a farm hold (queued fairly, restored by farmd on release) and re-run ourselves inside it
 if [ $FARM = 1 ] && [ -z "${FARM_HOLD:-}" ]; then
@@ -48,8 +52,6 @@ restore() {   # always: quit the game, stop the session, clear env, vkBridge=tru
   run "${DCTL[@]}" guest --timeout 30 -- sh -c 'echo off > /root/.malideck/debug; echo bridge > /root/.malideck/driver'
   run "$QUICK_ROOT/scripts/quick/qrestore" "$ALIAS"
 }
-trap 'restore' EXIT
-trap 'exit 130' INT TERM
 
 # (1) pre-flight --------------------------------------------------------------------------------------------------------------
 say "(1) pre-flight $ALIAS"
@@ -66,13 +68,16 @@ else
   printf '+ droiddeckctl thermal                # batteryC < %s\n' "$TEMP_MAX"
 fi
 # foreground_launch phones: farmd/qsafe own the session. Foreground must be the launcher/MediaDeck, never another app.
-run "$QUICK_ROOT/scripts/quick/qpreflight" "$ALIAS"
-run "${DCTL[@]}" start steam --wait --reuse --timeout 240
+must "$QUICK_ROOT/scripts/quick/qpreflight" "$ALIAS"
+# from here on the device is changed: arm the restore (a refused/disabled phone above is never touched)
+trap 'restore' EXIT
+trap 'exit 130' INT TERM
+must "${DCTL[@]}" start steam --wait --reuse --timeout 240
 
 # (2) select our driver, with evidence --------------------------------------------------------------------------------------
 say "(2) driver ours (MediaDeck Debug on + Driver ours, MaliBridge off; bundle 'Mali-open*' must be imported by hand beforehand)"
-run "${GUEST[@]}" sh -c 'echo on > /root/.malideck/debug; echo ours > /root/.malideck/driver'
-run "${DCTL[@]}" prefs set --type bool session vkBridge false
+must "${GUEST[@]}" sh -c 'echo on > /root/.malideck/debug; echo ours > /root/.malideck/driver'
+must "${DCTL[@]}" prefs set --type bool session vkBridge false
 collect_evidence() {   # -> $1 file of key=value evidence lines
   local f=$1
   if [ $DRY = 1 ]; then
@@ -89,21 +94,26 @@ collect_evidence() {   # -> $1 file of key=value evidence lines
     [ -f "$OUT/dxvk.log" ] && grep -h "Found device" "$OUT/dxvk.log" 2>/dev/null
   } > "$f"
 }
+# (3) env via droiddeckctl (one-shot, next session; cleared again by restore) ---------------------------------------------------
+say "(3) env"
+ENVL=("MALI_SHADER_CACHE=${MB_SHADER_CACHE:-/root/mali-shader-cache}" DXVK_LOG_LEVEL=info DXVK_LOG_PATH=/tmp/dxvk-logs)
+# advertise shims: GS = lane/gsshim #156, CULL = lane/cullshim #164, DESCIDX = #166 (a driver without them ignores the variable)
+[ "$GS" = 1 ] && ENVL+=(MALI_ADVERTISE_GS=1)
+[ "$CULL" = 1 ] && ENVL+=(MALI_ADVERTISE_CULL=1)
+[ "$DESCIDX" = 1 ] && ENVL+=(MALI_ADVERTISE_DESCIDX=1)
+must "${GUEST[@]}" mkdir -p "${MB_SHADER_CACHE:-/root/mali-shader-cache}" /tmp/dxvk-logs
+run "${GUEST[@]}" sh -c 'rm -f /tmp/dxvk-logs/*.log'     # stale logs would feed old "Found device" lines to the evidence gate
+must "${DCTL[@]}" env set "${ENVL[@]}"
+# a running session keeps its old env: restart so the env and the driver selection apply
+must "${DCTL[@]}" stop
+must "${DCTL[@]}" start steam --wait --timeout 240
+
+# pre-launch gate on the RESTARTED session (the old one still runs the old driver): refuse before the game starts
 collect_evidence "$OUT/evidence-pre.txt"
 if [ $DRY = 1 ]; then printf '+ %s %s/mblib.py evidence %s/evidence-pre.txt --allow-unknown   # exit != 0 (bridge/panvk/unknown/conflict) = REFUSE, no launch\n' "$PY" "$HERE" "$OUT"
 else
   "$PY" -I "$HERE/mblib.py" evidence "$OUT/evidence-pre.txt" --allow-unknown || { say "REFUSED before launch: fix the driver selection (Debug on + Driver ours + bundle imported)"; exit 3; }
 fi
-
-# (3) env via droiddeckctl (one-shot, next session; cleared again by restore) ---------------------------------------------------
-say "(3) env"
-ENVL=(MALI_ADVERTISE_GS=1 "MALI_SHADER_CACHE=${MB_SHADER_CACHE:-/root/mali-shader-cache}" DXVK_LOG_LEVEL=info DXVK_LOG_PATH=/tmp/dxvk-logs)
-[ "$CULL" = 1 ] && ENVL+=(MALI_ADVERTISE_CULL=1)     # only if the driver reads it (not in main today)
-run "${GUEST[@]}" mkdir -p "${MB_SHADER_CACHE:-/root/mali-shader-cache}" /tmp/dxvk-logs
-run "${DCTL[@]}" env set "${ENVL[@]}"
-# a running session keeps its old env: restart so the env and the driver selection apply
-run "${DCTL[@]}" stop
-run "${DCTL[@]}" start steam --wait --timeout 240
 
 # (4) launch, steady scene -----------------------------------------------------------------------------------------------------
 say "(4) launch $APPID, wait ${WAIT}s"

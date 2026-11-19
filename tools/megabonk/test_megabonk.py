@@ -10,6 +10,7 @@ sys.path.insert(0, HERE)
 import mblib  # noqa: E402
 
 RUN = os.path.join(HERE, "run.sh")
+OURS_NO_NAME = "driver_pref=ours\ndebug_pref=on\nvkBridge=false\n"
 OURS = "driver_pref=ours\ndebug_pref=on\nvkBridge=false\ndriverName = Mali-open 0.1\n"
 
 
@@ -43,6 +44,10 @@ class Evidence(unittest.TestCase):
             r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "mblib.py"), "evidence", p], capture_output=True, text=True)
             return r.returncode, r.stdout
 
+    def test_configured_icd_is_not_proof(self):
+        self.assertEqual(self.kind(OURS_NO_NAME + "env=VK_DRIVER_FILES=/tmp/mali-open.json\n"), "unknown")
+        self.assertEqual(self.kind(OURS_NO_NAME + "env=VK_DRIVER_FILES=/x/panvk_icd.json\n"), "conflict")
+
     def test_cli_refusal(self):
         rc, out = self.cli("driver_pref=bridge\ndebug_pref=on\nvkBridge=true\n")
         self.assertEqual(rc, 3)
@@ -74,13 +79,22 @@ class Stats(unittest.TestCase):
 class DryRun(unittest.TestCase):
     def test_dry_run_prints_everything_and_touches_nothing(self):
         env = dict(os.environ, HOME="/nonexistent-home", PATH="/nonexistent-bin:/usr/bin:/bin")
-        r = subprocess.run(["bash", RUN, "poco-x8", "--dry-run", "--cull", "--wait", "5", "--secs", "7", "--out", "/nonexistent-out/x"],
+        r = subprocess.run(["bash", RUN, "poco-x8", "--dry-run", "--wait", "5", "--secs", "7", "--out", "/nonexistent-out/x"],
                            capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        for want in ("thermal", "qpreflight", "debug", "driver", "vkBridge false", "MALI_ADVERTISE_GS=1", "MALI_ADVERTISE_CULL=1", "MALI_SHADER_CACHE=",
+        for want in ("thermal", "qpreflight", "debug", "driver", "vkBridge false", "MALI_ADVERTISE_GS=1", "MALI_ADVERTISE_CULL=1", "MALI_ADVERTISE_DESCIDX=1", "MALI_SHADER_CACHE=", "rm -f /tmp/dxvk-logs",
                      "launch 3405340", "sleep 5", "pacing --seconds 7", "mblib.py evidence", "mblib.py stats", "qrestore poco-x8"):
             self.assertIn(want, r.stdout)
         self.assertFalse(os.path.exists("/nonexistent-out"))
+
+    def test_dry_run_flags_disable_shims_and_order(self):
+        r = subprocess.run(["bash", RUN, "cmf", "--dry-run", "--no-gs", "--no-cull", "--no-descidx"], capture_output=True, text=True)
+        for gone in ("MALI_ADVERTISE_GS", "MALI_ADVERTISE_CULL", "MALI_ADVERTISE_DESCIDX"):
+            self.assertNotIn(gone, r.stdout)
+        r = subprocess.run(["bash", RUN, "cmf", "--dry-run"], capture_output=True, text=True)
+        o = r.stdout
+        self.assertGreater(o.index("evidence-pre.txt --allow-unknown"), o.rindex("start steam --wait --timeout"))   # gate after the restart
+        self.assertLess(o.index("evidence-pre.txt --allow-unknown"), o.index("launch 3405340"))
 
     def test_dry_run_farm_hold(self):
         r = subprocess.run(["bash", RUN, "cmf", "--dry-run", "--farm"], capture_output=True, text=True)
@@ -113,16 +127,20 @@ elif "guest" in a and "/root/.malideck/debug" in a and "cat" in a: print("on")
         open(qr, "w").write(f"#!/bin/sh\necho qrestore $@ >> {d}/calls.log\n")
         os.chmod(qr, 0o755)
         qp = os.path.join(root, "scripts", "quick", "qpreflight")
-        open(qp, "w").write("#!/bin/sh\nexit 0\n")
+        open(qp, "w").write("#!/bin/sh\nexit ${QPF_RC:-0}\n")
         os.chmod(qp, 0o755)
         return root
 
-    def go(self, driver, vkb):
+    def go(self, driver, vkb, extra_env=None, disabled=False):
         with tempfile.TemporaryDirectory() as d:
             root = self.stub(d, driver, vkb)
-            env = dict(os.environ, MB_QUICK_ROOT=root, ANDROID_SERIAL="fake", MALI_FARM_STATE=os.path.join(d, "st"), PATH="/usr/bin:/bin")
+            env = dict(os.environ, MB_QUICK_ROOT=root, ANDROID_SERIAL="fake", MALI_FARM_STATE=os.path.join(d, "st"), PATH="/usr/bin:/bin", **(extra_env or {}))
+            if disabled:
+                os.makedirs(os.path.join(d, "st", "disabled"))
+                open(os.path.join(d, "st", "disabled", "fake"), "w").close()
             r = subprocess.run(["bash", RUN, "fake", "--wait", "0", "--secs", "60", "--out", os.path.join(d, "out")], capture_output=True, text=True, env=env)
-            return r, open(os.path.join(d, "calls.log")).read()
+            p = os.path.join(d, "calls.log")
+            return r, (open(p).read() if os.path.exists(p) else "")
 
     def test_bridge_refused_but_restored(self):
         r, calls = self.go("bridge", "True")
@@ -131,6 +149,20 @@ elif "guest" in a and "/root/.malideck/debug" in a and "cat" in a: print("on")
         self.assertIn("REFUSED", r.stdout)
         self.assertNotIn("launch", calls)           # refused before the game starts
         self.assertIn("qrestore fake", calls)
+
+    def test_disabled_device_is_never_touched(self):
+        r, calls = self.go("ours", "False", disabled=True)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertNotIn("qrestore", calls)
+        self.assertNotIn("quit", calls)
+        self.assertNotIn("guest", calls)
+
+    def test_qpreflight_failure_stops_but_restores(self):
+        r, calls = self.go("ours", "False", {"QPF_RC": "1"})
+        self.assertEqual(r.returncode, 7, r.stdout)
+        self.assertNotIn("launch", calls)
+        self.assertNotIn("start steam", calls)
+        self.assertNotIn("avg fps", r.stdout)
 
     def test_ours_reports_fps(self):
         r, calls = self.go("ours", "False")
