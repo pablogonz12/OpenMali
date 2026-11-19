@@ -114,21 +114,30 @@ mali_afbc_layout(const struct mali_afbc_params *p, struct mali_afbc_layout *o)
       aw = (uint32_t)mali_afbc_align(aw, (uint64_t)o->sb_w * o->tile);
       ah = (uint32_t)mali_afbc_align(ah, (uint64_t)o->sb_h * o->tile);
    }
-   o->aligned_w = (uint32_t)mali_afbc_align(p->width, aw);
-   o->aligned_h = (uint32_t)mali_afbc_align(p->height, ah);
+   /* Every product below is formed in 64 bits and range-checked BEFORE it is narrowed or stored: a wrapped value would return success
+    * with a zero or tiny size (huge extents must be rejected, never under-allocated). */
+   const uint64_t aw64 = mali_afbc_align(p->width, aw), ah64 = mali_afbc_align(p->height, ah);
+   if (aw64 > UINT32_MAX || ah64 > UINT32_MAX) return -1;
+   o->aligned_w = (uint32_t)aw64;
+   o->aligned_h = (uint32_t)ah64;
 
    uint32_t ra = mali_afbc_row_stride_align(p->arch, p->bpp_bits, p->modifier);
    uint64_t rs = (uint64_t)(o->aligned_w / o->sb_w) * o->tile * MALI_AFBC_HEADER_BYTES;
-   o->header_row_stride = (uint32_t)mali_afbc_align(rs, ra);
+   const uint64_t hrs = mali_afbc_align(rs, ra);
+   if (hrs > UINT32_MAX) return -1;
+   o->header_row_stride = (uint32_t)hrs;
    o->stride_blocks = o->header_row_stride / (MALI_AFBC_HEADER_BYTES * o->tile);
-   o->nblocks = o->stride_blocks * (o->aligned_h / o->sb_h);
-   o->header_size = (uint64_t)o->nblocks * MALI_AFBC_HEADER_BYTES;
+   const uint64_t nb = (uint64_t)o->stride_blocks * (o->aligned_h / o->sb_h);
+   if (nb > UINT32_MAX || nb * MALI_AFBC_HEADER_BYTES > UINT32_MAX) return -1;   /* also the existing header-size limit */
+   o->nblocks = (uint32_t)nb;
+   o->header_size = nb * MALI_AFBC_HEADER_BYTES;
    o->offset_align = mali_afbc_header_align(p->arch, p->modifier);
    o->body_offset = mali_afbc_align(o->header_size, o->offset_align);
    o->payload_per_sb = (uint64_t)o->sb_w * o->sb_h * (p->bpp_bits / 8);
-   o->slice_stride = o->body_offset + (uint64_t)o->nblocks * o->payload_per_sb;
+   if (nb > (UINT64_MAX - o->body_offset) / o->payload_per_sb) return -1;
+   o->slice_stride = o->body_offset + nb * o->payload_per_sb;
+   if (o->slice_stride > UINT64_MAX / p->depth) return -1;
    o->size = o->slice_stride * p->depth;
-   if (o->header_size > UINT32_MAX) return -1;
    return 0;
 }
 

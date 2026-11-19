@@ -80,6 +80,13 @@ int main(void)
    a = L(6, MALI_AFBC_SB_16x16, 32, 64, 64, 1, &rc); EQ(rc, 0); EQ(a.offset_align, 128);
    a = L(5, MALI_AFBC_SB_16x16, 32, 64, 64, 1, &rc); EQ(rc, 0); EQ(a.offset_align, 64);
 
+   /* Overflow: every wrapped product must be rejected, never returned as success with a zero/tiny size. */
+   (void)L(13, MALI_AFBC_SB_16x16, 32, UINT32_MAX, 16, 1, &rc); CHECK(rc == -1);                       /* aligned width = 2^32 */
+   (void)L(13, MALI_AFBC_SB_16x16 | MALI_AFBC_MOD_TILED, 32, 1u << 29, 16, 1, &rc); CHECK(rc == -1);   /* tiled: header row stride overflows */
+   (void)L(13, MALI_AFBC_SB_16x16, 32, 1u << 20, 1u << 20, 1, &rc); CHECK(rc == -1);                   /* 65536*65536 blocks wrap to 0 */
+   (void)L(13, MALI_AFBC_SB_16x16, 32, 65536, 65536, 1u << 30, &rc); CHECK(rc == -1);                  /* slice_stride * depth wraps to 2^58 */
+   (void)L(13, MALI_AFBC_SB_16x16, 32, 65536, 16, 1, &rc); CHECK(rc == 0);                              /* large but valid still passes */
+
    /* Env flag defaults off, only exactly "1" enables. */
    unsetenv("MALI_AFBC"); CHECK(!mali_afbc_enabled());
    setenv("MALI_AFBC", "1", 1); CHECK(mali_afbc_enabled());
