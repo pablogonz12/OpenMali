@@ -77,6 +77,7 @@ static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the m
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
+static double g_pipe_ns;   /* pipecost: ns per vkCreateGraphicsPipelines (+ vkDestroyPipeline) of the scene pipeline, measured in scene_create */
 static const char *g_only, *g_spv = "shader";
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
 
@@ -120,7 +121,7 @@ case_skipped(const char *n)
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
-   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
+   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults) X(ResetDescriptorPool) X(CmdCopyBuffer) X(CmdPipelineBarrier)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -538,6 +539,19 @@ scene_create(struct scene *s, int depth)
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe);
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+   if (g_pipe_ns < 0) {   /* pipecost: repeat the creation with the (already compiled) shader modules */
+      const char *po = getenv("MALI_PC_ONLY");
+      const int NP = getenv("MALI_PC_REPS") ? atoi(getenv("MALI_PC_REPS")) / 10 : 200;
+      if (po && strcmp(po, "pipe")) goto skip_pipe;
+      double t0 = now_us();
+      for (int i = 0; i < NP; i++) {
+         VkPipeline p;
+         CHECK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &p) == VK_SUCCESS, "pipe repeat");
+         DestroyPipeline(dev, p, NULL);
+      }
+      g_pipe_ns = (now_us() - t0) * 1000.0 / NP;
+   }
+skip_pipe:
    if (g_dxvk) {
       rs.cullMode = VK_CULL_MODE_BACK_BIT;
       cba.blendEnable = VK_TRUE;
@@ -995,6 +1009,202 @@ test_dxvk_frame(void)
    return ok;
 }
 
+
+/* ---- pipecost: per-call CPU cost of the pipeline / descriptor / submit / memory entry points (host microbenchmark, fake backend) ----
+ * One JSON line, ns per call for: create_pipeline (+destroy), alloc_desc_sets (+reset pool), update_desc_sets (1 UBO write),
+ * bind_pipeline_churn (2 pipelines alternating + 6 dynamic states per 8 binds), pool_reset+begin+end, queue_submit with 1/4/16 command
+ * buffers (each with one tiny render pass), create_buffer(+destroy), alloc_memory(+free), map/unmap, cmd_copy_buffer, cmd_pipeline_barrier,
+ * and a one-line count of the copy/barrier commands that reach the stream. MALI_PC_REPS (default 2000) scales the loops. */
+static int
+test_pipecost(void)
+{
+   const int reps = getenv("MALI_PC_REPS") ? atoi(getenv("MALI_PC_REPS")) : 2000;
+   const char *only = getenv("MALI_PC_ONLY");   /* pipe|mem|copy|submit|misc: run one group (for profiling) */
+#define ON(n) (!only || !strcmp(only, n))
+   g_dxvk = 1;
+   g_pipe_ns = -1;
+   struct scene s = {.mode = MODE_UBO};
+   if (!scene_create(&s, 0)) { g_dxvk = 0; g_pipe_ns = 0; return 0; }
+   g_dxvk = 0;
+   double ns_pipe = g_pipe_ns;
+   g_pipe_ns = 0;
+   int ok = 1;
+   double t0;
+#define T0() (t0 = now_us())
+#define NS(n) ((now_us() - t0) * 1000.0 / (n))
+
+   /* descriptor sets: allocate one set + free by pool reset (the pool was made with maxSets>=2: use our own) */
+   VkDescriptorPoolSize dps = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 64, .poolSizeCount = 1, .pPoolSizes = &dps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &s.dsl};
+   VkDescriptorSet ds;
+   T0();
+   for (int i = 0; i < reps; i++) {
+      CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "alloc set");
+      if ((i & 31) == 31) ResetDescriptorPool(dev, dp, 0);
+   }
+   double ns_dalloc = NS(reps);
+   ResetDescriptorPool(dev, dp, 0);
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "alloc set");
+   VkDescriptorBufferInfo dbi = {s.ubo[0], 0, 16};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &dbi};
+   T0();
+   for (int i = 0; i < reps * 4; i++) { dbi.buffer = s.ubo[i % 3]; UpdateDescriptorSets(dev, 1, &w, 0, NULL); }
+   double ns_dupd = NS(reps * 4);
+
+   /* command buffer lifecycle */
+   VkCommandBuffer cbs[16];
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 16};
+   CHECK(AllocateCommandBuffers(dev, &cai, cbs) == VK_SUCCESS, "alloc cbs");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   T0();
+   for (int i = 0; i < reps; i++) {
+      CHECK(ResetCommandPool(dev, s.pool, 0) == VK_SUCCESS, "reset pool");
+      CHECK(BeginCommandBuffer(cbs[0], &bi) == VK_SUCCESS, "begin");
+      CHECK(EndCommandBuffer(cbs[0]) == VK_SUCCESS, "end");
+   }
+   double ns_cblife = NS(reps);
+
+   /* bind pipeline + dynamic state churn: per iteration 8 binds (2 pipelines) + one 6-state group */
+   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = cv};
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   const float bc[4] = {0.1f, 0.2f, 0.3f, 0.4f};
+   const int NB = 512 * (reps >= 10000 ? 8 : 1);
+   CHECK(ResetCommandPool(dev, s.pool, 0) == VK_SUCCESS, "reset pool");
+   CHECK(BeginCommandBuffer(cbs[0], &bi) == VK_SUCCESS, "begin");
+   CmdBeginRenderPass(cbs[0], &rb, VK_SUBPASS_CONTENTS_INLINE);
+   T0();
+   int nb = 0;
+   for (int i = 0; i < NB; i++) {
+      for (int k = 0; k < 8; k++, nb++) CmdBindPipeline(cbs[0], VK_PIPELINE_BIND_POINT_GRAPHICS, (k & 1) ? s.pipe2 : s.pipe);
+   }
+   double ns_bindp = NS(nb);
+   int ndyn = 0;
+   T0();
+   for (int i = 0; i < NB; i++, ndyn += 6) {
+      CmdSetCullMode(cbs[0], (i & 1) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+      CmdSetFrontFace(cbs[0], (i & 2) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+      CmdSetDepthBias(cbs[0], (float)(i & 3), 0.0f, 1.0f);
+      CmdSetBlendConstants(cbs[0], bc);
+      vp.x = (float)(i & 1);
+      sc.offset.x = i & 1;
+      CmdSetViewport(cbs[0], 0, 1, &vp);
+      CmdSetScissor(cbs[0], 0, 1, &sc);
+   }
+   double ns_dyn = NS(ndyn);
+   CmdEndRenderPass(cbs[0]);
+   CHECK(EndCommandBuffer(cbs[0]) == VK_SUCCESS, "end");
+
+   /* buffers / memory */
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 65536,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+   VkBuffer b0;
+   T0();
+   for (int i = 0; i < reps; i++) {
+      CHECK(CreateBuffer(dev, &bci, NULL, &b0) == VK_SUCCESS, "create buf");
+      DestroyBuffer(dev, b0, NULL);
+   }
+   double ns_buf = NS(reps);
+   VkBuffer cb2[2];
+   VkMemoryRequirements mr;
+   CHECK(CreateBuffer(dev, &bci, NULL, &cb2[0]) == VK_SUCCESS && CreateBuffer(dev, &bci, NULL, &cb2[1]) == VK_SUCCESS, "bufs");
+   GetBufferMemoryRequirements(dev, cb2[0], &mr);
+   VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size * 2,
+                               .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+   VkDeviceMemory mem;
+   T0();
+   for (int i = 0; ON("mem") && i < reps; i++) {
+      CHECK(AllocateMemory(dev, &mai, NULL, &mem) == VK_SUCCESS, "alloc mem");
+      FreeMemory(dev, mem, NULL);
+   }
+   double ns_mem = NS(reps);
+   CHECK(AllocateMemory(dev, &mai, NULL, &mem) == VK_SUCCESS, "alloc mem");
+   CHECK(BindBufferMemory(dev, cb2[0], mem, 0) == VK_SUCCESS && BindBufferMemory(dev, cb2[1], mem, mr.size) == VK_SUCCESS, "bind");
+   void *mp;
+   T0();
+   for (int i = 0; i < reps; i++) {
+      CHECK(MapMemory(dev, mem, 0, VK_WHOLE_SIZE, 0, &mp) == VK_SUCCESS, "map");
+      UnmapMemory(dev, mem);
+   }
+   double ns_map = NS(reps);
+
+   /* copy + barrier recording: one command buffer, NB commands each */
+   CHECK(ResetCommandPool(dev, s.pool, 0) == VK_SUCCESS, "reset pool");
+   CHECK(BeginCommandBuffer(cbs[1], &bi) == VK_SUCCESS, "begin");
+   VkBufferCopy rc = {0, 0, 256};
+   CmdCopyBuffer(cbs[1], cb2[0], cb2[1], 1, &rc);   /* warm-up: the first copy builds the meta pipeline */
+   double ns_copy = 0;
+   const int crounds = ON("copy") ? 1 + reps / 1000 : 0;
+   for (int rd = 0; rd < crounds; rd++) {
+      if (rd) {
+         EndCommandBuffer(cbs[1]);
+         ResetCommandPool(dev, s.pool, 0);
+         BeginCommandBuffer(cbs[1], &bi);
+      }
+      double a = now_us();
+      for (int i = 0; i < 512; i++) CmdCopyBuffer(cbs[1], cb2[0], cb2[1], 1, &rc);
+      ns_copy += (now_us() - a) * 1000.0 / 512;
+   }
+   if (crounds) ns_copy /= crounds;
+   VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
+   T0();
+   for (int i = 0; i < NB; i++)
+      CmdPipelineBarrier(cbs[1], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+   double ns_barrier = NS(NB);
+   CHECK(EndCommandBuffer(cbs[1]) == VK_SUCCESS, "end");
+
+   /* QueueSubmit with N small command buffers (one empty render pass + one draw each) */
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   static const int ncb[3] = {1, 4, 16};
+   double ns_sub[3];
+   for (int c = 0; c < 3; c++) {
+      int n = ncb[c];
+      T0();
+      double tsub = 0;
+      for (int i = 0; ON("submit") && i < reps / 10; i++) {
+         CHECK(ResetCommandPool(dev, s.pool, 0) == VK_SUCCESS, "reset pool");
+         for (int k = 0; k < n; k++) {
+            CHECK(BeginCommandBuffer(cbs[k], &bi) == VK_SUCCESS, "begin");
+            CmdBeginRenderPass(cbs[k], &rb, VK_SUBPASS_CONTENTS_INLINE);
+            CmdBindPipeline(cbs[k], VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+            CmdSetViewport(cbs[k], 0, 1, &vp);
+            CmdSetScissor(cbs[k], 0, 1, &sc);
+            CmdBindDescriptorSets(cbs[k], VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.dset[0], 0, NULL);
+            CmdDraw(cbs[k], 3, 1, 0, 0);
+            CmdEndRenderPass(cbs[k]);
+            CHECK(EndCommandBuffer(cbs[k]) == VK_SUCCESS, "end");
+         }
+         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = n, .pCommandBuffers = cbs};
+         double a = now_us();
+         CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+         tsub += now_us() - a;
+         CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+         ResetFences(dev, 1, &f);
+      }
+      ns_sub[c] = tsub * 1000.0 / (reps / 10);
+   }
+   printf("{\"test\":\"pipecost\",\"reps\":%d,\"ns\":{\"create_pipeline\":%.0f,\"alloc_desc_set\":%.0f,\"update_desc_set\":%.0f,"
+          "\"pool_reset_begin_end\":%.0f,\"bind_pipeline\":%.0f,\"dyn_state\":%.0f,\"create_buffer\":%.0f,\"alloc_memory\":%.0f,"
+          "\"map_unmap\":%.0f,\"cmd_copy_buffer\":%.0f,\"cmd_barrier\":%.0f,\"submit_1cb\":%.0f,\"submit_4cb\":%.0f,\"submit_16cb\":%.0f},\"ok\":%s}\n",
+          reps, ns_pipe, ns_dalloc, ns_dupd, ns_cblife, ns_bindp, ns_dyn, ns_buf, ns_mem, ns_map, ns_copy, ns_barrier,
+          ns_sub[0], ns_sub[1], ns_sub[2], ok ? "true" : "false");
+   DestroyFence(dev, f, NULL);
+   DestroyBuffer(dev, cb2[0], NULL);
+   DestroyBuffer(dev, cb2[1], NULL);
+   FreeMemory(dev, mem, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   scene_destroy(&s);
+   return ok;
+}
 
 static uint32_t px_at(struct scene *s, int x, int y);
 
@@ -2216,6 +2426,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
+   if (ok && g_only && CASE_ON("pipecost")) ok &= test_pipecost();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
