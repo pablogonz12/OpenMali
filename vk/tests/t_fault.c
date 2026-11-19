@@ -494,6 +494,12 @@ static void
 sweep(const char *name, VkResult (*fn)(void), int kind, int is_dev)
 {
    scn_name = name;
+   /* HOST and BO faults must reach the compiler: a disk-cache hit (check.sh sets MALI_SHADER_CACHE) would skip do_compile(). The LIBC sweep keeps the cache:
+    * Mesa's own spirv_to_nir/ralloc does not survive malloc returning NULL (vtn_create_builder), which is outside this driver. */
+   static char *sc_orig; static int sc_have;   /* the cache dir check.sh set, captured once */
+   if (!sc_have) { const char *e = getenv("MALI_SHADER_CACHE"); sc_orig = e ? strdup(e) : NULL; sc_have = 1; }
+   if (kind == LIBC) { if (sc_orig) setenv("MALI_SHADER_CACHE", sc_orig, 1); }
+   else setenv("MALI_SHADER_CACHE", "", 1);
    const long fds0 = count_dir("/proc/self/fd"), maps0 = count_maps();
    if (kind == LIBC) {   /* warm-up: lazily created process-wide state must not count as a leak of the failing runs */
       for (int i = 0; i < 2; i++) {   /* twice: some statics are only touched on the second pass */
@@ -550,9 +556,11 @@ sweep(const char *name, VkResult (*fn)(void), int kind, int is_dev)
          g_report_from = g_seq;
       }
       if (r == VK_SUCCESS) {
-         last = n;   /* never reached the n-th allocation: the sweep is complete */
          if (g_live != live0)
             FAIL("%s n=%d (%s): success path leaked %ld allocation(s)", name, n, kname[kind], g_live - live0);
+         if (kind == LIBC && g_libc_count >= n)
+            continue;   /* the armed malloc WAS reached and the code absorbed the NULL (e.g. the optional page-hash table): later indices are still to test */
+         last = n;   /* never reached the n-th allocation: the sweep is complete */
          break;
       }
       nfail++;
