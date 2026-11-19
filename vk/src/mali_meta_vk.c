@@ -28,7 +28,10 @@ __attribute__((weak)) void mali_cmd_push_frame(struct mali_cmd_buffer *cmd, cons
 
 /* ---- per command buffer persistent memory (descriptor sets, staged update data) ---- */
 static pthread_mutex_t g_tab_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct tab_ent { const void *cmd; struct mali_meta_mem mem; } *g_tab;
+/* Entries are individually heap allocated: mem_of() hands the pointer out and the caller uses it after g_tab_lock is dropped, so it must survive another
+ * command buffer growing the table (realloc) or being forgotten (swap-remove) in the meantime. */
+struct tab_ent { const void *cmd; struct mali_meta_mem mem; };
+static struct tab_ent **g_tab;
 static unsigned g_ntab, g_captab;
 
 static struct mali_meta_mem *
@@ -37,12 +40,12 @@ mem_of(const void *cmd)
    struct mali_meta_mem *r = NULL;
    pthread_mutex_lock(&g_tab_lock);
    for (unsigned i = 0; i < g_ntab; i++)
-      if (g_tab[i].cmd == cmd)
-         r = &g_tab[i].mem;
+      if (g_tab[i]->cmd == cmd)
+         r = &g_tab[i]->mem;
    if (!r) {
       if (g_ntab == g_captab) {
          unsigned nc = g_captab ? g_captab * 2 : 8;
-         struct tab_ent *n = realloc(g_tab, nc * sizeof *n);
+         struct tab_ent **n = realloc(g_tab, nc * sizeof *n);
          if (!n) {
             pthread_mutex_unlock(&g_tab_lock);
             return NULL;
@@ -50,9 +53,14 @@ mem_of(const void *cmd)
          g_tab = n;
          g_captab = nc;
       }
-      g_tab[g_ntab].cmd = cmd;
-      memset(&g_tab[g_ntab].mem, 0, sizeof g_tab[g_ntab].mem);
-      r = &g_tab[g_ntab++].mem;
+      struct tab_ent *e = calloc(1, sizeof *e);
+      if (!e) {
+         pthread_mutex_unlock(&g_tab_lock);
+         return NULL;
+      }
+      e->cmd = cmd;
+      g_tab[g_ntab++] = e;
+      r = &e->mem;
    }
    pthread_mutex_unlock(&g_tab_lock);
    return r;
@@ -72,8 +80,9 @@ mali_meta_cmd_forget(const void *cmd)
 {
    pthread_mutex_lock(&g_tab_lock);
    for (unsigned i = 0; i < g_ntab; i++)
-      if (g_tab[i].cmd == cmd) {
-         mali_meta_mem_release(&g_tab[i].mem);
+      if (g_tab[i]->cmd == cmd) {
+         mali_meta_mem_release(&g_tab[i]->mem);
+         free(g_tab[i]);
          g_tab[i] = g_tab[--g_ntab];
          break;
       }
