@@ -161,7 +161,7 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
-      if (bf && bf->pBindingFlags && bf->bindingCount == ci->bindingCount) {
+      if (bf && bf->bindingCount && bf->pBindingFlags && bf->bindingCount == ci->bindingCount) {   /* bindingCount 0: every flag is zero, the array is not read */
          if (!d->bflags) d->bflags = vk_zalloc(&dev->alloc, nb * sizeof *d->bflags, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
          if (!d->bflags) {
             dsl_destroy(dev, &d->vk);
@@ -170,7 +170,7 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          d->bflags[n] = bf->pBindingFlags[src - ci->pBindings];
          b->bflags = d->bflags[n];
       }
-      if (bf && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
+      if (bf && bf->bindingCount && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
           n == nb - 1)   /* spec: only the highest-numbered binding; its slots are last in the set */
          d->var_binding = n;
       /* Immutable samplers with a YCbCr conversion: the element holds one texture descriptor per image plane, then the sampler. */
@@ -246,7 +246,7 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
       const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
          vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
       vs->maxVariableDescriptorCount = 0;
-      if (bf && bf->pBindingFlags && ci->bindingCount) {
+      if (bf && bf->bindingCount && bf->pBindingFlags && ci->bindingCount) {
          uint32_t hi = 0;
          for (uint32_t i = 1; i < ci->bindingCount; i++)
             if (ci->pBindings[i].binding > ci->pBindings[hi].binding) hi = i;
@@ -340,7 +340,10 @@ write_immutable(struct mali_dset *s)
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
       if (b->type == MALI_DT_NONE || b->imm_off == MALI_NO_IMM_SAMPLER || !g_res) continue;
-      for (uint32_t k = 0; k < b->count; k++) {
+      /* A variable binding may have been shrunk at allocation time (alloc_set, s->var_count): initialising it to the
+       * layout count would write descriptors past the end of this set's slots, into the next set or past the pool. */
+      const uint32_t cnt = l->var_binding >= 0 && (uint32_t)l->var_binding == n ? s->var_count : b->count;
+      for (uint32_t k = 0; k < cnt; k++) {
          unsigned sub = b->type == MALI_DT_COMBINED_IMAGE_SAMPLER ? (b->ycbcr_planes ? b->ycbcr_planes : 1) : 0;
          struct mali_hw_desc hw;
          if (g_res->sampler(l->imm[b->imm_off + k], &hw) == 0)

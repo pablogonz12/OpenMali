@@ -37,7 +37,10 @@ mali_descidx_check_layout(const VkDescriptorSetLayoutCreateInfo *ci, VkDescripto
       VkDescriptorBindingFlags f = bf->pBindingFlags[i];
       VkDescriptorType t = ci->pBindings[i].descriptorType;
       if (f & ~MALI_DESCIDX_KNOWN_FLAGS) return VK_ERROR_FEATURE_NOT_PRESENT;
-      if ((f & (VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT)) && !MALI_DESCIDX_UAB_TYPE(t))
+      /* Only UPDATE_AFTER_BIND needs the descriptor type's update-after-bind support. UPDATE_UNUSED_WHILE_PENDING is
+       * gated by its own feature (descriptorBindingUpdateUnusedWhilePending, advertised unconditionally), and the spec
+       * does not make it a per-type update-after-bind feature, so a uniform/storage buffer binding may carry it alone. */
+      if ((f & VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT) && !MALI_DESCIDX_UAB_TYPE(t))
          return VK_ERROR_FEATURE_NOT_PRESENT;
       if ((f & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) && (ci->pBindings[i].binding != top || MALI_DESCIDX_DYNAMIC(t)))
          return VK_ERROR_FEATURE_NOT_PRESENT;

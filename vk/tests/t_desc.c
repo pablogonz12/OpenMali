@@ -361,6 +361,23 @@ test_descidx_flags(void)
    CHECK(try_layout(0, 2, two, unk, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "unknown flag bit rejected");
    VkDescriptorBindingFlags ubouab[] = { UAB, 0 };
    CHECK(try_layout(0, 2, two, ubouab, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "UAB on uniform buffer rejected (not honest yet)");
+   /* UPDATE_UNUSED_WHILE_PENDING is its own feature (advertised unconditionally); it does not require the descriptor
+    * type's update-after-bind support, so a uniform buffer binding may carry it alone. */
+   VkDescriptorBindingFlags uuwp[] = { VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT, 0 };
+   CHECK(try_layout(0, 2, two, uuwp, NULL) == VK_SUCCESS, "UPDATE_UNUSED_WHILE_PENDING on a uniform buffer is allowed");
+   {  /* bindingCount 0: the spec says every binding flag is zero and pBindingFlags is not read */
+      VkDescriptorBindingFlags nb0[] = { VAR | PB, VAR | PB };
+      VkDescriptorSetLayoutBindingFlagsCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                         .bindingCount = 0, .pBindingFlags = nb0 };
+      VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &fi, .bindingCount = 2, .pBindings = two };
+      struct mali_dsl *d = NULL;
+      CHECK(mali_dsl_create(&g_dev, 11, &ci, &d) == VK_SUCCESS, "binding-flags struct with bindingCount 0 accepted");
+      if (d) {
+         CHECK(d->b[0].bflags == 0 && d->b[1].bflags == 0 && d->var_binding < 0,
+               "bindingCount 0 ignores pBindingFlags (flags %x/%x var %d)", d->b[0].bflags, d->b[1].bflags, d->var_binding);
+         vk_descriptor_set_layout_unref(&g_dev, &d->vk);
+      }
+   }
    VkDescriptorBindingFlags varlow[] = { VAR, 0 };
    CHECK(try_layout(0, 2, two, varlow, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "VARIABLE_DESCRIPTOR_COUNT only on the highest binding");
    VkDescriptorBindingFlags okpb[] = { PB, PB };
@@ -534,6 +551,49 @@ test_descidx_wiring(void)
    }
 }
 
+/* A variable binding with immutable samplers must be initialised to the allocate-time count: writing the layout
+ * count would run past this set's slots, into the next set or past the pool (write_immutable). */
+static void
+test_variable_immutable(void)
+{
+   printf("variable binding + immutable samplers: initialised to the allocate-time count\n");
+   static const VkSampler fake[8] = { (VkSampler)(uintptr_t)0x101, (VkSampler)(uintptr_t)0x102, (VkSampler)(uintptr_t)0x103,
+                                      (VkSampler)(uintptr_t)0x104, (VkSampler)(uintptr_t)0x105, (VkSampler)(uintptr_t)0x106,
+                                      (VkSampler)(uintptr_t)0x107, (VkSampler)(uintptr_t)0x108 };
+   VkDescriptorSetLayoutBinding b = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 8,
+                                      .stageFlags = 0x1f, .pImmutableSamplers = fake };
+   VkDescriptorBindingFlags fl = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bf = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = 1, .pBindingFlags = &fl };
+   VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bf, .bindingCount = 1, .pBindings = &b };
+   struct mali_dsl *l = NULL;
+   CHECK(mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS, "layout (variable sampler binding, 8 immutable samplers)");
+   if (!l) return;
+   CHECK(l->imm_count == 8 && l->b[0].imm_off != MALI_NO_IMM_SAMPLER && l->var_binding == 0, "immutable samplers stored, binding is variable");
+   VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_SAMPLER, 9 };
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &ps };
+   VkDescriptorPool pool = VK_NULL_HANDLE;
+   CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkDescriptorSetLayout hl = mali_dsl_to_handle(l);
+   uint32_t cnt = 2;
+   VkDescriptorSetVariableDescriptorCountAllocateInfo vc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+                                                             .descriptorSetCount = 1, .pDescriptorCounts = &cnt };
+   VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .pNext = &vc, .descriptorPool = pool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &hl };
+   VkDescriptorSet h = VK_NULL_HANDLE;
+   CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &h) == VK_SUCCESS, "alloc 2 of 8");
+   struct mali_dset *s = mali_dset_from_handle(h);
+   struct mali_dpool *p = mali_dpool_from_handle(pool);
+   if (s) {
+      CHECK(s->bytes == 2 * MALI_DESC_SLOT_SIZE, "set is 2 slots (%u bytes)", s->bytes);
+      unsigned past = 0;
+      for (uint32_t i = s->bytes; i < p->cap; i++) past += p->cpu[i] != 0;
+      CHECK(past == 0, "%u bytes initialised past the set's %u slots", past, s->bytes / MALI_DESC_SLOT_SIZE);
+   }
+   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
+   vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -550,6 +610,7 @@ main(int argc, char **argv)
    test_pool();
    test_descidx_flags();
    test_variable_count();
+   test_variable_immutable();
    test_desctable();
    test_descidx_wiring();
    test_compile(11);
