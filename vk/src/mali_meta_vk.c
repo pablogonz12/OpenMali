@@ -26,6 +26,19 @@ __attribute__((weak)) void mali_cmd_push_frame(struct mali_cmd_buffer *cmd, cons
 
 #define CMD(h) struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(h))
 
+/* M15: copy destinations are GPU-written; the fence wait for this submission only CSYNCs marked BOs (vk/MEMORY.md). */
+static void
+mark_dst_buf(struct mali_cmd_buffer *cmd, struct vk_buffer *b)
+{
+   mali_cmd_mark_buffer_written(cmd, vk_buffer_to_handle(b));
+}
+
+static void
+mark_dst_img(struct mali_cmd_buffer *cmd, struct mali_image *img)
+{
+   mali_cmd_mark_image_written(cmd, mali_image_to_handle(img));
+}
+
 /* ---- per command buffer persistent memory (descriptor sets, staged update data) ---- */
 static pthread_mutex_t g_tab_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct tab_ent { const void *cmd; struct mali_meta_mem mem; } *g_tab;
@@ -211,6 +224,7 @@ mali_CmdCopyBuffer2(VkCommandBuffer h, const VkCopyBufferInfo2 *ci)
    struct vk_buffer *src = vk_buffer_from_handle(ci->srcBuffer), *dst = vk_buffer_from_handle(ci->dstBuffer);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mark_dst_buf(cmd, dst);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
@@ -228,6 +242,7 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkImageCopy2 *g = &ci->pRegions[i];
       /* D+S images are two planes: a region naming both aspects copies the depth plane, then the stencil plane */
@@ -270,6 +285,7 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
    struct mali_image *img = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mark_dst_img(cmd, img);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
@@ -299,6 +315,7 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
    struct vk_buffer *buf = vk_buffer_from_handle(ci->dstBuffer);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mark_dst_buf(cmd, buf);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
@@ -555,6 +572,7 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);
    emit(cmd, &l, r);
@@ -567,6 +585,7 @@ mali_CmdResolveImage2(VkCommandBuffer h, const VkResolveImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, NULL, VK_FILTER_NEAREST, true, &ci->pRegions[i]);
    emit(cmd, &l, r);
