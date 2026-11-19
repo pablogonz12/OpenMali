@@ -455,14 +455,67 @@ test_fbd_rt_store(void)
    CHECK(((w[11] >> 19) & 0xfu) == 2u, "Render Target Count - 1 = %u, want 2", (w[11] >> 19) & 0xfu);
 }
 
+/* Ring wrap + chunking (host, fake kbase backend). A 4 KiB ring, a 3000-instruction stream and pieces from
+ * kb_queue_piece_instrs: every piece must be readable at its masked ring address as it crosses the end of the ring,
+ * a stream longer than the ring must still be accepted in pieces, and one oversized block must be refused. */
+static int
+test_ringwrap(void)
+{
+   enum { N = 3000 };
+   uint64_t *ins = malloc(N * sizeof *ins);
+   if (!ins)
+      return 1;
+   for (unsigned i = 0; i < N; i++)
+      ins[i] = 0x1000000000ull + i;
+   CHECK(F.q.ring_size == 4096, "ring size %u", F.q.ring_size);
+   unsigned piece = kb_queue_piece_instrs(F.q.ring_size);
+   CHECK(piece >= 1 && ((size_t)piece * 8 + 63) / 64 * 64 + 64 <= F.q.ring_size,
+         "piece %u instrs (%zu B) leaves room in the %u-byte ring", piece, (size_t)piece * 8, F.q.ring_size);
+   CHECK(kb_queue_piece_instrs(1u << 20) == (1u << 20) / 4 / 8, "piece scales with the ring (%u)", kb_queue_piece_instrs(1u << 20));
+   CHECK(kb_queue_piece_instrs(1) == piece, "a too-small ring clamps to the 4 KiB piece (%u)", kb_queue_piece_instrs(1));
+
+   const size_t mask = F.q.ring_size - 1;
+   unsigned pieces = 0, wraps = 0;
+   for (unsigned i = 0; i < N && g_fail == 0; i += piece) {
+      unsigned m = N - i < piece ? N - i : piece;
+      if (m > 1) m -= (i / piece) % 13;   /* vary the piece so offsets are not ring/4 aligned and copies straddle the end */
+      uint64_t off = F.q.insert;
+      if (kb_queue_submit(&F.q, ins + i, m, KB_KICK_IOCTL) != 0) {
+         CHECK(false, "submit piece %u (%u instrs)", pieces, m);
+         break;
+      }
+      size_t total = ((size_t)m * 8 + 63) & ~(size_t)63;
+      for (unsigned k = 0; k < m; k++)
+         if (*(const uint64_t *)((const char *)F.q.ring.cpu + ((off + k * 8) & mask)) != ins[i + k]) {
+            CHECK(false, "piece %u word %u at ring offset %llu: got %llx want %llx (wrap)", pieces, k,
+                  (unsigned long long)((off + k * 8) & mask),
+                  (unsigned long long)*(const uint64_t *)((const char *)F.q.ring.cpu + ((off + k * 8) & mask)),
+                  (unsigned long long)ins[i + k]);
+            break;
+         }
+      if (((off + total - 1) & ~(uint64_t)mask) != (off & ~(uint64_t)mask))
+         wraps++;
+      pieces++;
+   }
+   CHECK(pieces >= 20, "stream longer than the ring was submitted in %u pieces", pieces);
+   CHECK(wraps >= 3, "%u pieces straddled the end of the ring", wraps);
+   /* total >= ring_size is refused by the queue, so callers must chunk (the old 2 KiB cap silently relied on this) */
+   CHECK(kb_queue_submit(&F.q, ins, F.q.ring_size / 8, KB_KICK_IOCTL) == -EINVAL, "oversized block refused");
+   printf("{\"test\":\"ringwrap\",\"piece\":%u,\"pieces\":%u,\"wraps\":%u,\"pass\":%s}\n", piece, pieces, wraps,
+          g_fail ? "false" : "true");
+   free(ins);
+   return g_fail ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
-   bool extra = false, m13 = false;
+   bool extra = false, m13 = false, ringwrap = false;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--scene") && i + 1 < argc) scene = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--extra")) extra = true;
       else if (!strcmp(argv[i], "--m13")) m13 = true;
+      else if (!strcmp(argv[i], "--ringwrap")) ringwrap = true;
    }
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
@@ -473,6 +526,10 @@ int main(int argc, char **argv)
    fill_compiled();
    if (setup_kb())
       return 1;
+   if (ringwrap) {
+      test_ringwrap();
+      return g_fail ? 1 : 0;
+   }
 
    /* ---- ICD bring-up (instance -> device), as t_icd ---- */
    extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance, const char *);

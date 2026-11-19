@@ -539,7 +539,6 @@ kbase_device_lost(struct mali_kdev *k)
 }
 
 /* ---- M9: frame command streams, counter wait, tiler heap ---- */
-#define CS_PIECE 256u /* instructions per ring write: 2 KiB, a multiple of 64 bytes */
 
 static void
 mem_sync_all(struct mali_kdev *k, unsigned op)
@@ -592,8 +591,12 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
       goto out;
    }
    mem_sync_bos(k, 1, SYNC_HOT);   /* the other BOs were synced by host_sync at the start of the queue submit */
-   for (unsigned i = 0; i < n && !r; i += CS_PIECE) {
-      unsigned m = n - i < CS_PIECE ? n - i : CS_PIECE;
+   /* One kick per piece: the old fixed 2 KiB piece kicked every 256 instructions (a 3k-draw frame is 3064
+    * instructions = 12 kicks), and a piece larger than the ring made wait_ring_space spin until it timed out.
+    * A quarter of the ring keeps three quarters free for the GPU, so any frame size makes progress. */
+   const unsigned piece = kb_queue_piece_instrs(k->queue.ring_size);
+   for (unsigned i = 0; i < n && !r; i += piece) {
+      unsigned m = n - i < piece ? n - i : piece;
       if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63)))
          break;
       r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL);
