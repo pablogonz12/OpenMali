@@ -44,12 +44,13 @@ int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL;
-   int pixels = 0;
+   int pixels = 0, bench = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
+      else if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench = atoi(argv[++i]);   /* N frames, prints ns per acquire/submit/present/wait */
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
-      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--expect-name s]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--bench N] [--expect-name s]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -161,6 +162,9 @@ main(int argc, char **argv)
    int fifo = 0;
    for (uint32_t i = 0; i < nm; i++) fifo |= modes[i] == VK_PRESENT_MODE_FIFO_KHR;
    REQ(fifo, "FIFO present mode missing");
+   VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;   /* the bench measures the driver, not the vblank: prefer a non-blocking mode */
+   for (uint32_t i = 0; i < nm; i++) if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) pm = modes[i];
+   for (uint32_t i = 0; i < nm; i++) if (pm == VK_PRESENT_MODE_FIFO_KHR && modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) pm = modes[i];
    printf("format %d, %u present modes\n", (int)fmt.format, nm);
 
    const char *dexts[] = {"VK_KHR_swapchain"};
@@ -196,7 +200,7 @@ main(int argc, char **argv)
                                                           .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
                                                           .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
                                                           .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                                                          .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE}, NULL, &sc));
+                                                          .presentMode = bench ? pm : VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE}, NULL, &sc));
    uint32_t ni = 0;
    CK(GetSwapchainImagesKHR(dev, sc, &ni, NULL));
    REQ(ni >= want, "fewer swapchain images than requested");
@@ -221,9 +225,14 @@ main(int argc, char **argv)
    CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &fence));
 
    const VkClearColorValue clr = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}};   /* BGRA8: 51,102,204 */
-   for (int f = 0; f < FRAMES; f++) {
+   double tm[4] = {0, 0, 0, 0}, tn = 0;
+   const int frames = bench ? bench + 20 : FRAMES;   /* 20 warm-up frames */
+   for (int f = 0; f < frames; f++) {
       uint32_t idx;
+      struct timespec n0, n1, n2, n3, n4;
+      clock_gettime(CLOCK_MONOTONIC, &n0);
       CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
+      clock_gettime(CLOCK_MONOTONIC, &n1);
       REQ(idx < ni, "acquired index out of range");
       CK(ResetCommandBuffer(cb, 0));
       CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -247,18 +256,26 @@ main(int argc, char **argv)
                                            .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
                                            .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
                      fence));
+      clock_gettime(CLOCK_MONOTONIC, &n2);
       VkResult pres = VK_SUCCESS;
       r = QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
                                                  .pWaitSemaphores = &done, .swapchainCount = 1, .pSwapchains = &sc,
                                                  .pImageIndices = &idx, .pResults = &pres});
       if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { fprintf(stderr, "FAIL present frame %d = %d\n", f, (int)r); return 1; }
+      clock_gettime(CLOCK_MONOTONIC, &n3);
       REQ(pres == VK_SUCCESS || pres == VK_SUBOPTIMAL_KHR, "per-swapchain present result");
       CK(WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
       CK(ResetFences(dev, 1, &fence));
-      printf("frame %d: image %u acquired, cleared, presented\n", f, idx);
+      clock_gettime(CLOCK_MONOTONIC, &n4);
+#define D_(a, b) (((b).tv_sec - (a).tv_sec) * 1e9 + ((b).tv_nsec - (a).tv_nsec))
+      if (bench && f >= 20) { tm[0] += D_(n0, n1); tm[1] += D_(n1, n2); tm[2] += D_(n2, n3); tm[3] += D_(n3, n4); tn++; }
+      if (!bench) printf("frame %d: image %u acquired, cleared, presented\n", f, idx);
    }
    CK(QueueWaitIdle(q));
    xcb_flush(c);
+   if (bench)
+      printf("{\"test\":\"present_bench\",\"frames\":%d,\"mode\":%d,\"acquire_ns\":%.0f,\"record_submit_ns\":%.0f,\"present_ns\":%.0f,\"wait_ns\":%.0f,\"total_ns\":%.0f}\n",
+             bench, (int)pm, tm[0] / tn, tm[1] / tn, tm[2] / tn, tm[3] / tn, (tm[0] + tm[1] + tm[2] + tm[3]) / tn);
 
    int rc = 0;
    if (pixels) {
