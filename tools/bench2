@@ -218,7 +218,7 @@ def metrics(r, driver_kind):
     g = (m.get("gpu_ms") or {})
     rec = (cm.get("record") or {}).get("mean", 0)
     sub = (cm.get("submit") or {}).get("mean", 0)
-    return {"fps": m["fps"], "low1": m["fps_1pct_low"], "over50": m["over_50ms"], "frames": m["frames_measured"],
+    return {"fps": m["fps"], "low1": m["fps_1pct_low"], "over25": m["over_25ms"], "over50": m["over_50ms"], "frames": m["frames_measured"],
             "cpu_ms": round(rec + sub, 3), "rec_ms": round(rec, 3), "sub_ms": round(sub, 3), "gpu_ms": g.get("mean") and round(g["mean"], 3),
             "frame_p50": m["frame_time_ms"]["all"]["p50"], "frame_p99": m["frame_time_ms"]["all"]["p99"],
             "mode": m["present_mode"], "images": m["swapchain_images"], "size": f"{m['width']}x{m['height']}", "fif": m["config"]["frames_in_flight"],
@@ -232,7 +232,7 @@ def med(v):
 
 
 def agg(ms):
-    return {k: med([m[k] for m in ms]) for k in ("fps", "low1", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
+    return {k: med([m[k] for m in ms]) for k in ("fps", "low1", "over25", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
 
 
 BASE_PRES = dict(mode="mailbox", images=3, fif=2)
@@ -478,18 +478,18 @@ def report():
         for c in reversed(order):
             blk = [x for x in brows if (x.get("commit") or x["version"]) == c]
             out += [f"### mali-open {c} ({max(x['date'] for x in blk)})", "",
-                    "| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
-                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+                    "| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off 1% low | off >25 ms | off >50 ms | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
             for r in sorted(blk, key=lambda x: (x["variant"], x["phone"], x["driver"], x["date"], x["version"])):
                 p, o = r["presented"], r["offscreen"]
                 out.append(f"| {r['phone']} | {r['class']} | {r['driver']} | {r['version']} | {r['variant']} | {f(p['fps'])} | {f(p['low1'])} | {f(p['over50'], 0)} | {f(p['cpu_ms'], 2)} | {f(p['gpu_ms'], 2)} | "
-                           f"{f(o['fps'])} | {f(o['cpu_ms'], 2)} | {f(o['gpu_ms'], 2)} | {r['best_settings']} | {r['date']} |")
+                           f"{f(o['fps'])} | {f(o.get('low1'))} | {f(o.get('over25'), 0)} | {f(o.get('over50'), 0)} | {f(o['cpu_ms'], 2)} | {f(o['gpu_ms'], 2)} | {r['best_settings']} | {r['date']} |")
             out.append("")
         if pend:
-            out += ["| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
-                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            out += ["| phone | class | driver | version | variant | pres fps | pres 1% low | pres >50 ms | pres CPU ms | pres GPU ms | off fps | off 1% low | off >25 ms | off >50 ms | off CPU ms (rec+sub) | off GPU ms | best settings | date |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for ph, why in sorted(pend.items()):
-            out.append(f"| {ph} | | ours + bridge | | all | pending | | | | | | | | {why} | |")
+            out.append(f"| {ph} | | ours + bridge | | all | pending | | | | | | | | | | | {why} | |")
         out.append("")
     out += ML.report_lines([r for r in ML.load_rows(MENU) if ML.publishable(r)])
     out += ["Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets "
