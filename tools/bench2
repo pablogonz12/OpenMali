@@ -181,6 +181,9 @@ class Phone:
 
     def session(self):
         rc, o = self.ctl("start", "steam", "--wait", "--reuse", timeout=200)
+        if rc != 0:
+            self.session_err = f"rc={rc}: " + re.sub(r"\s+", " ", str(o)).strip()[-300:]
+            print(f"  {self.alias}: droiddeckctl start steam failed {self.session_err}")
         return rc == 0
 
     def restore(self):
@@ -334,7 +337,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
     if "ours" in drivers:
         so_sha = ph.push(ours_so, "mdb_icd.so")
     if not ph.session():
-        return [("error", ph.alias, "guest session did not start")]
+        return [("error", ph.alias, "guest session did not start: " + getattr(ph, "session_err", ""))]
     md = ph.malideck()
     commit = COMMIT[0] or (git("rev-parse", "--short=9", "HEAD") + ("-dirty" if git("status", "--porcelain", "--untracked-files=no") else ""))
     date = datetime.date.today().isoformat()
@@ -565,6 +568,7 @@ def main():
         for o in out:
             if o[0] in ("pending", "error"):
                 pend[o[1]] = o[2]
+                print(f"{o[0].upper()}: {o[1]}: {o[2]}")
     p = PENDING
     old = json.load(open(p)) if os.path.exists(p) else {}
     for dev in sel:

@@ -808,6 +808,37 @@ class T(unittest.TestCase):
             self.assertEqual((res["verdict"], res["max_attempts"]), ("invalid", 2), out)
             self.assertIn("UI-BLOCKED", res["notes"])
 
+    def test_bench_empty_log_reports_pending_json_error(self):
+        """rc=0, 0 rows, empty log but pending.json has bench2's error (guest session did not start): the alert shows it, not UI-BLOCKED?"""
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        f.fake = False
+        f.bench_prepare = lambda job: "/nonexistent/mdbench"
+        f.tree = lambda jid: self.d + "/tree"
+        f.best_file = lambda job: self.d + "/best.json"
+        f.keep_log = lambda *a: None
+        f.shell_route = lambda dev: False
+        f.alive = lambda dev: True
+        f.phone_env = lambda dev, ex=None: {}
+        f.verify_so = lambda job, dev, path, key="so_sha256": (True, "x")
+        job = {"id": "j2", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
+        dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
+        orig = m.L.run_watched
+        self.addCleanup(setattr, m.L, "run_watched", orig)
+        def rw2(cmd, tmo, alive, env=None, **k):
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            json.dump({"dev-b": "guest session did not start: rc=1: boom"}, open(out + "/pending.json", "w"))
+            return 0, ""
+        m.L.run_watched = rw2
+        res = f.suite_bench(job, dev)
+        self.assertEqual(res["verdict"], "invalid")
+        self.assertIn("guest session did not start: rc=1: boom", res["notes"])
+        self.assertNotIn("UI-BLOCKED", res["notes"])
+
     def test_sweep_power_rule_pure(self):
         pb = S.power_blocked
         ok = {"level": 60, "temp_c": 30.0, "powered": True}
