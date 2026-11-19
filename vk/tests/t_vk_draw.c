@@ -30,6 +30,7 @@ static unsigned g_colbpp = 4;
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
+static int g_psiz;      /* vertex shader writes gl_PointSize under a triangle-list pipeline (strip_psiz path) */
 static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
 static int g_dynstr;   /* dynamic VERTEX_INPUT_BINDING_STRIDE with a wrong static stride; the draw binds strides through CmdBindVertexBuffers2 */
@@ -212,7 +213,7 @@ scene_create(struct scene *s, int depth)
    memset(s, 0, sizeof *s);
    s->mode = mode;
    s->depth = depth;
-   const char *vsn = g_inst ? "inst_attr.vert.spv" : g_sparse ? "rot_sparse.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
+   const char *vsn = g_inst ? "inst_attr.vert.spv" : g_psiz ? "rot_psiz.vert.spv" : g_sparse ? "rot_sparse.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
@@ -2010,7 +2011,7 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading, .shaderClipDistance = g_feat.shaderClipDistance};
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
@@ -2064,6 +2065,8 @@ main(int argc, char **argv)
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
+   if (ok && CASE_ON("psiz_tri") && !g_feat.shaderClipDistance) printf("{\"test\":\"psiz_tri\",\"skipped\":\"shaderClipDistance not advertised\",\"ok\":true}\n");
+   else if (ok && CASE_ON("psiz_tri")) { g_psiz = 1; ok &= test_triangle(); g_psiz = 0; }   /* gl_PointSize written by a triangle-list VS: NIR validation aborted after strip_psiz retyped the variable */
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
