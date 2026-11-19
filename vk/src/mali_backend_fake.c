@@ -230,6 +230,11 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    if (!k)
       return -ENOMEM;
    pthread_mutex_init(&k->lock, NULL);
+   pthread_condattr_t ca; /* initialised once here, so a failed timer start never re-inits it; monotonic for the timed wait */
+   pthread_condattr_init(&ca);
+   pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+   pthread_cond_init(&k->slow_cv, &ca);
+   pthread_condattr_destroy(&ca);
    const char *f = getenv("MALI_FAULT_INJECT"), *sl = getenv("MALI_FAKE_SLOW_US");
    k->fault_at = f ? strtoul(f, NULL, 10) : 0;
    k->slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
@@ -250,8 +255,8 @@ fake_device_destroy(struct mali_kdev *k)
       pthread_cond_signal(&k->slow_cv);
       pthread_mutex_unlock(&k->lock);
       pthread_join(k->slow_thr, NULL);
-      pthread_cond_destroy(&k->slow_cv);
    }
+   pthread_cond_destroy(&k->slow_cv);
    pthread_mutex_destroy(&k->lock);
    for (unsigned i = 0; i < k->nbos; i++)
       free(k->bos[i].phash);
@@ -389,19 +394,16 @@ slow_thread(void *arg)
          pthread_cond_wait(&k->slow_cv, &k->lock);
          continue;
       }
+      /* Sleep until due, but wake on destroy (slow_stop is rechecked under the lock): then everything left is signalled at once. */
+      if (!k->slow_stop && now_ns() < e->due_ns) {
+         struct timespec ts = {(time_t)(e->due_ns / 1000000000ull), (long)(e->due_ns % 1000000000ull)};
+         pthread_cond_timedwait(&k->slow_cv, &k->lock, &ts); /* CLOCK_MONOTONIC condvar; re-evaluate the head after any wake */
+         continue;
+      }
       k->slow_q = e->next;
       if (!k->slow_q)
          k->slow_tail = NULL;
-      bool stop = k->slow_stop; /* destroy: signal what is left right away */
       pthread_mutex_unlock(&k->lock);
-      if (!stop) {
-         uint64_t now = now_ns();
-         if (e->due_ns > now) {
-            uint64_t d = e->due_ns - now;
-            struct timespec ts = {(time_t)(d / 1000000000ull), (long)(d % 1000000000ull)};
-            nanosleep(&ts, NULL);
-         }
-      }
       uint64_t one = 1;
       if (write(e->fd, &one, sizeof(one)) < 0) {}
       close(e->fd);
@@ -423,7 +425,6 @@ slow_queue(struct mali_kdev *k, int fd, unsigned us)
    e->due_ns = now_ns() + (uint64_t)us * 1000;
    pthread_mutex_lock(&k->lock);
    if (!k->slow_started) {
-      pthread_cond_init(&k->slow_cv, NULL);
       if (pthread_create(&k->slow_thr, NULL, slow_thread, k)) {
          pthread_mutex_unlock(&k->lock);
          free(e);

@@ -639,10 +639,20 @@ main(int argc, char **argv)
    int td = g_only && !strcmp(g_only, "teardown");
    if (ok && td) ok &= test_teardown();
    if (!td) DeviceWaitIdle(dev);
+   struct timespec t0, t1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
    DestroyDevice(dev, NULL);
+   clock_gettime(CLOCK_MONOTONIC, &t1);
    DestroyInstance(inst, NULL);
    dlclose(lib);
-   if (td) usleep(300000); /* longer than the delay: any thread left behind runs now */
+   const char *sl = getenv("MALI_FAKE_SLOW_US");
+   unsigned slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
+   if (td) usleep(slow_us + 100000); /* longer than the delay: any thread left behind runs now */
+   double dms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+   if (td && dms > slow_us / 2000.0) { /* destroy must cut the pending delay short, not sit it out */
+      printf("{\"fail\":\"DestroyDevice took %.0f ms with a %u us fence delay\"}\n", dms, slow_us);
+      g_fail = 1;
+   }
    int fds1 = count_fds();
    if (td && fds1 != fds0) { printf("{\"fail\":\"teardown fds %d -> %d\"}\n", fds0, fds1); g_fail = 1; }
    printf("{\"fds\":[%d,%d],\"pass\":%s}\n", fds0, fds1, (ok && !g_fail) ? "true" : "false");
