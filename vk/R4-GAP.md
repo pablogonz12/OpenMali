@@ -10,7 +10,7 @@ verify when online (see "Unverified").
 - Device extensions (mali_physical_device.c:124-136): KHR_timeline_semaphore, KHR_descriptor_update_template, KHR_external_memory(+_fd), EXT_external_memory_dma_buf,
   KHR_external_semaphore(+_fd), KHR_external_fence(+_fd), KHR_swapchain(+mutable_format), EXT_image_drm_format_modifier (LINEAR only).
 - Features: `vk_features` = `{timelineSemaphore}` only: every core 1.0 feature is false (no robustBufferAccess, no samplerAnisotropy, no BC, no geometryShader...).
-- Limits: all 1.0 required minimums (maxImageDimension2D 4096, maxColorAttachments 4, maxBoundDescriptorSets 4, maxPerStageDescriptorSamplers 16,
+- Limits: all 1.0 required minimums (maxImageDimension2D 4096, maxColorAttachments 4, maxBoundDescriptorSets 8, maxPerStageDescriptorSamplers 16,
   maxPushConstantsSize 128, maxViewports 1, maxSamplerAnisotropy 1, no subgroup props, no 1.1/1.2/1.3 property structs filled).
 - Queue: 1 family (G|C|T), `timestampValidBits = 0`.
 - Entrypoints implemented (mali_*): Create/Destroy buffer/image/view/sampler/pipeline (graphics, compute)/descriptors/query pool, Cmd Bind*/Draw/DrawIndexed/Dispatch(+Indirect)/
@@ -121,7 +121,10 @@ Oracle capture: `R4-ORACLE/vulkaninfo-panvk-poco.txt` (PanVK-kbase, Mesa 26.3.0-
 | item | ours | PanVK |
 |---|---|---|
 | maxImageDimension2D / 3D / ArrayLayers | 4096 / 256 / 256 | 65536 / 65536 / 1 (as reported by PanVK) |
-| maxColorAttachments, maxBoundDescriptorSets | 4, 4 | 8, 7 |
+| maxColorAttachments, maxBoundDescriptorSets | 4, 8 | 8, 7 |
+
+maxBoundDescriptorSets is 8 because the Mali SRT has 16 table slots and our layout uses 0 (driver set), 1..8 (user sets) and 9 (dynamic-buffer table).
+PanVK reports 7 only because its own layout reserves the slots above MAX_SETS; the hardware limit is the SRT width, not 4.
 | maxPushConstantsSize, maxComputeSharedMemory | 128, 16 KiB | 256, 32 KiB |
 | maxDrawIndirectCount, maxMemoryAllocationCount | 1, 4096 | 4294967295 |
 | timestampPeriod | 1 | 76.9231 ns |
