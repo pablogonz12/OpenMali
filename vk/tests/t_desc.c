@@ -279,6 +279,56 @@ test_compile(unsigned arch)
    vk_descriptor_set_layout_unref(&g_dev, &l1->vk);
 }
 
+/* ---- descriptor indexing shader side: dynamic image-array index clamp (descidx_clamp, default off) ---- */
+static void
+test_descidx_clamp(unsigned arch)
+{
+   printf("descriptor indexing shader clamp, v%u\n", arch);
+   VkDescriptorSetLayoutBinding b[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 4, .stageFlags = 0x1f },
+      { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = 0x1f } };
+   struct mali_dsl *l = mk_layout(arch, 2, b);
+   struct vk_pipeline_layout pl;
+   memset(&pl, 0, sizeof pl);
+   pl.set_count = 1; pl.set_layouts[0] = &l->vk;
+   struct mali_flat_layout fl;
+   CHECK(mali_pipeline_layout_flatten(&pl, &fl) == VK_SUCCESS, "flatten");
+   CHECK(fl.c.descidx_clamp == 0, "flatten leaves the clamp off");
+   struct spv fs = load("didx.frag.spv");
+   struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n, .layout = &fl.c, .cache_dir = "" };
+   struct mali_compiled a, a2, c;
+   char err[256] = "";
+   CHECK(mali_compile(&o, &a, err, sizeof err) == 0, "default compile: %s", err);
+   struct mali_compile_layout off = fl.c;
+   off.descidx_clamp = 0;
+   o.layout = &off;
+   CHECK(mali_compile(&o, &a2, err, sizeof err) == 0, "explicit off compile: %s", err);
+   CHECK(a.bin_size == a2.bin_size && !memcmp(a.bin, a2.bin, a.bin_size), "clamp off is byte-identical to the default");
+   struct mali_compile_layout on = fl.c;
+   on.descidx_clamp = 1;
+   o.layout = &on;
+   int r = mali_compile(&o, &c, err, sizeof err);
+   CHECK(r == 0, "clamped compile: %s", err);
+   if (r == 0) {
+      CHECK(c.bin_size != a.bin_size || memcmp(c.bin, a.bin, a.bin_size), "clamp changes the output for a dynamic index");
+      /* the bound is count-1: a one-element array clamps to the constant 0, which folds the whole index computation away */
+      struct mali_compile_layout one = on;
+      struct mali_lbinding ob[2];
+      memcpy(ob, on.set[0].b, sizeof ob);
+      ob[0].count = 1;
+      one.set[0].b = ob;
+      o.layout = &one;
+      struct mali_compiled c1;
+      CHECK(mali_compile(&o, &c1, err, sizeof err) == 0, "one-element clamped compile: %s", err);
+      CHECK(c1.bin_size < c.bin_size, "bound is count-1 (1 element folds: %u < %u)", c1.bin_size, c.bin_size);
+      mali_compiled_free(&c1);
+      mali_compiled_free(&c);
+   }
+   mali_compiled_free(&a); mali_compiled_free(&a2);
+   free(fs.w);
+   vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+}
+
 /* ---- descriptor indexing stage 1: binding flags, gated by MALI_DESCIDX_FLAGS ---- */
 static VkResult
 try_layout(VkDescriptorSetLayoutCreateFlags lf, uint32_t n, const VkDescriptorSetLayoutBinding *b, const VkDescriptorBindingFlags *bf, struct mali_dsl **out)
@@ -531,6 +581,8 @@ main(int argc, char **argv)
    test_descidx_wiring();
    test_compile(11);
    test_compile(13);
+   test_descidx_clamp(11);
+   test_descidx_clamp(13);
    clock_gettime(CLOCK_MONOTONIC, &b);
    printf("%s (%d failures, %.2f s)\n", g_fail ? "FAIL" : "PASS", g_fail, (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) * 1e-9);
    return g_fail != 0;

@@ -52,6 +52,7 @@ struct mali_compile_layout {
    struct mali_lset set[MALI_MAX_SETS];
    uint32_t dyn_start[MALI_MAX_SETS]; /* running index of the set's first dynamic buffer in the pipeline's dynamic-buffer array */
    uint32_t push_size;                /* bytes of push constants (<= MALI_MAX_PUSH_BYTES) */
+   uint32_t descidx_clamp;            /* MALI_DESCIDX_FLAGS=1: clamp dynamic image/sampler array indices to count-1; 0 = off (default, not hashed) */
    uint32_t robust_access;            /* robustBufferAccess2/robustImageAccess2 enabled: bounds-check buffer/image accesses (nir_lower_robust_access); 0 = off */
 };
 

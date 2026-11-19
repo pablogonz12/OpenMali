@@ -112,3 +112,6 @@ struct mali_dtab_entry;
 uint32_t mali_dset_dtab(const struct mali_dset *s, struct mali_dtab_entry *out, uint32_t cap);
 /* GPU address of element idx of binding, via the table; false if absent/out of range. */
 bool mali_dset_binding_va(const struct mali_dset *s, uint32_t binding, uint32_t idx, uint64_t *va);
+
+/* MALI_DESCIDX_FLAGS=1 (or the test override). Pipeline creation uses it to set mali_compile_layout::descidx_clamp. */
+bool mali_desc_descidx_enabled(void);
