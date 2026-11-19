@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <errno.h>
+#include "mali_env.h"
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
@@ -905,9 +906,9 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    memset(&c, 0, sizeof c);
    memset(c.sh, 0xff, sizeof c.sh);
    E(&c, kb_cs_nop());
-   if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
+   if (MALI_GETENV_ONCE("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(MALI_GETENV_ONCE("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    {
-      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x332); 0 = none */
+      const char *e = MALI_GETENV_ONCE("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x332); 0 = none */
       int hf = e ? (int)strtol(e, NULL, 16) : 0x332;
       if (hf) {
          M32(&c, R->flush_id, 0);
@@ -934,7 +935,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       M32(&c, CR_JOB_SIZE + 2, d->groups[2]);
    }
    {
-      const char *cvs = getenv("MALI_CV");
+      const char *cvs = MALI_GETENV_ONCE("MALI_CV");
       unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
       if (cv & 1) E(&c, kb_cs_wait(0xffff));
       if (cv & 64) { M48(&c, R->heap, 0); E(&c, kb_cs_heap_set(R->heap)); }
@@ -942,14 +943,14 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       if (cv & 2) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, 0));
       if (cv & 4) E(&c, kb_cs_req_res(0));
       if (cv & 8) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_DEFERRED, 0));
-      if (getenv("MALI_CV_OTHER")) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, (unsigned)atoi(getenv("MALI_CV_OTHER"))));
+      if (MALI_GETENV_ONCE("MALI_CV_OTHER")) E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, (unsigned)atoi(MALI_GETENV_ONCE("MALI_CV_OTHER"))));
    }
    E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
    E(&c, kb_cs_req_res(KB_CS_RES_COMPUTE));
    {
       /* task axis/increment as panvk calculate_task_axis_and_increment: spread workgroups over cores, ~T threads per task */
       unsigned inc = 1, axis = 0;
-      const char *te = getenv("MALI_TASK_THREADS");
+      const char *te = MALI_GETENV_ONCE("MALI_TASK_THREADS");
       unsigned T = te ? (unsigned)atoi(te) : (env->tls_threads ? env->tls_threads / 4 : 0);
       if (!d->indirect_va && T) {
          unsigned wgc[3] = { d->groups[0], d->groups[1], d->groups[2] };
@@ -973,7 +974,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    E(&c, kb_cs_wait(1u << env->slot));
    E(&c, kb_cs_req_res(0));
    {
-      const char *cvs = getenv("MALI_CV");
+      const char *cvs = MALI_GETENV_ONCE("MALI_CV");
       unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
       M32(&c, R->flush_id, 0);
       E(&c, kb_cs_flush_cache2((cv & 16) ? 3 : 1, (cv & 16) ? 3 : 1, (cv & 16) ? 2 : 0, R->flush_id));
@@ -1040,7 +1041,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
        * while firmware owns grown chunks: the second frame that needed heap growth (>~600 draws) TRANSLATION_FAULTed on v11. */
       if (!env->heap_desc_ready)
          kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
-      uint64_t geom = (env->geo_va + 4096) | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
+      uint64_t geom = (env->geo_va + 4096) | ((MALI_GETENV_ONCE("MALI_GEOM_SIZE") ? (uint32_t)atoi(MALI_GETENV_ONCE("MALI_GEOM_SIZE")) : 65536u) >> 12);
       if (v13)
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
@@ -1118,7 +1119,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_COMPLETED));
    }
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
-   if (geometry && !getenv("MALI_NOTF")) {
+   if (geometry && !MALI_GETENV_ONCE("MALI_NOTF")) {
       M32(&c, R->flush_id, 0);
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
@@ -1156,7 +1157,7 @@ mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f)
    if ((rc = mali_frame_build(hw, f, &cs, &n)))
       return rc;
    clock_gettime(CLOCK_MONOTONIC, &pt2);
-   if (getenv("MALI_PROF")) {
+   if (MALI_GETENV_ONCE("MALI_PROF")) {
       static double a, b; static unsigned c;
       a += (pt1.tv_sec - pt0.tv_sec) * 1e3 + (pt1.tv_nsec - pt0.tv_nsec) / 1e6;
       b += (pt2.tv_sec - pt1.tv_sec) * 1e3 + (pt2.tv_nsec - pt1.tv_nsec) / 1e6;
