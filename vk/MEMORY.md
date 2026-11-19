@@ -11,11 +11,13 @@ needs a GPU is marked **unverified**.
 | # | propertyFlags | kbase backing |
 |---|---|---|
 | 0 | `DEVICE_LOCAL \| HOST_VISIBLE \| HOST_COHERENT` | native BO, `COHERENT_LOCAL`, CPU mapping write-combined (`mali_memory.c:53`) |
-| 1 | `DEVICE_LOCAL \| HOST_VISIBLE \| HOST_CACHED` | `KB_HEAP_SYSTEM` dma-buf (CPU-cached), flush/invalidate via `bo_cache` (`mali_memory.c:126-161`) |
+| 1 | `DEVICE_LOCAL \| HOST_VISIBLE \| HOST_CACHED` | native BO with `KB_BO_CPU_CACHED` (CPU-cached mapping), flush/invalidate via `bo_cache` (`mali_memory.c:126-161`); an *exported* type-1 BO instead gets a `KB_HEAP_SYSTEM` dma-buf (`mali_backend_kbase.c:306-315`), and `bo_cache` is the cache op for both paths |
 
 One heap, flagged `DEVICE_LOCAL`, size `gpu.heap_bytes` (`mali_physical_device.c:354-355`).
-`MALI_MEM_TYPE_COUNT` is hardcoded 2 (`mali_memory.c:15`), the policy is `index == 1` means cached
-(`mali_memory.c:52`), and every buffer/image requirement returns *all* bits
+`memoryTypeCount` is 2 by default and 3 with `MALI_DEVICE_LOCAL=1` (device-local first, then the two
+host-visible types), the policy comes from the advertised flags rather than the index
+(`mali_memory.c:52-57`), and every buffer/image requirement returns *all* bits except the
+device-local type for `INDIRECT` buffers (`mali_buffer.c:59-70`)
 (`mali_buffer.c:59`, `mali_image.c:368` via `fill_reqs`), so the app can pick either type.
 
 **Correction to the earlier notes** (`/tmp/oc/submit120.md`, `/tmp/oc/megabonk-gaps.md`): it is not
@@ -35,11 +37,14 @@ Source: dxvk_memory.cpp @ v2.7.1 (`DxvkMemoryAllocator`).
   candidate type — heap 0, i.e. everything — then walks the mask from the lowest bit. **It therefore
   always picks type 0**, the write-combined, `COHERENT_LOCAL` one. Type 1 (cached) is only reachable
   when the caller explicitly asks for `HOST_CACHED` (readback).
-- Because type 0 is `HOST_VISIBLE`, DXVK maps the chunk (`mapDeviceMemory`) and `createAllocation`
-  hands every sub-allocation a `m_mapPtr`. So **texture uploads, vertex/index/uniform buffer
-  updates, and the global buffer are plain CPU stores** that DXVK expects the driver to make
-  coherent — no staging buffer, no copy command, no flush. With `COHERENT_LOCAL` those stores also
-  keep the GPU from using its caches for the memory it reads back.
+- Because type 0 is `HOST_VISIBLE`, DXVK *can* map a chunk that selects it — but only when the request also
+  asked for `HOST_VISIBLE`: `mapDeviceMemory` tests the requested `properties`, and `createAllocation` passes
+  `allocationInfo.properties` down. A `DEVICE_LOCAL`-only request that lands on type 0 therefore stays
+  unmapped (`m_mapPtr` stays null) and uploads to it go through a staging buffer plus a copy. So the
+  prediction depends on the request: **host-visible** requests that select type 0 get `m_mapPtr` and their
+  texture/vertex/uniform updates are plain CPU stores, while `DEVICE_LOCAL`-only resources are not mapped and
+  must not be predicted to take the CPU-store upload path. The upload benefit in §5 is therefore limited to
+  the host-visible requests, and those still keep `COHERENT_LOCAL`.
 - It never *requires* `DEVICE_LOCAL|HOST_VISIBLE`: with a non-host-visible type present, DXVK would
   pick it for device-local resources (lowest bit), stage uploads through a host-visible buffer with
   `vkCmdCopyBuffer`/`vkCmdCopyBufferToImage`, mark allocations `CanMove`, and never map them.
@@ -75,13 +80,34 @@ That is the same trade real drivers make: property flags are a policy the driver
 dropping `COHERENT_LOCAL` on a *buffer/image* BO is safe on v13 (the comment at
 `mali_backend_kbase.c:289-295` records that v13 internal BOs keep it because "the v13 tiler bins
 nothing without it"), and that GPU-cached reads are measurably faster for this workload. The
-implementation is therefore opt-in (`MALI_DEVICE_LOCAL=1`) until a phone A/B exists.
+implementation is therefore opt-in (`MALI_DEVICE_LOCAL=1`, read by `mali_device_local_enabled()` in
+`mali_private.h:21-31` at physical-device creation) until a phone A/B exists.
+
+### Constraint: GPU-written memory and SSBO atomics (arch 11)
+
+`KB_BO_NOCOH` removes `COHERENT_LOCAL`, and on arch 11 that is not only a CPU-cache question: plain
+SSBO atomics then run in each core's L1 and updates from different cores are lost. The comment at
+`mali_backend_kbase.c:131-134` records exactly this (CMF, 2 cores: `atomicAdd` count ~half), which is
+why `COHERENT_LOCAL` is the arch-11 default for application `VkDeviceMemory` in the first place.
+Unmapping the BO does not help: the loss is GPU-side, so `vkMapMemory` failing says nothing about it.
+
+Therefore a device-local BO is only honest for resources that are **read** on the GPU (sampled
+images, vertex/uniform/index data, storage buffers without atomics) or written only by one workgroup
+without cross-core visibility requirements. A storage buffer that the application updates with
+atomics, or that is written by one dispatch and read by another without a barrier that implies
+coherence, must stay in a host-visible (`COHERENT_LOCAL`) type on arch 11. Until the switch has a
+per-resource policy (or arch 11 grows a GPU-cache-maintenance story for these BOs), treat
+`MALI_DEVICE_LOCAL=1` as usable only for front ends/games without SSBO-atomic workloads.
 
 ### Resources that must stay host-visible
 
 - Anything the CPU reads at submit time: computed indirect draws are expanded on the CPU
   (`mali_cmd.c:602`, `expand_indirect`), so `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` memory must be
-  host-visible, and indirect buffers are `bo_host_touch`ed at bind (`mali_buffer.c:78-80`).
+  host-visible, and indirect buffers are `bo_host_touch`ed at bind (`mali_buffer.c:78-80`). The
+  device-local type is therefore masked out of `memoryTypeBits` for that usage in
+  `mali_GetDeviceBufferMemoryRequirements` (`mali_buffer.c:53-72`): binding one would keep the BO
+  host-lazy (`kbase_bo_host_touch` skips `MALI_BO_DEVICE_LOCAL`) and it never gets a CPU-side
+  `MEM_SYNC`, so those CPU reads would be unsynchronised.
 - DXVK's "global buffer" mixes `INDIRECT` into its usage mask, so it keeps landing in a
   host-visible type; vertex/uniform writes therefore do not benefit until indirect draws are
   expanded on the GPU.
@@ -89,8 +115,8 @@ implementation is therefore opt-in (`MALI_DEVICE_LOCAL=1`) until a phone A/B exi
 ## 4. The per-wait CSYNC cost (mem_sync_all)
 
 `kbase_fence_wait` calls `mem_sync_all(k, 2)` after **every** successful wait
-(`mali_backend_kbase.c:510`), and `kbase_wait_counter` does the same (`:616-619`). `mem_sync_bos`
-(`:452-475`) takes `bo_lock` and issues one `MEM_SYNC` ioctl for **every live BO** that is not
+(`mali_backend_kbase.c:516`), and `kbase_wait_counter` does the same (`:618-624`). `mem_sync_bos`
+(`:557-584`) takes `bo_lock` and issues one `MEM_SYNC` ioctl for **every live BO** that is not
 `host_lazy` and not `NOCOH` — the number scales with allocations, not with what the GPU wrote or
 what the CPU will read. This is the next real submit-path cost and is tracked separately (per-BO
 write tracking, PR that follows this one).
@@ -101,5 +127,5 @@ write tracking, PR that follows this one).
 |---|---|
 | Do we advertise a device-local memory type? | Yes, on both types and on the heap — but only as `HOST_VISIBLE`. |
 | Is a non-host-visible device-local type honest here? | Yes, as a policy: no `COHERENT_LOCAL`, no mapping, GPU-side copies. Not a physical property. |
-| Does it help DXVK? | It changes which type DXVK picks for images/buffers (0 -> the device-local type), removes the per-frame CPU store-into-VRAM path, and removes those BOs from the CSYNC sweep. **Unmeasured on hardware.** |
+| Does it help DXVK? | It changes which type DXVK picks for `DEVICE_LOCAL`-only images/buffers (0 -> the device-local type) and removes those BOs from the CSYNC sweep; uploads to them then go through a staging buffer + copy instead of the CPU-store path, because they are no longer mapped. Host-visible requests are unaffected. **Unmeasured on hardware.** |
 | What is the risk? | v13 `COHERENT_LOCAL`/tiler interaction and GPU-cache maintenance, both hardware-only questions. Hence opt-in. |

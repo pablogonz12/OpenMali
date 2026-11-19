@@ -46,6 +46,20 @@ int main(void)
    EXPECT(kb_fake_mem_alloc_count() == a0 + 2 && y.gpu_va != va, "other flags: real MEM_ALLOC");
    b->bo_free(k, &y);
 
+   /* device-local: mali_AllocateMemory passes DEVICE_LOCAL|HOSTLAZY and bo_alloc adds NOCOH itself. The pool
+    * compares flags exactly, so the augmented flags must be normalised before the lookup as well as stored on
+    * free; otherwise the next identical allocation misses and the freed entry can never be taken again. */
+   a0 = kb_fake_mem_alloc_count();
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | MALI_BO_DEVICE_LOCAL, &x)) return 1;
+   const uint64_t va_dl = x.gpu_va;
+   EXPECT((x.flags & (MALI_BO_NOCOH | MALI_BO_HOSTLAZY | MALI_BO_DEVICE_LOCAL)) ==
+          (MALI_BO_NOCOH | MALI_BO_HOSTLAZY | MALI_BO_DEVICE_LOCAL), "device-local BO is NOCOH|HOSTLAZY (flags %x)", x.flags);
+   b->bo_free(k, &x);
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | MALI_BO_DEVICE_LOCAL, &y)) return 1;
+   EXPECT(kb_fake_mem_alloc_count() == a0 + 1 && y.gpu_va == va_dl,
+          "device-local free/alloc with the caller's flags is reused (1 MEM_ALLOC for the pair, flags %x)", y.flags);
+   b->bo_free(k, &y);
+
    /* steady state: 8 allocs per frame, ring of 3 frames */
    a0 = kb_fake_mem_alloc_count();
    struct mali_bo ring[3][8];

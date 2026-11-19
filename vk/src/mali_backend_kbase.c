@@ -270,6 +270,15 @@ static int
 kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
 {
    size = (size + 4095) & ~(size_t)4095;
+   /* Normalise before the pool lookup, not after it: the pool compares flags exactly and stores the flags of
+    * the freed BO. The caller (mali_AllocateMemory) passes DEVICE_LOCAL|HOSTLAZY and relies on this function
+    * to add NOCOH, so normalising later would store DEVICE_LOCAL|HOSTLAZY|NOCOH on free but look up
+    * DEVICE_LOCAL|HOSTLAZY on the next allocation: every device-local allocation would miss the pool and
+    * leave an unreachable entry behind until it is evicted. */
+   /* A device-local allocation is GPU-cacheable by definition: no COHERENT_LOCAL, and the CPU side of
+    * the sync is skipped because the app can never map it (vk/MEMORY.md). */
+   if (flags & MALI_BO_DEVICE_LOCAL)
+      flags |= MALI_BO_NOCOH | MALI_BO_HOSTLAZY;
    if (pool_eligible(flags)) {
       struct kb_bo *hit = pool_take(k, size, flags);
       if (hit) {
@@ -291,10 +300,6 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       const char *ie = getenv("MALI_INT_NOCOH");   /* default: on for arch 11 only (v10/v13 keep it: the v13 tiler bins nothing without it); =0/1 overrides */
       int_nocoh = ie ? ie[0] == '1' : k_int_nocoh_default;
    }
-   /* A device-local allocation is GPU-cacheable by definition: no COHERENT_LOCAL, and the CPU side of
-    * the sync is skipped because the app can never map it (vk/MEMORY.md). */
-   if (flags & MALI_BO_DEVICE_LOCAL)
-      flags |= MALI_BO_NOCOH | MALI_BO_HOSTLAZY;
    if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED | MALI_BO_COH)))
       flags |= MALI_BO_NOCOH;
    /* Why this is safe: CPU-side these BOs are write-combined (not CPU_CACHED), so kbase_sync_now() is a no-op for them (it returns early for

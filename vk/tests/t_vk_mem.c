@@ -148,6 +148,25 @@ main(int argc, char **argv)
       CHECK(InvalidateMappedMemoryRanges(dev, 1, &dr) == VK_SUCCESS, "invalidate on device-local is a no-op, not an error");
       CHECK(MapMemory(dev, d, 0, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "still unmappable after flush/invalidate");
       FreeMemory(dev, d, NULL);
+      /* Indirect arguments are expanded on the CPU (expand_indirect), so memory the device may never
+       * MEM_SYNC is not allowed there: the requirement must not offer our type. */
+      PFN_vkCreateBuffer cbuf = (PFN_vkCreateBuffer)GetDeviceProcAddr(dev, "vkCreateBuffer");
+      PFN_vkDestroyBuffer dbuf = (PFN_vkDestroyBuffer)GetDeviceProcAddr(dev, "vkDestroyBuffer");
+      PFN_vkGetDeviceBufferMemoryRequirements gbreq =
+         (PFN_vkGetDeviceBufferMemoryRequirements)GetDeviceProcAddr(dev, "vkGetDeviceBufferMemoryRequirements");
+      if (cbuf && dbuf && gbreq) {
+         VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
+                                   .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+         VkBuffer ib;
+         CHECK(cbuf(dev, &bci, NULL, &ib) == VK_SUCCESS, "create indirect buffer");
+         VkDeviceBufferMemoryRequirements breq = {.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &bci};
+         VkMemoryRequirements2 mr = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+         gbreq(dev, &breq, &mr);
+         CHECK((mr.memoryRequirements.memoryTypeBits & (1u << t_dev)) == 0,
+               "indirect buffer must not offer the device-local type (%x)", mr.memoryRequirements.memoryTypeBits);
+         CHECK((mr.memoryRequirements.memoryTypeBits & (1u << t_coh)) != 0, "indirect buffer still offers a host-visible type");
+         dbuf(dev, ib, NULL);
+      }
    } else {
       CHECK(t_dev < 0, "device-local type advertised without MALI_DEVICE_LOCAL=1 (type %d)", t_dev);
       CHECK(mp.memoryTypeCount == 2, "two memory types by default, got %u", mp.memoryTypeCount);
