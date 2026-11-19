@@ -4,6 +4,7 @@
  * runtime default covers (barriers are no-ops: every submission is serialised by the queue). Shader modules, pipeline cache,
  * render pass, framebuffer: the runtime's vk_common_* (render pass 1.x is emulated through vkCmdBeginRendering, mali_cmd.c). */
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -12,6 +13,7 @@
 #include "mali_entrypoints.h"
 #include "mali_image.h"
 #include "mali_msaa.h"
+#include "mali_gs_shim.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -127,6 +129,11 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
          fss = &ci->pStages[i];
       else {
+         if (ci->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT && mali_advertise_gs()) {
+            static atomic_flag gs_logged = ATOMIC_FLAG_INIT;
+            if (!atomic_flag_test_and_set(&gs_logged))
+               fprintf(stderr, "mali_vk: geometry shader pipeline rejected (VK_ERROR_FEATURE_NOT_PRESENT): MALI_ADVERTISE_GS only fakes the device feature, no GS runs\n");
+         }
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation / geometry: not supported */
          goto fail;
       }
