@@ -293,8 +293,9 @@ test_push256(void)
          for (unsigned i = 0; i < 256; i++) block[i] = (uint8_t)(0x40 + i);
          memcpy((uint8_t *)fau + push_base, block, 256);
          for (unsigned i = 0; i < c.nimm; i++)
-            CHECK(fau[c.imm[i].word] == c.imm[i].value, "v%u %s: immediate 0x%08x at word %u clobbered by the push block", arch,
-                  cases[k].f, c.imm[i].value, c.imm[i].word);
+            if (c.imm[i].word < 128)   /* out-of-range already failed above; do not read past fau[128] */
+               CHECK(fau[c.imm[i].word] == c.imm[i].value, "v%u %s: immediate 0x%08x at word %u clobbered by the push block", arch,
+                     cases[k].f, c.imm[i].value, c.imm[i].word);
          for (unsigned i = 0; i < 256; i += 4) {
             uint32_t w;
             memcpy(&w, block + i, 4);
