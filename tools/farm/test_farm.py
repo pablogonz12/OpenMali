@@ -315,8 +315,12 @@ class T(unittest.TestCase):
         import shutil
         root = os.path.join(self.d, "fx")
         shutil.copytree(HERE, root, ignore=shutil.ignore_patterns("__pycache__", ".git"))
-        g = lambda *c: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", *c], capture_output=True, text=True, check=True).stdout.strip()
+        g = lambda *c: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false", *c], capture_output=True, text=True, check=True).stdout.strip()
         g("init", "-q", "-b", "main")
+        for dev in ("cmf", "x8", "poco"):                       # minimal passing daily baselines, so a daily job can reach `pass` in fake mode
+            os.makedirs(os.path.join(root, "vk/deqp"), exist_ok=True)
+            with open(os.path.join(root, "vk/deqp/ours-daily-sample-%s.tsv" % dev), "w") as f:
+                f.write("".join("dEQP-VK.api.smoke.t%d\tPass\t\n" % i for i in range(20)))
         g("add", "-A")
         for i in range(n):
             g("commit", "-q", "--allow-empty", "-m", f"c{i}")
@@ -1666,6 +1670,7 @@ class T(unittest.TestCase):
             self.farmd()
         self.assertEqual((rc, bool(d1)), (0, True), err)
         self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
+        self.assertEqual(L.job_verdict(L.find_job(d1)), "pass")     # a real passed daily job, so reuse would be possible
         rc, d2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
         self.assertEqual(rc, 0, err)
         self.assertTrue(d2, err)
