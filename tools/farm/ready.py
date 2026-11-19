@@ -128,7 +128,7 @@ def fetch_threads(repo, n):
          'reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated}}}}}')
     total, cursor = 0, None
     while True:
-        args = ["api", "graphql", "-f", f"query={q}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"p={n}"]
+        args = ["api", "graphql", "-f", f"query={q}", "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={n}"]
         if cursor:
             args += ["-F", f"c={cursor}"]
         rt = json.loads(gh(*args))["data"]["repository"]["pullRequest"]["reviewThreads"]
