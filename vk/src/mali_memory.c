@@ -12,7 +12,6 @@
 #include "vk_alloc.h"
 #include "vk_util.h"
 
-#define MALI_MEM_TYPE_COUNT 2
 #define MALI_MAX_ALLOCS 4096
 #define MALI_LINE 64 /* nonCoherentAtomSize */
 
@@ -34,7 +33,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const struct mali_backend_ops *be = pdev->backend;
 
-   if (pAllocateInfo->memoryTypeIndex >= MALI_MEM_TYPE_COUNT)
+   if (pAllocateInfo->memoryTypeIndex >= pdev->memory.memoryTypeCount)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    if (pAllocateInfo->allocationSize > pdev->gpu.heap_bytes)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -49,8 +48,13 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   const bool cached = pAllocateInfo->memoryTypeIndex == 1;
-   const uint32_t flags = cached ? MALI_BO_CACHED : 0;
+   /* Policy comes from the advertised property flags, not from the index (MALI_DEVICE_LOCAL reorders
+    * the types, vk/MEMORY.md): HOST_CACHED = CPU-cached mapping with explicit flush/invalidate;
+    * no HOST_VISIBLE = device-local, GPU-cacheable, never mapped and never CSYNCed by the CPU. */
+   const VkMemoryPropertyFlags tprops = pdev->memory.memoryTypes[pAllocateInfo->memoryTypeIndex].propertyFlags;
+   const bool cached = (tprops & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
+   const bool devlocal = (tprops & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0;
+   const uint32_t flags = (cached ? MALI_BO_CACHED : 0) | (devlocal ? MALI_BO_DEVICE_LOCAL : 0);
    const VkImportMemoryFdInfoKHR *imp =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
    int r;
@@ -66,8 +70,9 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       }
    } else {
       const bool export = mem->vk.export_handle_types != 0;
+      /* device-local: HOSTLAZY even for an export, so no per-submit MEM_SYNC ever covers it. */
       r = be->bo_alloc(dev->kdev, pAllocateInfo->allocationSize,
-                       flags | (export ? MALI_BO_EXPORT : MALI_BO_HOSTLAZY), &mem->bo);
+                       flags | (export ? MALI_BO_EXPORT : MALI_BO_HOSTLAZY) | (devlocal ? MALI_BO_HOSTLAZY : 0), &mem->bo);
    }
    if (r != 0) {
       vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
@@ -75,6 +80,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       return errno_to_vk(dev, r);
    }
 
+   mem->props = tprops;
    p_atomic_add(&pdev->mem_used, mem->vk.size);
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
@@ -105,7 +111,9 @@ mali_MapMemory(VkDevice _device, VkDeviceMemory _mem, VkDeviceSize offset, VkDev
       *ppData = NULL;
       return VK_SUCCESS;
    }
-   if (mem->mapped || offset >= mem->vk.size)
+   /* A device-local type is not host visible: the app must stage through a host-visible type. That is
+    * what makes "no flush/invalidate needed" true instead of a silent stale read. */
+   if (!(mem->props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) || mem->mapped || offset >= mem->vk.size)
       return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
    mem->mapped = true;
    if (mali_device_pdev(dev)->backend->bo_host_touch)
@@ -189,6 +197,6 @@ mali_GetMemoryFdPropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBi
 
    if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-   pProps->memoryTypeBits = (1u << MALI_MEM_TYPE_COUNT) - 1;
+   pProps->memoryTypeBits = (1u << mali_device_pdev(dev)->memory.memoryTypeCount) - 1;
    return VK_SUCCESS;
 }

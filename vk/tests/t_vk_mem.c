@@ -6,7 +6,11 @@
  * type accepts flush/invalidate (explicit size, WHOLE_SIZE, unaligned range); an out-of-range memory type and an oversized
  * allocation are OUT_OF_DEVICE_MEMORY; the 4096-allocation cap returns TOO_MANY_OBJECTS and frees make room again;
  * vkGetDeviceMemoryCommitment is 0 (no lazily allocated type); the opaque capture address queries are 0 (no
- * bufferDeviceAddressCaptureReplay). Exit 0 = pass. */
+ * bufferDeviceAddressCaptureReplay).
+ * M15 device-local type (vk/MEMORY.md): with MALI_DEVICE_LOCAL=1 there is exactly one DEVICE_LOCAL type
+ * that is not HOST_VISIBLE, it is type 0 (so a front end taking the lowest bit of a DEVICE_LOCAL mask
+ * picks it), vkMapMemory on it fails instead of handing out a pointer that could go stale, and flush/
+ * invalidate are accepted as no-ops; without the variable the type is absent. Exit 0 = pass. */
 #define _DEFAULT_SOURCE
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -15,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 
 static int g_fail;
@@ -118,9 +123,39 @@ main(int argc, char **argv)
    UnmapMemory(dev, c);
    FreeMemory(dev, c, NULL);
 
+   /* ---- M15: device-local type ---- */
+   const char *dl = getenv("MALI_DEVICE_LOCAL");
+   const bool want_dev = dl && dl[0] == '1' && dl[1] == '\0';
+   int t_dev = -1;
+   for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+      VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+      if ((f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && t_dev < 0) t_dev = i;
+   }
+   if (want_dev) {
+      CHECK(t_dev == 0, "device-local type must be type 0 for bit-order selection, got %d", t_dev);
+      CHECK(mp.memoryTypeCount == 3, "three memory types, got %u", mp.memoryTypeCount);
+      CHECK(t_coh == 1 && t_cached == 2, "host-visible types move to 1/2, got coherent=%d cached=%d", t_coh, t_cached);
+      CHECK((mp.memoryTypes[t_dev].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
+             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == 0, "device-local type must not be host visible/coherent/cached");
+      CHECK(mp.memoryTypes[t_dev].heapIndex == 0, "device-local type on the one heap");
+      VkMemoryAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = 65536, .memoryTypeIndex = t_dev};
+      VkDeviceMemory d;
+      CHECK(AllocateMemory(dev, &dai, NULL, &d) == VK_SUCCESS, "alloc device-local");
+      /* A pointer into GPU-only memory is exactly the stale-read bug this type exists to prevent. */
+      CHECK(MapMemory(dev, d, 0, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "map of device-local memory must fail");
+      VkMappedMemoryRange dr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = d, .offset = 0, .size = VK_WHOLE_SIZE};
+      CHECK(FlushMappedMemoryRanges(dev, 1, &dr) == VK_SUCCESS, "flush on device-local is a no-op, not an error");
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &dr) == VK_SUCCESS, "invalidate on device-local is a no-op, not an error");
+      CHECK(MapMemory(dev, d, 0, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "still unmappable after flush/invalidate");
+      FreeMemory(dev, d, NULL);
+   } else {
+      CHECK(t_dev < 0, "device-local type advertised without MALI_DEVICE_LOCAL=1 (type %d)", t_dev);
+      CHECK(mp.memoryTypeCount == 2, "two memory types by default, got %u", mp.memoryTypeCount);
+   }
+
    /* ---- allocation limits ---- */
    VkDeviceMemory bad = VK_NULL_HANDLE;
-   mai.memoryTypeIndex = 2; /* MALI_MEM_TYPE_COUNT */
+   mai.memoryTypeIndex = mp.memoryTypeCount; /* one past the advertised types */
    CHECK(AllocateMemory(dev, &mai, NULL, &bad) == VK_ERROR_OUT_OF_DEVICE_MEMORY, "memory type out of range");
    mai.memoryTypeIndex = t_coh; mai.allocationSize = mp.memoryHeaps[0].size + 1;
    CHECK(AllocateMemory(dev, &mai, NULL, &bad) == VK_ERROR_OUT_OF_DEVICE_MEMORY, "alloc larger than the heap");
