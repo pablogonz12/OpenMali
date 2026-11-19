@@ -27,4 +27,4 @@ eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/tests/fuzz_s
 # shellcheck disable=SC2086
 c++ -o "$OUT/fuzz_spirv" "$OUT/fuzz_spirv.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor_lower.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cd "$D/.."
-timeout -k 5 1500 "$OUT/fuzz_spirv" "$V/shader" "$@"
+timeout -k 5 "${FUZZ_TIMEOUT:-1500}" "$OUT/fuzz_spirv" "$V/shader" "$@"

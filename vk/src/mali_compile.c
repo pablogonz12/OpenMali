@@ -78,7 +78,7 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
    return true;
 }
 
-struct push_ctx { unsigned base; unsigned max_end; };
+struct push_ctx { unsigned base; unsigned max_end; bool overflow; };
 
 /* The hardware instance id already includes the IDVS instance offset (= firstInstance). nir_lower_system_values makes
  * InstanceIndex = instance_id + base_instance and InstanceId = instance_id, so: instance_id := hw_id - base_instance
@@ -101,8 +101,13 @@ add_push_base(nir_builder *b, nir_intrinsic_instr *i, void *d)
    if (i->intrinsic != nir_intrinsic_load_push_constant)
       return false;
    unsigned bytes = i->def.num_components * (i->def.bit_size / 8);
-   if (nir_src_is_const(i->src[0]))
-      c->max_end = MAX2(c->max_end, nir_src_as_uint(i->src[0]) + bytes);
+   if (nir_src_is_const(i->src[0])) {
+      uint64_t end = nir_src_as_uint(i->src[0]) + (uint64_t)bytes;   /* 64-bit: a constant offset near 2^32 must not wrap to a small end */
+      if (end >= UINT32_MAX)
+         c->overflow = true;
+      else
+         c->max_end = MAX2(c->max_end, (unsigned)end);
+   }
    else
       c->max_end = UINT32_MAX;
    /* bifrost_compile.c asserts range == 0 (the value is ignored in release builds) */
@@ -493,9 +498,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);
    NIR_PASS(_, nir, nir_opt_constant_folding);
-   struct push_ctx pc = { push_base, 0 };
+   struct push_ctx pc = { push_base, 0, false };
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, add_push_base, nir_metadata_control_flow, &pc);
-   if (pc.max_end != UINT32_MAX && push_base + pc.max_end > fau_reserved * 4) {   /* the backend asserts the push words fit the reserved FAU */
+   if (pc.overflow || (pc.max_end != UINT32_MAX && (uint64_t)push_base + pc.max_end > (uint64_t)fau_reserved * 4)) {   /* the backend asserts the push words fit the reserved FAU */
       ralloc_free(nir);
       return fail(err, errsz, "shader reads push constants beyond the reserved FAU range");
    }

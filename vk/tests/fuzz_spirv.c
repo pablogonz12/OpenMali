@@ -77,11 +77,13 @@ main(int argc, char **argv)
       size_t n;
       uint32_t *w = load(argv[1], &n);
       int bad = 0;
-      for (unsigned a = 11; w && a <= 13; a += 2)
+      if (!w) { fprintf(stderr, "fuzz_spirv: cannot load %s\n", argv[1]); return 2; }
+      for (unsigned a = 11; a <= 13; a += 2)
          for (int st = 0; st <= MALI_STAGE_COMPUTE; st++) {
             int sig = run_case(w, n, a, st);
             if (sig) { printf("replay %s arch=%u stage=%d: signal %d\n", argv[1], a, st, sig); bad++; }
          }
+      free(w);
       return bad != 0;
    }
    int iters = argc > 2 ? atoi(argv[2]) : 2000;
@@ -94,6 +96,7 @@ main(int argc, char **argv)
       size_t l = strlen(e->d_name);
       if (l > 8 && !strcmp(e->d_name + l - 4, ".spv")) names[nn++] = strdup(e->d_name);
    }
+   if (nn == 0) { fprintf(stderr, "fuzz_spirv: no .spv files in %s\n", argv[1]); return 2; }
    int bad = 0;
    for (int it = 0; it < iters; it++) {
       char p[600];
