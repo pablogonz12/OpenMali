@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* AFBC stage-5 hardware test (first phone test). Standalone Vulkan app, loader-free like t_vk_draw: dlopens the ICD.
- *   t_afbc_hw --direct <icd.so> [--spv-dir dir] [--case clear|draw|sample]      run with MALI_AFBC=1 for the AFBC path
+ *   t_afbc_hw --direct <icd.so> [--spv-dir dir] [--case clear|draw|sample|load] run with MALI_AFBC=1 for the AFBC path
  * It renders into a 128x128 RGBA8 colour attachment: a clear (case clear), then a clear + one triangle draw (case draw).
  *  MALI_AFBC unset (reference): the image is TILING_LINEAR + TRANSFER_SRC; the pixels are read back and compared (clear colour at a corner,
  *    triangle colour near the centre). This proves the test itself and the default path.
@@ -82,6 +82,7 @@ struct run {
    int afbc;                 /* MALI_AFBC=1 */
    int draw;                 /* clear + triangle, else clear only */
    int sample;               /* case sample: the image is also SAMPLED, and a second pass draws it 1:1 into a linear target (tmap) */
+   int load;                 /* case load: a second render pass on the same image with loadOp LOAD (preload path) */
    uint8_t *tmap;            /* sample case: target pixels (linear) */
    uint32_t tpitch;
    uint8_t *map;             /* whole memory, mapped */
@@ -371,7 +372,45 @@ run_case(struct run *r)
       CmdDraw(cb, 3, 1, 0, 0);
    }
    CmdEndRenderPass(cb);
-   CK(EndCommandBuffer(cb));
+   if (r->load) {
+      /* Second render pass on the same image with loadOp LOAD. The driver has no hardware preload knob: it preserves the
+       * contents with a full-screen draw that reads the image as a linear storage buffer. On a linear image that must work
+       * (the sample pass below then sees the clear colour + the triangle). On an AFBC image the same read would decode
+       * compressed headers/body as linear rows, so the driver must refuse the command buffer instead of corrupting it -
+       * this case pins that contract. When the AFBC preload (sample the AFBC plane instead) lands, the AFBC half must
+       * instead pass the reference pixel check: flip the expectation in run_case/main together with that change. */
+      VkAttachmentDescription lda = ad;
+      lda.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      lda.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkRenderPassCreateInfo lrpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &lda,
+                                     .subpassCount = 1, .pSubpasses = &sp};
+      VkRenderPass lrp;
+      CK(CreateRenderPass(dev, &lrpi, NULL, &lrp));
+      VkFramebufferCreateInfo lfbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = lrp, .attachmentCount = 1,
+                                      .pAttachments = &view, .width = IW, .height = IH, .layers = 1};
+      VkFramebuffer lfb;
+      CK(CreateFramebuffer(dev, &lfbi, NULL, &lfb));
+      VkRenderPassBeginInfo lrb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = lrp, .framebuffer = lfb,
+                                   .renderArea = {{0, 0}, {IW, IH}}};
+      CmdBeginRenderPass(cb, &lrb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkBuffer lvbs[2] = {vb[0], vb[1]};
+      VkDeviceSize loffs[2] = {0, 64};
+      CmdBindVertexBuffers(cb, 0, 2, lvbs, loffs);
+      const float lrot[4] = {1, 0, 0, 0};
+      CmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, lrot);
+      CmdDraw(cb, 3, 1, 0, 0);
+      CmdEndRenderPass(cb);
+   }
+   const VkResult ecb = EndCommandBuffer(cb);
+   if (r->load && r->afbc) {
+      if (ecb != VK_ERROR_FEATURE_NOT_PRESENT) FAIL("AFBC loadOp LOAD: EndCommandBuffer = %d, want FEATURE_NOT_PRESENT (refuse, do not corrupt)", (int)ecb);
+      for (uint64_t i = r->img_size; i < r->alloc; i++)
+         if (r->map[i] != 0xA5) FAIL("AFBC loadOp LOAD: guard byte %llu written (0x%02x)", (unsigned long long)(i - r->img_size), r->map[i]);
+      printf("{\"case\":\"load\",\"afbc_load\":\"refused\"}\n");
+      return 1;
+   }
+   if (ecb != VK_SUCCESS) FAIL("EndCommandBuffer = %d", (int)ecb);
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
    CK(QueueSubmit(queue, 1, &si, fence));
    VkResult w = WaitForFences(dev, 1, &fence, VK_TRUE, 5000000000ull);
@@ -477,7 +516,7 @@ main(int argc, char **argv)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
       else if (!strcmp(argv[i], "--case") && i + 1 < argc) only = argv[++i];
-      else { fprintf(stderr, "usage: t_afbc_hw --direct icd.so [--spv-dir dir] [--case clear|draw|sample]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_afbc_hw --direct icd.so [--spv-dir dir] [--case clear|draw|sample|load]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
@@ -529,6 +568,15 @@ main(int argc, char **argv)
       ok &= run_case(&rs);
       if (ok) ok &= afbc ? check_afbc(&rs, "sample-src") : check_linear(&rs);
       if (ok) ok &= check_sample(&rs);
+   }
+   if (ok && only && !strcmp(only, "load")) {
+      /* Contract case (see run_case): linear preserves the contents through the preload draw and samples as the draw case;
+       * AFBC must be refused cleanly. Deliberately not part of the default chain until an AFBC preload exists: today the
+       * AFBC half can only pass by refusing. */
+      struct run rl = {.afbc = afbc, .draw = 1, .sample = 1, .load = 1};
+      ok &= run_case(&rl);
+      if (ok && !afbc) ok &= check_linear(&rl);
+      if (ok && !afbc) ok &= check_sample(&rl);
    }
    if (ok && afbc && !g_fake && rc.hdr && rd.hdr) {
       /* the triangle covers superblocks the clear-only frame left solid: some header must differ */

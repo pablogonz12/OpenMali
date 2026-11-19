@@ -395,9 +395,10 @@ test_afbc_wiring(unsigned arch)
       CHECK(mali_view_payload_entries(&a, &v) == 4, "afbc entries");
       CHECK(mali_view_emit(arch, &a, iva, &v, pay, 0x7f0000300000ull, &tex) == 0, "afbc emit");
       /* entry 0 = layer 0 level 0: header at base, size 16640, row stride 64, header size 256, 64x64 */
-      const uint32_t g0[8] = { 0x2810016a, 0x4100, 0x00100000, 0x7f00, 0x40, 0x100, 0, 0x003f003f };
+      /* word 0 superblock size is the genxml 0-based enum (16x16 = 0, 0x6a), not the drm 1-based bits: see mali_afbc_tex_plane_words */
+      const uint32_t g0[8] = { 0x2810006a, 0x4100, 0x00100000, 0x7f00, 0x40, 0x100, 0, 0x003f003f };
       /* entry 3 = layer 1 level 1: base + 16640 + 22016 = 0x7f0000109700, size 4224, row stride 32, header size 64, 32x32 */
-      const uint32_t g3[8] = { 0x2810016a, 0x1080, 0x00109700, 0x7f00, 0x20, 0x40, 0, 0x001f001f };
+      const uint32_t g3[8] = { 0x2810006a, 0x1080, 0x00109700, 0x7f00, 0x20, 0x40, 0, 0x001f001f };
       cmp_words("afbc plane 0", pay, g0, 0);
       cmp_words("afbc plane 3", pay + 24, g3, 0);
       CHECK(tex.w[2] == (0x688u | 0x1000u | 0x10000u), "afbc tex w2 %08x (interleave must be set)", tex.w[2]);

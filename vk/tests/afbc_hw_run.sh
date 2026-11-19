@@ -12,5 +12,11 @@ echo "== reference (linear) =="; adb shell "cat $D/ref.log; echo rc=\$(cat $D/re
 if [ "$(adb shell "cat $D/ref.rc" | tr -d '\r')" != 0 ]; then echo "reference failed: device/driver problem, not AFBC; stopping"; exit 1; fi
 adb shell "cd $D && MALI_AFBC=1 timeout 60 ./t_afbc_hw --direct $D/libvulkan_mali.so --spv-dir s >afbc.log 2>&1; echo \$? >afbc.rc"
 echo "== MALI_AFBC=1 =="; adb shell "cat $D/afbc.log; echo rc=\$(cat $D/afbc.rc)"
+# loadOp LOAD (docs/afbc-default.md): reference must render and preserve; AFBC must be refused cleanly today, and must match the
+# reference pixel counts once the AFBC preload path exists. Both halves exit 0 as long as the driver refuses instead of corrupting.
+adb shell "cd $D && ./t_afbc_hw --direct $D/libvulkan_mali.so --spv-dir s --case load >load.log 2>&1; echo \$? >load.rc"
+echo "== load reference (linear) =="; adb shell "cat $D/load.log; echo rc=\$(cat $D/load.rc)"
+adb shell "cd $D && MALI_AFBC=1 timeout 60 ./t_afbc_hw --direct $D/libvulkan_mali.so --spv-dir s --case load >loadafbc.log 2>&1; echo \$? >loadafbc.rc"
+echo "== load MALI_AFBC=1 (expect refused) =="; adb shell "cat $D/loadafbc.log; echo rc=\$(cat $D/loadafbc.rc)"
 echo "== kernel =="; adb shell "dmesg 2>/dev/null | grep -i 'mali\|kbase\|fault' | tail -15"
-[ "$(adb shell "cat $D/afbc.rc" | tr -d '\r')" = 0 ]
+[ "$(adb shell "cat $D/afbc.rc" | tr -d '\r')" = 0 ] && [ "$(adb shell "cat $D/load.rc" | tr -d '\r')" = 0 ] && [ "$(adb shell "cat $D/loadafbc.rc" | tr -d '\r')" = 0 ]

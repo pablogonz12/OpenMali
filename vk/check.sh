@@ -87,6 +87,10 @@ for g in v11 v13; do
 # AFBC phone test, host self-check on the fake backend (v13 layout): reference mode completes; MALI_AFBC=1 proves BindImageMemory2 zeroed the headers
 run "afbc_hw ref v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_afbc_hw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
 run "afbc_hw bind v13" 0 MALI_AFBC=1 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_afbc_hw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
+# loadOp LOAD contract (docs/afbc-default.md): the linear reference must record and submit; an AFBC image must be REFUSED at record time
+# (VK_ERROR_FEATURE_NOT_PRESENT), never read as linear rows. This is the gate for turning AFBC on by default.
+run "afbc_hw load ref v13"     0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_afbc_hw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --case load
+run "afbc_hw load refused v13" 0 MALI_AFBC=1 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_afbc_hw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --case load
 done
 
 # R4-B2: DXVK-required core feature tests (pixels only on hardware).
