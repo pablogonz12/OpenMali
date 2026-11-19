@@ -43,7 +43,11 @@ case_ "wl mock normal, mailbox + resize"        normal    30 0   30 '"pass":true
 case_ "wl mock noframe, mailbox keeps going"    noframe    4 0   30 '"pass":true'            -- --seconds 1 --mode mailbox
 case_ "wl mock stall, acquire times out"        stall      4 3   30 'acquire_timeout'        -- --seconds 5 --mode mailbox --acquire-ms 300
 case_ "wl mock norelease, fifo acquire times out" norelease 4 3  30 'acquire_timeout'        -- --seconds 5 --mode fifo --acquire-ms 300
-if [ "$PATCHED" = patched ]; then   # 0009: the throttle wait gives up after 500 ms per present, so 1 s of FIFO still finishes (slowly)
+TREE_PATCHED=0   # after the Mesa roll-in the shared tree already carries 0009, so the plain ICD no longer hangs
+for p9 in "$(dirname "$0")"/../mesa-patches/0009-*.patch; do
+   patch -p1 -R -s --dry-run -d "$(dirname "$0")/../../third_party/mesa" <"$p9" >/dev/null 2>&1 && TREE_PATCHED=1
+done
+if [ "$PATCHED" = patched ] || [ "$TREE_PATCHED" = 1 ]; then   # 0009: the throttle wait gives up after 500 ms per present, so 1 s of FIFO still finishes (slowly)
    case_ "wl mock noframe, fifo does not hang (0009)" noframe 4 0 20 '"pass":true' -- --seconds 1 --mode fifo
 else   # KNOWN HANG: expected to be stuck at the timeout (124/137); 0 would mean Mesa no longer blocks.
    case_ "wl mock noframe, fifo (KNOWN HANG, Mesa legacy FIFO throttle)" noframe 4 "124|137" 5 '' -- --seconds 1 --mode fifo

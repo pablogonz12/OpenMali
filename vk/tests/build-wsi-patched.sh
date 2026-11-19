@@ -11,7 +11,9 @@ B=$D/third_party/build-vk-x86-x11; [ -f "$B/build.ninja" ] || B=$D/third_party/b
 F=src/vulkan/wsi/wsi_common_wayland.c
 cp -rs "$(readlink -f "$D/third_party/mesa")" "$S/mesa"; rm "$S/mesa/$F"; cp "$D/third_party/mesa/$F" "$S/mesa/$F"   # symlink overlay: ../mesa/... include paths of the build tree resolve
 for p in "$V"/mesa-patches/*.patch; do   # only the patches that touch the WSI file
-   grep -q "^+++ b/$F" "$p" && { patch -p1 -s -d "$S/mesa" <"$p" || { echo "patch $(basename "$p") does not apply"; exit 1; }; }
+   grep -q "^+++ b/$F" "$p" || continue
+   patch -p1 -R -s --dry-run -d "$S/mesa" <"$p" >/dev/null 2>&1 && continue   # already in the shared tree (after the Mesa roll-in)
+   { patch -p1 -s -d "$S/mesa" <"$p" || { echo "patch $(basename "$p") does not apply"; exit 1; }; }
 done
 CC=$(cd "$B" && ninja -t commands src/vulkan/wsi/libvulkan_wsi.a | grep -m1 -- 'wsi_common_wayland\.c$' | sed -E 's# -MD -MQ [^ ]+ -MF [^ ]+##; s# -o [^ ]+ -c [^ ]+$##')
 (cd "$B" && eval "$CC -o $S/wl.o -c $S/mesa/$F")
