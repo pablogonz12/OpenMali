@@ -394,14 +394,22 @@ static int
 fake_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
    struct pollfd pf = {fence_fd, POLLIN, 0};
+   /* Test hooks: MALI_FAKE_WAIT_SLICE_MS caps every wait like the old sliced kbase backend did (mutation of the fix);
+    * MALI_FAKE_WAIT_LOG reports each wait that returned -ETIMEDOUT so a test can see the driver re-polling in slices. */
+   const char *cap = getenv("MALI_FAKE_WAIT_SLICE_MS");
+   int slice = cap ? atoi(cap) : 0;
+   bool capped = slice > 0 && (timeout_ms < 0 || timeout_ms > slice);
    for (;;) {
-      int r = poll(&pf, 1, timeout_ms);
+      int r = poll(&pf, 1, capped ? slice : timeout_ms);
       if (r < 0 && errno == EINTR)
          continue;
       if (r < 0)
          return -errno;
-      if (r == 0)
+      if (r == 0) {
+         if (getenv("MALI_FAKE_WAIT_LOG"))
+            fprintf(stderr, "mali_fake: fence_wait timeout (asked %d ms)\n", capped ? slice : timeout_ms);
          return -ETIMEDOUT;
+      }
       return (pf.revents & POLLERR) ? -EIO : 0;
    }
 }

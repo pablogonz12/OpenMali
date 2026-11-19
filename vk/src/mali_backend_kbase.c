@@ -4,7 +4,9 @@
 #include "mali_backend.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -392,36 +394,51 @@ static void mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only);
 static int
 kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
-   /* kb_fence_wait reads kbase notifications from the shared fd, so only one thread at a time; slice
-    * the wait so that others (and the timeout) get their turn. */
+   /* One poll over the sync_file and the kbase notification fd for the whole timeout (no slicing, no lock while
+    * sleeping): a fence signal or a fatal notification wakes every waiter at once. Notifications are drained
+    * non-blockingly under wait_lock; a thread that loses the trylock just polls again (the reader is draining). */
    struct timespec t0;
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (;;) {
-      struct timespec t1;
-      clock_gettime(CLOCK_MONOTONIC, &t1);
-      long long el = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000;
-      long long left = timeout_ms < 0 ? 1000000 : timeout_ms - el;
-      if (left < 0)
-         left = 0;
-      int slice = left > 20 ? 20 : (int)left;
-      pthread_mutex_lock(&k->wait_lock);
-      int r = kb_fence_wait(k->ctx, fence_fd, slice);
-      pthread_mutex_unlock(&k->wait_lock);
-      if (r == 0) {
+      int left = -1;
+      if (timeout_ms >= 0) {
+         struct timespec t1;
+         clock_gettime(CLOCK_MONOTONIC, &t1);
+         long long el = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+         left = el >= timeout_ms ? 0 : (int)(timeout_ms - el);
+      }
+      struct pollfd pf[2] = {{fence_fd, POLLIN, 0}, {kb_fd(k->ctx), POLLIN, 0}};
+      int r = poll(pf, 2, left);
+      if (r < 0 && errno == EINTR)
+         continue;
+      if (r < 0)
+         return -errno;
+      if (pf[0].revents & (POLLIN | POLLERR)) {
+         if (pf[0].revents & POLLERR) {
+            k->lost = true;
+            return -EIO;
+         }
          mem_sync_all(k, 2); /* device -> CPU (CSYNC): CPU caches may hold stale lines of COHERENT_LOCAL BOs */
          return 0;
       }
-      if (r == -EIO) {
-         k->lost = true;
-         return -EIO;
+      if (pf[1].revents & POLLIN) {
+         if (pthread_mutex_trylock(&k->wait_lock) == 0) {
+            struct kb_event ev;
+            int e = kb_event_read(k->ctx, &ev, 0);
+            pthread_mutex_unlock(&k->wait_lock);
+            if (e > 0 && ev.fatal) {
+               k->lost = true;
+               return -EIO;
+            }
+         } else {
+            sched_yield();
+         }
       }
-      if (r == -ETIMEDOUT && kb_queue_faulted(&k->queue)) {
+      if (kb_queue_faulted(&k->queue)) {
          k->lost = true; /* another thread read the fatal notification */
          return -EIO;
       }
-      if (r != -ETIMEDOUT)
-         return r;
-      if (timeout_ms >= 0 && left <= slice)
+      if (r == 0 && left >= 0)
          return -ETIMEDOUT;
    }
 }
