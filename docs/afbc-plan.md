@@ -117,3 +117,11 @@ Remaining before a hardware run (honest list; the descriptor semantics can only 
 6. Run the phone test (`farm hold`, X8 first), see above; `afbc_hw_run.sh` now also pushes the tex shaders.
 
 Hours: ~3.5 this PR (descriptor words, view wiring, eligibility, tests, mutation checks, sample pass, doc); about 16.5 of 55-60 total.
+
+### First hardware run (X8, v13, 2026-11-19): render OK, sampled readback half wrong
+
+`farm hold poco-x8 --max 20 -- vk/tests/afbc_hw_run.sh` (adb must be on PATH). Control (MALI_AFBC off): PASS. MALI_AFBC=1: no fault, no hang, guard bytes intact, all 64
+superblock headers rewritten by the GPU, draw headers differ from clear headers (so the render path works on v13 even with the v11 `kb_fb_pack` descriptors).
+The sample pass through the AFBC plane descriptor fails: rows 0..63 decode correctly (clear 7168 px, red 1024 px) and rows 64..127 read (0,0,0,0) (8192 px).
+Next (cheap, one hold each): sample with a 64x64 image, dump what the plane words are, try the barrier (cache flush) between submits, and vary the header
+row stride; compare with a linear sample of the same rows. Full evidence: `/tmp/oc/afbc-hw.md`. Hours: ~1.5 (build, two holds, write-up); about 18 of 55-60 total.
