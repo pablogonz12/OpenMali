@@ -2318,5 +2318,55 @@ SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3
                       '{"test":"t_vk_meta","rc":0,"fail_lines":0,"pass_lines":1}', '{"test":"summary","ok":true}'])
 
 
+class ReadyTests(unittest.TestCase):
+    """farm ready: decision logic with fixtures (no gh, no git)"""
+    HEAD, MERGE, OLD = "h" * 40, "m" * 40, "o" * 40
+    ANC = {(HEAD, MERGE), (OLD, HEAD)}                       # pairs (ancestor, descendant)
+    anc = staticmethod(lambda a, b: (a, b) in ReadyTests.ANC)
+
+    def job(self, commit, verdict, state="done", jid="20261119-000000-abcd1234"):
+        return {"id": jid, "suite": "smoke", "commit": commit, "parts": {"v13": {"state": state, "verdict": verdict}}}
+
+    def pr(self, **kw):
+        d = {"number": 7, "headRefOid": self.HEAD, "mergeable": "MERGEABLE", "isDraft": False,
+             "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]}
+        d.update(kw)
+        return d
+
+    def row(self, jobs, threads=0, links=(), **kw):
+        import ready as R
+        return R.make_row(self.pr(**kw), jobs, self.anc, L.job_verdict, threads, list(links))
+
+    def test_ready_exact_and_merge_commit(self):
+        self.assertEqual(self.row([self.job(self.HEAD, "pass")])["verdict"], "READY")
+        self.assertEqual(self.row([self.job(self.MERGE, "pass")])["verdict"], "READY")      # --merge-with-main job: head is its parent
+
+    def test_stale_none_fail_pending(self):
+        self.assertEqual(self.row([self.job(self.OLD, "pass")])["verdict"], "smoke is for an older head")
+        self.assertEqual(self.row([])["verdict"], "no smoke for head")
+        self.assertEqual(self.row([self.job(self.HEAD, "fail")])["verdict"], "smoke FAIL")
+        self.assertEqual(self.row([self.job(self.HEAD, None, state="running")])["verdict"], "smoke pending")
+
+    def test_newest_covering_job_wins(self):
+        jobs = [self.job(self.HEAD, "fail", jid="20261119-000001-a"), self.job(self.HEAD, "pass", jid="20261119-000002-b")]
+        self.assertEqual(self.row(jobs)["smoke"], "pass")
+        self.assertEqual(self.row(list(reversed(jobs)))["smoke"], "FAIL")
+
+    def test_other_columns_block(self):
+        ok = [self.job(self.HEAD, "pass")]
+        self.assertIn("checks FAIL", self.row(ok, statusCheckRollup=[{"status": "COMPLETED", "conclusion": "FAILURE"}])["verdict"])
+        self.assertIn("checks pending", self.row(ok, statusCheckRollup=[{"status": "IN_PROGRESS", "conclusion": ""}])["verdict"])
+        self.assertIn("2 unresolved", self.row(ok, threads=2)["verdict"])
+        self.assertIn("symlink", self.row(ok, links=["third_party"])["verdict"])
+        self.assertIn("CONFLICTING", self.row(ok, mergeable="CONFLICTING")["verdict"])
+        self.assertEqual(self.row(ok, isDraft=True)["verdict"], "draft")
+
+    def test_bad_files_and_render(self):
+        import ready as R
+        self.assertEqual(R.bad_files(["vk/deqp/out/x", "vk/src/a.c", "third_party"]), ["vk/deqp/out/x", "third_party"])
+        out = R.render([self.row([self.job(self.HEAD, "pass")]), self.row([], links=[])])
+        self.assertIn("1 READY of 2", out)
+
+
 if __name__ == "__main__":
     unittest.main()
