@@ -16,6 +16,23 @@
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 static int cmpd(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return (x > y) - (x < y); }
 
+/* Name of the first OpEntryPoint (NUL-terminated inside the instruction), or NULL. */
+static const char *
+entry_name_of(const uint32_t *w, size_t n)
+{
+   for (size_t i = 5; i < n;) {
+      unsigned wc = w[i] >> 16, op = w[i] & 0xffff;
+      if (!wc || i + wc > n) break;
+      if (op == 15 && wc >= 4) {
+         const char *nm = (const char *)(w + i + 3);
+         size_t maxlen = (size_t)(wc - 3) * 4;
+         return memchr(nm, 0, maxlen) ? nm : NULL;
+      }
+      i += wc;
+   }
+   return NULL;
+}
+
 static int
 stage_of(const uint32_t *w, size_t n)
 {
@@ -32,12 +49,14 @@ stage_of(const uint32_t *w, size_t n)
 /* Minimal SPIR-V reflection: build a descriptor layout (sets/bindings/types/array counts) so descriptor-using shaders compile.
  * Slots are packed per set; push constants are given the full 128 bytes. */
 struct tinfo { uint16_t op; const uint32_t *w; };
-struct layout_store { struct mali_compile_layout lay; struct mali_lbinding b[MALI_MAX_SETS][32]; };
+#define SDB_MAX_BINDINGS 1024   /* bindings per set the reflection keeps; larger ones are skipped (the compile then reports the missing binding) */
+struct layout_store { struct mali_compile_layout lay; struct mali_lbinding b[MALI_MAX_SETS][SDB_MAX_BINDINGS]; };
 
 static unsigned
 const_u32(struct tinfo *t, uint32_t bound, uint32_t id)
 {
-   return id < bound && t[id].op == 43 ? t[id].w[3] : 1;
+   /* OpConstant (43) or OpSpecConstant (50): for a spec constant the default value is the length (no specialization data here) */
+   return id < bound && (t[id].op == 43 || t[id].op == 50) ? t[id].w[3] : 1;
 }
 
 static int
@@ -46,7 +65,8 @@ build_layout(const uint32_t *w, size_t n, struct layout_store *L)
    uint32_t bound = w[3];
    if (bound > (1u << 22)) return 0;
    struct tinfo *t = calloc(bound, sizeof *t);
-   uint8_t *set = calloc(bound, 1), *bind = calloc(bound, 1), *has = calloc(bound, 1), *bufblock = calloc(bound, 1);
+   uint32_t *set = calloc(bound, 4), *bind = calloc(bound, 4);
+   uint8_t *has = calloc(bound, 1), *bufblock = calloc(bound, 1);
    memset(L, 0, sizeof *L);
    for (size_t i = 5; i < n;) {
       unsigned wc = w[i] >> 16, op = w[i] & 0xffff;
@@ -64,7 +84,7 @@ build_layout(const uint32_t *w, size_t n, struct layout_store *L)
          if (p[1] < bound) { t[p[1]].op = op; t[p[1]].w = p; }
          break;
       }
-      if ((op == 59 || op == 43) && p[2] < bound) { t[p[2]].op = op; t[p[2]].w = p; }
+      if ((op == 59 || op == 43 || op == 50) && p[2] < bound) { t[p[2]].op = op; t[p[2]].w = p; }
       i += wc;
    }
    unsigned nsets = 0, slot[MALI_MAX_SETS] = {0}, nb[MALI_MAX_SETS] = {0};
@@ -93,7 +113,7 @@ build_layout(const uint32_t *w, size_t n, struct layout_store *L)
       else if (sc == 12) type = MALI_DT_STORAGE_BUFFER;
       else continue;
       unsigned s = set[id], b = bind[id];
-      if (s >= MALI_MAX_SETS || b >= 32) continue;
+      if (s >= MALI_MAX_SETS || b >= SDB_MAX_BINDINGS) continue;   /* checked on the full 32-bit values */
       if (!L->b[s][b].count) {
          unsigned stride = mali_desc_stride(type);
          L->b[s][b] = (struct mali_lbinding){ type, count, slot[s], stride, 0, MALI_NO_IMM_SAMPLER };
@@ -103,7 +123,7 @@ build_layout(const uint32_t *w, size_t n, struct layout_store *L)
       if (s + 1 > nsets) nsets = s + 1;
    }
    for (unsigned s = 0; s < MALI_MAX_SETS; s++)
-      for (unsigned b = 0; b < 32; b++) if (!L->b[s][b].count) L->b[s][b].type = MALI_DT_NONE;
+      for (unsigned b = 0; b < SDB_MAX_BINDINGS; b++) if (!L->b[s][b].count) L->b[s][b].type = MALI_DT_NONE;
    L->lay.nsets = nsets;
    for (unsigned s = 0; s < nsets; s++) L->lay.set[s] = (struct mali_lset){ nb[s], slot[s], 0, L->b[s] };
    L->lay.push_size = MALI_MAX_PUSH_BYTES;
@@ -116,25 +136,39 @@ main(int argc, char **argv)
 {
    unsigned archs[3] = { 11, 13, 0 }, na = 2;
    int a = 1;
-   if (argc > 2 && !strcmp(argv[1], "-a")) {
-      na = 0;
-      for (char *s = strtok(argv[2], ","); s && na < 3; s = strtok(NULL, ",")) archs[na++] = atoi(s);
-      a = 3;
+   const char *listfile = NULL;   /* -l FILE: NUL-separated shader paths (keeps a big corpus out of argv: E2BIG) */
+   while (a + 1 < argc && argv[a][0] == '-' && (!strcmp(argv[a], "-a") || !strcmp(argv[a], "-l"))) {
+      if (argv[a][1] == 'a') {
+         na = 0;
+         for (char *s = strtok(argv[a + 1], ","); s && na < 3; s = strtok(NULL, ",")) archs[na++] = atoi(s);
+      } else listfile = argv[a + 1];
+      a += 2;
    }
+   char *lbuf = NULL; char **files = NULL; size_t nfiles = 0;
+   if (listfile) {
+      FILE *lf = fopen(listfile, "rb");
+      if (!lf) { fprintf(stderr, "cannot open list %s\n", listfile); return 2; }
+      size_t cap = 0, len = 0; int ch;
+      while ((ch = fgetc(lf)) != EOF) { if (len + 1 >= cap) { cap = cap ? cap * 2 : 65536; lbuf = realloc(lbuf, cap); } lbuf[len++] = (char)ch; }
+      fclose(lf);
+      if (len) { lbuf = realloc(lbuf, len + 1); lbuf[len] = 0; }
+      for (size_t i = 0; i < len;) { if (lbuf[i]) { files = realloc(files, (nfiles + 1) * sizeof *files); files[nfiles++] = lbuf + i; } i += strlen(lbuf + i) + 1; }
+   }
+   for (; a < argc; a++) { files = realloc(files, (nfiles + 1) * sizeof *files); files[nfiles++] = argv[a]; }
    const char *r = getenv("MALI_SHADERDB_REPS");
    int reps = r ? atoi(r) : 3;
    if (reps < 1 || reps > 15) reps = 3;
    puts("file\tarch\tstage\tstatus\tinstr\tregs\tspills\twls\tfau\timm\tbytes\ttime_us");
-   for (; a < argc; a++) {
-      FILE *f = fopen(argv[a], "rb");
-      if (!f) { fprintf(stderr, "cannot open %s\n", argv[a]); continue; }
+   for (size_t fi = 0; fi < nfiles; fi++) {
+      FILE *f = fopen(files[fi], "rb");
+      if (!f) { fprintf(stderr, "cannot open %s\n", files[fi]); continue; }
       fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
       uint32_t *w = malloc(sz + 4);
       size_t n = fread(w, 1, sz, f) / 4;
       fclose(f);
       int st = stage_of(w, n);
       /* TSV id: the path as given, minus a leading SHADERDB_STRIP prefix (colon list), so same-named files in different dirs stay distinct */
-      const char *b = argv[a];
+      const char *b = files[fi];
       for (const char *sp = getenv("SHADERDB_STRIP"); sp && *sp;) {
          size_t l = strcspn(sp, ":");
          if (l && !strncmp(b, sp, l)) { b += l; break; }
@@ -142,7 +176,7 @@ main(int argc, char **argv)
       }
       for (unsigned i = 0; i < na; i++) {
          if (st < 0) { printf("%s\t%u\t-\tNOSTAGE\t0\t0\t0\t0\t0\t0\t0\t0\n", b, archs[i]); continue; }
-         struct mali_compile_opts o = { .arch = archs[i], .stage = st, .spirv = w, .spirv_words = n, .cache_dir = "" };
+         struct mali_compile_opts o = { .arch = archs[i], .stage = st, .spirv = w, .spirv_words = n, .cache_dir = "", .entry = entry_name_of(w, n) };
          struct layout_store *L = mmap(NULL, sizeof *L, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
          if (build_layout(w, n, L)) o.layout = &L->lay;
          o.fau_reserved = st == MALI_STAGE_COMPUTE ? 32 : 0;   /* compute: room for 128 B of push constants */
