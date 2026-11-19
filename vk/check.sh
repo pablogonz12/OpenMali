@@ -34,8 +34,8 @@ fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
 # Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=5            # gate off (default); measured with t_dxvk_caps. MALI_EXPERIMENTAL_MSAA=1 advertises sampleRateShading: one fewer
-DXVK_MISSING_MSAA=$((DXVK_MISSING - 1))
+DXVK_MISSING=4            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
+DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
 run() { # name, expected exit status, command...

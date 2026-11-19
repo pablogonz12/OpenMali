@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|clip8|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -43,6 +43,7 @@ static int test_zinit(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
@@ -258,7 +259,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw, .pNext = g_rs_next};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                              .sampleShadingEnable = g_sample_shading, .minSampleShading = g_sample_shading ? 1.0f : 0.0f};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
@@ -2067,6 +2069,37 @@ test_demote(void)
    return 1;
 }
 
+/* sampleRateShading with 1-sample rasterisation (always supported): sample shading is a no-op, gl_SampleID is 0 and gl_SamplePosition the
+ * pixel centre. Shader uses the `sample` qualifier, gl_SampleID and gl_SamplePosition (SPIR-V SampleRateShading). Red = ok. */
+static int
+test_samplerate(void)
+{
+   if (!g_feat.sampleRateShading) { printf("{\"test\":\"samplerate\",\"skipped\":\"sampleRateShading not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_sample_shading = VK_TRUE;
+   int ok = make_pipe(&t, "sampid.vert.spv", "sampid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_sample_shading = VK_FALSE;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(near(p, 255, 0, 0, 255, 2), "sample shading at 1 sample: %u,%u,%u,%u (want 255,0,0,255)", p[0], p[1], p[2], p[3]);
+      printf("{\"test\":\"samplerate\",\"ok\":true}\n");
+   } else printf("{\"test\":\"samplerate\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
 static int
 test_clip(void)
@@ -2810,6 +2843,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
+   if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
