@@ -85,6 +85,8 @@ main(int argc, char **argv)
          VkResult pr2 = CGP(dev, VK_NULL_HANDLE, 1, &gp, NULL, &p);
          CHECK(pr2 == VK_ERROR_FEATURE_NOT_PRESENT, "GS pipeline must be rejected: %d", pr2);
          CHECK(p == VK_NULL_HANDLE, "rejected pipeline handle must be VK_NULL_HANDLE");
+         PFN_vkDestroyShaderModule DSM = (PFN_vkDestroyShaderModule)GetDeviceProcAddr(dev, "vkDestroyShaderModule");
+         if (DSM && m) DSM(dev, m, NULL);   /* no live child objects when the device goes below */
       }
       PFN_vkDestroyDevice DD = dev ? (PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice") : NULL;
       if (DD) DD(dev, NULL);
