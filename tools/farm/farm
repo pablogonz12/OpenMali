@@ -23,7 +23,25 @@ def git(*a, env=None):
 
 def cmd_submit(a):
     cfg, devs = L.load_devices()
-    commit = git("rev-parse", "--verify", a.ref + "^{commit}")
+    batch = None
+    if a.batch:
+        refs = [r.strip() for r in a.batch.split(",") if r.strip()]
+        if len(refs) < 2:
+            raise SystemExit("farm: --batch needs at least two comma-separated refs")
+        commits = [git("rev-parse", "--verify", r + "^{commit}") for r in refs]
+        commit = commits[0]
+        for r, c in zip(refs[1:], commits[1:]):
+            m = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "merge-tree", "--write-tree", commit, c], capture_output=True, text=True)
+            if m.returncode:
+                raise SystemExit(f"farm: --batch: {r} conflicts with the refs before it ({m.stdout.strip().splitlines()[-1] if m.stdout.strip() else m.stderr.strip()})")
+            commit = git("commit-tree", m.stdout.splitlines()[0], "-p", commit, "-p", c, "-m", f"farm: batch merge of {r} (gate only)", env=MERGE_ENV)
+        batch = {"refs": refs, "commits": commits}
+        a.ref = "batch:" + "+".join(refs)
+        a.keep_old = True                                  # a batch never supersedes (or is superseded by) a branch gate
+    elif not a.ref:
+        raise SystemExit("farm: submit needs a REF or --batch r1,r2,...")
+    else:
+        commit = git("rev-parse", "--verify", a.ref + "^{commit}")
     head = git("rev-parse", "HEAD")
     om = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-parse", "--verify", "-q", "origin/main^{commit}"], capture_output=True, text=True)
     om = om.stdout.strip() if om.returncode == 0 else ""
@@ -50,6 +68,14 @@ def cmd_submit(a):
         raise SystemExit("farm: --suite cases needs at least one --case <dEQP case name>")
     if not need:
         raise SystemExit("farm: --need selects no class")
+    if a.prio is None and a.suite == "cases" and len(a.case) == 1 and a.repeat <= 1:
+        a.prio = L.SINGLE_CASE_PRIO                              # a lane's one-case diagnostic must not wait behind a 15 min full cases run
+    if not a.rerun:                                              # (dirty edits are never tested, so the commit alone identifies the job) the identical job already queued/running: return it, never double-queue
+        inflight = L.find_inflight(L.list_jobs(), commit, a.suite, need, L.parse_env(a.env), a.only, a.case, a.repeat)
+        if inflight:
+            print(f"farm: same commit/suite/class is already {L.job_verdict(inflight)} as {inflight['id']}; not resubmitting (--rerun forces)", file=sys.stderr)
+            print(inflight["id"])
+            return
     if not a.rerun and not dirty and a.suite == "smoke":        # reuse only where the verdict does not depend on a moving input: daily judges against main's baseline, menu/bench against the installed MediaDeck
         old = L.find_passed(L.list_jobs(), commit, a.suite, need, L.parse_env(a.env), a.only, a.case, a.repeat)
         if old:
@@ -58,6 +84,9 @@ def cmd_submit(a):
             return
     job = L.new_job(a.ref, commit, dirty, a.suite, need, L.parse_env(a.env), os.path.basename(git("rev-parse", "--show-toplevel")),
                     cases=a.case, repeat=a.repeat, only=a.only, prio=a.prio, keep_old=a.keep_old)
+    if batch:
+        job["batch"] = batch
+        L.write_json(L.job_path(job["id"]), job)
     if dirty:
         print("farm: warning: working tree has uncommitted changes; only the committed state is tested", file=sys.stderr)
     if not a.keep_old:
@@ -71,6 +100,24 @@ def cmd_submit(a):
             with open(os.path.join(L.state_dir(), "logs", "farm-queue.log"), "a") as f:
                 f.write(f"{L.now()} {msg}\n")
     print(job["id"])
+
+
+def cmd_batch(a):
+    """per-branch result of a `submit --batch` job (farmd bisects a failed batch by running every branch alone)"""
+    j = L.find_job(a.job)
+    b = j.get("batch")
+    if not b:
+        raise SystemExit(f"farm: {j['id']} is not a batch job")
+    print(f"{j['id']} batch {L.job_verdict(j)}: {', '.join(b['refs'])}")
+    bis = j.get("bisect") or {}
+    if L.job_verdict(j) == "pass":
+        print("  all branches pass together")
+    elif not bis:
+        print("  bisect not started yet" if L.job_verdict(j) == "fail" else "  no bisect (batch did not fail)")
+    for ref, jid in bis.items():
+        print(f"  {ref:30} {jid} {L.job_verdict(L.find_job(jid))}")
+    if bis and all(L.job_verdict(L.find_job(i)) == "pass" for i in bis.values()):
+        print("  every branch passes alone: the failure is an interaction between them")
 
 
 def cmd_prio(a):
@@ -752,19 +799,23 @@ def main():
     ap = argparse.ArgumentParser(prog="farm")
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("submit")
-    s.add_argument("ref")
+    s.add_argument("ref", nargs="?", default="")
+    s.add_argument("--batch", default="", help="r1,r2,...: gate several branches merged into one throwaway ref; if it fails, farmd re-runs each branch alone and `farm batch JOB` reports which one broke it")
     s.add_argument("--suite", choices=L.SUITES, default="smoke")
     s.add_argument("--need", default="", help="comma list of device classes (default: every configured class)")
     s.add_argument("--env", default="", help='e.g. "MALI_HF=330 FOO=1"')
     s.add_argument("--only", default="", help="(--suite smoke) comma list of test cases passed to the test binaries as --only (draw: triangle two depth ...; compute/meta: buf fill img ...)")
     s.add_argument("--case", action="append", default=[], help="(--suite cases) a dEQP case to run; repeatable")
     s.add_argument("--repeat", type=int, default=1, help="(--suite cases) repetitions of the case list")
-    s.add_argument("--prio", type=int, default=None, help="queue priority, lower first (default by suite: smoke/daily 0, bench/menu 10, cases 20)")
+    s.add_argument("--prio", type=int, default=None, help="queue priority, lower first (default by suite: smoke/daily 0, one-case cases 5, bench/menu 10, full cases 20)")
     s.add_argument("--keep-old", action="store_true", help="smoke/daily: do not cancel pending jobs of older commits of the same branch")
     s.add_argument("--merge-with-main", action="store_true", help="gate the merge of REF with origin/main (a throwaway merge commit), not REF alone")
     s.add_argument("--allow-stale", action="store_true", help="accept a base more than 5 commits behind origin/main")
     s.add_argument("--rerun", action="store_true", help="submit even if the same commit/suite/inputs already passed")
     s.set_defaults(f=cmd_submit)
+    s = sp.add_parser("batch", help="per-branch results of a submit --batch job")
+    s.add_argument("job")
+    s.set_defaults(f=cmd_batch)
     s = sp.add_parser("prio", help="change the queue priority of a job (lower runs first; gates 0, bench/menu 10, cases 20)")
     s.add_argument("job")
     s.add_argument("n", type=int)
