@@ -669,7 +669,7 @@ def util_data(since, now, devs, jobs):
         for cls, p in j["parts"].items():
             if p["state"] == "pending":
                 demand.setdefault(cls, []).append((ts(j["created"]), now))
-    start = min(Xor [since])        # with runs, an earlier agent hold moves the window start back too
+    start = min((firsts[1:] and firsts[1:] + hfirst) or [since])        # with runs, an earlier agent hold moves the window start back too
     start = max(since, start)
     return start, busy, builds, sweep, demand, ev, held
 
