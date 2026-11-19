@@ -58,15 +58,24 @@ the session log says `vulkan driver: imported`. Build the guest ICD with
 | measurement | class |
 |---|---|
 | p50 <= 1.25 * base and fast >= 90 % | display-paced at the panel rate (120 fps) |
-| p50 ~ 2 * base (within 12 %) and fast < 10 % | **60 fps cap**: every frame lands exactly on every second vsync |
+| p50 ~ 2 * base (within 12 %), fast < 10 %, >= 90 % of intervals at 2 * base | **half-panel cadence**: every frame lands on every second vsync. This does not prove a 60 fps cap |
+| p50 ~ 2 * base, fast < 10 %, but < 90 % of intervals there | half-panel median with a tail: the rest are split between intervals shorter than 2 * base (a minority at the panel rate, too few for the bimodal row) and intervals longer than 2 * base |
 | 15 % <= fast <= 85 % | bimodal: CPU stalls / missed vsyncs (frames alternate cadence) |
 | p50 > 1.25 * base (and not the cap case) | client or GPU bound |
 
-A 60 fps *cap* produces a clean unimodal 16.67 ms histogram: the producer is paced by every second
-vsync, so the interval variance is under a millisecond. A 120 fps render that merely drops alternate
-frames, or a GPU that needs 16.7 ms, leaves an 8.3/16.7 mix (some frames make the next vsync), not a
-clean 16.7. That is why the fast-frame share is part of the test. The class is still a hypothesis:
-`--uncapped` plus a second run is the decisive check (if lifting a knob raises fps, it was a cap).
+Half-panel cadence is **ambiguous**: a 60 fps cap and a 120 fps producer whose alternate frames are
+dropped before presentation put identical timestamps on the screen (0, 16.67, 33.33 ms), so the tool
+reports the observed cadence and leaves the renderer-cap diagnosis open. Another measurement (for
+example the guest-side produced-frame counter) has to establish it.
+
+`--uncapped` changes several things at once (performance mode, swapchain image count, the webhelper
+frame-rate flags), so a gain with it is not evidence of a cap: a GPU-bound session also gains from
+performance mode. To attribute a gain to one limiter, change one limiter per run and compare.
+
+A sample is rejected (exit 4) when SurfaceFlinger's 128-frame history ring lost frames between two
+polls (raw occupancy, including a pending-fence sentinel), any poll failed, or the active display mode
+changed during the window: a gap would otherwise be counted as one very long frame, and a mode change
+would measure intervals against the wrong base.
 
 `cpu_percent` is the summed `%CPU` of `steamwebhelper` / `gamescope` / `steam` from one `top -b -n 1`
 sample. High CPU plus bimodal intervals points at CPU stalls; low CPU plus a uniform interval at a
