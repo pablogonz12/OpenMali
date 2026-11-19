@@ -91,6 +91,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .framebufferDepthSampleCounts = samples_1_4,
       .framebufferStencilSampleCounts = samples_1_4,
       .framebufferNoAttachmentsSampleCounts = samples_1_4,
+      /* 4, not the 8 render targets Valhall/G615/G925 allow: the tile colour buffer is 16 B/pixel and mali_cmd.c rejects passes
+       * whose attachments sum past it, so RGBA8 x 4 is the widest configuration the driver can back today (mali_cmd.c: bpp > 16) */
       .maxColorAttachments = 4,
       .sampledImageColorSampleCounts = samples_1_4,
       .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT,
