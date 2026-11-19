@@ -358,8 +358,15 @@ mali_meta_mem_release(struct mali_meta_mem *m)
    memset(m, 0, sizeof *m);
 }
 
+/* One device BO per request cost a kernel allocation + mmap per vkCmdCopyBuffer / blit (the 64 B descriptor set). Small requests are carved from a
+ * bump chunk instead: the first chunk is one page, each next chunk doubles up to 64 KiB, so a command buffer with a single meta op still costs
+ * one BO. Chunks are released with the rest of a[] and never reused inside a command buffer's recording, so the memory stays zero until written. */
+#define MEM_SLAB_MAX_REQ 1024u
+#define MEM_SLAB_FIRST   (4096u - 64u)   /* the device seam adds a 64 B header: exactly one page per BO */
+#define MEM_SLAB_LAST    (65536u - 64u)
+
 static void *
-mem_alloc(struct mali_meta_mem *m, size_t size, size_t align, uint64_t *va)
+mem_alloc_bo(struct mali_meta_mem *m, size_t size, size_t align, uint64_t *va)
 {
    if (m->n == m->cap) {
       unsigned nc = m->cap ? m->cap * 2 : 8;
@@ -376,6 +383,37 @@ mem_alloc(struct mali_meta_mem *m, size_t size, size_t align, uint64_t *va)
    m->a[m->n].va = *va;
    m->a[m->n].size = size;
    m->n++;
+   return p;
+}
+
+static void *
+mem_alloc(struct mali_meta_mem *m, size_t size, size_t align, uint64_t *va)
+{
+   if (size > MEM_SLAB_MAX_REQ || align > 64)
+      return mem_alloc_bo(m, size, align, va);
+   size_t pad = 0;
+   if (m->slab) {
+      pad = (size_t)(-(uintptr_t)(m->slab_va) & (align - 1));
+      if (pad + size > m->slab_left)
+         m->slab = NULL;
+   }
+   if (!m->slab) {
+      size_t cs = m->slab_next ? m->slab_next : MEM_SLAB_FIRST;
+      uint64_t cva;
+      uint8_t *c = mem_alloc_bo(m, cs, 64, &cva);
+      if (!c)
+         return NULL;
+      m->slab = c;
+      m->slab_va = cva;
+      m->slab_left = cs;
+      m->slab_next = cs * 2 + 64 > MEM_SLAB_LAST ? MEM_SLAB_LAST : cs * 2 + 64;
+      pad = 0;
+   }
+   void *p = m->slab + pad;
+   *va = m->slab_va + pad;
+   m->slab += pad + size;
+   m->slab_va += pad + size;
+   m->slab_left -= pad + size;
    return p;
 }
 
