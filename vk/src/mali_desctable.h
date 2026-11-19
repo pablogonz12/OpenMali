@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* VK_EXT_descriptor_indexing stage 3/4 building block: a per-set binding-address table and the write-while-in-use rule.
  * Pure (no device, no hardware). Not wired into the compiler or the command stream yet (compile output unchanged, no version bump);
- * see docs/descidx-plan.md "Descriptor tables". Active only behind MALI_DESCIDX_FLAGS=1 once wired. */
+ * see docs/descidx-plan.md "Descriptor tables". */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

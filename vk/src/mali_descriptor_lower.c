@@ -66,11 +66,21 @@ deref_handle(nir_builder *b, struct ctx *c, nir_deref_instr *deref, bool sampler
    if (!bd) return nir_imm_int(b, 0);
    unsigned sub = (sampler && bd->type == MALI_DT_COMBINED_IMAGE_SAMPLER) ? (bd->ycbcr_planes ? bd->ycbcr_planes : 1) : 0;
    if (!sampler && bd->ycbcr_planes) sub = plane;   /* YCbCr element: [plane 0 texture, plane 1 texture, sampler] */
-   unsigned stride = bd->stride ? bd->stride : 1;
+   uint32_t stride = bd->stride ? bd->stride : 1;
    nir_def *h = nir_imm_int(b, first_handle(c, set, bd) + sub + imm * stride);
    if (ssa) {
-      if (c->l->descidx_clamp && bd->count) ssa = nir_umin(b, ssa, nir_imm_int(b, bd->count - 1));   /* dynamic index into a descriptor array */
-      h = nir_iadd(b, h, nir_imul_imm(b, ssa, stride));
+      /* Dynamic index into a descriptor array. PARTIALLY_BOUND: an index that is not less than the binding's element count must
+       * read as a null descriptor (D3D11/HLSL OOB semantics DXVK relies on), not the last element and not memory past the set. */
+      nir_def *off = nir_imul_imm(b, ssa, stride);
+      if (bd->bflags & MALI_DESC_BINDING_PARTIALLY_BOUND) {
+         nir_def *in_range = nir_ult(b, ssa, nir_imm_int(b, bd->count));
+         nir_def *addr = nir_iadd(b, h, off);
+         h = nir_bcsel(b, in_range, addr, nir_imm_int(b, pan_res_handle(0, MALI_NULL_DESC_IDX)));
+      } else {
+         h = nir_iadd(b, h, off);
+      }
+   } else if (imm >= bd->count && (bd->bflags & MALI_DESC_BINDING_PARTIALLY_BOUND)) {
+      h = nir_imm_int(b, pan_res_handle(0, MALI_NULL_DESC_IDX));
    }
    return h;
 }

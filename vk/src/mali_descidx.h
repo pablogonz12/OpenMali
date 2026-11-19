@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* VK_EXT_descriptor_indexing stage 1: per-binding flags validation. Pure (no device, no hardware), so a host test drives it directly.
- * Active only with MALI_DESCIDX_FLAGS=1 (default off: flags are ignored as before). Advertises nothing; see docs/descidx-plan.md. */
+ * Honoured unconditionally for the advertised subset; unsupported flag/type combinations are rejected. See docs/descidx-plan.md. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

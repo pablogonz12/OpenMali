@@ -41,10 +41,10 @@ void mali_desc_set_mem_ops(const struct mali_desc_mem_ops *ops);
 struct mali_dsl {
    struct vk_descriptor_set_layout vk;
    uint32_t nbindings, slot_count, dyn_count, imm_count;
-   bool uab_pool;               /* created with UPDATE_AFTER_BIND_POOL (only set with MALI_DESCIDX_FLAGS=1) */
+   bool uab_pool;               /* created with UPDATE_AFTER_BIND_POOL */
    int32_t var_binding;         /* binding with VARIABLE_DESCRIPTOR_COUNT (always the highest-numbered), or -1 */
    struct mali_lbinding *b;     /* nbindings entries */
-   VkDescriptorBindingFlags *bflags;   /* per binding number, only with MALI_DESCIDX_FLAGS=1 and a chained flags struct, else NULL */
+   VkDescriptorBindingFlags *bflags;   /* per binding number, when a flags struct is chained, else NULL */
    VkSampler *imm;              /* immutable samplers */
    struct vk_ycbcr_conversion_state *ycbcr;   /* conversion of each immutable sampler that has one (index = b->ycbcr_off + element), else NULL */
 };
@@ -62,7 +62,7 @@ struct mali_dset {
    struct mali_dset *next;       /* pool list, sorted by offset */
    struct mali_dyn_buf *dyn;     /* dynamic buffers (base address, range); the dynamic offset is added when binding */
    unsigned arch;
-   uint32_t var_count;           /* allocate-time element count of the variable binding (MALI_DESCIDX_FLAGS=1), else 0 */
+   uint32_t var_count;           /* allocate-time element count of the variable binding, else 0 */
    int32_t in_use;               /* pending submissions referencing the set; only counted through mali_dset_use */
    uint32_t denied_writes;       /* writes dropped because the set was in use and the binding has no UPDATE_AFTER_BIND/UNUSED_WHILE_PENDING */
 };
@@ -78,8 +78,6 @@ struct mali_dpool {
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dpool, base, VkDescriptorPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL)
 
 /* Create the layout. dev->... arch is passed per object; `arch` = 11 or 13. */
-/* Test seam: 1/0 forces the descriptor-indexing flags stage on/off, -1 = follow MALI_DESCIDX_FLAGS. */
-void mali_desc_set_descidx(int v);
 VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci, struct mali_dsl **out);
 
 /* Pure core, used by the entrypoints below and by tests. */
@@ -102,16 +100,14 @@ void mali_update_descriptor_sets(struct vk_device *dev, uint32_t nw, const VkWri
                                  const VkCopyDescriptorSet *c);
 void mali_update_descriptor_set_with_template(struct vk_device *dev, VkDescriptorSet set, VkDescriptorUpdateTemplate t, const void *data);
 
-/* MALI_DESCIDX_FLAGS=1 only. delta +1 when a submission starts referencing the set, -1 when it retires. While in_use > 0 a write to
+/* delta +1 when a submission starts referencing the set, -1 when it retires. While in_use > 0 a write to
  * a binding without UPDATE_AFTER_BIND / UPDATE_UNUSED_WHILE_PENDING is dropped (it is undefined behaviour in the spec and would race
  * the GPU's read of the set memory). Default path: never counted, nothing dropped. */
 void mali_dset_use(struct mali_dset *s, int delta);
 struct mali_dtab_entry;
 /* Fills out[0..layout->nbindings) (indexed by binding number); the variable binding's count is the allocate-time count. Returns
- * the number of entries (0 without MALI_DESCIDX_FLAGS=1 so nothing can depend on it by default). Dynamic buffers have no slot: present=false. */
+ * the number of entries (0 when cap is too small). Dynamic buffers have no slot: present=false. */
 uint32_t mali_dset_dtab(const struct mali_dset *s, struct mali_dtab_entry *out, uint32_t cap);
 /* GPU address of element idx of binding, via the table; false if absent/out of range. */
 bool mali_dset_binding_va(const struct mali_dset *s, uint32_t binding, uint32_t idx, uint64_t *va);
 
-/* MALI_DESCIDX_FLAGS=1 (or the test override). Pipeline creation uses it to set mali_compile_layout::descidx_clamp. */
-bool mali_desc_descidx_enabled(void);

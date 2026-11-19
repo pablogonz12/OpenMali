@@ -18,6 +18,11 @@
 #define MALI_DYN_BUF_START       0u     /* index of the first dynamic-buffer descriptor in table MALI_DYN_TABLE */
 #define MALI_MAX_PUSH_BYTES      128u
 #define MALI_NO_IMM_SAMPLER      0xffffffffu
+/* Plain-C copy of VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT (same value), so the compiler-side lowering needs no Vulkan header. */
+#define MALI_DESC_BINDING_PARTIALLY_BOUND 0x00000004u
+/* All-zero descriptor in resource table 0: the hardware Null Descriptor (reads return zero, writes are dropped). Used for an
+ * out-of-range index into a partially-bound array; same slot the sampler-less path uses for its dummy sampler. */
+#define MALI_NULL_DESC_IDX       MALI_DUMMY_SAMPLER_IDX
 
 /* Values equal VkDescriptorType (so no Vulkan header is needed here). */
 enum mali_desc_type {
@@ -37,6 +42,7 @@ struct mali_lbinding {
    uint32_t ycbcr_planes; /* combined image sampler whose immutable samplers carry a YCbCr conversion: 2 (stride 3: luma, chroma, sampler); else 0 */
    uint32_t ycbcr_off;    /* index of element 0's conversion in the set's ycbcr array (mali_lset::ycbcr) */
    uint32_t inline_bytes; /* inline uniform block: data size in bytes (type = UNIFORM_BUFFER, count 1, stride 1 + data slots); else 0 */
+   uint32_t bflags;       /* VkDescriptorBindingFlags of the binding; the lowering reads PARTIALLY_BOUND for OOB -> null */
 };
 
 struct mali_lset {
@@ -52,7 +58,6 @@ struct mali_compile_layout {
    struct mali_lset set[MALI_MAX_SETS];
    uint32_t dyn_start[MALI_MAX_SETS]; /* running index of the set's first dynamic buffer in the pipeline's dynamic-buffer array */
    uint32_t push_size;                /* bytes of push constants (<= MALI_MAX_PUSH_BYTES) */
-   uint32_t descidx_clamp;            /* MALI_DESCIDX_FLAGS=1: clamp dynamic image/sampler array indices to count-1; 0 = off (default, not hashed) */
    uint32_t robust_access;            /* robustBufferAccess2/robustImageAccess2 enabled: bounds-check buffer/image accesses (nir_lower_robust_access); 0 = off */
 };
 

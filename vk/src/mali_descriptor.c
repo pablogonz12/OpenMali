@@ -87,17 +87,6 @@ mem_free(struct vk_device *dev, void *p, size_t size)
 
 /* ---- set layout ---- */
 
-/* VK_EXT_descriptor_indexing stage 1 gate (default off). -1 = read MALI_DESCIDX_FLAGS; tests force 0/1. */
-static int g_descidx = -1;
-void mali_desc_set_descidx(int v) { g_descidx = v; }
-static bool
-descidx_on(void)
-{
-   if (g_descidx < 0) { const char *e = getenv("MALI_DESCIDX_FLAGS"); g_descidx = e && e[0] == '1'; }
-   return g_descidx;
-}
-
-bool mali_desc_descidx_enabled(void) { return descidx_on(); }
 
 static bool
 type_ok(VkDescriptorType t)
@@ -132,10 +121,8 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
       if (b->pImmutableSamplers) nimm += b->descriptorCount;
    }
    bool uab_pool = false;
-   if (descidx_on()) {
-      VkResult cr = mali_descidx_check_layout(ci, NULL, &uab_pool);
-      if (cr != VK_SUCCESS) return cr;
-   }
+   VkResult cr = mali_descidx_check_layout(ci, NULL, &uab_pool);
+   if (cr != VK_SUCCESS) return cr;
    struct mali_dsl *d = vk_descriptor_set_layout_zalloc(dev, sizeof *d, ci);
    if (!d) return VK_ERROR_OUT_OF_HOST_MEMORY;
    d->uab_pool = uab_pool;
@@ -174,15 +161,16 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
-      if (descidx_on() && bf && bf->pBindingFlags && bf->bindingCount == ci->bindingCount) {
+      if (bf && bf->pBindingFlags && bf->bindingCount == ci->bindingCount) {
          if (!d->bflags) d->bflags = vk_zalloc(&dev->alloc, nb * sizeof *d->bflags, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
          if (!d->bflags) {
             dsl_destroy(dev, &d->vk);
             return VK_ERROR_OUT_OF_HOST_MEMORY;
          }
          d->bflags[n] = bf->pBindingFlags[src - ci->pBindings];
+         b->bflags = d->bflags[n];
       }
-      if (descidx_on() && bf && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
+      if (bf && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
           n == nb - 1)   /* spec: only the highest-numbered binding; its slots are last in the set */
          d->var_binding = n;
       /* Immutable samplers with a YCbCr conversion: the element holds one texture descriptor per image plane, then the sampler. */
@@ -250,15 +238,15 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
          ok &= b->descriptorCount <= MALI_MAX_INLINE_BYTES && !(b->descriptorCount & 3);
       else slots += (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
    }
-   if (ok && descidx_on()) ok = mali_descidx_check_layout(ci, NULL, NULL) == VK_SUCCESS;
+   if (ok) ok = mali_descidx_check_layout(ci, NULL, NULL) == VK_SUCCESS;
    s->supported = ok && slots < (1u << 20);
    VkDescriptorSetVariableDescriptorCountLayoutSupport *vs =
       vk_find_struct(s->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);
-   if (vs) {   /* stage 2: only with MALI_DESCIDX_FLAGS=1, else 0 as before */
+   if (vs) {   /* allocate-time count sizing is implemented; the feature itself stays unadvertised (see docs/descidx-plan.md) */
       const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
          vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
       vs->maxVariableDescriptorCount = 0;
-      if (descidx_on() && bf && bf->pBindingFlags && ci->bindingCount) {
+      if (bf && bf->pBindingFlags && ci->bindingCount) {
          uint32_t hi = 0;
          for (uint32_t i = 1; i < ci->bindingCount; i++)
             if (ci->pBindings[i].binding > ci->pBindings[hi].binding) hi = i;
@@ -537,7 +525,7 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
    }
 }
 
-/* MALI_DESCIDX_FLAGS=1: is a write to `binding` of a set that a pending submission uses illegal? Counted, then dropped by the caller. */
+/* Is a write to `binding` of a set that a pending submission uses illegal? Counted, then dropped by the caller. */
 static bool
 write_denied(struct mali_dset *s, uint32_t binding)
 {
@@ -550,14 +538,14 @@ write_denied(struct mali_dset *s, uint32_t binding)
 void
 mali_dset_use(struct mali_dset *s, int delta)
 {
-   if (descidx_on()) s->in_use += delta;
+   s->in_use += delta;
 }
 
 uint32_t
 mali_dset_dtab(const struct mali_dset *s, struct mali_dtab_entry *out, uint32_t cap)
 {
    const struct mali_dsl *l = s->layout;
-   if (!descidx_on() || cap < l->nbindings) return 0;
+   if (cap < l->nbindings) return 0;
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
       out[n] = (struct mali_dtab_entry){ .slot = b->slot, .stride = b->stride, .count = b->count,

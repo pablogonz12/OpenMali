@@ -279,57 +279,55 @@ test_compile(unsigned arch)
    vk_descriptor_set_layout_unref(&g_dev, &l1->vk);
 }
 
-/* ---- descriptor indexing shader side: dynamic image-array index clamp (descidx_clamp, default off) ---- */
+/* ---- descriptor indexing shader side: an out-of-range index into a partially-bound array selects the null descriptor ---- */
 static void
-test_descidx_clamp(unsigned arch)
+test_descidx_oob(unsigned arch)
 {
-   printf("descriptor indexing shader clamp, v%u\n", arch);
+   printf("descriptor indexing OOB -> null, v%u\n", arch);
    VkDescriptorSetLayoutBinding b[] = {
       { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 4, .stageFlags = 0x1f },
       { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = 0x1f } };
-   struct mali_dsl *l = mk_layout(arch, 2, b);
    struct vk_pipeline_layout pl;
    memset(&pl, 0, sizeof pl);
-   pl.set_count = 1; pl.set_layouts[0] = &l->vk;
+   pl.set_count = 1;
+   struct spv fs = load("didx.frag.spv");
+   struct mali_compiled plain, pb;
+   char err[256] = "";
+
+   /* without PARTIALLY_BOUND: plain handle arithmetic (nothing to select from) */
+   struct mali_dsl *l0 = mk_layout(arch, 2, b);
+   pl.set_layouts[0] = &l0->vk;
    struct mali_flat_layout fl;
    CHECK(mali_pipeline_layout_flatten(&pl, &fl) == VK_SUCCESS, "flatten");
-   CHECK(fl.c.descidx_clamp == 0, "flatten leaves the clamp off");
-   struct spv fs = load("didx.frag.spv");
+   CHECK(fl.c.set[0].b[0].bflags == 0, "no flags by default");
    struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n, .layout = &fl.c, .cache_dir = "" };
-   struct mali_compiled a, a2, c;
-   char err[256] = "";
-   CHECK(mali_compile(&o, &a, err, sizeof err) == 0, "default compile: %s", err);
-   struct mali_compile_layout off = fl.c;
-   off.descidx_clamp = 0;
-   o.layout = &off;
-   CHECK(mali_compile(&o, &a2, err, sizeof err) == 0, "explicit off compile: %s", err);
-   CHECK(a.bin_size == a2.bin_size && !memcmp(a.bin, a2.bin, a.bin_size), "clamp off is byte-identical to the default");
-   struct mali_compile_layout on = fl.c;
-   on.descidx_clamp = 1;
-   o.layout = &on;
-   int r = mali_compile(&o, &c, err, sizeof err);
-   CHECK(r == 0, "clamped compile: %s", err);
+   CHECK(mali_compile(&o, &plain, err, sizeof err) == 0, "plain compile: %s", err);
+   vk_descriptor_set_layout_unref(&g_dev, &l0->vk);
+
+   /* PARTIALLY_BOUND must reach the compiler and add the idx >= count -> Null Descriptor select */
+   VkDescriptorBindingFlags bf[2] = { VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0 };
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bfi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                       .bindingCount = 2, .pBindingFlags = bf };
+   VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi, .bindingCount = 2, .pBindings = b };
+   struct mali_dsl *l = NULL;
+   CHECK(mali_dsl_create(&g_dev, arch, &ci, &l) == VK_SUCCESS, "partially-bound layout");
+   CHECK(l->b[0].bflags == VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, "PARTIALLY_BOUND threaded into mali_lbinding");
+   pl.set_layouts[0] = &l->vk;
+   CHECK(mali_pipeline_layout_flatten(&pl, &fl) == VK_SUCCESS, "flatten (PB)");
+   CHECK(fl.c.set[0].b[0].bflags & MALI_DESC_BINDING_PARTIALLY_BOUND, "flatten keeps the flag");
+   int r = mali_compile(&o, &pb, err, sizeof err);
+   CHECK(r == 0, "partially-bound compile: %s", err);
    if (r == 0) {
-      CHECK(c.bin_size != a.bin_size || memcmp(c.bin, a.bin, a.bin_size), "clamp changes the output for a dynamic index");
-      /* the bound is count-1: a one-element array clamps to the constant 0, which folds the whole index computation away */
-      struct mali_compile_layout one = on;
-      struct mali_lbinding ob[2];
-      memcpy(ob, on.set[0].b, sizeof ob);
-      ob[0].count = 1;
-      one.set[0].b = ob;
-      o.layout = &one;
-      struct mali_compiled c1;
-      CHECK(mali_compile(&o, &c1, err, sizeof err) == 0, "one-element clamped compile: %s", err);
-      CHECK(c1.bin_size < c.bin_size, "bound is count-1 (1 element folds: %u < %u)", c1.bin_size, c.bin_size);
-      mali_compiled_free(&c1);
-      mali_compiled_free(&c);
+      CHECK(pb.bin_size != plain.bin_size || memcmp(pb.bin, plain.bin, plain.bin_size),
+            "OOB -> null changes the output for a dynamic array index (count %u)", fl.c.set[0].b[0].count);
+      mali_compiled_free(&pb);
    }
-   mali_compiled_free(&a); mali_compiled_free(&a2);
+   mali_compiled_free(&plain);
    free(fs.w);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
 
-/* ---- descriptor indexing stage 1: binding flags, gated by MALI_DESCIDX_FLAGS ---- */
+/* ---- descriptor indexing: binding flags (honoured unconditionally; advertised subset) ---- */
 static VkResult
 try_layout(VkDescriptorSetLayoutCreateFlags lf, uint32_t n, const VkDescriptorSetLayoutBinding *b, const VkDescriptorBindingFlags *bf, struct mali_dsl **out)
 {
@@ -352,16 +350,14 @@ test_descidx_flags(void)
    VkDescriptorSetLayoutBinding two[] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, 0xff, NULL },
                                           { 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4, 0xff, NULL } };
    VkDescriptorSetLayoutBinding dyn[] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, 0xff, NULL } };
-   /* gate off: everything is ignored (old behaviour), even nonsense */
-   mali_desc_set_descidx(0);
-   VkDescriptorBindingFlags bad[] = { UAB, 0x80 }, unk[] = { 0, 0x80 };
-   CHECK(try_layout(0, 2, two, bad, NULL) == VK_SUCCESS, "gate off must ignore flags");
-   CHECK(try_layout(POOL, 1, dyn, NULL, NULL) == VK_SUCCESS, "gate off must ignore POOL+dynamic");
-   mali_desc_set_descidx(1);
    VkDescriptorBindingFlags ok[] = { 0, UAB | PB | VAR };
    struct mali_dsl *l = NULL;
    CHECK(try_layout(POOL, 2, two, ok, &l) == VK_SUCCESS && l && l->uab_pool, "valid flags on image binding");
-   if (l) vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+   if (l) {
+      CHECK(l->b[0].bflags == 0 && l->b[1].bflags == (UAB | PB | VAR), "binding flags are threaded into the compiler layout");
+      vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+   }
+   VkDescriptorBindingFlags unk[] = { 0, 0x80 };
    CHECK(try_layout(0, 2, two, unk, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "unknown flag bit rejected");
    VkDescriptorBindingFlags ubouab[] = { UAB, 0 };
    CHECK(try_layout(0, 2, two, ubouab, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "UAB on uniform buffer rejected (not honest yet)");
@@ -399,14 +395,12 @@ test_descidx_flags(void)
       mali_destroy_descriptor_pool(&g_dev, pool, NULL);
    }
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
-   mali_desc_set_descidx(-1);
 }
 
 static void
 test_variable_count(void)
 {
-   printf("variableDescriptorCount: sized by the allocate-time count (MALI_DESCIDX_FLAGS=1)\n");
-   mali_desc_set_descidx(1);
+   printf("variableDescriptorCount: sized by the allocate-time count (layout support stays, feature withheld)\n");
    VkDescriptorSetLayoutBinding b[2] = {
       { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1, .stageFlags = 0x1f },
       { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1000, .stageFlags = 0x1f } };
@@ -448,16 +442,6 @@ test_variable_count(void)
    CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s) == VK_SUCCESS, "1000 fits the roomy pool");
    mali_destroy_descriptor_pool(&g_dev, pool, NULL);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
-   /* default off: the flag is ignored, so the set takes the full 1001 slots and the support query reports 0 */
-   mali_desc_set_descidx(0);
-   struct mali_dsl *l0 = NULL;
-   CHECK(mali_dsl_create(&g_dev, 11, &ci, &l0) == VK_SUCCESS, "layout (off)");
-   CHECK(l0 && l0->var_binding == -1, "off: no variable binding");
-   vs.maxVariableDescriptorCount = 77;
-   mali_get_descriptor_set_layout_support(&ci, &sup);
-   CHECK(vs.maxVariableDescriptorCount == 0, "off: support reports 0 (%u)", vs.maxVariableDescriptorCount);
-   if (l0) vk_descriptor_set_layout_unref(&g_dev, &l0->vk);
-   mali_desc_set_descidx(-1);
 }
 
 static void
@@ -502,10 +486,9 @@ test_descidx_wiring(void)
    (void)ps;
    VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
       .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT, .maxSets = 2, .poolSizeCount = 2, .pPoolSizes = ps2 };
-   for (int on = 1; on >= 0; on--) {
-      mali_desc_set_descidx(on);
+   {
       struct mali_dsl *l = NULL;
-      CHECK(mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS, "layout (flags %d)", on);
+      CHECK(mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS, "layout with flags");
       VkDescriptorPool pool;
       CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, NULL, &pool) == VK_SUCCESS, "pool");
       uint32_t cnt = 10;
@@ -516,21 +499,17 @@ test_descidx_wiring(void)
                                          .descriptorSetCount = 1, .pSetLayouts = &hl };
       VkDescriptorSet hs = VK_NULL_HANDLE;
       VkResult ar = mali_allocate_descriptor_sets(&g_dev, &ai, &hs);
-      CHECK(ar == VK_SUCCESS, "alloc (flags %d): %d", on, ar);
+      CHECK(ar == VK_SUCCESS, "alloc: %d", ar);
       struct mali_dset *s = mali_dset_from_handle(hs);
-      if (!s) { mali_destroy_descriptor_pool(&g_dev, pool, NULL); vk_descriptor_set_layout_unref(&g_dev, &l->vk); continue; }
+      if (!s) { mali_destroy_descriptor_pool(&g_dev, pool, NULL); vk_descriptor_set_layout_unref(&g_dev, &l->vk); return; }
       struct mali_dtab_entry t[3];
       uint64_t va = 0;
-      if (!on) {
-         CHECK(mali_dset_dtab(s, t, 3) == 0 && !mali_dset_binding_va(s, 0, 0, &va), "off: no table");
-      } else {
-         CHECK(mali_dset_dtab(s, t, 3) == 3, "table has 3 entries");
-         CHECK(t[2].count == 10 && t[0].count == 2 && t[1].slot == 2 && t[2].slot == 3, "table: counts %u/%u slots %u/%u", t[0].count, t[2].count, t[1].slot, t[2].slot);
-         CHECK(t[2].flags & VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, "table carries binding flags");
-         CHECK(mali_dset_binding_va(s, 2, 9, &va) && va == s->va + (3 + 9) * MALI_DESC_SLOT_SIZE, "va of last variable element");
-         CHECK(!mali_dset_binding_va(s, 2, 10, &va), "element past the allocate-time count has no address");
-         CHECK(!mali_dset_binding_va(s, 5, 0, &va), "unknown binding has no address");
-      }
+      CHECK(mali_dset_dtab(s, t, 3) == 3, "table has 3 entries");
+      CHECK(t[2].count == 10 && t[0].count == 2 && t[1].slot == 2 && t[2].slot == 3, "table: counts %u/%u slots %u/%u", t[0].count, t[2].count, t[1].slot, t[2].slot);
+      CHECK(t[2].flags & VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, "table carries binding flags");
+      CHECK(mali_dset_binding_va(s, 2, 9, &va) && va == s->va + (3 + 9) * MALI_DESC_SLOT_SIZE, "va of last variable element");
+      CHECK(!mali_dset_binding_va(s, 2, 10, &va), "element past the allocate-time count has no address");
+      CHECK(!mali_dset_binding_va(s, 5, 0, &va), "unknown binding has no address");
       VkDescriptorImageInfo ii = { 0, (VkImageView)(uintptr_t)&g_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
       VkDescriptorBufferInfo bi = { (VkBuffer)(uintptr_t)1, 0x40, 256 };
       VkWriteDescriptorSet wi = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hs, .dstBinding = 0, .dstArrayElement = 1,
@@ -540,25 +519,19 @@ test_descidx_wiring(void)
       mali_dset_use(s, 1);   /* a pending submission references the set */
       static const uint8_t zero[32];
       mali_update_descriptor_sets(&g_dev, 1, &wi, 0, NULL);
-      CHECK(memcmp(s->cpu + 1 * 32, zero, 32) != 0, "UAB binding written while in use (flags %d)", on);
+      CHECK(memcmp(s->cpu + 1 * 32, zero, 32) != 0, "UAB binding written while in use");
       mali_update_descriptor_sets(&g_dev, 1, &wb, 0, NULL);
-      if (on) {
-         CHECK(!memcmp(s->cpu + 2 * 32, zero, 32) && s->denied_writes == 1, "non-UAB binding write dropped while in use (%u)", s->denied_writes);
-         VkCopyDescriptorSet cp = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs, .srcBinding = 0, .srcArrayElement = 1,
-                                    .dstSet = hs, .dstBinding = 1, .descriptorCount = 1 };
-         mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
-         CHECK(!memcmp(s->cpu + 2 * 32, zero, 32) && s->denied_writes == 2, "copy into a non-UAB binding is dropped while in use (%u)", s->denied_writes);
-         mali_dset_use(s, -1);
-         mali_update_descriptor_sets(&g_dev, 1, &wb, 0, NULL);
-         CHECK(memcmp(s->cpu + 2 * 32, zero, 32) != 0 && s->denied_writes == 2, "same write lands once the set retired");
-      } else {
-         CHECK(memcmp(s->cpu + 2 * 32, zero, 32) != 0 && s->denied_writes == 0 && s->in_use == 0, "off: write lands, nothing counted");
-         mali_dset_use(s, -1);
-      }
+      CHECK(!memcmp(s->cpu + 2 * 32, zero, 32) && s->denied_writes == 1, "non-UAB binding write dropped while in use (%u)", s->denied_writes);
+      VkCopyDescriptorSet cp = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs, .srcBinding = 0, .srcArrayElement = 1,
+                                 .dstSet = hs, .dstBinding = 1, .descriptorCount = 1 };
+      mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
+      CHECK(!memcmp(s->cpu + 2 * 32, zero, 32) && s->denied_writes == 2, "copy into a non-UAB binding is dropped while in use (%u)", s->denied_writes);
+      mali_dset_use(s, -1);
+      mali_update_descriptor_sets(&g_dev, 1, &wb, 0, NULL);
+      CHECK(memcmp(s->cpu + 2 * 32, zero, 32) != 0 && s->denied_writes == 2, "same write lands once the set retired");
       mali_destroy_descriptor_pool(&g_dev, pool, NULL);
       vk_descriptor_set_layout_unref(&g_dev, &l->vk);
    }
-   mali_desc_set_descidx(-1);
 }
 
 int
@@ -581,8 +554,8 @@ main(int argc, char **argv)
    test_descidx_wiring();
    test_compile(11);
    test_compile(13);
-   test_descidx_clamp(11);
-   test_descidx_clamp(13);
+   test_descidx_oob(11);
+   test_descidx_oob(13);
    clock_gettime(CLOCK_MONOTONIC, &b);
    printf("%s (%d failures, %.2f s)\n", g_fail ? "FAIL" : "PASS", g_fail, (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) * 1e-9);
    return g_fail != 0;
