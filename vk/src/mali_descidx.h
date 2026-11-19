@@ -28,11 +28,16 @@ mali_descidx_check_layout(const VkDescriptorSetLayoutCreateInfo *ci, VkDescripto
    if (flags_out) for (uint32_t i = 0; i < ci->bindingCount; i++) flags_out[i] = 0;
    uint32_t top = 0;
    for (uint32_t i = 0; i < ci->bindingCount; i++) if (ci->pBindings[i].binding > top) top = ci->pBindings[i].binding;
-   if (pool)
-      for (uint32_t i = 0; i < ci->bindingCount; i++)
-         if (MALI_DESCIDX_DYNAMIC(ci->pBindings[i].descriptorType)) return VK_ERROR_FEATURE_NOT_PRESENT;
    if (!bf || !bf->bindingCount) return VK_SUCCESS;
    if (bf->bindingCount != ci->bindingCount || !bf->pBindingFlags) return VK_ERROR_FEATURE_NOT_PRESENT;
+   /* VUID-03000: a binding with UPDATE_AFTER_BIND needs the layout's UPDATE_AFTER_BIND_POOL flag. VUID-03001: when ANY binding of the
+    * layout has UPDATE_AFTER_BIND, dynamic UBO/SSBO bindings are forbidden in the whole layout (the pool flag alone does not trigger it). */
+   bool any_uab = false, any_dyn = false;
+   for (uint32_t i = 0; i < ci->bindingCount; i++) {
+      any_uab |= (bf->pBindingFlags[i] & VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT) != 0;
+      any_dyn |= MALI_DESCIDX_DYNAMIC(ci->pBindings[i].descriptorType);
+   }
+   if (any_uab && (!pool || any_dyn)) return VK_ERROR_FEATURE_NOT_PRESENT;
    for (uint32_t i = 0; i < ci->bindingCount; i++) {
       VkDescriptorBindingFlags f = bf->pBindingFlags[i];
       VkDescriptorType t = ci->pBindings[i].descriptorType;

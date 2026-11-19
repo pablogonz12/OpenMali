@@ -89,12 +89,19 @@ mem_free(struct vk_device *dev, void *p, size_t size)
 
 /* VK_EXT_descriptor_indexing stage 1 gate (default off). -1 = read MALI_DESCIDX_FLAGS; tests force 0/1. */
 static int g_descidx = -1;
-void mali_desc_set_descidx(int v) { g_descidx = v; }
+void mali_desc_set_descidx(int v) { __atomic_store_n(&g_descidx, v, __ATOMIC_RELAXED); }
 static bool
 descidx_on(void)
 {
-   if (g_descidx < 0) { const char *e = getenv("MALI_DESCIDX_FLAGS"); g_descidx = e && e[0] == '1'; }
-   return g_descidx;
+   int v = __atomic_load_n(&g_descidx, __ATOMIC_RELAXED);
+   if (v < 0) {   /* first use may race across threads: every racer computes the same value; atomics keep it defined */
+      const char *e = getenv("MALI_DESCIDX_FLAGS");
+      v = e && e[0] == '1';
+      int exp = -1;
+      __atomic_compare_exchange_n(&g_descidx, &exp, v, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);   /* a concurrent mali_desc_set_descidx() wins */
+      v = __atomic_load_n(&g_descidx, __ATOMIC_RELAXED);
+   }
+   return v;
 }
 
 static bool
@@ -393,7 +400,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, uint3
    s->pool = p;
    s->off = at;
    s->bytes = bytes;
-   s->cpu = p->cpu + at;
+   s->cpu = p->cpu ? p->cpu + at : NULL;
    s->va = p->va + at;
    s->arch = p->arch;
    if (l->var_binding >= 0) s->var_count = var_count;
@@ -624,14 +631,28 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
       return;
    }
    if (write_denied(dst, c->dstBinding)) return;
+   /* spec: a copy that runs past the end of a binding continues into the next consecutive binding, on both sides */
+   uint32_t sbi = c->srcBinding, dbi = c->dstBinding, se = c->srcArrayElement, de = c->dstArrayElement;
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
-      uint32_t se = c->srcArrayElement + i, de = c->dstArrayElement + i;
-      if (se >= sb->count || de >= db->count) return;
+      while (sbi < src->layout->nbindings && se >= src->layout->b[sbi].count) {
+         se -= src->layout->b[sbi].count;
+         sbi++;
+      }
+      while (dbi < dst->layout->nbindings && de >= dst->layout->b[dbi].count) {
+         de -= dst->layout->b[dbi].count;
+         dbi++;
+      }
+      if (sbi >= src->layout->nbindings || dbi >= dst->layout->nbindings) return;
+      sb = &src->layout->b[sbi];
+      db = &dst->layout->b[dbi];
+      if (sb->type == MALI_DT_NONE || db->type == MALI_DT_NONE) return;
       if (sb->stride && db->stride)
          memcpy(slot_at(dst, db->slot + de * db->stride), slot_at(src, sb->slot + se * sb->stride),
                 MIN2(sb->stride, db->stride) * MALI_DESC_SLOT_SIZE);
       else if (!sb->stride && !db->stride)
          dst->dyn[db->dyn_idx + de] = src->dyn[sb->dyn_idx + se];
+      se++;
+      de++;
    }
 }
 
