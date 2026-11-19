@@ -6,6 +6,7 @@
 #endif
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <stdarg.h>
@@ -228,12 +229,16 @@ mali_banner(void)
    if (n <= 0)
       return;
    if (path && *path) {
-      fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+      /* O_NONBLOCK: a FIFO without a reader must not block vkCreateInstance; only regular files are written */
+      fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NONBLOCK, 0644);
       if (fd >= 0) {
-         line[n++] = '\n';
-         if (write(fd, line, n) < 0) {}
+         struct stat st;
+         if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+            line[n++] = '\n';
+            if (write(fd, line, n) < 0) {}
+            line[--n] = 0;
+         }
          close(fd);
-         line[--n] = 0;
       }
    }
 #ifdef __ANDROID__

@@ -15,4 +15,6 @@ run MALI_BANNER=1 || exit 1
 run MALI_STATUS_FILE= || exit 1
 [ "$(wc -l <"$T/s")" = 2 ] || { echo "FAIL empty env wrote"; exit 1; }
 run MALI_STATUS_FILE="$T/nodir/x" || { echo "FAIL unwritable path must not break instance"; exit 1; }
+mkfifo "$T/fifo" || { echo "FAIL mkfifo"; exit 1; }
+timeout 20 env MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_STATUS_FILE="$T/fifo" "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-name Mali-G925 >/dev/null 2>&1 || { echo "FAIL FIFO without reader blocked or broke the instance"; exit 1; }
 echo "banner ok"
