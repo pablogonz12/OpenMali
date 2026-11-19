@@ -192,7 +192,7 @@ else
    for t in bc bopool cmd compile desc image memsync meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
-   for g in v11 v13; do run "unity_caps $g" 0 "$V/tests/build-t_unity_caps.sh" $g; done
+   for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done
 fi
 
 # v10 (Mali-G610, Poco X4 GT): every fake-backend case above, once more on MALI_FAKE_GPU=v10.

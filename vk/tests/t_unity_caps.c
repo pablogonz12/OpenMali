@@ -186,10 +186,20 @@ probe_formats(void)
       /* Unity asks the driver this before creating the image */
       if (r->usage)
          propm = vkGetPhysicalDeviceImageFormatProperties(g_pd, r->f, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, r->usage, 0, &ifp);
-      VkResult cr = r->usage ? try_create(r->f, r->usage, r->compressed ? 5 : 5, 1, VK_IMAGE_VIEW_TYPE_2D) : VK_SUCCESS;
-      /* sampled formats are also uploaded as mip chains and cubemaps by Unity */
-      VkResult cub = r->usage && !(r->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
-                        ? try_create(r->f, r->usage, 1, 6, VK_IMAGE_VIEW_TYPE_CUBE) : VK_SUCCESS;
+      /* The format query is the spec's support check for exactly the parameters vkCreateImage gets: do not create an image the query
+       * already rejected, report the query's error instead. */
+      VkResult cr = !r->usage ? VK_SUCCESS
+                  : propm != VK_SUCCESS ? propm
+                  : try_create(r->f, r->usage, 5, 1, VK_IMAGE_VIEW_TYPE_2D);
+      /* Sampled formats are also uploaded as mip chains and cubemaps by Unity. The cube create passes VK_IMAGE_CREATE_CUBE_COMPATIBLE,
+       * so it needs its own query with that flag (the 2D query above passes flags 0 and cannot vouch for it). */
+      VkResult cub = VK_SUCCESS;
+      if (r->usage && !(r->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+         VkImageFormatProperties cifp;
+         VkResult cprop = vkGetPhysicalDeviceImageFormatProperties(g_pd, r->f, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, r->usage,
+                                                                   VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, &cifp);
+         cub = cprop == VK_SUCCESS ? try_create(r->f, r->usage, 1, 6, VK_IMAGE_VIEW_TYPE_CUBE) : cprop;
+      }
       bool need = r->usage && !strstr(r->cls, "EXT_4444") && strcmp(r->name, "R10X6G10X6B10X6A10X6");
       bool ok = (propm == VK_SUCCESS) && (cr == VK_SUCCESS) && (cub == VK_SUCCESS) &&
                 (!(r->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) || (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) &&
@@ -234,11 +244,14 @@ make_surface(PFN_vkCreateHeadlessSurfaceEXT *headless, const char **used)
    exts[next++] = VK_KHR_SURFACE_EXTENSION_NAME;
    if (has_headless) exts[next++] = VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME;
    else if (has_xcb && getenv("DISPLAY")) exts[next++] = "VK_KHR_xcb_surface";
+   const char *pick = has_headless ? "headless" : (has_xcb && getenv("DISPLAY")) ? "xcb" : NULL;
    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_1};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = next, .ppEnabledExtensionNames = exts};
    if (vkCreateInstance(&ici, NULL, &g_inst) != VK_SUCCESS) { g_inst = VK_NULL_HANDLE; return VK_NULL_HANDLE; }
-   *used = has_headless ? "headless" : "xcb";
+   /* "none" = no platform was usable here (a skip); anything else means that platform was selected, so a NULL return below is a
+    * setup failure and probe_swapchain must count it. */
+   *used = pick ? pick : "none";
    if (has_headless) {
       *headless = (PFN_vkCreateHeadlessSurfaceEXT)vkGetInstanceProcAddr(g_inst, "vkCreateHeadlessSurfaceEXT");
       if (!*headless) return VK_NULL_HANDLE;
@@ -276,11 +289,22 @@ make_surface(PFN_vkCreateHeadlessSurfaceEXT *headless, const char **used)
    return VK_NULL_HANDLE;
 }
 
+static bool g_mutable;   /* VK_KHR_swapchain_mutable_format (+ VK_KHR_image_format_list) enabled on the device */
+
 static void
 probe_swapchain(VkSurfaceKHR surf, const char *used)
 {
    printf("== swapchain (Unity: >=minImageCount, prefers 3, FIFO required, B8G8R8A8 or R8G8B8A8 UNORM/SRGB pair) ==\n");
-   if (!surf) { printf("surface: NONE (this build has no headless or xcb surface) - swapchain rows NOT checked here\n"); return; }
+   if (!surf) {
+      if (!strcmp(used, "none")) {
+         printf("surface: NONE (this build has no headless or xcb surface) - swapchain rows NOT checked here\n");
+         return;
+      }
+      /* a platform was selected and vkCreateInstance/vkCreate*SurfaceKHR failed: that is a hard failure, not "not checked here" */
+      printf("surface: VK_KHR_%s_surface selected but setup FAILED - HARD-BLOCKER\n", used);
+      g_fail++;
+      return;
+   }
    printf("surface: VK_KHR_%s_surface\n", used);
    VkSurfaceCapabilitiesKHR caps;
    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_pd, surf, &caps) != VK_SUCCESS) { printf("caps: FAIL\n"); g_fail++; return; }
@@ -304,15 +328,17 @@ probe_swapchain(VkSurfaceKHR surf, const char *used)
           caps.supportedCompositeAlpha, caps.supportedTransforms);
 
    int hard = 0;
-   bool bgra = false, bgra_srgb = false, rgba = false, fifo = false;
+   bool bgra = false, bgra_srgb = false, rgba = false, rgba_srgb = false, fifo = false;
    for (uint32_t i = 0; i < nf; i++) {
       if (fs[i].format == VK_FORMAT_B8G8R8A8_UNORM) bgra = true;
       if (fs[i].format == VK_FORMAT_B8G8R8A8_SRGB) bgra_srgb = true;
       if (fs[i].format == VK_FORMAT_R8G8B8A8_UNORM) rgba = true;
+      if (fs[i].format == VK_FORMAT_R8G8B8A8_SRGB) rgba_srgb = true;
    }
    for (uint32_t i = 0; i < nm; i++) if (ms[i] == VK_PRESENT_MODE_FIFO_KHR) fifo = true;
-   printf("row surface formats: B8G8R8A8_UNORM=%s SRGB=%s R8G8B8A8_UNORM=%s -> %s\n", bgra ? "yes" : "NO", bgra_srgb ? "yes" : "NO",
-          rgba ? "yes" : "NO", bgra && bgra_srgb ? "fine (the pair Unity wants)" : (rgba ? "degrades (RGBA only)" : "HARD"));
+   printf("row surface formats: B8G8R8A8_UNORM=%s SRGB=%s R8G8B8A8_UNORM=%s SRGB=%s -> %s\n", bgra ? "yes" : "NO", bgra_srgb ? "yes" : "NO",
+          rgba ? "yes" : "NO", rgba_srgb ? "yes" : "NO",
+          bgra && bgra_srgb ? "fine (the pair Unity wants)" : (rgba && rgba_srgb ? "degrades (RGBA pair only)" : "HARD"));
    if (!(bgra || rgba)) hard++;
    printf("row present mode FIFO: %s\n", fifo ? "fine" : "HARD-BLOCKER");
    if (!fifo) hard++;
@@ -326,13 +352,17 @@ probe_swapchain(VkSurfaceKHR surf, const char *used)
    /* Unity's actual request: vulkanNumSwapchainBuffers images (default 3), FIFO, OPAQUE, B8G8R8A8_UNORM + SRGB view. */
    /* Unity's sRGB-write path: a B8G8R8A8_SRGB view of the swapchain image, i.e. VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR plus a
     * two-format image format list (VK_KHR_swapchain_mutable_format, which we advertise). Without the flag the view is illegal. */
-   VkFormat view_fmts[2] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
+   /* Pick the UNORM/SRGB pair the surface actually advertises: requesting BGRA on an RGBA-only surface must fail, not "degrade". */
+   bool use_rgba = !(bgra && bgra_srgb) && rgba && rgba_srgb;
+   VkFormat base_fmt = use_rgba ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
+   VkFormat srgb_fmt = use_rgba ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_B8G8R8A8_SRGB;
+   VkFormat view_fmts[2] = {base_fmt, srgb_fmt};
    VkImageFormatListCreateInfo fli = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = 2, .pViewFormats = view_fmts};
    VkSwapchainCreateInfoKHR ci = {
-      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .pNext = &fli, .surface = surf,
-      .flags = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR,
+      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .pNext = g_mutable ? &fli : NULL, .surface = surf,
+      .flags = g_mutable ? VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR : 0,
       .minImageCount = (3u >= caps.minImageCount && (caps.maxImageCount == 0 || 3u <= caps.maxImageCount)) ? 3u : caps.minImageCount,
-      .imageFormat = VK_FORMAT_B8G8R8A8_UNORM, .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+      .imageFormat = base_fmt, .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
       .imageExtent = {caps.currentExtent.width == UINT32_MAX ? W : caps.currentExtent.width,
                       caps.currentExtent.height == UINT32_MAX ? H : caps.currentExtent.height},
       .imageArrayLayers = 1, .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -342,21 +372,26 @@ probe_swapchain(VkSurfaceKHR surf, const char *used)
    VkSwapchainKHR sc = VK_NULL_HANDLE;
    VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &sc);
    if (r != VK_SUCCESS) {
-      printf("swapchain create (B8G8R8A8_UNORM, FIFO, OPAQUE, %u images): FAIL (%d) HARD-BLOCKER\n", ci.minImageCount, r);
+      printf("swapchain create (%s, FIFO, OPAQUE, %u images): FAIL (%d) HARD-BLOCKER\n", use_rgba ? "R8G8B8A8_UNORM" : "B8G8R8A8_UNORM",
+             ci.minImageCount, r);
       g_fail++;
    } else {
       uint32_t got = 0;
       vkGetSwapchainImagesKHR(g_dev, sc, &got, NULL);
-      printf("swapchain create (B8G8R8A8_UNORM, FIFO, OPAQUE, %u requested): ok, %u image(s) -> %s\n", ci.minImageCount, got,
+      printf("swapchain create (%s, FIFO, OPAQUE, %u requested): ok, %u image(s) -> %s\n", use_rgba ? "R8G8B8A8_UNORM" : "B8G8R8A8_UNORM",
+             ci.minImageCount, got,
              got >= ci.minImageCount ? "fine" : "HARD-BLOCKER");
       if (got < ci.minImageCount) hard++;
-      /* the sRGB half of the pair: Unity renders through a B8G8R8A8_SRGB view of a UNORM image, or asks for a mutable swapchain */
+      /* the sRGB half of the pair: Unity renders through a _SRGB view of a UNORM image, i.e. it needs the mutable-format swapchain.
+       * Without VK_KHR_swapchain_mutable_format enabled the request is illegal instead of testable, so report it as unavailable. */
       VkImage imgs[8];
       uint32_t n = got < 8 ? got : 8;
       vkGetSwapchainImagesKHR(g_dev, sc, &n, imgs);
-      if (n > 0) {
+      if (!g_mutable)
+         printf("row sRGB view over the swapchain image (vulkanEnableSetSRGBWrite): unavailable (device has no VK_KHR_swapchain_mutable_format)\n");
+      else if (n > 0) {
          VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = imgs[0],
-            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_B8G8R8A8_SRGB,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = srgb_fmt,
             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
          VkImageView iv;
          VkResult vr = vkCreateImageView(g_dev, &vi, NULL, &iv);
@@ -391,10 +426,10 @@ main(int argc, char **argv)
       if (vkCreateInstance(&ici, NULL, &g_inst) != VK_SUCCESS) { printf("no instance (set VK_DRIVER_FILES)\n"); return 2; }
    }
    uint32_t n = 0;
-   if (vkEnumeratePhysicalDevices(g_inst, &n, NULL) != VK_SUCCESS) { printf("no device\n"); return 2; }
+   if (vkEnumeratePhysicalDevices(g_inst, &n, NULL) != VK_SUCCESS || n == 0) { printf("no device\n"); return 2; }
    VkPhysicalDevice pds[4] = {0};
    if (n > 4) n = 4;
-   vkEnumeratePhysicalDevices(g_inst, &n, pds);
+   if (vkEnumeratePhysicalDevices(g_inst, &n, pds) != VK_SUCCESS || n == 0) { printf("no device\n"); return 2; }
    g_pd = pds[0];
    vkGetPhysicalDeviceProperties(g_pd, &g_props);
    vkGetPhysicalDeviceFeatures(g_pd, &g_feat);
@@ -415,9 +450,27 @@ main(int argc, char **argv)
       if (qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) nq++;
       if (qp[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) ns++;
    }
-   const char *dev_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+   /* VK_KHR_swapchain_mutable_format (and its VK_KHR_image_format_list dependency) is what the sRGB-view rows need; advertising it is
+    * not enabling it, so query and enable both before issuing a mutable swapchain request. */
+   bool has_mutable = false, has_fmtlist = false;
+   uint32_t nde = 0;
+   if (vkEnumerateDeviceExtensionProperties(g_pd, NULL, &nde, NULL) == VK_SUCCESS && nde) {
+      VkExtensionProperties *deps = calloc(nde, sizeof *deps);
+      if (deps && vkEnumerateDeviceExtensionProperties(g_pd, NULL, &nde, deps) == VK_SUCCESS)
+         for (uint32_t i = 0; i < nde; i++) {
+            if (!strcmp(deps[i].extensionName, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME)) has_mutable = true;
+            if (!strcmp(deps[i].extensionName, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME)) has_fmtlist = true;
+         }
+      free(deps);
+   }
+   g_mutable = has_mutable && has_fmtlist;
+   const char *dev_exts[3] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+   uint32_t ndev = 1;
+   if (g_mutable) { dev_exts[ndev++] = VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME; dev_exts[ndev++] = VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME; }
+   else printf("device: VK_KHR_swapchain_mutable_format%s - sRGB-view rows report unavailable\n",
+               has_mutable ? " without VK_KHR_image_format_list" : " absent");
    VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
-                             .enabledExtensionCount = 1, .ppEnabledExtensionNames = dev_exts};
+                             .enabledExtensionCount = ndev, .ppEnabledExtensionNames = dev_exts};
    if (vkCreateDevice(g_pd, &dci, NULL, &g_dev) != VK_SUCCESS) { printf("device create failed\n"); return 2; }
    printf("queues: %u family(ies), graphics %u, 1 present-capable graphics family: %s\n", qn, nq, "checked below");
 
