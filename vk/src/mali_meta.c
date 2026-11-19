@@ -75,7 +75,7 @@ static int
 plan_rect(struct mali_meta_list *l, const struct mali_meta_surf *dst, const struct mali_meta_surf *src, uint32_t bpt, uint32_t ex,
           uint32_t ey, uint32_t ez, const uint32_t *cst)
 {
-   if (!ex || !ey || !ez || !bpt || (cst && bpt > 16))
+   if (!ex || !ey || !ez || !bpt || (cst && bpt > 16) || (!cst && !src))
       return -EINVAL;
    uint64_t doff, soff = 0;
    struct mali_meta_bind db, sb = {0};

@@ -1308,8 +1308,9 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       }
       if (nall + n > capall) {
          capall = (nall + n) * 2;
-         all = realloc(all, capall * sizeof *all);
-         if (!all) { free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+         uint64_t *grown = realloc(all, capall * sizeof *all);
+         if (!grown) { free(all); free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+         all = grown;
       }
       memcpy(all + nall, cs, n * sizeof *all);
       nall += n;
