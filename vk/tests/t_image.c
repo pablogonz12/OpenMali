@@ -335,6 +335,39 @@ test_format_table(unsigned arch)
    if (g_verbose) printf("  arch %u: %u formats\n", arch, n);
 }
 
+/* MALI_AFBC wiring: off = byte-identical to the plain layout; on = eligible colour images get the AFBC size/alignment. */
+static void
+test_afbc_wiring(unsigned arch)
+{
+   VkImageCreateInfo ci = { .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = { 64, 64, 1 }, .mipLevels = 3,
+                            .arrayLayers = 1, .samples = 1, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT };
+   struct mali_image_desc d = { ci.format, ci.imageType, ci.extent, 3, 1, 1, false };
+   struct mali_image_layout plain, off, on;
+   CHECK(mali_image_layout_init(arch, &d, &plain) == 0, "afbc plain");
+   CHECK(mali_image_plain_layout(arch, &ci, &d, false, &off) == 0, "afbc off");
+   CHECK(!off.afbc && off.size == plain.size && off.alignment == plain.alignment, "flag off changed layout");
+   CHECK(!memcmp(&off, &plain, sizeof plain), "flag off not byte-identical");
+   CHECK(mali_image_plain_layout(arch, &ci, &d, true, &on) == 0, "afbc on");
+   /* 64x64 RGBA8 3 mips, hand-derived in t_afbc: 16640 + 4224 + 1152 = 22016 B per layer */
+   CHECK(on.afbc && on.size == 22016, "afbc size %llu want 22016", (unsigned long long)on.size);
+   CHECK(on.size > plain.size && on.alignment == 128, "afbc align %u", on.alignment);
+   CHECK(on.afbc_lay.level_offset[1] == 16640, "afbc level1 off");
+   CHECK(on.plane[0].slice[0].row_stride == plain.plane[0].slice[0].row_stride, "linear planes must stay untouched");
+   /* ineligible stays plain even with the flag on */
+   VkImageCreateInfo c2 = ci; c2.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc && on.size == plain.size, "storage image AFBC");
+   c2 = ci; c2.tiling = VK_IMAGE_TILING_LINEAR;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "linear image AFBC");
+   c2 = ci; c2.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "modifier image AFBC");
+   c2 = ci; c2.format = VK_FORMAT_R16G16B16A16_SFLOAT; struct mali_image_desc d2 = d; d2.format = c2.format;
+   CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && !on.afbc, "float image AFBC");
+   /* layers multiply */
+   c2 = ci; c2.arrayLayers = 4; d2 = d; d2.layers = 4;
+   CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && on.afbc && on.size == 4 * on.afbc_lay.array_stride, "afbc layers");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -347,6 +380,7 @@ main(int argc, char **argv)
       unsigned a = archs[i];
       printf("arch v%u\n", a);
       test_format_table(a);
+      test_afbc_wiring(a);
       test_rgba8(a);
       test_rtfmt(a);
       test_attr(a);
