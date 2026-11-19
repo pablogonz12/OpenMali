@@ -28,6 +28,7 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
    /* M14: surfaces come from wsi_common (Wayland, XCB, Xlib: whatever Mesa was configured with) */
    .KHR_surface = true,
    .KHR_get_surface_capabilities2 = true,
+   .EXT_headless_surface = true,       /* wsi_common_headless: tests (t_vk_dxvk_wsi) present without a compositor */
    .EXT_surface_maintenance1 = true,   /* companion of swapchain_maintenance1 (wsi_common) */
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface = true,
