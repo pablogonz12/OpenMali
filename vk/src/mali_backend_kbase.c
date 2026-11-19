@@ -291,6 +291,10 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       const char *ie = getenv("MALI_INT_NOCOH");   /* default: on for arch 11 only (v10/v13 keep it: the v13 tiler bins nothing without it); =0/1 overrides */
       int_nocoh = ie ? ie[0] == '1' : k_int_nocoh_default;
    }
+   /* A device-local allocation is GPU-cacheable by definition: no COHERENT_LOCAL, and the CPU side of
+    * the sync is skipped because the app can never map it (vk/MEMORY.md). */
+   if (flags & MALI_BO_DEVICE_LOCAL)
+      flags |= MALI_BO_NOCOH | MALI_BO_HOSTLAZY;
    if (int_nocoh && !(flags & (MALI_BO_EXPORT | MALI_BO_HOSTLAZY | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_CACHED | MALI_BO_COH)))
       flags |= MALI_BO_NOCOH;
    /* Why this is safe: CPU-side these BOs are write-combined (not CPU_CACHED), so kbase_sync_now() is a no-op for them (it returns early for
@@ -329,7 +333,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
                            .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
    /* Exported VkDeviceMemory (swapchain images) is lazy like every other VkDeviceMemory: the GPU writes it and nothing on the CPU has touched it
     * until vkMapMemory (bo_host_touch). Before this, 4 swapchain dma-bufs were MEM_SYNCed (a real cache op on an imported dma-buf) at every submit. */
-   bo->host_lazy = (flags & MALI_BO_HOSTLAZY) || ((flags & MALI_BO_EXPORT) && !(flags & MALI_BO_CACHED));
+   bo->host_lazy = (flags & (MALI_BO_HOSTLAZY | MALI_BO_DEVICE_LOCAL)) || ((flags & MALI_BO_EXPORT) && !(flags & MALI_BO_CACHED));
    bo->hot = (flags & MALI_BO_HOT) != 0;
    track_bo(k, bo, true);
    return 0;
@@ -338,7 +342,9 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
 static void
 kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 {
-   if (b && b->priv)
+   /* A device-local BO is never mapped by the app (vkMapMemory fails), so it stays lazy: clearing the
+    * flag here would put it back into the per-submit MEM_SYNC sweep. */
+   if (b && b->priv && !(b->flags & MALI_BO_DEVICE_LOCAL))
       ((struct kb_bo *)b->priv)->host_lazy = false;
 }
 

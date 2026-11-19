@@ -6,7 +6,9 @@
  *  - an imported dma-buf: kbase_bo_import does not track_bo(), so imports are NOT synced per submit (pre-existing, not a regression of the lazy-export
  *    change; pinned here so a change is deliberate). Foreign CPU writers must use DMA_BUF_IOCTL_SYNC / implicit fences.
  *  - VkDeviceMemory (HOSTLAZY) is lazy until touched, then synced every submit
- *  - an arch 11 driver-internal BO (NOCOH) is never synced; with MALI_INT_NOCOH=0 it is */
+ *  - an arch 11 driver-internal BO (NOCOH) is never synced; with MALI_INT_NOCOH=0 it is
+ *  - M15: a device-local BO (MALI_BO_DEVICE_LOCAL, vk/MEMORY.md) is never MEM_SYNCed in either direction,
+ *    and bo_host_touch must not put it back into the per-submit sweep (the app can never map it) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,6 +68,19 @@ int main(void)
    EXPECT(kb_fake_memsync_count(expc.gpu_va) - c0 >= 2 * N, "CACHED export: never lazy, synced at each submit (%u)", kb_fake_memsync_count(expc.gpu_va) - c0);
    EXPECT(kb_fake_memsync_count(imp.gpu_va) - i0 == 0, "imported dma-buf: untracked, no per-submit MEM_SYNC (known gap, pre-existing)");
    EXPECT(kb_fake_memsync_count(internal.gpu_va) == n0, "arch 11 internal BO: no MEM_SYNC (NOCOH)");
+   /* M15: device-local (GPU-cacheable, never app-mapped) is outside both sweeps, also after a host touch */
+   static volatile uint64_t cnt2 = 1;
+   struct mali_bo dvl;
+   if ((r = b->bo_alloc(k, 65536, MALI_BO_DEVICE_LOCAL | MALI_BO_HOSTLAZY | MALI_BO_NOCOH, &dvl))) { printf("FAIL  bo_alloc device-local\n"); return 1; }
+   unsigned v0 = kb_fake_memsync_count(dvl.gpu_va);
+   for (int i = 0; i < N; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO: no CPU->device MEM_SYNC in %d submits", N);
+   b->bo_host_touch(k, &dvl);   /* a stray touch must not re-enable the sweep */
+   for (int i = 0; i < N; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO after bo_host_touch: still no MEM_SYNC");
+   b->wait_counter(k, &cnt2, 1, 100);
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO: no device->CPU MEM_SYNC after a counter wait");
+
    /* the device -> CPU direction after a fence wait covers mapped BOs only */
    unsigned before = kb_fake_memsync_count(exp.gpu_va);
    static volatile uint64_t cnt = 1;
