@@ -151,6 +151,16 @@ main(int argc, char **argv)
       for (unsigned i = 0; i < nhave; i++) adv |= !strcmp(have_ext[i], "VK_KHR_maintenance6");
       CHECK(adv == (int)m6.maintenance6, "VK_KHR_maintenance6 advertised=%d but maintenance6=%u", adv, m6.maintenance6);
    }
+   {
+      VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds2};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state2");
+      CHECK(adv == 1 && eds2.extendedDynamicState2 == 1, "VK_EXT_extended_dynamic_state2 advertised=%d extendedDynamicState2=%u (want 1/1)", adv, eds2.extendedDynamicState2);
+      /* the driver does not honour these: logic op is unsupported() in the draw snapshot, there is no tessellation */
+      CHECK(!eds2.extendedDynamicState2LogicOp && !eds2.extendedDynamicState2PatchControlPoints, "EDS2 logicOp=%u patchControlPoints=%u must stay false", eds2.extendedDynamicState2LogicOp, eds2.extendedDynamicState2PatchControlPoints);
+   }
    /* VK_KHR_unified_image_layouts: name and feature bit move together, and the feature is reported through vkGetPhysicalDeviceFeatures2. */
    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR uil = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};
    {
