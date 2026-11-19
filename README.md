@@ -90,6 +90,8 @@ Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DX
 | BC1-BC7 texture decode (compute emulation) | Offline done; hardware wiring pending |
 | DXVK-required features | 4 of 47 still false on main (`check.sh`, `DXVK_MISSING=4`): shaderCullDistance, robustBufferAccess, descriptorIndexing (full), geometryShader (rejected on purpose until R5) |
 | EXT/KHR_line_rasterization | `rectangularLines` only (Bresenham and smooth lines not advertised); `t_vk_feat linerast` |
+| dualSrcBlend, multiViewport (state only, viewport 0 used), inlineUniformBlock, depth clamp/clip, custom border colour (the `VK_EXT_border_color_swizzle` swizzle is only groundwork in `mali_sampler.c`, not advertised), dynamic vertex binding stride (`BindVertexBuffers2` `pStrides`), `KHR_shader_expect_assume`, calibrated timestamps | Done, each backed by a `t_vk_feat`/`t_vk_draw` test |
+| MSAA (4x draws, `sampleRateShading`) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
 | dualSrcBlend, multiViewport (state only, viewport 0 used), inlineUniformBlock, depth clamp/clip, custom border colour, calibrated timestamps | Done, each backed by a `t_vk_feat`/`t_vk_draw` test |
 | MSAA (4x draws; `sampleRateShading` itself is advertised, 1-sample no-op) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
 | logicOp, geometry/tessellation, GPL, Bresenham/smooth lines | Not done / not advertised |
@@ -134,7 +136,7 @@ driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/p
 
 - Performance is not uniform (see the generated table above, which is the source of truth): on the Poco X8 (G925) every row is at or above the bridge, on the CMF (G615) the cubes are at 74-89 % and triangle-3k above the bridge. The Poco X4 (G610, v10) has no `ours` cube row; its triangle row is 44 % of the bridge.
 - Draw-count scaling (CMF, `bench/README.md`): 5k, 10k and 20k draws per frame now work, but at 10k/20k our CPU ms per frame is above the bridge's. No poco-x8 5k/10k/20k rows have been published yet.
-- Known dEQP fails: `a2r10g10b10` `sample_count_4` fails on v11 and v13 (baseline refreshed, not fixed), plus the 27 sample failures below. `logicOp`, `vertex_attribute_divisor` and part of the Steam/zink gap list are still open (`vk/STEAM-GAPS.md`).
+- Known dEQP fails: `a2r10g10b10` `sample_count_4` fails on v11 and v13 (baseline refreshed, not fixed), plus the 27 sample failures below. `logicOp` (`mali_cmd.c` rejects logic-op draws), divisor > 1 (`vertexAttributeInstanceRateDivisor` is false; 0/1 work) and part of the Steam/zink gap list are still open (`vk/STEAM-GAPS.md`).
 
 - Not conformant: dEQP numbers above are a sample, 27 sample cases fail on the v13 run. The committed `vk/deqp/ours-daily-sample-*.tsv` baselines are older (301-302 pass) and are refreshed by `farm bless`.
 - v13 coverage is thinner than v11. A geometry-buffer size regression broke v13 draws and was fixed, so recheck draws on every change.
