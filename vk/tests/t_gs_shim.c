@@ -70,6 +70,7 @@ main(int argc, char **argv)
    if (on) {
       CHECK(r == VK_SUCCESS && dev, "CreateDevice with geometryShader: %d", r);
       PFN_vkCreateGraphicsPipelines CGP = dev ? (PFN_vkCreateGraphicsPipelines)GetDeviceProcAddr(dev, "vkCreateGraphicsPipelines") : NULL;
+      PFN_vkDestroyShaderModule DSM = dev ? (PFN_vkDestroyShaderModule)GetDeviceProcAddr(dev, "vkDestroyShaderModule") : NULL;
       PFN_vkCreateShaderModule CSM = dev ? (PFN_vkCreateShaderModule)GetDeviceProcAddr(dev, "vkCreateShaderModule") : NULL;
       CHECK(CGP && CSM, "device procs");
       if (CGP && CSM) {
@@ -85,6 +86,7 @@ main(int argc, char **argv)
          VkResult pr2 = CGP(dev, VK_NULL_HANDLE, 1, &gp, NULL, &p);
          CHECK(pr2 == VK_ERROR_FEATURE_NOT_PRESENT, "GS pipeline must be rejected: %d", pr2);
          CHECK(p == VK_NULL_HANDLE, "rejected pipeline handle must be VK_NULL_HANDLE");
+         if (DSM && m) DSM(dev, m, NULL);
       }
       PFN_vkDestroyDevice DD = dev ? (PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice") : NULL;
       if (DD) DD(dev, NULL);
