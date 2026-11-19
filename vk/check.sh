@@ -208,6 +208,17 @@ if readelf -d "$OUT/libvulkan_mali.so" | grep NEEDED | grep -qi libelf; then ech
 # No PanVK code in the binary.
 if nm "$OUT/libvulkan_mali.so" 2>/dev/null | grep -qi 'panvk'; then echo "FAIL  panvk symbols linked"; fail=1; else echo "ok    no panvk symbols"; fi
 
+# Desktop software rasteriser (MALI_SOFT=1, docs/host-harness.md): real frames rendered on the CPU from the frame record and
+# compared tile by tile with tests/golden/soft-frame.txt. Deterministic across v10/v11/v13 (the CPU path never looks at the arch).
+if [ -x "$OUT/t_soft_frame" ]; then
+   if [ $bless = 1 ]; then
+      MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" --bless >/dev/null && echo "ok    soft frames (golden re-blessed)"
+   elif out=$(MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" 2>&1); then echo "ok    ${out#ok }"
+   else echo "FAIL  soft frames:"; echo "$out" | sed 's/^/        /'; fail=1; fi
+else
+   echo "skip  soft frames (t_soft_frame not built)"
+fi
+
 if command -v vulkaninfo >/dev/null; then
    out=$(env $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v13 vulkaninfo --summary 2>&1); rc=$?
    if [ $rc -eq 0 ] && grep -q "Mali-G925 MC11 (mali-own, fake backend)" <<<"$out"; then echo "ok    vulkaninfo --summary"; else echo "FAIL  vulkaninfo --summary (exit $rc)"; fail=1; echo "$out" | tail -20; fi

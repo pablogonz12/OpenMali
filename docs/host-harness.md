@@ -20,9 +20,30 @@ Verified on this host on 2026-11-19 (see `tools/hostcheck --inventory` for the l
 | X11/WSI | `vk/tests/xwsi-host.sh vk/out/native v10` (`vk/check.sh` runs it) | a real `VK_KHR_xcb_surface` swapchain: create/acquire/clear; present x3 (`t_vk_xcb`), and `glxinfo -B` through zink (kopper needs a working xcb surface + swapchain) | the real compositor, scanout, dmabuf import/export. Runs under `gamescope --backend headless`; skips itself (exit 0, "skipped") without gamescope/Xwayland or `t_vk_xcb` |
 | Host dEQP-VK | `vk/check.sh --deqp-host` (opt-in, ~15 min) | ~200 dEQP-VK cases against the fake backend through the real loader | functional pixel results: dEQP runs but every draw is a no-op, so only Crash/Timeout/NotSupported are gated |
 | Guest aarch64 build | `vk/cross/build-cross.sh glibc` | the 32-bit-ABI / bionic-libc differences of the same sources | nothing is executed on the host: there is no aarch64 user-mode runner wired here (`qemu-aarch64-static` is installed but no script uses it, and the sysroot's `ld.so` is not set up). Arch-specific *words* are already checked natively by the goldens: they are data, not code |
-| Soft-rendered frames | `vk/out/native/t_soft_frame` (this document's second PR) | fixed-function state and attachment metadata of a recorded frame end to end: clear/load/store, row stride, formats, viewport/scissor, culling, depth test/write, blending, write masks, multi-pass. Pixels are diffed against a committed golden | shader *code*: the soft rasteriser runs CPU programs registered per pipeline, not the app's SPIR-V. Not vkmark/DXVK yet |
+| Soft-rendered frames | `vk/tests/soft-frame.sh` (`vk/check.sh` runs it; `--bless` re-records) | fixed-function state and attachment metadata of a recorded frame end to end: clear/render-area coverage, row stride, formats, viewport/scissor, culling, depth test/write (D32F, D24X8, D16), blending, write masks. Pixels are compared tile by tile with `vk/tests/golden/soft-frame.txt`; the map is byte-identical across v10/v11/v13 | shader *code*: CPU programs stand in for the pipeline's shaders. Not vkmark/DXVK |
 
 Not available on this host today: `vkmark`, DXVK/d3d11 binaries, `Xvfb`, a wired `qemu-aarch64` runner.
+
+## What the software rasteriser does not model
+
+Say exactly which of these a passing `soft-frame.sh` does **not** prove:
+
+* **MRT in one pass.** `struct mali_frame` carries a single colour attachment (`colour`, one `mali_att`), because the front
+  end advertises `maxColorAttachments = 1` today. A two-RT pipeline is rejected at pipeline creation (covered by
+  `t_dxvk_caps`/`t_steam_caps`), and the rasteriser has nothing to write the second RT through. Multi-RT *frames* are
+  covered as two separate passes/attachments, never as one subpass.
+* **Colour `loadOp LOAD`.** `mali_cmd.c` rejects a colour attachment with `loadOp LOAD` (not representable in the FBD), so
+  no Vulkan client can reach it. The rasteriser does implement LOAD (`clear = false` keeps memory), and
+  `case_render_area` exercises it directly on a hand-built frame record: a CLEAR limited to rows 64..127 must leave rows
+  0..63 and 128..255 untouched. That is the second-block-row class ("rows 64-127 read zero"); it is unit-tested on the
+  frame record, not through `vkCmdBeginRenderPass`.
+* **Shader code.** The rasteriser executes a CPU program registered per pipeline (`mali_soft_bind_program`), not the app's
+  SPIR-V. It proves vertex fetch, clipping-less triangle setup (triangles reaching behind the eye are dropped, not
+  near-clipped), interpolation, and the whole fixed-function output path; it says nothing about the compiled Valhall
+  shader, descriptor tables or texture sampling.
+* **Sampling, MSAA, stencil, compute, indirect draws, non-triangle topologies.** Each makes `mali_soft_frame` return
+  `-ENOTSUP` (the submit fails loudly, it never draws nothing silently). `t_soft_frame` covers single-sample colour +
+  depth, triangle lists, direct draws.
 
 ## What the host cannot prove, ever
 

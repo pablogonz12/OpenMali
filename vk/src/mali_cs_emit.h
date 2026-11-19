@@ -48,6 +48,7 @@ struct mali_env {
 };
 
 struct mali_bo;   /* M15: bo_wrote only stores the pointer */
+struct mali_frame;
 
 struct mali_hw {
    void *user;
@@ -59,11 +60,15 @@ struct mali_hw {
    int (*submit_multi)(void *user, const uint64_t *cs, unsigned ninstr, unsigned nframes);   /* nframes concatenated frame streams, one kick */
    void (*drain)(void *user);   /* wait until every submitted frame has retired */
    void (*bo_wrote)(void *user, struct mali_bo *bo);   /* M15: per-BO GPU-write mark (NULL bo = sweep everything next sync) */
+   /* Desktop software rasteriser (mali_soft.c, MALI_SOFT=1): when `soft` is set, a frame is rendered on the CPU from its
+    * record instead of being encoded into a command stream, and `va_cpu` resolves the record's GPU VAs to CPU memory. */
+   bool (*soft)(void *user, const struct mali_frame *f);
+   void *(*va_cpu)(void *user, uint64_t va, size_t size);
    struct mali_env env;
 };
 
 /* One vertex attribute: 1D attribute fetch from vertex binding `binding`. pixfmt = Mali Pixel Format word (KB_PIXFMT_*). */
-struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ uint32_t divisor; /* instance rate: hardware divisor (>= 1) */ };
+struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ uint32_t divisor; /* instance rate: hardware divisor (>= 1) */ int vk_format; /* VkFormat, for the software rasteriser's vertex fetch */ };
 
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
