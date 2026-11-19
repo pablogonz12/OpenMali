@@ -52,6 +52,7 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dynwm;                   /* colour write mask is dynamic (COLOR_WRITE_MASK_EXT): 1 = mask 0 then 0xf, 2 = mask 0 then 1 (R only), 3 = 0xf then 0 */
    int dynpoly;                 /* poly is set with vkCmdSetPolygonModeEXT (pipeline polygonMode FILL + VK_DYNAMIC_STATE_POLYGON_MODE_EXT) */
    int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
@@ -75,6 +76,8 @@ static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between d
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
+static PFN_vkCmdSetColorWriteMaskEXT CmdSetColorWriteMaskEXT_;
+static int g_have_wm;       /* extendedDynamicState3ColorWriteMask advertised and enabled */
 static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
@@ -521,13 +524,14 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
-   VkDynamicState dyn[11] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+   VkDynamicState dyn[12] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
    if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    if (g_fx.dynpoly) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+   if (g_fx.dynwm) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
       for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
       dys.dynamicStateCount += 3;
@@ -691,6 +695,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
    for (int i = 0; i < n; i++) {
+      if (g_fx.dynwm) {
+         static const VkColorComponentFlags seq[4][2] = {{0}, {0, 0xf}, {0, 1}, {0xf, 0}};
+         VkColorComponentFlags m = seq[g_fx.dynwm][i & 1];
+         CmdSetColorWriteMaskEXT_(cb, 0, 1, &m);
+      }
       if (g_dirty == 1) {
          VkViewport vi = {(i & 1) ? W / 2 : 0, 0, W / 2, H, 0.0f, 1.0f};
          CmdSetViewport(cb, 0, 1, &vi);
@@ -1475,6 +1484,40 @@ test_poly_dyn(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, in
    return good;
 }
 
+/* VK_EXT_extended_dynamic_state3 colorWriteMask (attachment 0): pipeline mask 0xf, the real mask is set per draw with vkCmdSetColorWriteMaskEXT.
+ * Two draws toggle it. On hardware: kind 1 (0 then 0xf) must draw the triangle, kind 2 (0 then R) only red, kind 3 (0xf then 0) the triangle.
+ * Fake backend: pixels are not checked, the decoded stream (golden) of each kind differs. */
+static int
+test_wmask_dyn(const char *name, int kind)
+{
+   struct scene s;
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   if (!g_have_wm) { printf("{\"test\":\"%s\",\"skipped\":\"extendedDynamicState3ColorWriteMask not advertised\",\"ok\":true}\n", name); return 1; }
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&g_fx, 0, sizeof g_fx);
+   g_fx.dynwm = kind;
+   g_fx.wmask = 0xf;
+   memset(&s, 0, sizeof s);
+   s.mode = MODE_TRI;
+   if (!scene_create(&s, 0)) return 0;
+   float rot[2][4] = {{1, 0, 0, 0}, {1, 0, 0, 0}};
+   int ok = scene_draw(&s, 2, rot, f);
+   int good = ok;
+   if (ok && !g_fake) {
+      uint32_t cov = count_cov(&s);
+      const uint8_t *c = s.px + 106 * s.pitch + 128 * 4;
+      good = cov > 8000 && c[0] > 60 && (kind == 2 ? (c[1] == 0 && c[2] == 0) : 1);
+      if (!good) { printf("{\"fail\":\"%s: cov %u px %u,%u,%u,%u\"}\n", name, cov, c[0], c[1], c[2], c[3]); g_fail++; }
+      else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
+   } else if (ok)
+      printf("{\"test\":\"%s\",\"ok\":true,\"skipped\":\"pixels: fake backend\"}\n", name);
+   memset(&g_fx, 0, sizeof g_fx);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return good;
+}
+
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
 enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
 struct fxcase {
@@ -2030,11 +2073,13 @@ main(int argc, char **argv)
       VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dce_f};
       GPF2(pd, &f2);
       void *chain = NULL;
+      g_have_wm = has3 && eds3_f.extendedDynamicState3ColorWriteMask;
       if (has3 && eds3_f.extendedDynamicState3PolygonMode) {
          g_have_eds3 = 1;
          /* enable polygonMode only: the other bits are not what this test exercises */
          VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
-                                                               .extendedDynamicState3PolygonMode = VK_TRUE};
+                                                               .extendedDynamicState3PolygonMode = VK_TRUE,
+                                                               .extendedDynamicState3ColorWriteMask = g_have_wm};
          eds3_f = e3;
          eds3_f.pNext = NULL;
          en_ext[di.enabledExtensionCount++] = dce_ext[1];
@@ -2054,6 +2099,9 @@ main(int argc, char **argv)
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
    CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
+   CmdSetColorWriteMaskEXT_ = (PFN_vkCmdSetColorWriteMaskEXT)GDPA(dev, "vkCmdSetColorWriteMaskEXT");
+   /* caps agreement: the feature bit is advertised exactly when the entry point exists and the extension was enabled */
+   if (g_have_wm && (!CmdSetColorWriteMaskEXT_ || !g_have_eds3)) { printf("{\"fail\":\"colorWriteMask advertised without vkCmdSetColorWriteMaskEXT / polygonMode\"}\n"); return 1; }
    if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
@@ -2116,6 +2164,11 @@ main(int argc, char **argv)
       ok &= test_poly_dyn("poly_dyn_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
       ok &= test_poly_dyn("poly_dyn_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
       ok &= test_poly_dyn("poly_dyn_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
+   }
+   if (ok && CASE_ON("wmask_dyn")) {
+      ok &= test_wmask_dyn("wmask_dyn_0_then_f", 1);
+      ok &= test_wmask_dyn("wmask_dyn_0_then_r", 2);
+      ok &= test_wmask_dyn("wmask_dyn_f_then_0", 3);
    }
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
