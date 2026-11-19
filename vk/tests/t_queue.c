@@ -3,7 +3,7 @@
  * timeline semaphores, sync_file export/import, many empty submits, device loss. Loader-free: dlopens
  * the ICD like t_icd --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle]
+ *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|teardown]
  *   fault mode needs MALI_FAULT_INJECT=n in the environment (n-th submission fails).
  */
 #define _DEFAULT_SOURCE
@@ -226,6 +226,22 @@ test_idle(void)
    CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "queue idle");
    CHECK(DeviceWaitIdle(dev) == VK_SUCCESS, "device idle");
    printf("{\"test\":\"idle\",\"n\":%d,\"ok\":true}\n", g_burst);
+   return 1;
+}
+
+/* Device teardown with a delayed fence still pending (MALI_FAKE_SLOW_US=100000): the fake backend's timer must be stopped and joined in
+ * DestroyDevice. main() then dlclose()s the ICD and waits past the delay: a stray backend thread would wake in unmapped code (SEGV). */
+static int
+test_teardown(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   for (int i = 0; i < 4; i++)
+      CHECK(QueueSubmit(queue, 1, &si, i == 3 ? f : VK_NULL_HANDLE) == VK_SUCCESS, "submit %d", i);
+   DestroyFence(dev, f, NULL); /* not waited: the signal is still in flight */
+   printf("{\"test\":\"teardown\",\"ok\":true}\n");
    return 1;
 }
 
@@ -620,11 +636,15 @@ main(int argc, char **argv)
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
 
-   DeviceWaitIdle(dev);
+   int td = g_only && !strcmp(g_only, "teardown");
+   if (ok && td) ok &= test_teardown();
+   if (!td) DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
    DestroyInstance(inst, NULL);
    dlclose(lib);
+   if (td) usleep(300000); /* longer than the delay: any thread left behind runs now */
    int fds1 = count_fds();
+   if (td && fds1 != fds0) { printf("{\"fail\":\"teardown fds %d -> %d\"}\n", fds0, fds1); g_fail = 1; }
    printf("{\"fds\":[%d,%d],\"pass\":%s}\n", fds0, fds1, (ok && !g_fail) ? "true" : "false");
    return (ok && !g_fail) ? 0 : 1;
 }

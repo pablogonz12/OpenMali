@@ -69,6 +69,7 @@ for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
+run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=100000 $TQ --only teardown
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
