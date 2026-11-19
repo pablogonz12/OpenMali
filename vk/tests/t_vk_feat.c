@@ -517,10 +517,19 @@ test_divisor(void)
       CmdBindVertexBuffers(cb, 0, 1, &vb.b, &off);
       CmdDraw(cb, 3, ni, 0, fi);
       CmdEndRenderPass(cb);
+      if (d > 1 && fi) {
+         /* hardware divides (firstInstance + i): refused loudly at record time (mali_cmd.c snapshot_draw), never wrong pixels */
+         CHECK(EndCommandBuffer(cb) != VK_SUCCESS, "divisor %u firstInstance %u must be refused (supportsNonZeroFirstInstance = false)", d, fi);
+         printf("{\"test\":\"divisor\",\"divisor\":%u,\"first_instance\":%u,\"refused\":true,\"ok\":true}\n", d, fi);
+         DestroyPipeline(dev, pipe, NULL);
+         DestroyPipelineLayout(dev, lay, NULL);
+         tgt_destroy(&t);
+         continue;
+      }
       if (!cb_submit(&t, cb)) return 0;
       if (!g_fake) {
          int want[4] = {0, 0, 0, 0};
-         for (unsigned i = 0; i < ni; i++) { unsigned k = d == 0 ? 0 : d == 1 ? fi + i : (fi + i) / d;   /* d > 1: the hardware divides the offset instance index */ if (k < 4) want[k] = 1; }
+         for (unsigned i = 0; i < ni; i++) { unsigned k = d == 0 ? 0 : fi + i / d; if (k < 4) want[k] = 1; }
          for (int k = 0; k < 4; k++)
             CHECK(red_at(&t, 21 + 64 * k, 117) == want[k], "divisor %u first %u: column %d %s, pixel %u,%u,%u,%u", d, fi, k, want[k] ? "missing" : "drawn",
                   pix(&t, 21 + 64 * k, 117)[0], pix(&t, 21 + 64 * k, 117)[1], pix(&t, 21 + 64 * k, 117)[2], pix(&t, 21 + 64 * k, 117)[3]);

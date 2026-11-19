@@ -316,7 +316,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
-      .vertexAttributeInstanceRateDivisor = false, .vertexAttributeInstanceRateZeroDivisor = true,   /* divisor > 1 is NOT advertised: the hardware divides (firstInstance + i), Vulkan wants firstInstance + i / divisor, and dEQP draw.*.instanced.*attrib_divisor_{2,20} (firstInstance 0,1,3,4,20) Fail on v13 (job 20261118-142435-48673771); needs a per-run descriptor rebase. Implementation stays in mali_cs_emit.c. t_vk_feat divisor (zero: divisor 1 with stride 0, as panvk) */
+      .vertexAttributeInstanceRateDivisor = true, .vertexAttributeInstanceRateZeroDivisor = true,   /* any divisor (kb_draw_attr_instance POT/NPOT, t_resources attr_instance). Hardware adds firstInstance BEFORE the divide, so supportsNonZeroFirstInstance = false and mali_cmd.c snapshot_draw rejects firstInstance != 0 with divisor > 1 (loud, not wrong pixels). t_vk_feat divisor */
       /* multiViewport: no geometry shader and no shaderOutputViewportIndex, so every primitive uses viewport/scissor 0; 1..15 are accepted state
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,
