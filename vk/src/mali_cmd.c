@@ -1091,6 +1091,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    for (int pi = 0; pi < 5; pi++) {
       if (!pre[pi].on)
          continue;
+      if (getenv("MALI_P86B_SKIP") && (atoi(getenv("MALI_P86B_SKIP")) & (1 << (pi >= 2 ? pi - 1 : 0))))   /* p86b diagnostic: bit n = skip RT n's preload */
+         continue;
       struct mali_draw d;
       if (mali_meta_vk_preload(cmd, pre[pi].kind, pre[pi].src, &d)) {
          unsupported(cmd, pre[pi].what);

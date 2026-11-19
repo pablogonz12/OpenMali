@@ -1159,6 +1159,7 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
    return ok;
 }
 
+static int g_mrt_skip = -1;
 /* multiple render targets: nrt (2 or 4) RGBA8 colour attachments, one draw of a left-half quad whose fragment shader
  * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
  * left half must hold that target's draw colour and the right half its clear colour.
@@ -1190,7 +1191,7 @@ test_mrt(const char *name, int nrt, int clear_att)
       for (int y_ = 0; y_ < H; y_++) for (int x_ = 0; x_ < W; x_++) { const uint8_t *q_ = px[i_] + (size_t)y_ * pitch[i_] + (size_t)x_ * 4; \
          if (q_[0] | q_[1] | q_[2] | q_[3]) { nz_++; if (y_ == 8) nzr_++; } } \
       const uint8_t *a_ = px[i_] + 8 * (size_t)pitch[i_] + (size_t)(W / 4) * 4, *b_ = px[i_] + 8 * (size_t)pitch[i_] + (size_t)(3 * W / 4) * 4, *c_ = px[i_] + (size_t)(H - 1) * pitch[i_] + (size_t)(W - 1) * 4; \
-      printf("{\"dump\":\"%s rt%d\",\"nonzero\":%u,\"row8\":%u,\"drawpx\":\"%02x%02x%02x%02x\",\"clearpx\":\"%02x%02x%02x%02x\",\"corner\":\"%02x%02x%02x%02x\"}\n", tag, i_, nz_, nzr_, a_[0], a_[1], a_[2], a_[3], b_[0], b_[1], b_[2], b_[3], c_[0], c_[1], c_[2], c_[3]); } } while (0)
+      printf("{\"dump\":\"%s %s rt%d\",\"nonzero\":%u,\"row8\":%u,\"drawpx\":\"%02x%02x%02x%02x\",\"clearpx\":\"%02x%02x%02x%02x\",\"corner\":\"%02x%02x%02x%02x\"}\n", name, tag, i_, nz_, nzr_, a_[0], a_[1], a_[2], a_[3], b_[0], b_[1], b_[2], b_[3], c_[0], c_[1], c_[2], c_[3]); } } while (0)
    MRT_CHECK(vs && fs, "shaders");
    for (int i = 0; i < nrt; i++) {
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
@@ -1313,6 +1314,7 @@ test_mrt(const char *name, int nrt, int clear_att)
    MRT_DUMP("after pass1");
    if (clear_att == 2) {   /* pass 2: LOAD every target, draw 1 pixel at the bottom right corner only */
       VkCommandBuffer cb2;
+      if (g_mrt_skip >= 0) { char sk_[16]; snprintf(sk_, sizeof sk_, "%d", g_mrt_skip); setenv("MALI_P86B_SKIP", sk_, 1); }   /* diagnostic: skip some preload draws */
       MRT_CHECK(AllocateCommandBuffers(dev, &cai, &cb2) == VK_SUCCESS, "alloc cb2");
       MRT_CHECK(BeginCommandBuffer(cb2, &bi) == VK_SUCCESS, "begin 2");
       VkRenderPassBeginInfo rb2 = rb;
@@ -2297,6 +2299,14 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2, 0);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
    if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
+   if (ok && !g_fake && CASE_ON("mrt4_load")) {   /* p86b diagnostics: which preload draws / RT counts break the LOAD frame (results ignored by ok) */
+      static const struct { const char *n; int nrt, skip; } ex[] = {{"mrt2_load", 2, -1}, {"mrt3_load", 3, -1}, {"mrt4_load_realonly", 4, 15},
+                                                                      {"mrt4_load_rt0pre", 4, 14}, {"mrt4_load_rt123pre", 4, 1}};
+      const int fail0 = g_fail;
+      for (unsigned e = 0; e < sizeof ex / sizeof *ex; e++) { g_mrt_skip = ex[e].skip; test_mrt(ex[e].n, ex[e].nrt, 2); }
+      g_mrt_skip = -1;
+      g_fail = fail0;
+   }
    if (ok && CASE_ON("mrt4_load")) ok &= test_mrt("mrt4_load", 4, 2);
    if (ok && CASE_ON("mrt4_clearquad")) ok &= test_mrt("mrt4_clearquad", 4, 3);
 
