@@ -1338,6 +1338,30 @@ class T(unittest.TestCase):
         self.assertIn("MINE", r.stdout)
         self.assertNotIn("OTHER-PHONE", r.stdout)
 
+    def test_valrun_serial_env_and_symlinked_runs_dir(self):
+        """qdrv resolves scripts/quick (a symlink to MediaDeck) and writes runs/quick THERE; quick.py reads CMF_SERIAL only: valrun must export it and look in that dir"""
+        home = self.d + "/home"
+        tree = self.d + "/tree"
+        md = self.d + "/MediaDeck"
+        for dpath in (md + "/scripts/quick", md + "/runs/quick", home + "/Projects/mali-gaming/scripts", home + "/.cache/mali-tmp", tree + "/vk/tests", tree + "/vk/out/a64-glibc", tree + "/tools", self.d + "/bin"):
+            os.makedirs(dpath, exist_ok=True)
+        os.symlink(md + "/scripts/quick", home + "/Projects/mali-gaming/scripts/quick")
+        shutil.copy(HERE + "/../../vk/tests/valrun.sh", tree + "/vk/tests/valrun.sh")
+        for n in ("libvulkan_mali.so", "t_vk_draw", "t_vk_compute", "t_vk_meta"):
+            open(tree + "/vk/out/a64-glibc/" + n, "w").write("x")
+        def script(path, body):
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, 0o755)
+        script(self.d + "/bin/adb", "exit 0\n")
+        script(tree + "/tools/dev-serial", "echo SERIAL-CMF\n")
+        script(md + "/scripts/quick/qdrv", "echo \"serial=$CMF_SERIAL\"; echo '{\"line\":\"MINE\"}' >" + md + "/runs/quick/29990101-000001-cmf-drv-valguest.sh.jsonl\n")
+        env = dict(os.environ, HOME=home, PATH=self.d + "/bin:" + os.environ["PATH"], QSAFE_LOCK_OVERRIDE="1", PHONE="cmf")
+        env.pop("CMF_SERIAL", None)
+        r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True, env=env, timeout=60, cwd=tree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("serial=SERIAL-CMF", r.stderr)
+        self.assertIn("MINE", r.stdout)
+
     def test_auto_bench_beats_sweep(self):
         self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
         self.attach("dev-a")
