@@ -56,6 +56,9 @@ struct mali_bo {
    void *priv;
 };
 
+/* Fake backend only (tests): live buffer BOs of one device. */
+unsigned mali_fake_live_bos(struct mali_kdev *k);
+
 struct mali_backend_ops {
    const char *name;
    /* 0 and *out filled when one GPU is usable, negative errno otherwise. */

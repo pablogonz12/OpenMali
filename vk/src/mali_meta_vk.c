@@ -403,7 +403,7 @@ blit_gclass(int pipe, struct gdesc *g)
       case UTIL_FORMAT_TYPE_FLOAT: if (ch->size != 16 && ch->size != 32) return false; t = 5; break;
       default: return false;
       }
-      if (ch->size < 1 || ch->size > 32 || ch->shift > 127 || ch->shift < 0)
+      if (ch->size < 1 || ch->size > 32 || ch->shift > 127)
          return false;
       g->ch[c] = (uint32_t)ch->shift | ch->size << 8 | t << 16;
    }

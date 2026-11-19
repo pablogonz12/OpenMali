@@ -221,7 +221,7 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
 /* ---- pools and sets ---- */
 
 VkResult
-mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescriptorPoolCreateInfo *ci, VkDescriptorPool *out)
+mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescriptorPoolCreateInfo *ci, const VkAllocationCallbacks *alloc, VkDescriptorPool *out)
 {
    uint64_t slots = 0;
    for (uint32_t i = 0; i < ci->poolSizeCount; i++) {
@@ -235,7 +235,7 @@ mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescri
    if (pib) slots += pib->maxInlineUniformBlockBindings * 2ull;   /* descriptor slot + alignment slack per binding */
    uint64_t bytes = slots * MALI_DESC_SLOT_SIZE;
    if (bytes > (1u << 30)) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-   struct mali_dpool *p = vk_object_zalloc(dev, NULL, sizeof *p, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
+   struct mali_dpool *p = vk_object_zalloc(dev, alloc, sizeof *p, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
    if (!p) return VK_ERROR_OUT_OF_HOST_MEMORY;
    p->cap = (uint32_t)bytes;
    p->max_sets = ci->maxSets;
@@ -244,7 +244,7 @@ mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescri
    if (p->cap) {
       p->cpu = mem_alloc(dev, p->cap, &p->va);
       if (!p->cpu) {
-         vk_object_free(dev, NULL, p);
+         vk_object_free(dev, alloc, p);
          return VK_ERROR_OUT_OF_DEVICE_MEMORY;
       }
    }
@@ -272,13 +272,13 @@ pool_clear(struct vk_device *dev, struct mali_dpool *p)
 }
 
 void
-mali_destroy_descriptor_pool(struct vk_device *dev, VkDescriptorPool h)
+mali_destroy_descriptor_pool(struct vk_device *dev, VkDescriptorPool h, const VkAllocationCallbacks *alloc)
 {
    struct mali_dpool *p = mali_dpool_from_handle(h);
    if (!p) return;
    pool_clear(dev, p);
    if (p->cpu) mem_free(dev, p->cpu, p->cap);
-   vk_object_free(dev, NULL, p);
+   vk_object_free(dev, alloc, p);
 }
 
 VkResult
@@ -378,8 +378,10 @@ mali_free_descriptor_sets(struct vk_device *dev, VkDescriptorPool h, uint32_t n,
    for (uint32_t i = 0; i < n; i++) {
       struct mali_dset *s = mali_dset_from_handle(sets[i]);
       if (!s) continue;
-      for (struct mali_dset **l = &p->sets; *l; l = &(*l)->next)
-         if (*l == s) { *l = s->next; break; }
+      struct mali_dset **l = &p->sets;
+      while (*l && *l != s) l = &(*l)->next;
+      if (!*l) continue;   /* not a live set of this pool (already freed, or another pool's): nothing to unlink or free */
+      *l = s->next;
       p->nsets--;
       dset_free(dev, s);
    }
