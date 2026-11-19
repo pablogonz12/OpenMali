@@ -995,6 +995,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          x->va = tx.va;
          x->rt = tx.rt;
          x->row_stride = tx.row_stride;
+         x->surface_stride = tx.surface_stride;   /* LOAD reads and store writes the same plane: keep the view's surface stride */
          x->clear = cx->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
          x->store = cx->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
          if (x->clear)
