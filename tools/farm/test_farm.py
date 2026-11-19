@@ -2138,6 +2138,15 @@ class SmokeRoute(unittest.TestCase):
         self.assertIn("so_sha256=" + "g" * 64, self.kept.splitlines()[0])
         self.assertNotIn(("shell", True), self.calls)
 
+    def test_daily_shell_decision(self):
+        """daily/sweep use the shell route on a locked smoke_fallback phone, the guest route when awake, never without the fallback"""
+        self.assertTrue(self.farm().daily_shell(self.dev))                                   # locked + smoke_fallback
+        self.assertFalse(self.farm(dumpsys="mWakefulness=Awake").daily_shell(self.dev))      # session can be READY
+        self.assertFalse(self.farm(fallback=False).daily_shell(self.dev))                    # no fallback configured
+        f = self.farm(fallback=False)
+        self.dev["route"] = "shell"
+        self.assertTrue(f.daily_shell(self.dev))                                             # route=shell phones always
+
     def test_shell_route_failing_test_is_a_fail(self):
         f = self.farm()
         bad = SMOKE_OUT.replace('"test":"t_vk_draw","rc":0', '"test":"t_vk_draw","rc":1').replace('"ok":true', '"ok":false')
