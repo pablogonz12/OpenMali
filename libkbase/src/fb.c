@@ -124,8 +124,8 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		unsigned sw = n ? p->rt_extra[n - 1].swizzle : p->rt_swizzle;
 		unsigned ibo = n ? p->rt_extra[n - 1].internal_offset : 0;
 		/* storeOp is per attachment: a discarded target keeps Write Enable and Clean Tile Write off, the next one still stores.
-		 * RT0's own DONT_CARE lives in kb_fb_params.rt_no_store (PR #217): this branch only owns RT 1..3. */
-		unsigned ns = n ? p->rt_extra[n - 1].no_store : 0;
+		 * RT0's own DONT_CARE lives in kb_fb_params.rt_no_store (PR #217), the extra targets in rt_extra[].no_store. */
+		unsigned ns = n ? p->rt_extra[n - 1].no_store : p->rt_no_store;
 		const uint32_t *cl = n ? p->rt_extra[n - 1].clear : p->rt_clear;
 		put(q, 0, 0, 4, 0);                                  /* Writeback Mode: compat */
 		put(q, 0, 4, 12, ibo >> 4);                          /* Internal Buffer Offset >> 4 */

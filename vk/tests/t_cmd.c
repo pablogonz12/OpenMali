@@ -402,6 +402,8 @@ test_store_op(void)
    CHECK(fbd_rt_write_enable(true, false) == 1, "storeOp STORE must write the tile back");
    CHECK(fbd_rt_write_enable(false, false) == 0, "storeOp DONT_CARE/NONE must not write the tile back (RT Write Enable)");
    CHECK(fbd_rt_write_enable(false, true) == 1, "MSAA resolve needs the RT write");
+}
+
 /* per-attachment storeOp in the packed FBD: a discarded colour attachment must clear its own Write Enable (word 1 bit 0) and
  * Clean Tile Write (word 1 bit 31), and must not touch the neighbours' bits. Host-level, no backend: fails if the packer ignores
  * rt_extra[].no_store (the fake backend's render is a no-op, so the pixel test cannot see this). */
