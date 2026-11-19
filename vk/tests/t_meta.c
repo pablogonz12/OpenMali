@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <pthread.h>
 
 extern int mali_meta_ref_oob;
 static int g_fail, g_verbose;
@@ -328,6 +330,72 @@ static void t_qcopy(void)
    }
 }
 
+
+/* Device replacement racing shader lookups (review: -ENODEV for a still-valid device; materialize mixing the shader of one device with the
+ * descriptor memory of another). Each fake device tags the VAs it hands out in bits 56+; materialize must return a dispatch whose shader and
+ * descriptor set come from the same device. The device is only ever replaced (A, B, A, A ...), never cleared. The v11/v13 meta binaries are
+ * byte-identical, so a stale-arch compile (the set_dev generation bump) cannot be seen from the bytes: that part is fixed by construction. */
+struct rdev { unsigned tag; };
+static int g_race_bad, g_race_enodev;
+static void *r_alloc(void *u, size_t sz, size_t al, uint64_t *va)
+{
+   void *p = d_alloc(u, sz, al, va);
+   *va |= (uint64_t)((struct rdev *)u)->tag << 56;
+   return p;
+}
+static void r_free(void *u, void *cpu, uint64_t va, size_t sz) { free(cpu); }
+static int r_up(void *u, const uint8_t *b, uint32_t sz, uint64_t *va)
+{
+   *va = ((uint64_t)((struct rdev *)u)->tag << 56) | 0x7f0000001000ull;
+   return 0;
+}
+static volatile int g_race_stop;
+static void *race_worker(void *arg)
+{
+   int mat = (int)(intptr_t)arg;
+   struct mali_meta_list l = { 0 };
+   uint8_t *a = mk(256, 1), *b = mk(256, 2);
+   struct mali_meta_surf d = S(b, 256, 8, 0, 0), s = S(a, 256, 4, 0, 0);
+   if (mat) mali_meta_plan_buffer_copy(&l, &d, &s, 100);
+   while (!g_race_stop) {
+      const struct mali_compiled *c; uint64_t va;
+      if (mat && l.n) {
+         struct mali_meta_mem mem = { 0 };
+         struct mali_dispatch disp;
+         int r = mali_meta_materialize(&l.j[0], &mem, &disp);
+         if (r == -19) g_race_enodev++;   /* the device is only ever replaced, never cleared, in this test */
+         if (!r && (disp.cs_va >> 56) != (disp.set_va[0] >> 56)) g_race_bad++;
+         mali_meta_mem_release(&mem);
+      } else {
+         int r = mali_meta_shader_get(MALI_META_COPY, &c, &va);
+         if (r == -19) g_race_enodev++;
+      }
+   }
+   return NULL;
+}
+static void t_set_dev_race(void)
+{
+   static struct rdev da = { 1 }, db = { 2 }, dc = { 3 };
+   mali_meta_set_dev(&(struct mali_meta_dev){ &da, 11, r_alloc, r_free, r_up });
+   pthread_t t[4];
+   g_race_stop = 0;
+   for (int i = 0; i < 4; i++) pthread_create(&t[i], NULL, race_worker, (void *)(intptr_t)(i & 1));
+   struct mali_meta_dev dv[3] = { { &da, 11, r_alloc, r_free, r_up }, { &db, 13, r_alloc, r_free, r_up }, { &dc, 11, r_alloc, r_free, r_up } };
+   struct timespec t0, t1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   int n = 0;
+   do {
+      mali_meta_set_dev(&dv[n++ % 3]);   /* A, B, A, A, B, A ... */
+      usleep(1000 + (n * 7919) % 15000);   /* a compile takes ms: replace the device at a pace that lands inside them */
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+   } while ((t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9 < 2.0);
+   g_race_stop = 1;
+   for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+   if (g_verbose) printf("  set_dev race: %d replacements, bad uploads %d, ENODEV %d\n", n, g_race_bad, g_race_enodev);
+   CHECK(g_race_bad == 0, "%d dispatches mixed a shader of one device with descriptor memory of another", g_race_bad);
+   CHECK(g_race_enodev == 0, "%d lookups/materialisations returned -ENODEV with a device always installed", g_race_enodev);
+}
+
 int main(int argc, char **argv)
 {
    struct timespec t0, t1;
@@ -342,6 +410,7 @@ int main(int argc, char **argv)
    t_const();
    t_blit();
    t_qcopy();
+   t_set_dev_race();
    CHECK(mali_meta_ref_oob == 0, "reference ran %d out-of-bounds / short-grid accesses", mali_meta_ref_oob);
    mali_meta_set_dev(NULL);
    clock_gettime(CLOCK_MONOTONIC, &t1);

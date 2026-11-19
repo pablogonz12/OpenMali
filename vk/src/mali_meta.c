@@ -336,6 +336,7 @@ mali_meta_set_dev(const struct mali_meta_dev *dev)
    g_dev_set = dev != NULL;
    if (dev)
       g_dev = *dev;
+   g_gen++;   /* a compile that started in the window since the first bump captured the OLD device's arch under the NEW gen: drop it too */
    pthread_mutex_unlock(&g_lock);
 }
 
@@ -411,8 +412,9 @@ meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[2], unsigned
 /* Compiles outside g_lock (a first-use compile is tens to hundreds of ms and g_lock also guards every meta/query/event allocation),
  * publishes under it. Two racing first uses may both compile; the loser's result is freed. */
 static int
-shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
+shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va, unsigned *gen_out)
 {
+retry:
    pthread_mutex_lock(&g_lock);
    if (!g_dev_set) {
       pthread_mutex_unlock(&g_lock);
@@ -421,6 +423,8 @@ shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *v
    if (g_sh[sh].ok) {
       *c = &g_sh[sh].c;
       *va = g_sh[sh].va;
+      if (gen_out)
+         *gen_out = g_gen;
       pthread_mutex_unlock(&g_lock);
       return 0;
    }
@@ -454,9 +458,13 @@ shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *v
 
    pthread_mutex_lock(&g_lock);
    int r = 0;
-   if (!g_dev_set || g_gen != gen) {
+   if (!g_dev_set) {
       mali_compiled_free(&comp);
       r = -ENODEV;
+   } else if (g_gen != gen) {   /* the device was replaced while compiling (set(A), set(B), set(A) included): drop the stale binary, compile again for the current one */
+      mali_compiled_free(&comp);
+      pthread_mutex_unlock(&g_lock);
+      goto retry;
    } else if (g_sh[sh].ok) {
       mali_compiled_free(&comp);
    } else if (g_dev.upload_shader(g_dev.user, comp.bin, comp.bin_size, &g_sh[sh].va) < 0) {
@@ -469,6 +477,8 @@ shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *v
    if (!r) {
       *c = &g_sh[sh].c;
       *va = g_sh[sh].va;
+      if (gen_out)
+         *gen_out = g_gen;
    }
    pthread_mutex_unlock(&g_lock);
    return r;
@@ -477,7 +487,7 @@ shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *v
 int
 mali_meta_shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
 {
-   return shader_get(sh, c, va);
+   return shader_get(sh, c, va, NULL);
 }
 
 /* Compile the built-in meta shaders (copy, blit, qcopy) on a background thread so the first blit/copy of a frame does not hitch.
@@ -488,7 +498,7 @@ prewarm_main(void *unused)
    const struct mali_compiled *c;
    uint64_t va;
    for (int i = 0; i <= MALI_META_QCOPY; i++)
-      shader_get(i, &c, &va);
+      shader_get(i, &c, &va, NULL);
    return NULL;
 }
 
@@ -523,10 +533,16 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    struct mali_meta_bind bind[2] = { j->bind[0], j->bind[1] };
    int r;
 
-   r = shader_get(j->sh, &c, &cs_va);
-   if (r)
-      return r;
-   pthread_mutex_lock(&g_lock);
+   unsigned gen;
+   for (;;) {
+      r = shader_get(j->sh, &c, &cs_va, &gen);
+      if (r)
+         return r;
+      pthread_mutex_lock(&g_lock);
+      if (g_dev_set && g_gen == gen)
+         break;   /* shader and the device that allocates below are still the same generation, and g_lock is held from here to the last alloc */
+      pthread_mutex_unlock(&g_lock);   /* set_dev ran between lookup and allocation: the shader pointer/VA may be freed or foreign, look it up again */
+   }
    if (j->inline_data) {
       uint64_t va;
       void *p = mem_alloc(mem, (j->inline_len + 63) & ~63u, 64, &va);
