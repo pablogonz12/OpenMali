@@ -127,26 +127,35 @@ def run_watched(cmd, timeout, alive, grace=45, poll=5, **kw):
     th.start()
     t0, lost = time.time(), None
     rc = None
-    while rc is None:
-        try:
-            rc = p.wait(poll)
-        except subprocess.TimeoutExpired:
-            if time.time() - t0 > timeout:
-                rc = 124
-            elif (st := alive()) == "stop":
-                rc = 125
-            elif st:
-                lost = None
-            else:
-                lost = lost or time.time()
-                if time.time() - lost > grace:
+    try:
+        while rc is None:
+            try:
+                rc = p.wait(poll)
+            except subprocess.TimeoutExpired:
+                if time.time() - t0 > timeout:
+                    rc = 124
+                elif (st := alive()) == "stop":
                     rc = 125
-            if rc in (124, 125):
-                try:
-                    os.killpg(p.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-                p.wait()
+                elif st:
+                    lost = None
+                else:
+                    lost = lost or time.time()
+                    if time.time() - lost > grace:
+                        rc = 125
+                if rc in (124, 125):
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    p.wait()
+    except BaseException:
+        # alive() (or anything in the loop) raised: never leave the child group driving the phone
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.wait()
+        raise
     th.join(5)
     txt = (out[0] if out else b"").decode(errors="replace")
     return rc, txt + ("\nDEVICE-LOST" if rc == 125 else "\nTIMEOUT" if rc == 124 else "")
@@ -157,6 +166,12 @@ def store_route(alias, addr, path=None):
     `ip:5555` entry in `wireless`/`address` is replaced, other routes (other ports) stay, none yet -> a `wireless` line is added.
     Text edit (comments and other entries untouched), atomic. -> True if the file changed."""
     path = path or devices_path()
+    with open(path + ".lock", "a") as lk:                 # serialize the read-modify-write between writers (farmd threads, farm CLI)
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        return _store_route(alias, addr, path)
+
+
+def _store_route(alias, addr, path):
     lines = open(path).read().split("\n")
     start = next((i for i, l in enumerate(lines) if re.match(r'\s*alias\s*=\s*"%s"' % re.escape(alias), l)), None)
     if start is None:
@@ -192,6 +207,7 @@ def store_route(alias, addr, path=None):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
     with os.fdopen(fd, "w") as f:
         f.write("\n".join(lines))
+    os.chmod(tmp, os.stat(path).st_mode & 0o7777)          # mkstemp is 0600: keep the file's own mode
     os.replace(tmp, path)
     return True
 

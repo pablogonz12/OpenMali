@@ -1445,13 +1445,14 @@ class Farm:
             self.cool[alias] = time.time() + (0 if self.fake else 20)
             return
         t0, started = time.time(), L.now()
-        job = L.read_json(L.job_path(jid))
+        job = None
         res, h0, touched = None, {}, False
         self.stop_reason.pop(alias, None)
         if not hasattr(self, "running_job"):
             self.running_job = {}
         self.running_job[alias] = jid
         try:
+            job = L.read_json(L.job_path(jid))              # inside the try: a read error must still release the lock
             gs, gwhy, h0 = self.gate_check(dev, starting=True)
             if gs != "ok":
                 log(f"{alias}: gated ({gs}: {gwhy}); {jid}/{cls} stays pending")
@@ -1499,7 +1500,12 @@ class Farm:
             return
         why_stop = self.stop_reason.pop(alias, None)
         if res is None and why_stop == "cancelled":
-            self.upd(jid, lambda x: x["parts"][cls].update(state="cancelled"))
+            j = self.upd(jid, lambda x: x["parts"][cls].update(state="cancelled"))
+            if not any(p.get("state") == "running" for p in (j or {}).get("parts", {}).values()):
+                try:                                            # else a requeued part of this job would be stopped at once
+                    os.unlink(os.path.join(L.state_dir(), "cancel", jid))
+                except OSError:
+                    pass
             log(f"{alias}: {jid}/{cls} cancelled by the owner; lock released")
             return
         if res is None and why_stop:                            # owner policy (charger removed / disabled): clean stop, no blame, no retry count
