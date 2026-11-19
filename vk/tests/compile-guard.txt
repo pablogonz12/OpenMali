@@ -1,3 +1,7 @@
 version 22
+<<<<<<< HEAD
 sha256 6a4acfee842b2a2a04be7f6a4c9c50babc912789816dafc2c14a54649a81e78d
+=======
+sha256 52ae36e4df93e47b9da70fe354ed527dc7d84b6fa55daad47f5d20e51234a76f
+>>>>>>> ba7cb46 (vk: advertise robustBufferAccess (buffer lowering only; stacked on #114))
 files src/mali_compile.c src/mali_descriptor_lower.c src/mali_descriptor_lower.h src/mali_pipeline_layout_flat.h
