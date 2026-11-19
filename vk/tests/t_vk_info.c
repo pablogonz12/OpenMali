@@ -118,6 +118,11 @@ main(int argc, char **argv)
    CHECK(pr.properties.vendorID == 0x13b5, "vendor");
    eq("driverID", p12.driverID, drv.driverID);
    CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
+   CHECK(!strcmp(drv.driverName, "mali-own"), "driverName '%s'", drv.driverName);
+   CHECK(!strncmp(drv.driverInfo, "mali-open ", 10) && strstr(drv.driverInfo, " (mali-own)"), "driverInfo '%s'", drv.driverInfo);
+   CHECK(strstr(pr.properties.deviceName, "mali-own"), "deviceName '%s'", pr.properties.deviceName);
+   CHECK(drv.conformanceVersion.major == 0 && drv.conformanceVersion.minor == 0 && drv.conformanceVersion.subminor == 0 &&
+         drv.conformanceVersion.patch == 0, "conformanceVersion must stay 0.0.0.0");
    CHECK(!memcmp(p11.driverUUID, idp.driverUUID, VK_UUID_SIZE) && !memcmp(p11.deviceUUID, idp.deviceUUID, VK_UUID_SIZE), "UUID mismatch 1.1 vs ID struct");
    eq("subgroupSize", p11.subgroupSize, sg.subgroupSize);
    CHECK(p11.subgroupSize == 16 && p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16, "subgroup 16");

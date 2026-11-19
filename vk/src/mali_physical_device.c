@@ -128,6 +128,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA "unknown"
+#endif
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
             gpu->fake ? ", fake backend" : "");
 
@@ -151,7 +154,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
     * no msrtss); an unregistered id would lose them. Revisit only if a PanVK quirk turns out wrong for us. */
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
-   snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
+   snprintf(p->driverInfo, sizeof(p->driverInfo), "mali-open %s (mali-own), not conformant", MALI_GIT_SHA);
    /* conformanceVersion stays 0.0.0.0: we do not claim conformance. */
    p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
    p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;

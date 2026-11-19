@@ -69,9 +69,12 @@ for s in $KBSRCS; do
    eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
    OBJS="$OBJS $o"
 done
+# Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
+MALI_SHA=$(git -C "$V" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
+git -C "$V" diff --quiet HEAD -- 2>/dev/null || MALI_SHA="$MALI_SHA-dirty"
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
 
