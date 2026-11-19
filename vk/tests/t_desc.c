@@ -301,6 +301,84 @@ test_variable_count(void)
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
 
+static void
+test_variable_count_edges(void)
+{
+   printf("variableDescriptorCount: ignored flags, immutable samplers, inline blocks\n");
+   VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64 };
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 4, .poolSizeCount = 1, .pPoolSizes = &ps };
+   VkDescriptorBindingFlags var = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+   /* 1. bindingCount 0: the flags array is ignored */
+   {
+      VkDescriptorSetLayoutBinding b[2] = {
+         { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1, .stageFlags = 0x1f },
+         { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 2, .stageFlags = 0x1f } };
+      VkDescriptorBindingFlags fl[2] = { 0, var };
+      VkDescriptorSetLayoutBindingFlagsCreateInfo bf = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 0, .pBindingFlags = fl };
+      VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bf, .bindingCount = 2, .pBindings = b };
+      struct mali_dsl *l = NULL;
+      CHECK(mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS, "layout");
+      if (l) { CHECK(l->var_binding == -1, "bindingCount 0 ignores pBindingFlags (var_binding %d)", l->var_binding); vk_descriptor_set_layout_unref(&g_dev, &l->vk); }
+      VkDescriptorSetVariableDescriptorCountLayoutSupport vs = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT, .maxVariableDescriptorCount = 77 };
+      VkDescriptorSetLayoutSupport sup = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT, .pNext = &vs };
+      mali_get_descriptor_set_layout_support(&ci, &sup);
+      CHECK(vs.maxVariableDescriptorCount == 0, "support: no variable binding when bindingCount is 0 (%u)", vs.maxVariableDescriptorCount);
+   }
+   /* 2. immutable samplers: only var_count elements are written */
+   {
+      VkSampler smp[8] = { (VkSampler)1, (VkSampler)2, (VkSampler)3, (VkSampler)4, (VkSampler)5, (VkSampler)6, (VkSampler)7, (VkSampler)8 };
+      VkDescriptorSetLayoutBinding b = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 8, .stageFlags = 0x1f, .pImmutableSamplers = smp };
+      VkDescriptorSetLayoutBindingFlagsCreateInfo bf = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 1, .pBindingFlags = &var };
+      VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bf, .bindingCount = 1, .pBindings = &b };
+      struct mali_dsl *l = NULL;
+      VkDescriptorPool pool;
+      CHECK(mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS, "immutable layout");
+      CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, &pool) == VK_SUCCESS, "pool");
+      if (l) {
+         VkDescriptorSetLayout hl = mali_dsl_to_handle(l);
+         uint32_t cnt = 1;
+         VkDescriptorSetVariableDescriptorCountAllocateInfo vc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO, .descriptorSetCount = 1, .pDescriptorCounts = &cnt };
+         VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .pNext = &vc, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &hl };
+         VkDescriptorSet s = VK_NULL_HANDLE;
+         CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s) == VK_SUCCESS, "alloc 1 of 8 immutable");
+         if (s) {
+            struct mali_dset *d = mali_dset_from_handle(s);
+            bool clean = true;
+            for (uint32_t i = d->bytes; i < d->bytes + 7 * MALI_DESC_SLOT_SIZE; i++) clean &= d->cpu[i] == 0;
+            CHECK(clean, "immutable init stayed inside the %u allocated bytes", d->bytes);
+         }
+         vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+      }
+      mali_destroy_descriptor_pool(&g_dev, pool);
+   }
+   /* 3. variable inline uniform block: the count is bytes */
+   {
+      VkDescriptorSetLayoutBinding b = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, .descriptorCount = 64, .stageFlags = 0x1f };
+      VkDescriptorBindingFlags f1 = var;
+      VkDescriptorSetLayoutBindingFlagsCreateInfo bf = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 1, .pBindingFlags = &f1 };
+      VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bf, .bindingCount = 1, .pBindings = &b };
+      struct mali_dsl *l = NULL;
+      VkDescriptorPool pool;
+      VkDescriptorPoolSize ips = { VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 64 };
+      VkDescriptorPoolCreateInfo ipi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &ips };
+      if (mali_dsl_create(&g_dev, 11, &ci, &l) == VK_SUCCESS && mali_create_descriptor_pool(&g_dev, 11, &ipi, &pool) == VK_SUCCESS) {
+         VkDescriptorSetLayout hl = mali_dsl_to_handle(l);
+         uint32_t cnt = 16;
+         VkDescriptorSetVariableDescriptorCountAllocateInfo vc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO, .descriptorSetCount = 1, .pDescriptorCounts = &cnt };
+         VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .pNext = &vc, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &hl };
+         VkDescriptorSet s = VK_NULL_HANDLE;
+         VkResult r = mali_allocate_descriptor_sets(&g_dev, &ai, &s);
+         CHECK(r == VK_SUCCESS, "inline block of 16 bytes out of 64 allocates (%d)", (int)r);
+         if (s) CHECK(mali_dset_from_handle(s)->bytes == 2 * MALI_DESC_SLOT_SIZE, "header + 16 B = 2 slots (%u bytes)", mali_dset_from_handle(s)->bytes);
+         mali_reset_descriptor_pool(&g_dev, pool);
+         cnt = 68;
+         CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s) == VK_ERROR_OUT_OF_POOL_MEMORY, "more bytes than declared must fail");
+         mali_destroy_descriptor_pool(&g_dev, pool);
+         vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+      } else CHECK(0, "inline layout/pool");
+   }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -316,6 +394,7 @@ main(int argc, char **argv)
    test_bytes(13);
    test_pool();
    test_variable_count();
+   test_variable_count_edges();
    test_compile(11);
    test_compile(13);
    clock_gettime(CLOCK_MONOTONIC, &b);

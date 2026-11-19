@@ -153,7 +153,7 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
-      if (bf && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
+      if (bf && bf->bindingCount && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
           n == nb - 1)   /* spec: only the highest-numbered binding; its slots are last in the set */
          d->var_binding = n;
       /* Immutable samplers with a YCbCr conversion: the element holds one texture descriptor per image plane, then the sampler. */
@@ -228,7 +228,7 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
       const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
          vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
       vs->maxVariableDescriptorCount = 0;
-      if (bf && bf->pBindingFlags && ci->bindingCount) {
+      if (bf && bf->bindingCount && bf->pBindingFlags && ci->bindingCount) {
          uint32_t hi = 0;
          for (uint32_t i = 1; i < ci->bindingCount; i++)
             if (ci->pBindings[i].binding > ci->pBindings[hi].binding) hi = i;
@@ -316,13 +316,14 @@ mali_reset_descriptor_pool(struct vk_device *dev, VkDescriptorPool h)
 }
 
 static void
-write_immutable(struct mali_dset *s)
+write_immutable(struct mali_dset *s, uint32_t var_count)
 {
    const struct mali_dsl *l = s->layout;
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
       if (b->type == MALI_DT_NONE || b->imm_off == MALI_NO_IMM_SAMPLER || !g_res) continue;
-      for (uint32_t k = 0; k < b->count; k++) {
+      const uint32_t cnt = (l->var_binding == (int)n && var_count < b->count) ? var_count : b->count;   /* the variable binding holds only var_count elements */
+      for (uint32_t k = 0; k < cnt; k++) {
          unsigned sub = b->type == MALI_DT_COMBINED_IMAGE_SAMPLER ? (b->ycbcr_planes ? b->ycbcr_planes : 1) : 0;
          struct mali_hw_desc hw;
          if (g_res->sampler(l->imm[b->imm_off + k], &hw) == 0)
@@ -338,8 +339,13 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, uint3
    uint32_t slots = l->slot_count;
    if (l->var_binding >= 0) {   /* the variable binding is last: shrink it from count to var_count elements */
       const struct mali_lbinding *vb = &l->b[l->var_binding];
-      if (var_count > vb->count) return VK_ERROR_OUT_OF_POOL_MEMORY;
-      slots -= (vb->count - var_count) * vb->stride;
+      if (vb->inline_bytes) {   /* inline uniform block: the count is a byte capacity; the header slot stays */
+         if (var_count > vb->inline_bytes) return VK_ERROR_OUT_OF_POOL_MEMORY;
+         slots -= inline_slots(vb->inline_bytes) - inline_slots(var_count);
+      } else {
+         if (var_count > vb->count) return VK_ERROR_OUT_OF_POOL_MEMORY;
+         slots -= (vb->count - var_count) * vb->stride;
+      }
    }
    uint32_t bytes = slots * MALI_DESC_SLOT_SIZE;
    if (p->nsets >= p->max_sets) return VK_ERROR_OUT_OF_POOL_MEMORY;
@@ -368,12 +374,13 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, uint3
    s->va = p->va + at;
    s->arch = p->arch;
    memset(s->cpu, 0, bytes);
-   write_immutable(s);
+   write_immutable(s, var_count);
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
       if (b->type == MALI_DT_NONE || !b->inline_bytes) continue;
       struct mali_hw_desc hw;
-      mali_pack_buffer(p->arch, &hw, s->va + (uint64_t)(b->slot + 1) * MALI_DESC_SLOT_SIZE, b->inline_bytes);
+      mali_pack_buffer(p->arch, &hw, s->va + (uint64_t)(b->slot + 1) * MALI_DESC_SLOT_SIZE,
+                       (l->var_binding == (int)n && var_count < b->inline_bytes) ? var_count : b->inline_bytes);
       memcpy(s->cpu + (size_t)b->slot * MALI_DESC_SLOT_SIZE, &hw, sizeof hw);
    }
    s->next = *link;
