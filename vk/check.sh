@@ -66,7 +66,7 @@ for g in v11 v13; do run "steam_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 # MALI_ADVERTISE_DESCIDX compatibility shim (not conformance): descriptorIndexing flag only; off by default.
 for g in v11 v13; do
-   run "descidx shim off $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_descidx_shim" --direct "$OUT/libvulkan_mali.so" --expect off
+   run "descidx shim off $g" 0 -u MALI_ADVERTISE_DESCIDX MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_descidx_shim" --direct "$OUT/libvulkan_mali.so" --expect off
    run "descidx shim on $g"  0 MALI_ADVERTISE_DESCIDX=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_descidx_shim" --direct "$OUT/libvulkan_mali.so" --expect on
 done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done

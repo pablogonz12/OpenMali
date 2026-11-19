@@ -236,7 +236,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
-    * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
+    * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Named exception: descriptorIndexing under MALI_ADVERTISE_DESCIDX=1 (non-conformant shim) is probed by t_descidx_shim, not t_vk_info. Everything else stays false. */
    const struct vk_features features = {
       .timelineSemaphore = true,
       .textureCompressionBC = true,
