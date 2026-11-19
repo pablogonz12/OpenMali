@@ -12,12 +12,14 @@ while getopts "o:a:n" o; do case $o in o) OUT=$OPTARG;; a) ARCHS=$OPTARG;; n) BU
 shift $((OPTIND - 1))
 [ $BUILD = 1 ] && (cd "$D/vk" && ./build.sh >&2)
 BIN=$D/vk/out/native/shaderdb
-C=${SHADERDB_CACHE:-${TMPDIR:-/tmp}/shaderdb-corpus}
-mkdir -p "$C"
-mapfile -d '' -t FILES < <( { for f in "$D"/vk/shader/*.spv "$D"/bench/mdbench/shaders/*.spv "$D"/compiler-spike/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
+C=${SHADERDB_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/shaderdb-corpus}
+mkdir -p -m 700 "$C"
+[ -O "$C" ] && [ -d "$C" ] && [ ! -L "$C" ] || { echo "run.sh: cache dir $C must be a real directory owned by you" >&2; exit 1; }
+LIST=$(mktemp); trap 'rm -f "$LIST"' EXIT
+{ for f in "$D"/vk/shader/*.spv "$D"/bench/mdbench/shaders/*.spv "$D"/compiler-spike/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
    EX=${SHADERDB_EXTRA:-}
    IFS=: read -r -a EXA <<< "$EX"
-   for e in ${EXA[@]+"${EXA[@]}"} "$@"; do [ -n "$e" ] || continue; if [ -d "$e" ]; then find "$e" -name '*.spv' -print0; else printf '%s\0' "$e"; fi; done
+   for e in ${EXA[@]+"${EXA[@]}"} "$@"; do [ -n "$e" ] || continue; if [ -d "$e" ]; then find "$e" -name '*.spv' -print0; elif [ -f "$e" ]; then printf '%s\0' "$e"; else echo "run.sh: no such corpus path: $e" >&2; exit 2; fi; done
    if [ -z "${SHADERDB_NO_DXVK:-}" ]; then
       DX=${SHADERDB_DXVK_DIR:-$(ls -d /usr/share/steam/compatibilitytools.d/*/files/lib/wine/dxvk/x86_64-windows 2>/dev/null | head -1 || true)}
       if [ -n "$DX" ] && [ -d "$DX" ]; then
@@ -28,5 +30,6 @@ mapfile -d '' -t FILES < <( { for f in "$D"/vk/shader/*.spv "$D"/bench/mdbench/s
          fi
          for f in "$C"/dxvk/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
       fi
-   fi; } | LC_ALL=C sort -zu)
-SHADERDB_STRIP="$D/:$C/" MALI_SHADER_CACHE= "$BIN" -a "$ARCHS" "${FILES[@]}" > "$OUT"
+   fi; } > "$LIST"   # group runs under set -e (not in a pipeline), so a failing find/extract aborts the run
+mapfile -d '' -t FILES < <(LC_ALL=C sort -zu "$LIST")
+SHADERDB_STRIP="$D/:$C/" MALI_SHADER_CACHE= "$BIN" -a "$ARCHS" ${FILES[@]+"${FILES[@]}"} > "$OUT"
