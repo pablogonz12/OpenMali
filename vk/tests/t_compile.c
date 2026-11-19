@@ -273,6 +273,21 @@ test_errors(void)
          CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "module with an unterminated function refused");
          m.w[m.n - 1] = keep;
       }
+      free(m.w);
+      m = load("pc.frag.spv");   /* struct P {vec4; vec4} with Offset 0 / 16 */
+      o.spirv = m.w; o.spirv_words = m.n;
+      size_t md = 0;
+      for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+         if ((m.w[i] & 0xffff) == 72 && m.w[i + 2] == 1 && m.w[i + 3] == 35) { md = i; break; }
+      CHECK(md, "pc.frag has a member 1 Offset");
+      if (md) {
+         m.w[md + 2] = 0;   /* member 0 gets two Offsets, member 1 none: glsl_get_explicit_size asserted offset >= 0 */
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "struct with a member lacking Offset refused");
+         m.w[md + 2] = 1;
+      }
+      free(m.w);
+      m = load("var.frag.spv");
+      o.spirv = m.w; o.spirv_words = m.n;
       uint32_t last = 5, lw = 0;
       for (size_t i = 5; i < m.n; i += m.w[i] >> 16) { last = i; lw = m.w[i]; }
       m.w[last] = (lw & 0xffff) | ((uint32_t)(m.n - last + 3) << 16);   /* claims 3 words more than the module has */
