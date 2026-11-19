@@ -94,6 +94,13 @@ for g in v11 v13; do
    run "vk_feat $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
 done
 
+# VK_EXT_provoking_vertex: the fake backend asserts the two hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx
+# word 2 bit 18) in t_cmd --extra (build-t_cmd.sh, below); the t_vk_feat provoking case (flat v0 red / v2 blue) is named here so the
+# fake-backend gate cannot silently drop it. Its pixel assertion only runs on hardware (FIRST=red, LAST=blue).
+for g in v11 v13; do
+   run "vk_feat provoking $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only provoking
+done
+
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
 for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200

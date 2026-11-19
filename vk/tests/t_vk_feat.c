@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -2101,6 +2101,46 @@ test_samplerate(void)
 }
 
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+/* VK_EXT_provoking_vertex on hardware: flat colour (v0 red, v1 green, v2 blue) over a covering triangle; FIRST must read red, LAST blue */
+static VkBool32 g_pv_last;
+static int
+test_provoking(void)
+{
+   if (!g_pv_last) { printf("{\"test\":\"provoking\",\"skipped\":\"provokingVertexLast not advertised\",\"ok\":true}\n"); return 1; }
+   static const struct { VkProvokingVertexModeEXT m; const char *n; uint8_t r, g, b; } modes[2] = {
+      {VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT, "first", 255, 0, 0}, {VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT, "last", 0, 0, 255}};
+   for (int i = 0; i < 2; i++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pv = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
+                                                                     .provokingVertexMode = modes[i].m};
+      g_rs_next = &pv;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      int okp = make_pipe(&t, "provoking.vert.spv", "provoking.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_rs_next = NULL;
+      if (!okp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      CmdDraw(cb, 3, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         int bad = 0, n = 0;
+         for (int y = 4; y < H - 4; y += 7)
+            for (int x = 4; x < W - 4; x += 7) { const uint8_t *p = pix(&t, x, y); n++; bad += !near(p, modes[i].r, modes[i].g, modes[i].b, 255, 2); }
+         const uint8_t *p = pix(&t, 100, 100);
+         CHECK(bad == 0, "provoking %s: %d of %d pixels wrong (centre %u,%u,%u,%u, want %u,%u,%u,255)", modes[i].n, bad, n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+         printf("{\"test\":\"provoking\",\"mode\":\"%s\",\"centre\":[%u,%u,%u,%u],\"want\":[%u,%u,%u,255],\"ok\":true}\n", modes[i].n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+      } else printf("{\"test\":\"provoking\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   return 1;
+}
+
 static int
 test_clip(void)
 {
@@ -2867,7 +2907,13 @@ main(int argc, char **argv)
                                                             .vertexAttributeInstanceRateZeroDivisor = fdv.vertexAttributeInstanceRateZeroDivisor};
    VkPhysicalDeviceLineRasterizationFeaturesEXT elr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &edv, .rectangularLines = flr.rectangularLines};
    e2.pNext = &elr;
-   const char *dexts[6]; uint32_t ndx = 0;
+   VkPhysicalDeviceProvokingVertexFeaturesEXT epv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT, .pNext = e2.pNext, .provokingVertexLast = VK_TRUE};
+   { VkPhysicalDeviceProvokingVertexFeaturesEXT fpv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
+     GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
+   if (g_pv_last) e2.pNext = &epv;
+   const char *dexts[7]; uint32_t ndx = 0;
+   if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
@@ -2923,6 +2969,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
+   if (ok && CASE_ON("provoking")) ok &= test_provoking();
    if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
