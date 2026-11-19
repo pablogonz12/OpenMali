@@ -417,6 +417,56 @@ test_firstinst(void)
    return 1;
 }
 
+/* multiDrawIndirect at maxDrawIndirectCount with a padded stride (32 != sizeof(VkDrawIndirectCommand) = 16). Entries 0, 1 and limit-1 hold real draws
+ * (firstInstance 0, 2, 3 -> columns 0, 2, 3 of the inst shader); every other entry is all-zero (no-op), and the 16 padding bytes of the used entries
+ * are garbage that a stride-16 reader would execute. */
+static int
+test_mdilimit(void)
+{
+   if (!g_feat.multiDrawIndirect) { printf("{\"test\":\"mdilimit\",\"skipped\":\"multiDrawIndirect not advertised\",\"ok\":true}\n"); return 1; }
+   uint32_t lim = g_props.limits.maxDrawIndirectCount;
+   CHECK(lim >= 0xffff, "maxDrawIndirectCount %u < 65535 with multiDrawIndirect", lim);
+   const uint32_t stride = 32;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "inst.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   struct hbuf ib;
+   VkDeviceSize sz = 16 + (VkDeviceSize)stride * (lim - 1) + 16;
+   if (!hbuf_create(&ib, sz, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) return 0;
+   memset(ib.p, 0, sz);
+   static const uint32_t idx[3] = {0, 1, 2};
+   memcpy(ib.p, idx, sizeof idx);
+   static const uint32_t first[3] = {0, 2, 3};
+   const uint32_t slot[3] = {0, 1, lim - 1};
+   for (int i = 0; i < 3; i++) {
+      uint32_t *e = (uint32_t *)(void *)(ib.p + 16 + (size_t)stride * slot[i]);
+      e[0] = 3; e[1] = 1; e[2] = 0; e[3] = first[i];
+      e[4] = 3; e[5] = 1; e[6] = 0; e[7] = 1;   /* padding: would be a visible triangle if the stride were 16 */
+   }
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   CmdDrawIndirect(cb, ib.b, 16, lim, stride);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      uint32_t cov = coverage(&t);
+      CHECK(abs((int)cov - 3 * 2048) <= 3 * 2048 / 50, "coverage %u expected %u", cov, 3 * 2048);
+      static const int cx[4] = {21, 85, 149, 213};
+      for (int i = 0; i < 4; i++)
+         CHECK(red_at(&t, cx[i], 117) == (i != 1), "column %d: %s", i, i == 1 ? "padding was executed (stride ignored)" : "triangle missing");
+      printf("{\"test\":\"mdilimit\",\"coverage\":%u,\"limit\":%u,\"ok\":true}\n", cov, lim);
+   } else printf("{\"test\":\"mdilimit\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&ib);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* ---------------------------------------------------------------- vertex attribute divisor */
 /* One float attribute at instance rate with divisor d (shader div.vert: x offset = value). 6 instances; the vertex buffer holds the
  * offsets 0, 0.5, 1, 1.5 (triangle k at column k of four). Instance i reads element i / d (d = 0: element 0), so the triangles drawn are
@@ -2600,6 +2650,7 @@ main(int argc, char **argv)
    int ok = 1;
    if (ok && CASE_ON("imageless")) ok &= test_imageless();
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
+   if (ok && CASE_ON("mdilimit")) ok &= test_mdilimit();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();

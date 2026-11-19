@@ -294,6 +294,34 @@ fail(char *err, size_t n, const char *m)
    return -1;
 }
 
+/* spirv_to_nir debug sink: keep the last ERROR message (e.g. "Unimplemented SPIR-V capability: X") so the caller sees why. */
+struct vtn_diag {
+   char msg[200];
+};
+
+static void
+vtn_diag_cb(void *priv, enum nir_spirv_debug_level level, size_t offset, const char *message)
+{
+   struct vtn_diag *d = priv;
+   if (level != NIR_SPIRV_DEBUG_LEVEL_ERROR)
+      return;
+   /* The message is multi-line ("SPIR-V parsing FAILED:", "In file ...", the reason, "N bytes into ..."): keep the reason lines. */
+   size_t n = 0;
+   d->msg[0] = 0;
+   for (const char *p = message; *p;) {
+      while (*p == ' ' || *p == '\n')
+         p++;
+      const char *e = strchr(p, '\n');
+      size_t len = e ? (size_t)(e - p) : strlen(p);
+      if (len && strncmp(p, "SPIR-V parsing", 14) && strncmp(p, "In file", 7) && n + 1 < sizeof d->msg)
+         n += snprintf(d->msg + n, sizeof d->msg - n, "%s%.*s", n ? "; " : "", (int)len, p);
+      p += len;
+   }
+   if (n >= sizeof d->msg)
+      n = sizeof d->msg - 1;
+   (void)offset;
+}
+
 static const struct vk_ycbcr_conversion_state *
 ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_index)
 {
@@ -343,8 +371,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                              o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
    const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
 
+   struct vtn_diag diag = {{0}};
    struct spirv_to_nir_options so = {
       .environment = NIR_SPIRV_VULKAN,
+      .debug = {.func = vtn_diag_cb, .private_data = &diag},
+      .skip_os_break_in_debug_build = true,   /* a bad shader must fail the compile, not trap a debug build */
       .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
       .ssbo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_64bit_global_32bit_offset,
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
@@ -366,8 +397,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
    nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
    free(se);
-   if (!nir)
-      return fail(err, errsz, "spirv_to_nir failed");
+   if (!nir) {
+      if (diag.msg[0] && err && errsz)
+         snprintf(err, errsz, "spirv_to_nir failed: %s", diag.msg);
+      else
+         return fail(err, errsz, "spirv_to_nir failed");
+      return -1;
+   }
 
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
