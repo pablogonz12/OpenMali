@@ -391,9 +391,9 @@ meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[2], unsigned
 {
    memset(lay, 0, sizeof *lay);
    for (unsigned i = 0; i < 2; i++)
-      b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER };
+      b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER, 0, 0, 0 };
    lay->nsets = 1;
-   lay->set[0] = (struct mali_lset){ 2, 2, 0, b };
+   lay->set[0] = (struct mali_lset){ 2, 2, 0, b, NULL };
    lay->push_size = push;
 }
 
@@ -509,12 +509,12 @@ static int
 preload_compile(unsigned kind)   /* kind < MALI_PRELOAD_KINDS: enum mali_preload_kind; MALI_PRELOAD_KINDS + 0/1: integer-output colour variants (U / S) */
 {
    char err[256] = "";
-   struct mali_lbinding b[2] = { { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER, 0 }, { MALI_DT_STORAGE_BUFFER, 1, 1, 1, 0, MALI_NO_IMM_SAMPLER, 0 } };
+   struct mali_lbinding b[2] = { { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER, 0, 0, 0 }, { MALI_DT_STORAGE_BUFFER, 1, 1, 1, 0, MALI_NO_IMM_SAMPLER, 0, 0, 0 } };
    struct mali_compile_layout lay;
    memset(&lay, 0, sizeof lay);
    lay.nsets = 1;
    unsigned nb = kind == MALI_PRELOAD_ZS ? 2 : 1;
-   lay.set[0] = (struct mali_lset){ nb, nb, 0, b };
+   lay.set[0] = (struct mali_lset){ nb, nb, 0, b, NULL };
    lay.push_size = 16;
    struct mali_compile_opts o = { 0 };
    o.arch = g_dev.arch;

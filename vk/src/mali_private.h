@@ -36,6 +36,7 @@ struct mali_physical_device {
 
    /* M14 (mali_wsi.c): Mesa wsi_common, Wayland platform, linear dma-buf swapchain images. */
    struct wsi_device wsi;
+   PFN_vkDestroyQueryPool wsi_real_destroy_query_pool;   /* what wsi.DestroyQueryPool pointed to before the NULL-tolerant guard */
 };
 
 struct mali_queue {
