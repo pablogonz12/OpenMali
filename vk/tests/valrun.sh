@@ -15,7 +15,7 @@ adb -s $S push $HOME/.cache/mali-tmp/val_env.txt $DL/val_env.txt >/dev/null; adb
 case $PH in cmf) export CMF_SERIAL=${CMF_SERIAL:-$S};; poco) export POCO_SERIAL=${POCO_SERIAL:-$S};; esac
 cd ~/Projects/mali-gaming; M=$(mktemp); trap 'rm -f "$M"' EXIT
 # qdrv writes to the runs/quick of the repo scripts/quick points at (MediaDeck), not necessarily of cwd; QUICK_RUNS_DIR overrides
-if [ -n "${QUICK_RUNS_DIR:-}" ]; then RD=$QUICK_RUNS_DIR; else RD=$(readlink -f scripts/quick); RD=${RD%/scripts/quick}/runs/quick; fi
+if [ -n "${QUICK_RUNS_DIR:-}" ]; then RD=$(readlink -f "$QUICK_RUNS_DIR"); else RD=$(readlink -f scripts/quick); RD=${RD%/scripts/quick}/runs/quick; fi
 timeout 280 scripts/quick/qdrv $PH $V/tests/valguest.sh --keep 2>&1 | tail -1 | tee /dev/stderr >/dev/null
 # THIS run's result only: this phone's file written after we started. `ls -t | head -1` over every phone returned an older job's (or another phone's)
 # result whenever qdrv failed before writing one (e.g. "session not READY"), so a smoke could fail with a foreign job's test line

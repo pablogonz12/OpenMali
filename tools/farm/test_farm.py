@@ -1357,9 +1357,15 @@ class T(unittest.TestCase):
         script(md + "/scripts/quick/qdrv", "echo \"serial=$CMF_SERIAL\"; echo '{\"line\":\"MINE\"}' >" + md + "/runs/quick/29990101-000001-cmf-drv-valguest.sh.jsonl\n")
         env = dict(os.environ, HOME=home, PATH=self.d + "/bin:" + os.environ["PATH"], QSAFE_LOCK_OVERRIDE="1", PHONE="cmf")
         env.pop("CMF_SERIAL", None)
+        env.pop("QUICK_RUNS_DIR", None)
         r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True, env=env, timeout=60, cwd=tree)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("serial=SERIAL-CMF", r.stderr)
+        self.assertIn("MINE", r.stdout)
+        os.symlink(md + "/runs/quick", self.d + "/link-runs")                # a symlinked QUICK_RUNS_DIR override must be followed
+        r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True,
+                           env=dict(env, QUICK_RUNS_DIR=self.d + "/link-runs"), timeout=60, cwd=tree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("MINE", r.stdout)
 
     def test_auto_bench_beats_sweep(self):
