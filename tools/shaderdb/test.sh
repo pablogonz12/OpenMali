@@ -1,0 +1,54 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# shaderdb harness self-test (needs spirv-as; run after vk/build.sh): tools/shaderdb/test.sh
+set -euo pipefail
+D=$(cd "$(dirname "$0")/../.." && pwd)
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+fail() { echo "FAIL: $*" >&2; exit 1; }
+# 1. extract_spv: a carve candidate truncated right after an OpEntryPoint header must not crash
+python3 -I - "$D/tools/shaderdb/extract_spv.py" <<'P' || fail "extract_spv truncated OpEntryPoint"
+import importlib.util, struct, sys
+s = importlib.util.spec_from_file_location("e", sys.argv[1]); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+d = struct.pack("<5I", 0x07230203, 0x10000, 0, 8, 0) + struct.pack("<I", (1 << 16) | 15)
+assert m.carve(d, 0) == (None, None)
+P
+# 2. harness: fixed-size descriptor array keeps its length; same basename in two dirs stays distinct; space in path
+mkdir -p "$T/a b" "$T/c"
+cat > "$T/t.spvasm" <<'S'
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" 
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %u DescriptorSet 0
+OpDecorate %u Binding 0
+OpDecorate %blk Block
+OpMemberDecorate %blk 0 Offset 0
+OpDecorate %v DescriptorSet 0
+OpDecorate %v Binding 1
+OpDecorate %blk2 Block
+OpMemberDecorate %blk2 0 Offset 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%c4 = OpConstant %int 4
+%blk = OpTypeStruct %int
+%arr = OpTypeArray %blk %c4
+%pa = OpTypePointer Uniform %arr
+%u = OpVariable %pa Uniform
+%blk2 = OpTypeStruct %int
+%p2 = OpTypePointer Uniform %blk2
+%v = OpVariable %p2 Uniform
+%main = OpFunction %void None %fn
+%l = OpLabel
+OpReturn
+OpFunctionEnd
+S
+spirv-as "$T/t.spvasm" -o "$T/a b/t.spv" && cp "$T/a b/t.spv" "$T/c/t.spv"
+OUT=$T/o.tsv
+SHADERDB_NO_DXVK=1 SHADERDB_CACHE=$T/cache MALI_SHADERDB_REPS=1 "$D/tools/shaderdb/run.sh" -n -a 11 -o "$OUT" "$T/a b" "$T/c/t.spv" 2>/dev/null
+grep -qF "$T/a b/t.spv" "$OUT" || fail "path with space not compiled/identified"
+grep -qF "$T/c/t.spv" "$OUT" || fail "same-basename shader collapsed"
+[ "$(cut -f1 "$OUT" | grep -c "/t\.spv$")" = 2 ] || fail "expected 2 distinct t.spv rows"
+# 3. a missing corpus path is an error, not a silent skip
+if SHADERDB_NO_DXVK=1 SHADERDB_CACHE=$T/cache "$D/tools/shaderdb/run.sh" -n -a 11 -o "$T/x.tsv" "$T/nope.spv" 2>/dev/null; then fail "missing path accepted"; fi
+echo "shaderdb test OK"

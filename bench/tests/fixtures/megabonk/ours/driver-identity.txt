@@ -1,0 +1,4 @@
+VK_DRIVER_FILES=/opt/mali_open_icd.json
+--- /opt/mali_open_icd.json
+{"ICD":{"library_path":"/opt/libvulkan_mali_open.so"}}
+	driverName         = mali-open

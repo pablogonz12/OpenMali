@@ -1,0 +1,2 @@
+VK_ICD_FILENAMES=/x/vkbridge_icd.json
+{"ICD":{"library_path":"/x/libvkbridge_client.so"}}
