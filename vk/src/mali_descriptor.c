@@ -88,12 +88,19 @@ mem_free(struct vk_device *dev, void *p, size_t size)
 
 /* VK_EXT_descriptor_indexing stage 1 gate (default off). -1 = read MALI_DESCIDX_FLAGS; tests force 0/1. */
 static int g_descidx = -1;
-void mali_desc_set_descidx(int v) { g_descidx = v; }
+void mali_desc_set_descidx(int v) { __atomic_store_n(&g_descidx, v, __ATOMIC_RELAXED); }
 static bool
 descidx_on(void)
 {
-   if (g_descidx < 0) { const char *e = getenv("MALI_DESCIDX_FLAGS"); g_descidx = e && e[0] == '1'; }
-   return g_descidx;
+   int v = __atomic_load_n(&g_descidx, __ATOMIC_RELAXED);
+   if (v < 0) {   /* first use may race across threads: every racer computes the same value; atomics keep it defined */
+      const char *e = getenv("MALI_DESCIDX_FLAGS");
+      v = e && e[0] == '1';
+      int exp = -1;
+      __atomic_compare_exchange_n(&g_descidx, &exp, v, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);   /* a concurrent mali_desc_set_descidx() wins */
+      v = __atomic_load_n(&g_descidx, __ATOMIC_RELAXED);
+   }
+   return v;
 }
 
 static bool

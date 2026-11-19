@@ -329,7 +329,21 @@ test_descidx_flags(void)
       mali_get_descriptor_set_layout_support(&ci, &sup);
       CHECK(!sup.supported, "GetDescriptorSetLayoutSupport agrees with create");
    }
-   CHECK(try_layout(POOL, 1, dyn, NULL, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "UAB_POOL layout with dynamic UBO rejected");
+   CHECK(try_layout(POOL, 1, dyn, NULL, NULL) == VK_SUCCESS, "UAB_POOL flag alone with a dynamic UBO is valid (VUID-03001 needs a UAB binding)");
+   CHECK(try_layout(0, 1, dyn, NULL, NULL) == VK_SUCCESS, "dynamic UBO, no flags, valid");
+   {  /* layout-wide: a dynamic binding next to a UPDATE_AFTER_BIND image binding is rejected */
+      VkDescriptorSetLayoutBinding mix[] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, 0xff, NULL }, { 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4, 0xff, NULL } };
+      VkDescriptorBindingFlags mixf[] = { 0, UAB };
+      CHECK(try_layout(POOL, 2, mix, mixf, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "dynamic UBO + UAB image binding in one layout rejected");
+   }
+   {  /* VUID-03000: UPDATE_AFTER_BIND binding without the layout pool flag */
+      VkDescriptorSetLayoutBinding img[] = { { 0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, 0xff, NULL } };
+      VkDescriptorBindingFlags f1[] = { UAB };
+      CHECK(try_layout(0, 1, img, f1, NULL) == VK_ERROR_FEATURE_NOT_PRESENT, "UAB binding without UPDATE_AFTER_BIND_POOL rejected");
+      struct mali_dsl *l2 = NULL;
+      CHECK(try_layout(POOL, 1, img, f1, &l2) == VK_SUCCESS && l2, "same binding with the pool flag is valid");
+      if (l2) vk_descriptor_set_layout_unref(&g_dev, &l2->vk);
+   }
 
    /* pool compatibility at allocation */
    VkDescriptorBindingFlags uabimg[] = { 0, UAB };
