@@ -6,6 +6,7 @@
 #include "mali_soft.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,19 @@ void
 mali_soft_clear_programs(void)
 {
    g_nprog = 0;
+}
+
+void
+mali_soft_retire(const struct mali_compiled *vs, const struct mali_compiled *fs)
+{
+   /* The key is the address of the pipeline's own compiled-shader members, so a freed pipeline's storage can be reused
+    * by a new one and a stale entry would then answer for a program that was never registered. Drop the entry here,
+    * before the pipeline's memory goes back to the allocator. */
+   for (unsigned i = 0; i < g_nprog; i++)
+      if (g_prog[i].vs == vs && g_prog[i].fs == fs) {
+         g_prog[i] = g_prog[--g_nprog];
+         return;
+      }
 }
 
 static const struct mali_soft_program *
@@ -92,6 +106,22 @@ px_size(int fmt)
    }
 }
 
+/* sRGB attachments store an encoded value: the fragment value is linear, the byte is not. Blend in linear space, so
+ * decode on the way in and encode on the way out (alpha stays linear in both directions). */
+static float
+srgb_to_lin(float c)
+{
+   return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static float
+lin_to_srgb(float c)
+{
+   if (!(c > 0.0f)) return 0.0f;
+   if (c >= 1.0f) return 1.0f;
+   return c <= 0.0031308f ? c * 12.92f : 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
+}
+
 static void
 px_read(const struct surf *s, unsigned x, unsigned y, float c[4])
 {
@@ -99,11 +129,19 @@ px_read(const struct surf *s, unsigned x, unsigned y, float c[4])
    memset(c, 0, 4 * sizeof(float));
    c[3] = 1.0f;
    switch (s->fmt) {
-   case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_R8G8B8A8_UNORM:
       for (unsigned i = 0; i < 4; i++) c[i] = q[i] / 255.0f;
       break;
-   case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+   case VK_FORMAT_R8G8B8A8_SRGB:
+      for (unsigned i = 0; i < 3; i++) c[i] = srgb_to_lin(q[i] / 255.0f);
+      c[3] = q[3] / 255.0f;
+      break;
+   case VK_FORMAT_B8G8R8A8_UNORM:
       c[0] = q[2] / 255.0f; c[1] = q[1] / 255.0f; c[2] = q[0] / 255.0f; c[3] = q[3] / 255.0f;
+      break;
+   case VK_FORMAT_B8G8R8A8_SRGB:
+      c[0] = srgb_to_lin(q[2] / 255.0f); c[1] = srgb_to_lin(q[1] / 255.0f);
+      c[2] = srgb_to_lin(q[0] / 255.0f); c[3] = q[3] / 255.0f;
       break;
    case VK_FORMAT_R16G16B16A16_SFLOAT: {
       const uint16_t *h = (const uint16_t *)q;
@@ -159,11 +197,19 @@ px_write(const struct surf *s, unsigned x, unsigned y, const float c[4])
 {
    uint8_t *q = s->p + (size_t)y * s->stride + (size_t)x * px_size(s->fmt);
    switch (s->fmt) {
-   case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_R8G8B8A8_UNORM:
       for (unsigned i = 0; i < 4; i++) q[i] = u8(c[i]);
       break;
-   case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+   case VK_FORMAT_R8G8B8A8_SRGB:
+      for (unsigned i = 0; i < 3; i++) q[i] = u8(lin_to_srgb(c[i]));
+      q[3] = u8(c[3]);
+      break;
+   case VK_FORMAT_B8G8R8A8_UNORM:
       q[0] = u8(c[2]); q[1] = u8(c[1]); q[2] = u8(c[0]); q[3] = u8(c[3]);
+      break;
+   case VK_FORMAT_B8G8R8A8_SRGB:
+      q[0] = u8(lin_to_srgb(c[2])); q[1] = u8(lin_to_srgb(c[1])); q[2] = u8(lin_to_srgb(c[0]));
+      q[3] = u8(c[3]);
       break;
    case VK_FORMAT_R16G16B16A16_SFLOAT: {
       uint16_t h[4];
@@ -306,6 +352,7 @@ struct rctx {
    struct surf col;
    bool has_col;
    uint8_t *zs;
+   bool sc_set;
    int ax0, ay0, ax1, ay1;
 };
 
@@ -318,7 +365,7 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    const unsigned cull = set ? fx->cull : 0;
    const bool front_ccw = set ? fx->front_ccw : true;
    const bool depth_clip = set ? fx->depth_clip : true;
-   const uint8_t wmask = set && fx->wmask ? fx->wmask : 0xfu;
+   const uint8_t wmask = set ? fx->wmask : 0xfu;   /* a configured 0 is a depth-only draw, not "unset" */
 
    if (clip[0][3] <= 1e-6f || clip[1][3] <= 1e-6f || clip[2][3] <= 1e-6f)
       return;   /* no near-plane clipping: triangles that reach behind the eye are dropped (documented) */
@@ -352,7 +399,7 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    y0 = y0 > c->ay0 ? y0 : c->ay0;
    x1 = x1 < c->ax1 ? x1 : c->ax1;
    y1 = y1 < c->ay1 ? y1 : c->ay1;
-   if (d->sc[2] > 0 && d->sc[3] > 0) {   /* scissor */
+   if (c->sc_set) {   /* a set scissor, empty or not: an empty rectangle covers no samples */
       x0 = x0 > d->sc[0] ? x0 : d->sc[0];
       y0 = y0 > d->sc[1] ? y0 : d->sc[1];
       x1 = x1 < d->sc[0] + d->sc[2] ? x1 : d->sc[0] + d->sc[2];
@@ -360,6 +407,8 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    }
    x0 = x0 > 0 ? x0 : 0;
    y0 = y0 > 0 ? y0 : 0;
+   if (x1 <= x0 || y1 <= y0)
+      return;   /* nothing survives the clip: decide in signed arithmetic, never cast a negative to unsigned */
    const unsigned xe = x1 < (int)c->f->width ? (unsigned)x1 : c->f->width;
    const unsigned ye = y1 < (int)c->f->height ? (unsigned)y1 : c->f->height;
 
@@ -377,7 +426,11 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
          w0 *= iarea; w1 *= iarea; w2 *= iarea;
          if (w0 < 0 || w1 < 0 || w2 < 0)
             continue;
-         float z = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];
+         const float zn = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];   /* NDC depth, clipped against [0, 1] */
+         if (depth_clip && (zn < 0.0f || zn > 1.0f))
+            continue;
+         /* the framebuffer depth the test and the store see is the viewport transform of the NDC depth */
+         float z = d->vp[4] + zn * (d->vp[5] - d->vp[4]);
          if (set && fx->bias_en) {
             float b = fx->bias_const * r;
             float dzdx = fabsf((sx[0] - sx[1]) * sz[2] + (sx[1] - sx[2]) * sz[0] + (sx[2] - sx[0]) * sz[1]) * iarea;
@@ -386,8 +439,6 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
                b = fminf(fmaxf(b, -fabsf(fx->bias_clamp)), fabsf(fx->bias_clamp));
             z += b;
          }
-         if (depth_clip && (z < d->vp[4] || z > d->vp[5]))
-            continue;
          if (dep_en && c->zs && !depth_test((VkCompareOp)dep_func, z, zs_read(&c->f->zs, c->zs, x, y)))
             continue;
          /* perspective-correct interpolation: sum(w * v / w) / sum(w / w) */
@@ -422,8 +473,10 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    }
 }
 
-bool
-mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
+static atomic_flag g_busy = ATOMIC_FLAG_INIT;
+
+static bool
+soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
 {
    memset(&g_st, 0, sizeof g_st);
    g_st.frames = 1;
@@ -487,6 +540,10 @@ mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
    memset(&x, 0, sizeof x);
    for (unsigned di = 0; di < f->ndraws; di++) {
       const struct mali_rec *r = &f->draws[di];
+      /* An indirect draw is expanded (mali_cmd.c) before it reaches here and the origin is lost with it, so reject it
+       * on the record: a three-vertex indirect draw would otherwise pass as a direct one and "succeed". */
+      if (r->ind)
+         return unsupported("indirect draw");
       mali_draw_expand(&x, r);
       g_st.draws++;
       const struct mali_soft_program *p = find_prog(&x.gfx);
@@ -494,12 +551,15 @@ mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
          return unsupported("no CPU program registered for this pipeline (mali_soft_bind_program)");
       c.d = &x;
       c.p = p;
+      c.sc_set = x.sc_set;
       if (x.gfx.discard || x.count == 0 || x.instance_count == 0)
          continue;
-      if (x.ind)
-         return unsupported("indirect draw");
       if (x.gfx.prim != 8 && x.gfx.prim != 10 && x.gfx.prim != 12)
          return unsupported("non-triangle topology");
+      /* A restart index is a primitive boundary, not a vertex: fetching it as one reads outside the vertex data and
+       * joins the strips across the restart. Reject before the fetch until the assembly below can split on it. */
+      if (x.gfx.prim_restart && x.indexed)
+         return unsupported("primitive restart in an indexed draw");
 
       const uint8_t *vb[MALI_MAX_VB];
       for (unsigned b = 0; b < MALI_MAX_VB; b++)
@@ -565,10 +625,7 @@ mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
          for (unsigned i = 0; i + 2 < nv; i += step) {
             unsigned a = i, b = i + 1, cc = i + 2;
             if (x.gfx.prim == 10 && (i & 1)) { b = i + 2; cc = i + 1; }   /* strip: alternate the winding */
-            if (x.gfx.prim == 12) { a = 0; b = i; cc = i + 1; }          /* fan */
-            if (x.gfx.prim_restart && x.gfx.prim != 8) {
-               /* an index equal to the restart value splits the primitive; the -1 sentinel is not representable in clip */
-            }
+            if (x.gfx.prim == 12) { a = 0; b = i + 1; cc = i + 2; }      /* fan: i=0 gives (0,1,2), i=1 gives (0,2,3) */
             const float c3[3][4] = {{vclip[a][0], vclip[a][1], vclip[a][2], vclip[a][3]},
                                     {vclip[b][0], vclip[b][1], vclip[b][2], vclip[b][3]},
                                     {vclip[cc][0], vclip[cc][1], vclip[cc][2], vclip[cc][3]}};
@@ -586,4 +643,16 @@ mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
          return unsupported("vertex attribute format not in the CPU model");
    }
    return true;
+}
+
+bool
+mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
+{
+   /* g_st and the program registry are process-wide, so two device contexts must not render at the same time: one
+    * frame would clear the other's counters. Serialise whole frames (the harness renders a frame at a time anyway). */
+   while (atomic_flag_test_and_set_explicit(&g_busy, memory_order_acquire))
+      ;
+   const bool ok = soft_frame(hw, f);
+   atomic_flag_clear_explicit(&g_busy, memory_order_release);
+   return ok;
 }

@@ -440,8 +440,11 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
 {
    VK_FROM_HANDLE(mali_device, dev, d);
    VK_FROM_HANDLE(mali_pipeline, p, pipeline);
-   if (p)
+   if (p) {
+      /* the software rasteriser keys its CPU programs on these addresses, which are about to be reusable */
+      mali_soft_retire(&p->vs, &p->fs);
       pipeline_destroy(dev, p, alloc);
+   }
 }
 
 /* Every submission is serialised by the queue (a frame is built and retired before the next one), so barriers have nothing to do. */

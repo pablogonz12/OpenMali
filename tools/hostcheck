@@ -74,7 +74,9 @@ stage "offline gate (vk/check.sh --no-build)" "$V/check.sh" --no-build
 
 # Soft-rendered frames: the CPU rasteriser over real recorded frames, with image diffs. Not built yet
 # in a tree without the rasteriser: report it as a skip, never as a pass.
+soft=skipped
 if [ -x "$V/tests/soft-frame.sh" ] && [ -x "$OUT/t_soft_frame" ]; then
+   soft=run
    if [ $bless = 1 ]; then stage "soft frames (re-blessed)" "$V/tests/soft-frame.sh" --bless
    else stage "soft frames (image diffs)" "$V/tests/soft-frame.sh"; fi
 else
@@ -98,5 +100,5 @@ if [ $fail = 1 ]; then
    echo "Do not take a phone run until this is green: the host catches semantics bugs for free."
    exit 1
 fi
-echo "SUMMARY: PASS ($(for i in $(seq 1 $stage_no); do printf '%s, ' "${names[$i]}"; done | sed 's/, $//'); soft frames $([ -x "$OUT/t_soft_frame" ] && echo run || echo skipped))"
+echo "SUMMARY: PASS ($(for i in $(seq 1 $stage_no); do printf '%s, ' "${names[$i]}"; done | sed 's/, $//'); soft frames $soft)"
 exit 0

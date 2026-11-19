@@ -135,6 +135,7 @@ struct mali_draw {
    uint8_t push[2][MALI_PUSH_MAX];        /* [0] vertex stage view, [1] fragment stage view of the push constants */
    float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
    int32_t sc[4];                         /* scissor x, y, w, h */
+   bool sc_set;                           /* a scissor was set: an empty one clips everything, unset means render area */
    unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];

@@ -45,6 +45,9 @@ struct mali_soft_stats {
 void mali_soft_bind_program(const struct mali_compiled *vs, const struct mali_compiled *fs,
                             const struct mali_soft_program *p);
 void mali_soft_clear_programs(void);
+/* Drop the program registered for a pipeline that is being destroyed: the key is the address of the compiled-shader
+ * members inside the pipeline, and a freed pipeline's storage can be handed to a new one. */
+void mali_soft_retire(const struct mali_compiled *vs, const struct mali_compiled *fs);
 
 /* hw->soft: render one frame into its attachments. Returns false (and records why) when the frame needs something the
  * rasteriser does not do, so the caller can report it instead of silently drawing nothing. */

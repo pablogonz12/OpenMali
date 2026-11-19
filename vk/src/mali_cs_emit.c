@@ -985,17 +985,25 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
 
    if (f->nops)
       return mali_ops_build(env, f->ops, f->nops, out, nout);
-   if (f->compute)
-      return build_compute(hw, f, out, nout);
    if (hw->soft) {
       /* MALI_SOFT=1: render on the CPU instead of encoding a command stream. A frame the rasteriser cannot do is a hard
-       * error (-ENOTSUP), never a silent no-op: the whole point of the harness is that nothing passes unnoticed. */
-      if (!hw->soft(hw->user, f))
+       * error (-ENOTSUP), never a silent no-op: the whole point of the harness is that nothing passes unnoticed.
+       * This branch comes BEFORE the compute dispatch: with a software backend there is nothing that could execute a
+       * dispatch, so a compute frame must not be built and accepted. Reserve the placeholder word first too, so an
+       * allocation failure is reported before the rasteriser has written into the attachments. */
+      uint64_t *keep = calloc(1, sizeof *keep);   /* callers free() it: a valid pointer with ninstr 0 */
+      if (!keep)
+         return -ENOMEM;
+      if (!hw->soft(hw->user, f)) {
+         free(keep);
          return -ENOTSUP;
-      *out = calloc(1, sizeof(uint64_t));   /* callers free() and memcpy() it: keep it a valid pointer with ninstr 0 */
+      }
+      *out = keep;
       *nout = 0;
-      return *out ? 0 : -ENOMEM;
+      return 0;
    }
+   if (f->compute)
+      return build_compute(hw, f, out, nout);
    *out = NULL;
    *nout = 0;
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
@@ -1229,6 +1237,8 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
       x->gfx = r->pipe->gfx;
       memcpy(x->vp, r->pipe->vp, sizeof x->vp);
       memcpy(x->sc, r->pipe->sc, sizeof x->sc);
+      if (m & MALI_D_SC)
+         x->sc_set = true;   /* sticky like sc itself: a later draw that does not renew the scissor inherits it */
    }
    if (m & MALI_D_BIND) {
       const struct mali_bbind *b = r->bind;

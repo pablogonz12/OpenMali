@@ -196,7 +196,9 @@ if nm "$OUT/libvulkan_mali.so" 2>/dev/null | grep -qi 'panvk'; then echo "FAIL  
 # compared tile by tile with tests/golden/soft-frame.txt. Deterministic across v10/v11/v13 (the CPU path never looks at the arch).
 if [ -x "$OUT/t_soft_frame" ]; then
    if [ $bless = 1 ]; then
-      MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" --bless >/dev/null && echo "ok    soft frames (golden re-blessed)"
+      # a failed render under --bless must fail the gate: the golden is then stale or untouched, not blessed
+      if out=$(MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" --bless 2>&1); then echo "ok    soft frames (golden re-blessed)"
+      else echo "FAIL  soft frames (--bless):"; echo "$out" | sed 's/^/        /'; fail=1; fi
    elif out=$(MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" 2>&1); then echo "ok    ${out#ok }"
    else echo "FAIL  soft frames:"; echo "$out" | sed 's/^/        /'; fail=1; fi
 else
