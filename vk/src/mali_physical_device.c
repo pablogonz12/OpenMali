@@ -3,6 +3,7 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_gs_shim.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -64,6 +65,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxVertexInputBindingStride = 2048,
       .maxVertexOutputComponents = 64,
       .maxFragmentInputComponents = 64,
+      /* MALI_ADVERTISE_GS=1 compatibility shim (mali_gs_shim.h): the Vulkan minimums, only reported with the feature; pipelines never work */
+      .maxGeometryShaderInvocations = mali_advertise_gs() ? 32 : 0, .maxGeometryInputComponents = mali_advertise_gs() ? 64 : 0,
+      .maxGeometryOutputComponents = mali_advertise_gs() ? 64 : 0, .maxGeometryOutputVertices = mali_advertise_gs() ? 256 : 0,
+      .maxGeometryTotalOutputComponents = mali_advertise_gs() ? 1024 : 0,
       .maxFragmentOutputAttachments = 4,
       .maxFragmentDualSrcAttachments = 1,   /* dualSrcBlend: blend shader, attachment 0 */
       .maxFragmentCombinedOutputResources = 4,
@@ -289,8 +294,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .multiDrawIndirect = true,
       .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
+      .geometryShader = mali_advertise_gs(),   /* MALI_ADVERTISE_GS=1 shim only (mali_gs_shim.h): GS pipelines are rejected; t_gs_shim */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
+      .robustBufferAccess = true,  /* buffer loads/stores/atomics bounds-checked (mali_descriptor_lower.c); OOB loads 0, writes dropped; X8 t_vk_robust. Images/shared memory are not covered (not required) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
@@ -315,6 +322,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
+      .robustBufferAccess2 = true, /* same buffer lowering as robustBufferAccess (robust_zero_loads + Mesa's pass; byte-granular bounds, OOB loads 0, stores/atomics dropped). robustImageAccess2 stays FALSE: image loads/stores are not bounds-checked. t_vk_feat nulld */
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */

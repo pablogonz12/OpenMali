@@ -2935,6 +2935,9 @@ main(int argc, char **argv)
    }
    g_m5 = fm5.maintenance5;
    g_null = rb2.nullDescriptor;
+   /* robustness2 (VK_EXT_robustness2, t_vk_robust): robustBufferAccess2 shares the robustBufferAccess lowering, robustImageAccess2 has no lowering */
+   CHECK(rb2.robustBufferAccess2 == f2.features.robustBufferAccess, "robustBufferAccess2 %u must match robustBufferAccess %u", rb2.robustBufferAccess2, f2.features.robustBufferAccess);
+   CHECK(!rb2.robustImageAccess2, "robustImageAccess2 must stay off: image accesses are not bounds-checked");
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    f11.pNext = &f13;
    GetPhysicalDeviceFeatures2(pd, &f2);
@@ -2982,7 +2985,7 @@ main(int argc, char **argv)
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceMaintenance5FeaturesKHR em5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &e11, .maintenance5 = g_m5};
-   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor};
+   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor, .robustBufferAccess2 = rb2.robustBufferAccess2};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
    VkPhysicalDeviceCustomBorderColorFeaturesEXT ecb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = e2.pNext,
                                                        .customBorderColors = fcb.customBorderColors, .customBorderColorWithoutFormat = fcb.customBorderColorWithoutFormat};
