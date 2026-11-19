@@ -108,7 +108,7 @@ case_skipped(const char *n)
 
 #define DEV_FNS(X)                                                                                 \
    X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory)  \
-   X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
+   X(CreateFence) X(DestroyFence) X(CreateSemaphore) X(DestroySemaphore) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
    X(DestroyBuffer) X(GetBufferMemoryRequirements) X(BindBufferMemory) X(CreateShaderModule)       \
@@ -915,6 +915,86 @@ test_many(void)
    return ok;
 }
 
+
+/* ---- submit_bench: per-submit CPU cost (host microbenchmark, fake backend) ----
+ * "small": N one-cb submits of 4 draws each (no fence), one wait at the end.
+ * "frame": DXVK-like: 4 pre-recorded cbs (3 draws each) in one QueueSubmit that waits on the previous frame's semaphore, signals its own
+ * semaphore and a fence, then vkWaitForFences/ResetFences. MALI_SUBMIT_REPS (2000). Prints ns per submit. */
+static int
+test_submit_bench(void)
+{
+   const int nrep = getenv("MALI_SUBMIT_REPS") ? atoi(getenv("MALI_SUBMIT_REPS")) : 2000;
+   struct scene s = {.mode = MODE_UBO};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSemaphore sem[2];
+   VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+   CHECK(CreateSemaphore(dev, &sci, NULL, &sem[0]) == VK_SUCCESS && CreateSemaphore(dev, &sci, NULL, &sem[1]) == VK_SUCCESS, "sem");
+   if (!scene_create(&s, 0)) return 0;
+   VkCommandBuffer cb[4];
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 4};
+   CHECK(AllocateCommandBuffers(dev, &ai, cb) == VK_SUCCESS, "alloc cb");
+   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+   VkDeviceSize offs[2] = {0, 0};
+   for (int c = 0; c < 4; c++) {
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      CHECK(BeginCommandBuffer(cb[c], &bi) == VK_SUCCESS, "begin");
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                                  .renderArea = {{0, 0}, {W, H}}, .clearValueCount = s.depth ? 2 : 1, .pClearValues = cv};
+      CmdBeginRenderPass(cb[c], &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb[c], VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+      CmdSetViewport(cb[c], 0, 1, &vp);
+      CmdSetScissor(cb[c], 0, 1, &sc);
+      CmdBindVertexBuffers(cb[c], 0, 2, vbs, offs);
+      CmdBindIndexBuffer(cb[c], s.ib, 16, VK_INDEX_TYPE_UINT32);
+      CmdBindDescriptorSets(cb[c], VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.dset[0], 0, NULL);
+      for (int i = 0; i < (c == 0 ? 4 : 3); i++) {
+         float pc[4] = {1, 0, 0, (float)i};
+         CmdPushConstants(cb[c], s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
+         CmdDrawIndexed(cb[c], 6, 1, 0, 3, 0);
+      }
+      CmdEndRenderPass(cb[c]);
+      CHECK(EndCommandBuffer(cb[c]) == VK_SUCCESS, "end");
+   }
+   int ok = 1;
+   double t_small = 0, t_frame = 0, t_frame_all = 0;
+   for (int rep = -3; ok && rep < 1; rep++) {
+      double t0 = now_us();
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb[0]};
+      for (int i = 0; i < nrep; i++)
+         CHECK(QueueSubmit(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS, "submit");
+      double t1 = now_us();
+      CHECK(DeviceWaitIdle(dev) == VK_SUCCESS, "idle");
+      if (rep == 0) t_small = (t1 - t0) * 1000.0 / nrep;
+   }
+   VkPipelineStageFlags ws = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   for (int rep = -20; ok && rep < nrep; rep++) {
+      int a = rep & 1;
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 4, .pCommandBuffers = cb,
+                         .waitSemaphoreCount = rep > -20, .pWaitSemaphores = &sem[!a], .pWaitDstStageMask = &ws,
+                         .signalSemaphoreCount = 1, .pSignalSemaphores = &sem[a]};
+      double t0 = now_us();
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+      double t1 = now_us();
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+      CHECK(ResetFences(dev, 1, &f) == VK_SUCCESS, "reset");
+      double t2 = now_us();
+      if (rep >= 0) { t_frame += t1 - t0; t_frame_all += t2 - t0; }
+   }
+   printf("{\"test\":\"submit_bench\",\"reps\":%d,\"small_submit_ns\":%.0f,\"frame_submit_ns\":%.0f,\"frame_submit_wait_ns\":%.0f,\"ok\":%s}\n",
+          nrep, t_small, t_frame * 1000.0 / nrep, t_frame_all * 1000.0 / nrep, ok ? "true" : "false");
+   DeviceWaitIdle(dev);
+   DestroySemaphore(dev, sem[0], NULL);
+   DestroySemaphore(dev, sem[1], NULL);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
 
 /* ---- dxvk_frame: a DXVK-shaped frame, the CPU cost of the driver per draw / per submit (host microbenchmark, fake backend) ----
  * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of one of two sets (DXVK rewrites
@@ -2483,6 +2563,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
+   if (ok && g_only && CASE_ON("submit_bench")) ok &= test_submit_bench();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("pipecost")) ok &= test_pipecost();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();

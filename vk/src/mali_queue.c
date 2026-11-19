@@ -3,8 +3,10 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include "mali_env.h"
 #include <time.h>
-static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static double prof_now(void) { if (!MALI_GETENV_ONCE("MALI_PROF")) return 0;   /* the submit path timestamps unconditionally; only MALI_PROF reads them */
+   struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
 static double prof_acc[6]; static unsigned prof_n;
 
 #include <errno.h>
@@ -288,7 +290,7 @@ hw_job_begin(void *u)
    hw_retire(h, MALI_MAX_INFLIGHT - 1);
    kb_arena_begin(&h->ar);
    h->cur_start = h->ar.start;
-   if (h->nfl && !getenv("MALI_SYNC_SUBMIT")) {
+   if (h->nfl && !MALI_GETENV_ONCE("MALI_SYNC_SUBMIT")) {
       /* the new frame must stay clear of the oldest in-flight frame's arena range */
       size_t so = h->fl[0].start;
       if (so > h->ar.start)
@@ -326,7 +328,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
 {
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
-   if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
+   if (MALI_GETENV_ONCE("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
    {
       const char *sf = getenv("MALI_ALLOC_STATS");
       FILE *fp = sf ? fopen(sf, "w") : NULL;
@@ -337,12 +339,12 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
-   if (getenv("MALI_PROF")) {
+   if (MALI_GETENV_ONCE("MALI_PROF")) {
       static double acc; static unsigned cnt;
       acc += prof_now() - q0;
       if (++cnt % 200 == 0) fprintf(stderr, "PROF/hw_submit submit_cs avg %.3f ms (n=%u instr)\n", acc / cnt, n);
    }
-   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
+   if (MALI_GETENV_ONCE("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
    if (r)
       return r;
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
@@ -352,7 +354,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
       if (!h->ovf[i].tag)
          h->ovf[i].tag = h->expected;
    h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
-   if (!getenv("MALI_SYNC_SUBMIT")) {
+   if (!MALI_GETENV_ONCE("MALI_SYNC_SUBMIT")) {
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
       h->nfl++;
@@ -360,8 +362,8 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double w0 = prof_now();
    int wr = hw_wait(h, h->expected);
-   if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
-   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
+   if (MALI_GETENV_ONCE("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
+   if (MALI_GETENV_ONCE("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
 }
 
@@ -465,7 +467,7 @@ mali_hw_init(struct mali_device *dev)
                               .tls_threads = pdev->gpu.tls_threads};
    kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
    hw.env.heap_desc_ready = true;
-   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
+   if (MALI_GETENV_ONCE("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    h->hw = hw;
    h->md = (struct mali_meta_dev){.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};
    pthread_mutex_lock(&g_bind_lock);
@@ -558,7 +560,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
-      if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
+      if (cr == VK_ERROR_DEVICE_LOST && MALI_GETENV_ONCE("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
       if (cr == VK_ERROR_DEVICE_LOST)
          return vk_queue_set_lost(vq, "frame submit failed");
       if (cr != VK_SUCCESS)
@@ -569,7 +571,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
    int fd = -1;
    int r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
-      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
+      if (MALI_GETENV_ONCE("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);
    }
 
@@ -584,7 +586,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       }
    }
    close(fd);
-   if (getenv("MALI_PROF")) {
+   if (MALI_GETENV_ONCE("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
       if (++prof_n % 200 == 0) {
