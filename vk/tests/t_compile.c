@@ -201,20 +201,29 @@ test_determinism_and_cache(void)
       char p[600], buf[1000];
       memset(buf, 7, sizeof buf);
       for (int i = 0; i < 10; i++) {
-         snprintf(p, sizeof p, "%s/e%d.bin", tdir, i);
-         FILE *f = fopen(p, "wb"); fwrite(buf, 1, sizeof buf, f); fclose(f);
+         snprintf(p, sizeof p, "%s/%063x%d.bin", tdir, 0, i);   /* 64 hex chars like a real key */
+         FILE *f = fopen(p, "wb");
+         CHECK(f != NULL, "fixture fopen");
+         if (!f) break;
+         fwrite(buf, 1, sizeof buf, f); fclose(f);
          struct timespec ts[2] = {{1000000 + i, 0}, {1000000 + i, 0}};
          utimensat(AT_FDCWD, p, ts, 0);
       }
       snprintf(p, sizeof p, "%s/keep.txt", tdir);
-      FILE *f = fopen(p, "wb"); fwrite(buf, 1, sizeof buf, f); fclose(f);
+      FILE *f = fopen(p, "wb");
+      CHECK(f != NULL, "fixture fopen");
+      if (f) { fwrite(buf, 1, sizeof buf, f); fclose(f); }
+      snprintf(p, sizeof p, "%s/model.bin", tdir);   /* looks like a cache file but is not ours */
+      f = fopen(p, "wb");
+      CHECK(f != NULL, "fixture fopen");
+      if (f) { fwrite(buf, 1, sizeof buf, f); fclose(f); }
       mali_compile_cache_trim(tdir, 0);
-      snprintf(p, sizeof p, "%s/e0.bin", tdir);
+      snprintf(p, sizeof p, "%s/%063x0.bin", tdir, 0);
       CHECK(access(p, F_OK) == 0, "limit 0 = unlimited");
       mali_compile_cache_trim(tdir, 5500);   /* 10000 B > 5500: delete oldest until <= 4950 B = 4 entries */
       int left = 0, newest_ok = 1;
       for (int i = 0; i < 10; i++) {
-         snprintf(p, sizeof p, "%s/e%d.bin", tdir, i);
+         snprintf(p, sizeof p, "%s/%063x%d.bin", tdir, 0, i);
          int ex = access(p, F_OK) == 0;
          left += ex;
          if (i >= 6 && !ex) newest_ok = 0;
@@ -223,6 +232,8 @@ test_determinism_and_cache(void)
       CHECK(left == 4 && newest_ok, "trim keeps the 4 newest of 10 (left %d)", left);
       snprintf(p, sizeof p, "%s/keep.txt", tdir);
       CHECK(access(p, F_OK) == 0, "trim leaves foreign files alone");
+      snprintf(p, sizeof p, "%s/model.bin", tdir);
+      CHECK(access(p, F_OK) == 0, "trim leaves model.bin (not a cache key) alone");
       snprintf(buf, sizeof buf, "rm -rf %s", tdir);
       CHECK(system(buf) == 0, "cleanup");
    }

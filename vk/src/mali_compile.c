@@ -31,6 +31,8 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
@@ -277,21 +279,43 @@ trim_cmp(const void *a, const void *b)
    return (x->mtime > y->mtime) - (x->mtime < y->mtime);
 }
 
+/* "<64 hex>.bin" is an entry; "<64 hex>.bin.tmp<pid>.<n>" is an in-flight or abandoned write. Anything else is not ours. */
+static int
+cache_name_kind(const char *n)
+{
+   for (int i = 0; i < 64; i++)
+      if (!((n[i] >= '0' && n[i] <= '9') || (n[i] >= 'a' && n[i] <= 'f'))) return 0;
+   if (!strcmp(n + 64, ".bin")) return 1;
+   if (strncmp(n + 64, ".bin.tmp", 8)) return 0;
+   const char *q = n + 72;
+   int dots = 0, digits = 0;
+   for (; *q; q++) {
+      if (*q == '.') { if (!digits || dots++) return 0; digits = 0; }
+      else if (*q >= '0' && *q <= '9') digits++;
+      else return 0;
+   }
+   return dots == 1 && digits ? 2 : 0;
+}
+
 void
 mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
 {
    DIR *d = opendir(dir);
    if (!d) return;
+   /* one trimmer per directory: a second process scanning at the same time would act on sizes the first already deleted */
+   char lp[1100];
+   snprintf(lp, sizeof lp, "%s/.trim.lock", dir);
+   int lfd = open(lp, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+   if (lfd >= 0 && flock(lfd, LOCK_EX | LOCK_NB)) { close(lfd); closedir(d); return; }
    struct trim_ent *v = NULL;
    size_t n = 0, cap = 0;
    unsigned long long total = 0;
    time_t now = time(NULL);
    struct dirent *de;
    while ((de = readdir(d))) {
-      size_t l = strlen(de->d_name);
-      int is_bin = l > 4 && !strcmp(de->d_name + l - 4, ".bin");
-      int is_tmp = strstr(de->d_name, ".bin.tmp") != NULL;
-      if (!is_bin && !is_tmp) continue;
+      int kind = cache_name_kind(de->d_name);
+      int is_bin = kind == 1, is_tmp = kind == 2;
+      if (!kind) continue;
       char path[1400];
       struct stat st;
       snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
@@ -321,6 +345,7 @@ mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
       }
    }
    free(v);
+   if (lfd >= 0) close(lfd);   /* drops the lock */
 }
 
 static void
