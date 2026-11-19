@@ -678,6 +678,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
       CmdDraw(cb, 3, 1, 0, 0);
       CmdBindVertexBuffers2_(cb, 0, 2, vbs, offs, sz, st16);
+      if (g_dynstr == 2) {
+         /* a plain vkCmdBindVertexBuffers after the 2-form (new offsets/sizes only) must keep the stride 16 set above: if it reset the
+          * stride to 0 the draw below would be degenerate and the triangle missing */
+         CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      }
       CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
       CmdDraw(cb, 3, 1, 0, 0);
       n = 0;
@@ -1234,15 +1239,15 @@ test_discard(const char *name, int mode)
    return ok;
 }
 
-/* dynamic vertex binding stride: static stride 4 is wrong; draw 1 binds stride 0 (nothing), draw 2 stride 16 (the triangle) */
+/* dynamic vertex binding stride (rebind=1: a plain BindVertexBuffers follows the stride-16 2-form bind): static stride 4 is wrong; draw 1 binds stride 0 (nothing), draw 2 stride 16 (the triangle) */
 static int
-test_dynstride(const char *name)
+test_dynstride(const char *name, int rebind)
 {
    struct scene s = {.mode = MODE_TRI};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
-   g_dynstr = 1;
+   g_dynstr = rebind ? 2 : 1;
    int ok = scene_create(&s, 0);
    float one[1][4] = {{1, 0, 0, 0}};
    if (ok) ok = scene_draw(&s, 1, one, f);
@@ -2055,7 +2060,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("nofs_depth_readback")) ok &= test_nofs_readback("nofs_depth_readback");
    if (ok && CASE_ON("nofs_stencil")) ok &= test_nocol("nofs_stencil", 1);
    if (ok && CASE_ON("nocol_stencil")) ok &= test_nocol("nocol_stencil", 1);
-   if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride");
+   if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride", 0);
+   if (ok && CASE_ON("dyn_stride_rebind")) ok &= test_dynstride("dyn_stride_rebind", 1);   /* plain BindVertexBuffers after BindVertexBuffers2 keeps the stride */
    if (ok && CASE_ON("discard_both")) ok &= test_discard("discard_both", 1);
    if (ok && CASE_ON("discard_vs_only")) ok &= test_discard("discard_vs_only", 2);
    if (ok && CASE_ON("int_clear_rgba8ui")) ok &= test_int_clear("int_clear_rgba8ui", VK_FORMAT_R8G8B8A8_UINT, 4, 0x073264c8u);
