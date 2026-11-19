@@ -542,14 +542,14 @@ test_cache_disk(void)
    CHECK(count_files(dir, ".bin") == 2, "cap 0 = unlimited");
 
    /* ---- stale temp files of a killed process are swept, a fresh one (live writer) is not ---- */
-   snprintf(p, sizeof p, "%s/dead.bin.tmp1.0", dir);
+   snprintf(p, sizeof p, "%s/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin.tmp1.0", dir);
    FILE *f = fopen(p, "wb"); if (f) { fputs("x", f); fclose(f); }
    struct utimbuf old = { time(NULL) - 3600, time(NULL) - 3600 };
    utime(p, &old);
-   snprintf(p, sizeof p, "%s/live.bin.tmp2.0", dir);
+   snprintf(p, sizeof p, "%s/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab.bin.tmp2.0", dir);
    f = fopen(p, "wb"); if (f) { fputs("x", f); fclose(f); }
    mali_compile_cache_trim(dir, 0);
-   CHECK(count_files(dir, "dead.bin.tmp") == 0 && count_files(dir, "live.bin.tmp") == 1, "stale temp swept, fresh temp kept");
+   CHECK(count_files(dir, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin.tmp") == 0 && count_files(dir, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab.bin.tmp") == 1, "stale temp swept, fresh temp kept");
    unlink(p);
 
    /* ---- a directory others can write to is not trusted: nothing is loaded from it or stored in it ---- */
