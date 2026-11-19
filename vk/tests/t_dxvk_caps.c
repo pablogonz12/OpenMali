@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 /* R4-M2 test: DXVK-style instance + device create. Loader-free (dlopen the ICD).
- *   t_dxvk_caps --direct <icd.so>
+ *   t_dxvk_caps --direct <icd.so> [--expect-missing N] [--expect-first <feature>]
+ *   --expect-first asserts which check stops DXVK 3.1.1 (pin 25ca63f1) at dxvk_device_info.cpp:767-793: an
+ *   apiVersion, feature or pushConstants, in that source order. The feature `require` flags there are literals
+ *   (no #ifdef, no feature-level condition), so a false bit really does refuse the device.
  * 1. instance with apiVersion 1.3 (+ the instance extensions DXVK asks for that we have).
  * 2. DXVK's hard-required feature list (R4-GAP.md sec. 3, DXVK info.cpp) is queried; every item is
  *    printed as ok/MISSING (honest report; missing items are the R4 backlog, not test failures).
@@ -37,14 +40,17 @@ static const char *const dxvk_exts[] = {
    "VK_EXT_custom_border_color", "VK_EXT_graphics_pipeline_library", "VK_KHR_pipeline_library",
 };
 
+static const char *g_first_missing;
+
 int
 main(int argc, char **argv)
 {
-   const char *icd = NULL;
+   const char *icd = NULL, *expect_first = NULL;
    int expect_missing = -1;
    for (int i = 1; i < argc; i++)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--expect-missing") && i + 1 < argc) expect_missing = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--expect-first") && i + 1 < argc) expect_first = argv[++i];
    if (!icd) { printf("usage: t_dxvk_caps --direct <icd.so>\n"); return 2; }
    void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
    if (!lib) { printf("dlopen: %s\n", dlerror()); return 1; }
@@ -101,6 +107,90 @@ main(int argc, char **argv)
       printf("%s %s\n", req[i].have ? "ok     " : "MISSING", req[i].name);
       missing += !req[i].have;
    }
+
+   /* ---- DXVK 3.1.1 (pin 25ca63f1) device gate, in that source's order -------------------------------
+    * DxvkDeviceCapabilities::checkDeviceCompatibility (src/dxvk/dxvk_device_info.cpp:767) is: apiVersion vs
+    * DxvkVulkanApiVersion (= VK_API_VERSION_1_3, dxvk_instance.h:12), then the feature list in getFeatureList()
+    * order for every entry marked `true` (there is no #ifdef and no feature-level condition: the `require`
+    * argument is a literal at each site), then maxPushConstantsSize >= MaxTotalPushDataSize (256,
+    * dxvk_limits.h:22) unless descriptorHeap is enabled. isSuitable() returns false on the first message, so
+    * the FIRST failing entry is what stops vkCreateDevice. Line numbers below are from that pin. */
+   VkPhysicalDeviceDepthClipEnableFeaturesEXT gdce = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+#ifdef VK_EXT_descriptor_heap
+   VkPhysicalDeviceDescriptorHeapFeaturesEXT gdh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+#else
+   VkPhysicalDeviceFeatures2 gdh_unused; (void)gdh_unused;
+#endif
+   VkPhysicalDeviceRobustness2FeaturesEXT grb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &gdce};
+   VkPhysicalDeviceMaintenance5FeaturesKHR gm5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &grb2};
+   VkPhysicalDeviceMaintenance6FeaturesKHR gm6 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR, .pNext = &gm5};
+   VkPhysicalDeviceVulkan13Features gf13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &gm6};
+#ifdef VK_EXT_descriptor_heap
+   gdce.pNext = &gdh;   /* append: inserting at gm6.pNext would orphan gm5/grb2/gdce */
+#endif
+   VkPhysicalDeviceFeatures2 gq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &gf13};
+   GetPhysicalDeviceFeatures2(pd, &gq);
+   struct gate_item { const char *name; unsigned line; VkBool32 have; };
+   const struct gate_item gate[] = {
+      {"depthBiasClamp", 847, f2.features.depthBiasClamp}, {"depthClamp", 849, f2.features.depthClamp},
+      {"dualSrcBlend", 851, f2.features.dualSrcBlend}, {"fillModeNonSolid", 852, f2.features.fillModeNonSolid},
+      {"fragmentStoresAndAtomics", 853, f2.features.fragmentStoresAndAtomics}, {"fullDrawIndexUint32", 854, f2.features.fullDrawIndexUint32},
+      {"geometryShader", 855, f2.features.geometryShader}, {"imageCubeArray", 856, f2.features.imageCubeArray},
+      {"independentBlend", 857, f2.features.independentBlend}, {"multiDrawIndirect", 860, f2.features.multiDrawIndirect},
+      {"multiViewport", 861, f2.features.multiViewport}, {"occlusionQueryPrecise", 862, f2.features.occlusionQueryPrecise},
+      {"robustBufferAccess", 864, f2.features.robustBufferAccess}, {"sampleRateShading", 865, f2.features.sampleRateShading},
+      {"samplerAnisotropy", 866, f2.features.samplerAnisotropy}, {"shaderClipDistance", 867, f2.features.shaderClipDistance},
+      {"shaderCullDistance", 868, f2.features.shaderCullDistance}, {"shaderImageGatherExtended", 870, f2.features.shaderImageGatherExtended},
+      {"shaderInt16", 871, f2.features.shaderInt16}, {"shaderInt64", 872, f2.features.shaderInt64},
+      {"shaderSampledImageArrayDynamicIndexing", 874, f2.features.shaderSampledImageArrayDynamicIndexing},
+      {"textureCompressionBC", 889, f2.features.textureCompressionBC},
+      {"shaderDrawParameters", 894, f11.shaderDrawParameters}, {"storageBuffer16BitAccess", 895, f11.storageBuffer16BitAccess},
+      {"bufferDeviceAddress", 898, f12.bufferDeviceAddress}, {"descriptorIndexing", 899, f12.descriptorIndexing},
+      {"storageBuffer8BitAccess", 900, f12.storageBuffer8BitAccess},
+      {"descriptorBindingSampledImageUpdateAfterBind", 910, f12.descriptorBindingSampledImageUpdateAfterBind},
+      {"descriptorBindingUpdateUnusedWhilePending", 911, f12.descriptorBindingUpdateUnusedWhilePending},
+      {"descriptorBindingPartiallyBound", 912, f12.descriptorBindingPartiallyBound},
+      {"hostQueryReset", 914, f12.hostQueryReset}, {"runtimeDescriptorArray", 915, f12.runtimeDescriptorArray},
+      {"samplerMirrorClampToEdge", 917, f12.samplerMirrorClampToEdge}, {"scalarBlockLayout", 918, f12.scalarBlockLayout},
+      {"shaderInt8", 920, f12.shaderInt8}, {"timelineSemaphore", 923, f12.timelineSemaphore},
+      {"uniformBufferStandardLayout", 924, f12.uniformBufferStandardLayout}, {"vulkanMemoryModel", 925, f12.vulkanMemoryModel},
+      {"inlineUniformBlock", 927, f13.inlineUniformBlock}, {"computeFullSubgroups", 928, f13.computeFullSubgroups},
+      {"dynamicRendering", 929, f13.dynamicRendering}, {"maintenance4", 930, f13.maintenance4},
+      {"shaderDemoteToHelperInvocation", 933, f13.shaderDemoteToHelperInvocation},
+      {"shaderZeroInitializeWorkgroupMemory", 934, f13.shaderZeroInitializeWorkgroupMemory},
+      {"subgroupSizeControl", 935, f13.subgroupSizeControl}, {"synchronization2", 936, f13.synchronization2},
+      {"depthClipEnable", 953, gdce.depthClipEnable}, {"robustBufferAccess2", 1014, grb2.robustBufferAccess2},
+      {"nullDescriptor", 1016, grb2.nullDescriptor}, {"maintenance5", 1064, gm5.maintenance5},
+      {"maintenance6", 1065, gm6.maintenance6},
+   };
+   const char *verdict = "ok";
+   if (pr.properties.apiVersion < VK_API_VERSION_1_3)
+      verdict = "apiVersion";
+   else {
+      for (unsigned i = 0; i < sizeof(gate) / sizeof(gate[0]) && !strcmp(verdict, "ok"); i++)
+         if (!gate[i].have) {
+            printf("GATE first missing feature '%s' (dxvk_device_info.cpp:%u)\n", gate[i].name, gate[i].line);
+            g_first_missing = gate[i].name;
+            verdict = "feature";
+         }
+   }
+   if (!strcmp(verdict, "ok") &&
+#ifdef VK_EXT_descriptor_heap
+       !gdh.descriptorHeap &&
+#endif
+
+       pr.properties.limits.maxPushConstantsSize < 256) {   /* dxvk_limits.h:22, checked at dxvk_device_info.cpp:790 */
+      printf("GATE first missing: push constants %u < 256 (dxvk_device_info.cpp:790)\n", pr.properties.limits.maxPushConstantsSize);
+      g_first_missing = "pushConstants";
+      verdict = "pushConstants";
+   }
+   if (expect_first)   /* the definite answer to "does vkCreateDevice succeed": the first check that stops it */
+      CHECK(!strcmp(g_first_missing ? g_first_missing : verdict, expect_first), "DXVK 3.1.1 first blocker is '%s', expected '%s'",
+            g_first_missing ? g_first_missing : verdict, expect_first);
+   printf("GATE dxvk-3.1.1 verdict: %s%s%s (apiVersion %u.%u.%u, maxPushConstantsSize %u)\n", verdict,
+          strcmp(verdict, "feature") ? "" : " ", strcmp(verdict, "feature") ? "" : g_first_missing,
+          VK_API_VERSION_MAJOR(pr.properties.apiVersion), VK_API_VERSION_MINOR(pr.properties.apiVersion),
+          VK_API_VERSION_PATCH(pr.properties.apiVersion), pr.properties.limits.maxPushConstantsSize);
 
    uint32_t ne = 0;
    EnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);

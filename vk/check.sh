@@ -73,6 +73,13 @@ for g in v11 v13; do
    run "gs shim on $g"  0 MALI_ADVERTISE_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_gs_shim" --direct "$OUT/libvulkan_mali.so" --expect on
    run "dxvk_caps $g gs shim" 0 MALI_ADVERTISE_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_GS"
 done
+# DXVK 3.1.1 (pin 25ca63f1) device gate: checkDeviceCompatibility() order (dxvk_device_info.cpp:767-793).
+# Default build stops at geometryShader (:855); with the GS and cull shims on, descriptorIndexing (:899) is next.
+# The push-constant check (:790) is exercised by the mutation in the PR (descriptorIndexing forced true).
+for g in v11 v13; do
+   run "dxvk gate $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-first geometryShader
+   run "dxvk gate shims $g" 0 MALI_ADVERTISE_GS=1 MALI_ADVERTISE_CULL=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-first descriptorIndexing
+done
 # MALI_ADVERTISE_CULL compatibility shim (not conformance): off by default; on only with the env; cull writes are ignored.
 for g in v11 v13; do
    run "cull shim off $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_cull_shim" --direct "$OUT/libvulkan_mali.so" --expect off
