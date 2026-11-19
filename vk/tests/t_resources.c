@@ -271,6 +271,116 @@ test_attr_instance(void)
    return 0;
 }
 
+static int g_allocs, g_frees;
+static void *
+cnt_alloc(void *u, size_t n, size_t al, VkSystemAllocationScope sc)
+{
+   g_allocs++;
+   return aligned_alloc(al > 16 ? al : 16, (n + 15) & ~(size_t)15);
+}
+static void *
+cnt_realloc(void *u, void *p, size_t n, size_t al, VkSystemAllocationScope sc)
+{
+   if (!p) g_allocs++;
+   return realloc(p, n);
+}
+static void
+cnt_free(void *u, void *p)
+{
+   if (p) g_frees++;
+   free(p);
+}
+
+/* Leak regressions: event/query-pool BOs freed through the owning device, foreign-set free, pool allocator callbacks. */
+static int
+test_leaks(void)
+{
+   uint32_t n = 1;
+   VkPhysicalDevice pd;
+   PFN_vkEnumeratePhysicalDevices en = (PFN_vkEnumeratePhysicalDevices)vk_icdGetInstanceProcAddr(inst, "vkEnumeratePhysicalDevices");
+   CHECK(en(inst, &n, &pd) == VK_SUCCESS && n == 1, "pd");
+   PFN_vkCreateDevice cd = (PFN_vkCreateDevice)vk_icdGetInstanceProcAddr(inst, "vkCreateDevice");
+   float prio = 1.0f;
+   VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
+   VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
+   VkDevice A, B;
+   CHECK(cd(pd, &dci, NULL, &A) == VK_SUCCESS, "device A");
+   PFN_vkVoidFunction (*gp)(VkDevice, const char *) = (PFN_vkVoidFunction(*)(VkDevice, const char *))vk_icdGetInstanceProcAddr(inst, "vkGetDeviceProcAddr");
+   PFN_vkCreateEvent cev = (PFN_vkCreateEvent)gp(A, "vkCreateEvent");
+   PFN_vkDestroyEvent dev_ = (PFN_vkDestroyEvent)gp(A, "vkDestroyEvent");
+   PFN_vkCreateQueryPool cqp = (PFN_vkCreateQueryPool)gp(A, "vkCreateQueryPool");
+   PFN_vkDestroyQueryPool dqp = (PFN_vkDestroyQueryPool)gp(A, "vkDestroyQueryPool");
+   PFN_vkDestroyDevice dd = (PFN_vkDestroyDevice)gp(A, "vkDestroyDevice");
+   PFN_vkCreateDescriptorSetLayout cdsl = (PFN_vkCreateDescriptorSetLayout)gp(A, "vkCreateDescriptorSetLayout");
+   PFN_vkDestroyDescriptorSetLayout ddsl = (PFN_vkDestroyDescriptorSetLayout)gp(A, "vkDestroyDescriptorSetLayout");
+   PFN_vkCreateDescriptorPool cdp = (PFN_vkCreateDescriptorPool)gp(A, "vkCreateDescriptorPool");
+   PFN_vkDestroyDescriptorPool ddp = (PFN_vkDestroyDescriptorPool)gp(A, "vkDestroyDescriptorPool");
+   PFN_vkAllocateDescriptorSets ads = (PFN_vkAllocateDescriptorSets)gp(A, "vkAllocateDescriptorSets");
+   PFN_vkFreeDescriptorSets fds = (PFN_vkFreeDescriptorSets)gp(A, "vkFreeDescriptorSets");
+   CHECK(cev && dev_ && cqp && dqp && dd && cdsl && ddsl && cdp && ddp && ads && fds, "entrypoints");
+   struct mali_device *ma = mali_device_from_handle(A);
+   unsigned base = mali_fake_live_bos(ma->kdev);
+
+   VkEventCreateInfo eci = {.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO};
+   VkQueryPoolCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_OCCLUSION, .queryCount = 8};
+   VkEvent ev;
+   VkQueryPool qp;
+   CHECK(cev(A, &eci, NULL, &ev) == VK_SUCCESS, "event");
+   CHECK(cqp(A, &qci, NULL, &qp) == VK_SUCCESS, "qpool");
+   CHECK(mali_fake_live_bos(ma->kdev) > base, "event/qpool BOs live on A");
+   CHECK(cd(pd, &dci, NULL, &B) == VK_SUCCESS, "device B");   /* B is now the bound device (g_cur) */
+   struct mali_device *mb = mali_device_from_handle(B);
+   unsigned bbase = mali_fake_live_bos(mb->kdev);
+   dev_(A, ev, NULL);
+   dqp(A, qp, NULL);
+   CHECK(mali_fake_live_bos(ma->kdev) == base, "A BOs freed via A: %u vs %u", mali_fake_live_bos(ma->kdev), base);
+   CHECK(mali_fake_live_bos(mb->kdev) == bbase, "B untouched");
+
+   /* create on A while B is the bound device, destroy B first, then free A's objects (no dangling owner, BOs go back to A) */
+   CHECK(cev(A, &eci, NULL, &ev) == VK_SUCCESS, "event while B bound");
+   CHECK(cqp(A, &qci, NULL, &qp) == VK_SUCCESS, "qpool while B bound");
+   CHECK(mali_fake_live_bos(ma->kdev) > base, "BOs live on A (B bound)");
+   CHECK(mali_fake_live_bos(mb->kdev) == bbase, "nothing allocated on B");
+   dd(B, NULL);
+   B = VK_NULL_HANDLE;
+   dev_(A, ev, NULL);
+   dqp(A, qp, NULL);
+   CHECK(mali_fake_live_bos(ma->kdev) == base, "A BOs freed after B destroyed: %u vs %u", mali_fake_live_bos(ma->kdev), base);
+   CHECK(cd(pd, &dci, NULL, &B) == VK_SUCCESS, "device B again");
+   mb = mali_device_from_handle(B);
+
+   /* wrong-pool free must not unlink/free/decrement */
+   VkDescriptorSetLayoutBinding bd = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL};
+   VkDescriptorSetLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &bd};
+   VkDescriptorSetLayout l;
+   CHECK(cdsl(A, &lci, NULL, &l) == VK_SUCCESS, "layout");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
+   VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+                                     .maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkAllocationCallbacks ac = {.pfnAllocation = cnt_alloc, .pfnReallocation = cnt_realloc, .pfnFree = cnt_free};
+   VkDescriptorPool p1, p2;
+   g_allocs = g_frees = 0;
+   CHECK(cdp(A, &pci, &ac, &p1) == VK_SUCCESS, "pool1");
+   CHECK(g_allocs > 0, "pool create used app allocator");
+   CHECK(cdp(A, &pci, NULL, &p2) == VK_SUCCESS, "pool2");
+   VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = p1, .descriptorSetCount = 1, .pSetLayouts = &l};
+   VkDescriptorSet s;
+   CHECK(ads(A, &ai, &s) == VK_SUCCESS, "alloc set");
+   struct mali_dpool *dp1 = mali_dpool_from_handle(p1);
+   CHECK(dp1->nsets == 1, "nsets 1");
+   CHECK(fds(A, p2, 1, &s) == VK_SUCCESS, "free via wrong pool");
+   CHECK(dp1->nsets == 1 && dp1->sets, "set still live in p1 (nsets %u)", dp1->nsets);
+   CHECK(fds(A, p1, 1, &s) == VK_SUCCESS && dp1->nsets == 0, "free via owner");
+   ddp(A, p1, &ac);
+   CHECK(g_frees == g_allocs, "allocator balanced: %d allocs %d frees", g_allocs, g_frees);
+   ddp(A, p2, NULL);
+   ddsl(A, l, NULL);
+   dd(B, NULL);
+   dd(A, NULL);
+   printf("{\"test\":\"leaks\",\"ok\":true}\n");
+   return 0;
+}
+
 int
 main(void)
 {
@@ -281,6 +391,7 @@ main(void)
    }
    int r = test_attr_instance();
    if (!r) r = run();
+   if (!r) r = test_leaks();
    printf("{\"test\":\"t_resources\",\"pass\":%s}\n", r || g_fail ? "false" : "true");
    return r || g_fail;
 }
