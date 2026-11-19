@@ -241,6 +241,98 @@ test_errors(void)
    o.arch = 12;
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
 
+   /* fuzz findings: an OpName with an out-of-range target id (wild write in spirv_to_nir) and a truncated last instruction
+    * (assert(w == end)) must be refused, not crash; the unmodified module compiles */
+   struct spv m = load("var.frag.spv");
+   if (m.w) {
+      size_t at = 0;
+      for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+         if ((m.w[i] & 0xffff) == 5) { at = i; break; }
+      CHECK(at, "var.frag has an OpName");
+      o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_FRAGMENT, .spirv = m.w, .spirv_words = m.n, .cache_dir = "" };
+      if (at) {
+         uint32_t keep = m.w[at + 1];
+         m.w[at + 1] = 0x50886f08u;
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "OpName with out-of-range target refused");
+         m.w[at + 1] = keep;
+      }
+      size_t ep = 0;
+      for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+         if ((m.w[i] & 0xffff) == 15) { ep = i; break; }
+      CHECK(ep, "var.frag has an OpEntryPoint");
+      if (ep) {
+         uint32_t keep = m.w[ep + 2];
+         m.w[ep + 2] = 0x50886f08u;
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "OpEntryPoint with out-of-range function id refused");
+         m.w[ep + 2] = keep;
+      }
+      CHECK((m.w[m.n - 1] & 0xffff) == 56 && (m.w[m.n - 1] >> 16) == 1, "var.frag ends in OpFunctionEnd");
+      {
+         uint32_t keep = m.w[m.n - 1];
+         m.w[m.n - 1] = 0x00010000u;   /* OpNop: the last function is never closed */
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "module with an unterminated function refused");
+         m.w[m.n - 1] = keep;
+      }
+      free(m.w);
+      m = load("pc.frag.spv");   /* struct P {vec4; vec4} with Offset 0 / 16 */
+      o.spirv = m.w; o.spirv_words = m.n;
+      size_t md = 0;
+      for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+         if ((m.w[i] & 0xffff) == 72 && m.w[i + 2] == 1 && m.w[i + 3] == 35) { md = i; break; }
+      CHECK(md, "pc.frag has a member 1 Offset");
+      if (md) {
+         m.w[md + 2] = 0;   /* member 0 gets two Offsets, member 1 none: glsl_get_explicit_size asserted offset >= 0 */
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "struct with a member lacking Offset refused");
+         m.w[md + 2] = 1;
+      }
+      /* Offset 0 for member 0 delivered through a decoration group (OpDecorationGroup + OpDecorate <grp> Offset 0 + OpGroupMemberDecorate
+       * <grp> P 0, a valid 4-word instruction) while member 1 keeps its direct Offset 16: valid SPIR-V, must compile and must not trip the guard.
+       * With a second pair (word count 6) naming a member that does not exist, the guard must refuse. */
+      if (md) {
+         size_t d0 = 0;
+         for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+            if ((m.w[i] & 0xffff) == 72 && m.w[i + 2] == 0 && m.w[i + 3] == 35) { d0 = i; break; }
+         CHECK(d0, "pc.frag has a member 0 Offset");
+         if (d0) {
+            uint32_t grp = m.w[3], pid = m.w[d0 + 1];
+            for (int bad = 0; bad < 2; bad++) {
+               uint32_t *g = malloc((m.n + 16) * 4);
+               size_t n = d0;
+               memcpy(g, m.w, d0 * 4);
+               g[n++] = (2u << 16) | 73;                 /* OpDecorationGroup %grp */
+               g[n++] = grp;
+               g[n++] = (4u << 16) | 71; g[n++] = grp; g[n++] = 35; g[n++] = 0;   /* OpDecorate %grp Offset 0 */
+               if (!bad) { g[n++] = (4u << 16) | 75; g[n++] = grp; g[n++] = pid; g[n++] = 0; }   /* OpGroupMemberDecorate %grp %P 0 */
+               else      { g[n++] = (6u << 16) | 75; g[n++] = grp; g[n++] = pid; g[n++] = 0; g[n++] = pid; g[n++] = 7; }   /* + (%P, 7): no member 7 */
+               memcpy(g + n, m.w + d0 + 5, (m.n - d0 - 5) * 4);
+               n += m.n - d0 - 5;
+               g[3] = grp + 1;                            /* new id */
+               o.spirv = g; o.spirv_words = n;
+               if (!bad) {
+                  FILE *f = fopen("/tmp/t_compile_grp.spv", "wb");   /* spirv-val gate: the mutated module must be valid, or this tests nothing */
+                  if (f) { fwrite(g, 4, n, f); fclose(f); }
+                  if (f && system("spirv-val --target-env vulkan1.1 /tmp/t_compile_grp.spv >/dev/null 2>&1") == 0)
+                     printf("  grouped-offset module passes spirv-val\n");
+                  else if (f && system("command -v spirv-val >/dev/null 2>&1") == 0) { printf("  grouped-offset module FAILS spirv-val\n"); g_fail++; }
+                  CHECK(mali_compile(&o, &c, err, sizeof err) == 0, "struct with direct + grouped member Offsets accepted (%s)", err);
+               } else
+                  CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "grouped Offset naming a nonexistent member refused");
+               free(g);
+            }
+            o.spirv = m.w; o.spirv_words = m.n;
+         }
+      }
+      free(m.w);
+      m = load("var.frag.spv");
+      o.spirv = m.w; o.spirv_words = m.n;
+      uint32_t last = 5, lw = 0;
+      for (size_t i = 5; i < m.n; i += m.w[i] >> 16) { last = i; lw = m.w[i]; }
+      m.w[last] = (lw & 0xffff) | ((uint32_t)(m.n - last + 3) << 16);   /* claims 3 words more than the module has */
+      CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "truncated last instruction refused");
+      m.w[last] = lw;
+      free(m.w);
+   }
+
    /* A module that declares a capability Mesa does not implement: the error must name it (not just "spirv_to_nir failed"). */
    uint32_t badcap[] = {0x07230203, 0x00010500, 0, 1, 0, 0x00020011, 0x7ffffff0u /* OpCapability <unknown> */};
    o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = badcap, .spirv_words = 7, .cache_dir = "" };

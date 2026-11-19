@@ -641,6 +641,66 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    return 0;
 }
 
+/* spirv_to_nir trusts validated input: a truncated last instruction trips `assert(w == end)` and OpName/OpMemberName index the id table
+ * with an unchecked target id (wild write). Found by tools/fuzz on mutated modules; vkCreateShaderModule input may be invalid, so walk the
+ * instruction stream here and refuse what the parser would not survive. */
+static bool
+spirv_offsets_ok(const uint32_t *w, size_t nwords, uint32_t bound)
+{
+   /* A struct with explicit layout must give every member an Offset: glsl_get_explicit_size asserts offset >= 0 otherwise. Member Offset
+    * decorations must target a real struct member. Struct members are numbered through a per-id base into one byte pool. */
+   uint32_t *base = calloc(bound, 2 * sizeof *base);   /* base[id] = pool index + 1, nmem[id] = member count */
+   if (!base) return false;
+   uint32_t *nmem = base + bound, pool = 0;
+   bool ok = true;
+   for (size_t i = 5; i < nwords; i += w[i] >> 16)
+      if ((w[i] & 0xffff) == 30 && (w[i] >> 16) >= 2 && w[i + 1] < bound) { base[w[i + 1]] = pool + 1; nmem[w[i + 1]] = (w[i] >> 16) - 2; pool += (w[i] >> 16) - 2; }
+   uint8_t *seen = calloc(pool ? pool : 1, 1);
+   uint32_t *have = calloc(bound, sizeof *have);
+   uint8_t *grpoff = calloc(bound, 1);   /* decoration groups (OpDecorate <group> Offset) that carry an Offset */
+   if (!seen || !have || !grpoff) ok = false;
+   for (size_t i = 5; ok && i < nwords; i += w[i] >> 16)
+      if ((w[i] & 0xffff) == 71 && (w[i] >> 16) >= 4 && w[i + 2] == 35 && w[i + 1] < bound) grpoff[w[i + 1]] = 1;
+   for (size_t i = 5; ok && i < nwords; i += w[i] >> 16) {
+      uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+      if (op == 75 && wc >= 2 && w[i + 1] < bound && grpoff[w[i + 1]]) {   /* OpGroupMemberDecorate <group> (target, member)...: grouped Offsets */
+         for (size_t k = i + 2; ok && k + 1 < i + wc; k += 2) {
+            uint32_t id = w[k], mem = w[k + 1];
+            if (id >= bound || !base[id] || mem >= nmem[id]) { ok = false; break; }
+            if (!seen[base[id] - 1 + mem]) { seen[base[id] - 1 + mem] = 1; have[id]++; }
+         }
+         continue;
+      }
+      if (op != 72 || wc < 4 || w[i + 3] != 35) continue;   /* OpMemberDecorate ... Offset */
+      uint32_t id = w[i + 1], mem = w[i + 2];
+      if (wc < 5 || id >= bound || !base[id] || mem >= nmem[id]) { ok = false; break; }
+      if (!seen[base[id] - 1 + mem]) { seen[base[id] - 1 + mem] = 1; have[id]++; }
+   }
+   for (uint32_t id = 0; ok && id < bound; id++)
+      if (have[id] && have[id] != nmem[id]) ok = false;
+   free(grpoff); free(have); free(seen); free(base);
+   return ok;
+}
+
+static bool
+spirv_structure_ok(const uint32_t *w, size_t nwords)
+{
+   uint32_t bound = w[3];
+   if (bound == 0 || bound > (1u << 20)) return false;
+   bool infn = false;
+   for (size_t i = 5; i < nwords;) {
+      uint32_t wc = w[i] >> 16, op = w[i] & 0xffff;
+      if (wc == 0 || wc > nwords - i) return false;
+      if (op == 5 && (wc < 3 || w[i + 1] >= bound)) return false;   /* OpName */
+      if (op == 6 && (wc < 4 || w[i + 1] >= bound)) return false;   /* OpMemberName */
+      if (op == 15 && (wc < 4 || w[i + 2] >= bound)) return false;  /* OpEntryPoint: model, function id, name... (id indexes the id table unchecked) */
+      if (op == 54) { if (infn) return false; infn = true; }   /* OpFunction: functions do not nest */
+      if (op == 56) infn = false;                              /* OpFunctionEnd */
+      i += wc;
+   }
+   return !infn && spirv_offsets_ok(w, nwords, bound);   /* an unterminated last function trips assert(w == end) in vtn_foreach_instruction */
+}
+
 int
 mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
 {
@@ -649,6 +709,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    /* spirv_to_nir dereferences a NULL builder option on a bad header: check it ourselves */
    if (o->spirv_words < 5 || o->spirv[0] != 0x07230203u)
       return fail(err, errsz, "not a SPIR-V module (bad magic or too short)");
+   if (!spirv_structure_ok(o->spirv, o->spirv_words))
+      return fail(err, errsz, "malformed SPIR-V (truncated instruction or out-of-range OpName target)");
    if (o->arch != 10 && o->arch != 11 && o->arch != 13)
       return fail(err, errsz, "arch must be 10, 11 or 13");
    if (o->stage > MALI_STAGE_COMPUTE)
