@@ -431,6 +431,10 @@ mali_compile_cache_uuid(uint32_t gpu_id, uint8_t uuid[16])
    blake3_hasher_update(&h, "mali-own-pc1", 12);
    blake3_hasher_update(&h, &gpu_id, sizeof gpu_id);
    blake3_hasher_update(&h, &k, sizeof k);
+   /* build identity: compiled output can change in sources the version bump does not cover; a different build must not reuse saved blobs */
+#ifdef MALI_GIT_SHA
+   blake3_hasher_update(&h, MALI_GIT_SHA, strlen(MALI_GIT_SHA));
+#endif
    blake3_hasher_finalize(&h, uuid, 16);
 }
 
