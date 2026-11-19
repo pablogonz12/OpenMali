@@ -18,6 +18,19 @@
 
 #define MALI_VENDOR_ID_ARM 0x13B5
 
+/* M15: opt-in device-local memory type (vk/MEMORY.md). When on, memory type 0 is DEVICE_LOCAL without
+ * HOST_VISIBLE, so a front end (DXVK) that asks for DEVICE_LOCAL and takes the lowest bit gets
+ * GPU-cacheable, never-CPU-mapped memory; the two host-visible types move to 1 and 2. The BO is
+ * allocated without COHERENT_LOCAL and is never MEM_SYNCed from the CPU side. Off by default: the
+ * v13 COHERENT_LOCAL/tiler interaction and the GPU-cache gain are unverified on hardware.
+ * MALI_DEVICE_LOCAL=0 overrides a shell that exports it. */
+static inline bool
+mali_device_local_enabled(void)
+{
+   const char *e = getenv("MALI_DEVICE_LOCAL");
+   return e && e[0] == '1' && e[1] == '\0';
+}
+
 struct mali_instance {
    struct vk_instance vk;
 };

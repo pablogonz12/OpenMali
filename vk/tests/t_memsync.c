@@ -9,7 +9,9 @@
  *  - an arch 11 driver-internal BO (NOCOH) is never synced; with MALI_INT_NOCOH=0 it is
  *  - M15: per-BO write tracking. A fence wait CSYNCs only BOs marked with bo_wrote; the fake kernel models a
  *    non-coherent GPU (kb_fake_gpu_write writes a shadow that only MEM_SYNC type 2 makes visible), so an
- *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first. */
+ *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first.
+ *  - M15: a device-local BO (MALI_BO_DEVICE_LOCAL, vk/MEMORY.md) is never MEM_SYNCed in either direction,
+ *    and bo_host_touch must not put it back into the per-submit sweep (the app can never map it) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,6 +194,20 @@ int main(void)
       EXPECT(n_track >= 300 && n_track <= 600, "tracking syncs the written BO only (+ the in-flight one): %u MEM_SYNC for 300 waits", n_track);
       EXPECT(n_all == 1500, "full sweep: 5 BOs x 300 waits = %u", n_all);
    }
+   EXPECT(kb_fake_memsync_count(internal.gpu_va) == n0, "arch 11 internal BO: no MEM_SYNC (NOCOH)");
+   /* M15: device-local (GPU-cacheable, never app-mapped) is outside both sweeps, also after a host touch */
+   static volatile uint64_t cnt2 = 1;
+   struct mali_bo dvl;
+   if ((r = b->bo_alloc(k, 65536, MALI_BO_DEVICE_LOCAL | MALI_BO_HOSTLAZY | MALI_BO_NOCOH, &dvl))) { printf("FAIL  bo_alloc device-local\n"); return 1; }
+   unsigned v0 = kb_fake_memsync_count(dvl.gpu_va);
+   for (int i = 0; i < N; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO: no CPU->device MEM_SYNC in %d submits", N);
+   b->bo_host_touch(k, &dvl);   /* a stray touch must not re-enable the sweep */
+   for (int i = 0; i < N; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO after bo_host_touch: still no MEM_SYNC");
+   b->wait_counter(k, &cnt2, 1, 100);
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO: no device->CPU MEM_SYNC after a counter wait");
+
    /* the device -> CPU direction after a fence wait covers mapped BOs only */
    unsigned before = kb_fake_memsync_count(exp.gpu_va);
    static volatile uint64_t cnt = 1;

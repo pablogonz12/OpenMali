@@ -55,6 +55,8 @@ run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
+# M15: the opt-in device-local type (vk/MEMORY.md) must not change the default layout; both are checked by the same binary.
+for g in v11 v13; do run "vk_mem devlocal $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g MALI_DEVICE_LOCAL=1 "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_qerr $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_qerr" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
 for g in v11 v13; do run "dxvk_api $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_api" --direct "$OUT/libvulkan_mali.so"; done

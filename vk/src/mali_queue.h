@@ -44,6 +44,7 @@ mali_device_pdev(struct mali_device *dev)
 struct mali_memory {
    struct vk_device_memory vk;
    struct mali_bo bo;
+   VkMemoryPropertyFlags props;   /* of the memory type: policy for map/CSYNC, see vk/MEMORY.md */
    bool mapped;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_memory, vk.base, VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)

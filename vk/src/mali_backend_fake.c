@@ -130,9 +130,11 @@ dump_out(void)
 static const char *
 fake_flag_rule(size_t size, uint32_t flags)
 {
-   const uint32_t known = MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOSTLAZY | MALI_BO_HOT | MALI_BO_COH;
+   const uint32_t known = MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOSTLAZY | MALI_BO_HOT | MALI_BO_COH | MALI_BO_DEVICE_LOCAL;
    if (flags & ~known)
       return "unknown MALI_BO_* bits";
+   if ((flags & MALI_BO_DEVICE_LOCAL) && (flags & (MALI_BO_CACHED | MALI_BO_HOT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_COH)))
+      return "DEVICE_LOCAL (GPU-cacheable, never CPU-mapped) cannot be CACHED/HOT/EVENT/EXEC/COH";
    if (size == 0)
       return "zero-size BO";
    if ((flags & MALI_BO_EVENT) && (flags & (MALI_BO_CACHED | MALI_BO_EXPORT | MALI_BO_EXEC | MALI_BO_HOT | MALI_BO_HOSTLAZY)))

@@ -344,18 +344,28 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    pdev->gpu = *gpu;
    mali_sync_init_physical(pdev);
 
-   /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
-    * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
+   /* One heap, one VkDeviceMemory pool in the kernel; the types only differ in the kbase allocation
+    * flags (mali_memory.c) and in what the application may do with them (vk/MEMORY.md):
+    *   MALI_DEVICE_LOCAL=1 -> type 0 DEVICE_LOCAL without HOST_VISIBLE (GPU-cacheable, never mapped,
+    *   uploads through GPU copies), then the two host-visible types at 1 and 2;
+    *   default -> type 0 HOST_VISIBLE|HOST_COHERENT, type 1 HOST_VISIBLE|HOST_CACHED for readback.
+    * Ordering matters: a front end asking for DEVICE_LOCAL takes the lowest set bit, so the
+    * device-local type has to come first to be picked at all (DXVK dxvk_memory.cpp). */
+   const bool devlocal = mali_device_local_enabled();
+   const VkMemoryPropertyFlags hv_coherent = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+   const VkMemoryPropertyFlags hv_cached = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
    pdev->memory = (VkPhysicalDeviceMemoryProperties){
-      .memoryTypeCount = 2,
+      .memoryTypeCount = devlocal ? 3 : 2,
       .memoryTypes = {
-         {.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+         {.propertyFlags = devlocal ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : hv_coherent,
           .heapIndex = 0},
-         {.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                           VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+         {.propertyFlags = devlocal ? hv_coherent : hv_cached,
+          .heapIndex = 0},
+         {.propertyFlags = devlocal ? hv_cached : 0,
           .heapIndex = 0},
       },
       .memoryHeapCount = 1,
