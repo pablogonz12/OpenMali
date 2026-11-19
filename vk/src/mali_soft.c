@@ -402,6 +402,10 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
       return;
    if ((cull & VK_CULL_MODE_BACK_BIT) && !front)
       return;
+   /* framebuffer depths, for the bias slope: Vulkan defines that slope in framebuffer coordinates */
+   const float zf[3] = {d->vp[4] + sz[0] * (d->vp[5] - d->vp[4]),
+                        d->vp[4] + sz[1] * (d->vp[5] - d->vp[4]),
+                        d->vp[4] + sz[2] * (d->vp[5] - d->vp[4])};
    const float s = area > 0 ? 1.0f : -1.0f;   /* make the edge functions positive inside */
    const float iarea = 1.0f / (area * s);
 
@@ -447,7 +451,7 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
          float z = d->vp[4] + zn * (d->vp[5] - d->vp[4]);
          if (set && fx->bias_en) {
             float b = fx->bias_const * r;
-            float dzdx = fabsf((sx[0] - sx[1]) * sz[2] + (sx[1] - sx[2]) * sz[0] + (sx[2] - sx[0]) * sz[1]) * iarea;
+            float dzdx = fabsf((sx[0] - sx[1]) * zf[2] + (sx[1] - sx[2]) * zf[0] + (sx[2] - sx[0]) * zf[1]) * iarea;
             b += fx->bias_slope * dzdx;
             if (fx->bias_clamp != 0.0f)
                b = fminf(fmaxf(b, -fabsf(fx->bias_clamp)), fabsf(fx->bias_clamp));
