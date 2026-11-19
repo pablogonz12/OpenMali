@@ -39,13 +39,14 @@ for var in "${variants[@]}"; do
    # highest GLIBC symbol version needed -> minGlibc
    minglibc=$(readelf -V "$so" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1 || true)
    [ -n "$minglibc" ] || minglibc=2.38
+   drv_name=${DRIVER_NAME:-Mali-open ($var)}   # DRIVER_NAME=Mali-open-<sha> makes the picker entry unique; must start with "Mali-open" (app hook)
    mesa_ver=$(cat "$MESA/VERSION" 2>/dev/null || echo unknown)
    src_id=$(cd "$V" && git rev-parse --short HEAD 2>/dev/null || echo nogit)
    cat > "$w/meta.json" <<J
 {
   "schemaVersion": 1,
   "kind": "linux-vulkan-icd",
-  "name": "Mali-open ($var)",
+  "name": "$drv_name",
   "driverVersion": "own Vulkan 1.0 ICD 0.1.0 (Mesa $mesa_ver runtime, $src_id)",
   "libc": "glibc",
   "minGlibc": "$minglibc",

@@ -72,3 +72,16 @@ Last result: all three zips pass.
 `mali-open-app-hook.patch` (applies with `git apply -p1` in upstream/DroidDeck, **not applied**, APK owned by another worker): a driver
 whose `meta.json` name starts with `Mali-open` switches MaliBridge off while selected and counts as the open driver, so a plain zip works
 without the `PanVK-*` bundle id trick.
+
+## MediaDeck variant with the app hook (`build-apk-variant.sh`)
+
+`mali-slot -- ./build-apk-variant.sh [--no-gradle] [variant]` (default `a64-glibc-wl`; needs `../out/<variant>/libvulkan_mali.so`):
+1. builds the driver zip with `meta.json` name **`Mali-open-<sha>`** (`DRIVER_NAME` override in `build-zip.sh`; the hook matches the prefix `Mali-open`);
+2. applies `mali-open-app-hook.patch` to a scratch `git archive` copy of `~/src/droiddeck-src` (never modifies it), runs Gradle for dex/res only;
+3. splices them into the base MediaDeck APK (default p22, `BASE=`), aligns, signs with the droidtest key.
+Output in `dist/apk/`: `MediaDeck-open-<sha>.apk`, `mali-open-<variant>-<sha>.zip`. Nothing is installed anywhere.
+The driver is **not inside the APK**: the app has no asset-driver seeding, so the zip is imported in-app (Setup > GPU drivers > Linux driver).
+Using it (by hand, on a phone, later): install the APK over the same-signature MediaDeck, import the zip, select `Mali-open-<sha>`; the hook
+turns MaliBridge off while it is selected and sets `BL_OPEN_DRIVER`. Roll back by selecting "Runtime default".
+Caveat: the shipped p14+ APKs choose "ours" in the guest session script instead (RELEASE-NOTES.md:66); the hook adds the app-side half.
+Not run end to end here (Gradle + base APK + no phone); `git apply --check` of the hook against upstream `cdff94e` passes.
