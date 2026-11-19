@@ -93,14 +93,28 @@ main(int argc, char **argv)
    VkDevice dev, sentinel = (VkDevice)(uintptr_t)0x1234;
 
    VkDeviceQueueCreateInfo bad_fam = q0; bad_fam.queueFamilyIndex = 1;
+   /* invalid usage (queue family / queueCount out of range) is undefined behaviour in the spec: a driver may refuse or tolerate it.
+    * Only assert what holds either way: no crash, and a refusal is a spec-legal error that leaves the handle alone. */
+#define CHECK_INVALID_USAGE_CREATE(what)                                                                                    \
+   do {                                                                                                                     \
+      VkResult r_ = CreateDevice(pd, &dci, NULL, &dev);                                                                     \
+      if (r_ == VK_SUCCESS) {                                                                                               \
+         ((PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice"))(dev, NULL);                                       \
+      } else {                                                                                                              \
+         CHECK(r_ == VK_ERROR_INITIALIZATION_FAILED || r_ == VK_ERROR_OUT_OF_HOST_MEMORY ||                                 \
+               r_ == VK_ERROR_OUT_OF_DEVICE_MEMORY || r_ == VK_ERROR_FEATURE_NOT_PRESENT || r_ == VK_ERROR_TOO_MANY_OBJECTS || \
+               r_ == VK_ERROR_DEVICE_LOST, what ": spec-legal error expected, got %d", r_);                                 \
+         CHECK(dev == sentinel, what ": failed create must not write the handle");                                          \
+      }                                                                                                                     \
+   } while (0)
    dci.pQueueCreateInfos = &bad_fam; dev = sentinel;
-   CHECK(CreateDevice(pd, &dci, NULL, &dev) != VK_SUCCESS && dev == sentinel, "queue family 1 must fail without writing the handle");
+   CHECK_INVALID_USAGE_CREATE("queue family 1");
    VkDeviceQueueCreateInfo two = q0; two.queueCount = 2;
    dci.pQueueCreateInfos = &two; dev = sentinel;
-   CHECK(CreateDevice(pd, &dci, NULL, &dev) == VK_ERROR_INITIALIZATION_FAILED && dev == sentinel, "queueCount 2");
+   CHECK_INVALID_USAGE_CREATE("queueCount 2");
    VkDeviceQueueCreateInfo pair[2] = {q0, q0};
    dci.queueCreateInfoCount = 2; dci.pQueueCreateInfos = pair; dev = sentinel;
-   CHECK(CreateDevice(pd, &dci, NULL, &dev) == VK_ERROR_INITIALIZATION_FAILED && dev == sentinel, "two queue infos (one queue exists)");
+   CHECK_INVALID_USAGE_CREATE("two queue infos (one queue exists)");
    dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &q0;
 
    VkAllocationCallbacks cb = {.pfnAllocation = cb_alloc, .pfnReallocation = cb_realloc, .pfnFree = cb_free};
