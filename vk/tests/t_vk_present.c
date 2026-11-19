@@ -5,7 +5,7 @@
  * One JSON line per event; exit 0 = ran the requested time without Vulkan errors.
  *
  *   t_vk_present --icd <libvulkan_mali.so> [--spv-dir dir] [--seconds S] [--mode fifo|mailbox|immediate]
- *                [--size WxH] [--resize-test] [--min-images N]
+ *                [--size WxH] [--resize-test] [--min-images N] [--acquire-ms N]
  * Client-side copies per frame: 0 (the swapchain image is rendered into directly; wsi attaches it as wl_buffer).
  */
 #define _GNU_SOURCE
@@ -35,6 +35,7 @@ static const char *g_spv = "shader", *g_mode = "fifo";
 static double g_seconds = 10;
 static uint32_t g_w, g_h, g_minimg = 3;
 static int g_resize_test;
+static uint64_t g_acq_ms = 20000;   /* --acquire-ms: acquire timeout; VK_TIMEOUT within it exits 3 (bounded wait: the compositor holds every buffer) */
 
 /* ------------------------------------------------------------------ wayland */
 static struct {
@@ -302,6 +303,7 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--min-images") && i + 1 < argc) g_minimg = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--size") && i + 1 < argc) { if (sscanf(argv[++i], "%ux%u", &g_w, &g_h) != 2) return 2; }
       else if (!strcmp(argv[i], "--resize-test")) g_resize_test = 1;
+      else if (!strcmp(argv[i], "--acquire-ms") && i + 1 < argc) g_acq_ms = strtoull(argv[++i], NULL, 0);
       else { fprintf(stderr, "usage: t_vk_present --icd x.so [--spv-dir d] [--seconds S] [--mode fifo|mailbox|immediate] [--size WxH] [--resize-test]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--icd required\n"); return 2; }
@@ -373,9 +375,21 @@ int main(int argc, char **argv)
 
    VkSurfaceCapabilitiesKHR caps;
    VK(GSC(pd, surface, &caps));
-   uint32_t nf = 16, np = 8;
-   VkSurfaceFormatKHR fmts[16];
-   VkPresentModeKHR pms[8];
+   /* Two-call enumeration: a compositor can offer any number of formats (gamescope's wl_shm list gives more than 16 entries, the
+    * fixed 16-entry array this test used to have made the call return VK_INCOMPLETE, which VK() reads as a failure). A truncated
+    * query must return VK_INCOMPLETE and fill exactly the room given. */
+   uint32_t nf = 0, np = 0;
+   VK(GetPhysicalDeviceSurfaceFormatsKHR_i(pd, surface, &nf, NULL));
+   VK(GetPhysicalDeviceSurfacePresentModesKHR_i(pd, surface, &np, NULL));
+   if (nf < 1 || np < 1) FAIL("surface offers %u formats, %u present modes", nf, np);
+   if (nf > 1) {
+      uint32_t one = 1;
+      VkSurfaceFormatKHR f1;
+      VkResult tr = GetPhysicalDeviceSurfaceFormatsKHR_i(pd, surface, &one, &f1);
+      if (tr != VK_INCOMPLETE || one != 1) FAIL("truncated surface format query = %d count %u (want VK_INCOMPLETE, 1)", tr, one);
+   }
+   VkSurfaceFormatKHR *fmts = calloc(nf, sizeof *fmts);
+   VkPresentModeKHR *pms = calloc(np, sizeof *pms);
    VK(GetPhysicalDeviceSurfaceFormatsKHR_i(pd, surface, &nf, fmts));
    VK(GetPhysicalDeviceSurfacePresentModesKHR_i(pd, surface, &np, pms));
    printf("{\"surface\":{\"min_images\":%u,\"max_images\":%u,\"cur_w\":%u,\"cur_h\":%u,\"formats\":[", caps.minImageCount,
@@ -569,8 +583,12 @@ int main(int argc, char **argv)
       }
       VK(WaitForFences(dev, 1, &fen[fi], VK_TRUE, 20000000000ull));
       uint32_t idx;
-      r = AcquireNextImageKHR(dev, S.sc, 20000000000ull, acq[fi], VK_NULL_HANDLE, &idx);
+      r = AcquireNextImageKHR(dev, S.sc, g_acq_ms * 1000000ull, acq[fi], VK_NULL_HANDLE, &idx);
       if (r == VK_ERROR_OUT_OF_DATE_KHR) { ood++; create_swapchain(S.w, S.h); recreates++; continue; }
+      if (r == VK_TIMEOUT && g_acq_ms < 20000) {
+         printf("{\"acquire_timeout\":{\"ms\":%llu,\"frames\":%llu}}\n", (unsigned long long)g_acq_ms, (unsigned long long)frames);
+         return 3;
+      }
       if (r == VK_SUBOPTIMAL_KHR) subopt++;
       else if (r != VK_SUCCESS) FAIL("AcquireNextImageKHR = %d", r);
       ResetFences(dev, 1, &fen[fi]);
