@@ -397,6 +397,25 @@ class T(unittest.TestCase):
         res = dict((l.split()[0], l.split()[-1]) for l in out.splitlines()[1:] if l.startswith("  H"))
         self.assertEqual(res, {"HEAD": "pass", "HEAD~1": "fail"}, out)
 
+    def test_stack_gate_order_prefix_bisect(self):
+        # HEAD~1 is the stack base, HEAD the PR on top: one job covers both; reversed order is rejected
+        self.assertNotEqual(self.farm("submit", "--stack", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")[0], 0)
+        self.assertNotEqual(self.farm("submit", "--stack", "HEAD~1,HEAD", "--batch", "HEAD,HEAD~1")[0], 0)
+        base = self.git_rev("HEAD~1")[:12]
+        rc, jid, err = self.farm("submit", "--stack", "HEAD~1,HEAD", "--need", "v11", "--allow-stale", "--env", "FAKE_FAIL_COMMIT=" + base)
+        self.assertEqual(rc, 0, err)
+        j = L.find_job(jid)
+        self.assertTrue(j["ref"].startswith("stack:"))
+        self.assertTrue(j["batch"]["stack"])
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "fail")
+        for _ in range(4):
+            self.farmd()
+        out = self.farm("batch", jid)[1]
+        self.assertIn("first failing prefix: HEAD~1", out)                       # the base PR already breaks it; the top PR is not blamed alone
+        self.assertEqual(L.find_job(jid)["bisect"]["HEAD"], jid)                 # the full stack is the failed job itself: not re-run
+
     def test_batch_needs_two_refs(self):
         self.assertNotEqual(self.farm("submit", "--batch", "HEAD")[0], 0)
         self.assertNotEqual(self.farm("submit")[0], 0)
