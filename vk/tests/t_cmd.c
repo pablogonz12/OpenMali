@@ -327,6 +327,44 @@ test_clear_words(void)
    check_clear_words(VK_FORMAT_A8B8G8R8_UINT_PACK32, f, 0x00000007, 0x00000007, 0x00000007, 0x00000007, "A8B8G8R8_UINT");
 }
 
+/* fillModeNonSolid triangle assembly (mali_poly_assemble): per assembled triangle, no incomplete primitives, restart markers removed. */
+static void
+test_poly_assemble(void)
+{
+   uint32_t out[6 * 16];
+   const uint32_t v4[4] = { 0, 1, 2, 3 };
+   /* strip of 4 vertices = 2 triangles: 6 edge instances (shared edge 1-2 twice), 6 points */
+   size_t n = mali_poly_assemble(1, 10, NULL, v4, 4, out);
+   CHECK(n == 12, "poly strip4 lines: %zu entries want 12", n);
+   unsigned shared = 0;
+   for (size_t i = 0; i + 1 < n; i += 2)
+      shared += (out[i] == 1 && out[i + 1] == 2) || (out[i] == 2 && out[i + 1] == 1);
+   CHECK(shared == 2, "poly strip4 lines: shared edge x%u want 2", shared);
+   CHECK(mali_poly_assemble(2, 10, NULL, v4, 4, out) == 6, "poly strip4 points");
+   /* fan of 4 vertices */
+   CHECK(mali_poly_assemble(1, 12, NULL, v4, 4, out) == 12, "poly fan4 lines");
+   /* a single triangle keeps 3 edges / 3 points */
+   CHECK(mali_poly_assemble(1, 8, NULL, v4, 3, out) == 6, "poly tri lines");
+   CHECK(mali_poly_assemble(2, 8, NULL, v4, 3, out) == 3, "poly tri points");
+   /* incomplete triangles produce nothing: list of 2, list of 4 (1 triangle), strip of 2 */
+   CHECK(mali_poly_assemble(2, 8, NULL, v4, 2, out) == 0, "poly list2 points");
+   CHECK(mali_poly_assemble(1, 8, NULL, v4, 2, out) == 0, "poly list2 lines");
+   CHECK(mali_poly_assemble(2, 8, NULL, v4, 4, out) == 3, "poly list4 points");
+   CHECK(mali_poly_assemble(2, 10, NULL, v4, 2, out) == 0, "poly strip2 points");
+   /* restart: 0 1 2 R 3 4 5 -> two triangles, the marker is never a vertex */
+   const uint32_t R = 0xffffu, vr[7] = { 0, 1, 2, R, 3, 4, 5 };
+   n = mali_poly_assemble(2, 10, &R, vr, 7, out);
+   bool bad = false;
+   for (size_t i = 0; i < n; i++)
+      bad |= out[i] == R;
+   CHECK(n == 6 && !bad, "poly strip restart points: %zu entries, marker %d", n, bad);
+   /* restart with short segments: 0 1 R 2 3 4 -> only the second segment (1 triangle) */
+   const uint32_t vs[6] = { 0, 1, R, 2, 3, 4 };
+   CHECK(mali_poly_assemble(2, 10, &R, vs, 6, out) == 3, "poly strip restart short segment");
+   /* list topology ignores restart (restart pointer NULL for lists) */
+   CHECK(mali_poly_assemble(2, 8, NULL, vr, 6, out) == 6, "poly list points");
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -339,6 +377,7 @@ int main(int argc, char **argv)
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
    test_clear_words();
+   test_poly_assemble();
    fill_compiled();
    if (setup_kb())
       return 1;
