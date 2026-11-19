@@ -27,7 +27,7 @@ extern "C" {
 #define MALI_MAX_ATTR 16
 #define MALI_CMD_SETS 4
 #define MALI_MAX_DYN 16        /* dynamic UBO/SSBO descriptors per draw (graphics) */
-#define MALI_PUSH_MAX 128
+#define MALI_PUSH_MAX 256      /* == MALI_MAX_PUSH_BYTES (VkPhysicalDeviceLimits::maxPushConstantsSize) */
 
 /* Per-queue resources the CS refers to (created by the backend once per device). */
 struct mali_env {

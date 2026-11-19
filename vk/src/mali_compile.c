@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 23 /* 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11); 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -655,6 +655,16 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       return fail(err, errsz, "bad stage");
    unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
+   /* The API push block is driver-owned FAU space, so the reservation must cover it: the compiler places promoted immediates from
+    * `fau_reserved` up, and the draw/dispatch emitter writes the immediates and then the push block into the same table
+    * (mali_cs_emit.c kb_draw_fau_imm + memcpy). With only the default reservation, an immediate lands in the push block for a
+    * block above 56 B in the VS (words 10..) or 32 B in the CS/FS-v11 (word 0), and one of the two is silently corrupted. */
+   if (!o->fau_reserved && o->layout && o->layout->push_size) {
+      unsigned push_end = (push_base + o->layout->push_size + 3) / 4;
+      fau_reserved = MAX2(fau_reserved, push_end);
+   }
+   if (fau_reserved > PAN_MAX_PUSH)   /* 64 FAU slots of 64 bits: the Bifrost/Valhall implementation limit (pan_compiler.h) */
+      return fail(err, errsz, "push constants leave no FAU space for immediates");
 
    char dir[900], hex[65];
    int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
