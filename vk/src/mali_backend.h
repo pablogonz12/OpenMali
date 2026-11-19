@@ -78,6 +78,8 @@ struct mali_backend_ops {
                     bool invalidate);
    /* dup of the dma-buf fd, or -errno. */
    int (*bo_export)(struct mali_kdev *kdev, const struct mali_bo *bo);
+   /* Desktop software rasteriser: CPU mapping of a live BO range [va, va+size), NULL when it is not mapped. */
+   void *(*va_cpu)(struct mali_kdev *kdev, uint64_t va, size_t size);
 
    /* One submission whose command stream is only FLUSH_CACHE2(+wait) and a signal of a fresh fence.
     * *fence_fd gets a sync_file that signals when it retires. Serialised by the backend. */

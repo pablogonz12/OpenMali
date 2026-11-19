@@ -1321,6 +1321,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          }
          break;
       }
+      if (!n) {
+         /* MALI_SOFT=1: the frame was rendered on the CPU inside mali_frame_build and produced no words. Appending
+          * nothing to nothing would memcpy() to a NULL destination; there is nothing for submit_multi() to do. */
+         free(cs);
+         continue;
+      }
       if (nall + n > capall) {
          capall = (nall + n) * 2;
          all = realloc(all, capall * sizeof *all);

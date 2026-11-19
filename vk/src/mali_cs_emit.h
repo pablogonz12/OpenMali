@@ -47,6 +47,8 @@ struct mali_env {
    unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
 };
 
+struct mali_frame;
+
 struct mali_hw {
    void *user;
    void *(*alloc)(void *user, size_t size, size_t align, uint64_t *va);
@@ -56,11 +58,15 @@ struct mali_hw {
    void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
    int (*submit_multi)(void *user, const uint64_t *cs, unsigned ninstr, unsigned nframes);   /* nframes concatenated frame streams, one kick */
    void (*drain)(void *user);   /* wait until every submitted frame has retired */
+   /* Desktop software rasteriser (mali_soft.c, MALI_SOFT=1): when `soft` is set, a frame is rendered on the CPU from its
+    * record instead of being encoded into a command stream, and `va_cpu` resolves the record's GPU VAs to CPU memory. */
+   bool (*soft)(void *user, const struct mali_frame *f);
+   void *(*va_cpu)(void *user, uint64_t va, size_t size);
    struct mali_env env;
 };
 
 /* One vertex attribute: 1D attribute fetch from vertex binding `binding`. pixfmt = Mali Pixel Format word (KB_PIXFMT_*). */
-struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ uint32_t divisor; /* instance rate: hardware divisor (>= 1) */ };
+struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ uint32_t divisor; /* instance rate: hardware divisor (>= 1) */ int vk_format; /* VkFormat, for the software rasteriser's vertex fetch */ };
 
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
@@ -130,6 +136,7 @@ struct mali_draw {
    uint8_t push[2][MALI_PUSH_MAX];        /* [0] vertex stage view, [1] fragment stage view of the push constants */
    float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
    int32_t sc[4];                         /* scissor x, y, w, h */
+   bool sc_set;                           /* a scissor was set: an empty one clips everything, unset means render area */
    unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
