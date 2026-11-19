@@ -43,6 +43,7 @@ struct mali_env {
    void *geo_cpu;                 /* geometry BO: 4 KiB heap descriptor page, then a 64 KiB geometry buffer */
    uint64_t geo_va;
    uint64_t sync_va;              /* CQS word the frame increments (SYNC_ADD64) when it retires */
+   int *light_pending;            /* per-device flag: a light ops frame was built, the next submit_signal of this device must not be skipped */
    unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
 };
 
