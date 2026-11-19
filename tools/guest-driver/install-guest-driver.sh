@@ -20,8 +20,14 @@
 #      The app re-stages /usr/local/* from the APK whenever SessionFiles' StageLedger
 #      (/usr/local/.droiddeck-staged: "path<TAB>length mtime canExecute") does not match the
 #      file, so after patching we rewrite that one ledger line; the patch then survives
-#      session restarts. Delete the drop-in and edit the ledger line back (or touch the
-#      script) to fall back to the app's own selection.
+#      session restarts.
+#
+# Rollback: run this script with --uninstall. Deleting only the drop-in is NOT enough: step 3
+# moved every other icd.d manifest into icd.d.disabled, so the loader would still find ours
+# (the app's bridge off path picks the first *.json in icd.d). --uninstall removes our manifest
+# and the drop-in and moves the displaced icd.d and bridge manifests back. To drop the session
+# hook as well, replace /usr/local/bin/droiddeck-session with droiddeck-session.orig-mali-open
+# (step 5 keeps it) or touch the script so the app re-stages its own copy.
 set -eu
 
 SRC=${1:-/storage/emulated/0/Download/mali-open-guest}
@@ -32,6 +38,27 @@ ENVF=$DEST/mali-open.env
 MARK=mali-open.env
 
 say() { printf '%s\n' "$*"; }
+
+# Rollback. Kept in this script so the paths that step 3/4 moved are restored by the same code
+# that moved them; "first manifest in icd.d wins" means leaving icd.d.disabled populated would
+# still select ours.
+if [ "${1:-}" = "--uninstall" ]; then
+   rm -f "$ICD" "$ENVF"
+   say "removed $ICD and $ENVF"
+   for f in "$ICD_DIR.disabled"/*.json; do
+      [ -e "$f" ] || continue
+      mv -f "$f" "$ICD_DIR/"
+      say "restored manifest: $f"
+   done
+   for f in /usr/local/share/vkbridge/*_icd.json.disabled; do
+      [ -e "$f" ] || continue
+      mv -f "$f" "${f%.disabled}"
+      say "restored bridge manifest: $f"
+   done
+   say "rollback ok: the app's own driver selection is back at the next session start"
+   say "  (the session hook stays inert without the drop-in; droiddeck-session.orig-mali-open has the original)"
+   exit 0
+fi
 
 [ -r "$SRC/libvulkan_panfrost.so" ] || { say "payload missing: $SRC/libvulkan_panfrost.so"; exit 2; }
 mkdir -p "$DEST" /usr/local/bin "$ICD_DIR" "$ICD_DIR.disabled" /usr/local/share/vkbridge

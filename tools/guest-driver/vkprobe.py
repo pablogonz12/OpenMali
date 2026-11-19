@@ -3,6 +3,7 @@
 # Prints deviceName, driverID, driverVersion, API version and the ICD that answered.
 import ctypes, ctypes.util, sys
 
+VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1   # 0 is VK_STRUCTURE_TYPE_APPLICATION_INFO
 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001
 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES = 1000196000
 DRIVER_IDS = {0: "UNKNOWN", 1: "AMD_PROPRIETARY", 2: "AMD_OPEN_SOURCE", 3: "MESA_RADV",
@@ -10,11 +11,12 @@ DRIVER_IDS = {0: "UNKNOWN", 1: "AMD_PROPRIETARY", 2: "AMD_OPEN_SOURCE", 3: "MESA
               7: "IMAGINATION_PROPRIETARY", 8: "QUALCOMM_PROPRIETARY", 9: "ARM_PROPRIETARY",
               10: "GOOGLE_SWIFTSHADER", 11: "GGP_PROPRIETARY", 12: "BROADCOM_PROPRIETARY",
               13: "MESA_LLVMPIPE", 14: "MOLTENVK", 15: "COREAVI_PROPRIETARY",
-              16: "JUICE_PROPRIETARY", 17: "VK_DRIVER_ID_MESA_TURNIP", 18: "VK_DRIVER_ID_MESA_V3DV",
-              19: "VK_DRIVER_ID_MESA_PANVK", 20: "VK_DRIVER_ID_SAMSUNG_PROPRIETARY",
-              21: "VK_DRIVER_ID_MESA_VENUS", 22: "VK_DRIVER_ID_MESA_DOZEN",
-              23: "VK_DRIVER_ID_MESA_NVK", 24: "VK_DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA",
-              25: "VK_DRIVER_ID_MESA_HONEYKRISP", 26: "VK_DRIVER_ID_VULKAN_SC_EMULATION_ON_VULKAN"}
+              16: "JUICE_PROPRIETARY", 17: "VERISILICON_PROPRIETARY",
+              18: "VK_DRIVER_ID_MESA_TURNIP", 19: "VK_DRIVER_ID_MESA_V3DV",
+              20: "VK_DRIVER_ID_MESA_PANVK", 21: "VK_DRIVER_ID_SAMSUNG_PROPRIETARY",
+              22: "VK_DRIVER_ID_MESA_VENUS", 23: "VK_DRIVER_ID_MESA_DOZEN",
+              24: "VK_DRIVER_ID_MESA_NVK", 25: "VK_DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA",
+              26: "VK_DRIVER_ID_MESA_HONEYKRISP", 27: "VK_DRIVER_ID_VULKAN_SC_EMULATION_ON_VULKAN"}
 DEVICE_TYPES = {0: "other", 1: "integrated-gpu", 2: "discrete-gpu", 3: "virtual-gpu", 4: "cpu"}
 
 
@@ -22,12 +24,20 @@ def ver(v):
     return "%d.%d.%d" % (v >> 22, (v >> 12) & 0x3FF, v & 0xFFF)
 
 
+# The native struct is 824 bytes with `limits` at offset 296: VkPhysicalDeviceLimits starts with
+# VkDeviceSize members, so the compiler inserts 4 bytes of padding after pipelineCacheUUID. Modelling the
+# limits as a byte array without that padding put limits at 292 and made the struct 816 bytes, so
+# vkGetPhysicalDeviceProperties would write 8 bytes past the Python object.
 class VkPhysicalDeviceProperties(ctypes.Structure):
     _fields_ = [("apiVersion", ctypes.c_uint32), ("driverVersion", ctypes.c_uint32),
                 ("vendorID", ctypes.c_uint32), ("deviceID", ctypes.c_uint32),
                 ("deviceType", ctypes.c_int), ("deviceName", ctypes.c_char * 256),
-                ("pipelineCacheUUID", ctypes.c_uint8 * 16), ("limits", ctypes.c_uint8 * 504),
-                ("sparseProperties", ctypes.c_uint8 * 20)]
+                ("pipelineCacheUUID", ctypes.c_uint8 * 16), ("_pad_limits", ctypes.c_uint32),
+                ("limits", ctypes.c_uint8 * 504), ("sparseProperties", ctypes.c_uint8 * 20),
+                ("_pad_tail", ctypes.c_uint32)]
+
+assert ctypes.sizeof(VkPhysicalDeviceProperties) == 824, ctypes.sizeof(VkPhysicalDeviceProperties)
+assert VkPhysicalDeviceProperties.limits.offset == 296, VkPhysicalDeviceProperties.limits.offset
 
 
 class VkPhysicalDeviceDriverProperties(ctypes.Structure):
@@ -43,10 +53,16 @@ class VkPhysicalDeviceProperties2(ctypes.Structure):
 
 def main():
     lib = ctypes.CDLL("libvulkan.so.1")
+    # Declare the pointer arguments too: a c_void_p array element reads back as a Python int, and without
+    # argtypes ctypes hands that to the C function as an `int`, truncating the 64-bit device handle.
     lib.vkCreateInstance.restype = ctypes.c_int
+    lib.vkCreateInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     lib.vkEnumeratePhysicalDevices.restype = ctypes.c_int
+    lib.vkEnumeratePhysicalDevices.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     lib.vkGetPhysicalDeviceProperties2.restype = None
+    lib.vkGetPhysicalDeviceProperties2.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     lib.vkGetPhysicalDeviceProperties.restype = None
+    lib.vkGetPhysicalDeviceProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
     class VkApplicationInfo(ctypes.Structure):
         _fields_ = [("sType", ctypes.c_int), ("pNext", ctypes.c_void_p),
@@ -61,7 +77,7 @@ def main():
                     ("enabledExtensionCount", ctypes.c_uint32), ("ppEnabledExtensionNames", ctypes.c_void_p)]
 
     ai = VkApplicationInfo(0, None, b"mali-open-probe", 1, b"none", 1, 0x00403000)
-    ci = VkInstanceCreateInfo(0, None, 0, ctypes.pointer(ai), 0, None, 0, None)
+    ci = VkInstanceCreateInfo(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, None, 0, ctypes.pointer(ai), 0, None, 0, None)
     inst = ctypes.c_void_p()
     rc = lib.vkCreateInstance(ctypes.byref(ci), None, ctypes.byref(inst))
     if rc != 0:
