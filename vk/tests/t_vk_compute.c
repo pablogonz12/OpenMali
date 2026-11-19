@@ -286,7 +286,7 @@ run_base(void)
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
    VkPipeline pipe;
-   VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl,
+   VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl, .flags = VK_PIPELINE_CREATE_DISPATCH_BASE_BIT,   /* required by vkCmdDispatchBase with a nonzero base */
       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main"}};
    CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, NULL, &pipe) == VK_SUCCESS, "CreateComputePipelines");
    CHECK(mkbuf(&out, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "out");

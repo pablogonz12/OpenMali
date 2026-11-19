@@ -142,6 +142,13 @@ test_compute(void)
       /* GlobalInvocationID includes the vkCmdDispatchBase baseGroup: read from the 3 FAU words after the 12 push bytes */
       CHECK(c.cs_base_wg_set == 1 && c.cs_base_wg_off == 12, "v%u compute base wg sysval set %u off %u", arch, c.cs_base_wg_set, c.cs_base_wg_off);
       mali_compiled_free(&c);
+      /* push_base shifts the API push loads: the base-group words move with them (else they overlap the relocated push data) */
+      struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = cs.w, .spirv_words = cs.n, .cache_dir = "", .push_base_set = 1, .push_base = 16};
+      char err[256] = "";
+      if (!mali_compile(&o, &c, err, sizeof err)) {
+         CHECK(c.cs_base_wg_set == 1 && c.cs_base_wg_off == 16 + 12, "v%u compute base wg off with push_base 16: %u (want 28)", arch, c.cs_base_wg_off);
+         mali_compiled_free(&c);
+      } else printf("  compile error: %s\n", err);
    }
    free(cs.w);
 }

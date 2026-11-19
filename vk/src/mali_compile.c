@@ -516,7 +516,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    /* base workgroup id: first 4-aligned byte after the push constants the shader reads (the whole block when it indexes them dynamically) */
-   struct base_wg_ctx bwc = { stage == MESA_SHADER_COMPUTE ? (pc.max_end == UINT32_MAX ? 128u : (pc.max_end + 3u) & ~3u) : UINT32_MAX, false };
+   struct base_wg_ctx bwc = { stage == MESA_SHADER_COMPUTE ? push_base + (pc.max_end == UINT32_MAX ? 128u : (pc.max_end + 3u) & ~3u) : UINT32_MAX, false };
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, &bwc);
    in.fau.reserved = fau_reserved;
    if (bwc.used)   /* the driver also fills the 3 base-group words (pushed loads must lie inside the reserved range) */
