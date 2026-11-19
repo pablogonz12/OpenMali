@@ -897,21 +897,45 @@ test_many(void)
 
 
 /* ---- dxvk_frame: a DXVK-shaped frame, the CPU cost of the driver per draw / per submit (host microbenchmark, fake backend) ----
- * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of one of two sets (DXVK rewrites
+ * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of a set of its own (DXVK rewrites
  * its UBO/texture sets every few draws), per 4 draws a pipeline switch (two pipelines), per 8 draws cull/front-face/depth-bias/
  * blend-constant/viewport/scissor changes, per 16 draws a vertex-buffer + index-buffer rebind; indexed draws. One QueueSubmit per frame.
  * MALI_DXVK_DRAWS (3000), MALI_DXVK_REPS (200). Prints ns_per_draw (record+submit), record_ns_per_draw, submit_ns_per_draw, submit_ns. */
 static int
 test_dxvk_frame(void)
 {
-   const int n = getenv("MALI_DXVK_DRAWS") ? atoi(getenv("MALI_DXVK_DRAWS")) : 3000;
-   const int nrep = getenv("MALI_DXVK_REPS") ? atoi(getenv("MALI_DXVK_REPS")) : 200;
+   long n_l = 3000, nrep_l = 200;
+   const char *ev[2] = {getenv("MALI_DXVK_DRAWS"), getenv("MALI_DXVK_REPS")};
+   long *dst[2] = {&n_l, &nrep_l};
+   for (int i = 0; i < 2; i++) {   /* checked conversion: a zero/negative/non-numeric count would divide by zero in the report yet print ok:true */
+      char *end = NULL;
+      if (!ev[i]) continue;
+      long v = strtol(ev[i], &end, 10);
+      if (end == ev[i] || *end || v <= 0 || v > 10000000) { printf("MALI_DXVK_%s must be a positive integer (got '%s')\n", i ? "REPS" : "DRAWS", ev[i]); return 0; }
+      *dst[i] = v;
+   }
+   const int n = (int)n_l, nrep = (int)nrep_l;
    g_dxvk = 1;
    struct scene s = {.mode = MODE_UBO};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    if (!scene_create(&s, 0)) { g_dxvk = 0; return 0; }
+   /* one set per draw: each is written once and bound once per command buffer (rewriting a set that the recording cb already bound is invalid);
+    * the previous frame has completed (fence) before its sets are written again */
+   VkDescriptorPool dxpool = VK_NULL_HANDLE;
+   VkDescriptorSet *dxsets = calloc((size_t)n, sizeof *dxsets);
+   {
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (uint32_t)n};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = (uint32_t)n, .poolSizeCount = 1, .pPoolSizes = &ps};
+      VkDescriptorSetLayout *ls = malloc((size_t)n * sizeof *ls);
+      for (int i = 0; i < n; i++) ls[i] = s.dsl;
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = (uint32_t)n, .pSetLayouts = ls};
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dxpool) == VK_SUCCESS, "dx pool");
+      dai.descriptorPool = dxpool;
+      CHECK(AllocateDescriptorSets(dev, &dai, dxsets) == VK_SUCCESS, "dx sets");
+      free(ls);
+   }
    alloc_stats_start();
    double t_rec = 0, t_sub = 0, t_all = 0;
    int ok = 1;
@@ -946,10 +970,10 @@ test_dxvk_frame(void)
             if ((d & 7) == 0) {
                CmdSetCullMode(cb, (d & 8) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
                CmdSetFrontFace(cb, (d & 16) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
-               CmdSetDepthBias(cb, (float)(d & 3), 0.0f, 1.0f);
+               CmdSetDepthBias(cb, (float)((d >> 3) & 3), 0.0f, 1.0f);   /* d is a multiple of 8 here: the update index d >> 3 is what changes */
                CmdSetBlendConstants(cb, bc);
-               vp.x = (float)(d & 1);
-               sc.offset.x = d & 1;
+               vp.x = (float)((d >> 3) & 1);
+               sc.offset.x = (d >> 3) & 1;
                CmdSetViewport(cb, 0, 1, &vp);
                CmdSetScissor(cb, 0, 1, &sc);
             }
@@ -959,10 +983,10 @@ test_dxvk_frame(void)
                CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
             }
             VkDescriptorBufferInfo bi2 = {s.ubo[d % 3], 0, 16};
-            VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s.dset[d & 1], .dstBinding = 0,
+            VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dxsets[d], .dstBinding = 0,
                                       .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
             UpdateDescriptorSets(dev, 1, &w, 0, NULL);
-            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.dset[d & 1], 0, NULL);
+            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &dxsets[d], 0, NULL);
             float pc[4] = {1, 0, 0, (float)(d & 7)};
             CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
             CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
@@ -984,6 +1008,8 @@ test_dxvk_frame(void)
           n, nrep, t_all * 1000.0 / nrep / n, t_rec * 1000.0 / nrep / n, t_sub * 1000.0 / nrep / n, t_sub * 1000.0 / nrep,
           (double)alloc_bytes() / (nrep + 5) / n, ok ? "true" : "false");
    g_dxvk = 0;
+   if (dxpool) DestroyDescriptorPool(dev, dxpool, NULL);
+   free(dxsets);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
