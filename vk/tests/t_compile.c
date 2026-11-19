@@ -2,6 +2,8 @@
 /* Offline tests of mali_compile(). Usage: t_compile [shader_dir] [-v]. Runs in a few seconds, no GPU. */
 #include "../src/mali_compile.h"
 #include "vk_ycbcr_conversion.h"
+#include "vk_blend.h"
+#include "nir.h"
 #include "../../libkbase/tests/shaders_compiled_v11.h"
 #include "../shader/golden_compiled_v13.h"
 
@@ -473,6 +475,84 @@ test_spec(void)
    }
 }
 
+/* logicOp in the blend shader: all 16 VkLogicOps on every format class. Vulkan: logic ops apply to integer and normalized colour
+ * attachments only; float and sRGB attachments ignore them (the shader just writes the source). Proves (a) the Vulkan -> gallium op
+ * mapping, (b) every op gives its own code on UNORM/SNORM/UINT/SINT, (c) float/sRGB code is the same for every op, (d) an unused
+ * logicOp (logicOpEnable = FALSE) is never converted, so an invalid value cannot reach vk_logic_op_to_pipe. */
+static bool g_blend_no_model;   /* last blend_bin failed only because the GPU model is unavailable */
+static int
+blend_bin(unsigned arch, unsigned fmt, unsigned type, unsigned en, unsigned op, struct mali_compiled *c)
+{
+   struct mali_blend_opts o = {.arch = arch, .vk_format = fmt, .samples = 1, .rgb_op = VK_BLEND_OP_ADD, .alpha_op = VK_BLEND_OP_ADD,
+                               .rgb_src = VK_BLEND_FACTOR_ONE, .rgb_dst = VK_BLEND_FACTOR_ZERO, .alpha_src = VK_BLEND_FACTOR_ONE,
+                               .alpha_dst = VK_BLEND_FACTOR_ZERO, .color_mask = 0xf, .src0_type = type,
+                               .logic_op_enable = en, .logic_op = op};
+   char err[256] = "";
+   int r = mali_compile_blend(&o, c, err, sizeof err);
+   g_blend_no_model = r && !strcmp(err, "no GPU model");
+   if (r) printf("  blend compile arch %u fmt %u op %u: %s\n", arch, fmt, op, err);
+   return r;
+}
+
+static bool
+same_bin(const struct mali_compiled *a, const struct mali_compiled *b)
+{
+   return a->bin_size == b->bin_size && !memcmp(a->bin, b->bin, a->bin_size);
+}
+
+static void
+test_logicop(void)
+{
+   printf("logicop\n");
+   static const enum pipe_logicop expect[16] = {   /* VkLogicOp order */
+      PIPE_LOGICOP_CLEAR, PIPE_LOGICOP_AND, PIPE_LOGICOP_AND_REVERSE, PIPE_LOGICOP_COPY, PIPE_LOGICOP_AND_INVERTED, PIPE_LOGICOP_NOOP,
+      PIPE_LOGICOP_XOR, PIPE_LOGICOP_OR, PIPE_LOGICOP_NOR, PIPE_LOGICOP_EQUIV, PIPE_LOGICOP_INVERT, PIPE_LOGICOP_OR_REVERSE,
+      PIPE_LOGICOP_COPY_INVERTED, PIPE_LOGICOP_OR_INVERTED, PIPE_LOGICOP_NAND, PIPE_LOGICOP_SET};
+   for (int op = 0; op < 16; op++)
+      CHECK(vk_logic_op_to_pipe((VkLogicOp)op) == expect[op], "VkLogicOp %d maps to pipe %d, want %d", op, vk_logic_op_to_pipe((VkLogicOp)op), expect[op]);
+
+   static const struct { unsigned fmt, type; bool applies; const char *name; } fm[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM, nir_type_float32, true, "UNORM"},
+      {VK_FORMAT_R8G8B8A8_SNORM, nir_type_float32, true, "SNORM"},
+      {VK_FORMAT_R8G8B8A8_UINT, nir_type_uint32, true, "UINT"},
+      {VK_FORMAT_R8G8B8A8_SINT, nir_type_int32, true, "SINT"},
+      {VK_FORMAT_R16G16B16A16_SFLOAT, nir_type_float32, false, "SFLOAT16"},
+      {VK_FORMAT_R32G32B32A32_SFLOAT, nir_type_float32, false, "SFLOAT32"},
+      {VK_FORMAT_R8G8B8A8_SRGB, nir_type_float32, false, "SRGB"},
+   };
+   static const unsigned archs[] = {10, 11, 13};
+   for (unsigned ai = 0; ai < 3; ai++) {
+      for (unsigned f = 0; f < sizeof fm / sizeof fm[0]; f++) {
+         struct mali_compiled c[16], eq = {0};
+         bool ok[16], no_model = false;
+         for (int op = 0; op < 16; op++) {
+            ok[op] = !blend_bin(archs[ai], fm[f].fmt, fm[f].type, 1, op, &c[op]);
+            if (!ok[op] && g_blend_no_model) no_model = true;
+         }
+         if (no_model) { printf("  arch %u %s: skipped (no model)\n", archs[ai], fm[f].name); continue; }
+         for (int op = 0; op < 16; op++) CHECK(ok[op], "arch %u %s op %d compiles", archs[ai], fm[f].name, op);
+         for (int a = 0; a < 16; a++) {
+            for (int b = a + 1; b < 16; b++) {
+               if (!ok[a] || !ok[b]) continue;
+               if (fm[f].applies)
+                  CHECK(!same_bin(&c[a], &c[b]), "arch %u %s: ops %d and %d give identical code", archs[ai], fm[f].name, a, b);
+               else
+                  CHECK(same_bin(&c[a], &c[b]), "arch %u %s: logic op %d changes code on a float/sRGB attachment (must be ignored)", archs[ai], fm[f].name, a);
+            }
+         }
+         /* an unused logicOp (enable = 0) must not be converted: any value compiles to the plain blend */
+         struct mali_compiled off0, offbad;
+         if (!blend_bin(archs[ai], fm[f].fmt, fm[f].type, 0, 0, &off0)) {
+            CHECK(!blend_bin(archs[ai], fm[f].fmt, fm[f].type, 0, 0x7fff, &offbad) && same_bin(&off0, &offbad),
+                  "arch %u %s: invalid unused logicOp changes or breaks the blend compile", archs[ai], fm[f].name);
+            if (fm[f].applies && ok[10])
+               CHECK(!same_bin(&off0, &c[10]), "arch %u %s: INVERT equals no logic op", archs[ai], fm[f].name);
+         }
+         (void)eq;
+      }
+   }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -496,6 +576,7 @@ main(int argc, char **argv)
    test_wpos_center();
    test_spec();
    test_errors();
+   test_logicop();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;
 }

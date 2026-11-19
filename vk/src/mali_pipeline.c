@@ -201,6 +201,16 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       for (unsigned i = 0; i < 4; i++)
          if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
             has_blend = true;
+      /* logicOp (static state; zink uses it statically as extendedDynamicState2LogicOp is not advertised): colour logic op in the blend shader */
+      /* a logic op can only change the output when colour output 0 is written and attachment 0 is writable; otherwise the pipeline is
+       * accepted without a blend shader and the draw-time check (gfx.logic_inert) lets it through */
+      const bool logic_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
+                               st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+                               (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      const bool logic = st.cb->logic_op_enable && !logic_inert;
+      p->gfx.logic_inert = st.cb->logic_op_enable && logic_inert;
+      if (logic)
+         has_blend = true;
       /* equations fixed function cannot express (MIN/MAX, SRC_ALPHA_SATURATE, unsupported factor pairs) also go through the blend shader */
       if (!has_blend && a->blend_enable) {
          struct mali_fixed fx = {.blend_en = true, .src_c = f[0], .dst_c = f[1], .src_a = f[2], .dst_a = f[3],
@@ -223,12 +233,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
             .alpha_src = a->src_alpha_blend_factor, .alpha_dst = a->dst_alpha_blend_factor,
             .color_mask = a->write_mask,
             .src0_type = p->fs.fs_blend0_type, .src1_type = p->fs.fs_blend_src1_type,
+            .logic_op_enable = logic, .logic_op = st.cb->logic_op,
          };
          bool uses_src1 = false;
          for (unsigned i = 0; i < 4; i++)
             if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
                uses_src1 = true;
-         if (!bo.src0_type || (uses_src1 && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
+         if (!bo.src0_type || (uses_src1 && !logic && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
             res = VK_ERROR_FEATURE_NOT_PRESENT;
             goto fail;
          }
