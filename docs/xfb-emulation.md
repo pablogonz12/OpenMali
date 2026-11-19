@@ -104,7 +104,12 @@ hardware run passes):
 * no geometry shaders, no tessellation in the same pipeline.
 
 Not advertised today: the extension name is absent from the device's extension list and the features struct is not
-chained. A pipeline that asks for XFB must keep failing `VK_ERROR_FEATURE_NOT_PRESENT`.
+chained. A pipeline that asks for XFB must keep failing `VK_ERROR_FEATURE_NOT_PRESENT`. The path to advertising is
+ordered: verify counters and pause/resume on hardware (the host-side counts become GPU-visible truth), confirm by
+instrumentation what zink's XFB usage actually is (separate buffers, indirect draws, overflow queries) so the advertised
+subset matches it, and only then flip the extension; the paired hardware measurement (§4) is the same draw run with and
+without the capture pass, GPU-timestamped at 10k/100k/1M vertices, reported as ns per captured vertex and as a fraction
+of an 8.3 ms frame.
 
 ## 4. Cost
 
