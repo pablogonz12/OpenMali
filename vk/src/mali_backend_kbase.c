@@ -230,6 +230,13 @@ pool_take(struct mali_kdev *k, size_t size, uint32_t flags)
    return bo;
 }
 
+/* can the pool ever retain a BO of this size (pool disabled with MALI_BO_POOL_MB=0, or too big)? */
+static bool
+pool_fits(const struct mali_kdev *k, size_t size)
+{
+   return size <= POOL_MAX_BO_BYTES && size <= k->pool_max;
+}
+
 /* true: the pool kept bo (the caller must not free it). Evicted BOs are freed outside the lock. */
 static bool
 pool_put(struct mali_kdev *k, struct kb_bo *bo, uint32_t flags)
@@ -237,7 +244,7 @@ pool_put(struct mali_kdev *k, struct kb_bo *bo, uint32_t flags)
    struct kb_bo *victim[POOL_MAX_ENTS];
    unsigned nv = 0;
    bool kept = false;
-   if (bo->size > POOL_MAX_BO_BYTES || bo->size > k->pool_max)
+   if (!pool_fits(k, bo->size))
       return false;
    pthread_mutex_lock(&k->bo_lock);
    unsigned drop = 0;
@@ -360,7 +367,7 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
    track_bo(k, bo->priv, false);
    /* A pooled CPU-cached BO keeps its mapping and is handed out again without the zero+flush of a fresh one: write back any CPU-dirty lines now, or they could
     * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
-   if (pool_eligible(bo->flags) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)
+   if (pool_eligible(bo->flags) && pool_fits(k, bo->size) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)
       kb_bo_cache_flush_inv(bo->priv, 0, bo->size);
    if (!(pool_eligible(bo->flags) && pool_put(k, bo->priv, bo->flags))) {
       kb_bo_free(bo->priv);

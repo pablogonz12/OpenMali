@@ -114,6 +114,12 @@ int main(void)
       c0 = kb_test_cache_flush_count();
       b->bo_free(k, &x);
       EXPECT(kb_test_cache_flush_count() == c0, "uncached BO: no cache maintenance");
+      /* a BO the pool cannot keep (over POOL_MAX_BO_BYTES) is freed for real: no point flushing it first */
+      if (b->bo_alloc(k, 32u << 20, MALI_BO_HOSTLAZY | MALI_BO_CACHED, &x)) return 1;
+      b->bo_host_touch(k, &x);
+      c0 = kb_test_cache_flush_count();
+      b->bo_free(k, &x);
+      EXPECT(kb_test_cache_flush_count() == c0, "oversize cached BO: no cache maintenance before the real free");
    }
 
    b->device_destroy(k);
