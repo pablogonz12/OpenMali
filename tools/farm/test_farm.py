@@ -1136,6 +1136,21 @@ class T(unittest.TestCase):
         st2 = {"cmf": {"status": "up"}, "b2": {"status": "up"}}
         self.assertEqual(BL.idle_candidates(2000, {"cmf": 500, "b2": 100}, devs2, st2, [], [], "T", set()), ["b2", "cmf"])   # longest idle = oldest missing first
 
+    def test_bench_gated_hot_ages_ahead_of_gates(self):
+        """bench starvation: a smoke re-heats the phone before the bench (temp_start) can start, and a prio-0 smoke is always queued ahead of it.
+        A part gated hot for > STARVE_SECS goes first (reserving the phone until it has cooled); a fresh gating does not reorder"""
+        now = 10000.0
+        smoke = {"id": "smoke", "suite": "smoke", "seq": 2, "parts": {"v10": {"state": "pending"}}}
+        bench = lambda since: {"id": "bench", "suite": "bench", "seq": 1, "parts": {"v10": {"state": "pending", "gated_since": since}}}
+        ids = lambda js: [j["id"] for j in BL.order_jobs(js, now)]
+        self.assertEqual(ids([smoke, bench(now - 10)]), ["smoke", "bench"])                        # just gated: gates still first
+        self.assertEqual(ids([smoke, bench(now - BL.STARVE_SECS - 1)]), ["bench", "smoke"])        # starved: first
+        done = bench(now - BL.STARVE_SECS - 1)
+        done["parts"]["v10"]["state"] = "running"                                                    # no longer pending: no reservation
+        self.assertEqual(ids([smoke, done]), ["smoke", "bench"])
+        cases = dict(bench(now - BL.STARVE_SECS - 1), id="cases", suite="cases")
+        self.assertEqual(ids([smoke, cases]), ["smoke", "cases"])                                    # not a bench job: gates stay first
+
     def test_bench_priority_order(self):
         jobs = [{"id": "auto1", "auto": True, "seq": 1}, {"id": "ex2", "seq": 2}, {"id": "ex3", "seq": 3}, {"id": "auto0", "auto": True, "seq": 0}]
         self.assertEqual([j["id"] for j in BL.order_jobs(jobs)], ["ex2", "ex3", "auto0", "auto1"])   # explicit > auto, each FIFO
