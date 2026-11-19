@@ -473,9 +473,171 @@ test_spec(void)
    }
 }
 
+/* dyn_index: arrays of UBOs and SSBOs indexed with a runtime value (Unity 2023.2's per-object UBO arrays do this). The descriptor
+ * lowering sees the variable index as nir_intrinsic_vulkan_resource_index (nir_lower_explicit_io makes it from the deref) and must
+ * (a) clamp it against count - 1 and (b) add it to the first element's handle. MALI_NIR_DUMP prints the lowered NIR, so the check
+ * reads the clamp immediate with two layouts that differ only in the array count: 4 -> 3, 8 -> 7. Mutation: replacing the index with
+ * a constant (or dropping the umin) makes both dumps identical and this test fails, which no binary-golden check can show. */
+static char g_nir_dump[256];
+
+static int
+dyn_compile(unsigned arch, const char *spv, unsigned count, unsigned dyn_idx, struct mali_compiled *c, char *dump, size_t dumpsz)
+{
+   struct spv s = load(spv);
+   if (!s.w) return -1;
+   if (!strcmp(spv, "imgidx.comp.spv")) {
+      struct mali_lbinding bi = {.type = MALI_DT_STORAGE_IMAGE, .count = count, .slot = 0, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER};
+      struct mali_compile_layout li;
+      memset(&li, 0, sizeof li);
+      li.nsets = 1;
+      li.push_size = 4;
+      li.set[0] = (struct mali_lset){.nbindings = 1, .slot_count = count, .b = &bi};
+      struct mali_compile_opts io = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n, .layout = &li, .cache_dir = ""};
+      char e[256] = "";
+      unlink(g_nir_dump);
+      setenv("MALI_NIR_DUMP", g_nir_dump, 1);
+      int rr = mali_compile(&io, c, e, sizeof e);
+      unsetenv("MALI_NIR_DUMP");
+      if (rr) printf("  compile error: %s\n", e);
+      dump[0] = 0;
+      FILE *f = fopen(g_nir_dump, "r");
+      if (f) { size_t n = fread(dump, 1, dumpsz - 1, f); dump[n] = 0; fclose(f); }
+      free(s.w);
+      return rr;
+   }
+   struct mali_lbinding b[2] = {
+      {.type = MALI_DT_UNIFORM_BUFFER, .count = count, .slot = 0, .stride = 1, .dyn_idx = dyn_idx, .imm_off = MALI_NO_IMM_SAMPLER},
+      {.type = MALI_DT_STORAGE_BUFFER, .count = 1, .slot = count, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER},
+   };
+   if (!strcmp(spv, "ssboidx.comp.spv")) {   /* the indexed array is the SSBO (binding 0): swap the descriptor types of the two bindings */
+      b[0].type = MALI_DT_STORAGE_BUFFER;
+      b[1].type = MALI_DT_UNIFORM_BUFFER;
+   }
+   struct mali_compile_layout l;
+   memset(&l, 0, sizeof l);
+   l.nsets = 1;
+   l.push_size = 4;
+   l.set[0] = (struct mali_lset){.nbindings = 2, .slot_count = count + 1, .b = b};
+   struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n, .layout = &l, .cache_dir = ""};
+   char err[256] = "";
+   unlink(g_nir_dump);
+   setenv("MALI_NIR_DUMP", g_nir_dump, 1);
+   int r = mali_compile(&o, c, err, sizeof err);
+   unsetenv("MALI_NIR_DUMP");
+   if (r) printf("  compile error: %s\n", err);
+   dump[0] = 0;
+   FILE *f = fopen(g_nir_dump, "r");
+   if (f) {
+      size_t n = fread(dump, 1, dumpsz - 1, f);
+      dump[n] = 0;
+      fclose(f);
+   }
+   free(s.w);
+   return r;
+}
+
+/* The lowering of a runtime array index is one vec3: <first element handle>, <index>, <count - 1>, clamped by the umin on the index.
+ * nir_print inlines the immediates as "(0x..)", so the dump is enough to tell a dynamic index (an SSA value in the middle) from a
+ * constant one (an immediate there), and to read the clamp the lowering used. Returns false when the dump has no such vec3. */
+struct res_idx { unsigned handle, count_m1; int dynamic; };
+
+static bool
+res_index(const char *dump, struct res_idx *out)
+{
+   /* "32x3   %4 = vec3 %3 (0x1000000), %1, %2 (0x3)" */
+   const char *p = strstr(dump, " = vec3 ");
+   if (!p) return false;
+   const char *nl = strchr(p, '\n');
+   const char *c1 = strchr(p, ',');
+   if (!nl || !c1 || c1 > nl) return false;
+   const char *h = strstr(p, "(0x");
+   if (!h || h > c1) return false;
+   out->handle = (unsigned)strtoul(h + 3, NULL, 16);
+   const char *c2a = strchr(c1 + 1, ',');
+   const char *dyn = c2a ? strstr(c1, "(0x") : NULL;
+   out->dynamic = dyn == NULL || dyn >= nl || (c2a && dyn >= c2a);
+   const char *c2 = strchr(c1 + 1, ',');
+   if (!c2 || c2 > nl) return false;
+   /* the clamp is the last "(0x..)" of the line: on the third field, or on a trailing const line it refers to */
+   const char *v = NULL;
+   for (const char *q = c2; (q = strstr(q, "(0x")) && q < nl; q++) v = q;
+   if (!v) {
+      /* nir_print may put the mov'd constant on its own line; fall back to the umin source's definition */
+      const char *u = strstr(dump, "umin %");
+      unsigned a = 0, b = 0;
+      if (!u || sscanf(u, "umin %%%*u, %%%u", &b) != 1) return false;
+      char pat[40];
+      snprintf(pat, sizeof pat, "%%%u = load_const (0x", b);
+      const char *lc = strstr(dump, pat);
+      if (!lc) {
+         snprintf(pat, sizeof pat, "%%%u = mov %%%u.z", b, b);
+         (void)a;
+         return false;
+      }
+      out->count_m1 = (unsigned)strtoul(lc + strlen(pat), NULL, 16);
+      return true;
+   }
+   out->count_m1 = (unsigned)strtoul(v + 3, NULL, 16);
+   return true;
+}
+
+static bool
+same_code(const struct mali_compiled *a, const struct mali_compiled *b)
+{
+   if (a->bin_size != b->bin_size || memcmp(a->bin, b->bin, a->bin_size)) return false;
+   if (a->nimm != b->nimm) return false;
+   for (unsigned i = 0; i < a->nimm; i++)
+      if (a->imm[i].word != b->imm[i].word || a->imm[i].value != b->imm[i].value) return false;
+   return true;
+}
+
+static void
+test_dyn_index(void)
+{
+   printf("dyn_index (runtime index into UBO/SSBO arrays)\n");
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct mali_compiled c4, c8;
+      static char d4[1 << 16], d8[1 << 16];
+      if (dyn_compile(arch, "uboidx.comp.spv", 4, 0, &c4, d4, sizeof d4)) continue;
+      if (dyn_compile(arch, "uboidx.comp.spv", 8, 0, &c8, d8, sizeof d8)) { mali_compiled_free(&c4); continue; }
+      CHECK(strstr(d4, "umin") != NULL, "v%u uboidx: the runtime index is clamped (no umin in the lowered NIR)", arch);
+      struct res_idx ri4, ri8;
+      CHECK(res_index(d4, &ri4) && res_index(d8, &ri8), "v%u uboidx: no resource-index vec3 in the lowered NIR", arch);
+      CHECK(ri4.dynamic && ri8.dynamic, "v%u uboidx: the array index is still dynamic after lowering (constant -> the add was dropped)", arch);
+      CHECK(ri4.count_m1 == 3 && ri8.count_m1 == 7, "v%u uboidx clamp count-1: count 4 -> %u, count 8 -> %u", arch, ri4.count_m1, ri8.count_m1);
+      CHECK(strstr(d4, "umin %") != NULL, "v%u uboidx: the index is clamped with umin", arch);
+      mali_compiled_free(&c4);
+      mali_compiled_free(&c8);
+
+      struct mali_compiled s4, s8;
+      if (dyn_compile(arch, "ssboidx.comp.spv", 4, 0, &s4, d4, sizeof d4)) continue;
+      if (dyn_compile(arch, "ssboidx.comp.spv", 8, 0, &s8, d8, sizeof d8)) { mali_compiled_free(&s4); continue; }
+      struct res_idx sj4, sj8;
+      CHECK(res_index(d4, &sj4) && res_index(d8, &sj8), "v%u ssboidx: no resource-index vec3 in the lowered NIR", arch);
+      CHECK(sj4.dynamic && sj8.dynamic, "v%u ssboidx: the array index is still dynamic after lowering", arch);
+      CHECK(sj4.count_m1 == 3 && sj8.count_m1 == 7, "v%u ssboidx clamp count-1: count 4 -> %u, count 8 -> %u", arch, sj4.count_m1, sj8.count_m1);
+      /* the clamp constant rides in the FAU immediates, not the code, so compare both */
+      CHECK(!same_code(&s4, &s8), "v%u ssboidx count 4 and 8 produce different code (immediates included)", arch);
+      mali_compiled_free(&s4);
+      mali_compiled_free(&s8);
+
+      /* storage-image array: the deref must be gone (handle-based imageStore) and the index must reach handle arithmetic */
+      struct mali_compiled im;
+      if (dyn_compile(arch, "imgidx.comp.spv", 4, 0, &im, d4, sizeof d4)) continue;
+      CHECK(strstr(d4, "image_store") != NULL, "v%u imgidx: imageStore survives the lowering", arch);
+      CHECK(strstr(d4, "load_push_constant") != NULL, "v%u imgidx: the runtime index is still read", arch);
+      CHECK(strstr(d4, "iadd") != NULL, "v%u imgidx: the index is folded into the image handle (no iadd -> index dropped)", arch);
+      CHECK(strstr(d4, "image_deref") == NULL, "v%u imgidx: no image deref is left after lowering", arch);
+      mali_compiled_free(&im);
+   }
+}
+
 int
 main(int argc, char **argv)
 {
+   snprintf(g_nir_dump, sizeof g_nir_dump, "/tmp/t_compile_nir_%d.txt", (int)getpid());
+
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "-v")) g_verbose = 1;
       else g_dir = argv[i];
@@ -495,7 +657,9 @@ main(int argc, char **argv)
    test_ycbcr();
    test_wpos_center();
    test_spec();
+   test_dyn_index();
    test_errors();
+   unlink(g_nir_dump);
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;
 }

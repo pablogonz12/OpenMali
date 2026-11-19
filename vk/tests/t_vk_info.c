@@ -249,6 +249,9 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, samplerAnisotropy),         /* t_vk_feat aniso */
          offsetof(VkPhysicalDeviceFeatures, imageCubeArray),
          offsetof(VkPhysicalDeviceFeatures, shaderSampledImageArrayDynamicIndexing), /* t_vk_feat didx */
+         offsetof(VkPhysicalDeviceFeatures, shaderUniformBufferArrayDynamicIndexing), /* t_vk_feat didxbuf; t_compile dyn_index */
+         offsetof(VkPhysicalDeviceFeatures, shaderStorageBufferArrayDynamicIndexing), /* t_vk_feat didxbuf; t_compile dyn_index */
+         offsetof(VkPhysicalDeviceFeatures, shaderStorageImageArrayDynamicIndexing),  /* t_vk_feat didxbuf; t_compile dyn_index (imgidx) */
          offsetof(VkPhysicalDeviceFeatures, fillModeNonSolid),         /* t_vk_draw --only poly */
          offsetof(VkPhysicalDeviceFeatures, multiViewport),            /* t_vk_draw --only multivp */
          offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
