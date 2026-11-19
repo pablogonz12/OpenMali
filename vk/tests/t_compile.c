@@ -266,6 +266,13 @@ test_errors(void)
          CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "OpEntryPoint with out-of-range function id refused");
          m.w[ep + 2] = keep;
       }
+      CHECK((m.w[m.n - 1] & 0xffff) == 56 && (m.w[m.n - 1] >> 16) == 1, "var.frag ends in OpFunctionEnd");
+      {
+         uint32_t keep = m.w[m.n - 1];
+         m.w[m.n - 1] = 0x00010000u;   /* OpNop: the last function is never closed */
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "module with an unterminated function refused");
+         m.w[m.n - 1] = keep;
+      }
       uint32_t last = 5, lw = 0;
       for (size_t i = 5; i < m.n; i += m.w[i] >> 16) { last = i; lw = m.w[i]; }
       m.w[last] = (lw & 0xffff) | ((uint32_t)(m.n - last + 3) << 16);   /* claims 3 words more than the module has */

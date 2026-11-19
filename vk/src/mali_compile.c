@@ -648,15 +648,18 @@ static bool
 spirv_structure_ok(const uint32_t *w, size_t nwords)
 {
    uint32_t bound = w[3];
+   bool infn = false;
    for (size_t i = 5; i < nwords;) {
       uint32_t wc = w[i] >> 16, op = w[i] & 0xffff;
       if (wc == 0 || wc > nwords - i) return false;
       if (op == 5 && (wc < 3 || w[i + 1] >= bound)) return false;   /* OpName */
       if (op == 6 && (wc < 4 || w[i + 1] >= bound)) return false;   /* OpMemberName */
       if (op == 15 && (wc < 4 || w[i + 2] >= bound)) return false;  /* OpEntryPoint: model, function id, name... (id indexes the id table unchecked) */
+      if (op == 54) { if (infn) return false; infn = true; }   /* OpFunction: functions do not nest */
+      if (op == 56) infn = false;                              /* OpFunctionEnd */
       i += wc;
    }
-   return true;
+   return !infn;   /* an unterminated last function trips assert(w == end) in vtn_foreach_instruction */
 }
 
 int
