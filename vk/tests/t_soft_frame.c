@@ -355,8 +355,9 @@ static void
 readpx(const struct scene *s, unsigned x, unsigned y, float out[4])
 {
    const uint8_t *p = s->px + (size_t)y * s->pitch;
-   const unsigned bpp = s->cfmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+   const unsigned bpp = s->cfmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : s->cfmt == VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : 4;
    p += (size_t)x * bpp;
+   if (s->cfmt == VK_FORMAT_R32G32B32A32_SFLOAT) { memcpy(out, p, 16); return; }
    if (s->cfmt == VK_FORMAT_R16G16B16A16_SFLOAT) {
       float v[4];
       for (unsigned i = 0; i < 4; i++) {
@@ -368,6 +369,9 @@ readpx(const struct scene *s, unsigned x, unsigned y, float out[4])
       memcpy(out, v, sizeof v);
    } else {
       for (unsigned i = 0; i < 4; i++) out[i] = p[i] / 255.0f;
+      if (s->cfmt == VK_FORMAT_B8G8R8A8_UNORM || s->cfmt == VK_FORMAT_B8G8R8A8_SRGB) {   /* memory is B,G,R,A: return RGBA */
+         const float t = out[0]; out[0] = out[2]; out[2] = t;
+      }
    }
 }
 
@@ -518,6 +522,208 @@ case_render_area(void)
    return 1;
 }
 
+
+/* ---- hand-built frames: MRT, LOAD, and the two-vertical-halves (AFBC rows 64..127) cases ----
+ * No Vulkan pipeline: the draw carries dummy shader keys that the CPU programs below are registered under, and its vertices
+ * live in hw->alloc memory (the rasteriser reaches both through hw->va_cpu like any attachment). Each render target is a
+ * `scene` image so the test owns its row stride and format and can read the pixels back. */
+static void
+fs_mrt4(void *u, const float vary[MALI_SOFT_VARY][4], const uint8_t *push, unsigned x, unsigned y, float out[MALI_SOFT_MRT][4])
+{
+   (void)u; (void)push; (void)x; (void)y;
+   /* RT0 = the vertex colour, RT1 = its inverse, RT2 = the colour with R and B swapped, RT3 = a constant grey */
+   for (unsigned k = 0; k < 3; k++) { out[0][k] = vary[0][k]; out[1][k] = 1.0f - vary[0][k]; }
+   out[0][3] = out[1][3] = out[2][3] = out[3][3] = 1.0f;
+   out[2][0] = vary[0][2]; out[2][1] = vary[0][1]; out[2][2] = vary[0][0];
+   out[3][0] = out[3][1] = out[3][2] = 0.5f;
+}
+static const char key_mrt_vs, key_mrt_fs, key_grad_vs, key_grad_fs;
+static const struct mali_soft_program PROG_MRT = {.name = "mrt", .vs = vs_gradient, .fs = fs_colour, .fs_mrt = fs_mrt4};
+
+/* A rectangle in NDC [x0,x1]x[y0,y1] (y = -1 is row 0), two triangles, vertex colour c (or the gradient's own colours when
+ * c == NULL: the corner colours differ so every 32x32 tile of a covered area has its own value). */
+static int
+hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, const void *fskey, float x0, float y0,
+          float x1, float y1, const float *c)
+{
+   uint64_t va;
+   float (*v)[8] = hw->alloc(hw->user, 6 * sizeof *v, 64, &va);
+   CHECK(v, "alloc vertex buffer");
+   const float px[6][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x0, y1}, {x1, y0}, {x1, y1}};
+   const float cc[4][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}};
+   const unsigned ci[6] = {0, 1, 2, 2, 1, 3};
+   for (unsigned i = 0; i < 6; i++) {
+      v[i][0] = px[i][0]; v[i][1] = px[i][1]; v[i][2] = 0.5f; v[i][3] = 1;
+      memcpy(&v[i][4], c ? c : cc[ci[i]], 4 * sizeof(float));
+      if (c) v[i][7] = 1;
+   }
+   struct mali_draw d;
+   memset(&d, 0, sizeof d);
+   d.gfx.vs = vskey; d.gfx.fs = fskey; d.gfx.prim = 8; d.gfx.nattr = 2;
+   d.gfx.attr[0] = (struct mali_attr){.binding = 0, .offset = 0, .stride = 32, .vk_format = VK_FORMAT_R32G32B32A32_SFLOAT};
+   d.gfx.attr[1] = (struct mali_attr){.binding = 0, .offset = 16, .stride = 32, .vk_format = VK_FORMAT_R32G32B32A32_SFLOAT};
+   d.vp[2] = (float)f->width; d.vp[3] = (float)f->height; d.vp[5] = 1.0f;
+   d.sc[2] = (int32_t)f->width; d.sc[3] = (int32_t)f->height;
+   d.vb_va[0] = va; d.vb_size[0] = 6 * sizeof *v;
+   d.count = 6; d.instance_count = 1;
+   CHECK(mali_frame_add_draw(f, &d) == 0, "add draw");
+   return 1;
+}
+
+static int
+hand_target(const struct scene *s, struct mali_att *a)
+{
+   struct mali_cmd_target t;
+   CHECK(mali_cmd_res.image_view(s->colv, &t) == 0, "image view target");
+   a->va = t.va; a->row_stride = t.row_stride; a->rt = t.rt;
+   return 1;
+}
+
+static int
+hand_frame(const struct scene *const *rt, unsigned n, const struct mali_att *attrs, int32_t ax, int32_t ay,
+           int32_t aw, int32_t ah, const struct mali_soft_program *prog, const void *vk, const void *fk,
+           float qx0, float qy0, float qx1, float qy1, const float *col)
+{
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   CHECK(hw, "device hw context");
+   struct mali_frame f;
+   memset(&f, 0, sizeof f);
+   f.width = rt[0]->w; f.height = rt[0]->h; f.samples = 1; f.has_colour = true; f.ncolour = n;
+   for (unsigned i = 0; i < n; i++) {
+      struct mali_att *a = i ? &f.colour_x[i - 1] : &f.colour;
+      *a = attrs[i];
+      if (!hand_target(rt[i], a)) return 0;
+   }
+   f.area[0] = ax; f.area[1] = ay; f.area[2] = aw; f.area[3] = ah;
+   mali_soft_bind_program(vk, fk, prog);
+   if (!hand_quad(&f, hw, vk, fk, qx0, qy0, qx1, qy1, col)) { mali_frame_finish(&f); return 0; }
+   const bool ok = mali_soft_frame(hw, &f);
+   mali_frame_finish(&f);
+   CHECK(ok, "soft frame: %s", mali_soft_last()->why);
+   return 1;
+}
+
+static int
+near4(const float c[4], float r, float g, float b)
+{
+   return fabsf(c[0] - r) < 0.02f && fabsf(c[1] - g) < 0.02f && fabsf(c[2] - b) < 0.02f;
+}
+
+/* Two-pass MRT. Pass 1 draws the left half into RT0 (RGBA8) and RT1 (RGBA16F), both CLEARed and stored. Pass 2 draws the
+ * top half: RT1 LOADs (and keeps pass 1 outside the quad), RT0 is loadOp DONT_CARE + storeOp DONT_CARE, so pass 2 must
+ * leave RT0's memory exactly as pass 1 stored it. Each attachment has its own format, stride and flags. */
+static int
+case_mrt(void)
+{
+   struct scene a, b;
+   const float z[4] = {0, 0, 0, 1};
+   CHECK(scene_init(&a, 128, 128, VK_FORMAT_R8G8B8A8_UNORM, 0, z, 1.0f), "init rt0");
+   CHECK(scene_init(&b, 128, 128, VK_FORMAT_R16G16B16A16_SFLOAT, 0, z, 1.0f), "init rt1");
+   CHECK(a.pitch != b.pitch, "RT0/RT1 strides should differ (%u vs %u)", a.pitch, b.pitch);
+   const struct scene *rt[2] = {&a, &b};
+   const float red[4] = {1, 0, 0, 1}, green[4] = {0, 1, 0, 1};
+   struct mali_att p1[2] = {{.clear = true, .clear_color = {0.2f, 0.2f, 0.2f, 1}}, {.clear = true, .clear_color = {0, 0, 0.5f, 1}}};
+   CHECK(hand_frame(rt, 2, p1, 0, 0, 128, 128, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, -1, -1, 0, 1, red), "pass 1");
+   struct mali_att p2[2] = {{.dont_care = true, .no_store = true}, {0}};   /* RT1: LOAD */
+   CHECK(hand_frame(rt, 2, p2, 0, 0, 128, 128, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, -1, -1, 1, 0, green), "pass 2");
+   float c[4];
+   /* RT0 after pass 2 = after pass 1: red left half, grey right half, pass 2's green nowhere */
+   readpx(&a, 20, 100, c); CHECK(near4(c, 1, 0, 0), "RT0 bottom-left %f,%f,%f, expected red (pass 1)", c[0], c[1], c[2]);
+   readpx(&a, 100, 20, c); CHECK(near4(c, 0.2f, 0.2f, 0.2f), "RT0 top-right %f,%f,%f: a storeOp DONT_CARE pass wrote memory", c[0], c[1], c[2]);
+   readpx(&a, 100, 100, c); CHECK(near4(c, 0.2f, 0.2f, 0.2f), "RT0 bottom-right %f,%f,%f, expected the pass 1 clear", c[0], c[1], c[2]);
+   /* RT1: the inverse of the vertex colour where a quad covered it, the LOADed pass 1 contents elsewhere */
+   readpx(&b, 20, 100, c); CHECK(near4(c, 0, 1, 1), "RT1 bottom-left %f,%f,%f, expected cyan (pass 1 kept by LOAD)", c[0], c[1], c[2]);
+   readpx(&b, 20, 20, c); CHECK(near4(c, 1, 0, 1), "RT1 top-left %f,%f,%f, expected magenta (pass 2 over pass 1)", c[0], c[1], c[2]);
+   readpx(&b, 100, 20, c); CHECK(near4(c, 1, 0, 1), "RT1 top-right %f,%f,%f, expected magenta (pass 2)", c[0], c[1], c[2]);
+   readpx(&b, 100, 100, c); CHECK(near4(c, 0, 0, 0.5f), "RT1 bottom-right %f,%f,%f, expected the pass 1 clear (LOAD)", c[0], c[1], c[2]);
+   tilemap("mrt-rt0", &a);
+   tilemap("mrt-rt1", &b);
+   scene_free(&a); scene_free(&b);
+   return 1;
+}
+
+/* Four attachments in one pass, with formats RGBA8, BGRA8, RGBA16F and RGBA32F and their own strides; RT3 is a LOAD of a
+ * pre-filled image and the quad covers a quarter of it. */
+static int
+case_mrt4(void)
+{
+   struct scene s[4];
+   const float z[4] = {0, 0, 0, 1};
+   const VkFormat fm[4] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
+                           VK_FORMAT_R32G32B32A32_SFLOAT};
+   for (unsigned i = 0; i < 4; i++)
+      CHECK(scene_init(&s[i], 64, 64, fm[i], 0, z, 1.0f), "init rt%u", i);
+   /* pre-fill RT3 with a CLEAR pass of its own, then use it as LOAD */
+   const struct scene *one[1] = {&s[3]};
+   struct mali_att pre = {.clear = true, .clear_color = {0.25f, 0.5f, 0.75f, 1}};
+   CHECK(hand_frame(one, 1, &pre, 0, 0, 64, 64, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, z), "prefill");
+   const struct scene *rt[4] = {&s[0], &s[1], &s[2], &s[3]};
+   struct mali_att at[4] = {{.clear = true, .clear_color = {0, 0, 0, 1}}, {.clear = true, .clear_color = {0, 0, 0, 1}},
+                            {.clear = true, .clear_color = {0, 0, 0, 1}}, {0}};
+   const float col[4] = {1, 0.25f, 0.5f, 1};
+   CHECK(hand_frame(rt, 4, at, 0, 0, 64, 64, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, 0, 0, 1, 1, col), "4-RT pass");
+   float c[4];
+   readpx(&s[0], 48, 48, c); CHECK(near4(c, 1, 0.25f, 0.5f), "RT0 %f,%f,%f", c[0], c[1], c[2]);
+   readpx(&s[1], 48, 48, c); CHECK(near4(c, 0, 0.75f, 0.5f), "RT1 (BGRA8, inverse) %f,%f,%f", c[0], c[1], c[2]);
+   readpx(&s[2], 48, 48, c); CHECK(near4(c, 0.5f, 0.25f, 1), "RT2 (RGBA16F, R/B swapped) %f,%f,%f", c[0], c[1], c[2]);
+   readpx(&s[3], 48, 48, c); CHECK(near4(c, 0.5f, 0.5f, 0.5f), "RT3 inside the quad %f,%f,%f", c[0], c[1], c[2]);
+   readpx(&s[3], 8, 8, c); CHECK(near4(c, 0.25f, 0.5f, 0.75f), "RT3 outside the quad %f,%f,%f, expected the LOADed pre-fill", c[0], c[1], c[2]);
+   readpx(&s[0], 8, 8, c); CHECK(near4(c, 0, 0, 0), "RT0 outside the quad %f,%f,%f", c[0], c[1], c[2]);
+   tilemap("mrt4-rt1-bgra8", &s[1]);
+   tilemap("mrt4-rt2-rgba16f", &s[2]);
+   tilemap("mrt4-rt3-load-rgba32f", &s[3]);
+   for (unsigned i = 0; i < 4; i++) scene_free(&s[i]);
+   return 1;
+}
+
+/* colour loadOp LOAD of a partially covered pass: the quad covers the bottom-right quarter only, everything else must
+ * keep the previous pass's contents (blue, with a green stripe from an earlier LOAD pass). */
+static int
+case_load(void)
+{
+   struct scene s;
+   const float z[4] = {0, 0, 0, 1};
+   CHECK(scene_init(&s, 128, 128, VK_FORMAT_R8G8B8A8_UNORM, 0, z, 1.0f), "init");
+   const struct scene *rt[1] = {&s};
+   const float green[4] = {0, 1, 0, 1}, red[4] = {1, 0, 0, 1};
+   struct mali_att clr = {.clear = true, .clear_color = {0, 0, 1, 1}}, load = {0};
+   CHECK(hand_frame(rt, 1, &clr, 0, 0, 128, 128, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, green), "clear pass");
+   CHECK(hand_frame(rt, 1, &load, 0, 0, 128, 128, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, -0.25f, -1, 0.25f, 1, green), "stripe pass");
+   CHECK(hand_frame(rt, 1, &load, 0, 0, 128, 128, &PROG_MRT, &key_mrt_vs, &key_mrt_fs, 0, 0, 1, 1, red), "partial pass");
+   float c[4];
+   readpx(&s, 10, 10, c); CHECK(near4(c, 0, 0, 1), "outside both quads %f,%f,%f, expected the cleared blue (LOAD lost it)", c[0], c[1], c[2]);
+   readpx(&s, 64, 20, c); CHECK(near4(c, 0, 1, 0), "stripe %f,%f,%f, expected green from the second pass", c[0], c[1], c[2]);
+   readpx(&s, 100, 100, c); CHECK(near4(c, 1, 0, 0), "partial quad %f,%f,%f, expected red", c[0], c[1], c[2]);
+   tilemap("load-partial", &s);
+   scene_free(&s);
+   return 1;
+}
+
+/* The AFBC-class failure: the image is rendered in two vertical halves, rows 0..63 then rows 64..127 (render areas, second
+ * pass LOADs). Memory starts zeroed, so a second half that is skipped reads back black; the checks (and the golden) fail. */
+static int
+case_halves(void)
+{
+   struct scene s;
+   const float z[4] = {0, 0, 0, 1};
+   CHECK(scene_init(&s, 128, 128, VK_FORMAT_R8G8B8A8_UNORM, 0, z, 1.0f), "init");
+   const struct scene *rt[1] = {&s};
+   struct mali_att first = {.clear = true, .clear_color = {0.1f, 0.1f, 0.1f, 1}}, second = {0};
+   CHECK(hand_frame(rt, 1, &first, 0, 0, 128, 64, &PROG_GRAD, &key_grad_vs, &key_grad_fs, -1, -1, 1, 1, NULL), "rows 0..63");
+   CHECK(hand_frame(rt, 1, &second, 0, 64, 128, 64, &PROG_GRAD, &key_grad_vs, &key_grad_fs, -1, -1, 1, 1, NULL), "rows 64..127");
+   float c[4];
+   for (unsigned y = 4; y < 128; y += 20) {
+      readpx(&s, 100, y, c);
+      CHECK(c[0] + c[1] + c[2] > 0.3f, "row %u is black: the %s half was never written", y, y < 64 ? "first" : "second (rows 64..127)");
+   }
+   float lo[4], hi[4];
+   readpx(&s, 100, 63, lo); readpx(&s, 100, 64, hi);
+   CHECK(fabsf(lo[1] - hi[1]) < 0.05f, "rows 63/64 of one gradient differ by %f in G: a seam at the half boundary", fabsf(lo[1] - hi[1]));
+   tilemap("halves", &s);
+   scene_free(&s);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -560,6 +766,10 @@ main(int argc, char **argv)
    if (!only || !strcmp(only, "rgba8")) ok &= case_rgba8();
    if (!only || !strcmp(only, "formats")) ok &= case_formats();
    if (!only || !strcmp(only, "render-area")) ok &= case_render_area();
+   if (!only || !strcmp(only, "mrt")) ok &= case_mrt();
+   if (!only || !strcmp(only, "mrt4")) ok &= case_mrt4();
+   if (!only || !strcmp(only, "load")) ok &= case_load();
+   if (!only || !strcmp(only, "halves")) ok &= case_halves();
    p_DeviceWaitIdle(dev);
    printf("%s\n", ok && !g_fail ? "PASS" : "FAILED");
    return ok && !g_fail ? 0 : 1;
