@@ -75,6 +75,16 @@ bind_hw(struct mali_hwctx *h)
    }
 }
 
+/* M15: per-BO write tracking for the fence-wait CSYNC (mali_backend.h bo_wrote, vk/MEMORY.md). */
+static void
+hw_bo_wrote(void *user, struct mali_bo *bo)
+{
+   struct mali_hwctx *h = user;
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   if (be->bo_wrote)
+      be->bo_wrote(h->dev->kdev, bo);
+}
+
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
  * executable shader memory ---- */
 #define META_HDR 64u
@@ -451,7 +461,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain, .bo_wrote = hw_bo_wrote};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,
