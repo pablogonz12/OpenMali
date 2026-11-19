@@ -512,14 +512,28 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
               src->cpu + (size_t)(sb->slot + 1) * MALI_DESC_SLOT_SIZE + c->srcArrayElement, c->descriptorCount);
       return;
    }
+   /* spec: a copy that runs past the end of a binding continues into the next consecutive binding, on both sides */
+   uint32_t sbi = c->srcBinding, dbi = c->dstBinding, se = c->srcArrayElement, de = c->dstArrayElement;
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
-      uint32_t se = c->srcArrayElement + i, de = c->dstArrayElement + i;
-      if (se >= sb->count || de >= db->count) return;
+      while (sbi < src->layout->nbindings && se >= src->layout->b[sbi].count) {
+         se -= src->layout->b[sbi].count;
+         sbi++;
+      }
+      while (dbi < dst->layout->nbindings && de >= dst->layout->b[dbi].count) {
+         de -= dst->layout->b[dbi].count;
+         dbi++;
+      }
+      if (sbi >= src->layout->nbindings || dbi >= dst->layout->nbindings) return;
+      sb = &src->layout->b[sbi];
+      db = &dst->layout->b[dbi];
+      if (sb->type == MALI_DT_NONE || db->type == MALI_DT_NONE) return;
       if (sb->stride && db->stride)
          memcpy(slot_at(dst, db->slot + de * db->stride), slot_at(src, sb->slot + se * sb->stride),
                 MIN2(sb->stride, db->stride) * MALI_DESC_SLOT_SIZE);
       else if (!sb->stride && !db->stride)
          dst->dyn[db->dyn_idx + de] = src->dyn[sb->dyn_idx + se];
+      se++;
+      de++;
    }
 }
 
