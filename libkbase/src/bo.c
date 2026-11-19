@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer B: GPU memory (kbase native allocations, dma-buf imports, dma-heap helper). */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
