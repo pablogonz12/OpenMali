@@ -9,3 +9,4 @@ for p in "$D"/mesa-patches/*.patch; do
    patch -p1 -s --dry-run -d "$M" <"$p" >/dev/null || { echo "FAIL   $(basename "$p") does not apply to $M"; exit 1; }
    patch -p1 -s -d "$M" <"$p"; echo "apply  $(basename "$p")"
 done
+echo "note: the disk shader cache key does not include the applied patch set; clear \$MALI_SHADER_CACHE (default ~/.cache/mali-gaming/shaders) after applying or changing patches"
