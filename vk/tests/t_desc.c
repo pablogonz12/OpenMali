@@ -55,7 +55,7 @@ mk_set(unsigned arch, struct mali_dsl *l, VkDescriptorPool *poolout)
                                  { VK_DESCRIPTOR_TYPE_SAMPLER, 4 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 } };
    VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 4, .poolSizeCount = 4, .pPoolSizes = ps,
                                      .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT };
-   VkResult r = mali_create_descriptor_pool(&g_dev, arch, &pi, poolout);
+   VkResult r = mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, poolout);
    CHECK(r == VK_SUCCESS, "pool create %d", r);
    VkDescriptorSetLayout hl = mali_dsl_to_handle(l);
    VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = *poolout, .descriptorSetCount = 1, .pSetLayouts = &hl };
@@ -137,9 +137,9 @@ test_bytes(unsigned arch)
    kb_draw_buffer(buf, g_buf_va + 0x40, 256);
    CHECK(!memcmp(mali_dset_from_handle(hs3)->cpu, buf, 32), "template UBO bytes");
 
-   mali_destroy_descriptor_pool(&g_dev, pool);
-   mali_destroy_descriptor_pool(&g_dev, pool2);
-   mali_destroy_descriptor_pool(&g_dev, pool3);
+   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
+   mali_destroy_descriptor_pool(&g_dev, pool2, NULL);
+   mali_destroy_descriptor_pool(&g_dev, pool3, NULL);
    free(tp);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
@@ -154,7 +154,7 @@ test_pool(void)
    VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8, .poolSizeCount = 1, .pPoolSizes = &ps,
                                      .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT };
    VkDescriptorPool pool;
-   CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, &pool) == VK_SUCCESS, "pool");
+   CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, NULL, &pool) == VK_SUCCESS, "pool");
    VkDescriptorSetLayout hl[3] = { mali_dsl_to_handle(l), mali_dsl_to_handle(l), mali_dsl_to_handle(l) };
    VkDescriptorSet s[3];
    VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 2, .pSetLayouts = hl };
@@ -169,7 +169,7 @@ test_pool(void)
    CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s[2]) == VK_SUCCESS && mali_dset_from_handle(s[2])->va == freed_va, "reuses the freed hole");
    mali_reset_descriptor_pool(&g_dev, pool);
    CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s[0]) == VK_SUCCESS, "alloc after reset");
-   mali_destroy_descriptor_pool(&g_dev, pool);
+   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
 
