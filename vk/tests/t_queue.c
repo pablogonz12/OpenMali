@@ -678,8 +678,8 @@ test_wsiimg(void)
    VkBindImageMemorySwapchainInfoKHR sw = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR, .pNext = &bs};
    VkBindImageMemoryInfo al = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .pNext = &sw, .image = ex,
                                .memory = VK_NULL_HANDLE};
-   CHECK(BindImageMemory2KHR_(dev, 1, &al) != VK_SUCCESS, "swapchain-aliased bind reported success with the image unbound");
-   CHECK(status != VK_SUCCESS, "VkBindMemoryStatus not set for the unbound image");
+   CHECK(BindImageMemory2KHR_(dev, 1, &al) == VK_ERROR_UNKNOWN, "swapchain-aliased bind reported success with the image unbound");
+   CHECK(status == VK_ERROR_UNKNOWN, "VkBindMemoryStatus not set for the unbound image");
    FreeMemory(dev, mem, NULL);
    DestroyImage(dev, ex, NULL);
    DestroyImage(dev, img, NULL);

@@ -432,9 +432,9 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
       const VkBindMemoryStatus *st = vk_find_struct_const(b[i].pNext, BIND_MEMORY_STATUS);
       if (!mem) {
          /* Swapchain-aliased images (BindImageMemorySwapchainInfoKHR) are not supported: wsi_common has no lookup in
-          * this Mesa. Report it instead of returning success with an unbound image. */
-         if (st && st->pResult) *st->pResult = VK_ERROR_FEATURE_NOT_PRESENT;
-         res = VK_ERROR_FEATURE_NOT_PRESENT;
+          * this Mesa. FEATURE_NOT_PRESENT is not a permitted vkBindImageMemory2 result, so use VK_ERROR_UNKNOWN. Report it instead of returning success with an unbound image. */
+         if (st && st->pResult) *st->pResult = VK_ERROR_UNKNOWN;
+         res = VK_ERROR_UNKNOWN;
          continue;
       }
       if (st && st->pResult) *st->pResult = VK_SUCCESS;
