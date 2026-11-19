@@ -22,6 +22,7 @@
 #include "vk_command_buffer.h"
 
 #include "kbase.h"
+#include "kbase_fb.h"
 #include "kbase_uapi.h"
 #include "kbase_draw.h"
 #include "kbase_fb.h"
@@ -403,6 +404,59 @@ test_store_op(void)
    CHECK(fbd_rt_write_enable(false, true) == 1, "MSAA resolve needs the RT write");
 }
 
+/* per-attachment storeOp in the packed FBD: a discarded colour attachment must clear its own Write Enable (word 1 bit 0) and
+ * Clean Tile Write (word 1 bit 31), and must not touch the neighbours' bits. Host-level, no backend: fails if the packer ignores
+ * rt_extra[].no_store (the fake backend's render is a no-op, so the pixel test cannot see this). */
+static void
+test_fbd_rt_store(void)
+{
+   struct mali_env env;
+   struct mali_frame f;
+   uint8_t fbd[KB_FB_DESC_SIZE_MAX];
+   memset(&env, 0, sizeof env);
+   memset(&f, 0, sizeof f);
+   memset(fbd, 0, sizeof fbd);
+   env.arch = ARCH;
+   env.tile_log2 = 10;
+   f.width = 64;
+   f.height = 32;
+   f.has_colour = true;
+   f.samples = 1;
+   f.ncolour = 3;
+   f.colour.va = 0x1000;
+   f.colour.row_stride = 64 * 4;
+   f.colour.store = true;
+   f.colour.clear = true;
+   f.colour.clear_color[0] = 1.0f;
+   f.colour_x[0].va = 0x2000;          /* RT1: DONT_CARE store, blended + discarded */
+   f.colour_x[0].row_stride = 64 * 4;
+   f.colour_x[0].store = false;
+   f.colour_x[0].clear = true;
+   f.colour_x[0].clear_color[2] = 1.0f;
+   f.colour_x[1].va = 0x3000;          /* RT2: stored */
+   f.colour_x[1].row_stride = 64 * 4;
+   f.colour_x[1].store = true;
+   f.colour_x[1].clear = true;
+   f.colour_x[1].clear_color[1] = 1.0f;
+   int rc = mali_render_pack_fbd(&env, &f, fbd, 0x5000, 0x6000);
+   CHECK(rc == 0, "pack_fbd rc %d", rc);
+   if (rc)
+      return;
+   const uint32_t *w = (const uint32_t *)(const void *)fbd;
+   const uint32_t *r = w + KB_FB_FBD_SIZE / 4;   /* no ZS/CRC extension: descriptors right after the FBD */
+   for (unsigned n = 0; n < 3; n++) {
+      const uint32_t *q = r + 16u * n;
+      const bool want_store = n != 1;
+      CHECK(((q[1] >> 0) & 1u) == (want_store ? 1u : 0u), "RT%u Write Enable = %u, want %u", n, (q[1] >> 0) & 1u, want_store ? 1u : 0u);
+      CHECK(((q[1] >> 31) & 1u) == (want_store ? 1u : 0u), "RT%u Clean Tile Write = %u, want %u", n, (q[1] >> 31) & 1u, want_store ? 1u : 0u);
+      CHECK((q[8] == (uint32_t)(n == 0 ? 0x1000u : n == 1 ? 0x2000u : 0x3000u)), "RT%u base = %08x", n, q[8]);
+      CHECK(((q[0] >> 4) & 0xfffu) == 256u * n, "RT%u internal offset = %u, want %u", n, (q[0] >> 4) & 0xfffu, 256u * n);
+      /* clear colour is per attachment: RT0 red, RT1 blue, RT2 green (UNORM8 bytes R,G,B,A) */
+      CHECK(q[12] == (n == 0 ? 0x000000ffu : n == 1 ? 0x00ff0000u : 0x0000ff00u), "RT%u clear word %08x", n, q[12]);
+   }
+   CHECK(((w[11] >> 19) & 0xfu) == 2u, "Render Target Count - 1 = %u, want 2", (w[11] >> 19) & 0xfu);
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -417,6 +471,7 @@ int main(int argc, char **argv)
    test_clear_words();
    test_poly_assemble();
    test_store_op();
+   test_fbd_rt_store();
    fill_compiled();
    if (setup_kb())
       return 1;

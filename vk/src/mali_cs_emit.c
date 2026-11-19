@@ -212,7 +212,7 @@ struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
-   uint32_t bl23[2];         /* words 2..3 of the blend descriptor (CPU copy: the arena is write-combined, never read back) */
+   uint32_t bl23[4][2];      /* (per render target) */
 };
 
 static void *
@@ -300,14 +300,14 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
 
    if (s1) {
       o->spd_p = po->spd_p; o->spd_v = po->spd_v; o->spd_f = po->spd_f;
-      o->bl = po->bl; o->zsd = po->zsd; o->bl23[0] = po->bl23[0]; o->bl23[1] = po->bl23[1];
+      o->bl = po->bl; o->zsd = po->zsd; memcpy(o->bl23, po->bl23, sizeof o->bl23);
       spd_p = spd_v = spd_f = bl = zsd = NULL;
    } else {
       spd_p = A(hw, KB_SPD_SIZE, 32, &o->spd_p);
       if (!v13)
          spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
       spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
-      bl = A(hw, KB_BLEND_SIZE, 64, &o->bl);
+      bl = A(hw, KB_BLEND_SIZE * (f->ncolour > 1 ? 4 : 1), 64, &o->bl);   /* one descriptor per colour attachment */
       zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
    }
    if (s1) {
@@ -401,27 +401,42 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
    if (s1)
       goto fau;
-   uint32_t blt[4] = {0, 0, 0, 0};   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
+   uint32_t blt[4][4];   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
    uint32_t *bl_arena = bl;
-   bl = blt;
-   if (f->colour.rt) {
-      kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
-      if (f->colour.rt->int_bits)
-         bl[0] &= ~(1u << 11);   /* no rounding for integer targets */
-   } else
-      kb_draw_blend_opaque_rgba8(bl);
-   if (g->blend_va && d->fx.blend_en) {
-      /* blend shader (mode 0): word0 = load dest | enable | round-to-FB-precision (no sRGB RT formats are exposed), word3 = shader PC
-       * (16-aligned, same 4G region as the FS) */
-      bl[0] = 1u | (1u << 9) | (1u << 11);
-      bl[1] = 0;
-      bl[2] = 0;
-      bl[3] = (uint32_t)g->blend_va;
-   } else if (apply_blend(bl, &d->fx))
-      return -EINVAL;
-   memcpy(bl_arena, blt, sizeof blt);
-   o->bl23[0] = blt[2];
-   o->bl23[1] = blt[3];
+   const unsigned nrt = f->has_colour && f->ncolour > 1 ? f->ncolour : 1;
+   memset(blt, 0, sizeof blt);
+   for (unsigned i = 0; i < nrt; i++) {
+      const struct mali_att *at = i ? &f->colour_x[i - 1] : &f->colour;
+      uint32_t *b = blt[i];
+      if (at->rt) {
+         kb_draw_blend_opaque_fmt(b, at->rt->blend_pixfmt, at->rt->ncomp);
+         if (at->rt->int_bits)
+            b[0] &= ~(1u << 11);   /* no rounding for integer targets */
+      } else
+         kb_draw_blend_opaque_rgba8(b);
+      if (i == 0 && g->blend_va && d->fx.blend_en) {
+         /* blend shader (mode 0): word0 = load dest | enable | round-to-FB-precision (no sRGB RT formats are exposed), word3 = shader PC
+          * (16-aligned, same 4G region as the FS) */
+         b[0] = 1u | (1u << 9) | (1u << 11);
+         b[1] = 0;
+         b[2] = 0;
+         b[3] = (uint32_t)g->blend_va;
+      } else {
+         struct mali_fixed t = d->fx;
+         if (i) {
+            const struct mali_rtblend *r = &d->fx.rtb[i - 1];
+            t.blend_en = r->blend_en; t.wmask = r->wmask;
+            t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
+            t.op_c = r->op_c; t.op_a = r->op_a;
+         }
+         if (apply_blend(b, &t))
+            return -EINVAL;
+      }
+      b[2] |= i << 16;   /* Blend Fixed-Function: Render Target */
+      memcpy(bl_arena + 4 * i, b, 16);
+      o->bl23[i][0] = b[2];
+      o->bl23[i][1] = b[3];
+   }
 
    /* depth/stencil */
    if (g->depth_test && f->has_zs) {
@@ -489,8 +504,10 @@ fau:;
       memcpy((uint8_t *)fau + g->push_base[st], d->push[st], n);
    }
    if (v13) {
-      ffau[4] = o->bl23[0];
-      ffau[5] = o->bl23[1];
+      for (unsigned i = 0; i < (f->has_colour && f->ncolour > 1 ? f->ncolour : 1u); i++) {
+         ffau[4 + 2 * i] = o->bl23[i][0];   /* RT i at words 4 + 2i (RT0 hardware-proven; RT1..3 unverified, see lane report) */
+         ffau[5 + 2 * i] = o->bl23[i][1];
+      }
    }
    if (g->blend_va && d->fx.blend_en)
       memcpy(ffau, d->fx.bconst, 16);   /* blend shader constants: FAU words 0..3 */
@@ -642,6 +659,14 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
    /* a Z/S-only fragment shader (gl_FragDepth / stencil export, no colour output): no render target is written (panvk rt_written = 0: DCD render-target and write masks, blend count) */
    const bool nort = !f->has_colour || (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil) && !g->fs->fs_writes_colour);   /* no colour attachment: the colour output has no render target (panvk rt_written = 0) */
+   /* colour attachments the fragment shader writes (mask) and the blend descriptor count */
+   const unsigned nrt = f->has_colour && f->ncolour > 1 ? f->ncolour : 1;
+   unsigned rtm = nort ? 0 : 1;
+   if (!nort && nrt > 1 && g->fs)
+      rtm = g->fs->fs_colour_mask & ((1u << nrt) - 1);
+   const unsigned rtn = rtm ? nrt : 0;
+   if (rtm && rtm != ((1u << nrt) - 1))
+      dop.allow_fpk = 0;   /* writes only some of the targets (the per-target LOAD preload draws): a later full-area draw of another target must not forward-kill it */
    if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
       dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
       dop.zs_update = 3;
@@ -654,7 +679,10 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
       if (d->fx.blend_en || d->fx.wmask != 0xf)
-         dop.allow_fpk = 0;   /* the draw reads the destination: no forward pixel kill (panvk any_dest_read) */
+         dop.allow_fpk = 0;
+      for (unsigned i = 1; i < nrt; i++)
+         if (d->fx.rtb[i - 1].blend_en || d->fx.rtb[i - 1].wmask != 0xf)
+            dop.allow_fpk = 0;   /* the draw reads the destination: no forward pixel kill (panvk any_dest_read) */
       if (g->prim == 0 || g->prim == 8 || g->prim == 10 || g->prim == 12)
          dcd_extra = (uint32_t)(d->fx.cull & 3u) << 17;
       if (!d->fx.depth_clip)
@@ -689,7 +717,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M48(c, KB_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 (no hardware evidence) */
       M32(c, KB_IDVS_INSTANCE_OFFSET, d->first_instance);
-      M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, nort ? 0 : 1, 1, 1));
+      M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, rtm, 1, 1));
       M48(c, KB_IDVS_TILER_CTX, va_tctx);
       M32(c, KB_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
@@ -697,11 +725,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_HIGH_DEPTH_CLAMP, maxz);
       M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
       M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
-      M48(c, KB_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
+      M48(c, KB_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
       M48(c, KB_IDVS_ZSD, o->zsd);
       M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
       M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
+      M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
       M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
       M32(c, KB_IDVS_TILER_FLAGS2, 0);
    } else {
@@ -729,11 +757,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_INDEX_BUFFER_SIZE, d->indexed ? d->index_bytes : 0);
       M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
       M48(c, KB13_IDVS_ZSD, o->zsd);
-      M48(c, KB13_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
+      M48(c, KB13_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
       M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
       M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
-      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, 0, 0));
+      M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
+      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, rtm, 1, 1, 0, 0));
       M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
       M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
@@ -750,7 +778,7 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
 
    E(c, kb_cs_req_res(KB_CS_RES_FRAGMENT));
    E(c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, slot));
-   M48(c, 40, kb_fb_pointer_ex(va_fbd, 1, f->has_zs || f->has_st));
+   M48(c, 40, kb_fb_pointer_ex(va_fbd, f->has_colour && f->ncolour > 1 ? f->ncolour : 1, f->has_zs || f->has_st));
    M32(c, 42, kb_fb_bbox_min(x0, y0));
    M32(c, 43, kb_fb_bbox_max(x1, y1));
    if (geometry)
@@ -1006,7 +1034,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
 
    void *smp = A(hw, sizeof kb_sample_positions, 64, &va_smp);
    uint32_t *tctx = A(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
-   uint8_t *fbd = A(hw, KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
+   uint8_t *fbd = A(hw, f->ncolour > 1 ? KB_FB_DESC_SIZE_MAX : KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
    uint32_t *tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
    if (!smp || !tctx || !fbd || !tsd)
       return -ENOMEM;

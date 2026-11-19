@@ -3,7 +3,8 @@
  * v13 patches word 11 (tile log2, colour allocation in KiB) as in tests/rung2_v13.h. Load/store ops map as follows:
  *   colour loadOp CLEAR -> clear colour in the FBD; DONT_CARE -> clear to 0 (no FBD "no clear" knob in kb_fb_pack yet);
  *   colour LOAD         -> not representable (rejected by mali_cmd.c before it gets here);
- *   colour storeOp      -> DONT_CARE/NONE: RT Write Enable off (unless an MSAA resolve writes through it); STORE: Clean Tile Write on;
+ *   colour storeOp      -> DONT_CARE/NONE: that attachment's RT Write Enable off (RT0 via rt_no_store, 1..3 via
+ *                          rt_extra[].no_store; an MSAA resolve still writes); 1..3 also drop Clean Tile Write; STORE: written back;
  *   depth loadOp CLEAR  -> Z clear value; depth storeOp DONT_CARE/NONE -> Z write enable off (zs_no_store).
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
 #include <errno.h>
@@ -218,6 +219,33 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.clear_b = mali_unorm8(f->colour.clear_color[2]);
       p.clear_a = mali_unorm8(f->colour.clear_color[3]);
    }
+   if (f->has_colour && f->ncolour > 1) {
+      /* Internal Buffer Offset of RT n = bytes of the tile colour buffer used by RTs 0..n-1 (alloc = bytes per pixel) */
+      const unsigned tpx = env->arch == 13 ? 1u << env->tile_log2 : 1024u;
+      unsigned off = (f->colour.rt ? f->colour.rt->alloc : 4u) * tpx;
+      p.rt_extra_count = f->ncolour - 1;
+      for (unsigned n = 0; n < p.rt_extra_count && n < 3; n++) {
+         const struct mali_att *a = &f->colour_x[n];
+         struct kb_fb_rt *x = &p.rt_extra[n];
+         x->va = a->va;
+         x->row_stride = a->row_stride ? a->row_stride : f->width * 4;
+         x->internal_offset = off;
+         x->no_store = !a->store;   /* per-attachment storeOp: DONT_CARE/NONE on this target only (RT0: kb_fb_params.rt_no_store, PR #217) */
+         if (a->rt) {
+            x->internal = a->rt->internal;
+            x->wb = a->rt->wb;
+            x->swizzle = a->rt->swizzle;
+            if (a->clear)
+               mali_rtfmt_clear_words(a->rt, a->clear_color, x->clear);
+         } else if (a->clear) {
+            x->internal = 1; x->wb = 19; x->swizzle = 0 | 1 << 3 | 2 << 6 | 3 << 9;
+            uint32_t c = kb_fb_clear_word(mali_unorm8(a->clear_color[0]), mali_unorm8(a->clear_color[1]),
+                                          mali_unorm8(a->clear_color[2]), mali_unorm8(a->clear_color[3]));
+            for (unsigned i = 0; i < 4; i++) x->clear[i] = c;
+         }
+         off += (a->rt ? a->rt->alloc : 4u) * tpx;
+      }
+   }
    p.rt_none = !f->has_colour;
    /* storeOp DONT_CARE/NONE: Write Enable off, the tile is never written back. A resolve writes through the same RT, so it keeps the write. */
    p.rt_no_store = f->has_colour && !f->colour.store && !f->colour.resolve_va;
@@ -261,9 +289,21 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    int rc = kb_fb_pack(out, &p);
    if (rc)
       return rc;
+   if (env->arch != 13 && f->has_colour && f->ncolour > 1) {
+      /* v10/v11: Color Buffer Allocation (word 11 bits 31:24, KiB at 1024 px = bytes per pixel) must cover every render target, or
+       * RT n's Internal Buffer Offset lies outside it and the targets alias in the tile buffer (RT0 read back RT1's colour). */
+      uint32_t *w = (uint32_t *)out;
+      unsigned bpp = f->colour.rt ? f->colour.rt->alloc : 4u;
+      for (unsigned n = 0; n + 1 < f->ncolour && n < 3; n++)
+         bpp += f->colour_x[n].rt ? f->colour_x[n].rt->alloc : 4u;
+      w[11] = (w[11] & ~(0xffu << 24)) | (bpp << 24);
+   }
    if (env->arch == 13) {
       uint32_t *w = (uint32_t *)out;
-      unsigned al = ((1u << env->tile_log2) * (f->colour.rt ? f->colour.rt->alloc : 4u)) >> 10;
+      unsigned bpp = f->colour.rt ? f->colour.rt->alloc : 4u;
+      for (unsigned n = 0; f->has_colour && n + 1 < f->ncolour && n < 3; n++)
+         bpp += f->colour_x[n].rt ? f->colour_x[n].rt->alloc : 4u;
+      unsigned al = ((1u << env->tile_log2) * bpp) >> 10;
       if (!al)
          al = 1;
       unsigned tl = env->tile_log2 - (msaa ? 2 : 0);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */

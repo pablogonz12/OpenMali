@@ -1173,6 +1173,402 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
    return ok;
 }
 
+/* multiple render targets: nrt (2 or 4) RGBA8 colour attachments, one draw of a left-half quad whose fragment shader
+ * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
+ * left half must hold that target's draw colour and the right half its clear colour.
+ * clear_att 1: loadOp DONT_CARE + whole-area vkCmdClearAttachments. clear_att 2: after that pass a second pass with loadOp LOAD on every
+ * target draws into a 1-pixel scissor only, so every sampled pixel must still hold the first pass's result (colour LOAD on RT>0).
+ * clear_att 3: after the draw, a sub-rectangle vkCmdClearAttachments on RT 1..n-1 (the clear quad on colour attachment > 0). */
+static int
+test_mrt(const char *name, int nrt, int clear_att)
+{
+   static const float clr[4][4] = {{0, 0, 0, 0}, {1, 1, 1, 1}, {0, 1, 1, 0}, {1, 0, 1, 0}};
+   static const float drw[4][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 0, 1}};
+   VkImage im[4] = {0};
+   VkDeviceMemory mem[4] = {0};
+   VkImageView iv[4] = {0};
+   uint8_t *px[4] = {0};
+   uint32_t pitch[4] = {0};
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv(nrt == 2 ? "mrt2.frag.spv" : "mrt4.frag.spv");
+   VkRenderPass rp = VK_NULL_HANDLE, rp2 = VK_NULL_HANDLE;
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE, fence2 = VK_NULL_HANDLE;
+   int ok = 0;
+   unsigned bad = 0;
+#define MRT_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   MRT_CHECK(vs && fs, "shaders");
+   for (int i = 0; i < nrt; i++) {
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      MRT_CHECK(CreateImage(dev, &ii, NULL, &im[i]) == VK_SUCCESS, "image %d", i);
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, im[i], &mr);
+      int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      MRT_CHECK(mt >= 0, "no host visible type");
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      MRT_CHECK(AllocateMemory(dev, &ai, NULL, &mem[i]) == VK_SUCCESS, "mem %d", i);
+      MRT_CHECK(BindImageMemory(dev, im[i], mem[i], 0) == VK_SUCCESS, "bind %d", i);
+      MRT_CHECK(MapMemory(dev, mem[i], 0, VK_WHOLE_SIZE, 0, (void **)&px[i]) == VK_SUCCESS, "map %d", i);
+      VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+      VkSubresourceLayout sl;
+      GetImageSubresourceLayout(dev, im[i], &sr, &sl);
+      pitch[i] = (uint32_t)sl.rowPitch;
+      px[i] += sl.offset;
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = VK_FORMAT_R8G8B8A8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      MRT_CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view %d", i);
+   }
+   VkAttachmentDescription ad[4];
+   VkAttachmentReference ar[4];
+   for (int i = 0; i < nrt; i++) {
+      ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                        .loadOp = clear_att == 1 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+      ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   }
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = (uint32_t)nrt, .pColorAttachments = ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = (uint32_t)nrt, .pAttachments = ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   MRT_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass with %d colour attachments", nrt);
+   if (clear_att == 2) {
+      for (int i = 0; i < nrt; i++) {
+         ad[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+         ad[i].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      }
+      MRT_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "LOAD render pass");
+   }
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = (uint32_t)nrt,
+                                  .pAttachments = iv, .width = W, .height = H, .layers = 1};
+   MRT_CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   MRT_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba[4];
+   for (int i = 0; i < 4; i++) cba[i] = (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = (uint32_t)nrt, .pAttachments = cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = pl, .renderPass = rp};
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   MRT_CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   MRT_CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   MRT_CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   MRT_CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv[4];
+   for (int i = 0; i < 4; i++) memcpy(cv[i].color.float32, clr[i], 16);
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = (uint32_t)nrt, .pClearValues = cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   if (clear_att == 1) {   /* the loadOp is DONT_CARE: whole-area vkCmdClearAttachments before the first draw on every RT (RT>0 patches its descriptor) */
+      VkClearAttachment ca[4];
+      for (int i = 0; i < nrt; i++)
+         ca[i] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i, .clearValue = cv[i]};
+      VkClearRect cr = {.rect = {{0, 0}, {W, H}}, .layerCount = 1};
+      CmdClearAttachments(cb, (uint32_t)nrt, ca, 1, &cr);
+   }
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdDraw(cb, 6, 1, 0, 0);
+   if (clear_att == 3) {   /* after the draw, a sub-rectangle (right half, top half) vkCmdClearAttachments on every RT > 0: the clear quad, retargeted to that RT */
+      VkClearAttachment ca[3];
+      for (int i = 1; i < nrt; i++) {
+         ca[i - 1] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i};
+         for (int c = 0; c < 4; c++) ca[i - 1].clearValue.color.float32[c] = 1.0f - clr[i][c];
+      }
+      VkClearRect cr = {.rect = {{W / 2, 0}, {W / 2, H / 2}}, .layerCount = 1};
+      CmdClearAttachments(cb, (uint32_t)(nrt - 1), ca, 1, &cr);
+   }
+   CmdEndRenderPass(cb);
+   MRT_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   MRT_CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   r = QueueSubmit(queue, 1, &si, fence);
+   MRT_CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   MRT_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   if (clear_att == 2) {   /* pass 2: LOAD every target, draw 1 pixel at the bottom right corner only */
+      VkCommandBuffer cb2;
+      MRT_CHECK(AllocateCommandBuffers(dev, &cai, &cb2) == VK_SUCCESS, "alloc cb2");
+      MRT_CHECK(BeginCommandBuffer(cb2, &bi) == VK_SUCCESS, "begin 2");
+      VkRenderPassBeginInfo rb2 = rb;
+      rb2.renderPass = rp2;
+      rb2.clearValueCount = 0;
+      CmdBeginRenderPass(cb2, &rb2, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb2, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkRect2D sc2 = {{W - 1, H - 1}, {1, 1}};
+      CmdSetViewport(cb2, 0, 1, &vp);
+      CmdSetScissor(cb2, 0, 1, &sc2);
+      CmdDraw(cb2, 6, 1, 0, 0);
+      CmdEndRenderPass(cb2);
+      MRT_CHECK(EndCommandBuffer(cb2) == VK_SUCCESS, "end 2 (colour LOAD on every target)");
+      MRT_CHECK(CreateFence(dev, &fi, NULL, &fence2) == VK_SUCCESS, "fence 2");
+      VkSubmitInfo si2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb2};
+      r = QueueSubmit(queue, 1, &si2, fence2);
+      MRT_CHECK(r == VK_SUCCESS, "submit 2 = %d", r);
+      r = WaitForFences(dev, 1, &fence2, VK_TRUE, 20000000000ull);
+      MRT_CHECK(r == VK_SUCCESS, "wait 2 = %d", r);
+   }
+   ok = 1;
+   if (!g_fake) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
+      for (int i = 0; i < nrt; i++)
+         for (int y = 8; y < H; y += 40)
+            for (int h = 0; h < 2; h++) {
+               const float *want = h ? clr[i] : drw[i];
+               float inv[4];
+               if (clear_att == 3 && h && i > 0 && y < H / 2) {   /* inside the post-draw quad: the inverted clear colour; RT0 and the lower half keep the pass clear */
+                  for (int c = 0; c < 4; c++) inv[c] = 1.0f - clr[i][c];
+                  want = inv;
+               }
+               const uint8_t *p = px[i] + (size_t)y * pitch[i] + (size_t)(h ? 3 * W / 4 : W / 4) * 4;
+               for (int c = 0; c < 4; c++)
+                  if (p[c] != (want[c] > 0.5f ? 255 : 0)) {
+                     if (!bad++)
+                        printf("{\"detail\":\"rt%d y%d %s: got %02x%02x%02x%02x\"}\n", i, y, h ? "clear" : "draw", p[0], p[1], p[2], p[3]);
+                     break;
+                  }
+            }
+      ok = bad == 0;
+   }
+   printf("{\"test\":\"%s\",\"rts\":%d,\"bad\":%u,\"ok\":%s%s}\n", name, nrt, bad, ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend\"" : "");
+   if (!ok) g_fail = 1;
+out:
+   DeviceWaitIdle(dev);
+   if (fence) DestroyFence(dev, fence, NULL);
+   if (fence2) DestroyFence(dev, fence2, NULL);
+   if (pool) DestroyCommandPool(dev, pool, NULL);
+   if (pipe) DestroyPipeline(dev, pipe, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (fb) DestroyFramebuffer(dev, fb, NULL);
+   if (rp) DestroyRenderPass(dev, rp, NULL);
+   if (rp2) DestroyRenderPass(dev, rp2, NULL);
+   for (int i = 0; i < 4; i++) {
+      if (iv[i]) DestroyImageView(dev, iv[i], NULL);
+      if (im[i]) DestroyImage(dev, im[i], NULL);
+      if (mem[i]) FreeMemory(dev, mem[i], NULL);
+   }
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef MRT_CHECK
+   return ok;
+}
+
+/* mixed multi-RT pass: nrt (2, 3 or 4) colour attachments with per-attachment format, loadOp, storeOp, blend and write mask.
+ *   RT0 RGBA8  CLEAR (0,0,0,0)  STORE      unblended        -> draw colour on the left half, clear on the right
+ *   RT1 BGRA8  CLEAR (0,0,0,0)  STORE      SRC_ALPHA/ONE    -> two draws: 0.5 + 0.5 = 1.0 (an ignored blend would leave 0.5)
+ *   RT2 RGBA8  CLEAR (0,0,0,0.25) STORE    mask 0x7         -> RGB drawn, alpha stays the clear value (nrt == 4 only)
+ *   RTn RGBA8  CLEAR            DONT_CARE                   -> the image keeps its pre-fill: a per-attachment discard must not
+ *                                                               gate the write-back of the targets that are stored
+ * There is no pixel check on the fake backend (no rendering there); its golden stream carries the per-RT descriptors instead. */
+static int
+test_mrt_mixed(const char *name, int nrt)
+{
+   static const VkFormat fmt[4] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+   static const float clr[4][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0.25f}, {0.5f, 0.5f, 0.5f, 1}};
+   const int discard = nrt - 1;   /* the last attachment is the discarded one, so the earlier ones must still be written */
+   VkImage im[4] = {0};
+   VkDeviceMemory mem[4] = {0};
+   VkImageView iv[4] = {0};
+   uint8_t *px[4] = {0};
+   uint32_t pitch[4] = {0};
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv("mrtmix.frag.spv");
+   VkRenderPass rp = VK_NULL_HANDLE;
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE;
+   int ok = 0;
+   unsigned bad = 0;
+#define MRTM_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   MRTM_CHECK(vs && fs, "shaders");
+   for (int i = 0; i < nrt; i++) {
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = fmt[i], .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      MRTM_CHECK(CreateImage(dev, &ii, NULL, &im[i]) == VK_SUCCESS, "image %d", i);
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, im[i], &mr);
+      int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      MRTM_CHECK(mt >= 0, "no host visible type");
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      MRTM_CHECK(AllocateMemory(dev, &ai, NULL, &mem[i]) == VK_SUCCESS, "mem %d", i);
+      MRTM_CHECK(BindImageMemory(dev, im[i], mem[i], 0) == VK_SUCCESS, "bind %d", i);
+      MRTM_CHECK(MapMemory(dev, mem[i], 0, VK_WHOLE_SIZE, 0, (void **)&px[i]) == VK_SUCCESS, "map %d", i);
+      VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+      VkSubresourceLayout sl;
+      GetImageSubresourceLayout(dev, im[i], &sr, &sl);
+      pitch[i] = (uint32_t)sl.rowPitch;
+      px[i] += sl.offset;
+      if (i == discard)   /* a discarded target is never written: recognise the pre-fill */
+         for (unsigned y = 0; y < H; y++)
+            memset(px[i] + (size_t)y * pitch[i], 0x5a, (size_t)W * 4);
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = fmt[i], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      MRTM_CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view %d", i);
+   }
+   VkAttachmentDescription ad[4];
+   VkAttachmentReference ar[4];
+   for (int i = 0; i < nrt; i++) {
+      ad[i] = (VkAttachmentDescription){.format = fmt[i], .samples = VK_SAMPLE_COUNT_1_BIT,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                        .storeOp = i == discard ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE,
+                                        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+      ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   }
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = (uint32_t)nrt, .pColorAttachments = ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = (uint32_t)nrt, .pAttachments = ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   MRTM_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass with %d colour attachments", nrt);
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = (uint32_t)nrt,
+                                  .pAttachments = iv, .width = W, .height = H, .layers = 1};
+   MRTM_CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   MRTM_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba[4];
+   for (int i = 0; i < 4; i++) cba[i] = (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xf};
+   cba[1] = (VkPipelineColorBlendAttachmentState){.blendEnable = VK_TRUE, .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                                                  .dstColorBlendFactor = VK_BLEND_FACTOR_ONE, .colorBlendOp = VK_BLEND_OP_ADD,
+                                                  .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                                                  .alphaBlendOp = VK_BLEND_OP_ADD, .colorWriteMask = 0xf};
+   if (nrt == 4)
+      cba[2].colorWriteMask = 0x7;   /* RT2: alpha not written, so the clear alpha must survive the draw */
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = (uint32_t)nrt, .pAttachments = cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = pl, .renderPass = rp};
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   MRTM_CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   MRTM_CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   MRTM_CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   MRTM_CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv[4];
+   for (int i = 0; i < 4; i++) memcpy(cv[i].color.float32, clr[i], 16);
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = (uint32_t)nrt, .pClearValues = cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdDraw(cb, 6, 1, 0, 0);   /* same pass: RT1's blend factor must see the first draw's destination */
+   CmdEndRenderPass(cb);
+   MRTM_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   MRTM_CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   r = QueueSubmit(queue, 1, &si, fence);
+   MRTM_CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   MRTM_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   ok = 1;
+   if (!g_fake) {
+      for (int y = 8; y < H; y += 40) {
+         for (int h = 0; h < 2; h++) {
+            const unsigned x = (unsigned)(h ? 3 * W / 4 : W / 4);
+            for (int i = 0; i < nrt; i++) {
+               const uint8_t *p = px[i] + (size_t)y * pitch[i] + (size_t)x * 4;
+               uint8_t want[4] = {0, 0, 0, 0};
+               if (i == discard) {
+                  want[0] = want[1] = want[2] = want[3] = 0x5a;
+               } else if (i == 0) {
+                  if (!h) { want[0] = 255; want[3] = 255; }
+               } else if (i == 1) {   /* BGRA8: B, G, R, A */
+                  if (!h) { want[0] = want[1] = want[2] = want[3] = 255; }
+               } else {               /* nrt == 4, RT2: alpha-masked, alpha keeps the clear value 0.25 = 64 */
+                  want[3] = 64;
+                  if (!h) want[2] = 255;
+               }
+               if (memcmp(p, want, 4)) {
+                  if (!bad++)
+                     printf("{\"detail\":\"rt%d y%d %s: got %02x%02x%02x%02x want %02x%02x%02x%02x\"}\n", i, y, h ? "clear" : "draw",
+                            p[0], p[1], p[2], p[3], want[0], want[1], want[2], want[3]);
+               }
+            }
+         }
+      }
+      ok = bad == 0;
+   }
+   printf("{\"test\":\"%s\",\"rts\":%d,\"discard\":%d,\"bad\":%u,\"ok\":%s%s}\n", name, nrt, discard, bad, ok ? "true" : "false",
+          g_fake ? ",\"skipped\":\"pixels: fake backend\"" : "");
+   if (!ok) g_fail = 1;
+out:
+   DeviceWaitIdle(dev);
+   if (fence) DestroyFence(dev, fence, NULL);
+   if (pool) DestroyCommandPool(dev, pool, NULL);
+   if (pipe) DestroyPipeline(dev, pipe, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (fb) DestroyFramebuffer(dev, fb, NULL);
+   if (rp) DestroyRenderPass(dev, rp, NULL);
+   for (int i = 0; i < 4; i++) {
+      if (iv[i]) DestroyImageView(dev, iv[i], NULL);
+      if (im[i]) DestroyImage(dev, im[i], NULL);
+      if (mem[i]) FreeMemory(dev, mem[i], NULL);
+   }
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef MRTM_CHECK
+   return ok;
+}
+
 /* rasterizer discard: draws produce nothing (both stages present, or a vertex-only pipeline); the next pipeline draws normally */
 static int
 test_discard(const char *name, int mode)
@@ -2147,6 +2543,14 @@ main(int argc, char **argv)
    if (ok && CASE_ON("ubo")) ok &= test_quad("ubo", MODE_UBO);
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
+   if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2, 0);   /* last: its allocations must not shift the older cases' goldens */
+   if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
+   if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
+   if (ok && CASE_ON("mrt4_load")) ok &= test_mrt("mrt4_load", 4, 2);
+   if (ok && CASE_ON("mrt4_clearquad")) ok &= test_mrt("mrt4_clearquad", 4, 3);
+   if (ok && CASE_ON("mrt2_mixed")) ok &= test_mrt_mixed("mrt2_mixed", 2);
+   if (ok && CASE_ON("mrt3_mixed")) ok &= test_mrt_mixed("mrt3_mixed", 3);
+   if (ok && CASE_ON("mrt4_mixed")) ok &= test_mrt_mixed("mrt4_mixed", 4);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
