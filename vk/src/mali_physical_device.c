@@ -318,6 +318,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
+      .robustBufferAccess2 = true, /* same buffer lowering as robustBufferAccess (robust_zero_loads + Mesa's pass; byte-granular bounds, OOB loads 0, stores/atomics dropped). robustImageAccess2 stays FALSE: image loads/stores are not bounds-checked. t_vk_feat nulld */
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
