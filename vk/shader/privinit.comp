@@ -1,0 +1,9 @@
+#version 450
+// Regression shader: a Private (GLSL global) variable with a constant initializer, as DXVK emits for HLSL static const/static variables.
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 8, local_size_y = 1, local_size_z = 1) in;
+layout(buffer_reference, std430) buffer B { uint v[]; };
+layout(push_constant) uniform P { B b; } p;
+uint g_base = 5u;
+uint g_tab[4] = uint[4](1u, 2u, 3u, 4u);
+void main() { g_base += gl_GlobalInvocationID.x; p.b.v[gl_GlobalInvocationID.x] = g_base + g_tab[gl_LocalInvocationID.x & 3u]; }

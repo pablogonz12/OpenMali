@@ -209,6 +209,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
       blake3_hasher_update(&h, L->dyn_start, sizeof L->dyn_start);
       blake3_hasher_update(&h, &L->push_size, sizeof L->push_size);
+      blake3_hasher_update(&h, &L->robust_access, sizeof L->robust_access);
       for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
          blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
          blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);
@@ -452,7 +453,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
          }
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_entrypoints(nir);
