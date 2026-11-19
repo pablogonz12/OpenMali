@@ -27,6 +27,21 @@ lod_fixed(float v, uint32_t max)
    return (uint32_t)f;
 }
 
+/* VK_EXT_border_color_swizzle groundwork: the HW is assumed to apply the view swizzle to the border colour too, so scatter the wanted colour through the
+ * mapping (hw[swz[c]] = want[c]) so the view's output equals it. IDENTITY/ZERO/ONE channels are left alone; an all-zero (unset) mapping is identity.
+ * UNVERIFIED on silicon: do not advertise the extension before a phone check. */
+void
+mali_border_color_unswizzle(const VkComponentMapping *m, const uint32_t want[4], uint32_t out[4])
+{
+   const VkComponentSwizzle sw[4] = { m->r, m->g, m->b, m->a };
+   uint32_t tmp[4] = { want[0], want[1], want[2], want[3] };
+   for (unsigned c = 0; c < 4; c++) {
+      VkComponentSwizzle x = sw[c];
+      if (x >= VK_COMPONENT_SWIZZLE_R && x <= VK_COMPONENT_SWIZZLE_A) tmp[x - VK_COMPONENT_SWIZZLE_R] = want[c];
+   }
+   memcpy(out, tmp, sizeof tmp);
+}
+
 void
 mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_sampler *s, struct mali_hw_desc *o)
 {
@@ -57,10 +72,13 @@ mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_
       w2 |= 3u << 24;
    }
    o->w[2] = w2;
-   o->w[4] = s->border_color_value.uint32[0];
-   o->w[5] = s->border_color_value.uint32[1];
-   o->w[6] = s->border_color_value.uint32[2];
-   o->w[7] = s->border_color_value.uint32[3];
+   uint32_t bc[4];
+   VkComponentMapping bm = {0};   /* vk_sampler drops VkSamplerBorderColorComponentMappingCreateInfoEXT: read it from the create info */
+   for (const VkBaseInStructure *e = ci->pNext; e; e = e->pNext)
+      if (e->sType == VK_STRUCTURE_TYPE_SAMPLER_BORDER_COLOR_COMPONENT_MAPPING_CREATE_INFO_EXT)
+         bm = ((const VkSamplerBorderColorComponentMappingCreateInfoEXT *)e)->components;
+   mali_border_color_unswizzle(&bm, s->border_color_value.uint32, bc);
+   memcpy(&o->w[4], bc, sizeof bc);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
