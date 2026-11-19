@@ -169,6 +169,18 @@ test_refuse_and_push(void)
       mali_compiled_free(&c);
    }
    free(cs.w); free(fs.w);
+   /* a constant push read at byte 624 needs more FAU words than exist: refused, not asserted/overflowed */
+   struct spv far = load("pushfar.frag.spv");
+   if (far.w) {
+      for (unsigned arch = 10; arch <= 13; arch++) {
+         if (arch == 12) continue;
+         struct mali_compiled c;
+         struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = far.w, .spirv_words = far.n, .cache_dir = "" };
+         char err[256] = "";
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0 && strstr(err, "push"), "v%u push read beyond FAU capacity is refused (err '%s')", arch, err);
+      }
+      free(far.w);
+   }
 }
 
 static void

@@ -454,6 +454,12 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
     * 40 byte header, FS on v10/v11: 32 bytes) asserted in bi_emit_load_push_constant. Grow the reservation to cover it. */
    if (pc.max_end) {
       unsigned end = pc.max_end == UINT32_MAX ? (o->layout ? o->layout->push_size : 128u) : pc.max_end;
+      /* Refuse BEFORE the reservation grows: the backend writes promoted constants into a 128-entry FAU word array, and an
+       * oversized reservation would overflow it (or hit the count < max assertion). Also reject reads past the layout's push range here. */
+      if ((uint64_t)push_base + end > 4u * 128u || (o->layout && pc.max_end != UINT32_MAX && pc.max_end > o->layout->push_size)) {
+         ralloc_free(nir);
+         return fail(err, errsz, "shader reads push constants beyond the FAU capacity or the layout's push range");
+      }
       fau_reserved = MAX2(fau_reserved, (push_base + end + 3) / 4);
    }
 
