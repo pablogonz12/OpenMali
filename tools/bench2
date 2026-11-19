@@ -232,7 +232,7 @@ def med(v):
 
 
 def agg(ms):
-    return {k: med([m[k] for m in ms]) for k in ("fps", "low1", "over25", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
+    return {k: med([m.get(k) for m in ms]) for k in ("fps", "low1", "over25", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
 
 
 BASE_PRES = dict(mode="mailbox", images=3, fif=2)

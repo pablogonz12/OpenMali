@@ -22,6 +22,13 @@ class T(unittest.TestCase):
         a = B.agg(ms)
         self.assertEqual((a["low1"], a["over25"], a["over50"]), (85, 6, 2))
 
+    def test_agg_cached_record_without_over25(self):
+        old = B.metrics(run(500, 80, 7, 3), "ours")
+        del old["over25"]   # record cached before over25 existed
+        a = B.agg([old, B.metrics(run(520, 90, 5, 1), "ours")])
+        self.assertEqual(a["over25"], 5)
+        self.assertIsNone(B.agg([old])["over25"])
+
     def test_report_has_offscreen_columns(self):
         pres = dict(fps=300.0, low1=70.0, over25=1, over50=0, cpu_ms=1.0, gpu_ms=2.0)
         off = dict(fps=600.0, low1=123.4, over25=11, over50=22, cpu_ms=0.5, gpu_ms=1.0)
