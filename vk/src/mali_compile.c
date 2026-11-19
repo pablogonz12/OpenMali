@@ -641,6 +641,23 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    return 0;
 }
 
+/* spirv_to_nir trusts validated input: a truncated last instruction trips `assert(w == end)` and OpName/OpMemberName index the id table
+ * with an unchecked target id (wild write). Found by tools/fuzz on mutated modules; vkCreateShaderModule input may be invalid, so walk the
+ * instruction stream here and refuse what the parser would not survive. */
+static bool
+spirv_structure_ok(const uint32_t *w, size_t nwords)
+{
+   uint32_t bound = w[3];
+   for (size_t i = 5; i < nwords;) {
+      uint32_t wc = w[i] >> 16, op = w[i] & 0xffff;
+      if (wc == 0 || wc > nwords - i) return false;
+      if (op == 5 && (wc < 3 || w[i + 1] >= bound)) return false;   /* OpName */
+      if (op == 6 && (wc < 4 || w[i + 1] >= bound)) return false;   /* OpMemberName */
+      i += wc;
+   }
+   return true;
+}
+
 int
 mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
 {
@@ -649,6 +666,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    /* spirv_to_nir dereferences a NULL builder option on a bad header: check it ourselves */
    if (o->spirv_words < 5 || o->spirv[0] != 0x07230203u)
       return fail(err, errsz, "not a SPIR-V module (bad magic or too short)");
+   if (!spirv_structure_ok(o->spirv, o->spirv_words))
+      return fail(err, errsz, "malformed SPIR-V (truncated instruction or out-of-range OpName target)");
    if (o->arch != 10 && o->arch != 11 && o->arch != 13)
       return fail(err, errsz, "arch must be 10, 11 or 13");
    if (o->stage > MALI_STAGE_COMPUTE)
