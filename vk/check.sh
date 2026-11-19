@@ -108,6 +108,7 @@ done
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
 for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
+   run "vk_robust $g" 0 MALI_TEST_FORCE_ROBUST=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_robust" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
 

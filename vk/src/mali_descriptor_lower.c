@@ -177,9 +177,79 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
    return true;
 }
 
-bool
-mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, char *err, size_t errsz)
+/* robustness2: an out-of-bounds buffer load returns 0. nir_lower_robust_access rewrites the offset to 0 instead (reads word 0). */
+static bool
+robust_zero_loads(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
+   bool ubo = i->intrinsic == nir_intrinsic_load_ubo;
+   if (!ubo && i->intrinsic != nir_intrinsic_load_ssbo)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *size = ubo ? nir_get_ubo_size(b, 32, i->src[0].ssa) : nir_get_ssbo_size(b, 32, i->src[0].ssa);
+   nir_def *last = nir_iadd_imm(b, i->src[1].ssa, i->num_components * (i->def.bit_size / 8) - 1);
+   nir_def *zero = nir_imm_zero(b, i->num_components, i->def.bit_size);
+   nir_push_if(b, nir_ult(b, last, size));
+   nir_instr *orig = nir_instr_clone(b->shader, &i->instr);
+   nir_builder_instr_insert(b, orig);
+   nir_pop_if(b, NULL);
+   nir_def_rewrite_uses(&i->def, nir_if_phi(b, &nir_instr_as_intrinsic(orig)->def, zero));
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
+static bool
+robust_filter(const nir_intrinsic_instr *i, const void *d)
+{
+   switch (i->intrinsic) {   /* descriptor-backed accesses only (not shared memory) */
+   case nir_intrinsic_store_ssbo:   /* buffer loads: robust_zero_loads below (Mesa's pass clamps them to offset 0) */
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_store:
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* get_ssbo_size/get_ubo_size: read the size word (w1) of the Buffer descriptor. The shader cannot address a resource table by handle,
+ * so the driver passes the VA of each table in the push block (see MALI_SIZE_TAB_BYTES): entries 0..nsets-1 = user sets 1..nsets,
+ * entry nsets = the dynamic-buffer table. handle = table << 24 | index, descriptors are 32 bytes. */
+struct size_ctx {
+   const struct mali_compile_layout *l;
+   unsigned off;   /* push offset (incl. the stage's push base) of the VA array */
+   bool used;
+};
+
+static bool
+lower_size(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   struct size_ctx *c = d;
+   if (i->intrinsic != nir_intrinsic_get_ssbo_size && i->intrinsic != nir_intrinsic_get_ubo_size)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[0].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *table = nir_ushr_imm(b, h, 24);
+   nir_def *idx = nir_iand_imm(b, h, 0xffffff);
+   nir_def *va = nir_load_push_constant(b, 1, 64, nir_imm_int(b, c->off + c->l->nsets * 8));   /* dynamic table (the default) */
+   for (unsigned s = 0; s < c->l->nsets; s++)
+      va = nir_bcsel(b, nir_ieq_imm(b, table, s + 1), nir_load_push_constant(b, 1, 64, nir_imm_int(b, c->off + s * 8)), va);
+   nir_def *addr = nir_iadd(b, va, nir_u2u64(b, nir_iadd_imm(b, nir_imul_imm(b, idx, MALI_DESC_SLOT_SIZE), 4)));
+   nir_def *sz = nir_load_global(b, 1, 32, addr, .align_mul = 4, .align_offset = 0, .access = ACCESS_CAN_REORDER);
+   nir_def_replace(&i->def, sz);
+   c->used = true;
+   return true;
+}
+
+bool
+mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, unsigned push_base, int *size_tab_off, char *err, size_t errsz)
+{
+   if (size_tab_off)
+      *size_tab_off = -1;
    struct ctx c = { .l = layout, .err = err, .errsz = errsz };
    NIR_PASS(_, nir, nir_shader_instructions_pass, lower_instr, nir_metadata_control_flow, &c);
    if (c.failed)
@@ -187,6 +257,14 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
+   if (layout->robust_access) {   /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, robust_zero_loads, nir_metadata_none, NULL);
+      NIR_PASS(_, nir, nir_lower_robust_access, robust_filter, NULL);
+      struct size_ctx sc = { layout, push_base + mali_size_tab_off(layout), false };
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size, nir_metadata_control_flow, &sc);
+      if (sc.used && size_tab_off)
+         *size_tab_off = mali_size_tab_off(layout);   /* offset inside the push block, without the stage's push base */
+   }
    /* nonuniformEXT() indices: the hardware takes one resource handle per warp, so divergent handles become a waterfall loop
     * (same set of types as PanVK; runs after the UBO/SSBO IO lowering). */
    const enum nir_lower_non_uniform_access_type types =

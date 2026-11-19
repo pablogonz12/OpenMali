@@ -27,6 +27,21 @@
 #include "mali_cs_emit.h"
 #include "mali_event.h"
 
+/* Robust buffer access: the compiled shader reads buffer sizes from the descriptor tables (mali_descriptor_lower.c lower_size), so the VAs of
+ * the user-set tables and the dynamic table are written after the API push constants. fau = start of the stage's FAU block. */
+static void
+put_size_tab(uint8_t *fau, size_t room, unsigned push_base, const struct mali_compiled *c, const uint64_t *set_va, unsigned nsets, uint64_t va_dyn)
+{
+   if (!c->size_tab_off)
+      return;
+   for (unsigned i = 0; i <= c->size_tab_nsets; i++) {
+      uint64_t va = i == c->size_tab_nsets ? va_dyn : (i < nsets ? set_va[i] : 0);
+      size_t o = push_base + (c->size_tab_off - 1) + i * 8;
+      if (o + 8 <= room)
+         memcpy(fau + o, &va, 8);
+   }
+}
+
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
 #define FAU_BYTES(words32) (((((size_t)(words32) + 1) / 2) * 8 + 63) & ~(size_t)63)
 
@@ -281,7 +296,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    const unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
 
    /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter. */
-   const bool s1 = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
+   const bool rb = vs->size_tab_off || fs->size_tab_off;   /* the FAU holds table VAs (incl. this draw's dynamic table): rebuild everything */
+   const bool s1 = !rb && po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
    /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
@@ -487,6 +503,7 @@ fau:;
       if (g->push_base[st] + n > room)
          n = room > g->push_base[st] ? (unsigned)(room - g->push_base[st]) : 0;
       memcpy((uint8_t *)fau + g->push_base[st], d->push[st], n);
+      put_size_tab((uint8_t *)fau, room, g->push_base[st], c, d->set_va, d->nsets, va_dyn);
    }
    if (v13) {
       ffau[4] = o->bl23[0];
@@ -876,6 +893,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       if (n > room)
          n = (unsigned)room;
       memcpy((uint8_t *)fau, d->push, n);
+      put_size_tab((uint8_t *)fau, room, 0, cs, d->set_va, d->nsets, va_dyn);
    }
 
    memset(&c, 0, sizeof c);

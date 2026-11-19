@@ -1,0 +1,34 @@
+#version 450
+// Robust-access probe (t_vk_robust): out-of-bounds SSBO/UBO reads, writes, atomics and length() queries.
+// A = SSBO bound with a 16-word range inside a larger buffer (words 16.. hold canaries), R = results, U = UBO with a 32-byte range (2 std140 vec4s), C = SSBO with a 2-word range.
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) buffer A { uint a[]; };
+layout(set = 0, binding = 1) buffer R { uint r[]; };
+layout(set = 0, binding = 2) uniform U { uvec4 u[8]; };   // std140: 16-byte stride, so the 32-byte range covers u[0], u[1]
+layout(set = 0, binding = 3) buffer C { uint c[]; };
+layout(push_constant) uniform P { uint z; uint wild; } p;   // z = 0 at run time (defeats constant folding)
+void main()
+{
+   for (uint i = 0; i < 8; i++) r[i] = a[16 + i + p.z];            // 0..7: OOB SSBO reads (want 0)
+   r[8] = a[p.z];                                                 // in-bounds SSBO read (want 111)
+   for (uint i = 0; i < 4; i++) r[10 + i] = u[4 + i + p.z].x;       // 10..13: OOB UBO reads (want 0)
+   r[14] = u[p.z + 1].x;                                            // in-bounds UBO read (want 222)
+#ifndef NOLEN
+   r[15] = uint(a.length());                                      // want 16
+   r[16] = uint(c.length());                                      // want 2
+#endif
+   r[17] = atomicAdd(a[20 + p.z], 1);                             // OOB atomic: returns 0, discarded
+   r[18] = a[p.z + 2];                                            // in-bounds sanity (want 112)
+   for (uint i = 0; i < 8; i++) a[16 + i + p.z] = 0xBAD00000u + i; // OOB writes: discarded
+   c[2 + p.z] = 0xBAD1u;                                          // OOB write to C: discarded
+   a[p.z + 3] = 444;                                              // in-bounds write (must land)
+   r[19] = c[p.z + 1];                                            // in-bounds C read (want 555)
+   if (p.wild == 1) {                                             // far OOB: unmapped VA if not checked (GPU fault)
+      r[20] = a[0x10000000u + p.z];
+      r[21] = a[0xFFFFFFF0u + p.z];
+      a[0x10000000u + p.z] = 1;
+      a[0xFFFFFFF0u + p.z] = 1;
+      r[22] = atomicAdd(a[0x20000000u + p.z], 1);
+      r[23] = 7;                                                  // reached the end
+   }
+}

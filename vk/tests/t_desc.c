@@ -55,7 +55,7 @@ mk_set(unsigned arch, struct mali_dsl *l, VkDescriptorPool *poolout)
                                  { VK_DESCRIPTOR_TYPE_SAMPLER, 4 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 } };
    VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 4, .poolSizeCount = 4, .pPoolSizes = ps,
                                      .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT };
-   VkResult r = mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, poolout);
+   VkResult r = mali_create_descriptor_pool(&g_dev, arch, &pi, poolout);
    CHECK(r == VK_SUCCESS, "pool create %d", r);
    VkDescriptorSetLayout hl = mali_dsl_to_handle(l);
    VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = *poolout, .descriptorSetCount = 1, .pSetLayouts = &hl };
@@ -137,9 +137,9 @@ test_bytes(unsigned arch)
    kb_draw_buffer(buf, g_buf_va + 0x40, 256);
    CHECK(!memcmp(mali_dset_from_handle(hs3)->cpu, buf, 32), "template UBO bytes");
 
-   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
-   mali_destroy_descriptor_pool(&g_dev, pool2, NULL);
-   mali_destroy_descriptor_pool(&g_dev, pool3, NULL);
+   mali_destroy_descriptor_pool(&g_dev, pool);
+   mali_destroy_descriptor_pool(&g_dev, pool2);
+   mali_destroy_descriptor_pool(&g_dev, pool3);
    free(tp);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
@@ -154,7 +154,7 @@ test_pool(void)
    VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8, .poolSizeCount = 1, .pPoolSizes = &ps,
                                      .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT };
    VkDescriptorPool pool;
-   CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, NULL, &pool) == VK_SUCCESS, "pool");
+   CHECK(mali_create_descriptor_pool(&g_dev, 11, &pi, &pool) == VK_SUCCESS, "pool");
    VkDescriptorSetLayout hl[3] = { mali_dsl_to_handle(l), mali_dsl_to_handle(l), mali_dsl_to_handle(l) };
    VkDescriptorSet s[3];
    VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 2, .pSetLayouts = hl };
@@ -169,7 +169,7 @@ test_pool(void)
    CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s[2]) == VK_SUCCESS && mali_dset_from_handle(s[2])->va == freed_va, "reuses the freed hole");
    mali_reset_descriptor_pool(&g_dev, pool);
    CHECK(mali_allocate_descriptor_sets(&g_dev, &ai, &s[0]) == VK_SUCCESS, "alloc after reset");
-   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
+   mali_destroy_descriptor_pool(&g_dev, pool);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
 
@@ -256,6 +256,32 @@ test_compile(unsigned arch)
    r = mali_compile(&o, &c, err, sizeof err);
    CHECK(r == 0, "comp compile: %s", err);
    if (r == 0) { CHECK(c.bin_size > 0 && c.ubo_count >= 1 && c.push_const_bytes == 4, "comp ubo %u push %u", c.ubo_count, c.push_const_bytes); mali_compiled_free(&c); }
+   /* robust_access (robustBufferAccess2/robustImageAccess2 lowering, default off): nir_lower_robust_access inserts get_ssbo_size/get_ubo_size,
+    * which the driver lowers to a load of the Buffer descriptor's size word from the table VAs it passes in the push block after the API
+    * push constants. Without that lowering the backend asserts on the size intrinsics, so a successful compile proves it ran. */
+   {
+      struct mali_compile_layout rl = fl.c;
+      rl.robust_access = 1;
+      struct mali_compiled cr, cd;
+      o.layout = &fl.c;
+      err[0] = 0;
+      CHECK(mali_compile(&o, &cd, err, sizeof err) == 0, "default (robust off) compute compiles: %s", err);
+      CHECK(cd.size_tab_off == 0 && cd.size_tab_nsets == 0, "default compile needs no size table (off %u)", cd.size_tab_off);
+      o.layout = &rl;
+      err[0] = 0;
+      r = mali_compile(&o, &cr, err, sizeof err);
+      CHECK(r == 0, "robust compute with SSBO/UBO compiles (size queries lowered): %s", err);
+      if (r == 0) {
+         CHECK(cr.size_tab_off == 1 + mali_size_tab_off(&rl) && cr.size_tab_nsets == rl.nsets, "size table at push offset %u (got %u), nsets %u (got %u)",
+               mali_size_tab_off(&rl), cr.size_tab_off, rl.nsets, cr.size_tab_nsets);
+         CHECK(cr.bin_size != cd.bin_size || memcmp(cr.bin, cd.bin, cd.bin_size), "robust compile must differ from the default one");
+         CHECK(cr.fau_count > cd.fau_count, "the table VAs are FAU words (%u vs %u)", cr.fau_count, cd.fau_count);
+         CHECK(cr.push_const_bytes == cd.push_const_bytes, "table VAs are not API push constants (%u vs %u)", cr.push_const_bytes, cd.push_const_bytes);
+         mali_compiled_free(&cr);
+      }
+      mali_compiled_free(&cd);
+      o.layout = &fl.c;
+   }
    /* without layout the old descriptor-free path still compiles the plain shaders */
    free(fs.w); free(cs.w);
    vk_descriptor_set_layout_unref(&g_dev, &l0->vk);

@@ -66,6 +66,8 @@ struct mali_compiled {
    uint32_t nimm;
    struct mali_imm *imm;          /* nimm entries, words >= fau_reserved */
    uint32_t push_const_bytes;     /* highest API push constant byte used (before push_base), 0 = none */
+   uint32_t size_tab_off;         /* robust buffer access: 1 + push-block byte offset where the driver writes the descriptor-table VAs (mali_size_tab_bytes()), 0 = none */
+   uint32_t size_tab_nsets;       /* user-set entries of that table (the dynamic table VA follows them) */
    uint32_t ubo_count, attribute_count, texture_count, sampler_count;
    uint32_t uses_ld_var, wait_6, wait_7, writes_global;
    /* FS */

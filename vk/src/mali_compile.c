@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 35 /* 35: gl_CullDistance outputs ignored (MALI_ADVERTISE_CULL shim) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 36 /* 36: robust2-probe/robust size-table lowering merged in lane/mega-int2 (distinct from 35 = cull shim) ; 35: gl_CullDistance outputs ignored (MALI_ADVERTISE_CULL shim) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -527,11 +527,12 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       }
    }
 
+   int size_tab_off = -1;
    if (o->layout) {
       /* YCbCr (NV12): before the descriptors are lowered, while the texture derefs still name set/binding/array index. It turns each
        * sample of a converted combined image sampler into per-plane samples (nir_tex_src_plane) plus the model/range/siting maths. */
       NIR_PASS(_, nir, nir_vk_lower_ycbcr_tex, ycbcr_lookup, o->layout);
-      if (!mali_nir_lower_descriptors(nir, o->layout, err, errsz)) {
+      if (!mali_nir_lower_descriptors(nir, o->layout, push_base, &size_tab_off, err, errsz)) {
          ralloc_free(nir);
          if (err && errsz && !err[0]) snprintf(err, errsz, "descriptor lowering failed");
          return -1;
@@ -591,6 +592,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          k++;
       }
    out->push_const_bytes = pc.max_end;
+   out->size_tab_off = size_tab_off >= 0 ? (uint32_t)size_tab_off + 1 : 0;   /* the table VAs sit outside the API push range (checked below) */
+   out->size_tab_nsets = size_tab_off >= 0 ? o->layout->nsets : 0;
    if (o->layout && pc.max_end != UINT32_MAX && pc.max_end > o->layout->push_size) {
       free(out->bin); free(out->imm);
       ralloc_free(nir);
@@ -664,6 +667,11 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
 
+   if (o->layout && o->layout->robust_access) {   /* the descriptor-table VAs are push-block words (mali_descriptor_lower.c lower_size): the backend wants them in the reserved FAU range */
+      unsigned need = (push_base + mali_size_tab_off(o->layout) + mali_size_tab_bytes(o->layout) + 3) / 4;
+      if (fau_reserved < need)
+         fau_reserved = need;
+   }
    char dir[900], hex[65];
    int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
    if (use_cache) {

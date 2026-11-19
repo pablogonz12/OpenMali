@@ -54,6 +54,11 @@ struct mali_compile_layout {
    uint32_t push_size;                /* bytes of push constants (<= MALI_MAX_PUSH_BYTES) */
 };
 
+/* Robust buffer access: the shader reads buffer sizes from the descriptor tables, whose VAs the driver passes in the push block right
+ * after the layout's push constants (8-byte aligned): one u64 per user set (tables 1..nsets) plus one for the dynamic table. */
+static inline uint32_t mali_size_tab_off(const struct mali_compile_layout *l) { return (l->push_size + 7u) & ~7u; }
+static inline uint32_t mali_size_tab_bytes(const struct mali_compile_layout *l) { return (l->nsets + 1u) * 8u; }
+
 static inline uint32_t mali_desc_stride(uint32_t type)
 {
    switch (type) {
