@@ -43,3 +43,20 @@ stride + level offset, tile px from `1u << tile_log2`). `mali_afbc_image_header_
 Not yet done: nothing in `mali_cmd.c` calls `mali_render_att_afbc` (the render pass still sets linear va/stride), and `BindImageMemory2` does not
 call the header init (needs a CPU mapping of the BO, or a GPU-side clear). ~2 h; total about 9 of 55-60 h. Items 1 (call site) and 4 (init
 call site) of the phone-test list above are now only wiring.
+
+### Stage 5 (command-buffer + bind wiring) DONE, still MALI_AFBC=1 only
+
+- `mali_pipeline.c res_image_view` marks colour targets of AFBC images; `mali_cmd.c` requests AFBC on the frame colour attachment
+  (`mali_att_request_afbc`); `mali_render_pack_fbd` resolves it with the real tile size (v13: `1u << tile_log2`, v11: 256 px). Bad level/layer fails the frame.
+- `BindImageMemory2` calls `mali_image_afbc_bind_init` (zero headers, bounds-checked against the BO).
+- Sampling / transfer policy (chosen: **ineligible**, no decompress fallback): an image is AFBC only when `usage` has none of SAMPLED,
+  TRANSFER_SRC, TRANSFER_DST, INPUT_ATTACHMENT (plus STORAGE/HOST_TRANSFER from stage 1). So no descriptor, copy, blit, clear-image or
+  compute path ever sees an AFBC image. LOAD from an AFBC attachment and MSAA are refused as `unsupported`. Note this excludes WSI swapchain images
+  (they carry TRANSFER/sampled usage), so on a phone only offscreen render-only images can be AFBC.
+- Not host-covered: the one-line hooks in `mali_pipeline.c`/`mali_cmd.c`/`BindImageMemory2` (need the Mesa build); the pure parts are tested.
+- Hours: ~2.5 this stage, about 11.5 of 55-60 total.
+
+Remaining before a phone test: (a) a way to read an AFBC render target back: a render-only image cannot be sampled or copied, so either stage 6
+(AFBC texture plane descriptor for SAMPLED) or a debug env that dumps the BO via CPU map and a host AFBC decoder; (b) layout transitions /
+barriers (cache flush, no decompress needed for same-format use); (c) a test app rendering to an offscreen AFBC image, with a linear reference
+compared after decode; (d) v13 X8 first, farm hold, temp < 43 C, watch kbase faults; (e) verify v13 RT bit positions (kb_fb_pack TODO) and that zeroed headers are a valid start.

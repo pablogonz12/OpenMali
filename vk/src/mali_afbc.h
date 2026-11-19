@@ -185,9 +185,11 @@ struct mali_afbc_image_info {
    unsigned format;        /* VkFormat */
    uint32_t width, height;
    bool afbc_env;          /* mali_afbc_enabled() (injected so tests do not depend on the environment) */
+   bool render_only;       /* image is only rendered to: reject SAMPLED / TRANSFER_SRC/DST / INPUT_ATTACHMENT (no AFBC sampling or decompress path yet) */
 };
 
 #define MALI_AFBC_USAGE_STORAGE        0x08u
+#define MALI_AFBC_USAGE_NON_RENDER     (0x01u | 0x02u | 0x04u | 0x80u)   /* TRANSFER_SRC | TRANSFER_DST | SAMPLED | INPUT_ATTACHMENT */
 #define MALI_AFBC_USAGE_HOST_TRANSFER  0x400000u   /* VK_IMAGE_USAGE_HOST_TRANSFER_BIT (EXT/1.4) */
 #define MALI_AFBC_FLAG_SPARSE_BINDING  0x1u
 #define MALI_AFBC_FLAG_SPARSE_RESIDENT 0x2u
@@ -221,6 +223,7 @@ mali_afbc_image_eligible(const struct mali_afbc_image_info *i, unsigned *bpp_out
    if (i->image_type != 1) return MALI_AFBC_REJ_TYPE;
    if (i->samples != 1) return MALI_AFBC_REJ_SAMPLES;
    if (i->usage & (MALI_AFBC_USAGE_STORAGE | MALI_AFBC_USAGE_HOST_TRANSFER)) return MALI_AFBC_REJ_USAGE;
+   if (i->render_only && (i->usage & MALI_AFBC_USAGE_NON_RENDER)) return MALI_AFBC_REJ_USAGE;
    if (i->flags & (MALI_AFBC_FLAG_DISJOINT | MALI_AFBC_FLAG_ALIAS | MALI_AFBC_FLAG_SPARSE_BINDING |
                    MALI_AFBC_FLAG_SPARSE_RESIDENT | MALI_AFBC_FLAG_SPARSE_ALIASED))
       return MALI_AFBC_REJ_FLAGS;

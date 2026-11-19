@@ -33,8 +33,23 @@ struct mali_cmd_target {
    uint32_t s_row_stride;
    unsigned samples;     /* image sample count (1 or 4) */
    uint32_t surface_stride;   /* bytes per sample plane (MSAA images: samples consecutive) */
+   const struct mali_afbc_image_layout *afbc_lay;   /* MALI_AFBC=1 colour image: AFBC layout (NULL = linear, the default) */
+   uint64_t afbc_image_va;
+   unsigned afbc_level, afbc_layer, afbc_format;
    bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */
 };
+
+/* Mark a colour target as an AFBC image (image layout must have afbc set). Pure. */
+static inline void
+mali_cmd_target_set_afbc(struct mali_cmd_target *t, const struct mali_afbc_image_layout *al, bool afbc, uint64_t image_va, unsigned level, unsigned layer,
+                         unsigned vk_format)
+{
+   t->afbc_lay = afbc ? al : NULL;
+   t->afbc_image_va = image_va;
+   t->afbc_level = level;
+   t->afbc_layer = layer;
+   t->afbc_format = vk_format;
+}
 
 struct mali_cmd_res_ops {
    /* VkPipeline (graphics) -> state; arch of the compiled shaders must match the device. 0 = ok. */

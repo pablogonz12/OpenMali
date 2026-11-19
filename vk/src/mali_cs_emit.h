@@ -222,6 +222,10 @@ struct mali_att {
     * (header VA, row stride, body offset, block format, compression mode); va/row_stride above stay the linear values. Zero = default path. */
    bool afbc;
    struct mali_afbc_rt_words afbc_rt;
+   /* Image-based request (mali_cmd.c): when afbc_lay is set, mali_render_pack_fbd builds afbc_rt itself with the real tile size. */
+   const struct mali_afbc_image_layout *afbc_lay;
+   uint64_t afbc_image_va;
+   unsigned afbc_level, afbc_layer, afbc_format;
 };
 
 struct mali_frame {
@@ -254,6 +258,23 @@ int mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint6
 int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
 
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
+/* Colour attachment: carry an AFBC image request into the frame (pack_fbd resolves it with the real tile size). `al` NULL = linear image,
+ * attachment left on the default path. LOAD from an AFBC image has no preload path: returns false (caller reports unsupported). Pure. */
+static inline bool
+mali_att_request_afbc(struct mali_att *att, const struct mali_afbc_image_layout *al, uint64_t image_va, unsigned level, unsigned layer,
+                      unsigned vk_format, bool load)
+{
+   att->afbc = false;
+   att->afbc_lay = NULL;
+   if (!al) return true;
+   if (load) return false;
+   att->afbc_lay = al;
+   att->afbc_image_va = image_va;
+   att->afbc_level = level;
+   att->afbc_layer = layer;
+   att->afbc_format = vk_format;
+   return true;
+}
 int mali_render_att_afbc(struct mali_att *att, const struct mali_afbc_image_layout *al, bool afbc, uint64_t image_va, unsigned level,
                          unsigned layer, unsigned vk_format, unsigned tile_px);
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
