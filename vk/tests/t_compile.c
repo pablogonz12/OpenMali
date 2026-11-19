@@ -16,6 +16,9 @@
 #include <sys/wait.h>
 #include <utime.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 
 static int g_fail, g_verbose;
 #define CHECK(c, ...) do { if (!(c)) { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -556,6 +559,84 @@ test_cache_disk(void)
    free(vs.w);
 }
 
+/* Threads of ONE process storing and loading the same and different keys in one directory. Keys 0..NK-1 are shared by every thread (each thread
+ * walks them from its own offset); thread t also owns private key NK+t. Every result must equal the cache-free compile, and once any thread has
+ * finished a compile of a key the entry must be visible and complete to every compile that starts afterwards (so a hit): a store that is not
+ * atomic (in-place write, a temp name shared between threads) shows up as a miss or a wrong result. */
+#define TNK 60
+#define TTHR 8
+struct tshare {
+   const struct spv *vs;
+   const char *dir;
+   struct mali_compiled ref[TNK + TTHR];
+   atomic_int done[TNK + TTHR];   /* a compile of this key has returned */
+   atomic_uint bad, late_miss;
+   atomic_int go;
+   atomic_uint arrived;   /* round barrier */
+};
+struct targ { struct tshare *s; int id; };
+
+static void *
+thread_race(void *p)
+{
+   struct targ *a = p;
+   struct tshare *s = a->s;
+   while (!atomic_load(&s->go)) sched_yield();
+   for (unsigned k = 0; k < TNK; k++) {   /* round k: every thread hits the same fresh key at the same moment, plus one private key per 5 rounds */
+      atomic_fetch_add(&s->arrived, 1);
+      while (atomic_load(&s->arrived) < (k + 1) * TTHR) sched_yield();
+      for (unsigned rep = 0; rep < 3; rep++) {   /* 1st: a race of stores; 2nd and 3rd: this thread has itself stored or loaded it, so it must hit */
+         unsigned kk = (rep == 2 && k % 5 == 0) ? TNK + a->id : k;
+         int was_done = atomic_load(&s->done[kk]);
+         struct mali_compiled c;
+         if (compile_fau(s->vs, s->dir, 16 + 2 * kk, &c)) { atomic_fetch_add(&s->bad, 1); continue; }
+         const struct mali_compiled *r = &s->ref[kk];
+         if (c.bin_size != r->bin_size || memcmp(c.bin, r->bin, r->bin_size) || c.nimm != r->nimm) atomic_fetch_add(&s->bad, 1);
+         if ((was_done || rep == 1) && !c.cache_hit) atomic_fetch_add(&s->late_miss, 1);
+         atomic_store(&s->done[kk], 1);
+         mali_compiled_free(&c);
+      }
+   }
+   return NULL;
+}
+
+static void
+test_cache_threads(void)
+{
+   printf("disk cache: threads storing/loading same and different keys\n");
+   struct spv vs = load("rot.vert.spv");
+   if (!vs.w) return;
+   char dir[] = "/tmp/t_compile_thr.XXXXXX", cmd[1300];
+   if (!mkdtemp(dir)) { g_fail++; return; }
+   static struct tshare s;
+   s.vs = &vs; s.dir = dir;
+   for (unsigned k = 0; k < TNK + TTHR; k++) CHECK(!compile_fau(&vs, "", 16 + 2 * k, &s.ref[k]), "reference %u", k);
+   struct targ a[TTHR];
+   pthread_t th[TTHR];
+   int started = 0;
+   for (int i = 0; i < TTHR; i++) {
+      a[i].s = &s; a[i].id = i;
+      if (pthread_create(&th[i], NULL, thread_race, &a[i])) break;
+      started++;
+   }
+   CHECK(started == TTHR, "threads started");
+   atomic_store(&s.go, 1);
+   for (int i = 0; i < started; i++) pthread_join(th[i], NULL);
+   CHECK(!s.bad, "%u threaded compiles returned a wrong result", s.bad);
+   CHECK(!s.late_miss, "%u compiles missed an entry another thread had already stored (partial or lost entry)", s.late_miss);
+   CHECK(count_files(dir, ".bin") == TNK + TTHR && count_files(dir, ".tmp") == 0, "threads: %d entries, no leftover temp files (%u bin, %u tmp)",
+         TNK + TTHR, count_files(dir, ".bin"), count_files(dir, ".tmp"));
+   for (unsigned k = 0; k < TNK + TTHR; k++) {   /* every surviving entry is complete and right */
+      struct mali_compiled c;
+      CHECK(!compile_fau(&vs, dir, 16 + 2 * k, &c) && c.cache_hit, "threads: entry %u loads", k);
+      if (c.bin) CHECK(c.bin_size == s.ref[k].bin_size && !memcmp(c.bin, s.ref[k].bin, c.bin_size), "threads: entry %u is the right code", k);
+      mali_compiled_free(&c);
+      mali_compiled_free(&s.ref[k]);
+   }
+   snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) g_fail++;
+   free(vs.w);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -573,6 +654,7 @@ main(int argc, char **argv)
    test_compute();
    test_determinism_and_cache();
    test_cache_disk();
+   test_cache_threads();
    test_ycbcr();
    test_spec();
    test_errors();
