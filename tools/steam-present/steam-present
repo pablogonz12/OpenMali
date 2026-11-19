@@ -223,6 +223,7 @@ class Sampler(threading.Thread):
         self.errors = 0          # failed polls
         self.gaps = 0            # polls whose window no longer overlaps what we had: history was lost
         self.modes = set()       # active display mode id seen during the window
+        self.no_mode = 0         # polls whose active-mode read failed
         self.last_max = None
         self.stop = threading.Event()
 
@@ -241,6 +242,8 @@ class Sampler(threading.Thread):
             m = panel_mode(self.ph)
             if m is not None:
                 self.modes.add(m)
+            else:
+                self.no_mode += 1
             st, nraw = parse_latency(o)
             if st:
                 # SurfaceFlinger keeps the last 128 frames per layer.  A full window (raw occupancy: a
@@ -442,6 +445,9 @@ def main():
         time.sleep(a.warmup)
         # after input started: an idle menu can sit at 60 Hz until it is touched
         mode = panel_mode(ph)
+        if mode is None:
+            die("could not read the active display mode (mActiveModeId): the base interval and any mode change "
+                "are unmeasurable without it", 4)
         hz = panel_hz(ph, mode)
         base = 1000.0 / hz
         rc, o = ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
@@ -456,7 +462,7 @@ def main():
         # A mode we could not read at the start, or during the window, is a sampling failure: an unobserved
         # 60 -> 120 Hz switch would otherwise pass validation.
         moved = sorted(x for x in s.modes if x != mode) if mode is not None else sorted(s.modes)
-        unobserved = (mode is not None and not s.modes) or mode_end is None
+        unobserved = not s.modes or s.no_mode or mode_end is None
         if abs(hz_end - hz) > 0.5 or moved or unobserved:
             die(f"panel mode changed during sampling (started at {hz} Hz mode {mode}, "
                 f"ended at {hz_end} Hz, modes seen {sorted(s.modes)}); the base interval is not stable", 4)
