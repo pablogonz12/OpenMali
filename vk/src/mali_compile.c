@@ -442,7 +442,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
          }
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out | nir_var_shader_temp);
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_entrypoints(nir);
