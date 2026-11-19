@@ -439,11 +439,11 @@ class T(unittest.TestCase):
         self.assertIn("first failing prefix: HEAD~1", out)                      # base result is in: definitive
 
     def test_stack_prefixes_are_merged_with_main(self):
-        if subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main~1"], capture_output=True).returncode:
-            self.skipTest("no origin/main in this checkout")
+        for ref in ("origin/main~1", "origin/main~2"):   # both prefixes must exist; with them present a failing submit is a real regression
+            if subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", ref], capture_output=True).returncode:
+                self.skipTest("no %s in this checkout" % ref)
         rc, jid, err = self.farm("submit", "--stack", "origin/main~2,origin/main~1", "--need", "v11", "--merge-with-main", "--allow-stale")
-        if rc:
-            self.skipTest("stack of origin/main ancestors not submittable here: " + err[-200:])
+        self.assertEqual(rc, 0, err)
         j = L.find_job(jid)
         for c in j["batch"]["commits"]:
             parents = subprocess.run(["git", "-C", HERE, "rev-list", "--parents", "-n1", c], capture_output=True, text=True).stdout.split()
