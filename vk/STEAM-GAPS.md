@@ -76,12 +76,12 @@ Host gamescope 3.17.0.
 
 `t_steam_caps` has this list; `check.sh` pins the count of missing items (`ZINK_MISSING`).
 
-**Order:** (1) maintenance5 (done), (2) the `maintenance1` flag (done), (3) `logicOp`, `line_rasterization` (custom_border_color done) (each only with a test and only when the hardware path works), (4) `EXT_physical_device_drm` once there is a real render node, (5) then whatever the next GL context creation shows.
+**Order:** (1) maintenance5 (done), (2) the `maintenance1` flag (done), (3) `logicOp`, `line_rasterization` (custom_border_color and line_rasterization done) (each only with a test and only when the hardware path works), (4) `EXT_physical_device_drm` once there is a real render node, (5) then whatever the next GL context creation shows.
 
 **Host result, round 4 (fake v10, host Mesa 26.2.6 zink):**
 1. kopper/GLX through headless gamescope's Xwayland (`LIBGL_KOPPER_DRI2=1`, host Xwayland has no DRI3): screen created, then a NULL call in `vkCreateXcbSurfaceKHR` (sType 1000005000): the x86 host ICD has no X11 surface extension (the a64 build has it; the phone's drisw path needs no surface). Host-build limit.
 2. EGL surfaceless / GBM platforms (DRM render fd): `ZINK: failed to choose pdev`, falls back to llvmpipe: 26.2.x needs `VK_EXT_physical_device_drm` renderMajor/Minor to match the fd; we have no render node, so it stays unadvertised (S once a node exists; 26.3 has a single-device fallback).
-3. **EGL device platform (no fd, `tests/zink-host.sh`, `check.sh` "zink host triangle"): a GL context is created on our device** (`zink Vulkan 1.3(Mali-G610 MC6 ...)`, compat 2.1 / GLES 2.0 only: no core profile yet, reason not measured), shaders compile, one triangle is drawn and `glReadPixels` returns `GL_NO_ERROR` (pixels are real only on hardware). The base-requirement warning now names only `logicOp` and `EXT_line_rasterization`.
+3. **EGL device platform (no fd, `tests/zink-host.sh`, `check.sh` "zink host triangle"): a GL context is created on our device** (`zink Vulkan 1.3(Mali-G610 MC6 ...)`, compat 2.1 / GLES 2.0 only: no core profile yet, reason not measured), shaders compile, one triangle is drawn and `glReadPixels` returns `GL_NO_ERROR` (pixels are real only on hardware). The base-requirement warning now names only `logicOp` (`EXT_line_rasterization` is advertised since then, rectangularLines only, `t_vk_feat linerast`).
 4. Its first crash was a gap in our driver, now fixed: zink always uses the core 1.3 `vkCmdBindVertexBuffers2`, which this runtime routes to `vkCmdBindVertexBuffers3KHR`, which we did not implement (NULL call at the first draw). `mali_vb3.c`; `t_vk_draw` rebinds through the 2-form.
 5. **Dynamic vertex binding stride: fixed** (`ade632c`, kept across plain binds in `ba4dc6a`). `pBindingInfos[].setStride` is stored per binding (`cmd->vb_stride`, `mali_vb3.c`) and replaces the pipeline stride when it declares `VERTEX_INPUT_BINDING_STRIDE` dynamic (`gfx.dyn_stride`, `mali_cs_emit.c`); a stride change rebuilds the shared driver set. A plain `vkCmdBindVertexBuffers` after the 2-form and a 2-form bind without `setStride` keep the stride. Smoke `t_vk_draw` cases `dyn_stride` and `dyn_stride_rebind` (the latter follows the 2-form bind with a plain bind; pixels checked on hardware only, skipped on the fake backend). Still unmeasured: other extended-dynamic-state setters honoured by `mali_cmd.c`.
 
@@ -95,9 +95,9 @@ Mesa's GL version is computed in `src/mesa/main/version.c` (`compute_version`, `
 |---|---|---|---|---|
 | GL 2.1 / ES 2.0 | shaders, blend separate, two-sided stencil, sRGB | have | - | what we get today |
 | **GL 3.0** | `EXT_transform_feedback` (`EXT_CAP(EXT_transform_feedback, max_stream_output_buffers)`); zink sets `max_stream_output_buffers` only when `VK_EXT_transform_feedback` (feature `transformFeedback`) is present | **missing** | **`VK_EXT_transform_feedback`** | **L**: Valhall has no hardware stream-out; it needs a vertex-shader lowering to buffer stores (xfb info through NIR), begin/end + counter buffers, and VS-only draws (below); compiler and draw-path files |
-| **ES 3.0** | the same `EXT_transform_feedback`, plus `ARB_instanced_arrays` (zink: `vertex_element_instance_divisor` = `VK_EXT_vertex_attribute_divisor`) | both **missing** | `VK_EXT_transform_feedback` (L), `VK_EXT_vertex_attribute_divisor` (M: instance divisor in the attribute-buffer descriptor emitted by `mali_cs_emit.c`/`mali_pipeline.c`, draw path) | L + M |
+| **ES 3.0** | the same `EXT_transform_feedback`, plus `ARB_instanced_arrays` (zink: `vertex_element_instance_divisor` = `VK_EXT_vertex_attribute_divisor`) | `EXT_transform_feedback` **missing**; divisor **advertised** (0/1 plus the zero-divisor feature; `vertexAttributeInstanceRateDivisor` false, so GL instancing with a divisor > 1 is not yet served) | `VK_EXT_transform_feedback` (L); divisor > 1 needs a firstInstance fix (S-M) | L (+ S-M) |
 | GL 3.1 / 3.2 | UBO (`maxUniformBufferRange` 16384 ok), 16 vertex texture units (our 16 per-stage samplers ok), depth clamp (`depthClamp` + `VK_EXT_depth_clip_enable`: have), provoking vertex (zink flags it from `VK_EXT_provoking_vertex`, which we lack; not measured whether zink then falls back), sync, multisample (ok) | mostly have | provoking vertex unmeasured | M (draw path) if needed |
-| GL 3.3 | `ARB_instanced_arrays` (same divisor extension), dual-source blend (have), timer query (`timestampValidBits` = 64: have), swizzle (have) | divisor missing | `VK_EXT_vertex_attribute_divisor` | M |
+| GL 3.3 | `ARB_instanced_arrays` (same divisor extension), dual-source blend (have), timer query (`timestampValidBits` = 64: have), swizzle (have) | divisor advertised for 0/1 only (`vertexAttributeInstanceRateDivisor` false) | divisor > 1 (hardware divides `firstInstance + i`; `supportsNonZeroFirstInstance` false) | S-M |
 | GLES 3.1 | compute (have), `maxVertexInputBindingStride` >= 2048 (have, exactly 2048), draw indirect (have), image load/store, SSBO | have in principle | needs ES 3.0 first | - |
 | GLES 3.2 / GL 4.x | geometry + tessellation shaders (`geometryShader`, `tessellationShader` false) | missing | stages absent from the compiler | L each |
 
@@ -105,7 +105,7 @@ Mesa's GL version is computed in `src/mesa/main/version.c` (`compute_version`, `
 
 **Counts:** blockers for GL 3.0: 1 (L); for ES 3.0: 2 (1 L + 1 M); extra for GL 3.3: 0 beyond the divisor; unmeasured: 1 (provoking vertex). The draw-path prerequisites (rasterizer discard / VS-only pipelines, `mali_cmd.c:426`) are an M item that XFB needs in practice (GL_RASTERIZER_DISCARD).
 
-**Implemented this round: none.** No S item in this list can be advertised honestly: every blocker touches the compiler or the draw-path files, and Steam's web helper (ANGLE/GL ES 3) therefore stays at GLES 2.0 on zink until `VK_EXT_transform_feedback` and the divisor exist. Order: divisor (M, also needed by DXVK, DXVK-GAP.md) -> VS-only pipelines -> transform feedback (L).
+**Implemented this round: none (historical; the divisor 0/1 and line_rasterization were advertised later).** No S item in this list can be advertised honestly: every blocker touches the compiler or the draw-path files, and Steam's web helper (ANGLE/GL ES 3) therefore stays at GLES 2.0 on zink until `VK_EXT_transform_feedback` and the divisor exist. Order: divisor (M, also needed by DXVK, DXVK-GAP.md) -> VS-only pipelines -> transform feedback (L).
 
 **Phone result (round 5, poco-x4, a64-glibc-wl build of aa760ff, Mesa 26.2.4 in the guest):** the ICD loads and gamescope selects it; `vulkaninfo` lists the device. zink still prints `glx: failed to create drisw screen` / `failed to load driver: zink` (glxinfo and Steam's web helper, EGL `failed to create dri2 screen`) with no `MESA: error` line and no GL version: the screen creation fails silently before any context exists, so the GL level above is predicted from the source, not measured on the phone. Steam dies 11 s into the session (`GUEST_EXIT`, no frame). Next measurement: run `glxinfo` in the guest with `VK_LOADER_DEBUG=all` to see whether `vkCreateDevice` is reached (the host run reaches it).
 
@@ -162,7 +162,7 @@ Caveat of (a): wsi_common's `sw` flag is global, so software mode also moves the
 ## Round 7: VK_EXT/KHR_vertex_attribute_divisor (historical: written when it was not yet advertised; it is now, divisor 0/1 only)
 Needed by zink for GL 3.3 / ES 3.0 (`ARB_instanced_arrays`). Divisors 0 and 1 already worked (stride-0 trick); > 1 was rejected in `mali_pipeline.c`.
 - **On the branch (09e0baa, `check.sh` OK):** `kb_draw_attr_instance` in libkbase (frequency, 1D POT type 2 with R, NPOT type 3 with R/E/D as panvk), host test `t_resources attr_instance`, shader `div.vert`, `t_vk_feat divisor` (skips while not advertised).
-- **In `patches/vertex-attribute-divisor.patch` (needs the hot files + advertisement; host `check.sh` OK after `--bless`):** pipeline reject removed, `mali_attr.divisor`, emit call, extension/features/`maxVertexAttribDivisor`.
+- **Merged (the patch file is gone from `vk/patches/`; it needed the hot files + advertisement; host `check.sh` OK after `--bless`):** pipeline reject removed, `mali_attr.divisor`, emit call, extension/features/`maxVertexAttribDivisor`.
 - **Confirmed on hardware:** nothing yet (phone at 56 C when tried). `t_vk_feat --only divisor` on v10/v11/v13 must pass before the patch lands.
 - **Open:** firstInstance with divisor > 1 (hence `supportsNonZeroFirstInstance = false`).
 
@@ -176,8 +176,8 @@ Nothing here is confirmed on hardware yet.
   advertised extensions through `GetDeviceProcAddr` (KHR twin, then core name, as zink does): 0 unresolved.
 - DRM path only (EGL/GBM, not the GLX/drisw path Steam's X11 clients use): `VK_EXT_physical_device_drm` (MISSING) and `VK_KHR_external_memory_fd` (have).
 - `check_base_requirements` (warnings only): `logicOp` MISSING (`patches/zink-base-requirements.NOTE.md`), `shaderClipDistance` have, `scalarBlockLayout` have, `EXT_custom_border_color` have,
-  `EXT_line_rasterization`: `patches/line-rasterization.patch` (rectangularLines only; `t_vk_feat linerast`).
-- Optional extensions: 22 have, 81 missing of 103; 24 / 79 with the divisor and line-rasterization patches. They only select GL features. Missing ones that decide the GL level:
+  `EXT_line_rasterization`: **have** (rectangularLines only; `t_vk_feat linerast`; the patch is merged, `vk/patches/` no longer has it).
+- Optional extensions: 22 have, 81 missing of 103 when counted (round 5); the divisor and line_rasterization have been advertised since, plus KHR_shader_expect_assume and KHR_unified_image_layouts (count not redone). They only select GL features. Missing ones that decide the GL level:
   transform_feedback, extended_dynamic_state 1/2/3, vertex_input_dynamic_state, push_descriptor, descriptor_indexing (core-promoted names count as missing: zink tests the name),
   draw_indirect_count, index_type_uint8, provoking_vertex, conditional_rendering, color_write_enable. See Round 5.
 - Context creation cannot be predicted by name (dummy xfb buffer, descriptor init, first batch): that is a phone check.
