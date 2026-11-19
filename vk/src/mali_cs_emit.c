@@ -1251,7 +1251,11 @@ struct mali_rec *
 mali_frame_draw_slot(struct mali_frame *f)
 {
    if (f->ndraws == f->cap) {
-      unsigned nc = f->cap ? f->cap * 2 : 8;
+      /* a new frame starts at the previous frame's final capacity: no regrow-and-copy per frame */
+      static _Thread_local unsigned cap_hint;
+      unsigned nc = f->cap ? f->cap * 2 : (cap_hint > 8 ? cap_hint : 8);
+      if (nc > cap_hint && nc <= (1u << 16))
+         cap_hint = nc;
       struct mali_rec *nd = realloc(f->draws, nc * sizeof *nd);
       if (!nd)
          return NULL;
