@@ -23,10 +23,15 @@
 extern "C" {
 #endif
 
-#define MALI_MAX_VB 8
+#define MALI_MAX_VB 16         /* bound vertex buffers: Vulkan requires maxVertexInputBindings >= 16 and the VS driver set has 16 attribute
+                                * slots + a dummy sampler + entries 17..33 of the 64-entry table for the buffers (PanVK: MAX_VBS 16).
+                                * Was 8, while 16 was advertised: vkCmdBindVertexBuffers(first >= 8) marked the draw unsupported. */
 #define MALI_MAX_ATTR 16
 #define MALI_CMD_SETS 4
-#define MALI_MAX_DYN 16        /* dynamic UBO/SSBO descriptors per draw (graphics) */
+/* Dynamic UBO/SSBO descriptors per draw. Vulkan requires >= 8 dynamic UBOs and >= 4 dynamic SSBOs PER SET, and every set can be bound to
+ * one draw, so the per-draw table must hold MALI_CMD_SETS * (8 + 4) or a legal layout fails (mali_cmd.c BindDescriptorSets marked the draw
+ * unsupported; was 16). */
+#define MALI_MAX_DYN (MALI_CMD_SETS * 12)
 #define MALI_PUSH_MAX 256      /* == MALI_MAX_PUSH_BYTES (VkPhysicalDeviceLimits::maxPushConstantsSize) */
 
 /* Per-queue resources the CS refers to (created by the backend once per device). */

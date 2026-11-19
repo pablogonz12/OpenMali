@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|vb16|dyndesc|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1980,6 +1980,138 @@ test_inlineub(void)
    return 1;
 }
 
+/* Dynamic descriptors at the advertised per-set limits: 4 sets x (8 dynamic UBOs + 4 dynamic SSBOs) in one draw. Vulkan requires 8/4 per
+ * set and all four sets can be bound at once, so the per-draw dynamic table (MALI_MAX_DYN) must hold 48; it held 16, and
+ * vkCmdBindDescriptorSets then marked the draw unsupported although every value was within the advertised limits. */
+static int
+test_dyndesc(void)
+{
+   CHECK(g_props.limits.maxBoundDescriptorSets >= 4, "maxBoundDescriptorSets %u", g_props.limits.maxBoundDescriptorSets);
+   CHECK(g_props.limits.maxDescriptorSetUniformBuffersDynamic >= 8, "dynamic UBOs/set %u", g_props.limits.maxDescriptorSetUniformBuffersDynamic);
+   CHECK(g_props.limits.maxDescriptorSetStorageBuffersDynamic >= 4, "dynamic SSBOs/set %u", g_props.limits.maxDescriptorSetStorageBuffersDynamic);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf b;
+   if (!hbuf_create(&b, 4096, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(b.p, 0, 4096);
+   VkDescriptorSetLayoutBinding lb[12];
+   for (unsigned i = 0; i < 12; i++)
+      lb[i] = (VkDescriptorSetLayoutBinding){i, i < 8 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                             1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 12, .pBindings = lb};
+   VkDescriptorSetLayout dsl[4];
+   for (unsigned s = 0; s < 4; s++) CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl[s]) == VK_SUCCESS, "dsl %u", s);
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 32}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 16}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 4, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 4, .pSetLayouts = dsl};
+   VkDescriptorSet ds[4];
+   CHECK(AllocateDescriptorSets(dev, &dai, ds) == VK_SUCCESS, "4 sets");
+   VkDescriptorBufferInfo bi = {b.b, 0, 256};
+   VkWriteDescriptorSet w[48];
+   for (unsigned s = 0; s < 4; s++)
+      for (unsigned i = 0; i < 12; i++)
+         w[s * 12 + i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds[s], .dstBinding = i,
+            .descriptorCount = 1, .descriptorType = lb[i].descriptorType, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 48, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 4, .pSetLayouts = dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "4-set layout");
+   VkShaderModule vm = load_spv("inst.vert.spv"), fm = load_spv("solid.frag.spv");   /* no push constants: this layout has none */
+   CHECK(vm && fm, "shaders");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = lay, .renderPass = t.rp};
+   VkPipeline pipe;
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r == VK_SUCCESS, "pipeline = %d", r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   uint32_t offs[48] = {0};
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 4, ds, 48, offs);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   printf("{\"test\":\"dyndesc\",\"skipped\":\"pixels: 4 sets x 12 dynamic descriptors bound%s\",\"ok\":true}\n", g_fake ? " (fake backend)" : "");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyShaderModule(dev, vm, NULL);
+   DestroyShaderModule(dev, fm, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   for (unsigned s = 0; s < 4; s++) DestroyDescriptorSetLayout(dev, dsl[s], NULL);
+   hbuf_destroy(&b);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* Vertex input at the advertised limits: maxVertexInputBindings buffers (16) and maxVertexInputAttributes attributes (16), one
+ * attribute per binding. The VS sums the 16 x components, so the centre pixel is red only if every binding reaches the shader
+ * (was: MALI_MAX_VB 8 while 16 bindings were advertised, vkCmdBindVertexBuffers(8..15) marked the draw unsupported). */
+static int
+test_vb16(void)
+{
+   uint32_t nvb = g_props.limits.maxVertexInputBindings, nat = g_props.limits.maxVertexInputAttributes;
+   CHECK(nvb >= 16, "maxVertexInputBindings %u < 16 (Vulkan minimum)", nvb);
+   CHECK(nat >= 16, "maxVertexInputAttributes %u < 16 (Vulkan minimum)", nat);
+   if (nvb > 16 || nat < 16) nvb = 16;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf vb[16];
+   VkBuffer bufs[16];
+   VkDeviceSize ofs[16] = {0};
+   VkVertexInputBindingDescription bd[16];
+   VkVertexInputAttributeDescription ad[16];
+   for (unsigned i = 0; i < 16; i++) {
+      if (!hbuf_create(&vb[i], 3 * 8, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+      float *p = (float *)vb[i].p;
+      for (unsigned vtx = 0; vtx < 3; vtx++) { p[2 * vtx] = 1.0f / 16.0f; p[2 * vtx + 1] = 0.0f; }   /* sum over 16 bindings = 1.0 */
+      bufs[i] = vb[i].b;
+      bd[i] = (VkVertexInputBindingDescription){i, 8, VK_VERTEX_INPUT_RATE_VERTEX};
+      ad[i] = (VkVertexInputAttributeDescription){i, i, VK_FORMAT_R32G32_SFLOAT, 0};
+   }
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 16, .pVertexBindingDescriptions = bd,
+                                              .vertexAttributeDescriptionCount = 16, .pVertexAttributeDescriptions = ad};
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "vb16.vert.spv", "vb16.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf vb16");
+   begin_pass(cb, &t, pipe);
+   CmdBindVertexBuffers(cb, 0, 16, bufs, ofs);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0, "centre %u,%u,%u want 255,0,0 (16 bindings x 16 attributes)", p[0], p[1], p[2]);
+      printf("{\"test\":\"vb16\",\"ok\":true}\n");
+   } else printf("{\"test\":\"vb16\",\"skipped\":\"pixels: fake backend (16 bindings and 16 attributes bound and drawn)\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   for (unsigned i = 0; i < 16; i++) hbuf_destroy(&vb[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* Push constants at the advertised limit: DXVK 3.1.x refuses the device below 256 B (dxvk_limits.h). A 256-byte block is pushed
  * whole; the VS and the FS read the last word (offset 252, the FS turns it into the colour) and the CS copies it to a storage
  * buffer. The shaders also carry FAU immediates, so a reservation that does not cover the push block corrupts one of the two
@@ -3038,6 +3170,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
    if (ok && CASE_ON("push256")) ok &= test_push256();
+   if (ok && CASE_ON("vb16")) ok &= test_vb16();
+   if (ok && CASE_ON("dyndesc")) ok &= test_dyndesc();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("int16")) ok &= test_int16();
