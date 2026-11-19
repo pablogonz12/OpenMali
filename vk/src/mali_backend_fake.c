@@ -69,6 +69,7 @@ fake_probe(struct mali_gpu_info *out)
 /* The fake "GPU" retires every submission at once: the fence is an eventfd that is already readable.
  * MALI_FAULT_INJECT=n makes the n-th submission fail (device lost). MALI_FAKE_SLOW_US=n delays the
  * signal by n us (a helper thread writes the eventfd) so that waits really block. */
+struct slow_ev;
 struct mali_kdev {
    pthread_mutex_t lock;
    unsigned long submits, fault_at;
@@ -79,6 +80,19 @@ struct mali_kdev {
    /* Offline checking (MALI_FAKE_DUMP=path|-): BO registry + decoded-stream dump, see tests/golden.py */
    struct fake_bo *bos;
    unsigned nbos, capbos, id, kicks;
+   /* MALI_FAKE_SLOW_US: one timer thread per device signals the delayed fences in due order. It is joined in device destroy: a detached
+    * thread per fence could still be returning from usleep() inside the driver .so when the loader dlclose()d it (SEGV at exit, pc in
+    * unmapped code). */
+   struct slow_ev *slow_q, *slow_tail;
+   pthread_cond_t slow_cv;
+   pthread_t slow_thr;
+   bool slow_started, slow_stop;
+};
+
+struct slow_ev {
+   struct slow_ev *next;
+   int fd;                 /* dup of the fence eventfd: written then closed by the timer thread */
+   uint64_t due_ns;
 };
 
 
@@ -216,6 +230,11 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    if (!k)
       return -ENOMEM;
    pthread_mutex_init(&k->lock, NULL);
+   pthread_condattr_t ca; /* initialised once here, so a failed timer start never re-inits it; monotonic for the timed wait */
+   pthread_condattr_init(&ca);
+   pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+   pthread_cond_init(&k->slow_cv, &ca);
+   pthread_condattr_destroy(&ca);
    const char *f = getenv("MALI_FAULT_INJECT"), *sl = getenv("MALI_FAKE_SLOW_US");
    k->fault_at = f ? strtoul(f, NULL, 10) : 0;
    k->slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
@@ -230,6 +249,14 @@ fake_device_destroy(struct mali_kdev *k)
 {
    if (!k)
       return;
+   if (k->slow_started) {
+      pthread_mutex_lock(&k->lock);
+      k->slow_stop = true;
+      pthread_cond_signal(&k->slow_cv);
+      pthread_mutex_unlock(&k->lock);
+      pthread_join(k->slow_thr, NULL);
+   }
+   pthread_cond_destroy(&k->slow_cv);
    pthread_mutex_destroy(&k->lock);
    for (unsigned i = 0; i < k->nbos; i++)
       free(k->bos[i].phash);
@@ -346,16 +373,73 @@ fake_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
    return fd < 0 ? -errno : fd;
 }
 
-static void *
-slow_signal(void *arg)
+static uint64_t
+now_ns(void)
 {
-   uintptr_t v = (uintptr_t)arg;
-   int fd = (int)(v & 0xffffffff);
-   usleep((unsigned)(v >> 32));
-   uint64_t one = 1;
-   if (write(fd, &one, sizeof(one)) < 0) {}
-   close(fd);
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void *
+slow_thread(void *arg)
+{
+   struct mali_kdev *k = arg;
+   pthread_mutex_lock(&k->lock);
+   for (;;) {
+      struct slow_ev *e = k->slow_q;
+      if (!e) {
+         if (k->slow_stop)
+            break;
+         pthread_cond_wait(&k->slow_cv, &k->lock);
+         continue;
+      }
+      /* Sleep until due, but wake on destroy (slow_stop is rechecked under the lock): then everything left is signalled at once. */
+      if (!k->slow_stop && now_ns() < e->due_ns) {
+         struct timespec ts = {(time_t)(e->due_ns / 1000000000ull), (long)(e->due_ns % 1000000000ull)};
+         pthread_cond_timedwait(&k->slow_cv, &k->lock, &ts); /* CLOCK_MONOTONIC condvar; re-evaluate the head after any wake */
+         continue;
+      }
+      k->slow_q = e->next;
+      if (!k->slow_q)
+         k->slow_tail = NULL;
+      pthread_mutex_unlock(&k->lock);
+      uint64_t one = 1;
+      if (write(e->fd, &one, sizeof(one)) < 0) {}
+      close(e->fd);
+      free(e);
+      pthread_mutex_lock(&k->lock);
+   }
+   pthread_mutex_unlock(&k->lock);
    return NULL;
+}
+
+/* Queue the delayed signal of eventfd copy `fd` (takes ownership); false: fall back to signalling now. */
+static bool
+slow_queue(struct mali_kdev *k, int fd, unsigned us)
+{
+   struct slow_ev *e = calloc(1, sizeof(*e));
+   if (!e)
+      return false;
+   e->fd = fd;
+   e->due_ns = now_ns() + (uint64_t)us * 1000;
+   pthread_mutex_lock(&k->lock);
+   if (!k->slow_started) {
+      if (pthread_create(&k->slow_thr, NULL, slow_thread, k)) {
+         pthread_mutex_unlock(&k->lock);
+         free(e);
+         return false;
+      }
+      k->slow_started = true;
+   }
+   if (k->slow_tail)
+      k->slow_tail->next = e;
+   else
+      k->slow_q = e;
+   k->slow_tail = e;
+   pthread_cond_signal(&k->slow_cv);
+   pthread_mutex_unlock(&k->lock);
+   return true;
 }
 
 static int
@@ -376,14 +460,14 @@ fake_submit_signal(struct mali_kdev *k, int *fence_fd)
    if (fd < 0)
       return -errno;
    if (slow) {
-      pthread_t t;
       int d = dup(fd);
-      if (pthread_create(&t, NULL, slow_signal, (void *)((uintptr_t)d | ((uintptr_t)slow << 32)))) {
+      if (d >= 0 && !slow_queue(k, d, slow)) {
          uint64_t one = 1;
          if (write(fd, &one, sizeof(one)) < 0) {}
          close(d);
-      } else {
-         pthread_detach(t);
+      } else if (d < 0) {
+         uint64_t one = 1;
+         if (write(fd, &one, sizeof(one)) < 0) {}
       }
    }
    *fence_fd = fd;

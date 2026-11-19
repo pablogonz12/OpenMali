@@ -28,9 +28,12 @@ How close mali-open gets to the Mali bridge (MediaDeck's, the target) per phone,
 
 | Phone | GPU / arch | Benchmark | Ours first (build, date) | Ours latest (build, date) | Change | Bridge latest fps | Ours % of bridge | PanVK | GPU ms ours / bridge |
 |---|---|---|---|---|---|---|---|---|---|
-| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 60.7 (befc62510, 2026-11-18) | +32% | 71.5 (p25) | 85% | not measured | 13.27 / 11.31 |
-| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 61.6 (befc62510, 2026-11-18) | +34% | 71.1 (p25) | 87% | not measured | 13.12 / 11.31 |
-| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 116.5 (befc62510, 2026-11-18) | +60% | 171.5 (p25) | 68% | not measured | 1.11 / 2.30 |
+| cmf | CMF Mali-G615 (v11) | cube-720p | 46.0 (e2cd68cd2, 2026-11-18) | 62.4 (46631edd8, 2026-11-19) | +35% | 70.7 (p25) | 88% | not measured | 13.11 / 11.30 |
+| cmf | CMF Mali-G615 (v11) | cube-native | 45.9 (e2cd68cd2, 2026-11-18) | 62.1 (46631edd8, 2026-11-19) | +35% | 70.5 (p25) | 88% | not measured | 13.19 / 11.29 |
+| cmf | CMF Mali-G615 (v11) | triangle-10k | 145.3 (46631edd8, 2026-11-19) | 145.3 (46631edd8, 2026-11-19) | n/a | 82.7 (p25) | 176% | not measured | 2.96 / 7.30 |
+| cmf | CMF Mali-G615 (v11) | triangle-20k | 94.7 (46631edd8, 2026-11-19) | 94.7 (46631edd8, 2026-11-19) | n/a | 45.9 (p25) | 206% | not measured | 5.26 / 13.80 |
+| cmf | CMF Mali-G615 (v11) | triangle-3k | 72.6 (3cd6b12b8-dirty, 2026-11-17) | 334.1 (46631edd8, 2026-11-19) | +360% | 203.5 (p25) | 164% | not measured | 1.24 / 2.68 |
+| cmf | CMF Mali-G615 (v11) | triangle-5k | 261.5 (46631edd8, 2026-11-19) | 261.5 (46631edd8, 2026-11-19) | n/a | 137.5 (p25) | 190% | not measured | 1.71 / 3.85 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | cube-720p | 76.9 (20e290c1a, 2026-11-17) | 492.8 (453cd8d0c, 2026-11-18) | +541% | 451.6 (p25) | 109% | not measured | 1.55 / 1.32 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | cube-native | 77.3 (20e290c1a, 2026-11-17) | 496.9 (453cd8d0c, 2026-11-18) | +543% | 454.1 (p25) | 109% | not measured | 1.53 / 1.32 |
 | poco-x8 | Poco X8 Mali-G925 (v13) | triangle-3k | 100.1 (20e290c1a, 2026-11-17) | 601.6 (453cd8d0c, 2026-11-18) | +501% | 347.6 (p25) | 173% | not measured | 1.17 / 1.61 |
@@ -85,10 +88,10 @@ Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DX
 | Meta ops (copy, blit, clear, resolve), queries, events | Wired, hardware-tested on v11; partial elsewhere |
 | WSI (Wayland, swapchain, dma-heap images) | Passed on v11; v13 pending |
 | BC1-BC7 texture decode (compute emulation) | Offline done; hardware wiring pending |
-| DXVK-required features | 5 of 47 still false on main (`check.sh`, `DXVK_MISSING=5`): sampleRateShading (env-gated MSAA), shaderCullDistance, robustBufferAccess, descriptorIndexing (full), geometryShader (rejected on purpose until R5) |
+| DXVK-required features | 4 of 47 still false on main (`check.sh`, `DXVK_MISSING=4`): shaderCullDistance, robustBufferAccess, descriptorIndexing (full), geometryShader (rejected on purpose until R5) |
 | EXT/KHR_line_rasterization | `rectangularLines` only (Bresenham and smooth lines not advertised); `t_vk_feat linerast` |
 | dualSrcBlend, multiViewport (state only, viewport 0 used), inlineUniformBlock, depth clamp/clip, custom border colour, calibrated timestamps | Done, each backed by a `t_vk_feat`/`t_vk_draw` test |
-| MSAA (4x draws, `sampleRateShading`) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
+| MSAA (4x draws; `sampleRateShading` itself is advertised, 1-sample no-op) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
 | logicOp, geometry/tessellation, GPL, Bresenham/smooth lines | Not done / not advertised |
 
 **dEQP-VK** (see `vk/deqp/TRIAGE.md`; daily sample of 1381 cases, G925 phone):
