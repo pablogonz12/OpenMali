@@ -43,7 +43,8 @@ mali_qpool_get_results(const struct mali_qpool *p, uint32_t first, uint32_t coun
             memcpy(o, &v, 4);
          }
       }
-      if (!avail && !(flags & MALI_QF_PARTIAL))
+      /* WAIT means wait for availability even with PARTIAL: PARTIAL only changes what a non-waiting call returns */
+      if (!avail && (!(flags & MALI_QF_PARTIAL) || (flags & MALI_QF_WAIT)))
          ret = 1;
       if (flags & MALI_QF_AVAIL) {
          uint64_t a = avail ? 1 : 0;

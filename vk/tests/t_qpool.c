@@ -146,7 +146,13 @@ static void t_wait(void)
    g.polls = 0;
    CHECK(mali_qpool_get_results_wait(&p, 0, 1, 8, &v, 8, 1 | MALI_QF_WAIT, fake_poll, &g) == 0 && g.polls == 0, "already available: no polling");
    CHECK(mali_qpool_get_results_wait(&p, 1, 1, 8, &v, 8, 1 | MALI_QF_WAIT, dead_poll, NULL) == MALI_QWAIT_LOST, "device lost surfaces");
-   CHECK(mali_qpool_get_results_wait(&p, 1, 1, 8, &v, 8, 1 | MALI_QF_WAIT | MALI_QF_PARTIAL, dead_poll, NULL) == 0, "PARTIAL+WAIT does not block");
+   CHECK(mali_qpool_get_results_wait(&p, 1, 1, 8, &v, 8, 1 | MALI_QF_WAIT | MALI_QF_PARTIAL, dead_poll, NULL) == MALI_QWAIT_LOST, "PARTIAL+WAIT still polls (device lost surfaces)");
+   struct fakegpu g2 = { &e[1], 0, 2 };
+   v = 0;
+   CHECK(mali_qpool_get_results_wait(&p, 1, 1, 8, &v, 8, 1 | MALI_QF_WAIT | MALI_QF_PARTIAL, fake_poll, &g2) == 0 && g2.polls == 2 && v == 77, "PARTIAL+WAIT blocks until available (polls %u v %lu)", g2.polls, (unsigned long)v);
+   struct ent e3[1] = { { 0, 0, 0 } };
+   struct mali_qpool p3 = mkpool(e3, 1, MALI_QT_OCCLUSION);
+   CHECK(mali_qpool_get_results_wait(&p3, 0, 1, 8, &v, 8, 1 | MALI_QF_PARTIAL, dead_poll, NULL) == 0, "PARTIAL without WAIT returns at once");
 }
 
 int main(int argc, char **argv)
