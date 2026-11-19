@@ -5,6 +5,7 @@
  *   - colour loadOp LOAD, more than one colour attachment, depth-only render passes (the FBD needs a colour RT)
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
+#include <limits.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1265,7 +1266,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
    uint64_t *all = NULL;
-   unsigned nall = 0, counted = 0;
+   size_t nall = 0;   /* submit_multi takes an unsigned word count: the total is kept wide and rejected before it can wrap */
+   unsigned counted = 0;
    size_t capall = 0;
    VkResult res = VK_SUCCESS;
    if (g_hw.job_begin)
@@ -1279,7 +1281,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          /* indirect args are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
          if (nall) {
             kb_wmb();
-            if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
+            if (g_hw.submit_multi(g_hw.user, all, (unsigned)nall, counted)) {
                res = VK_ERROR_DEVICE_LOST;
                break;
             }
@@ -1307,8 +1309,13 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          }
          break;
       }
-      if ((size_t)nall + n > capall) {
-         size_t want = ((size_t)nall + n) * 2;
+      if (nall + n > UINT_MAX) {
+         free(all);
+         free(cs);
+         return VK_ERROR_OUT_OF_HOST_MEMORY;   /* more than 2^32 words in one submission: cannot be handed to submit_multi */
+      }
+      if (nall + n > capall) {
+         size_t want = (nall + n) * 2;
          uint64_t *grown = realloc(all, want * sizeof *all);
          if (!grown) { free(all); free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
          all = grown;
@@ -1321,7 +1328,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();
-      int rc = g_hw.submit_multi(g_hw.user, all, nall, counted);
+      int rc = g_hw.submit_multi(g_hw.user, all, (unsigned)nall, counted);
       if (rc)
          res = VK_ERROR_DEVICE_LOST;
    } else if (res != VK_SUCCESS && counted) {
