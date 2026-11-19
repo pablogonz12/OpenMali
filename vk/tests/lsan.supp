@@ -1,4 +1,5 @@
-# leaks in host tools that inherit the preloaded ASan runtime (MALI_SAN=1), not in the driver
+# leaks in host tools that inherit the preloaded ASan runtime (MALI_SAN=1), not in the driver.
+# Matched by the executable's own frames only: the tools are bash/sed/gcc (cc1 under /usr/lib/gcc). A suppression on libc.so is deliberately absent:
+# a driver leak through strdup/fopen/getline has a libc frame in its stack and would be hidden by it.
 leak:/usr/bin/
 leak:/usr/lib/gcc/
-leak:/usr/lib/libc.so
