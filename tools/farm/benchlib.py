@@ -142,6 +142,37 @@ def digest_lines(rows):
     return out
 
 
+REGRESS_PCT = 10.0                                # a newest-vs-previous move worse than this is flagged
+
+
+def regressions(rows, pct=REGRESS_PCT):
+    """newest bench row of each (phone, driver, variant) vs the previous row of a different commit -> list of text lines.
+    Flags offscreen fps dropping, or offscreen cpu_ms rising, by more than pct percent. Rows lacking a number are skipped."""
+    hist = {}
+    for r in rows:                                         # file order = time order
+        if r.get("commit_full") is None or not isinstance(r.get("offscreen"), dict):
+            continue
+        h = hist.setdefault((r.get("phone"), r.get("driver"), r.get("variant")), [])
+        if h and h[-1]["commit_full"] == r["commit_full"]:
+            h[-1] = r                                      # re-run of the same commit replaces it
+        else:
+            h.append(r)
+    out = []
+    for (ph, drv, var), h in sorted(hist.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        if len(h) < 2:
+            continue
+        old, new = h[-2]["offscreen"], h[-1]["offscreen"]
+        for key, worse_if_up in (("fps", False), ("cpu_ms", True)):
+            a, b = old.get(key), new.get(key)
+            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)) or a <= 0:
+                continue
+            d = (b - a) / a * 100.0
+            if (d > pct) if worse_if_up else (d < -pct):
+                out.append(f"REGRESSION {ph} {drv} {var} offscreen {key} {a:g} -> {b:g} ({d:+.0f}%) "
+                           f"{h[-2]['commit_full'][:7]}..{h[-1]['commit_full'][:7]}")
+    return out
+
+
 def menu_digest_lines(state):
     return M.digest_lines(M.load_rows(M.menu_path(state)))
 

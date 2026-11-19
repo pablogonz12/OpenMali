@@ -518,7 +518,7 @@ def cmd_digest(a):
                                      f"new Fails against main: {len(new)}" + (f" ({len(worse) - len(new)} on the flaky list)" if len(new) != len(worse) else ""))
                     else:
                         lines.append(f"    vs main {m['commit'][:7]}: new Fails against main: 0")
-    bl = BL.digest_lines(BL.load_rows(L.state_dir())) + BL.menu_digest_lines(L.state_dir())          # latest bench per phone always shown (not cut by the room limit)
+    bl = BL.digest_lines(BL.load_rows(L.state_dir())) + BL.regressions(BL.load_rows(L.state_dir())) + BL.menu_digest_lines(L.state_dir())          # latest bench per phone always shown (not cut by the room limit)
     room = 40 - 4 - len(devs) - len(bl)
     print("\n".join(bl + lines[:room]) + (f"\n... {len(lines) - room} more lines (older refs)" if len(lines) > room else ""))
 
