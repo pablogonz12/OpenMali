@@ -69,9 +69,10 @@ for s in $KBSRCS; do
    eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
    OBJS="$OBJS $o"
 done
+MALI_SHA=$(git -C "$V" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   eval "$CC -DMALI_GIT_SHA=$MALI_SHA -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
 

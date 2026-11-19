@@ -10,10 +10,20 @@
 #include <ucontext.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
 #endif
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA unknown
+#endif
+#define MALI_STR_(x) #x
+#define MALI_STR(x) MALI_STR_(x)
 
 #include "mali_entrypoints.h"
 #include "vk_alloc.h"
@@ -195,6 +205,43 @@ mali_EnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pPro
                                                      pProperties);
 }
 
+/* Opt-in proof of life: MALI_STATUS_FILE=<path> gets one appended line, MALI_BANNER=1 also logs it to logcat.
+ * Never fails instance creation. */
+static void
+mali_banner(void)
+{
+   const char *path = getenv("MALI_STATUS_FILE");
+   const char *lc = getenv("MALI_BANNER");
+   char exe[64] = "?", line[160];
+   int fd, n;
+
+   if ((!path || !*path) && !(lc && *lc == '1'))
+      return;
+   fd = open("/proc/self/comm", O_RDONLY | O_CLOEXEC);
+   if (fd >= 0) {
+      ssize_t r = read(fd, exe, sizeof(exe) - 1);
+      exe[r > 0 ? r : 0] = 0;
+      exe[strcspn(exe, "\n")] = 0;
+      close(fd);
+   }
+   n = snprintf(line, sizeof(line) - 1, "mali-open %s pid %d exe %s", MALI_STR(MALI_GIT_SHA), (int)getpid(), exe);
+   if (n <= 0)
+      return;
+   if (path && *path) {
+      fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+      if (fd >= 0) {
+         line[n++] = '\n';
+         if (write(fd, line, n) < 0) {}
+         close(fd);
+         line[--n] = 0;
+      }
+   }
+#ifdef __ANDROID__
+   if (lc && *lc == '1')
+      __android_log_write(ANDROID_LOG_INFO, "mali-open", line);
+#endif
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                     const VkAllocationCallbacks *pAllocator, VkInstance *pInstance)
@@ -231,6 +278,7 @@ mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    instance->vk.physical_devices.destroy = mali_destroy_physical_device;
 
    *pInstance = mali_instance_to_handle(instance);
+   mali_banner();
    mali_trace("vkCreateInstance -> ok (api %u.%u)", VK_API_VERSION_MAJOR(instance->vk.app_info.api_version),
               VK_API_VERSION_MINOR(instance->vk.app_info.api_version));
    return VK_SUCCESS;
