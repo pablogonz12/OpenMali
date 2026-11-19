@@ -65,6 +65,8 @@ int mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struc
 
 /* Stage 2 wiring: when `enabled` (MALI_AFBC=1) and the image is AFBC-eligible, grow lay->size/alignment to the AFBC layout and fill
  * lay->afbc*. Returns true when applied. With !enabled it never touches `lay` (default path byte-identical). */
+int mali_image_ci_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layout *lay, struct mali_bc_layout *bc,
+                         struct mali_image_layout *sh, bool *is_bc);
 int mali_image_plain_layout(unsigned arch, const VkImageCreateInfo *ci, const struct mali_image_desc *d, bool afbc_on, struct mali_image_layout *lay);
 bool mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, struct mali_image_layout *lay);
 /* MALI_IMAGE_TILED=1 selects u-interleaved for OPTIMAL images (single sampled, not 1D). Default: linear everywhere (tiled is not

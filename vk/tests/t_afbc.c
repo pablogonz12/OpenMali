@@ -154,6 +154,37 @@ int main(void)
    /* Single level matches the plain layout. */
    EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, 1, &il), 0);
    a = L(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, &rc); EQ(il.size, a.size);
+   /* Stage 3: RT descriptor words, hand-derived from v13.xml "AFBC RGB Render Target" bit positions. */
+   {
+      struct mali_afbc_rt_words w; uint32_t rt[16];
+      a = L(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, &rc);   /* row stride 1280 B, 3600 sb -> header 57600 -> body_offset 57600 (128-aligned) */
+      EQ(mali_afbc_rt_words(MALI_AFBC_SB_16x16, 37, 256, 0x123456789000ull, &a, &w), 0);
+      EQ(w.w1_block_format, 12); EQ(w.w2, 10u << 10); /* R8G8B8A8, no YTR/split/wide, tile 16x16 = SB: no reverse issue */
+      EQ(w.row_stride, 1280); EQ(w.body_offset, 57600);
+      for (int i = 0; i < 16; i++) rt[i] = 0xa5a5a5a5u;
+      rt[1] = 0x80000001u | (2u << 8);   /* write enable + clean tile + linear block format 2 */
+      mali_afbc_rt_patch(rt, &w);
+      EQ(rt[1], 0x80000001u | (12u << 8)); EQ(rt[2], 10u << 10); EQ(rt[8], 0x56789000u); EQ(rt[9], 0x1234u);
+      EQ(rt[10], 1280); EQ(rt[11], 57600); EQ(rt[0], 0xa5a5a5a5u); EQ(rt[12], 0xa5a5a5a5u); EQ(rt[3], 0xa5a5a5a5u);
+      /* Tile smaller than the superblock (128 px = 16x8, 64 px = 8x8) needs reverse issue order (bit 3). */
+      EQ(mali_afbc_rt_words(MALI_AFBC_SB_16x16, 37, 128, 0, &a, &w), 0); EQ(w.w2, (10u << 10) | 8);
+      EQ(mali_afbc_rt_words(MALI_AFBC_SB_16x16, 37, 64, 0, &a, &w), 0); EQ(w.w2, (10u << 10) | 8);
+      /* Wide (32x8) block: wide bit; tile 16x16 narrower than 32 -> reverse too. Split + YTR + tiled. */
+      a = L(13, MALI_AFBC_SB_32x8 | MALI_AFBC_MOD_SPLIT | MALI_AFBC_MOD_YTR | MALI_AFBC_MOD_TILED, 32, 256, 256, 1, &rc);
+      EQ(mali_afbc_rt_words(MALI_AFBC_SB_32x8 | MALI_AFBC_MOD_SPLIT | MALI_AFBC_MOD_YTR | MALI_AFBC_MOD_TILED, 44, 256, 0, &a, &w), 0);
+      EQ(w.w1_block_format, 13); EQ(w.w2, (10u << 10) | 1 | 2 | 4 | 8);
+      /* Other compression modes and rejects. */
+      a = L(13, MALI_AFBC_SB_16x16, 16, 64, 64, 1, &rc);
+      EQ(mali_afbc_rt_words(MALI_AFBC_SB_16x16, 4, 256, 0, &a, &w), 0); EQ(w.w2 >> 10, 4);
+      EQ(mali_afbc_rt_words(MALI_AFBC_SB_16x16, 64, 256, 0, &a, &w), 0); EQ(w.w2 >> 10, 11);
+      CHECK(mali_afbc_rt_words(MALI_AFBC_SB_16x16, 109, 256, 0, &a, &w) == -1);   /* float */
+      CHECK(mali_afbc_rt_words(0, 37, 256, 0, &a, &w) == -1);                    /* no superblock */
+      uint32_t tw, th;
+      mali_afbc_tile_block(256, &tw, &th); EQ(tw, 16); EQ(th, 16);
+      mali_afbc_tile_block(128, &tw, &th); EQ(tw, 16); EQ(th, 8);
+      mali_afbc_tile_block(32, &tw, &th); EQ(tw, 8); EQ(th, 4);
+   }
+
    printf(fails ? "t_afbc: %d FAILED\n" : "t_afbc: all ok\n", fails);
    return fails != 0;
 }

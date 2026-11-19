@@ -366,7 +366,20 @@ test_afbc_wiring(unsigned arch)
    /* layers multiply */
    c2 = ci; c2.arrayLayers = 4; d2 = d; d2.layers = 4;
    CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && on.afbc && on.size == 4 * on.afbc_lay.array_stride, "afbc layers");
+   /* The real call site (mali_image_ci_layout, used by CreateImage / memory requirements): MALI_AFBC env drives it. */
+   {
+      struct mali_bc_layout bc; struct mali_image_layout e0, e1, e2; bool isbc;
+      unsetenv("MALI_AFBC");
+      CHECK(mali_image_ci_layout(arch, &ci, &e0, &bc, NULL, &isbc) == 0 && !e0.afbc && e0.size == plain.size, "env unset: not plain");
+      CHECK(!memcmp(&e0, &plain, sizeof plain), "env unset: not byte-identical");
+      setenv("MALI_AFBC", "0", 1);
+      CHECK(mali_image_ci_layout(arch, &ci, &e1, &bc, NULL, &isbc) == 0 && !e1.afbc, "env 0 enabled AFBC");
+      setenv("MALI_AFBC", "1", 1);
+      CHECK(mali_image_ci_layout(arch, &ci, &e2, &bc, NULL, &isbc) == 0 && e2.afbc && e2.size == 22016, "env 1: AFBC sizing missing (size %llu)", (unsigned long long)e2.size);
+      unsetenv("MALI_AFBC");
+   }
 }
+
 
 int
 main(int argc, char **argv)

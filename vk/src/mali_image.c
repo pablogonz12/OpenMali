@@ -293,9 +293,10 @@ mali_image_plain_layout(unsigned arch, const VkImageCreateInfo *ci, const struct
    return r;
 }
 
-/* Layout of a VkImage: plain, or for a BC format the compressed region (planes overridden from the BC layout) + shadow layout. */
-static int
-image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layout *lay, struct mali_bc_layout *bc, struct mali_image_layout *sh,
+/* Layout of a VkImage: plain, or for a BC format the compressed region (planes overridden from the BC layout) + shadow layout.
+ * Not static so the host test can drive the MALI_AFBC environment call site. */
+int
+mali_image_ci_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layout *lay, struct mali_bc_layout *bc, struct mali_image_layout *sh,
              bool *is_bc)
 {
    struct mali_image_desc d;
@@ -366,7 +367,7 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    bool is_bc;
    struct mali_image *img = vk_image_create(&dev->vk, ci, alloc, sizeof *img);
    if (!img) return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
-   if (image_layout(dev_arch(dev), ci, &lay, &bc, &img->sh_lay, &is_bc) != 0) {
+   if (mali_image_ci_layout(dev_arch(dev), ci, &lay, &bc, &img->sh_lay, &is_bc) != 0) {
       vk_image_destroy(&dev->vk, alloc, &img->vk);
       return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
    }
@@ -420,7 +421,7 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
-   if (image_layout(dev_arch(dev), info->pCreateInfo, &lay, &bc, NULL, &is_bc) != 0) memset(&lay, 0, sizeof lay), lay.alignment = MALI_IMAGE_ALIGN;
+   if (mali_image_ci_layout(dev_arch(dev), info->pCreateInfo, &lay, &bc, NULL, &is_bc) != 0) memset(&lay, 0, sizeof lay), lay.alignment = MALI_IMAGE_ALIGN;
    fill_reqs(dev, lay.size, lay.alignment, r);
 }
 
@@ -473,7 +474,7 @@ mali_GetDeviceImageSubresourceLayout(VkDevice _dev, const VkDeviceImageSubresour
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
-   if (image_layout(dev_arch(dev), info->pCreateInfo, &lay, &bc, NULL, &is_bc) != 0) { memset(&o->subresourceLayout, 0, sizeof o->subresourceLayout); return; }
+   if (mali_image_ci_layout(dev_arch(dev), info->pCreateInfo, &lay, &bc, NULL, &is_bc) != 0) { memset(&o->subresourceLayout, 0, sizeof o->subresourceLayout); return; }
    subres_layout(&lay, &info->pSubresource->imageSubresource, &o->subresourceLayout);
 }
 
