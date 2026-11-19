@@ -7,6 +7,11 @@ Type=simple
 EnvironmentFile=%h/.config/mali-farm/service.env
 ExecStart=/bin/sh -c 'exec "$MALI_FARM_DIR/farmd"'
 Restart=always
+# M2/M4: the default KillMode=control-group SIGKILLs every child (adb, qdeqp, shell-route) the moment farmd restarts, mid-job/mid-hold.
+# mixed: SIGTERM only to farmd (it exits, its hold callers keep their own processes), SIGKILL to leftovers after the timeout.
+# farmd then re-adopts live holds and restores phones marked in <state>/restore-pending.
+KillMode=mixed
+TimeoutStopSec=30
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
 
