@@ -724,8 +724,12 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdDrawIndexed(cb, 6, 1, 0, 7, g_share == 3 ? g_share_fi[i] : 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
-      else
+      else {
          CmdDraw(cb, 3, 1, 0, 0);
+         /* polygonMode POINT: a 2-vertex triangle-list draw assembles no triangle and is rewritten to a different primitive than the draw above;
+          * with MALI_DIRTY_CHECK (check.sh) a reuse of the previous descriptors across that change aborts in build_draw_descs */
+         if (g_fx.poly == 2) CmdDraw(cb, 2, 1, 0, 0);
+      }
    }
    if (s->mode == MODE_CLEARQUAD) {   /* CmdClearAttachments AFTER a draw, sub-rectangle: a constant-colour quad (the triangle must survive outside the rect) */
       VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0, .clearValue = {.color = {{0, 0, 1, 1}}}};
