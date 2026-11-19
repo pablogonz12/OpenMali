@@ -84,6 +84,9 @@ for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_draw many $g"  0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only many_draws
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
+# AFBC phone test, host self-check on the fake backend (v13 layout): reference mode completes; MALI_AFBC=1 proves BindImageMemory2 zeroed the headers
+run "afbc_hw ref v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_afbc_hw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
+run "afbc_hw bind v13" 0 MALI_AFBC=1 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_afbc_hw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
 done
 
 # R4-B2: DXVK-required core feature tests (pixels only on hardware).

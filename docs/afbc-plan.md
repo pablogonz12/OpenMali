@@ -56,7 +56,44 @@ call site) of the phone-test list above are now only wiring.
 - Not host-covered: the one-line hooks in `mali_pipeline.c`/`mali_cmd.c`/`BindImageMemory2` (need the Mesa build); the pure parts are tested.
 - Hours: ~2.5 this stage, about 11.5 of 55-60 total.
 
-Remaining before a phone test: (a) a way to read an AFBC render target back: a render-only image cannot be sampled or copied, so either stage 6
-(AFBC texture plane descriptor for SAMPLED) or a debug env that dumps the BO via CPU map and a host AFBC decoder; (b) layout transitions /
-barriers (cache flush, no decompress needed for same-format use); (c) a test app rendering to an offscreen AFBC image, with a linear reference
-compared after decode; (d) v13 X8 first, farm hold, temp < 43 C, watch kbase faults; (e) verify v13 RT bit positions (kb_fb_pack TODO) and that zeroed headers are a valid start.
+### First phone test (prepared, NOT run; phones were busy with another lane)
+
+`vk/tests/t_afbc_hw.c` (built by `vk/build.sh` as `out/a64-bionic/t_afbc_hw`; check.sh runs it on the fake backend in both modes). It renders a
+128x128 RGBA8 attachment twice (clear; clear + red triangle). With `MALI_AFBC=1` the image is OPTIMAL + COLOR_ATTACHMENT only, so it is AFBC.
+Nothing can decode that yet, so PASS means what the host can see without a decoder: fence signalled (no hang/DEVICE_LOST), every superblock header
+the driver zeroed at bind was rewritten by the GPU, 4 KiB of 0xA5 guard bytes after the image are intact, and the draw case's headers differ from the
+clear case's. Headers are printed as hex for the stage-6 decoder. Without `MALI_AFBC` it is a linear reference run that compares real pixels
+(proves the test and the default path). On the fake backend (host) it proves `BindImageMemory2` zeroed the headers; mutation-checked (no-op'ing
+`mali_image_afbc_bind_init` fails `afbc_hw bind v13` and `t_image`).
+
+Run it on the X8 (v13) first, one phone, under a hold; stop above 43 C; the script also prints the last kernel mali/kbase/fault lines. Reference runs first:
+a failing reference stops the script (device/driver problem, not AFBC).
+
+```
+cd <afbc2 worktree> && ~/.local/bin/mali-slot -- vk/build.sh        # builds vk/out/a64-bionic/{libvulkan_mali.so,t_afbc_hw}
+farm hold <x8-device> --max 20 -- vk/tests/afbc_hw_run.sh           # exit 0 = both runs PASS
+```
+
+`<x8-device>`: see `farm status`. Run the reference half first; a failing reference means the device/driver is unusable, not an AFBC bug. Exit 124 =
+hold ended while running (kill, check `qrestore` output). Expected on success: `{"afbc_hw":"PASS","mode":"afbc"}`.
+
+### Stage 6 (next): reading back a render-only AFBC image. Route chosen: sample it through an AFBC texture plane descriptor
+
+Options weighed:
+1. Host AFBC decoder + CPU dump of the BO: no descriptor work, but needs a bit-exact software decoder (solid / uncompressed / split / YTR sub-block
+   modes) that nothing else uses, and is only a test aid. Rejected: more code than the descriptor, and it proves nothing about what the GPU samples.
+2. Decompress with compute/meta: impossible, compute cannot read AFBC.
+3. **Chosen:** emit the `AFBC Plane` of the texture descriptor (v13.xml:1994; Mesa `pan_texture.c emit_afbc_plane`, `afbc_compression_tag` at :73:
+   YTR/wide/split/tiled-header flags, plane type, superblock size, header pointer, row stride in superblocks) for images that are AFBC. Then the existing
+   graphics path (full-screen draw sampling the image into a linear attachment, which t_vk_draw's texture case already does) decompresses in hardware.
+   This is also the feature real use needs (sampled reads, stage 5 of the table), so nothing is thrown away.
+
+Work, in order (about 6-8 h): (a) pure `mali_afbc_tex_plane_words` + goldens from v13.xml (host); (b) allow SAMPLED on AFBC images; view format must keep the same
+compression mode (reject otherwise, per the existing rule); keep TRANSFER_*/INPUT_ATTACHMENT linear; (c) descriptor code emits it when `lay->afbc`;
+(d) extend `t_afbc_hw` with `--sample`: second pass draws the image into a linear target and compares the pixels with the reference run (decode check for real);
+(e) layout-transition/barrier for render->sample (cache flush only, same format, no decompress); (f) second phone run.
+Risk: the descriptor is only validated on hardware; golden tests catch bit positions, not semantics.
+
+Remaining after this PR: stage 6 above; then v13 RT bit positions (kb_fb_pack TODO(v13): the packer still emits v11 descriptors on v13, so the first phone run may
+fault there: that is exactly what the first test is meant to show), valid-start check for zeroed headers, copies/blits (table stage 6), depth, hardening.
+Hours: ~1.5 this PR (test + plan); about 13 of 55-60 total.
