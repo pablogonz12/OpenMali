@@ -33,6 +33,27 @@ static int has(const VkExtensionProperties *p, uint32_t n, const char *name)
 
 static int is_core(const char *owner) { return !strncmp(owner, "VK_BASE_VERSION_1_", 18) || !strncmp(owner, "VK_COMPUTE_VERSION_1_", 21) || !strncmp(owner, "VK_GRAPHICS_VERSION_1_", 22) || !strncmp(owner, "VK_VERSION_1_", 13); }
 
+/* vk.xml `depends` expression: ',' = or, '+' = and (parentheses ignored); VK_VERSION_1_0..1_3 count as available. A command whose
+ * extension is advertised but whose dependency is not is not part of that extension's advertised surface. */
+static int dep_ok(const char *dep, const VkExtensionProperties *a, uint32_t na, const VkExtensionProperties *b, uint32_t nb)
+{
+   if (!dep || !*dep) return 1;
+   char buf[256];
+   snprintf(buf, sizeof buf, "%s", dep);
+   for (char *or_ = buf, *save_or; (or_ = strtok_r(or_, ",", &save_or)); or_ = NULL) {
+      char term[256]; snprintf(term, sizeof term, "%s", or_);
+      int all = 1;
+      for (char *t = term, *save_and; (t = strtok_r(t, "+", &save_and)); t = NULL) {
+         while (*t == '(') t++;
+         char *e = t + strlen(t); while (e > t && e[-1] == ')') *--e = 0;
+         int ok = !strncmp(t, "VK_VERSION_1_", 13) ? t[13] >= '0' && t[13] <= '3' : has(a, na, t) || has(b, nb, t);
+         if (!ok) { all = 0; break; }
+      }
+      if (all) return 1;
+   }
+   return 0;
+}
+
 int main(int argc, char **argv)
 {
    const char *icd = NULL;
@@ -61,7 +82,7 @@ int main(int argc, char **argv)
    VkInstance inst = NULL;
    VkResult r = cin(&ici, NULL, &inst);
    CHECK(r == VK_SUCCESS, "vkCreateInstance: %d", r);
-   if (!inst) return 1;
+   if (!inst) { free(ie); free(iuse); return 1; }
 
 #define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
    I(EnumeratePhysicalDevices); I(EnumerateDeviceExtensionProperties); I(CreateDevice); I(GetDeviceProcAddr); I(DestroyInstance);
@@ -70,7 +91,7 @@ int main(int argc, char **argv)
    VkPhysicalDevice pd = NULL;
    EnumeratePhysicalDevices(inst, &np, &pd);
    CHECK(np >= 1 && pd, "no physical device");
-   if (!pd) return 1;
+   if (!pd) { free(ie); free(iuse); return 1; }
    uint32_t ne = 0;
    EnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);
    VkExtensionProperties *eps = calloc(ne + 1, sizeof *eps);
@@ -84,7 +105,7 @@ int main(int argc, char **argv)
    VkDevice dev = NULL;
    r = CreateDevice(pd, &dci, NULL, &dev);
    CHECK(r == VK_SUCCESS, "vkCreateDevice with all %u advertised extensions: %d", ne, r);
-   if (!dev) return 1;
+   if (!dev) { free(ie); free(iuse); free(eps); free(use); return 1; }
 
    unsigned req = 0, req_missing = 0, opt_absent = 0, opt_present = 0, wine = 0;
    for (unsigned i = 0; i < sizeof dxvk_api / sizeof dxvk_api[0]; i++) {
@@ -102,9 +123,8 @@ int main(int argc, char **argv)
          continue;
       }
       /* an extension DXVK uses, advertised by the instance or the device */
-      int adv = is_core(f->owner) || has(ie, nie, f->owner) || has(eps, ne, f->owner);
+      int adv = (is_core(f->owner) || has(ie, nie, f->owner) || has(eps, ne, f->owner)) && dep_ok(f->depends, ie, nie, eps, ne);
       PFN_vkVoidFunction p = f->level == 2 ? GetDeviceProcAddr(dev, f->name) : gipa(inst, f->name);
-      if (!p && f->level == 2) p = gipa(inst, f->name);   /* loader trampolines */
       if (adv) {
          req++;
          if (!p) { req_missing++; printf("MISSING required %s %s (%s)\n", f->level == 2 ? "device" : "instance", f->name, f->owner); }
@@ -118,6 +138,7 @@ int main(int argc, char **argv)
    CHECK(req > 200, "only %u required commands replayed: table not applied", req);
    ((PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice"))(dev, NULL);
    DestroyInstance(inst, NULL);
+   free(ie); free(iuse); free(eps); free(use);
    printf("{\"test\":\"t_dxvk_api\",\"pass\":%s,\"required\":%u,\"null\":%u}\n", g_fail ? "false" : "true", req, req_missing);
    return g_fail;
 }
