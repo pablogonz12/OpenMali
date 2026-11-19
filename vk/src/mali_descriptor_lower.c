@@ -68,7 +68,10 @@ deref_handle(nir_builder *b, struct ctx *c, nir_deref_instr *deref, bool sampler
    if (!sampler && bd->ycbcr_planes) sub = plane;   /* YCbCr element: [plane 0 texture, plane 1 texture, sampler] */
    unsigned stride = bd->stride ? bd->stride : 1;
    nir_def *h = nir_imm_int(b, first_handle(c, set, bd) + sub + imm * stride);
-   if (ssa) h = nir_iadd(b, h, nir_imul_imm(b, ssa, stride));
+   if (ssa) {
+      if (c->l->descidx_clamp && bd->count) ssa = nir_umin(b, ssa, nir_imm_int(b, bd->count - 1));   /* dynamic index into a descriptor array */
+      h = nir_iadd(b, h, nir_imul_imm(b, ssa, stride));
+   }
    return h;
 }
 

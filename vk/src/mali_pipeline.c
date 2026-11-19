@@ -9,6 +9,7 @@
 
 #include "mali_cmd.h"
 #include "mali_cs_emit.h"
+#include "mali_descriptor.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
 #include "mali_msaa.h"
@@ -153,6 +154,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
+   flat.c.descidx_clamp = mali_desc_descidx_enabled();
 
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
    o.stage = MALI_STAGE_VERTEX;
@@ -382,6 +384,7 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
+   flat.c.descidx_clamp = mali_desc_descidx_enabled();
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
    o.spirv = ccode;
    o.spirv_words = cwords;

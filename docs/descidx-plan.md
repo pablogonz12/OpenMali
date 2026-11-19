@@ -38,3 +38,9 @@ Wired behind `MALI_DESCIDX_FLAGS=1` (default path untouched; goldens/check.sh un
 `mali_dset_dtab` / `mali_dset_binding_va` (address table, variable count honoured), `mali_dset_use` + drop-and-count of writes/copies to
 non-UAB bindings while a set is in use. NOT wired: `mali_dset_use` callers in queue submit/retire (hot files mali_cmd.c/queue; ~2 h) and the
 shader-side access path (needs compiler lowering, compile version 38, separate default-off PR, ~6-8 h).
+
+## Shader-side access path (descidx4 PR)
+`mali_compile_layout::descidx_clamp` (set from `MALI_DESCIDX_FLAGS=1` at the two `robust_access` sites in `mali_pipeline.c`): dynamic indices into
+image/sampler descriptor arrays are clamped with `umin(idx, count-1)` in `deref_handle`. Hashed into the cache key only when nonzero, so default
+output and keys are unchanged: `MALI_COMPILE_VERSION` stays 22 (no bump). NonUniform waterfall and buffer-array indexing were already handled.
+Limit: the bound is the layout's max count, not the allocate-time variable count. NOT done: `mali_dset_use` callers in queue submit/retire.

@@ -97,6 +97,8 @@ descidx_on(void)
    return g_descidx;
 }
 
+bool mali_desc_descidx_enabled(void) { return descidx_on(); }
+
 static bool
 type_ok(VkDescriptorType t)
 {
