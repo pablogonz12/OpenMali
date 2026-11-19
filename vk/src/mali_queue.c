@@ -20,6 +20,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "mali_cmd.h"
 #include "mali_event.h"
 #include "mali_meta.h"
+#include "mali_soft.h"
 #include "vk_command_buffer.h"
 
 /* ---- M9: frame resources ---- */
@@ -345,6 +346,31 @@ hw_tls(void *u, size_t size, uint64_t *va)
    return h->tls.cpu;
 }
 
+/* MALI_SOFT=1: the desktop software rasteriser (mali_soft.c) renders each frame from its record instead of encoding a
+ * command stream. A frame it cannot do fails the submit (-ENOTSUP in mali_frame_build), never silently draws nothing. */
+const struct mali_hw *
+mali_soft_device_hw(VkDevice dev_handle)
+{
+   VK_FROM_HANDLE(mali_device, dev, dev_handle);
+   struct mali_hwctx *h = dev ? dev->hw : NULL;
+   return h ? &h->hw : NULL;
+}
+
+static bool
+hw_soft(void *u, const struct mali_frame *f)
+{
+   struct mali_hwctx *h = u;
+   return mali_soft_frame(&h->hw, f);
+}
+
+static void *
+hw_va_cpu(void *u, uint64_t va, size_t size)
+{
+   struct mali_hwctx *h = u;
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   return be->va_cpu ? be->va_cpu(h->dev->kdev, va, size) : NULL;
+}
+
 static int
 hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
 {
@@ -500,6 +526,11 @@ mali_hw_init(struct mali_device *dev)
                               .tls_threads = pdev->gpu.tls_threads};
    kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
    hw.env.heap_desc_ready = true;
+   if (getenv("MALI_SOFT") && getenv("MALI_SOFT")[0] && strcmp(getenv("MALI_SOFT"), "0") != 0 &&
+       pdev->backend->va_cpu) {
+      hw.soft = hw_soft;
+      hw.va_cpu = hw_va_cpu;
+   }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    h->hw = hw;
    h->md = (struct mali_meta_dev){.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};

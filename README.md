@@ -111,11 +111,13 @@ still a subset, not the full CTS. No R3 gate run (95 %) has been done.
 vk/build.sh                      # native x86-64 build against third_party/build-vk (one-time Mesa setup in vk/README.md)
 vk/cross/build-cross.sh all      # aarch64 glibc and bionic cross builds
 vk/check.sh                      # offline check with the fake backend, no GPU
+tools/hostcheck                  # first gate before any phone run: build + check.sh + soft-rendered frame diffs
 libkbase/check.sh                # libkbase offline tests
 tools/progress.py                # regenerate docs/progress.svg (--check: fail if stale; run by vk/check.sh and CI)
 ```
 
 `MALI_BACKEND=fake MALI_FAKE_GPU=v11|v13` runs everything that does not touch hardware (loader, caps, compile, descriptors, command-stream bytes versus golden).
+`docs/host-harness.md` lists exactly what the desktop can and cannot prove before a phone run (and why a passing host gate never removes one hardware smoke run).
 Hardware runs use two small harnesses on a rooted-free phone: a direct run (a bionic test binary that loads the ICD without a loader and issues
 Vulkan calls: `t_icd --direct`, `t_vk_draw`, `t_vk_feat`, ...) and a guest run (the glibc build through the Khronos loader, plus dEQP-VK via `vk/deqp/qdeqp.py`).
 The phone-side scripts are the maintainer's lab; the automatic test farm that drives them is in this tree (`tools/farm/GUIDE.md`, `tools/farm/README.md`).
