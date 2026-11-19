@@ -40,6 +40,8 @@ PKG = os.environ.get("DROIDDECK_PACKAGE", "com.ludashi.benchmark")
 # variant -> (benchmark, scene args common to presented/offscreen, size args for presented, offscreen size)
 WORK = {
     "triangle-3k": ("triangle", "--scene drawcalls --n 3000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
+    "triangle-5k": ("triangle", "--scene drawcalls --n 5000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
+    "triangle-10k": ("triangle", "--scene drawcalls --n 10000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
     "triangle-20k": ("triangle", "--scene drawcalls --n 20000 --max-draws 50000 --draw-idx 3", "", "--size 1280x720"),
     "cube-720p": ("cube", "--scene cube --layers 8 --iters 24", "--size 1280x720 --windowed", "--size 1280x720"),
     "cube-native": ("cube", "--scene cube --layers 8 --iters 24", "", "--size 1280x720"),
@@ -104,13 +106,16 @@ class Phone:
         """-> None when the phone may be used, else a reason string (the phone then stays pending)"""
         if L.disabled_dir() and os.path.exists(os.path.join(L.disabled_dir(), self.alias)) or G.disabled(self.dev["lock"], self.alias):
             return "disabled by owner"
-        self.lock = L.PhoneLock(self.dev)
-        if os.environ.get("QSAFE_HELD") == self.dev["lock"]:           # an ancestor (farmd/qsafe) already holds the lock
-            self.lock = None
-        elif not self.acquire_wait(WAIT[0]):
-            self.lock = None
-            return "PHONE BUSY (qsafe lock held by another worker)"
-        os.environ["QSAFE_HELD"] = self.dev["lock"]
+        if self.lock is not None:                                      # re-admission (recursive re-sweep): keep the flock this process already holds
+            pass
+        else:
+            self.lock = L.PhoneLock(self.dev)
+            if os.environ.get("QSAFE_HELD") == self.dev["lock"]:       # an ancestor (farmd/qsafe) already holds the lock
+                self.lock = None
+            elif not self.acquire_wait(WAIT[0]):
+                self.lock = None
+                return "PHONE BUSY (qsafe lock held by another worker)"
+            os.environ["QSAFE_HELD"] = self.dev["lock"]
         self.tid = L.resolve(self.dev, connect=True)
         if not self.tid:
             return "offline (no adb route)"
@@ -169,8 +174,10 @@ class Phone:
         self.adb("push", local, f"{DL}/{name}", timeout=120)
         rc, o = self.adb("shell", f"sha256sum {DL}/{name}")
         got = o.split()[0] if o.split() else ""
-        if got != sha256(local):
+        want = sha256(local)
+        if got != want:
             die(f"{name}: sha256 on the phone differs from the local file")
+        return got                                                   # the digest of the bytes that are on the phone (not a later read of the local file)
 
     def session(self):
         rc, o = self.ctl("start", "steam", "--wait", "--reuse", timeout=200)
@@ -256,9 +263,19 @@ def plan(variant, driver, mode, best):
     return cfg
 
 
+RANK_VER = 2    # bump when the winner ranking changes: stored best.json entries swept under the old ranking are stale (v1 ranked cube by 1% low: FIFO's flat 120 fps beat mailbox's 450)
+
+
+def pres_rank(pres, bench, pen=lambda k: 1.0):
+    """sort key for the presented-config winner (min wins): highest median fps; 1% low (cube) or CPU ms (triangle) only break ties"""
+    if bench == "triangle":
+        return lambda k: (-pres[k]["fps"] / pen(k), pres[k]["cpu_ms"] * pen(k))
+    return lambda k: (-pres[k]["fps"] / pen(k), -pres[k]["low1"])
+
+
 def sweep_sig(variant, driver):
     """fingerprint of the sweep's candidate list (present modes, image counts, fif, ours env sets): a new knob changes it -> stored best is stale"""
-    return hashlib.sha1("|".join(label(c) for c in plan(variant, driver, "sweep", None)).encode()).hexdigest()[:12]
+    return hashlib.sha1(f"rank{RANK_VER}|".encode() + "|".join(label(c) for c in plan(variant, driver, "sweep", None)).encode()).hexdigest()[:12]
 
 
 def start_blocked(h, th):
@@ -272,7 +289,7 @@ def best_stale(best_all, alias, driver, variant, today=None):
     e = (best_all.get(alias, {}).get(driver, {}) or {}).get(variant)
     if not e:
         return "no stored best"
-    if e.get("sig") and e["sig"] != sweep_sig(variant, driver):
+    if e.get("sig") != sweep_sig(variant, driver):          # also a missing sig (hand-edited or pre-sig entry): never replay a winner nobody can vouch for
         return "a new knob/candidate appeared since the sweep"
     age = ((today or datetime.date.today()) - datetime.date.fromisoformat(e.get("date") or LEGACY_BEST_DATE)).days
     return f"stored best is {age} days old" if age > BEST_MAX_AGE_DAYS else None
@@ -311,12 +328,11 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         return []
     if not os.path.exists(MDB):
         die("build the harness first: bench/mdbench/build.sh aarch64")
-    ph.push(MDB, "mdbench")
+    mdb_sha = ph.push(MDB, "mdbench")[:8]
     ph.push(os.path.join(ph.root, "driver", "libkbase", "out", "reaper-aarch64"), "reaper")
     so_sha = None
     if "ours" in drivers:
-        ph.push(ours_so, "mdb_icd.so")
-        so_sha = sha256(ours_so)
+        so_sha = ph.push(ours_so, "mdb_icd.so")
     if not ph.session():
         return [("error", ph.alias, "guest session did not start")]
     md = ph.malideck()
@@ -334,11 +350,16 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 return sub
     mode = "sweep" if sweep else "final"
     cp = cache_path(ph, commit, so_sha, mode)
-    cache = {}
+    cache, fails = {}, {}
     if os.path.exists(cp):
         for l in open(cp):
             e = json.loads(l)
-            cache[e["k"]] = e["m"]
+            if e["m"]:
+                cache[e["k"]] = e["m"]
+            else:                                         # a failed run is retried once on the next call (a transient adb/guest hiccup must not be a permanent hole); 2 failures stand
+                fails[e["k"]] = fails.get(e["k"], 0) + 1
+                if fails[e["k"]] >= 2:
+                    cache[e["k"]] = None
     bestf = BESTF[0] or os.path.join(REPO, "bench", "best.json")
     best_all = json.load(open(bestf)) if os.path.exists(bestf) else {}
     rows = []
@@ -351,7 +372,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
         for r, i, d in tasks:
             c = plans[d][i]
             key = ("off:" if c.get("off") else "pres:") + label(c)
-            ck = f"{d}|{variant}|{key}|{c.get('scene')}|{PIN[0].strip()}|{r}"
+            ck = f"{d}|{variant}|{key}|{c.get('scene')}|{c.get('wsi')}|{PIN[0].strip()}|{secs}|{mdb_sha}|{r}"      # every input that changes the workload
             if ck in cache:
                 if cache[ck]:
                     res[d].setdefault(key, []).append(cache[ck])
@@ -404,7 +425,7 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 off = {k: m for k, m in off.items() if envpart(k) == "+".join(BEST_ENV[bench]) or (m.get("gpu_ms") or 0) >= floor}
                 pres = {k: m for k, m in pres.items() if envpart(k) == "+".join(BEST_ENV[bench]) or (m.get("gpu_ms") or 0) >= floor}
             pen = lambda k: 1.0 if (d != "ours" or envpart(k) == "+".join(BEST_ENV[bench])) else 1.05
-            pk = (lambda k: (-pres[k]["fps"] / pen(k), pres[k]["cpu_ms"] * pen(k))) if bench == "triangle" else (lambda k: (-pres[k]["low1"] / pen(k), -pres[k]["fps"]))
+            pk = pres_rank(pres, bench, pen)
             ok_ = (lambda k: off[k]["cpu_ms"] * pen(k)) if bench == "triangle" else (lambda k: (off[k]["gpu_ms"] or 1e9) * pen(k))
             bp, bo = min(pres, key=pk), min(off, key=ok_)
             ps = {label(c): c for c in plan(variant, d, "sweep", None)}
@@ -417,7 +438,8 @@ def bench_phone(ph, drivers, variants, reps, secs, sweep, ours_so, dry, budget):
                 continue
             row = {"date": date, "bench": bench, "variant": variant, "phone": ph.alias, "class": ph.cls, "gpu": getattr(ph, "gpu", None), "driver": d,
                    "version": ver, "commit": commit, "ref": REF[0],
-                   "so_sha256": so_sha[:12] if d == "ours" else None, "reps": reps, "secs": secs,
+                   "so_sha256": so_sha[:12] if d == "ours" else None, "reps": reps, "secs": secs, "mdb_sha256": mdb_sha,
+                   "scene": {"pres": ps[bp[5:]]["scene"], "off": ps[bo[4:]]["scene"]}, "cpu_pin": PIN[0].strip() or None,
                    "presented": dict(pres[bp], cfg=bp[5:]), "offscreen": dict(off[bo], cfg=bo[4:]),
                    "best_settings": f"present {bp[5:]}; offscreen {bo[4:]}", "battery_c": ph.h.get("temp_c")}
             rows.append(("row", row))
@@ -530,7 +552,7 @@ def main():
     if not sel:
         die(f"no device {a.target} (aliases {list(devs)})")
     drivers = ["ours", "bridge"] if a.driver == "both" else [a.driver]
-    variants = [a.variant] if a.variant else [k for k, v in WORK.items() if a.bench in ("all", v[0]) and k != "triangle-20k"]
+    variants = [a.variant] if a.variant else [k for k, v in WORK.items() if a.bench in ("all", v[0])]
     qcfg = L.load_config()
     pend = {}
     for dev in sel:
