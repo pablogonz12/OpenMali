@@ -19,6 +19,9 @@
 #include "vk_shader_module.h"
 #include "util/bitscan.h"
 #include "vk_util.h"
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 
 struct mali_pipeline {
    struct vk_object_base base;
@@ -337,6 +340,88 @@ early_return(VkPipelineCreateFlags flags, const void *pNext)
    return (flags & VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT) != 0;
 }
 
+
+/* Batched vkCreate*Pipelines: each create is independent (mali_compile is thread-safe, the shader cache is locked), so a batch of n > 1 is
+ * compiled by up to MALI_PIPE_THREADS workers (env, default 4, 1 = sequential). Results are per index; EARLY_RETURN_ON_FAILURE keeps its
+ * meaning (first failing index wins, later pipelines are destroyed again). */
+struct batch {
+   struct mali_device *dev;
+   const void *ci;
+   size_t stride;
+   bool compute;
+   const VkAllocationCallbacks *alloc;
+   VkPipeline *out;
+   VkResult *res;
+   uint32_t n;
+   atomic_uint next;
+};
+
+static VkResult create_one(struct mali_device *, const VkGraphicsPipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
+static VkResult create_compute_one(struct mali_device *, const VkComputePipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
+
+static void *
+batch_worker(void *arg)
+{
+   struct batch *b = arg;
+   for (uint32_t i; (i = atomic_fetch_add(&b->next, 1)) < b->n;) {
+      const char *ci = (const char *)b->ci + i * b->stride;
+      b->res[i] = b->compute ? create_compute_one(b->dev, (const void *)ci, b->alloc, &b->out[i])
+                             : create_one(b->dev, (const void *)ci, b->alloc, &b->out[i]);
+      if (b->res[i] != VK_SUCCESS)
+         b->out[i] = VK_NULL_HANDLE;
+   }
+   return NULL;
+}
+
+static unsigned
+pipe_threads(uint32_t n)
+{
+   const char *e = getenv("MALI_PIPE_THREADS");
+   unsigned t = e ? (unsigned)atoi(e) : 4;
+   return t > n ? n : t;
+}
+
+static VkResult
+create_batch(struct mali_device *dev, bool compute, const void *ci, size_t stride, uint32_t n, const VkAllocationCallbacks *alloc, VkPipeline *out)
+{
+   VkResult result = VK_SUCCESS;
+   VkResult *res = calloc(n ? n : 1, sizeof *res);
+   if (!res)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   struct batch b = {dev, ci, stride, compute, alloc, out, res, n, 0};
+   unsigned nt = pipe_threads(n);
+   pthread_t th[8];
+   unsigned started = 0;
+   if (nt > 8)
+      nt = 8;
+   for (unsigned k = 1; k < nt; k++)
+      if (pthread_create(&th[started], NULL, batch_worker, &b) == 0)
+         started++;
+   batch_worker(&b);
+   for (unsigned k = 0; k < started; k++)
+      pthread_join(th[k], NULL);
+   bool stop = false;
+   for (uint32_t i = 0; i < n; i++) {
+      if (stop) {
+         if (out[i] != VK_NULL_HANDLE) {
+            VK_FROM_HANDLE(mali_pipeline, p, out[i]);
+            pipeline_destroy(dev, p, alloc);
+         }
+         out[i] = VK_NULL_HANDLE;
+         continue;
+      }
+      if (res[i] != VK_SUCCESS) {
+         result = res[i];
+         const VkPipelineCreateFlags fl = *(const VkPipelineCreateFlags *)((const char *)ci + i * stride + offsetof(VkGraphicsPipelineCreateInfo, flags));
+         const void *pn = *(const void *const *)((const char *)ci + i * stride + offsetof(VkGraphicsPipelineCreateInfo, pNext));
+         if (early_return(fl, pn))
+            stop = true;
+      }
+   }
+   free(res);
+   return result;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const VkGraphicsPipelineCreateInfo *ci,
                              const VkAllocationCallbacks *alloc, VkPipeline *out)
@@ -345,6 +430,8 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
+   if (n > 1 && pipe_threads(n) > 1)
+      return create_batch(dev, false, ci, sizeof *ci, n, alloc, out);
    for (i = 0; i < n; i++) {
       VkResult r = create_one(dev, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
@@ -383,6 +470,10 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
       goto fail;
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
+   /* Compute defaults to 8 reserved FAU words (32 B of push constants); a larger push block is copied in from word 0, so reserve it or
+      Bifrost asserts (bi_emit_load_push_constant). Never shrink below the default: that would move the immediates of existing shaders. */
+   if (layout && (flat.c.push_size + 3) / 4 > 8)
+      o.fau_reserved = (flat.c.push_size + 3) / 4;
    o.spirv = ccode;
    o.spirv_words = cwords;
    o.entry = ci->stage.pName;
@@ -422,6 +513,8 @@ mali_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
+   if (n > 1 && pipe_threads(n) > 1)
+      return create_batch(dev, true, ci, sizeof *ci, n, alloc, out);
    for (i = 0; i < n; i++) {
       VkResult r = create_compute_one(dev, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {

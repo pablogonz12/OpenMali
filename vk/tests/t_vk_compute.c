@@ -338,6 +338,56 @@ run_dyn(void)
    return 1;
 }
 
+/* Hitch: a batch of N pipelines in ONE vkCreateComputePipelines call must be compiled in parallel (MALI_PIPE_THREADS, default 4), so the
+ * call's latency (what the render thread sees) is well under the sum of the same compiles done one at a time. Run with
+ * MALI_SHADER_CACHE= (disabled) so every create really compiles. Reports max single-create latency and the batch latency. */
+static int
+run_batch(void)
+{
+   static const struct { const char *spv; unsigned nbind; } K[4] = {{"int64div.comp.spv", 2}, {"etc2.comp.spv", 2}, {"int64div.comp.spv", 2}, {"etc2.comp.spv", 2}};
+   enum { N = 8 };
+   VkComputePipelineCreateInfo ci[N];
+   VkPipelineLayout pl[N];
+   VkDescriptorSetLayout dsl[N];
+   VkPipeline pb[N], ps[N];
+   for (int i = 0; i < N; i++) {
+      VkShaderModule sm = load_spv(K[i % 4].spv);
+      CHECK(sm, "load");
+      VkDescriptorSetLayoutBinding lb[2];
+      for (unsigned j = 0; j < K[i % 4].nbind; j++)
+         lb[j] = (VkDescriptorSetLayoutBinding){.binding = j, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+      VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = K[i % 4].nbind, .pBindings = lb};
+      CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl[i]) == VK_SUCCESS, "dsl");
+      VkPushConstantRange pcr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 48};
+      VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl[i],
+                                        .pushConstantRangeCount = i % 2 == 1, .pPushConstantRanges = &pcr};
+      CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl[i]) == VK_SUCCESS, "layout");
+      ci[i] = (VkComputePipelineCreateInfo){.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl[i],
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main"}};
+   }
+   double t0 = now_us();
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, N, ci, NULL, pb);
+   double batch = now_us() - t0;
+   CHECK(r == VK_SUCCESS, "batch = %d", r);
+   for (int i = 0; i < N; i++)
+      CHECK(pb[i] != VK_NULL_HANDLE, "batch[%d] null", i);
+   double seq = 0, mx = 0;
+   for (int i = 0; i < N; i++) {
+      t0 = now_us();
+      CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci[i], NULL, &ps[i]) == VK_SUCCESS, "single %d", i);
+      double d = now_us() - t0;
+      seq += d;
+      if (d > mx) mx = d;
+   }
+   const char *e = getenv("MALI_PIPE_THREADS");
+   int par = !(e && atoi(e) <= 1) && sysconf(_SC_NPROCESSORS_ONLN) >= 2;
+   printf("{\"case\":\"batch\",\"n\":%d,\"batch_us\":%.0f,\"seq_us\":%.0f,\"max_single_us\":%.0f,\"parallel\":%d}\n", N, batch, seq, mx, par);
+   if (getenv("MALI_SHADER_CACHE") && !*getenv("MALI_SHADER_CACHE") && par)
+      CHECK(batch < seq * 0.75, "batch %.0f us not faster than sequential %.0f us", batch, seq);
+   for (int i = 0; i < N; i++) { DestroyPipeline(dev, pb[i], NULL); DestroyPipeline(dev, ps[i], NULL); }
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -395,6 +445,7 @@ main(int argc, char **argv)
 
    int ok = 1;
    if (CASE_ON("dyn")) ok &= run_dyn();
+   if (ok && g_only && !strcmp(g_only, "batch")) ok &= run_batch();
    if (ok && CASE_ON("saxpy")) ok &= run_case("saxpy", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 0);
    if (ok && CASE_ON("saxpy_ind")) ok &= run_case("saxpy_ind", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 1);
    if (ok && CASE_ON("atomic")) ok &= run_case("atomic", K_ATOMIC, "atomic.comp.spv", 64, 100, 0);

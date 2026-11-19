@@ -307,6 +307,9 @@ mali_meta_plan_qcopy(struct mali_meta_list *l, const struct mali_meta_surf *pool
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mali_meta_dev g_dev;
 static bool g_dev_set;
+static unsigned g_gen;   /* bumped by mali_meta_set_dev: a compile that finished for an older device is dropped */
+static pthread_t g_pw;
+static bool g_pw_run;
 static struct {
    bool ok;
    struct mali_compiled c;
@@ -316,6 +319,14 @@ static struct {
 void
 mali_meta_set_dev(const struct mali_meta_dev *dev)
 {
+   pthread_mutex_lock(&g_lock);
+   g_gen++;
+   bool join = g_pw_run;
+   g_pw_run = false;
+   pthread_t pw = g_pw;
+   pthread_mutex_unlock(&g_lock);
+   if (join)
+      pthread_join(pw, NULL);   /* the worker sees the new generation and drops its result; never held under g_lock */
    pthread_mutex_lock(&g_lock);
    for (int i = 0; i < MALI_META_NSHADERS; i++)
       if (g_sh[i].ok) {
@@ -397,53 +408,100 @@ meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[2], unsigned
    lay->push_size = push;
 }
 
+/* Compiles outside g_lock (a first-use compile is tens to hundreds of ms and g_lock also guards every meta/query/event allocation),
+ * publishes under it. Two racing first uses may both compile; the loser's result is freed. */
 static int
-shader_get_locked(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
+shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
 {
-   if (!g_dev_set)
+   pthread_mutex_lock(&g_lock);
+   if (!g_dev_set) {
+      pthread_mutex_unlock(&g_lock);
       return -ENODEV;
-   if (!g_sh[sh].ok) {
-      struct mali_compile_layout lay;
-      struct mali_lbinding b[2];
-      char err[256] = "";
-      const uint32_t *spv = g_src[sh].spv;
-      size_t words = g_src[sh].words, push = g_src[sh].push;
-      if (sh >= MALI_META_BC_FIRST) {
-         spv = mali_bc_spirv((enum mali_bc_shader)(sh - MALI_META_BC_FIRST), &words);
-         push = MALI_BC_PUSH_WORDS * 4;
-         if (!spv)
-            return -EINVAL;
-      }
-      meta_layout(&lay, b, push);
-      struct mali_compile_opts o = { 0 };
-      o.arch = g_dev.arch;
-      o.stage = MALI_STAGE_COMPUTE;
-      o.spirv = spv;
-      o.spirv_words = words;
-      o.layout = &lay;
-      o.fau_reserved = (push + 3) / 4;   /* compute: the push block is copied to FAU word 0 on, immediates go after it */
-      if (mali_compile(&o, &g_sh[sh].c, err, sizeof err) < 0) {
-         fprintf(stderr, "mali_meta: compile of shader %d failed: %s\n", sh, err);
+   }
+   if (g_sh[sh].ok) {
+      *c = &g_sh[sh].c;
+      *va = g_sh[sh].va;
+      pthread_mutex_unlock(&g_lock);
+      return 0;
+   }
+   const unsigned gen = g_gen, arch = g_dev.arch;
+   pthread_mutex_unlock(&g_lock);
+
+   struct mali_compile_layout lay;
+   struct mali_lbinding b[2];
+   char err[256] = "";
+   struct mali_compiled comp;
+   const uint32_t *spv = g_src[sh].spv;
+   size_t words = g_src[sh].words, push = g_src[sh].push;
+   if (sh >= MALI_META_BC_FIRST) {
+      spv = mali_bc_spirv((enum mali_bc_shader)(sh - MALI_META_BC_FIRST), &words);
+      push = MALI_BC_PUSH_WORDS * 4;
+      if (!spv)
          return -EINVAL;
-      }
-      if (g_dev.upload_shader(g_dev.user, g_sh[sh].c.bin, g_sh[sh].c.bin_size, &g_sh[sh].va) < 0) {
-         mali_compiled_free(&g_sh[sh].c);
-         return -ENOMEM;
-      }
+   }
+   meta_layout(&lay, b, push);
+   struct mali_compile_opts o = { 0 };
+   o.arch = arch;
+   o.stage = MALI_STAGE_COMPUTE;
+   o.spirv = spv;
+   o.spirv_words = words;
+   o.layout = &lay;
+   o.fau_reserved = (push + 3) / 4;   /* compute: the push block is copied to FAU word 0 on, immediates go after it */
+   if (mali_compile(&o, &comp, err, sizeof err) < 0) {
+      fprintf(stderr, "mali_meta: compile of shader %d failed: %s\n", sh, err);
+      return -EINVAL;
+   }
+
+   pthread_mutex_lock(&g_lock);
+   int r = 0;
+   if (!g_dev_set || g_gen != gen) {
+      mali_compiled_free(&comp);
+      r = -ENODEV;
+   } else if (g_sh[sh].ok) {
+      mali_compiled_free(&comp);
+   } else if (g_dev.upload_shader(g_dev.user, comp.bin, comp.bin_size, &g_sh[sh].va) < 0) {
+      mali_compiled_free(&comp);
+      r = -ENOMEM;
+   } else {
+      g_sh[sh].c = comp;
       g_sh[sh].ok = true;
    }
-   *c = &g_sh[sh].c;
-   *va = g_sh[sh].va;
-   return 0;
+   if (!r) {
+      *c = &g_sh[sh].c;
+      *va = g_sh[sh].va;
+   }
+   pthread_mutex_unlock(&g_lock);
+   return r;
 }
 
 int
 mali_meta_shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
 {
+   return shader_get(sh, c, va);
+}
+
+/* Compile the built-in meta shaders (copy, blit, qcopy) on a background thread so the first blit/copy of a frame does not hitch.
+ * Opt-in (the queue calls it after mali_meta_set_dev); MALI_META_PREWARM=0 disables. mali_meta_set_dev joins it. */
+static void *
+prewarm_main(void *unused)
+{
+   const struct mali_compiled *c;
+   uint64_t va;
+   for (int i = 0; i <= MALI_META_QCOPY; i++)
+      shader_get(i, &c, &va);
+   return NULL;
+}
+
+void
+mali_meta_prewarm(void)
+{
+   const char *e = getenv("MALI_META_PREWARM");
+   if (e && e[0] == '0')
+      return;
    pthread_mutex_lock(&g_lock);
-   int r = shader_get_locked(sh, c, va);
+   if (g_dev_set && !g_pw_run && pthread_create(&g_pw, NULL, prewarm_main, NULL) == 0)
+      g_pw_run = true;
    pthread_mutex_unlock(&g_lock);
-   return r;
 }
 
 /* Hardware Buffer descriptor (same bytes as mali_pack_buffer(): w0 = type 9 | 1<<4, w1 = size, w2/w3 = va; tests compare them). */
@@ -465,12 +523,10 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    struct mali_meta_bind bind[2] = { j->bind[0], j->bind[1] };
    int r;
 
-   pthread_mutex_lock(&g_lock);
-   r = shader_get_locked(j->sh, &c, &cs_va);
-   if (r) {
-      pthread_mutex_unlock(&g_lock);
+   r = shader_get(j->sh, &c, &cs_va);
+   if (r)
       return r;
-   }
+   pthread_mutex_lock(&g_lock);
    if (j->inline_data) {
       uint64_t va;
       void *p = mem_alloc(mem, (j->inline_len + 63) & ~63u, 64, &va);
