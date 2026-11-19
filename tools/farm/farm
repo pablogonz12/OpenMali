@@ -419,7 +419,8 @@ def finished(j, cls):
 def cmd_ready(a):
     import ready as R
     def anc(old, new):
-        return subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "merge-base", "--is-ancestor", old, new], capture_output=True).returncode == 0
+        rc = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "merge-base", "--is-ancestor", old, new], capture_output=True).returncode
+        return True if rc == 0 else False if rc == 1 else None   # other status (missing/pruned object): unknown, not "not an ancestor"
     rows = R.run(a.repo, L.list_jobs(), anc, L.job_verdict, set(a.pr) or None)
     print(R.render(rows))
 

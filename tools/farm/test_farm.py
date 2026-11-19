@@ -2361,6 +2361,23 @@ class ReadyTests(unittest.TestCase):
         self.assertIn("CONFLICTING", self.row(ok, mergeable="CONFLICTING")["verdict"])
         self.assertEqual(self.row(ok, isDraft=True)["verdict"], "draft")
 
+    def test_partial_only_unknown_and_cancelled(self):
+        import ready as R
+        only = dict(self.job(self.HEAD, "pass"), only=["t_vk_draw"])
+        self.assertEqual(self.row([only])["verdict"], "no smoke for head")                  # --only job is not the full gate
+        canc = self.job(self.HEAD, "pass")
+        canc["parts"]["v11"] = {"state": "cancelled"}
+        self.assertEqual(self.row([canc])["verdict"], "smoke job has cancelled part(s)")
+        unk = lambda a, b: None                                                              # git could not tell (pruned commit)
+        r = R.make_row(self.pr(), [self.job(self.MERGE, "pass")], unk, L.job_verdict, 0, [])
+        self.assertEqual(r["verdict"], "smoke ancestry unknown (commit not resolvable)")
+        self.assertEqual(R.make_row(self.pr(), [self.job(self.HEAD, "pass")], unk, L.job_verdict, 0, [])["verdict"], "READY")   # exact head needs no git
+
+    def test_symlink_by_tree_mode(self):
+        import ready as R
+        trees = {"vk/tests": {"a.c": "100644", "lnk": "120000"}, "": {"x": "120000"}}
+        self.assertEqual(R.symlink_paths(trees, ["vk/tests/a.c", "vk/tests/lnk", "x"]), ["vk/tests/lnk", "x"])
+
     def test_bad_files_and_render(self):
         import ready as R
         self.assertEqual(R.bad_files(["vk/deqp/out/x", "vk/src/a.c", "third_party"]), ["vk/deqp/out/x", "third_party"])
