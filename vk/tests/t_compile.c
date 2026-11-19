@@ -249,11 +249,18 @@ test_errors(void)
    uint32_t junk[8] = {0x12345678, 1, 2, 3, 4, 5, 6, 7};
    struct spv j = { junk, 8 };
    struct mali_compiled c;
-   char err[128];
+   char err[256];
    struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = j.w, .spirv_words = j.n, .cache_dir = "" };
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "junk SPIR-V rejected");
    o.arch = 12;
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
+
+   /* A module that declares a capability Mesa does not implement: the error must name it (not just "spirv_to_nir failed"). */
+   uint32_t badcap[] = {0x07230203, 0x00010500, 0, 1, 0, 0x00020011, 0x7ffffff0u /* OpCapability <unknown> */};
+   o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = badcap, .spirv_words = 7, .cache_dir = "" };
+   err[0] = 0;
+   CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "unknown capability rejected");
+   CHECK(strstr(err, "Unimplemented SPIR-V capability") != NULL, "error names the capability: '%s'", err);
 }
 
 /* YCbCr: the conversion of an immutable NV12 sampler is lowered into the shader (nir_vk_lower_ycbcr_tex: two plane samples, model/range
@@ -295,6 +302,37 @@ ycc_compile(unsigned arch, VkSamplerYcbcrModelConversion model, VkSamplerYcbcrRa
    if (r) printf("  compile error: %s\n", err);
    free(fs.w);
    return r;
+}
+
+/* Vulkan: gl_FragCoord.xy is a pixel centre (+0.5). The hardware gives the integer corner; the compiler adds the half pixel
+ * (nir_lower_wpos_center). fragcoord.frag only scales FragCoord, so the folded constants x - 99.5 and y - 199.5 exist only if the lowering ran. */
+/* the folded constants are literals inside the clause words (nimm is 0), so look for the float bit pattern in the binary */
+static int
+bin_has_f(const struct mali_compiled *c, float f)
+{
+   for (unsigned i = 0; i + 4 <= c->bin_size; i++)
+      if (!memcmp((const char *)c->bin + i, &f, 4)) return 1;
+   return 0;
+}
+
+static void
+test_wpos_center(void)
+{
+   printf("gl_FragCoord pixel centre\n");
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct spv fs = load("fragcoord.frag.spv");
+      if (!fs.w) continue;
+      struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n, .cache_dir = ""};
+      struct mali_compiled c;
+      char err[256] = "";
+      int r = mali_compile(&o, &c, err, sizeof err);
+      CHECK(r == 0, "v%u fragcoord.frag compiles: %s", arch, err);
+      if (r == 0)
+         CHECK(bin_has_f(&c, -99.5f) && bin_has_f(&c, -199.5f) && !bin_has_f(&c, -100.0f) && !bin_has_f(&c, -200.0f),
+               "v%u FragCoord carries the half-pixel centre", arch);
+      free(fs.w);
+   }
 }
 
 static void
@@ -405,6 +443,7 @@ main(int argc, char **argv)
    test_compute();
    test_determinism_and_cache();
    test_ycbcr();
+   test_wpos_center();
    test_spec();
    test_errors();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);

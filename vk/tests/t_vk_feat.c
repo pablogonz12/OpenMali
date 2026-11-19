@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -410,6 +410,56 @@ test_firstinst(void)
    } else {
       printf("{\"test\":\"firstinst\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&ib);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* multiDrawIndirect at maxDrawIndirectCount with a padded stride (32 != sizeof(VkDrawIndirectCommand) = 16). Entries 0, 1 and limit-1 hold real draws
+ * (firstInstance 0, 2, 3 -> columns 0, 2, 3 of the inst shader); every other entry is all-zero (no-op), and the 16 padding bytes of the used entries
+ * are garbage that a stride-16 reader would execute. */
+static int
+test_mdilimit(void)
+{
+   if (!g_feat.multiDrawIndirect) { printf("{\"test\":\"mdilimit\",\"skipped\":\"multiDrawIndirect not advertised\",\"ok\":true}\n"); return 1; }
+   uint32_t lim = g_props.limits.maxDrawIndirectCount;
+   CHECK(lim >= 0xffff, "maxDrawIndirectCount %u < 65535 with multiDrawIndirect", lim);
+   const uint32_t stride = 32;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "inst.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   struct hbuf ib;
+   VkDeviceSize sz = 16 + (VkDeviceSize)stride * (lim - 1) + 16;
+   if (!hbuf_create(&ib, sz, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) return 0;
+   memset(ib.p, 0, sz);
+   static const uint32_t idx[3] = {0, 1, 2};
+   memcpy(ib.p, idx, sizeof idx);
+   static const uint32_t first[3] = {0, 2, 3};
+   const uint32_t slot[3] = {0, 1, lim - 1};
+   for (int i = 0; i < 3; i++) {
+      uint32_t *e = (uint32_t *)(void *)(ib.p + 16 + (size_t)stride * slot[i]);
+      e[0] = 3; e[1] = 1; e[2] = 0; e[3] = first[i];
+      e[4] = 3; e[5] = 1; e[6] = 0; e[7] = 1;   /* padding: would be a visible triangle if the stride were 16 */
+   }
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   CmdDrawIndirect(cb, ib.b, 16, lim, stride);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      uint32_t cov = coverage(&t);
+      CHECK(abs((int)cov - 3 * 2048) <= 3 * 2048 / 50, "coverage %u expected %u", cov, 3 * 2048);
+      static const int cx[4] = {21, 85, 149, 213};
+      for (int i = 0; i < 4; i++)
+         CHECK(red_at(&t, cx[i], 117) == (i != 1), "column %d: %s", i, i == 1 ? "padding was executed (stride ignored)" : "triangle missing");
+      printf("{\"test\":\"mdilimit\",\"coverage\":%u,\"limit\":%u,\"ok\":true}\n", cov, lim);
+   } else printf("{\"test\":\"mdilimit\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    hbuf_destroy(&ib);
@@ -1658,6 +1708,170 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
    return 1;
 }
 
+/* didxbuf: hardware probe for dynamic + non-uniform indexing of arrays of UBOs, SSBOs and storage images (didx_buf.comp).
+ * Runs only when the device advertises (and we enable) shader{Uniform,Storage}BufferArray{Dynamic,NonUniform}Indexing and
+ * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
+ * rejects unadvertised features at vkCreateDevice), so the lowering can be verified on hardware before the bits are advertised. */
+static int g_dbuf, g_dbuf_force;
+static int
+test_didxbuf(void)
+{
+   if (!g_dbuf) { printf("{\"test\":\"didxbuf\",\"skipped\":\"buffer/storage-image array indexing not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { NT = 64, IW = 8, IH = 16, IMGB = IW * IH * 4, SW = 192 };
+   struct hbuf ub[4], sb[4], ob, stg, rb;
+   for (int i = 0; i < 4; i++) {
+      if (!hbuf_create(&ub[i], 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) || !hbuf_create(&sb[i], SW * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+      uint32_t *u = (uint32_t *)(void *)ub[i].p, *s = (uint32_t *)(void *)sb[i].p;
+      for (int j = 0; j < 4; j++) u[j] = 0xA000u + i * 16 + j;
+      for (int j = 0; j < SW; j++) s[j] = j < NT ? 0xB000u + i * 256 + j : 0xEEEEEEEEu;
+   }
+   const size_t osz = 16 + NT * 6 * 4;
+   if (!hbuf_create(&ob, osz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&stg, 4 * IMGB, VK_BUFFER_USAGE_TRANSFER_SRC_BIT) ||
+       !hbuf_create(&rb, 4 * IMGB, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(ob.p, 0xEE, osz);
+   ((uint32_t *)(void *)ob.p)[0] = 2;   /* dyn index */
+   uint32_t *st = (uint32_t *)(void *)stg.p;
+   for (int i = 0; i < 4; i++)
+      for (int k = 0; k < IW * IH; k++) st[i * IW * IH + k] = (k < IW * 8) ? 0xC000u + i * 0x100u + k : 0xEEEEEEEEu;
+   memset(rb.p, 0, 4 * IMGB);
+
+   VkImage img[4]; VkDeviceMemory imem[4]; VkImageView iv[4];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R32_UINT, IW, IH, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkDescriptorImageInfo ii[4];
+   for (int i = 0; i < 4; i++) {
+      CHECK(CreateImage(dev, &ici, NULL, &img[i]) == VK_SUCCESS, "image");
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, img[i], &mr);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+      CHECK(AllocateMemory(dev, &ai, NULL, &imem[i]) == VK_SUCCESS, "image memory");
+      CHECK(BindImageMemory(dev, img[i], imem[i], 0) == VK_SUCCESS, "bind image");
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = VK_FORMAT_R32_UINT, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view");
+      ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, iv[i], VK_IMAGE_LAYOUT_GENERAL};
+   }
+
+   VkDescriptorSetLayoutBinding lb[4] = {
+      {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 4, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo ubi[4], sbi[4], obi = {ob.b, 0, VK_WHOLE_SIZE};
+   for (int i = 0; i < 4; i++) { ubi[i] = (VkDescriptorBufferInfo){ub[i].b, 0, 16}; sbi[i] = (VkDescriptorBufferInfo){sb[i].b, 0, SW * 4}; }
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = ubi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = sbi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 2, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("didx_buf.comp.spv");
+   CHECK(m, "shader didx_buf.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "pipeline didx_buf = %d", r);
+
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   VkImageMemoryBarrier ib[4];
+   for (int i = 0; i < 4; i++)
+      ib[i] = (VkImageMemoryBarrier){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .image = img[i], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   for (int i = 0; i < 4; i++) {
+      VkBufferImageCopy reg = {.bufferOffset = (VkDeviceSize)i * IMGB, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {IW, IH, 1}};
+      CmdCopyBufferToImage(cb, stg.b, img[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+   }
+   for (int i = 0; i < 4; i++) {
+      ib[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      ib[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      ib[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      ib[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, 1, 1, 1);
+   for (int i = 0; i < 4; i++) {
+      ib[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      ib[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      ib[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   for (int i = 0; i < 4; i++) {
+      VkBufferImageCopy reg = {.bufferOffset = (VkDeviceSize)i * IMGB, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {IW, IH, 1}};
+      CmdCopyImageToBuffer(cb, img[i], VK_IMAGE_LAYOUT_GENERAL, rb.b, 1, &reg);
+   }
+   if (!cb_submit(&t, cb)) return 0;
+
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)(const void *)ob.p + 4;
+      const uint32_t *ri = (const uint32_t *)(const void *)rb.p;
+      int bad[8] = {0}, first[8] = {0};
+#define BAD(c, got) do { if (!(bad[c]++)) first[c] = (got); } while (0)
+      for (int tt = 0; tt < NT; tt++) {
+         uint32_t nu = tt & 3, di = 2, x = tt & 7, y = tt >> 3;
+         uint32_t want[6] = {0xA000u + di * 16, 0xA000u + nu * 16 + 1, 0xB000u + di * 256 + tt, 0xB000u + nu * 256 + tt,
+                             0xC000u + di * 0x100u + y * IW + x, 0xC000u + nu * 0x100u + y * IW + x};
+         for (int k = 0; k < 6; k++) if (o[tt * 6 + k] != want[k]) BAD(k, o[tt * 6 + k]);
+         /* every SSBO, both write regions: the selected one holds the written value, all others stay 0xEEEEEEEE */
+         for (uint32_t i = 0; i < 4; i++) {
+            const uint32_t *s = (const uint32_t *)(const void *)sb[i].p;
+            uint32_t w6 = i == nu ? 0x5000u + tt * 8u + nu : 0xEEEEEEEEu; /* non-uniform SSBO write */
+            uint32_t w7 = i == di ? 0x6000u + tt : 0xEEEEEEEEu;           /* dynamic SSBO write */
+            if (s[64 + tt] != w6) BAD(6, s[64 + tt]);
+            if (s[128 + tt] != w7) BAD(7, s[128 + tt]);
+         }
+      }
+      int ibad = 0;
+      for (int i = 0; i < 4; i++)
+         for (int tt = 0; tt < NT; tt++) {
+            uint32_t got = ri[i * IW * IH + (8 + (tt >> 3)) * IW + (tt & 7)], want = (uint32_t)(tt & 3) == (uint32_t)i ? 0xD000u + tt : 0xEEEEEEEEu;
+            if (got != want) ibad++;
+         }
+      static const char *nm[8] = {"ubo_dyn", "ubo_nonuniform", "ssbo_dyn_read", "ssbo_nonuniform_read", "img_dyn_load", "img_nonuniform_load", "ssbo_nonuniform_write", "ssbo_dyn_write"};
+      int tot = ibad;
+      for (int k = 0; k < 8; k++) {
+         tot += bad[k];
+         printf("{\"didxbuf\":\"%s\",\"bad\":%d,\"first\":\"0x%x\"}\n", nm[k], bad[k], first[k]);
+      }
+      printf("{\"didxbuf\":\"img_nonuniform_store\",\"bad\":%d}\n", ibad);
+      CHECK(tot == 0, "%d wrong results (forced=%d)", tot, g_dbuf_force);
+      printf("{\"test\":\"didxbuf\",\"forced\":%s,\"ok\":true}\n", g_dbuf_force ? "true" : "false");
+   } else printf("{\"test\":\"didxbuf\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 4; i++) {
+      DestroyImageView(dev, iv[i], NULL); DestroyImage(dev, img[i], NULL); FreeMemory(dev, imem[i], NULL);
+      hbuf_destroy(&ub[i]); hbuf_destroy(&sb[i]);
+   }
+   hbuf_destroy(&ob); hbuf_destroy(&stg); hbuf_destroy(&rb);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static int
 test_scalar(void)
 {
@@ -2471,12 +2685,20 @@ main(int argc, char **argv)
    g_bda = f12.bufferDeviceAddress;
    g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
             f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
+   {
+      const char *fe = getenv("MALI_TEST_FORCE_DIDX_BUF");   /* test-only: probe the lowering before the bits are advertised */
+      g_dbuf_force = fe && *fe == '1';
+      g_dbuf = (g_feat.shaderUniformBufferArrayDynamicIndexing && g_feat.shaderStorageBufferArrayDynamicIndexing && g_feat.shaderStorageImageArrayDynamicIndexing &&
+                f12.shaderUniformBufferArrayNonUniformIndexing && f12.shaderStorageBufferArrayNonUniformIndexing && f12.shaderStorageImageArrayNonUniformIndexing) || g_dbuf_force;
+   }
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    /* enable exactly what is advertised (everything advertised is under test somewhere) */
    VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress, .runtimeDescriptorArray = f12.runtimeDescriptorArray,
       .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
+      .shaderUniformBufferArrayNonUniformIndexing = f12.shaderUniformBufferArrayNonUniformIndexing, .shaderStorageBufferArrayNonUniformIndexing = f12.shaderStorageBufferArrayNonUniformIndexing,
+      .shaderStorageImageArrayNonUniformIndexing = f12.shaderStorageImageArrayNonUniformIndexing,
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
@@ -2520,6 +2742,7 @@ main(int argc, char **argv)
    int ok = 1;
    if (ok && CASE_ON("imageless")) ok &= test_imageless();
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
+   if (ok && CASE_ON("mdilimit")) ok &= test_mdilimit();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
@@ -2536,6 +2759,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
