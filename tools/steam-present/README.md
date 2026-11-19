@@ -59,7 +59,7 @@ the session log says `vulkan driver: imported`. Build the guest ICD with
 |---|---|
 | p50 <= 1.25 * base and fast >= 90 % | display-paced at the panel rate (120 fps) |
 | p50 ~ 2 * base (within 12 %), fast < 10 %, >= 90 % of intervals at 2 * base | **half-panel cadence**: every frame lands on every second vsync. This does not prove a 60 fps cap |
-| p50 ~ 2 * base, fast < 10 %, but < 90 % of intervals there | half-panel median with a tail: the rest are split between intervals shorter than 2 * base (a minority at the panel rate, too few for the bimodal row) and intervals longer than 2 * base |
+| p50 ~ 2 * base, fast < 10 %, but < 90 % of intervals there | half-panel median with a tail: the remaining intervals can be shorter than 2 * base, longer, or both (too few at the panel rate for the bimodal row) |
 | 15 % <= fast <= 85 % | bimodal: CPU stalls / missed vsyncs (frames alternate cadence) |
 | p50 > 1.25 * base (and not the cap case) | client or GPU bound |
 
