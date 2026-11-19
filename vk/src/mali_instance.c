@@ -21,10 +21,8 @@
 #endif
 
 #ifndef MALI_GIT_SHA
-#define MALI_GIT_SHA unknown
+#define MALI_GIT_SHA "unknown"
 #endif
-#define MALI_STR_(x) #x
-#define MALI_STR(x) MALI_STR_(x)
 
 #include "mali_entrypoints.h"
 #include "vk_alloc.h"
@@ -235,7 +233,7 @@ mali_banner(void)
       exe[strcspn(exe, "\n")] = 0;
       close(fd);
    }
-   n = snprintf(line, sizeof(line) - 1, "mali-open %s pid %d exe %s", MALI_STR(MALI_GIT_SHA), (int)getpid(), exe);
+   n = snprintf(line, sizeof(line) - 1, "mali-open %s pid %d exe %s", MALI_GIT_SHA, (int)getpid(), exe);
    if (n <= 0)
       return;
    if (path && *path) {
