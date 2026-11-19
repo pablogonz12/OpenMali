@@ -1,0 +1,33 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Builds and runs t_xfb (XFB emulation: compile the xfb vertex variant, capture plan, CPU reference) against the Mesa build tree
+# (x86-64, offline). Usage: build-t_xfb.sh [-v]
+set -euo pipefail
+D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk
+B=${MESA_BUILD:-$D/third_party/build-vk}; MESA_SRC=${MESA_SRC:-$D/third_party/mesa}; OUT=$V/out/native; mkdir -p "$OUT"
+export PATH=$D/third_party/venv/bin:$PATH
+cd "$B"
+# Flags: the compile/link lines of a panfrost compiler consumer in the Mesa tree (same trick as build-t_compile.sh).
+CMDS=$(ninja -t commands src/panfrost/vulkan/libvulkan_panfrost.so)
+CC=$(grep -m1 -- 'panvk_instance\.c$' <<<"$CMDS" | sed -E 's# -MD -MQ [^ ]+ -MF [^ ]+##; s# -o [^ ]+ -c [^ ]+$##; s# -I[^ ]*src/panfrost/vulkan[^ ]*##g')
+LIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midgard/libpanfrost_midgard.a
+ src/panfrost/compiler/midgard/libpanfrost_midgard_disasm.a src/compiler/nir/libnir.a src/compiler/libcompiler.a
+ src/util/libmesa_util.a src/util/libmesa_util_clflush.a src/util/libmesa_util_clflushopt.a src/util/libmesa_util_simd.a
+ src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/panfrost/compiler/bifrost/libpanfrost_bifrost.a
+ src/panfrost/compiler/bifrost/libpanfrost_bifrost_disasm.a src/panfrost/compiler/bifrost/valhall/libpanfrost_valhall_disasm.a
+ src/panfrost/model/libpanfrost_model_lib.a src/compiler/spirv/libvtn.a src/panfrost/lib/libpanfrost_lib.a
+ src/panfrost/lib/libpan-format-v10.a src/panfrost/lib/libpan-format-v11.a src/panfrost/lib/libpan-format-v13.a src/panfrost/lib/libpan-arch-v10.a src/panfrost/lib/libpan-arch-v11.a
+ src/panfrost/lib/libpan-arch-v13.a src/panfrost/lib/kmod/libpankmod_lib.a src/panfrost/genxml/libpanfrost_decode.a
+ src/panfrost/genxml/libpandecode-arch-v10.a src/panfrost/genxml/libpandecode-arch-v11.a src/panfrost/genxml/libpandecode-arch-v13.a
+ src/vulkan/runtime/libvulkan_runtime.a src/vulkan/runtime/libvulkan_instance.a src/vulkan/util/libvulkan_util.a src/vulkan/runtime/libvulkan_lite_runtime.a"
+SYS="-lSPIRV-Tools-opt -lSPIRV-Tools -lz -lzstd -ldrm -lm -pthread"
+for f in $LIBS; do [ -f $f ] || { echo "missing $B/$f"; exit 1; }; done
+eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/src/mali_compile.c -o $OUT/mali_compile_gs.o"
+eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/src/mali_descriptor_lower.c -o $OUT/mali_descriptor_lower_gs.o"
+eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/src/mali_xfb.c -o $OUT/mali_xfb.o"
+eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/src/mali_backend_fake.c -o $OUT/mali_backend_fake.o"
+eval "$CC -Wno-unused-parameter -Wno-unused-function -I$V/src -c $V/tests/t_xfb.c -o $OUT/t_xfb.o"
+# shellcheck disable=SC2086
+c++ -o "$OUT/t_xfb" "$OUT/t_xfb.o" "$OUT/mali_xfb.o" "$OUT/mali_backend_fake.o" "$OUT/mali_compile_gs.o" "$OUT/mali_descriptor_lower_gs.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
+cd "$D/.."
+timeout -k 5 120 "$OUT/t_xfb" "$V/shader" "$@"

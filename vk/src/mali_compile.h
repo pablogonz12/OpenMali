@@ -50,6 +50,8 @@ struct mali_compile_opts {
    unsigned nspec;                         /* VkSpecializationInfo: mapEntryCount (0 = none) */
    const struct mali_spec_entry *spec;     /* pMapEntries */
    const void *spec_data;                  /* pData; every entry must lie inside it (caller checks dataSize) */
+   int xfb;                       /* VS: transform-feedback variant (mali_xfb.h): outputs with Xfb decorations become 64-bit global stores, the shader is compiled without IDVS and launched as a compute job; its position/varyings are not rasterised */
+   unsigned xfb_params_off;       /* xfb: byte offset in the FAU table of struct mali_xfb_params (must lie below fau_reserved*4) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
 };
 
