@@ -90,7 +90,7 @@ Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DX
 | BC1-BC7 texture decode (compute emulation) | Offline done; hardware wiring pending |
 | DXVK-required features | 5 of 47 still false on main (`check.sh`, `DXVK_MISSING=5`): sampleRateShading (env-gated MSAA), shaderCullDistance, robustBufferAccess, descriptorIndexing (full), geometryShader (rejected on purpose until R5) |
 | EXT/KHR_line_rasterization | `rectangularLines` only (Bresenham and smooth lines not advertised); `t_vk_feat linerast` |
-| dualSrcBlend, multiViewport (state only, viewport 0 used), inlineUniformBlock, depth clamp/clip, custom border colour (the `VK_EXT_border_color_swizzle` swizzle is only groundwork in `mali_sampler.c`, not advertised), dynamic vertex binding stride (`BindVertexBuffers2` `setStride`), `KHR_shader_expect_assume`, calibrated timestamps | Done, each backed by a `t_vk_feat`/`t_vk_draw` test |
+| dualSrcBlend, multiViewport (state only, viewport 0 used), inlineUniformBlock, depth clamp/clip, custom border colour (the `VK_EXT_border_color_swizzle` swizzle is only groundwork in `mali_sampler.c`, not advertised), dynamic vertex binding stride (`BindVertexBuffers2` `pStrides`), `KHR_shader_expect_assume`, calibrated timestamps | Done, each backed by a `t_vk_feat`/`t_vk_draw` test |
 | MSAA (4x draws, `sampleRateShading`) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
 | logicOp, geometry/tessellation, GPL, Bresenham/smooth lines | Not done / not advertised |
 
