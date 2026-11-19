@@ -539,7 +539,9 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
-      if (dyn->cb.logic_op_enable) {
+      /* vk_graphics_state keeps the previous pass' logic_op_enable when a pipeline without colour blending is bound:
+       * a depth-only pass must ignore it, not fail the command buffer on retained state */
+      if (dyn->cb.logic_op_enable && cmd->cur.has_colour) {
          if (bp->gfx.blend_va)
             x->blend_en = true;   /* the pipeline's blend shader does the logic op (mali_pipeline.c); it reads the destination */
          else if (!bp->gfx.logic_inert)
