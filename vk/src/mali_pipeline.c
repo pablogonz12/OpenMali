@@ -568,6 +568,9 @@ res_image_view(VkImageView h, struct mali_cmd_target *out)
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
    int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
+   out->afbc_lay = NULL;
+   if (!r && img->lay.afbc && a == VK_IMAGE_ASPECT_COLOR_BIT && !out->is_zs)
+      mali_cmd_target_set_afbc(out, &img->lay.afbc_lay, true, img->va, v->vk.base_mip_level, v->vk.base_array_layer, (unsigned)img->vk.format);
    if (r && getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_vk: image view rejected rc=%d: format %d aspects 0x%x view aspect 0x%x type %d usage 0x%x samples %u\n", r, (int)img->vk.format,
               (unsigned)v->vk.aspects, (unsigned)a, (int)img->vk.image_type, (unsigned)img->vk.usage, img->lay.d.samples);

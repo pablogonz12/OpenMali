@@ -104,6 +104,9 @@ int main(void)
    unsigned bpp = 0;
    EQ(mali_afbc_image_eligible(&e, &bpp), MALI_AFBC_OK); EQ(bpp, 32);
    struct mali_afbc_image_info e2;
+   e2 = e; e2.render_only = true; e2.usage = 0x10; EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_OK);   /* colour attachment only */
+   for (unsigned u = 0; u < 4; u++) { e2.usage = 0x10 | (u == 0 ? 1u : u == 1 ? 2u : u == 2 ? 4u : 0x80u); EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_USAGE); }
+   e2.render_only = false; EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_OK);   /* default stage-1 behaviour unchanged */
    e2 = e; e2.afbc_env = false; EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_DISABLED);
    e2 = e; e2.arch = 6;         EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_ARCH);
    e2 = e; e2.tiling = 1;       EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_TILING);

@@ -87,6 +87,13 @@ mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct ma
    return 0;
 }
 
+uint64_t
+mali_image_afbc_bind_init(const struct mali_image_layout *lay, void *cpu, uint64_t cpu_size, uint64_t off)
+{
+   if (!lay->afbc || !cpu || off > cpu_size || lay->afbc_lay.size > cpu_size - off) return 0;
+   return mali_afbc_image_header_init(&lay->afbc_lay, (uint8_t *)cpu + off);
+}
+
 bool
 mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, struct mali_image_layout *lay)
 {
@@ -94,7 +101,7 @@ mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, 
    const struct mali_afbc_image_info info = {
       .arch = arch, .tiling = (unsigned)ci->tiling, .image_type = (unsigned)ci->imageType, .samples = (unsigned)ci->samples,
       .usage = ci->usage, .flags = ci->flags, .format = (unsigned)ci->format, .width = ci->extent.width, .height = ci->extent.height,
-      .afbc_env = true,
+      .render_only = true, .afbc_env = true,
    };
    unsigned bpp = 0;
    if (mali_afbc_image_eligible(&info, &bpp) != MALI_AFBC_OK) return false;
@@ -435,6 +442,7 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
       img->mem = mem;
       img->mem_off = b[i].memoryOffset;
       img->va = mem->bo.gpu_va + b[i].memoryOffset;
+      mali_image_afbc_bind_init(&img->lay, mem->bo.cpu, mem->bo.size, b[i].memoryOffset);   /* no-op unless MALI_AFBC=1 made the image AFBC */
    }
    return VK_SUCCESS;
 }

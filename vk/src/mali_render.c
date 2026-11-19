@@ -273,9 +273,14 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    int rc = kb_fb_pack(out, &p);
    if (rc)
       return rc;
-   if (f->has_colour && f->colour.afbc) {   /* default path: afbc is false, output untouched */
+   if (f->has_colour && (f->colour.afbc || f->colour.afbc_lay)) {   /* default path: neither set, output untouched */
       const bool ext = f->has_zs || f->has_st;
-      mali_afbc_rt_patch((uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (ext ? KB_FB_ZSEXT_SIZE : 0)), &f->colour.afbc_rt);
+      struct mali_att col = f->colour;
+      if (col.afbc_lay &&
+          mali_render_att_afbc(&col, col.afbc_lay, true, col.afbc_image_va, col.afbc_level, col.afbc_layer, col.afbc_format,
+                               env->arch == 13 ? 1u << env->tile_log2 : 256u))
+         return -EINVAL;
+      mali_afbc_rt_patch((uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (ext ? KB_FB_ZSEXT_SIZE : 0)), &col.afbc_rt);
    }
    if (env->arch == 13) {
       uint32_t *w = (uint32_t *)out;

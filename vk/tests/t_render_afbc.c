@@ -53,6 +53,28 @@ int main(void)
       env.tile_log2 = 8;
       CHECK(mali_render_att_afbc(&g.colour, &al, true, 0x10000000, 0, 0, 37, 128) == 0 && (g.colour.afbc_rt.w2 & 8), "reverse issue 128px");
    }
+   /* image-based request (what mali_cmd.c does): pack_fbd resolves it with the env tile; load is refused; no request = default bytes */
+   {
+      struct mali_frame f, g; uint8_t base[512], on[512], ref[512];
+      struct mali_afbc_image_layout al;
+      CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 256, 256, 2, 1, &al) == 0, "layout3");
+      frame_init(&f, false); g = f;
+      CHECK(mali_att_request_afbc(&g.colour, NULL, 0, 0, 0, 37, true) && !g.colour.afbc_lay, "linear request");
+      CHECK(mali_render_pack_fbd(&env, &f, base, 0x300000, 0) == 0 && mali_render_pack_fbd(&env, &g, on, 0x300000, 0) == 0 &&
+            !memcmp(base, on, KB_FB_DESC_SIZE), "linear image changed bytes");
+      CHECK(!mali_att_request_afbc(&g.colour, &al, 0x10000000, 0, 0, 37, true) && !g.colour.afbc_lay, "LOAD from AFBC must be refused");
+      CHECK(mali_att_request_afbc(&g.colour, &al, 0x10000000, 0, 0, 37, false) && g.colour.afbc_lay == &al, "request");
+      env.tile_log2 = 8;
+      CHECK(mali_render_pack_fbd(&env, &g, on, 0x300000, 0) == 0, "pack request");
+      struct mali_frame h = f;
+      CHECK(mali_render_att_afbc(&h.colour, &al, true, 0x10000000, 0, 0, 37, 256) == 0, "ref att");
+      CHECK(mali_render_pack_fbd(&env, &h, ref, 0x300000, 0) == 0 && !memcmp(ref, on, KB_FB_DESC_SIZE) && memcmp(base, on, KB_FB_DESC_SIZE), "request != direct");
+      env.tile_log2 = 6;   /* 64 px tile: reverse issue order picked from the env */
+      CHECK(mali_render_pack_fbd(&env, &g, on, 0x300000, 0) == 0 && (((uint32_t *)(void *)(on + KB_FB_FBD_SIZE))[2] & 8), "tile from env");
+      g.colour.afbc_level = 5;   /* out of range -> error, not a silent linear frame */
+      CHECK(mali_render_pack_fbd(&env, &g, on, 0x300000, 0) != 0, "bad level accepted");
+      env.tile_log2 = 8;
+   }
    /* header init: zero only the headers of every level/layer, leave bodies */
    struct mali_afbc_image_layout al;
    CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 3, 2, &al) == 0, "layout2");

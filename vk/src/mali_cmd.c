@@ -890,6 +890,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->colour.surface_stride = t.surface_stride;
    f->colour.rt = t.rt;
    f->colour.row_stride = t.row_stride;
+   if (!mali_att_request_afbc(&f->colour, t.afbc_lay, t.afbc_image_va, t.afbc_level, t.afbc_layer, t.afbc_format, load) || (t.afbc_lay && f->samples != 1)) {
+      unsupported(cmd, "AFBC colour attachment with loadOp LOAD / MSAA");
+      return;
+   }
    f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
    f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    if (f->colour.clear)

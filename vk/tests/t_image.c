@@ -341,7 +341,7 @@ test_afbc_wiring(unsigned arch)
 {
    VkImageCreateInfo ci = { .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = { 64, 64, 1 }, .mipLevels = 3,
                             .arrayLayers = 1, .samples = 1, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT };
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT };
    struct mali_image_desc d = { ci.format, ci.imageType, ci.extent, 3, 1, 1, false };
    struct mali_image_layout plain, off, on;
    CHECK(mali_image_layout_init(arch, &d, &plain) == 0, "afbc plain");
@@ -363,6 +363,27 @@ test_afbc_wiring(unsigned arch)
    CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "modifier image AFBC");
    c2 = ci; c2.format = VK_FORMAT_R16G16B16A16_SFLOAT; struct mali_image_desc d2 = d; d2.format = c2.format;
    CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && !on.afbc, "float image AFBC");
+   /* render-only: sampling / transfers have no AFBC path yet, so such images stay linear even with the flag on */
+   {
+      static const VkImageUsageFlags bad[] = { VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                                VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT };
+      for (unsigned i = 0; i < 4; i++) {
+         c2 = ci; c2.usage |= bad[i];
+         CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc && on.size == plain.size, "usage 0x%x must stay linear", (unsigned)bad[i]);
+      }
+   }
+   /* bind-time header init: zero headers only, never touch linear images or an image that does not fit */
+   {
+      struct mali_image_layout a;
+      CHECK(mali_image_plain_layout(arch, &ci, &d, true, &a) == 0 && a.afbc, "bind layout");
+      uint8_t *mem = malloc(a.size + 256);
+      memset(mem, 0xaa, a.size + 256);
+      uint64_t z = mali_image_afbc_bind_init(&a, mem, a.size + 256, 128);
+      CHECK(z > 0 && mem[0] == 0xaa && mem[127] == 0xaa && mem[128] == 0 && mem[128 + a.afbc_lay.level[0].body_offset] == 0xaa, "bind init range");
+      CHECK(mali_image_afbc_bind_init(&a, mem, a.size + 100, 128) == 0, "bind init beyond memory");
+      CHECK(mali_image_afbc_bind_init(&plain, mem, a.size + 256, 0) == 0, "bind init on linear image");
+      free(mem);
+   }
    /* layers multiply */
    c2 = ci; c2.arrayLayers = 4; d2 = d; d2.layers = 4;
    CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && on.afbc && on.size == 4 * on.afbc_lay.array_stride, "afbc layers");
