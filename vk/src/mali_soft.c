@@ -363,8 +363,9 @@ struct rctx {
    const struct mali_frame *f;
    const struct mali_draw *d;
    const struct mali_soft_program *p;
-   struct surf col;
-   bool has_col;
+   struct surf col[MALI_SOFT_MRT];
+   unsigned ncol;
+   uint8_t *scratch[MALI_SOFT_MRT];   /* storeOp DONT_CARE targets render here (a copy of memory), freed by mali_soft_frame */
    uint8_t *zs;
    bool sc_set;
    int ax0, ay0, ax1, ay1;
@@ -465,25 +466,30 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
          for (unsigned v = 0; v < MALI_SOFT_VARY; v++)
             for (unsigned k = 0; k < 4; k++)
                vin[v][k] = (w0 * vary[0][v][k] * iw[0] + w1 * vary[1][v][k] * iw[1] + w2 * vary[2][v][k] * iw[2]) / den;
-         float frag[4] = {0, 0, 0, 1};
-         c->p->fs(c->p->user, (const float (*)[4])vin, d->push[1], x, y, frag);
+         float frag[MALI_SOFT_MRT][4];
+         for (unsigned r = 0; r < MALI_SOFT_MRT; r++) { frag[r][0] = frag[r][1] = frag[r][2] = 0; frag[r][3] = 1; }
+         if (c->p->fs_mrt)
+            c->p->fs_mrt(c->p->user, (const float (*)[4])vin, d->push[1], x, y, frag);
+         else
+            c->p->fs(c->p->user, (const float (*)[4])vin, d->push[1], x, y, frag[0]);
          g_st.frags++;
-         if (c->has_col) {
+         /* the blend state of attachment 0 applies to every attachment (Vulkan 1.0: no independentBlend) */
+         for (unsigned r = 0; r < c->ncol; r++) {
             float dst[4];
-            px_read(&c->col, x, y, dst);
+            px_read(&c->col[r], x, y, dst);
             float out[4];
             for (unsigned k = 0; k < 4; k++) {
                if (!(wmask & (1u << k))) { out[k] = dst[k]; continue; }
                if (set && fx->blend_en && k < 3)
-                  out[k] = bop((VkBlendOp)fx->op_c, frag[k] * bfactor((VkBlendFactor)fx->src_c, frag, dst, fx->bconst, k, false),
-                                            dst[k] * bfactor((VkBlendFactor)fx->dst_c, frag, dst, fx->bconst, k, false));
+                  out[k] = bop((VkBlendOp)fx->op_c, frag[r][k] * bfactor((VkBlendFactor)fx->src_c, frag[r], dst, fx->bconst, k, false),
+                                            dst[k] * bfactor((VkBlendFactor)fx->dst_c, frag[r], dst, fx->bconst, k, false));
                else if (set && fx->blend_en)
-                  out[k] = bop((VkBlendOp)fx->op_a, frag[k] * bfactor((VkBlendFactor)fx->src_a, frag, dst, fx->bconst, k, true),
-                                            dst[k] * bfactor((VkBlendFactor)fx->dst_a, frag, dst, fx->bconst, k, true));
+                  out[k] = bop((VkBlendOp)fx->op_a, frag[r][k] * bfactor((VkBlendFactor)fx->src_a, frag[r], dst, fx->bconst, k, true),
+                                            dst[k] * bfactor((VkBlendFactor)fx->dst_a, frag[r], dst, fx->bconst, k, true));
                else
-                  out[k] = frag[k];
+                  out[k] = frag[r][k];
             }
-            px_write(&c->col, x, y, out);
+            px_write(&c->col[r], x, y, out);
          }
          if (dep_en && dep_write && c->zs)
             zs_write(&c->f->zs, c->zs, x, y, z);
@@ -491,8 +497,26 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    }
 }
 
+static bool soft_frame(const struct mali_hw *hw, const struct mali_frame *f, struct rctx *cp);
+
+bool
+mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
+{
+   /* g_st and the program registry are process-wide, so two device contexts must not render at the same time: one
+    * frame would clear the other's counters. Serialise whole frames (the harness renders a frame at a time anyway). */
+   while (atomic_flag_test_and_set_explicit(&g_busy, memory_order_acquire))
+      ;
+   struct rctx c;
+   memset(&c, 0, sizeof c);
+   const bool ok = soft_frame(hw, f, &c);
+   for (unsigned i = 0; i < MALI_SOFT_MRT; i++)
+      free(c.scratch[i]);
+   atomic_flag_clear_explicit(&g_busy, memory_order_release);
+   return ok;
+}
+
 static bool
-soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
+soft_frame(const struct mali_hw *hw, const struct mali_frame *f, struct rctx *cp)
 {
    memset(&g_st, 0, sizeof g_st);
    g_st.frames = 1;
@@ -507,50 +531,61 @@ soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
    if (!f->has_colour && !f->has_zs)
       return unsupported("frame without attachments");
 
-   struct rctx c;
-   memset(&c, 0, sizeof c);
-   c.f = f;
-   const int colfmt = f->has_colour ? (f->colour.rt ? f->colour.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM) : 0;
+   cp->f = f;
    /* the render area clips every write, clears included: a CLEAR only touches f->area */
    const int32_t *ar = f->area;
-   c.ax0 = ar[2] ? ar[0] : 0;
-   c.ay0 = ar[2] ? ar[1] : 0;
-   c.ax1 = ar[2] ? ar[0] + (int)ar[2] : (int)f->width;
-   c.ay1 = ar[2] ? ar[1] + (int)ar[3] : (int)f->height;
-   if (c.ax0 < 0) c.ax0 = 0;
-   if (c.ay0 < 0) c.ay0 = 0;
-   if (c.ax1 > (int)f->width) c.ax1 = (int)f->width;
-   if (c.ay1 > (int)f->height) c.ay1 = (int)f->height;
+   cp->ax0 = ar[2] ? ar[0] : 0;
+   cp->ay0 = ar[2] ? ar[1] : 0;
+   cp->ax1 = ar[2] ? ar[0] + (int)ar[2] : (int)f->width;
+   cp->ay1 = ar[2] ? ar[1] + (int)ar[3] : (int)f->height;
+   if (cp->ax0 < 0) cp->ax0 = 0;
+   if (cp->ay0 < 0) cp->ay0 = 0;
+   if (cp->ax1 > (int)f->width) cp->ax1 = (int)f->width;
+   if (cp->ay1 > (int)f->height) cp->ay1 = (int)f->height;
    if (f->has_colour) {
-      const unsigned bpp = px_size(colfmt);
-      if (!bpp)
-         return unsupported("colour format not in the CPU model");
-      if (f->colour.row_stride < f->width * bpp)
-         return unsupported("colour row stride smaller than one row");
-      c.col.p = hw->va_cpu(hw->user, f->colour.va, (size_t)f->colour.row_stride * f->height);
-      if (!c.col.p)
-         return unsupported("colour attachment address is not mapped");
-      c.col.stride = f->colour.row_stride;
-      c.col.w = f->width;
-      c.col.h = f->height;
-      c.col.fmt = colfmt;
-      c.has_col = true;
-      /* loadOp CLEAR clears; DONT_CARE is the driver's clear-to-0 (mali_render.c); LOAD keeps what is in memory. */
-      if (f->colour.clear)
-         for (int y = c.ay0; y < c.ay1; y++)
-            for (int x = c.ax0; x < c.ax1; x++)
-               px_write(&c.col, (unsigned)x, (unsigned)y, f->colour.clear_color);
+      const unsigned n = f->ncolour ? f->ncolour : 1;
+      if (n > MALI_SOFT_MRT)
+         return unsupported("more colour attachments than the CPU model has");
+      for (unsigned r = 0; r < n; r++) {
+         const struct mali_att *a = r ? &f->colour_x[r - 1] : &f->colour;
+         const int fmt = a->rt ? a->rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
+         const unsigned bpp = px_size(fmt);
+         if (!bpp)
+            return unsupported("colour format not in the CPU model");
+         if (a->row_stride < f->width * bpp)
+            return unsupported("colour row stride smaller than one row");
+         const size_t bytes = (size_t)a->row_stride * f->height;
+         uint8_t *mem = hw->va_cpu(hw->user, a->va, bytes);
+         if (!mem)
+            return unsupported("colour attachment address is not mapped");
+         if (a->no_store) {   /* storeOp DONT_CARE: work on a copy so memory keeps what it had */
+            cp->scratch[r] = malloc(bytes);
+            if (!cp->scratch[r])
+               return unsupported("out of memory for a DONT_CARE colour target");
+            memcpy(cp->scratch[r], mem, bytes);
+            mem = cp->scratch[r];
+         }
+         cp->col[r] = (struct surf){.p = mem, .stride = a->row_stride, .w = f->width, .h = f->height, .fmt = fmt};
+         /* loadOp CLEAR clears; DONT_CARE is the driver's clear-to-0 (mali_render.c); LOAD keeps what is in memory. */
+         if (a->clear || a->dont_care) {
+            const float z[4] = {0, 0, 0, 0};
+            for (int y = cp->ay0; y < cp->ay1; y++)
+               for (int x = cp->ax0; x < cp->ax1; x++)
+                  px_write(&cp->col[r], (unsigned)x, (unsigned)y, a->clear ? a->clear_color : z);
+         }
+      }
+      cp->ncol = n;
    }
    if (f->has_zs) {
       if (f->zs.zs_format < 1 || f->zs.zs_format > 3)
          return unsupported("depth format not in the CPU model");
-      c.zs = hw->va_cpu(hw->user, f->zs.va, (size_t)f->zs.row_stride * f->height);
-      if (!c.zs)
+      cp->zs = hw->va_cpu(hw->user, f->zs.va, (size_t)f->zs.row_stride * f->height);
+      if (!cp->zs)
          return unsupported("depth attachment address is not mapped");
       if (f->zs.clear)
-         for (int y = c.ay0; y < c.ay1; y++)
-            for (int x = c.ax0; x < c.ax1; x++)
-               zs_write(&f->zs, c.zs, (unsigned)x, (unsigned)y, f->zs.clear_depth);
+         for (int y = cp->ay0; y < cp->ay1; y++)
+            for (int x = cp->ax0; x < cp->ax1; x++)
+               zs_write(&f->zs, cp->zs, (unsigned)x, (unsigned)y, f->zs.clear_depth);
    }
    struct mali_draw x;
    memset(&x, 0, sizeof x);
@@ -565,9 +600,11 @@ soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
       const struct mali_soft_program *p = find_prog(&x.gfx);
       if (!p || !p->vs || !p->fs)
          return unsupported("no CPU program registered for this pipeline (mali_soft_bind_program)");
-      c.d = &x;
-      c.p = p;
-      c.sc_set = x.sc_set;
+      cp->d = &x;
+      cp->p = p;
+      cp->sc_set = x.sc_set;
+      if (cp->ncol > 1 && !p->fs_mrt)
+         return unsupported("MRT frame: the program has no fs_mrt");
       if (x.gfx.discard || x.count == 0 || x.instance_count == 0)
          continue;
       if (x.gfx.prim != 8 && x.gfx.prim != 10 && x.gfx.prim != 12)
@@ -650,7 +687,7 @@ soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
             memcpy(v3[1], vvary[b], sizeof v3[1]);
             memcpy(v3[2], vvary[cc], sizeof v3[2]);
             g_st.tris++;
-            raster_tri(&c, c3, (const float (*)[MALI_SOFT_VARY][4])v3);
+            raster_tri(cp, c3, (const float (*)[MALI_SOFT_VARY][4])v3);
          }
       }
       free(vclip);
@@ -659,16 +696,4 @@ soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
          return unsupported("vertex attribute format not in the CPU model");
    }
    return true;
-}
-
-bool
-mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
-{
-   /* g_st and the program registry are process-wide, so two device contexts must not render at the same time: one
-    * frame would clear the other's counters. Serialise whole frames (the harness renders a frame at a time anyway). */
-   while (atomic_flag_test_and_set_explicit(&g_busy, memory_order_acquire))
-      ;
-   const bool ok = soft_frame(hw, f);
-   atomic_flag_clear_explicit(&g_busy, memory_order_release);
-   return ok;
 }

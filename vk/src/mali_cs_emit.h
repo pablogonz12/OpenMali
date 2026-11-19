@@ -220,6 +220,8 @@ struct mali_att {
    int zs_format;                         /* depth only: 1 D32F, 2 D24X8, 3 D16 (enum kb_zs_format); colour is RGBA8 */
    bool clear;                            /* loadOp CLEAR (false = DONT_CARE, handled as clear to 0; LOAD is rejected by the caller) */
    bool store;                            /* storeOp STORE; colour: always stored (no FBD knob yet); depth: false = Z write enable off */
+   bool dont_care;                        /* software rasteriser only: loadOp DONT_CARE (!clear && !dont_care = LOAD, memory kept); modelled as clear to 0 */
+   bool no_store;                         /* software rasteriser only, colour: storeOp DONT_CARE, the pass's result never reaches memory */
    float clear_color[4];
    float clear_depth;
    uint8_t clear_stencil;                 /* stencil attachment (struct mali_frame.st): S Clear value */
@@ -234,6 +236,8 @@ struct mali_frame {
    bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
    struct mali_att colour, zs, st;
+   unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
+   struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
