@@ -2134,9 +2134,9 @@ test_share_inst(void)
       return 1;
    }
    unsigned long long same = ab[2] - ab[1], chg = ab[1] - ab[0];
-   /* same-state frame 0 -> 2 differ by nothing; the changing frame must allocate at least 3 driver sets (3 x 17 x 32 B) more than an identical one */
-   printf("{\"test\":\"share_inst\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", same, chg, chg >= same + 3 * 17 * 32 ? "true" : "false");
-   CHECK(chg >= same + 3 * 17 * 32, "share_inst: draws that differ in firstInstance / vertex buffer reused the driver set (%llu vs %llu bytes)", chg, same);
+   /* same-state frame 0 -> 2 differ by nothing; the changing frame must allocate at least 3 driver sets (3 x at least 13 entries x 32 B: the programs, blend and depth-stencil blocks are shared by draws that only rebind buffers, so only the driver set is rebuilt) more than an identical one */
+   printf("{\"test\":\"share_inst\",\"alloc_identical\":%llu,\"alloc_changed\":%llu,\"ok\":%s}\n", same, chg, chg >= same + 3 * 13 * 32 ? "true" : "false");
+   CHECK(chg >= same + 3 * 13 * 32, "share_inst: draws that differ in firstInstance / vertex buffer reused the driver set (%llu vs %llu bytes)", chg, same);
    return 1;
 }
 
@@ -2212,7 +2212,7 @@ test_share_vin(void)
    DestroyFence(dev, f, NULL);
    if (!ok) return 0;
    unsigned long long same = ab[1] - ab[0], mv = ab[2] - ab[1];
-   int good = mv >= same + 3 * 17 * 32;
+   int good = mv >= same + 3 * 13 * 32;
    printf("{\"test\":\"share_vin\",\"alloc_pipeline_switch\":%llu,\"alloc_with_vb_move\":%llu,\"ok\":%s}\n", same, mv, good ? "true" : "false");
    CHECK(good, "share_vin: pipeline switches rebuilt the driver set (%llu vs %llu bytes with a moving vertex buffer)", same, mv);
    return 1;

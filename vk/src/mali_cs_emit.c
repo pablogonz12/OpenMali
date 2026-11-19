@@ -35,8 +35,7 @@ struct cs {
    uint64_t *v;
    unsigned n, cap;
    int err;
-   uint32_t sh[128];
-   uint8_t sv[16];   /* bitmap of known shadow registers */
+   uint64_t sh[128];   /* shadow registers: a value above 32 bits = not known (cs_init) */
 };
 
 static void
@@ -58,12 +57,11 @@ E(struct cs *c, uint64_t i)
 static bool
 known(const struct cs *c, unsigned r, uint32_t v)
 {
-   return (c->sv[r >> 3] >> (r & 7) & 1) && c->sh[r] == v;
+   return c->sh[r] == v;
 }
 static void
 set_known(struct cs *c, unsigned r, uint32_t v)
 {
-   c->sv[r >> 3] |= 1u << (r & 7);
    c->sh[r] = v;
 }
 
@@ -298,6 +296,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
    const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !(d->dirty & (MALI_D_VP | MALI_D_PUSH));   /* FAUs reusable */
+   /* sp: the shader program descriptors, blend and depth-stencil depend on the pipeline and the fixed-function state only, not on the bound buffers or sets */
+   const bool sp = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX));
    const bool sv = s1 || (po && pd && (!(d->dirty & (MALI_D_PIPE | MALI_D_BIND)) || same_vin(pd, d)));   /* driver set reusable */
    if (check_dirty()) {   /* trap: whatever the mask lets us reuse must be byte-equal to what the compares would have reused */
       const bool o1 = po && same_static(pd, d);
@@ -308,6 +308,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          fprintf(stderr, "MALI_DIRTY_CHECK: mask 0x%x reuses a driver set whose vertex input changed\n", d->dirty);
          abort();
       }
+      if (sp && (memcmp(&pd->gfx, &d->gfx, sizeof d->gfx) || memcmp(&pd->fx, &d->fx, sizeof d->fx))) {
+         fprintf(stderr, "MALI_DIRTY_CHECK: mask 0x%x reuses program/blend/zsd blocks whose state changed\n", d->dirty);
+         abort();
+      }
       if ((s1 && !o1) || (s2 && !o2) || (s3 && !o3)) {
          fprintf(stderr, "MALI_DIRTY_CHECK: mask 0x%x reuses what changed (s1 %d/%d s2 %d/%d s3 %d/%d)\n", d->dirty, s1, o1, s2, o2, s3, o3);
          abort();
@@ -315,7 +319,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
    const unsigned vs_used = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);   /* entries the vertex shader can read below the dummy sampler */
 
-   if (s1) {
+   if (sp) {
       o->spd_p = po->spd_p; o->spd_v = po->spd_v; o->spd_f = po->spd_f;
       o->bl = po->bl; o->zsd = po->zsd; o->bl23[0] = po->bl23[0]; o->bl23[1] = po->bl23[1];
       spd_p = spd_v = spd_f = bl = zsd = NULL;
@@ -361,7 +365,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       vfau = A(hw, FAU_BYTES(vs->fau_count), 64, &va_vfau);
       ffau = A(hw, FAU_BYTES(fs->fau_count), 64, &va_ffau);
    }
-   if ((!s1 && (!spd_p || (!v13 && !spd_v) || !spd_f || !bl || !zsd)) || (!s3 && (!vfau || !ffau)))
+   if ((!sp && (!spd_p || (!v13 && !spd_v) || !spd_f || !bl || !zsd)) || (!s3 && (!vfau || !ffau)))
       return -ENOMEM;
    if (!s3) {
       o->vfau = kb_draw_fau_ptr(va_vfau, vs->fau_count);
@@ -372,7 +376,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    (void)vs_used;
 
    /* shader programs */
-   if (s1) {
+   if (sp) {
       /* shared with the previous draw */
    } else if (v13) {
       kb_v13_spd(spd_p, 3, g->vs_va, vs->work_reg_count, vs->preload, 0);
@@ -419,7 +423,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          kb_draw_resource(vst + MALI_DYN_TABLE * (KB_RES_SIZE / 4), va_dyn, d->ndyn * KB_DESC_SET_STRIDE, 1);
       }
    }
-   if (s1)
+   if (sp)
       goto fau;
    uint32_t blt[4] = {0, 0, 0, 0};   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
    uint32_t *bl_arena = bl;
@@ -899,6 +903,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
 
    memset(&c, 0, sizeof c);
+   memset(c.sh, 0xff, sizeof c.sh);
    E(&c, kb_cs_nop());
    if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    {
@@ -1012,6 +1017,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
       return -EINVAL;
    memset(&c, 0, sizeof c);
+   memset(c.sh, 0xff, sizeof c.sh);
    bool geometry = f->ndraws > 0;
    /* one allocation for the typical stream (~10 words per draw plus the frame prologue/epilogue) instead of doubling from 256 words: each doubling copies the stream */
    if (geometry && (c.v = malloc((c.cap = 512 + f->ndraws * 12) * sizeof *c.v)) == NULL)
