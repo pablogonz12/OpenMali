@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "kbase_fb.h"
 #include "mali_cmd.h"
 #include "mali_query_core.h"
 #include "mali_descriptor.h"
@@ -295,6 +296,51 @@ check_clear_words(int fmt, const float c[4], uint32_t w0, uint32_t w1, uint32_t 
    CHECK(w[0] == w0 && w[1] == w1 && w[2] == w2 && w[3] == w3, "clear words %s: %08x %08x %08x %08x want %08x %08x %08x %08x", what, w[0], w[1], w[2], w[3], w0, w1, w2, w3);
 }
 
+/* FBD store bits: storeOp DONT_CARE turns the colour Write Enable (RT word 1 bit 0) and Clean Tile Write (bit 31) off; a ZS target
+ * that is not stored also drops its Clean Tile Write (ZS ext word 0 bit 31) next to Z Write Enable (FBD word 12 bit 18).
+ * Hand-derived: the descriptors of the stored and the not-stored frame differ in exactly those bits and no others. */
+static void
+test_fbd_store(void)
+{
+   struct mali_env env = {.arch = 11, .tile_log2 = 10};
+   uint8_t a[KB_FB_DESC_SIZE_ZS + 64], b[KB_FB_DESC_SIZE_ZS + 64];
+   struct mali_frame f = {0};
+   f.width = f.height = 64;
+   f.has_colour = true;
+   f.colour.va = 0x10000;
+   f.colour.row_stride = 256;
+   f.colour.store = true;
+   f.has_zs = true;
+   f.zs.va = 0x20000;
+   f.zs.row_stride = 256;
+   f.zs.zs_format = KB_ZS_D32F;
+   f.zs.store = true;
+   memset(a, 0xcc, sizeof a); memset(b, 0xcc, sizeof b);
+   CHECK(mali_render_pack_fbd(&env, &f, a, 0x30000, 0x40000) == 0, "fbd stored");
+   f.colour.store = false;
+   CHECK(mali_render_pack_fbd(&env, &f, b, 0x30000, 0x40000) == 0, "fbd colour dont_care");
+   const uint32_t *wa = (const uint32_t *)(void *)a, *wb = (const uint32_t *)(void *)b;
+   const unsigned rt = (KB_FB_FBD_SIZE + KB_FB_ZSEXT_SIZE) / 4;
+   for (unsigned i = 0; i < KB_FB_DESC_SIZE_ZS / 4; i++) {
+      uint32_t want = i == rt + 1 ? 0x80000001u : 0;
+      CHECK((wa[i] ^ wb[i]) == want, "colour DONT_CARE: word %u xor %08x want %08x", i, wa[i] ^ wb[i], want);
+   }
+   f.colour.store = true;
+   f.zs.store = false;
+   CHECK(mali_render_pack_fbd(&env, &f, b, 0x30000, 0x40000) == 0, "fbd zs dont_care");
+   for (unsigned i = 0; i < KB_FB_DESC_SIZE_ZS / 4; i++) {
+      uint32_t want = i == 12 ? (1u << 18) : i == KB_FB_FBD_SIZE / 4 ? 0x80000000u : 0;
+      CHECK((wa[i] ^ wb[i]) == want, "ZS DONT_CARE: word %u xor %08x want %08x", i, wa[i] ^ wb[i], want);
+   }
+   f.colour.store = false;
+   f.colour.resolve_va = 0;
+   f.samples = 4;
+   f.colour.resolve_va = 0x50000;
+   f.colour.resolve_row_stride = 256;
+   CHECK(mali_render_pack_fbd(&env, &f, a, 0x30000, 0x40000) == 0, "fbd resolve");
+   CHECK(wa[rt + 1] & 1u, "MSAA resolve target stays written (resolve is the store)");
+}
+
 static void
 test_clear_words(void)
 {
@@ -339,6 +385,7 @@ int main(int argc, char **argv)
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
    test_clear_words();
+   test_fbd_store();
    fill_compiled();
    if (setup_kb())
       return 1;

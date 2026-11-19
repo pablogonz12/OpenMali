@@ -99,7 +99,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
 		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
 		put(x, 0, 8, 2, 0);                                  /* MSAA single */
-		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
+		put(x, 0, 31, 1, !p->zs_no_store);                   /* Clean Tile Write Enable: write the cleared depth of empty tiles (nothing is written back when not stored) */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */
@@ -114,12 +114,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(r, 0, 0, 4, 0);                                      /* Writeback Mode: compat */
 	put(r, 0, 4, 12, 0);                                     /* Internal Buffer Offset >> 4 */
 	put(r, 0, 26, 6, p->rt_internal ? p->rt_internal : 1);                                  /* Internal Format: R8G8B8A8 */
-	put(r, 1, 0, 1, !p->rt_none);                            /* Write Enable (off for a colour-less frame) */
+	put(r, 1, 0, 1, !p->rt_none && !p->rt_no_store);                            /* Write Enable (off for a colour-less frame) */
 	put(r, 1, 3, 5, p->rt_internal ? p->rt_wb : 19);                                    /* Writeback colour format R8G8B8A8 */
 	put(r, 1, 8, 4, p->block_format ? 1 : 2);                /* Block format: 2 linear, 1 tiled u-interleaved */
 	put(r, 1, 12, 2, p->rt_msaa);                            /* MSAA: 0 single, 1 average (resolve), 3 layered */
 	put(r, 1, 16, 12, p->rt_internal ? p->rt_swizzle : (0 | 1 << 3 | 2 << 6 | 3 << 9));         /* Swizzle RGBA identity (R=0 G=1 B=2 A=3) */
-	put(r, 1, 31, 1, !p->no_clean_tile_write);               /* Clean Tile Write Enable (default on) */
+	put(r, 1, 31, 1, !p->no_clean_tile_write && !p->rt_no_store);               /* Clean Tile Write Enable (default on) */
 	put(r, 8, 0, 32, (uint32_t)p->rt_gpu_va);                /* RT Buffer base */
 	put(r, 9, 0, 32, (uint32_t)(p->rt_gpu_va >> 32));
 	put(r, 10, 0, 32, p->row_stride);                        /* Row stride */
