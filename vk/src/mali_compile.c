@@ -32,12 +32,26 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 21 /* 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 22 /* 22: subgroup_size part of the cache key + recorded in mali_compiled (was implicit 16 for every arch) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
 
 static atomic_ullong g_hits, g_misses, g_stores;
+
+unsigned
+mali_subgroup_size_for_arch(unsigned arch)
+{
+   /* Mesa panfrost/compiler/pan_compiler.h pan_subgroup_size(): the lane count of a warp is a property of the architecture,
+    * not of the number of cores (shader_present is non-contiguous: 0xee0057 on G925 still has 16-wide warps). */
+   if (arch >= 9)
+      return 16;
+   if (arch >= 7)
+      return 8;
+   if (arch >= 6)
+      return 4;
+   return 1;   /* Midgard: no subgroups */
+}
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
@@ -146,6 +160,7 @@ type_size(const struct glsl_type *t, bool bindless)
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
    uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
+   uint32_t subgroup_size;   /* required subgroup size (0 = arch default): a requested 8/32 must not reuse a 16-wide binary */
    /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
    uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
    char mesa[24];
@@ -164,6 +179,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
    k.sample_shading = o->sample_shading != 0;
+   k.subgroup_size = o->subgroup_size;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    k.max_sets = MALI_MAX_SETS;
