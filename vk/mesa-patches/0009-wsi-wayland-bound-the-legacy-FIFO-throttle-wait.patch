@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mali-open
+Date: Thu, 19 Nov 2026 11:10:00 +0100
+Subject: [PATCH] wsi/wayland: bound the legacy FIFO throttle wait
+
+Without wp_fifo, a FIFO present arms a wl_surface.frame callback and the next
+present blocks in wl_display_dispatch_queue until it fires, with no timeout.
+A compositor that never sends it (hidden/occluded window, guest compositor)
+hangs vkQueuePresentKHR forever (only SIGKILL helps). Use
+wl_display_dispatch_queue_timeout with a 500 ms budget, then give up
+throttling for that frame and continue. IMMEDIATE falls back to FIFO on
+wl_surface, so it was affected too.
+---
+--- a/src/vulkan/wsi/wsi_common_wayland.c
++++ b/src/vulkan/wsi/wsi_common_wayland.c
+@@ -62,6 +62,8 @@
+ 
+ #include <loader/loader_wayland_helper.h>
+ 
++#define WSI_WL_LEGACY_FIFO_WAIT_MS 500
++
+ #ifdef MAJOR_IN_MKDEV
+ #include <sys/mkdev.h>
+ #endif
+@@ -3390,13 +3392,30 @@
+ 
+    /* For KHR_swapchain_maintenance1. We might have transitioned from FIFO to MAILBOX.
+     * In this case we need to let the FIFO request complete, before presenting MAILBOX. */
+-   while (!chain->legacy_fifo_ready) {
+-      int ret = wl_display_dispatch_queue(wsi_wl_surface->display->wl_display,
+-                                          wsi_wl_surface->display->queue);
+-      if (ret < 0)
+-         return VK_ERROR_OUT_OF_DATE_KHR;
++   /* Bounded: a compositor that never sends the frame callback (hidden or
++    * occluded window, minimised, a guest compositor that does not pace
++    * surfaces) must not block vkQueuePresentKHR forever. After
++    * WSI_WL_LEGACY_FIFO_WAIT_MS give up throttling and carry on. */
++   if (!chain->legacy_fifo_ready) {
++      /* The timeout of wl_display_dispatch_queue_timeout is relative. */
++      uint64_t deadline_ns = os_time_get_nano() + WSI_WL_LEGACY_FIFO_WAIT_MS * 1000000ull;
++      while (!chain->legacy_fifo_ready) {
++         uint64_t now_ns = os_time_get_nano();
++         uint64_t left_ns = now_ns < deadline_ns ? deadline_ns - now_ns : 0;
++         struct timespec left = { .tv_sec = left_ns / 1000000000ull,
++                                  .tv_nsec = left_ns % 1000000000ull };
++         int ret = wl_display_dispatch_queue_timeout(wsi_wl_surface->display->wl_display,
++                                                     wsi_wl_surface->display->queue,
++                                                     &left);
++         if (ret < 0)
++            return VK_ERROR_OUT_OF_DATE_KHR;
+ 
+-      queue_dispatched = true;
++         queue_dispatched = true;
++         if (!chain->legacy_fifo_ready && (ret == 0 || left_ns == 0)) {
++            chain->legacy_fifo_ready = true;   /* timed out: stop throttling this frame */
++            break;
++         }
++      }
+    }
+ 
+    if (chain->base.image_info.explicit_sync) {

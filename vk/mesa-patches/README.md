@@ -13,6 +13,7 @@ Upstream commits after the 26.3.0 tag that we carry (bi_ backend, not kraid). Ap
 | 0006 | 75217eab | panvk: restore zero flush_id after copy_fbd (part of the same fix; needs 0005) |
 | 0007 | 1fe05a79 | pan/bi: run CSE before load_store_vectorize |
 | 0008 | local (not upstream) | pan/bi: `find_all_dominated_predecessors` stops at the fixed point (was |blocks|-1 sweeps per loop header; 17% of corpus compile time). Output identical (shaderdb TSV), so no MALI_COMPILE_VERSION bump; -18% compile time |
+| 0009 | local (not upstream) | wsi/wayland: legacy FIFO throttle wait (no wp_fifo) is bounded to 500 ms; was an infinite wait when frame callbacks never arrive (hidden window, guest compositor); no codegen change |
 
 Patches only take effect in the Mesa roll-in (apply-mesa-patches.sh, then rebuild the Mesa trees); `tests/mesa-patches.sh` (run by check.sh) checks that they apply in order on a scratch copy and never touches the shared tree.
 

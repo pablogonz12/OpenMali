@@ -8,10 +8,11 @@
 #   KNOWN HANG noframe + FIFO: Mesa wsi_common_wayland's legacy FIFO throttle (queue_present: `while (!legacy_fifo_ready)
 #              wl_display_dispatch_queue`) blocks vkQueuePresent forever. Not our code (Mesa 26.3, no wp_fifo in the compositor); recorded
 #              as an expected hang so that a Mesa bump that fixes it shows up as "hang fixed" and this line can be tightened.
-# Usage: wlmock-host.sh <out dir with libvulkan_mali.so> [gpu v10|v11|v13]
+# Usage: wlmock-host.sh <out dir with libvulkan_mali.so> [gpu v10|v11|v13] [patched]
+#   "patched" = the ICD carries vk/mesa-patches/0009 (bounded legacy FIFO throttle, tests/build-wsi-patched.sh): the KNOWN HANG case must then pass.
 # Skips (exit 0, "skipped") without libwayland-server / wayland-scanner / libwayland-client.
 set -u
-OUT=$1; GPU=${2:-v10}
+OUT=$1; GPU=${2:-v10}; PATCHED=${3:-}
 V=$(cd "$(dirname "$0")/.." && pwd)
 command -v wayland-scanner >/dev/null && pkg-config --exists wayland-server wayland-client || { echo "skipped: no wayland-scanner/libwayland-server"; exit 0; }
 [ -f "$V/../present/gen/xdg-shell-protocol.c" ] || { echo "skipped: no present/gen"; exit 0; }
@@ -42,7 +43,10 @@ case_ "wl mock normal, mailbox + resize"        normal    30 0   30 '"pass":true
 case_ "wl mock noframe, mailbox keeps going"    noframe    4 0   30 '"pass":true'            -- --seconds 1 --mode mailbox
 case_ "wl mock stall, acquire times out"        stall      4 3   30 'acquire_timeout'        -- --seconds 5 --mode mailbox --acquire-ms 300
 case_ "wl mock norelease, fifo acquire times out" norelease 4 3  30 'acquire_timeout'        -- --seconds 5 --mode fifo --acquire-ms 300
-# KNOWN HANG: expected to be stuck at the timeout (124); 0 would mean Mesa no longer blocks.
-case_ "wl mock noframe, fifo (KNOWN HANG, Mesa legacy FIFO throttle)" noframe 4 "124|137" 5 ''     -- --seconds 1 --mode fifo
+if [ "$PATCHED" = patched ]; then   # 0009: the throttle wait gives up after 500 ms per present, so 1 s of FIFO still finishes (slowly)
+   case_ "wl mock noframe, fifo does not hang (0009)" noframe 4 0 20 '"pass":true' -- --seconds 1 --mode fifo
+else   # KNOWN HANG: expected to be stuck at the timeout (124/137); 0 would mean Mesa no longer blocks.
+   case_ "wl mock noframe, fifo (KNOWN HANG, Mesa legacy FIFO throttle)" noframe 4 "124|137" 5 '' -- --seconds 1 --mode fifo
+fi
 [ $fail = 0 ] && echo "wlmock-host: OK"
 exit $fail
