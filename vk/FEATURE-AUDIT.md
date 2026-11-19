@@ -19,4 +19,11 @@ Decisions: MSAA counts stay advertised (dEQP relies on them), maxColorAttachment
 - Conditional (required only together with an extension/feature we do not set): drawIndirectCount (only if `VK_KHR_draw_indirect_count` is supported; maxDrawIndirectCount=1 now), the descriptorIndexing sub-features (only if `descriptorIndexing`/`VK_EXT_descriptor_indexing` is supported).
 - Unconditional for a 1.2 device: shaderSubgroupExtendedTypes, separateDepthStencilLayouts, subgroupBroadcastDynamicId.
 - Not classified against the spec yet: samplerFilterMinmax, shaderOutputViewportIndex/Layer (check the feature table before enabling).
+**Umbrella inconsistency (known, not fixed here):** `descriptorIndexing` itself stays false while its
+sampled-image sub-features are true, although the Vulkan 1.2 features table requires the umbrella bit
+whenever one of the sub-features is enabled, and DXVK requires `descriptorIndexing` for its descriptor
+model. This is a one-line honesty fix plus a `t_vk_feat` assertion; it is deliberately not part of this
+change because it needs a `t_vk_feat didx` re-run and a golden re-bless. It is not required for FL11_0
+games that never use descriptor indexing (Megabonk is one: D3D11 shader model 5.0 without bindless), so
+it does not block a DXVK device for this title.
 Set today: runtimeDescriptorArray, descriptorBindingPartiallyBound, descriptorBindingSampledImageUpdateAfterBind, descriptorBindingUpdateUnusedWhilePending, shaderSampledImageArrayDynamicIndexing/NonUniformIndexing (sampled-image subset, see the summary). All other descriptorIndexing sub-features and the rest of this list are false; costs unknown (hardware/compiler work).
