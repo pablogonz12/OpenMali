@@ -78,6 +78,7 @@ for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
+run "fence wait not sliced" 0 sh "$V/tests/t_waitslice.sh" "$OUT/t_queue" "$OUT/libvulkan_mali.so"
 
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done

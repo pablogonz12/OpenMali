@@ -528,6 +528,30 @@ test_syncfile(void)
    return 1;
 }
 
+/* Fence waits block for the whole timeout (no 20/100 ms slices): a fence that completes late (MALI_FAKE_SLOW_US) is
+ * waited on without the backend ever returning -ETIMEDOUT, and a wait that really times out still returns VK_TIMEOUT
+ * after at least the requested time. tests/t_waitslice.sh greps the fake backend's MALI_FAKE_WAIT_LOG output. */
+static int
+test_waitslice(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f, idle;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   CHECK(CreateFence(dev, &fi, NULL, &idle) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 5000000000ull) == VK_SUCCESS, "late fence wait");
+   double t0 = now_us() / 1e6;
+   VkResult r = WaitForFences(dev, 1, &idle, VK_TRUE, 250000000ull);
+   double dt = now_us() / 1e6 - t0;
+   CHECK(r == VK_TIMEOUT, "unsubmitted fence must time out, got %d", (int)r);
+   CHECK(dt >= 0.249, "timeout returned early after %.3f s", dt);
+   DestroyFence(dev, f, NULL);
+   DestroyFence(dev, idle, NULL);
+   printf("{\"test\":\"waitslice\",\"ok\":true}\n");
+   return 1;
+}
+
 static int
 test_fault(void)
 {
@@ -661,6 +685,7 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
+   if (ok && g_only && !strcmp(g_only, "waitslice")) ok &= test_waitslice();
    if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
 
    int td = g_only && !strcmp(g_only, "teardown");

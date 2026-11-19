@@ -144,9 +144,13 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
       if (fd < 0)
          return vk_error(vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-      /* Slices of 100 ms so that a reset/move/destroy on another thread and a device loss are noticed. */
-      uint64_t ms = left / 1000000ull;
-      int slice = ms > 100 ? 100 : (int)ms;
+      /* The backend blocks for the whole remaining time and wakes on the fence, so nothing is sliced: the fd is a dup
+       * (a reset/move/destroy elsewhere cannot invalidate it) and a device loss makes the backend return -EIO. */
+      int slice = -1;
+      if (abs_timeout_ns != UINT64_MAX) {
+         uint64_t ms = (left + 999999ull) / 1000000ull; /* round up: never return VK_TIMEOUT early */
+         slice = ms > (uint64_t)INT_MAX ? INT_MAX : (int)ms;
+      }
       int r = be->fence_wait(dev->kdev, fd, slice);
       close(fd);
       if (r == 0)
