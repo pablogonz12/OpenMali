@@ -573,8 +573,17 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
-   for (uint32_t i = 0; i < ci->regionCount && !r; i++)
-      r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);
+   for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
+      /* D+S images are two planes: a region naming both aspects blits the depth plane, then the stencil plane (one operation per aspect) */
+      const VkImageAspectFlags am = ci->pRegions[i].srcSubresource.aspectMask;
+      const bool both = (am & VK_IMAGE_ASPECT_DEPTH_BIT) && (am & VK_IMAGE_ASPECT_STENCIL_BIT);
+      for (unsigned a = 0; a < (both ? 2u : 1u) && !r; a++) {
+         VkImageBlit2 g = ci->pRegions[i];
+         if (both)
+            g.srcSubresource.aspectMask = g.dstSubresource.aspectMask = a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
+         r = blit_one(&l, si, di, &g, ci->filter, false, NULL);
+      }
+   }
    emit(cmd, &l, r);
 }
 

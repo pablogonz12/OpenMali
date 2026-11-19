@@ -61,6 +61,8 @@ DEV_FNS(DECL)
 static VkDevice dev;
 static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
+static VkPhysicalDevice g_pd;
+static PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties;
 
 __attribute__((unused)) static double
 now_us(void)
@@ -347,7 +349,7 @@ case_blit(void)
  *   srgb R8G8B8A8_SRGB 4x4 -> 8x8 LINEAR: R alternates 0 / 255 per column; filtering must happen in linear light and re-encode (a non-sRGB-aware
  *        blit would give 64 at x = 1 where sRGB gives ~137).
  *   r8   R8_UNORM 4x4 -> 2x2 LINEAR (minify): one-channel gradient.
- *   d32  D32_SFLOAT 4x4 -> 2x2 NEAREST depth aspect (LINEAR is requested too and must behave as nearest): dst (x, y) = src (2x + 1, 2y + 1). */
+ *   d32  D32_SFLOAT 4x4 -> 2x2 NEAREST depth aspect (Vulkan requires NEAREST for depth/stencil sources): dst (x, y) = src (2x + 1, 2y + 1). */
 static uint16_t
 f2h(float f)
 {
@@ -419,7 +421,7 @@ case_blit_fmt(const char *name)
       CmdCopyBufferToImage(cb, src.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
       layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, asp);
       VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {sw, sw, 1}}, .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {dw, dw, 1}}};
-      CmdBlitImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+      CmdBlitImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, is_d32 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
       layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, asp);
       VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {dw, dw, 1}};
       CmdCopyImageToBuffer(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.b, 1, &dn);
@@ -801,6 +803,42 @@ case_dsfmt(const char *name, VkFormat fmt)
          if (hs) CHECK(!memcmp(sdst.p, ssrc.p, w * h), "%s stencil plane differs", name);
       }
    }
+   /* BLIT_DST must be advertised for depth/stencil formats, and a CmdBlitImage region naming both aspects must write BOTH planes */
+   {
+      VkFormatProperties fp;
+      GetPhysicalDeviceFormatProperties(g_pd, fmt, &fp);
+      CHECK((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT),
+            "%s optimal features 0x%x lack BLIT_SRC|BLIT_DST", name, fp.optimalTilingFeatures);
+   }
+   if (hs) {
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      layout_tr(cb, b.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      VkClearDepthStencilValue c = {.depth = 0.5f, .stencil = 0x11};
+      VkImageSubresourceRange rg = {all, 0, 1, 0, 1};
+      CmdClearDepthStencilImage(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &rg);
+      VkBufferImageCopy up = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, zsrc.b, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      VkBufferImageCopy us = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, ssrc.b, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &us);
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      VkImageBlit bl = {.srcSubresource = {all, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {w, h, 1}},
+                        .dstSubresource = {all, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {w, h, 1}}};
+      CmdBlitImage(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_NEAREST);
+      layout_tr(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      memset(zdst.p, 0xEE, w * h * zb);
+      memset(sdst.p, 0xEE, w * h);
+      VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, zdst.b, 1, &dn);
+      VkBufferImageCopy ds = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sdst.b, 1, &ds);
+      CHECK(submit_wait(cb), "submit blit");
+      if (!g_fake) {
+         CHECK(!memcmp(zdst.p, zsrc.p, w * h * zb), "%s blit depth plane differs", name);
+         CHECK(!memcmp(sdst.p, ssrc.p, w * h), "%s blit stencil plane not written by a depth|stencil region", name);
+      }
+   }
    /* clear-only pass: both aspects */
    {
       VkCommandBuffer cb = begin_cb();
@@ -1006,6 +1044,8 @@ main(int argc, char **argv)
    uint32_t cnt = 1;
    VkResult r = EPD(inst, &cnt, &pd);
    if ((r != VK_SUCCESS && r != VK_INCOMPLETE) || cnt < 1) { printf("{\"fail\":\"no device\"}\n"); return 1; }
+   g_pd = pd;
+   GetPhysicalDeviceFormatProperties = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
    g_ms4 = !!(pp.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT);

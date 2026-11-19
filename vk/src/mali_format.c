@@ -167,8 +167,8 @@ mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *o)
       o->hw = o->plane[0].hw;
       o->bind = pt[p].bind ? pt[p].bind : PAN_BIND_DEPTH_STENCIL;
       /* D16S8 has no Mali plane pair (Z16 + S8 is fine as two planes, but VK D16_UNORM_S8_UINT maps to NONE in Mesa and is optional): not advertised. */
-      VkFormatFeatureFlags ff = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-                                VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+      VkFormatFeatureFlags ff = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+                                VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
       if (o->has_depth && !o->has_stencil) ff |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
       if (o->has_depth && o->has_stencil) ff |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
       o->optimal = ff;
