@@ -214,6 +214,10 @@ run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
+# WSI contract (maintenance1 create structs + per-present switch + release, DRM modifiers for NV12/BGRA): same headless gamescope X server
+if [ -x "$OUT/t_wsi_maint" ] && command -v gamescope >/dev/null; then
+   for g in v11 v13; do run "wsi maint $g" 0 "$V/tests/xwsi-maint.sh" "$OUT" $g; done
+fi
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
 run "vk_meta v10"     0 $F "$OUT/t_vk_meta" $DL --loop 20
