@@ -488,8 +488,10 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          if (nir->info.clip_distance_array_size)
             NIR_PASS(_, nir, nir_merge_clip_cull_distance_vars);
          clip_distances = nir->info.clip_distance_array_size + (cull_as_clip ? nir->info.cull_distance_array_size : 0);
-         if (clip_distances > 8)
+         if (clip_distances > 8) {
+            ralloc_free(nir);
             return fail(err, errsz, "MALI_CULLDIST: clip + cull distances > 8");
+         }
          nir_foreach_shader_in_variable(var, nir)
             var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
          nir_assign_io_var_locations(nir, nir_var_shader_out);

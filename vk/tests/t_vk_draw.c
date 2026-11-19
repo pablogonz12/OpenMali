@@ -2065,7 +2065,9 @@ main(int argc, char **argv)
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
-   if (ok && getenv("MALI_CULLDIST") && CASE_ON("cull_dist")) { g_cull = 1; ok &= test_triangle(); g_cull = 0; }   /* gl_CullDistance VS (default off: only with MALI_CULLDIST=1) */
+   if (ok && CASE_ON("cull_dist") && !(getenv("MALI_CULLDIST") && !strcmp(getenv("MALI_CULLDIST"), "1")))
+      printf("{\"test\":\"cull_dist\",\"skipped\":\"needs MALI_CULLDIST=1 (the compiler lowers only for the value 1)\",\"ok\":true}\n");
+   else if (ok && CASE_ON("cull_dist")) { g_cull = 1; ok &= test_triangle(); g_cull = 0; }   /* gl_CullDistance VS (default off: only with MALI_CULLDIST=1) */
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
