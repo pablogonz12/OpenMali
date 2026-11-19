@@ -14,6 +14,7 @@
 extern const struct mali_backend_ops mali_backend_kbase;
 extern unsigned kb_fake_mem_alloc_count(void), kb_fake_mem_free_count(void);
 extern unsigned kb_fake_memsync_count(uint64_t va);
+extern unsigned kb_test_cache_flush_count(void);
 
 static int fails;
 #define EXPECT(c, ...) do { if (!(c)) { fails++; printf("FAIL  "); printf(__VA_ARGS__); printf("\n"); } else { printf("ok    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -21,6 +22,7 @@ static int fails;
 int main(void)
 {
    setenv("MALI_BO_POOL_MB", "8", 1);
+   setenv("MALI_BO_COHERENT_LOCAL", "1", 1);   /* the MEM_SYNC assertions below need COHERENT_LOCAL whatever the caller exported */
    const struct mali_backend_ops *b = &mali_backend_kbase;
    struct mali_gpu_info gi = {.arch_major = 11, .uapi_major = 1, .uapi_minor = 21, .core_count = 2};
    struct mali_kdev *k;
@@ -95,6 +97,24 @@ int main(void)
    s0 = kb_fake_memsync_count(va);
    b->host_sync(k); b->submit_cs(k, cs, 0);
    EXPECT(kb_fake_memsync_count(va) == s0, "pooled BO is not synced");
+
+   /* a pooled CPU-cached BO must not hold dirty lines: written back on release if the CPU touched it, nothing to do if it never did */
+   {
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | MALI_BO_CACHED, &x)) return 1;
+      unsigned c0 = kb_test_cache_flush_count();
+      b->bo_free(k, &x);   /* never touched: lazy */
+      EXPECT(kb_test_cache_flush_count() == c0, "untouched cached BO: no cache maintenance on release");
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | MALI_BO_CACHED, &x)) return 1;
+      b->bo_host_touch(k, &x);
+      c0 = kb_test_cache_flush_count();
+      b->bo_free(k, &x);
+      EXPECT(kb_test_cache_flush_count() > c0, "CPU-touched cached BO is cleaned before it enters the pool");
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &x)) return 1;
+      b->bo_host_touch(k, &x);
+      c0 = kb_test_cache_flush_count();
+      b->bo_free(k, &x);
+      EXPECT(kb_test_cache_flush_count() == c0, "uncached BO: no cache maintenance");
+   }
 
    b->device_destroy(k);
 

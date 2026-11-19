@@ -358,6 +358,10 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
    if (!bo->priv)
       return;
    track_bo(k, bo->priv, false);
+   /* A pooled CPU-cached BO keeps its mapping and is handed out again without the zero+flush of a fresh one: write back any CPU-dirty lines now, or they could
+    * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
+   if (pool_eligible(bo->flags) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)
+      kb_bo_cache_flush_inv(bo->priv, 0, bo->size);
    if (!(pool_eligible(bo->flags) && pool_put(k, bo->priv, bo->flags))) {
       kb_bo_free(bo->priv);
       free(bo->priv);
