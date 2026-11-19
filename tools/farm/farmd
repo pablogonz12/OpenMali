@@ -679,6 +679,14 @@ class Farm:
             ex["SHELLROUTE_NODIM"] = "1"
         return L.run_watched(cmd, tmo, lambda: self.alive(dev), env=self.phone_env(dev, ex))
 
+    @staticmethod
+    def unstaged(out):
+        """qdeqp bailed out BEFORE pushing the .so (adb missing / focus / app session not READY): nothing to verify on the phone -> reason or None"""
+        for m in ("FAIL session not READY", "PROBLEM adb missing", "FAIL focus not"):
+            if m in (out or ""):
+                return m
+        return None
+
     def shell_rc(self, rc, out, what):
         """common handling of shellroute exit codes -> result dict or None (= carry on)"""
         if rc == 125:
@@ -904,6 +912,11 @@ class Farm:
                 return {"lost": True}
             if rc == 73:
                 return {"gated": True}
+            why = self.unstaged(out) if rc not in (75, 124, 76) else None
+            if why:                                                      # never staged: not a foreign driver (cmf: locked screen = session SUSPENDED)
+                self.adb(dev, "shell", f"rm -f {so_phone}")
+                self.cool[dev["alias"]] = time.time() + 300
+                return {"verdict": "error", "notes": f"qdeqp did not start ({why}); .so never pushed: " + out.strip()[-160:]}
             if rc != 75 and rc != 124:                                   # driver on the phone must still be this job's build
                 ok_s, got = (rc != 76) and self.verify_so(job, dev, so_phone) or (False, "changed mid-run")
                 self.adb(dev, "shell", f"rm -f {so_phone}")
@@ -1048,6 +1061,9 @@ class Farm:
             if tsv and os.path.exists(tsv[:-4] + ".dbg"):       # MALI_*_DBG jobs: the driver's stderr per test case (qdeqp.py QDEQP_DBG_PATH) -> logs/<run>.dbg
                 shutil.copy(tsv[:-4] + ".dbg", os.path.join(L.state_dir(), "logs", f"{rid}.dbg"))
         sok, sgot = None, None
+        if self.unstaged(out):                                   # qdeqp never pushed the .so: nothing to judge (not an INVALID-RUN)
+            self.adb(dev, "shell", f"rm -f {so_phone}")
+            return rc, out, {}, None, None
         if rc in (0, 1) or verify_always:
             sok, sgot = self.verify_so(job, dev, so_phone)
             if rc in (76, 77) or sgot is None and rc not in (0, 1):

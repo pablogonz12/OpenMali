@@ -190,6 +190,10 @@ static void *map_new_bo(uint64_t flags_unused, size_t len, uint32_t kind, uint32
 struct synccnt { uint64_t va; unsigned n; };
 static struct synccnt syncs[256];
 static int nsync;
+static unsigned n_mem_alloc, n_mem_free;
+unsigned kb_fake_mem_alloc_count(void) { return n_mem_alloc; }   /* test hooks (t_bopool.c) */
+unsigned kb_fake_mem_free_count(void) { return n_mem_free; }
+unsigned kb_fake_memsync_count(uint64_t va);   /* test hook (t_memsync.c) */
 unsigned kb_fake_memsync_count(uint64_t va) { for (int i = 0; i < nsync; i++) if (syncs[i].va == va) return syncs[i].n; return 0; }
 
 int ioctl(int fd, unsigned long req, ...)
@@ -242,6 +246,7 @@ int ioctl(int fd, unsigned long req, ...)
 	}
 	case 59: {
 		union kbase_ioctl_mem_alloc_ex *m = arg;
+		n_mem_alloc++;
 		uint64_t fl = m->in.flags, pages = m->in.va_pages;
 		int same = (fl & BASE_MEM_SAME_VA) != 0;
 		struct pend *p = &pend[npend++ % 1024];
@@ -317,7 +322,7 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
 int munmap(void *addr, size_t len)
 {
 	for (int i = 0; i < nreg; i++)
-		if (reg[i].live && reg[i].cpu == addr) { reg[i].live = 0; reg[i].freed_seq = kick_no; break; }
+		if (reg[i].live && reg[i].cpu == addr) { n_mem_free++; reg[i].live = 0; reg[i].freed_seq = kick_no; break; }
 	long r = rsys(SYS_munmap, (long)addr, (long)len, 0, 0, 0, 0);
 	if (r < 0) { errno = (int)-r; return -1; }
 	return 0;

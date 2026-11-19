@@ -152,6 +152,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
 
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
    o.stage = MALI_STAGE_VERTEX;
@@ -295,7 +296,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
       /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */
       if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_POINT) {
-         g->poly_mode = 2; g->prim = 1; g->prim_restart = false;
+         g->poly_mode = 2; g->poly_prim = g->prim; g->prim = 1;   /* prim_restart stays: the rewrite uses it to split strips */
       } else if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_LINE) {
          g->poly_mode = 1; g->poly_prim = g->prim; g->prim = 2;
       }
@@ -391,6 +392,7 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
    o.spirv = ccode;
    o.spirv_words = cwords;

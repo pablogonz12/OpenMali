@@ -43,6 +43,7 @@ struct mali_env {
    void *geo_cpu;                 /* geometry BO: 4 KiB heap descriptor page, then a 64 KiB geometry buffer */
    uint64_t geo_va;
    uint64_t sync_va;              /* CQS word the frame increments (SYNC_ADD64) when it retires */
+   int *light_pending;            /* per-device flag: a light ops frame was built, the next submit_signal of this device must not be skipped */
    unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
 };
 
@@ -77,8 +78,8 @@ struct mali_gfx_state {
    unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
    unsigned prim;                         /* Mali draw mode: 1 points, 2 lines, 4 line strip, 8 triangles (default 0 = 8), 10 strip, 12 fan */
    bool prim_restart;
-   unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 */
-   unsigned poly_prim;                    /* LINE: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
+   unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 and the draw is likewise rewritten to an indexed point list */
+   unsigned poly_prim;                    /* LINE/POINT: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
 };
 
@@ -247,6 +248,9 @@ void mali_frame_finish(struct mali_frame *f);                               /* f
 int mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **cs, unsigned *ninstr);
 /* job_begin + build + write barrier + hw->submit. */
 int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
+
+/* polygonMode LINE (mode 1: 6 indices per triangle) / POINT (mode 2: 3) from the assembled triangles of a list (8) / strip (10) / fan (12); see mali_cs_emit.c. out: 6 * n entries. */
+size_t mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const uint32_t *v, uint32_t n, uint32_t *out);
 
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
