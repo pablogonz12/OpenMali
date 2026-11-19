@@ -1453,13 +1453,13 @@ class Farm:
                 self.hold_cleanup(dev)
                 self.restore_pending.discard(alias)
             touched = not menu                                  # menubench restores the phone itself
-            started = []
+            took = []
             def go(x):                                              # only a still-pending part starts: a `farm cancel` since the tick snapshot wins
                 if x["parts"][cls]["state"] == "pending":
                     x["parts"][cls].update(state="running", device=alias)
-                    started.append(1)
+                    took.append(1)
             self.upd(jid, go)
-            if not started:                                         # cancelled, or another worker already took this part: only the one that made the transition runs it
+            if not took:                                         # cancelled, or another worker already took this part: only the one that made the transition runs it
                 log(f"{alias}: {jid}/{cls} was cancelled or already started by another worker; not starting")
                 return
             sha, why = self.build(job)

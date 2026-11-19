@@ -469,11 +469,15 @@ class T(unittest.TestCase):
 
     def test_clean_pass_and_smoke_fail(self):
         self.attach("dev-a", "dev-b")
-        _, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--env", "FAKE_FAIL=1")
+        _, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--allow-stale")
+        self.assertTrue(j1, "submit failed")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--env", "FAKE_FAIL=1", "--allow-stale")
         self.farmd()
         self.assertEqual(self.farm("wait", j1)[1], "pass")
         self.assertEqual(self.farm("wait", j2)[1], "fail")
+        run = json.load(open(self.d + f"/state/runs/{j1}-v11.json"))
+        self.assertIsInstance(run["started"], str)                           # the ISO start time, not the worker's took-the-part marker
+        self.assertTrue(run["started"].startswith(time.strftime("%Y-")), run["started"])
 
     def test_lock_busy_keeps_pending(self):
         self.attach("dev-a")
