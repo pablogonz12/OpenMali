@@ -377,8 +377,8 @@ main(int argc, char **argv)
    const char *be = getenv("MALI_BACKEND");
    g_fake = be && !strcmp(be, "fake");
    const char *fr = getenv("MALI_TEST_FORCE_ROBUST");
-   if (!fr || (fr[0] != '1' && fr[0] != '0')) {
-      printf("{\"test\":\"robust\",\"ok\":true,\"skipped\":\"MALI_TEST_FORCE_ROBUST not set (=1 forces robust lowering, =0 control run)\"}\n{\"pass\":true}\n");
+   if (!fr || (fr[0] != '1' && fr[0] != '0' && fr[0] != 'f')) {
+      printf("{\"test\":\"robust\",\"ok\":true,\"skipped\":\"MALI_TEST_FORCE_ROBUST not set (=1 forces robust lowering, =f enables the advertised robustBufferAccess feature, =0 control run)\"}\n{\"pass\":true}\n");
       return 0;
    }
    g_control = fr[0] == '0';
@@ -412,7 +412,8 @@ main(int argc, char **argv)
 
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
-   VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
+   VkPhysicalDeviceFeatures feats = {.robustBufferAccess = VK_TRUE};   /* =f: the real core feature (advertised), no env hook in the ICD */
+   VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi, .pEnabledFeatures = fr[0] == 'f' ? &feats : NULL};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
