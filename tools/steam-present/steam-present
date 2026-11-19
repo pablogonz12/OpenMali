@@ -459,14 +459,16 @@ def main():
         s = Sampler(ph, layer, a.seconds, mode)
         s.start()
         time.sleep(a.seconds)
-        stop_workers(s, sweep)
+        # read the mode before the input stops: an idle menu can drop to 60 Hz, and that would look like a mode
+        # change inside the window when it is really the shutdown
         mode_end = panel_mode(ph)            # a fresh observation, not the starting id again
         hz_end = panel_hz(ph, mode_end)
+        stop_workers(s, sweep)
         # A mode we could not read at the start, or during the window, is a sampling failure: an unobserved
         # 60 -> 120 Hz switch would otherwise pass validation.
         moved = sorted(x for x in s.modes if x != mode) if mode is not None else sorted(s.modes)
         unobserved = not s.modes or s.no_mode or mode_end is None
-        if abs(hz_end - hz) > 0.5 or moved or unobserved:
+        if abs(hz_end - hz) > 0.5 or moved or unobserved or (mode is not None and mode_end != mode):
             die(f"panel mode changed during sampling (started at {hz} Hz mode {mode}, "
                 f"ended at {hz_end} Hz, modes seen {sorted(s.modes)}); the base interval is not stable", 4)
         if s.gaps or s.errors:
