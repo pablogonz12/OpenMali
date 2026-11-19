@@ -4,8 +4,8 @@
  * done from the vertex shader (one vertex) or the fragment shader (interpolated values). DXVK hard-requires the shaderCullDistance device
  * feature to create a device at all. With this env set the driver reports shaderCullDistance = true, maxCullDistances = 8 and
  * maxCombinedClipAndCullDistances = 8 (the Vulkan minimums), and the compiler IGNORES every gl_CullDistance write (the outputs are demoted
- * to plain temporaries). Primitives that should have been culled are therefore rasterised; D3D11 only uses SV_CullDistance as an
- * optimisation hint, so the visible result is normally identical. The CTS cull-distance tests must stay excluded while this is on, and
+ * to plain temporaries). Primitives that should have been culled are therefore rasterised; Direct3D rejects a primitive whose vertices
+ * are all negative for a plane, so ignoring the values CAN change the visible image, not only performance. The CTS cull-distance tests must stay excluded while this is on, and
  * nothing may report conformance with it. vk/README.md "Cull distance shim". */
 #ifndef MALI_CULL_SHIM_H
 #define MALI_CULL_SHIM_H

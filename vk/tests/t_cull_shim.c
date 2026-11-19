@@ -39,7 +39,9 @@ main(int argc, char **argv)
    I(CreateDevice); I(GetDeviceProcAddr); I(DestroyInstance);
    uint32_t n = 1;
    VkPhysicalDevice pd;
-   CHECK(EnumeratePhysicalDevices(inst, &n, &pd) == VK_SUCCESS && n == 1, "enumerate");
+   VkResult er = EnumeratePhysicalDevices(inst, &n, &pd);
+   CHECK(er == VK_SUCCESS && n == 1, "enumerate");
+   if (er != VK_SUCCESS || n < 1) { DestroyInstance(inst, NULL); return 1; }
 
    VkPhysicalDeviceFeatures f1;
    GetPhysicalDeviceFeatures(pd, &f1);
