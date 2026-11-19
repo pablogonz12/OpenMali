@@ -3002,8 +3002,11 @@ main(int argc, char **argv)
    {
       const char *fe = getenv("MALI_TEST_FORCE_DIDX_BUF");   /* test-only: probe the lowering before the bits are advertised */
       g_dbuf_force = fe && *fe == '1';
-      g_dbuf = (g_feat.shaderUniformBufferArrayDynamicIndexing && g_feat.shaderStorageBufferArrayDynamicIndexing && g_feat.shaderStorageImageArrayDynamicIndexing &&
-                f12.shaderUniformBufferArrayNonUniformIndexing && f12.shaderStorageBufferArrayNonUniformIndexing && f12.shaderStorageImageArrayNonUniformIndexing) || g_dbuf_force;
+      /* Runs on the three dynamic-indexing bits Unity asks for. The shader also indexes non-uniformly; those bits stay unadvertised (the
+       * waterfall lowering supports them, but nothing pixel-tests them on hardware), so on a device without them the ran test is the
+       * forced probe and the non-uniform lanes are the lowering's business, not a contract with an application. */
+      g_dbuf = (g_feat.shaderUniformBufferArrayDynamicIndexing && g_feat.shaderStorageBufferArrayDynamicIndexing &&
+                g_feat.shaderStorageImageArrayDynamicIndexing) || g_dbuf_force;
    }
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};

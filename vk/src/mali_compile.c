@@ -544,6 +544,19 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
    nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
 
+   /* MALI_NIR_DUMP=<path>: append the lowered NIR to <path> (tests/t_compile.c uses it to check the descriptor lowering itself:
+    * that a runtime index into a UBO/SSBO array reaches the handle arithmetic and the clamp against count - 1, which no pixel
+    * dump can show without a GPU). Off unless the variable is set, so the normal path is unchanged. */
+   const char *dump_path = getenv("MALI_NIR_DUMP");
+   if (dump_path && *dump_path) {
+      FILE *df = fopen(dump_path, "a");
+      if (df) {
+         fprintf(df, "# -- %s --\n", o->stage == MALI_STAGE_VERTEX ? "vertex" : o->stage == MALI_STAGE_FRAGMENT ? "fragment" : "compute");
+         nir_print_shader(nir, df);
+         fclose(df);
+      }
+   }
+
    struct pan_shader_info info = {0};
    /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
    if (gcm_enabled(nir)) {

@@ -285,6 +285,13 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
       .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */
+      /* Arrays of UBOs, SSBOs and storage images indexed with a runtime value: the lowering turns every array element into one
+       * 32-byte descriptor and the index into handle arithmetic (mali_descriptor_lower.c deref_handle/vulkan_resource_index:
+       * handle = first + idx * stride, stride 1 for all three types). Verified by t_vk_feat didxbuf (pipeline + dispatch) and by
+       * the t_compile uboidx/ssboidx NIR check (the clamp against count-1 and the index add must both be there).
+       * Non-uniform variants stay off: they run through the waterfall loop and are not probed by a pixel test on hardware yet. */
+      .shaderUniformBufferArrayDynamicIndexing = true, .shaderStorageBufferArrayDynamicIndexing = true,
+      .shaderStorageImageArrayDynamicIndexing = true,
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
