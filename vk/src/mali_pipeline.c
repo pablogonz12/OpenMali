@@ -15,6 +15,7 @@
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
+#include "vk_pipeline.h"
 #include "vk_pipeline_layout.h"
 #include "vk_shader_module.h"
 #include "util/bitscan.h"
@@ -326,14 +327,13 @@ fail:
    return res;
 }
 
-/* maintenance5: VkPipelineCreateFlags2CreateInfo::flags replaces ci.flags when chained */
+/* pipelineCreationCacheControl: there is no application-visible pipeline cache hit (VkPipelineCache is not consulted), so every
+ * creation "requires compilation": FAIL_ON_PIPELINE_COMPILE_REQUIRED fails with VK_PIPELINE_COMPILE_REQUIRED (the spec lets an
+ * implementation do this whenever it cannot return the pipeline without compiling). Apps retry without the flag. */
 static bool
-early_return(VkPipelineCreateFlags flags, const void *pNext)
+compile_required_fail(VkPipelineCreateFlags2KHR flags)
 {
-   const VkPipelineCreateFlags2CreateInfoKHR *f2 = vk_find_struct_const(pNext, PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
-   if (f2)
-      return (f2->flags & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) != 0;
-   return (flags & VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT) != 0;
+   return (flags & VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) != 0;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -345,11 +345,12 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
    uint32_t i;
 
    for (i = 0; i < n; i++) {
-      VkResult r = create_one(dev, &ci[i], alloc, &out[i]);
+      const VkPipelineCreateFlags2KHR f2 = vk_graphics_pipeline_create_flags(&ci[i]);
+      VkResult r = compile_required_fail(f2) ? VK_PIPELINE_COMPILE_REQUIRED : create_one(dev, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
          result = r;
          out[i] = VK_NULL_HANDLE;
-         if (early_return(ci[i].flags, ci[i].pNext))
+         if (f2 & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR)
             break;
       }
    }
@@ -421,11 +422,12 @@ mali_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const
    uint32_t i;
 
    for (i = 0; i < n; i++) {
-      VkResult r = create_compute_one(dev, &ci[i], alloc, &out[i]);
+      const VkPipelineCreateFlags2KHR f2 = vk_compute_pipeline_create_flags(&ci[i]);
+      VkResult r = compile_required_fail(f2) ? VK_PIPELINE_COMPILE_REQUIRED : create_compute_one(dev, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
          result = r;
          out[i] = VK_NULL_HANDLE;
-         if (early_return(ci[i].flags, ci[i].pNext))
+         if (f2 & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR)
             break;
       }
    }
