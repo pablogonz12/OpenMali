@@ -128,6 +128,23 @@ test_pairing(void)
    free(vs.w); free(fs.w);
 }
 
+/* A Private global with a constant initializer (DXVK/dxc `static` variables) used to hit an assert in nir_lower_vars_to_ssa. */
+static void
+test_private_init(void)
+{
+   printf("private variable initializers\n");
+   struct spv cs = load("privinit.comp.spv");
+   if (!cs.w) return;
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct mali_compiled c;
+      if (compile(arch, MALI_STAGE_COMPUTE, &cs, NULL, "", &c)) { g_fail++; continue; }
+      CHECK(c.bin_size > 0 && c.bin_size % 8 == 0, "v%u privinit binary size %u", arch, c.bin_size);
+      mali_compiled_free(&c);
+   }
+   free(cs.w);
+}
+
 static void
 test_compute(void)
 {
@@ -393,6 +410,7 @@ main(int argc, char **argv)
    else printf("golden: skipped (stale, T_COMPILE_GOLDEN=1 to run)\n");
    test_pairing();
    test_compute();
+   test_private_init();
    test_determinism_and_cache();
    test_ycbcr();
    test_wpos_center();
