@@ -14,15 +14,19 @@ shift $((OPTIND - 1))
 BIN=$D/vk/out/native/shaderdb
 C=${SHADERDB_CACHE:-${TMPDIR:-/tmp}/shaderdb-corpus}
 mkdir -p "$C"
-FILES=$( { ls "$D"/vk/shader/*.spv "$D"/bench/mdbench/shaders/*.spv "$D"/compiler-spike/*.spv 2>/dev/null
+mapfile -d '' -t FILES < <( { for f in "$D"/vk/shader/*.spv "$D"/bench/mdbench/shaders/*.spv "$D"/compiler-spike/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
    EX=${SHADERDB_EXTRA:-}
-   for e in ${EX//:/ } "$@"; do if [ -d "$e" ]; then find "$e" -name '*.spv'; else echo "$e"; fi; done
+   IFS=: read -r -a EXA <<< "$EX"
+   for e in ${EXA[@]+"${EXA[@]}"} "$@"; do [ -n "$e" ] || continue; if [ -d "$e" ]; then find "$e" -name '*.spv' -print0; else printf '%s\0' "$e"; fi; done
    if [ -z "${SHADERDB_NO_DXVK:-}" ]; then
-      DX=${SHADERDB_DXVK_DIR:-$(ls -d /usr/share/steam/compatibilitytools.d/*/files/lib/wine/dxvk/x86_64-windows 2>/dev/null | head -1)}
+      DX=${SHADERDB_DXVK_DIR:-$(ls -d /usr/share/steam/compatibilitytools.d/*/files/lib/wine/dxvk/x86_64-windows 2>/dev/null | head -1 || true)}
       if [ -n "$DX" ] && [ -d "$DX" ]; then
-         [ -d "$C/dxvk" ] || python3 -I "$D/tools/shaderdb/extract_spv.py" "$C/dxvk" dxvk "$DX"/d3d11.dll "$DX"/d3d9.dll "$DX"/d3d8.dll "$DX"/dxgi.dll "$DX"/d3d10core.dll >&2
-         ls "$C"/dxvk/*.spv 2>/dev/null
+         if [ ! -f "$C/dxvk/.complete" ]; then   # publish only after a successful extraction; partial runs are retried
+            rm -rf "$C/dxvk.tmp" "$C/dxvk"
+            python3 -I "$D/tools/shaderdb/extract_spv.py" "$C/dxvk.tmp" dxvk "$DX"/d3d11.dll "$DX"/d3d9.dll "$DX"/d3d8.dll "$DX"/dxgi.dll "$DX"/d3d10core.dll >&2
+            touch "$C/dxvk.tmp/.complete"; mv "$C/dxvk.tmp" "$C/dxvk"
+         fi
+         for f in "$C"/dxvk/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
       fi
-   fi; } | LC_ALL=C sort -u)
-# shellcheck disable=SC2086
-MALI_SHADER_CACHE= "$BIN" -a "$ARCHS" $FILES > "$OUT"
+   fi; } | LC_ALL=C sort -zu)
+SHADERDB_STRIP="$D/:$C/" MALI_SHADER_CACHE= "$BIN" -a "$ARCHS" "${FILES[@]}" > "$OUT"
