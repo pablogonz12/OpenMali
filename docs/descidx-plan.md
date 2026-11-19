@@ -32,3 +32,9 @@ Wiring estimates (lane-hours): write enforcement in vkUpdateDescriptorSets + in-
 the CS (new per-set table VA in the resource table, hot file mali_cs_emit.c) 3-4; compiler lowering for non-constant indices with
 bounds clamp 4-6 (bumps compile version to 38 when it first changes output); limits struct + advertise 1-2. Total ~10-15 h on top of the
 table core.
+
+## Stage 4 wiring (descidx3 PR 2)
+Wired behind `MALI_DESCIDX_FLAGS=1` (default path untouched; goldens/check.sh unchanged): per-layout `bflags`, per-set `var_count`,
+`mali_dset_dtab` / `mali_dset_binding_va` (address table, variable count honoured), `mali_dset_use` + drop-and-count of writes/copies to
+non-UAB bindings while a set is in use. NOT wired: `mali_dset_use` callers in queue submit/retire (hot files mali_cmd.c/queue; ~2 h) and the
+shader-side access path (needs compiler lowering, compile version 38, separate default-off PR, ~6-8 h).

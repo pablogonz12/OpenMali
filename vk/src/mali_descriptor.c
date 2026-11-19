@@ -3,6 +3,7 @@
 #include "mali_descriptor.h"
 #include "mali_format.h"
 #include "mali_descidx.h"
+#include "mali_desctable.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -112,6 +113,7 @@ dsl_destroy(struct vk_device *dev, struct vk_descriptor_set_layout *l)
 {
    struct mali_dsl *d = container_of(l, struct mali_dsl, vk);
    vk_free(&dev->alloc, d->b);
+   vk_free(&dev->alloc, d->bflags);
    vk_free(&dev->alloc, d->imm);
    vk_free(&dev->alloc, d->ycbcr);
    vk_object_free(dev, NULL, d);
@@ -170,6 +172,14 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
+      if (descidx_on() && bf && bf->pBindingFlags && bf->bindingCount == ci->bindingCount) {
+         if (!d->bflags) d->bflags = vk_zalloc(&dev->alloc, nb * sizeof *d->bflags, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         if (!d->bflags) {
+            dsl_destroy(dev, &d->vk);
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+         }
+         d->bflags[n] = bf->pBindingFlags[src - ci->pBindings];
+      }
       if (descidx_on() && bf && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
           n == nb - 1)   /* spec: only the highest-numbered binding; its slots are last in the set */
          d->var_binding = n;
@@ -386,6 +396,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, uint3
    s->cpu = p->cpu + at;
    s->va = p->va + at;
    s->arch = p->arch;
+   if (l->var_binding >= 0) s->var_count = var_count;
    if (bytes) memset(s->cpu, 0, bytes);   /* zero-capacity pool: s->cpu is NULL (memset(NULL, 0, 0) is UB) */
    write_immutable(s);
    for (uint32_t n = 0; n < l->nbindings; n++) {
@@ -524,6 +535,50 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
    }
 }
 
+/* MALI_DESCIDX_FLAGS=1: is a write to `binding` of a set that a pending submission uses illegal? Counted, then dropped by the caller. */
+static bool
+write_denied(struct mali_dset *s, uint32_t binding)
+{
+   if (s->in_use <= 0 || !s->layout->bflags) return false;
+   if (mali_dtab_write_allowed(binding < s->layout->nbindings ? s->layout->bflags[binding] : 0, true)) return false;
+   s->denied_writes++;
+   return true;
+}
+
+void
+mali_dset_use(struct mali_dset *s, int delta)
+{
+   if (descidx_on()) s->in_use += delta;
+}
+
+uint32_t
+mali_dset_dtab(const struct mali_dset *s, struct mali_dtab_entry *out, uint32_t cap)
+{
+   const struct mali_dsl *l = s->layout;
+   if (!descidx_on() || cap < l->nbindings) return 0;
+   for (uint32_t n = 0; n < l->nbindings; n++) {
+      const struct mali_lbinding *b = &l->b[n];
+      out[n] = (struct mali_dtab_entry){ .slot = b->slot, .stride = b->stride, .count = b->count,
+                                         .flags = l->bflags ? l->bflags[n] : 0,
+                                         .present = b->type != MALI_DT_NONE && b->stride != 0 };
+      if ((int32_t)n == l->var_binding) out[n].count = s->var_count;
+   }
+   return l->nbindings;
+}
+
+bool
+mali_dset_binding_va(const struct mali_dset *s, uint32_t binding, uint32_t idx, uint64_t *va)
+{
+   uint32_t cap = s->layout->nbindings, slot = 0;
+   struct mali_dtab_entry *t = cap ? malloc(cap * sizeof *t) : NULL;
+   if (!t) return false;
+   uint32_t n = mali_dset_dtab(s, t, cap);
+   bool ok = n && mali_dtab_slot(t, n, binding, idx, &slot) == MALI_DTAB_OK;
+   free(t);
+   if (ok) *va = s->va + (uint64_t)slot * MALI_DESC_SLOT_SIZE;
+   return ok;
+}
+
 void
 mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
 {
@@ -533,6 +588,7 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       const VkWriteDescriptorSetInlineUniformBlock *ib = vk_find_struct_const(w->pNext, WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
       if (!ib || binding >= l->nbindings || !l->b[binding].inline_bytes) return;
       const struct mali_lbinding *b = &l->b[binding];
+      if (write_denied(s, binding)) return;
       if (elem > b->inline_bytes || w->descriptorCount > b->inline_bytes - elem) return;
       memcpy(s->cpu + (size_t)(b->slot + 1) * MALI_DESC_SLOT_SIZE + elem, ib->pData, w->descriptorCount);
       return;
@@ -546,6 +602,7 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       if (binding >= l->nbindings) return;
       const struct mali_lbinding *b = &l->b[binding];
       if (b->type == MALI_DT_NONE) return;
+      if (write_denied(s, binding)) { elem++; continue; }
       write_one(s, b, elem, w->descriptorType,
                 w->pImageInfo ? &w->pImageInfo[i] : NULL, w->pBufferInfo ? &w->pBufferInfo[i] : NULL,
                 w->pTexelBufferView ? &w->pTexelBufferView[i] : NULL);
@@ -557,6 +614,7 @@ void
 mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src)
 {
    const struct mali_lbinding *sb = &src->layout->b[c->srcBinding], *db = &dst->layout->b[c->dstBinding];
+   if ((sb->inline_bytes || db->inline_bytes) && write_denied(dst, c->dstBinding)) return;
    if (sb->inline_bytes || db->inline_bytes) {   /* inline block: dstArrayElement/srcArrayElement are byte offsets, descriptorCount bytes */
       if (!sb->inline_bytes || !db->inline_bytes || c->srcArrayElement > sb->inline_bytes || c->dstArrayElement > db->inline_bytes ||
           c->descriptorCount > sb->inline_bytes - c->srcArrayElement || c->descriptorCount > db->inline_bytes - c->dstArrayElement)
@@ -565,6 +623,7 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
               src->cpu + (size_t)(sb->slot + 1) * MALI_DESC_SLOT_SIZE + c->srcArrayElement, c->descriptorCount);
       return;
    }
+   if (write_denied(dst, c->dstBinding)) return;
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
       uint32_t se = c->srcArrayElement + i, de = c->dstArrayElement + i;
       if (se >= sb->count || de >= db->count) return;
