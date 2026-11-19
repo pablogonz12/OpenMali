@@ -5,6 +5,7 @@
 #include "mali_msaa.h"
 #include "mali_gs_shim.h"
 #include "mali_cull_shim.h"
+#include "mali_descidx_shim.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -255,6 +256,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
+      .descriptorIndexing = mali_advertise_descidx(),   /* MALI_ADVERTISE_DESCIDX=1 shim only, NOT conformance (mali_descidx_shim.h); t_descidx_shim */
       .multiDrawIndirect = true,
       .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
