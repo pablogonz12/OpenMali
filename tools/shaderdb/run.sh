@@ -11,7 +11,7 @@ OUT=/dev/stdout ARCHS=11,13 BUILD=1
 while getopts "o:a:n" o; do case $o in o) OUT=$OPTARG;; a) ARCHS=$OPTARG;; n) BUILD=0;; *) exit 2;; esac; done
 shift $((OPTIND - 1))
 [ $BUILD = 1 ] && (cd "$D/vk" && ./build.sh >&2)
-BIN=$D/vk/out/native/shaderdb
+BIN=$D/vk/out/${SHADERDB_TARGET:-native}/shaderdb
 C=${SHADERDB_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/shaderdb-corpus}
 mkdir -p -m 700 "$C"
 [ -O "$C" ] && [ -d "$C" ] && [ ! -L "$C" ] || { echo "run.sh: cache dir $C must be a real directory owned by you" >&2; exit 1; }

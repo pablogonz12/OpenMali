@@ -153,6 +153,7 @@ main(int argc, char **argv)
          pid_t pid = fork();
          if (pid == 0) {
             if (!getenv("SHADERDB_V")) freopen("/dev/null", "w", stderr);
+            alarm(getenv("SHADERDB_TIMEOUT") ? atoi(getenv("SHADERDB_TIMEOUT")) : 60);
             double t[15]; struct mali_compiled c; char err[256] = ""; int rc = 0, ok = 0;
             for (int k = 0; k < reps; k++) {
                double t0 = now();
@@ -175,7 +176,9 @@ main(int argc, char **argv)
          int wstat = 0;
          waitpid(pid, &wstat, 0);
          const char *sn = st == 0 ? "vert" : st == 1 ? "frag" : "comp";
-         if (res->rc != 0) printf("%s\t%u\t%s\tERR\t0\t0\t0\t0\t0\t0\t0\t0\n", b, archs[i], sn);
+         if (WIFSIGNALED(wstat)) printf("%s\t%u\t%s\tSIG%d\t0\t0\t0\t0\t0\t0\t0\t0\n", b, archs[i], sn, WTERMSIG(wstat));
+         else if (WIFEXITED(wstat) && WEXITSTATUS(wstat) != 0) printf("%s\t%u\t%s\tEXIT%d\t0\t0\t0\t0\t0\t0\t0\t0\n", b, archs[i], sn, WEXITSTATUS(wstat));
+         else if (res->rc != 0) printf("%s\t%u\t%s\tERR\t0\t0\t0\t0\t0\t0\t0\t0\n", b, archs[i], sn);
          else printf("%s\t%u\t%s\tOK\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%.0f\n", b, archs[i], sn, res->v[0], res->v[1], res->v[2], res->v[3], res->v[4], res->v[5], res->v[6], res->t);
          munmap(res, sizeof *res); munmap(L, sizeof *L);
       }
