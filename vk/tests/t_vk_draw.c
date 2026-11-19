@@ -1537,7 +1537,11 @@ test_mrt_mixed(const char *name, int nrt)
                   want[3] = 64;
                   if (!h) want[2] = 255;
                }
-               if (memcmp(p, want, 4)) {
+               /* RT1 is blended 0.5 + 0.5: the 0.5 source converts to 127 or 128 depending on the GPU, so the sum is 254 or 255 (an ignored blend leaves 127/128) */
+               int slack = i == 1 && !h && i != discard ? 2 : 0, diff = 0;
+               for (int c = 0; c < 4; c++)
+                  diff |= abs((int)p[c] - (int)want[c]) > slack;
+               if (diff) {
                   if (!bad++)
                      printf("{\"detail\":\"rt%d y%d %s: got %02x%02x%02x%02x want %02x%02x%02x%02x\"}\n", i, y, h ? "clear" : "draw",
                             p[0], p[1], p[2], p[3], want[0], want[1], want[2], want[3]);
