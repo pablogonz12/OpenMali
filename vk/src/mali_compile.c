@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 35 /* 35: MALI_OPT_GCM=post (opt-in post-lowering gcm for compute; output unchanged when unset) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 36 /* 36: MALI_OPT_GCM=post compiles twice and keeps the post-GCM binary only if spills and work registers are no worse (output unchanged when unset) ; 35: MALI_OPT_GCM=post (opt-in post-lowering gcm for compute; output unchanged when unset) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -335,11 +335,15 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
 
 /* MALI_OPT_GCM gate: compute shaders without any derivative are touched. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex
  * only move earlier; belt and braces. MALI_OPT_GCM=1 runs it before pan_postprocess_nir (-5.3% instructions on the shaderdb corpus),
- * MALI_OPT_GCM=post after it (-11.2%, see tools/shaderdb; but meta_blit.comp gains 608 B of spills and subgroup.comp doubles its work registers). */
+ * MALI_OPT_GCM=post after it (-11.2%, see tools/shaderdb; meta_blit.comp gains 608 B of spills and subgroup.comp doubles its work registers, so the compile is repeated without it and the better binary is kept: -7.0%, 0 hurt). */
+static _Thread_local bool t_no_post_gcm; /* set while compiling the non-GCM fallback of MALI_OPT_GCM=post */
+
 static bool
 gcm_enabled(nir_shader *nir, bool post)
 {
    const char *e = getenv("MALI_OPT_GCM");
+   if (post && t_no_post_gcm)
+      return false;
    if (!e || nir->info.stage != MESA_SHADER_COMPUTE || (!strcmp(e, "post") != post))
       return false;
    nir_foreach_function_impl(impl, nir) {
@@ -671,6 +675,22 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    }
    atomic_fetch_add(&g_misses, 1);
    int r = do_compile(o, fau_reserved, push_base, out, err, errsz);
+   /* MALI_OPT_GCM=post: also compile without it and keep the post-GCM binary only if it is no worse in spills and work registers
+    * (GCM hoists long-lived values; meta_blit.comp +608 B of spills, subgroup.comp 2x regs without this guard). */
+   const char *ge = getenv("MALI_OPT_GCM");
+   if (r == 0 && ge && !strcmp(ge, "post") && o->stage == MALI_STAGE_COMPUTE) {
+      struct mali_compiled alt;
+      t_no_post_gcm = true;
+      int r2 = do_compile(o, fau_reserved, push_base, &alt, NULL, 0);
+      t_no_post_gcm = false;
+      if (r2 == 0) {
+         if (out->tls_size > alt.tls_size || out->work_reg_count > alt.work_reg_count) {
+            mali_compiled_free(out);
+            *out = alt;
+         } else
+            mali_compiled_free(&alt);
+      }
+   }
    if (r == 0 && use_cache)
       cache_store(dir, hex, out);
    return r;
