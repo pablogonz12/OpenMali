@@ -1159,7 +1159,8 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
    return ok;
 }
 
-static int g_mrt_skip = -1, g_mrt_sc = 0;   /* g_mrt_sc: pass-2 scissor 0 = 1px corner, 1 = full area, 2 = 1px at (0,0) */
+static int g_mrt_fill;
+static int g_mrt_fill, g_mrt_skip = -1, g_mrt_sc = 0;   /* g_mrt_sc: pass-2 scissor 0 = 1px corner, 1 = full area, 2 = 1px at (0,0) */
 /* multiple render targets: nrt (2 or 4) RGBA8 colour attachments, one draw of a left-half quad whose fragment shader
  * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
  * left half must hold that target's draw colour and the right half its clear colour.
@@ -1314,7 +1315,11 @@ test_mrt(const char *name, int nrt, int clear_att)
    MRT_DUMP("after pass1");
    if (clear_att == 2) {   /* pass 2: LOAD every target, draw 1 pixel at the bottom right corner only */
       VkCommandBuffer cb2;
-      if (g_mrt_skip >= 0) { char sk_[16]; snprintf(sk_, sizeof sk_, "%d", g_mrt_skip); setenv("MALI_P86B_SKIP", sk_, 1); }   /* diagnostic: skip some preload draws */
+      if (g_mrt_skip >= 0) { char sk_[16]; snprintf(sk_, sizeof sk_, "%d", g_mrt_skip); setenv("MALI_P86B_SKIP", sk_, 1); } else unsetenv("MALI_P86B_SKIP");   /* diagnostic: skip some preload draws */
+      if (g_mrt_fill)   /* p86b diagnostic: the LOAD source is written by the host (no GPU-written source) */
+         for (int i = 0; i < nrt; i++)
+            for (int y = 0; y < H; y++)
+               for (int x = 0; x < W * 4; x++) px[i][(size_t)y * pitch[i] + x] = (uint8_t)(0x40 * (i + 1) + 1 + (x & 3));
       MRT_CHECK(AllocateCommandBuffers(dev, &cai, &cb2) == VK_SUCCESS, "alloc cb2");
       MRT_CHECK(BeginCommandBuffer(cb2, &bi) == VK_SUCCESS, "begin 2");
       VkRenderPassBeginInfo rb2 = rb;
@@ -2301,10 +2306,11 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
    if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
    if (ok && !g_fake && CASE_ON("mrt4_load")) {   /* p86b diagnostics: which preload draws / RT counts break the LOAD frame (results ignored by ok) */
-      static const struct { const char *n; int nrt, skip, sc; } ex[] = {{"mrt2_load_full", 2, -1, 1}, {"mrt2_load_tl", 2, -1, 2}, {"mrt4_load_full", 4, -1, 1},
-                                                                      {"mrt4_load_tl", 4, -1, 2}, {"mrt4_load_rt0pre_full", 4, 14, 1}};
+      static const struct { const char *n; int nrt, skip, sc, fill; } ex[] = {{"mrt2_load_fill", 2, -1, 1, 1}, {"mrt4_load_fill", 4, -1, 1, 1}, {"mrt4_load_rt1only", 4, 13, 1, 0},
+                                                                      {"mrt4_load_rt1only_fill", 4, 13, 1, 1}, {"mrt4_load_rt3only_fill", 4, 7, 1, 1}, {"mrt2_load_full", 2, -1, 1, 0}};
       const int fail0 = g_fail;
-      for (unsigned e = 0; e < sizeof ex / sizeof *ex; e++) { g_mrt_skip = ex[e].skip; g_mrt_sc = ex[e].sc; test_mrt(ex[e].n, ex[e].nrt, 2); }
+      for (unsigned e = 0; e < sizeof ex / sizeof *ex; e++) { g_mrt_skip = ex[e].skip; g_mrt_sc = ex[e].sc; g_mrt_fill = ex[e].fill; test_mrt(ex[e].n, ex[e].nrt, 2); }
+      g_mrt_fill = 0;
       g_mrt_sc = 0;
       g_mrt_skip = -1;
       g_fail = fail0;
