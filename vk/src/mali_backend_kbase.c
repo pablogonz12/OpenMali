@@ -439,8 +439,12 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
          k->lost = true; /* another thread read the fatal notification */
          return -EIO;
       }
-      if (r == 0 && left >= 0)
-         return -ETIMEDOUT;
+      if (left >= 0) {   /* deadline check also when poll returned ready fds (a notification that stays readable must not extend the wait) */
+         struct timespec t2;
+         clock_gettime(CLOCK_MONOTONIC, &t2);
+         if (r == 0 || (t2.tv_sec - t0.tv_sec) * 1000ll + (t2.tv_nsec - t0.tv_nsec) / 1000000 >= timeout_ms)
+            return -ETIMEDOUT;
+      }
    }
 }
 
