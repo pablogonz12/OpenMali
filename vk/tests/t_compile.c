@@ -347,6 +347,250 @@ test_spec(void)
    }
 }
 
+/* ---- cache mutation guard ----
+ * Every branch of the disk cache (mali_compile.c cache_dir/mkey/cache_store/cache_load/mali_compile) has a check here that fails if the
+ * branch is flipped: key fields dropped, env precedence changed, entry validation weakened, stats miscounted, failed compiles stored. */
+static unsigned
+count_files(const char *dir, const char *suffix)
+{
+   char cmd[700], out[32] = "";
+   snprintf(cmd, sizeof cmd, "ls %s 2>/dev/null | grep -c '%s$'", dir, suffix);
+   FILE *p = popen(cmd, "r");
+   if (!p) return ~0u;
+   if (!fgets(out, sizeof out, p)) out[0] = 0;
+   pclose(p);
+   return (unsigned)atoi(out);
+}
+
+static int
+sh(const char *fmt, const char *a)
+{
+   char cmd[900];
+   snprintf(cmd, sizeof cmd, fmt, a, a, a, a);
+   return system(cmd);
+}
+
+static void
+test_cache_mutations(void)
+{
+   printf("cache mutation guard\n");
+   struct spv vs = load("rot.vert.spv"), vs2 = load("clip.vert.spv"), cs = load("comp.comp.spv"), fs = load("var.frag.spv");
+   if (!vs.w || !vs2.w || !fs.w || !cs.w) return;
+   char base[] = "/tmp/t_compile_mut.XXXXXX", dir[600], cmd[900];
+   if (!mkdtemp(base)) { g_fail++; return; }
+   const char *gcm = getenv("MALI_OPT_GCM"), *envc = getenv("MALI_SHADER_CACHE"), *xdg = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+   char *sgcm = gcm ? strdup(gcm) : NULL, *senv = envc ? strdup(envc) : NULL, *sxdg = xdg ? strdup(xdg) : NULL, *shome = home ? strdup(home) : NULL;
+   unsetenv("MALI_OPT_GCM");
+   struct mali_compiled c;
+   struct mali_compile_stats s0, s1;
+   struct mali_compile_opts o;
+#define BASEO(st, s) (struct mali_compile_opts){ .arch = 11, .stage = (st), .spirv = (s)->w, .spirv_words = (s)->n, .cache_dir = dir }
+
+   /* 1. one entry per distinct key, each field of the key separates entries; stats count every path */
+   snprintf(dir, sizeof dir, "%s/k", base);
+   mali_compile_stats(&s0);
+   o = BASEO(MALI_STAGE_VERTEX, &vs);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "key: first compile misses");
+   mali_compiled_free(&c);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && c.cache_hit == 1, "key: identical options hit");
+   mali_compiled_free(&c);
+   unsigned n = 1;
+   struct { const char *what; struct mali_compile_opts o; } var[7];
+   for (unsigned i = 0; i < 7; i++) var[i].o = BASEO(MALI_STAGE_VERTEX, &vs);
+   var[0].what = "other SPIR-V";  var[0].o = BASEO(MALI_STAGE_VERTEX, &vs2);
+   var[1].what = "other SPIR-V (comp)"; var[1].o.stage = MALI_STAGE_COMPUTE; var[1].o.spirv = cs.w; var[1].o.spirv_words = cs.n;
+   var[2].what = "push_base";     var[2].o.push_base = 48; var[2].o.push_base_set = 1;
+   var[3].what = "strip_psiz";    var[3].o.strip_psiz = 1;
+   var[4].what = "clip_distances"; var[4].o.clip_distances = 2;
+   var[5].what = "sample_shading"; var[5].o.sample_shading = 1;
+   var[6].what = "fau_reserved";  var[6].o.fau_reserved = 28;
+   for (unsigned i = 0; i < sizeof var / sizeof *var; i++) {
+      int r = mali_compile(&var[i].o, &c, NULL, 0);
+      if (r) { CHECK(0, "key: %s variant did not compile", var[i].what); continue; }
+      CHECK(!c.cache_hit, "key: %s is part of the key", var[i].what);
+      mali_compiled_free(&c);
+      CHECK(!mali_compile(&var[i].o, &c, NULL, 0) && c.cache_hit == 1, "key: %s variant hits on its own entry", var[i].what);
+      mali_compiled_free(&c);
+      n++;
+   }
+   /* link_vs layout (data and size) */
+   struct mali_compiled vsc;
+   o = BASEO(MALI_STAGE_VERTEX, &vs);
+   CHECK(!mali_compile(&o, &vsc, NULL, 0), "link: vs compile");
+   if (vsc.layout.size) {
+      struct mali_compile_opts f = BASEO(MALI_STAGE_FRAGMENT, &fs);
+      struct mali_varying_blob blob = vsc.layout, blob2 = vsc.layout;
+      blob2.data[0] ^= 0xff;
+      f.link_vs = &blob;
+      CHECK(!mali_compile(&f, &c, NULL, 0) && !c.cache_hit, "link: first linked FS misses");
+      mali_compiled_free(&c);
+      CHECK(!mali_compile(&f, &c, NULL, 0) && c.cache_hit == 1, "link: linked FS hits");
+      mali_compiled_free(&c);
+      f.link_vs = &blob2;
+      CHECK(!mali_compile(&f, &c, NULL, 0) && !c.cache_hit, "link: layout bytes are part of the key");
+      mali_compiled_free(&c);
+      struct mali_varying_blob blob3 = vsc.layout;   /* same leading bytes, shorter: only the size differs */
+      blob3.size--;
+      f.link_vs = &blob3;
+      CHECK(!mali_compile(&f, &c, NULL, 0) && !c.cache_hit, "link: layout size is part of the key");
+      mali_compiled_free(&c);
+   }
+   mali_compiled_free(&vsc);
+   unsigned nent = count_files(dir, "\\.bin");
+   CHECK(nent >= n, "key: %u distinct keys gave %u entries", n, nent);
+   CHECK(count_files(dir, "tmp[0-9]*") == 0, "store: no .tmp files left behind");
+   mali_compile_stats(&s1);
+   CHECK(s1.stores - s0.stores == s1.misses - s0.misses, "stats: every miss stored once (%llu stores, %llu misses)",
+         (unsigned long long)(s1.stores - s0.stores), (unsigned long long)(s1.misses - s0.misses));
+   CHECK(s1.hits - s0.hits >= n, "stats: hits counted (%llu)", (unsigned long long)(s1.hits - s0.hits));
+
+   /* 2. entry validation: every damaged form is a miss that recompiles to the same bytes, and the damaged file is replaced */
+   snprintf(dir, sizeof dir, "%s/v", base);
+   o = BASEO(MALI_STAGE_VERTEX, &vs);
+   struct mali_compiled ref;
+   CHECK(!mali_compile(&o, &ref, NULL, 0), "validate: reference compile");
+   struct { const char *what, *fmt; } dmg[] = {
+      { "bad magic",        "for f in %s/*.bin; do printf 'XXXX' | dd of=\"$f\" bs=1 count=4 conv=notrunc 2>/dev/null; done" },
+      { "trailing byte",    "for f in %s/*.bin; do printf 'x' >> \"$f\"; done" },
+      { "missing last byte","for f in %s/*.bin; do truncate -s -1 \"$f\"; done" },
+      { "empty file",       "for f in %s/*.bin; do : > \"$f\"; done" },
+      { "header only",      "for f in %s/*.bin; do truncate -s 8 \"$f\"; done" },
+   };
+   for (unsigned i = 0; i < sizeof dmg / sizeof *dmg; i++) {
+      CHECK(sh(dmg[i].fmt, dir) == 0, "validate: %s setup", dmg[i].what);
+      CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit && c.bin_size == ref.bin_size && !memcmp(c.bin, ref.bin, ref.bin_size),
+            "validate: %s is a miss that recompiles identically", dmg[i].what);
+      mali_compiled_free(&c);
+      CHECK(!mali_compile(&o, &c, NULL, 0) && c.cache_hit == 1 && c.bin_size == ref.bin_size && !memcmp(c.bin, ref.bin, ref.bin_size),
+            "validate: %s entry was rewritten and now hits", dmg[i].what);
+      mali_compiled_free(&c);
+   }
+   /* oversize bin_size field (header says >= 64 MiB): must not be trusted. bin_size sits after the 4-byte magic at its struct offset. */
+   {
+      char path[800]; snprintf(cmd, sizeof cmd, "ls %s/*.bin", dir);
+      FILE *p = popen(cmd, "r");
+      if (p && fgets(path, sizeof path, p)) {
+         path[strcspn(path, "\n")] = 0;
+         FILE *f = fopen(path, "r+b");
+         if (f) {
+            struct mali_compiled h; uint32_t m;
+            if (fread(&m, 4, 1, f) == 1 && fread(&h, sizeof h, 1, f) == 1) {
+               h.bin_size = 64u << 20;
+               fseek(f, 4, SEEK_SET); fwrite(&h, sizeof h, 1, f);
+               fclose(f);
+               CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit && c.bin_size == ref.bin_size, "validate: oversize bin_size is a miss");
+               mali_compiled_free(&c);
+               f = NULL;
+               /* same for nimm */
+               f = fopen(path, "r+b");
+               if (f && fread(&m, 4, 1, f) == 1 && fread(&h, sizeof h, 1, f) == 1) {
+                  h.nimm = 1u << 20;
+                  fseek(f, 4, SEEK_SET); fwrite(&h, sizeof h, 1, f); fclose(f); f = NULL;
+                  CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit && c.nimm == ref.nimm, "validate: oversize nimm is a miss");
+                  mali_compiled_free(&c);
+               }
+            }
+            if (f) fclose(f);
+         }
+      }
+      if (p) pclose(p);
+   }
+   /* the stored header's cache_hit and pointers never leak: a hit reports 1, a recompiled miss 0 (checked above), and imm round-trips */
+   CHECK(!mali_compile(&o, &c, NULL, 0) && c.cache_hit == 1 && c.nimm == ref.nimm && (!ref.nimm || !memcmp(c.imm, ref.imm, ref.nimm * sizeof *ref.imm)),
+         "validate: hit returns the stored immediates");
+   mali_compiled_free(&c);
+   mali_compiled_free(&ref);
+
+   /* a store that cannot rename onto its entry (a directory sits there) leaves no .tmp file behind */
+   snprintf(dir, sizeof dir, "%s/ren", base);
+   o = BASEO(MALI_STAGE_VERTEX, &vs);
+   CHECK(!mali_compile(&o, &c, NULL, 0), "rename: compile"); mali_compiled_free(&c);
+   snprintf(cmd, sizeof cmd, "cd %s && for f in *.bin; do rm \"$f\"; mkdir \"$f\"; done", dir);
+   CHECK(system(cmd) == 0, "rename: setup");
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "rename: unreadable entry is a miss"); mali_compiled_free(&c);
+   CHECK(count_files(dir, "tmp[0-9]*") == 0, "rename: failed store removes its .tmp file");
+
+   /* 3. a failed compile stores nothing (and still counts a miss) */
+   snprintf(dir, sizeof dir, "%s/f", base);
+   uint32_t junk[] = {0x07230203, 0x00010500, 0, 1, 0, 0x00020011, 0x7ffffff0u};   /* unknown capability: valid header, compile fails */
+   struct mali_compile_opts jo = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = junk, .spirv_words = 7, .cache_dir = dir };
+   mali_compile_stats(&s0);
+   char err[128] = "";
+   CHECK(mali_compile(&jo, &c, err, sizeof err) != 0, "failed compile: rejected");
+   {
+      mali_compile_stats(&s1);
+      CHECK(count_files(dir, "\\.bin") == 0, "failed compile: nothing stored");
+      CHECK(s1.stores == s0.stores && s1.misses == s0.misses + 1, "failed compile: miss counted, no store");
+   }
+   /* rejected arguments never touch the cache dir */
+   snprintf(dir, sizeof dir, "%s/rej", base);
+   o = BASEO(MALI_STAGE_VERTEX, &vs); o.arch = 12;
+   CHECK(mali_compile(&o, &c, NULL, 0) != 0, "rejected arch");
+   CHECK(access(dir, F_OK) != 0, "rejected arguments create no cache dir");
+
+   /* 4. directory selection: cache_dir > MALI_SHADER_CACHE > XDG_CACHE_HOME/mali-gaming/shaders > HOME/.cache/mali-gaming/shaders; "" disables */
+   char e1[700], e2[700], x1[700], h1[700];
+   snprintf(e1, sizeof e1, "%s/env", base); snprintf(x1, sizeof x1, "%s/xdg", base); snprintf(h1, sizeof h1, "%s/home", base);
+   snprintf(e2, sizeof e2, "%s/opt/a/b/c", base);   /* nested: mkdirs must create every level */
+   o = BASEO(MALI_STAGE_VERTEX, &vs); o.cache_dir = e2;
+   setenv("MALI_SHADER_CACHE", e1, 1);
+   CHECK(!mali_compile(&o, &c, NULL, 0), "dir: explicit"); mali_compiled_free(&c);
+   CHECK(count_files(e2, "\\.bin") == 1, "dir: explicit cache_dir wins and nested dirs are created");
+   CHECK(access(e1, F_OK) != 0, "dir: env untouched when cache_dir is set");
+   o.cache_dir = NULL;
+   CHECK(!mali_compile(&o, &c, NULL, 0), "dir: env"); mali_compiled_free(&c);
+   CHECK(count_files(e1, "\\.bin") == 1, "dir: MALI_SHADER_CACHE used when cache_dir is NULL");
+   setenv("MALI_SHADER_CACHE", "", 1);
+   setenv("XDG_CACHE_HOME", x1, 1);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "dir: empty env"); mali_compiled_free(&c);
+   snprintf(cmd, sizeof cmd, "%s/mali-gaming/shaders", x1);
+   CHECK(access(cmd, F_OK) != 0, "dir: MALI_SHADER_CACHE='' disables the cache (XDG not used)");
+   o.cache_dir = "";
+   setenv("MALI_SHADER_CACHE", e1, 1);
+   mali_compile_stats(&s0);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "dir: empty cache_dir"); mali_compiled_free(&c);
+   mali_compile_stats(&s1);
+   CHECK(s1.hits == s0.hits && s1.stores == s0.stores, "dir: cache_dir='' bypasses load and store even if the entry exists");
+   o.cache_dir = NULL;
+   unsetenv("MALI_SHADER_CACHE");
+   CHECK(!mali_compile(&o, &c, NULL, 0), "dir: xdg"); mali_compiled_free(&c);
+   CHECK(count_files(cmd, "\\.bin") == 1, "dir: XDG_CACHE_HOME/mali-gaming/shaders used");
+   unsetenv("XDG_CACHE_HOME");
+   setenv("HOME", h1, 1);
+   CHECK(!mali_compile(&o, &c, NULL, 0), "dir: home"); mali_compiled_free(&c);
+   snprintf(cmd, sizeof cmd, "%s/.cache/mali-gaming/shaders", h1);
+   CHECK(count_files(cmd, "\\.bin") == 1, "dir: HOME/.cache/mali-gaming/shaders used");
+   setenv("XDG_CACHE_HOME", "", 1);   /* empty XDG falls through to HOME */
+   mali_compile_stats(&s0);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && c.cache_hit == 1, "dir: empty XDG_CACHE_HOME falls back to HOME"); mali_compiled_free(&c);
+   unsetenv("XDG_CACHE_HOME");
+   unsetenv("HOME");
+   mali_compile_stats(&s0);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "dir: no HOME, no env"); mali_compiled_free(&c);
+   mali_compile_stats(&s1);
+   CHECK(s1.hits == s0.hits && s1.stores == s0.stores, "dir: no usable directory means no cache");
+
+   /* 5. MALI_OPT_GCM bypasses load and store */
+   setenv("HOME", h1, 1);
+   setenv("MALI_OPT_GCM", "1", 1);
+   mali_compile_stats(&s0);
+   CHECK(!mali_compile(&o, &c, NULL, 0) && !c.cache_hit, "gcm: bypass compile"); mali_compiled_free(&c);
+   mali_compile_stats(&s1);
+   CHECK(s1.hits == s0.hits && s1.stores == s0.stores && s1.misses == s0.misses + 1, "gcm: no load and no store, miss counted");
+   unsetenv("MALI_OPT_GCM");
+
+   /* restore the environment */
+   if (sgcm) setenv("MALI_OPT_GCM", sgcm, 1); else unsetenv("MALI_OPT_GCM");
+   if (senv) setenv("MALI_SHADER_CACHE", senv, 1); else unsetenv("MALI_SHADER_CACHE");
+   if (sxdg) setenv("XDG_CACHE_HOME", sxdg, 1); else unsetenv("XDG_CACHE_HOME");
+   if (shome) setenv("HOME", shome, 1); else unsetenv("HOME");
+   free(sgcm); free(senv); free(sxdg); free(shome);
+   snprintf(cmd, sizeof cmd, "rm -rf %s", base);
+   if (system(cmd)) g_fail++;
+   free(vs.w); free(vs2.w); free(fs.w); free(cs.w);
+#undef BASEO
+}
+
 int
 main(int argc, char **argv)
 {
@@ -363,6 +607,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_determinism_and_cache();
+   test_cache_mutations();
    test_ycbcr();
    test_spec();
    test_errors();
