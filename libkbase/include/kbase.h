@@ -144,6 +144,12 @@ struct kb_queue {
 
 enum kb_kick { KB_KICK_IOCTL = 0, KB_KICK_DOORBELL = 1 };
 
+/* Instructions per kb_queue_submit call for a ring of `ring_size` bytes: a quarter of the ring, 64-byte units.
+ * Every stream size fits (the caller loops), a frame larger than the ring is submitted as several pieces, and
+ * the free three quarters absorb the GPU's own progress, so wait_ring_space cannot spin on a piece that can
+ * never fit. Always >= 1. */
+unsigned kb_queue_piece_instrs(uint32_t ring_size);
+
 /* GPU timestamp counter frequency in Hz, measured against CLOCK_MONOTONIC_RAW (GET_CPU_GPU_TIMEINFO); 0 if unavailable. */
 uint64_t kb_timestamp_hz(struct kb_ctx *ctx);
 /* One GET_CPU_GPU_TIMEINFO call: GPU timestamp counter (ticks); 0 or -errno. */
