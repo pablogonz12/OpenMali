@@ -151,8 +151,8 @@ static void
 test_legalize(void)
 {
    printf("legalize shaders that assert in Mesa\n");
-   static const char *const names[] = { "legalize_i8.comp.spv", "legalize_cmp.comp.spv" };
-   for (unsigned n = 0; n < 2; n++) {
+   static const char *const names[] = { "legalize_i8.comp.spv", "legalize_cmp.comp.spv", "legalize_vec.comp.spv" };
+   for (unsigned n = 0; n < 3; n++) {
       struct spv cs = load(names[n]);
       if (!cs.w) continue;
       for (unsigned arch = 10; arch <= 13; arch++) {

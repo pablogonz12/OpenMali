@@ -46,6 +46,8 @@ fold_extreme_compare(nir_builder *b, nir_instr *instr, void *data)
       return false;
    nir_alu_instr *alu = nir_instr_as_alu(instr);
    int r = -1;   /* -1: keep, else folded boolean */
+   if (alu->def.num_components != 1)
+      return false;   /* a vector compare folds per lane: replacing it with one scalar would drop the other lanes */
    if (alu->op != nir_op_ilt && alu->op != nir_op_ult && alu->op != nir_op_ige && alu->op != nir_op_uge)
       return false;
    unsigned bits = nir_src_bit_size(alu->src[0].src);

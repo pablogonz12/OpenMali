@@ -1,0 +1,7 @@
+#version 460
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(local_size_x = 1) in;
+layout(push_constant) uniform PC { uvec2 a; uvec2 v; } pc;
+layout(buffer_reference, std430) buffer B { uint x[]; };
+// vector compare against a constant whose first lane folds (x < 0 is false): only that lane may be folded, not the whole bvec2
+void main() { B b = B(pc.a); bvec2 r = lessThan(pc.v, uvec2(0u, 10u)); b.x[0] = r.y ? 1u : 2u; }
