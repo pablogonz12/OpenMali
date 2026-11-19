@@ -9,7 +9,7 @@
  *          intact), in-bounds accesses still work, .length() of a small / full range is right
  *   vertex a draw of 16 vertices from an 8-word vertex buffer: vertices 8..15 fetch 0 (not the canaries stored after the buffer)
  *   wild   far OOB indexes (1 GiB, 0xFFFFFFF0 words) neither fault nor hang and read 0
- * MALI_TEST_FORCE_ROBUST unset or on the fake backend: skipped (pass). MALI_TEST_FORCE_ROBUST=0: control run, prints what the unchecked
+ * MALI_TEST_FORCE_ROBUST unset or on the fake backend: skipped (pass). MALI_TEST_FORCE_ROBUST=0: control run (shader without .length(): OpArrayLength aborts the backend when the lowering is off), prints what the unchecked
  * driver returns for the near-OOB cases, never fails on them and skips "wild" (it could fault the GPU).
  */
 #define _DEFAULT_SOURCE
@@ -154,7 +154,7 @@ run_compute(int wild)
 {
    int bad = 0;
    struct buf A = {0}, R = {0}, U = {0}, C = {0};
-   VkShaderModule sm = load_spv("robust.comp.spv");
+   VkShaderModule sm = load_spv(g_control ? "robust_nolen.comp.spv" : "robust.comp.spv");
    CHECK(sm, "load robust.comp.spv");
    VkDescriptorSetLayoutBinding lb[4];
    for (unsigned i = 0; i < 4; i++)
@@ -221,8 +221,10 @@ run_compute(int wild)
       EXPECT(r[8] == 111, "in-bounds SSBO read = %u (want 111)", r[8]);
       for (unsigned i = 0; i < 4; i++) EXPECT(r[10 + i] == 0, "OOB UBO read u[%u] = 0x%x (want 0)", 4 + i, r[10 + i]);
       EXPECT(r[14] == 222, "in-bounds UBO read = %u (want 222)", r[14]);
+      if (!g_control) {
       EXPECT(r[15] == 16, "a.length() = %u (want 16)", r[15]);
       EXPECT(r[16] == 2, "c.length() = %u (want 2)", r[16]);
+      }
       EXPECT(r[17] == 0, "OOB atomicAdd returned 0x%x (want 0)", r[17]);
       EXPECT(r[18] == 112, "in-bounds read a[2] = %u (want 112)", r[18]);
       EXPECT(r[19] == 555, "in-bounds C read = %u (want 555)", r[19]);

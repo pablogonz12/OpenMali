@@ -13,8 +13,10 @@ void main()
    r[8] = a[p.z];                                                 // in-bounds SSBO read (want 111)
    for (uint i = 0; i < 4; i++) r[10 + i] = u[4 + i + p.z];       // 10..13: OOB UBO reads (want 0)
    r[14] = u[p.z + 1];                                            // in-bounds UBO read (want 222)
+#ifndef NOLEN
    r[15] = uint(a.length());                                      // want 16
    r[16] = uint(c.length());                                      // want 2
+#endif
    r[17] = atomicAdd(a[20 + p.z], 1);                             // OOB atomic: returns 0, discarded
    r[18] = a[p.z + 2];                                            // in-bounds sanity (want 112)
    for (uint i = 0; i < 8; i++) a[16 + i + p.z] = 0xBAD00000u + i; // OOB writes: discarded
