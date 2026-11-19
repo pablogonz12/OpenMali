@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "mali_soft.h"
 #include "mali_cs_emit.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
@@ -304,7 +305,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const bool inst = vb->input_rate == VK_VERTEX_INPUT_RATE_INSTANCE;
          /* instance rate: HW has no zero divisor, panvk uses stride 0 (divisor 1). divisor > 1: 1D POT / NPOT divisor attribute */
          const struct mali_attr cur = {f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst, inst && vb->divisor == 0,
-                                       inst && vb->divisor > 1 ? vb->divisor : 1};
+                                       inst && vb->divisor > 1 ? vb->divisor : 1, (int)a->format};
          /* sparse locations (dEQP vertex_input layout_skip): the shader reads attribute slot = location, so the skipped slots are filled with a copy
           * of this attribute (a valid binding; the shader never reads them) */
          while (g->nattr < loc)
@@ -591,3 +592,13 @@ res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *
 }
 
 const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute, res_pipeline_dyn};
+
+/* Desktop software rasteriser (mali_soft.c): the compiled shader pointers the frame record carries, so a test can key its CPU
+ * program on the pipeline exactly the way the rasteriser will look it up. */
+void
+mali_soft_pipeline_keys(VkPipeline h, const struct mali_compiled **vs, const struct mali_compiled **fs)
+{
+   struct mali_pipeline *p = mali_pipeline_from_handle(h);
+   *vs = p ? &p->vs : NULL;
+   *fs = p ? &p->fs : NULL;
+}

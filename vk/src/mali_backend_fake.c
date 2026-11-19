@@ -337,6 +337,25 @@ fake_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t 
    __sync_synchronize();
 }
 
+/* Software rasteriser (mali_soft.c): the CPU mapping of a live BO range. The registry is the fake backend's memory model. */
+static void *
+fake_va_cpu(struct mali_kdev *k, uint64_t va, size_t size)
+{
+   void *p = NULL;
+   pthread_mutex_lock(&k->lock);
+   for (unsigned i = 0; i < k->nbos; i++) {
+      struct fake_bo *b = &k->bos[i];
+      if (!b->live || !b->cpu || b->kind != 0)
+         continue;
+      if (va >= b->va && va + size <= b->va + b->size) {
+         p = (uint8_t *)b->cpu + (va - b->va);
+         break;
+      }
+   }
+   pthread_mutex_unlock(&k->lock);
+   return p;
+}
+
 static int
 fake_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
 {
@@ -470,6 +489,7 @@ const struct mali_backend_ops mali_backend_fake = {
    .bo_free = fake_bo_free,
    .bo_cache = fake_bo_cache,
    .bo_export = fake_bo_export,
+   .va_cpu = fake_va_cpu,
    .submit_signal = fake_submit_signal,
    .fence_wait = fake_fence_wait,
    .device_lost = fake_device_lost,

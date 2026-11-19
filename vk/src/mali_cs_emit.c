@@ -987,6 +987,15 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       return mali_ops_build(env, f->ops, f->nops, out, nout);
    if (f->compute)
       return build_compute(hw, f, out, nout);
+   if (hw->soft) {
+      /* MALI_SOFT=1: render on the CPU instead of encoding a command stream. A frame the rasteriser cannot do is a hard
+       * error (-ENOTSUP), never a silent no-op: the whole point of the harness is that nothing passes unnoticed. */
+      if (!hw->soft(hw->user, f))
+         return -ENOTSUP;
+      *out = calloc(1, sizeof(uint64_t));   /* callers free() and memcpy() it: keep it a valid pointer with ninstr 0 */
+      *nout = 0;
+      return *out ? 0 : -ENOMEM;
+   }
    *out = NULL;
    *nout = 0;
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
