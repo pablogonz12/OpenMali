@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 38 /* 38: nir_fixup_deref_modes after strip_psiz retypes gl_PointSize (validation abort) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -420,12 +420,17 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       if (has_clip)
          NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
    }
-   if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
+   if (o->strip_psiz && stage == MESA_SHADER_VERTEX) {
+      bool stripped = false;
       nir_foreach_shader_out_variable(var, nir)
          if (var->data.location == VARYING_SLOT_PSIZ) {
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
+            stripped = true;
          }
+      if (stripped)
+         nir_fixup_deref_modes(nir);   /* derefs still said shader_out: nir_validate aborted (deref modes == var mode) for DXVK/Unity VS writing gl_PointSize under a non-point topology */
+   }
    NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
