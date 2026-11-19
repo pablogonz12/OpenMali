@@ -15,6 +15,8 @@ def carve(data, off):
         if wc == 0 or op > 5000 or i + wc > n:
             break
         if op == 15 and entry is None:  # OpEntryPoint
+            if wc < 4:
+                return None, None  # truncated candidate
             entry = struct.unpack_from("<I", data, (i + 1) * 4)[0]
         i += wc
         if op == 56:  # OpFunctionEnd
@@ -44,4 +46,5 @@ def main():
                         else: seen.add(h)
             pos += 4
     print(len(seen), "modules")
-main()
+if __name__ == "__main__":
+    main()
