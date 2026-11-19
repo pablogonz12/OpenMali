@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""steam-present: measure the Steam Big Picture menu frame rate in the DroidDeck guest.
+
+  tools/steam-present/steam-present cmf [--seconds 30] [--driver bridge|ours] [--uncapped]
+  tools/steam-present/steam-present cmf --help
+
+The primary counter is SurfaceFlinger `--latency <layer>`: per-frame
+desiredPresent/actualPresent/frameReady timestamps of the session's
+SurfaceView layer.  It sees the pixels that reached the screen, independent
+of which Vulkan driver produced them, needs no guest change and shows no
+overlay.  gamescope's own `-T/--stats-path` counter (one `fps=` line every
+300 paints) is only used as a coarse cross-check; Steam's overlay and
+MangoApp change what they measure.
+
+`--driver ours` pushes the a64-glibc-wl ICD to the guest and starts the next
+session with BL_VKBRIDGE=0 + BL_VK_DRIVER, then checks the session log for
+"vulkan driver: imported".  `--driver bridge` leaves the installed bridge.
+
+Phones: `cmf` (this lane).  `poco-x8` is the owner's daily phone: refused
+unless --allow-owner-phone is passed after coordinating with its lane.
+poco-x4 has no guest route for this suite.
+
+Output: mean fps, p50/p95/p99 frame interval and the pacing class:
+  * uniform ~8.33 ms                  -> display-paced at 120
+  * uniform ~16.67 ms, <10 % fast     -> half-panel cadence (cap not established)
+  * 15-85 % fast frames               -> bimodal: CPU stalls / missed vsyncs
+  * p50 > 1.25 x base                 -> client/GPU bound
+"""
+import argparse
+import json
+import os
+import re
+import shlex
+import statistics
+import subprocess
+import sys
+import threading
+import tempfile
+import time
+import tomllib
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(REPO, "tools", "farm"))
+import farmlib as L          # noqa: E402
+import gate as G             # noqa: E402
+
+DEVICES = os.environ.get("MALI_FARM_DEVICES") or os.path.expanduser("~/.config/mali-farm/devices.toml")
+FARM_CFG = os.path.expanduser("~/.config/mali-farm/farm.toml")
+PKG = os.environ.get("DROIDDECK_PACKAGE", "com.ludashi.benchmark")
+DL = "/storage/emulated/0/Download/steam-present"
+OURS = os.path.join(REPO, "vk", "out", "a64-glibc-wl")
+PROFILES = ("bridge", "ours")
+PENDING = 9223372036854775807
+HISTORY = 128             # SurfaceFlinger frame-history ring per layer
+
+
+def sh(cmd, timeout=60, env=None):
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+        return p.returncode, p.stdout.decode(errors="replace") + p.stderr.decode(errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, "timeout"
+
+
+def die(msg, rc=2):
+    print("steam-present:", msg, file=sys.stderr)
+    sys.exit(rc)
+
+
+def load_devices():
+    try:
+        devs = tomllib.load(open(DEVICES, "rb")).get("device", [])
+    except OSError as e:
+        die(f"cannot read the device table: {e}")
+    return {d["alias"]: d for d in devs}
+
+
+def quick_root():
+    try:
+        return os.path.expanduser(tomllib.load(open(FARM_CFG, "rb"))["quick_root"])
+    except (OSError, KeyError) as e:
+        die(f"cannot read quick_root from the farm config: {e}")
+
+
+class Phone:
+    def __init__(self, dev):
+        self.dev = dev
+        self.alias = dev["alias"]
+        self.lock = None
+        self.tid = None
+        self.root = quick_root()
+        self.env = dict(os.environ, DROIDDECK_PACKAGE=PKG,
+                        PATH=os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", ""))
+
+    def adb(self, *a, timeout=60):
+        return sh(["timeout", "-k", "3", str(timeout), "adb", "-s", self.tid, *a], timeout + 10, env=self.env)
+
+    def ctl(self, *a, timeout=150):
+        p = sh([sys.executable, "-I", os.path.join(self.root, "tools", "droiddeckctl"),
+                "--serial", self.tid, *a], timeout, env=self.env)
+        i = p[1].find("{")
+        try:
+            j = json.loads(p[1][i:]) if i >= 0 else {}
+        except ValueError:
+            j = {"text": p[1][-300:]}
+        j["_rc"] = p[0]
+        return j
+
+    def _take(self):
+        """Acquire the qsafe lock and KEEP the object: a temporary would close its fd and drop the lock."""
+        lk = L.PhoneLock(self.dev)
+        if lk.acquire():
+            self.lock = lk
+            return True
+        return False
+
+    def admit(self, wait):
+        if G.disabled(self.dev["lock"], self.alias):
+            return "disabled by owner"
+        if os.environ.get("QSAFE_HELD") == self.dev["lock"]:   # an ancestor (farmd/qsafe) already holds it
+            self.lock = None
+        elif not self._take():
+            import fcntl
+            fd = open(f"/tmp/qsafe-{self.dev['lock']}.lock", "a")
+            if wait <= 0:
+                fd.close()
+                return "PHONE BUSY (qsafe lock held by another worker)"
+            t0 = time.time()
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.lock = L.PhoneLock(self.dev)
+                    self.lock.fd = fd
+                    break
+                except OSError:
+                    if time.time() - t0 >= wait:
+                        fd.close()
+                        return "PHONE BUSY (qsafe lock held by another worker)"
+                    time.sleep(2)
+            self.lock.fd = fd
+        self.tid = L.resolve(self.dev, connect=True)
+        if not self.tid:
+            return "offline (no adb route)"
+        h = G.read_adb(self.tid)
+        th = G.thresholds(self.dev.get("serial"))
+        if th.get("temp_start") is None:      # gate.py defaults it to None, which would make starting=True a no-op
+            th["temp_start"] = 38.0           # the documented start limit (43/38 C in the README); a device override wins
+        # starting=True: a job that begins at temp_start is gated now, not twenty minutes in at temp_stop
+        st, why = G.check(self.dev["lock"], h, th, starting=True)
+        return None if st == "ok" else f"gated ({st}): {why}"
+
+
+def percentile(s, q):
+    if not s:
+        return None
+    i = min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))
+    return s[i]
+
+
+def panel_mode(ph):
+    """The active display mode id.  One adb call, cheap enough to poll during sampling."""
+    _, o = ph.adb("shell", "dumpsys display | grep -m1 -o 'mActiveModeId=[0-9]*'", timeout=15)
+    m = re.search(r"mActiveModeId=(\d+)", o)
+    return m.group(1) if m else None
+
+
+def panel_hz(ph, mode=None):
+    """Refresh rate of the ACTIVE mode.  The DisplayDeviceInfo line prints the active mode as a bare
+    id and lists `supportedModes` in a fixed order, so the first `fps=` belongs to whatever mode sorts
+    first, not to the one that is running."""
+    _, d = ph.adb("shell", "dumpsys display | grep -m1 'DisplayDeviceInfo{'", timeout=20)
+    mid = mode if mode is not None else panel_mode(ph)
+    if mid is not None:
+        e = re.search(r"\{[^{}]*\b(?:id|modeId)=%s\b[^{}]*\}" % re.escape(mid), d)
+        f = re.search(r"fps=([0-9.]+)", e.group(0)) if e else None
+        if f:
+            return float(f.group(1))
+    m = re.search(r"fps=([0-9.]+)", d)
+    if m:
+        return float(m.group(1))
+    _, p = ph.adb("shell", "settings get system peak_refresh_rate", timeout=15)
+    try:
+        return float(p.strip())
+    except ValueError:
+        return 120.0
+
+
+def layer_name(ph):
+    _, o = ph.adb("shell", "dumpsys SurfaceFlinger --list", timeout=30)
+    cand = [l.strip() for l in o.splitlines()
+            if f"SurfaceView[{PKG}/" in l and "SessionActivity" in l]
+    if not cand:
+        cand = [l.strip() for l in o.splitlines() if "droiddeck_wayland_game" in l]
+    if not cand:
+        return None
+    cand.sort(key=lambda l: ("(BLAST)" not in l, l))
+    return cand[0]
+
+
+def parse_latency(text):
+    """(valid present timestamps, raw record count).  The raw count includes a pending fence, so it is
+    the real ring occupancy; History::insert writes the INT64_MAX sentinel for a frame whose fence has
+    not signalled yet."""
+    out, nraw = [], 0
+    lines = text.replace("\r\n", "\n").splitlines()
+    for l in lines[1:]:
+        p = l.split()
+        if len(p) >= 2:
+            try:
+                a = int(p[1])
+            except ValueError:
+                continue
+            if a > 0:
+                nraw += 1
+            if 0 < a < PENDING:      # SurfaceFlinger prints INT64_MAX for an unresolved fence
+                out.append(a)
+    return out, nraw
+
+
+class Sampler(threading.Thread):
+    def __init__(self, ph, layer, seconds, mode=None):
+        super().__init__(daemon=True)
+        self.ph, self.layer, self.seconds, self.mode = ph, layer, seconds, mode
+        self.stamps, self.err, self.calls = set(), None, 0
+        self.errors = 0          # failed polls
+        self.gaps = 0            # polls whose window no longer overlaps what we had: history was lost
+        self.modes = set()       # active display mode id seen during the window
+        self.no_mode = 0         # polls whose active-mode read failed
+        self.last_max = None
+        self.stop = threading.Event()
+
+    def run(self):
+        # The layer name comes from `dumpsys --list` and reaches the device shell, so quote it for that
+        # shell: escaping only `"` still lets $(...) and backticks through.
+        q = shlex.quote(self.layer)
+        while not self.stop.is_set():
+            rc, o = self.ph.adb("shell", f"dumpsys SurfaceFlinger --latency {q}", timeout=20)
+            self.calls += 1
+            if rc != 0:
+                self.err = o.strip()[-200:]
+                self.errors += 1
+                time.sleep(0.2)
+                continue
+            m = panel_mode(self.ph)
+            if m is not None:
+                self.modes.add(m)
+            else:
+                self.no_mode += 1
+            st, nraw = parse_latency(o)
+            if st:
+                # SurfaceFlinger keeps the last 128 frames per layer.  A full window (raw occupancy: a
+                # pending sentinel still fills a slot) with nothing at or below the newest stamp we
+                # already hold means frames fell out of the ring between two polls.
+                if self.last_max is not None and nraw >= HISTORY - 1 and min(st) > self.last_max:
+                    self.gaps += 1
+                self.last_max = max(st + [self.last_max or 0])
+                self.stamps.update(st)
+            time.sleep(0.15)
+
+
+class Sweep(threading.Thread):
+    """Keep the menu moving: a pad press every ~0.7 s, alternating direction."""
+
+    def __init__(self, ph):
+        super().__init__(daemon=True)
+        self.ph = ph
+        self.stop = threading.Event()
+        self.n = 0
+
+    def run(self):
+        while not self.stop.is_set():
+            btn = "right" if (self.n // 6) % 2 == 0 else "left"
+            self.ph.ctl("input", "pad", btn, timeout=25)
+            self.n += 1
+            time.sleep(0.7)
+
+
+def stop_workers(*ws):
+    """Signal every started worker, then wait until each has really exited (a Sweep may be inside a 25 s ctl call)."""
+    ws = [w for w in ws if w is not None]
+    for w in ws:
+        w.stop.set()
+    for w in ws:
+        if w.is_alive():
+            w.join(90)
+        if w.is_alive():
+            print(f"steam-present: worker {type(w).__name__} still running after 90 s; "
+                  "restoring anyway", file=sys.stderr)
+
+
+def need(j, what):
+    """A phone operation that must have succeeded before the benchmark means anything."""
+    if j.get("_rc") != 0:
+        die(f"{what} failed: {json.dumps(j)[:300]}")
+    return j
+
+
+def cpu_sample(ph):
+    _, o = ph.adb("shell", "top -b -n 1 -m 40", timeout=30)
+    total = 0.0
+    for l in o.splitlines():
+        if not re.search(r"steamwebhelper|gamescope|steam\b", l):
+            continue
+        p = l.split()
+        val = None
+        if len(p) > 8 and re.fullmatch(r"[0-9.]+", p[8]):
+            val = float(p[8])                      # PID USER PR NI VIRT RES SHR S %CPU ...
+        else:
+            m = re.search(r"\s([0-9.]+)\s+[0-9.]+\s+[0-9:]+", l)
+            val = float(m.group(1)) if m else None
+        if val is not None:
+            total += val
+    return round(total, 1)
+
+
+def classify(iv, base, fast_frac):
+    p50 = percentile(sorted(iv), 0.50)
+    if p50 is None:
+        return "no frames"
+    if 0.15 <= fast_frac <= 0.85:
+        return "bimodal: CPU stalls / missed vsyncs"
+    if p50 <= 1.25 * base and fast_frac >= 0.9:
+        return f"display-paced at {round(1000 / base)} Hz (uniform {base:.2f} ms)"
+    half = sum(1 for x in iv if abs(x - 2 * base) <= 0.12 * base) / len(iv)
+    if abs(p50 - 2 * base) <= 0.12 * base and fast_frac < 0.10:
+        if half >= 0.90:
+            return (f"half-panel cadence: {half * 100:.0f} % of intervals at {p50:.2f} ms "
+                    f"(every 2nd vsync of a {round(1000 / base)} Hz panel); presentation timestamps alone "
+                    "cannot tell a 60 fps render cap from a faster producer whose alternate frames are "
+                    "dropped, so the cap is not established")
+        return (f"slow tail: median {p50:.2f} ms but only {half * 100:.0f} % of intervals are at half-panel "
+                f"cadence ({100 * sum(1 for x in iv if x >= 2.5 * base) / len(iv):.0f} % are >= 2.5 x base)")
+    if p50 > 1.25 * base:
+        return f"client/GPU bound (p50 {p50:.2f} ms, {1000 / p50:.1f} fps)"
+    return f"mixed (p50 {p50:.2f} ms, {100 * fast_frac:.0f} % at panel cadence)"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("phone", nargs="?", choices=["cmf", "poco-x8"], help="farm alias (poco-x8 needs --allow-owner-phone)")
+    ap.add_argument("--seconds", type=float, default=30.0, help="sampling window (default 30)")
+    ap.add_argument("--driver", choices=PROFILES, default="bridge", help="bridge = installed ICD; ours = push vk/out/a64-glibc-wl")
+    ap.add_argument("--icd", help="ICD manifest to use with --driver ours (default vk/out/a64-glibc-wl/mali_icd.json)")
+    ap.add_argument("--uncapped", action="store_true", help="lift the known frame limiters for this session (see README)")
+    ap.add_argument("--settle", type=float, default=30.0, help="seconds after the session starts before warmup (default 30)")
+    ap.add_argument("--warmup", type=float, default=5.0, help="seconds of input before sampling (default 5)")
+    ap.add_argument("--wait", type=float, default=0.0, help="block up to N s for the qsafe lock (default: fail PHONE BUSY)")
+    ap.add_argument("--keep", action="store_true", help="leave the session running")
+    ap.add_argument("--json", help="write the result row here")
+    ap.add_argument("--allow-owner-phone", action="store_true", help="allow poco-x8 (owner lane; coordinate first)")
+    ap.add_argument("--dry-run", action="store_true", help="print the plan, touch nothing")
+    a = ap.parse_args()
+    if not a.phone:
+        ap.error("a phone alias is required (cmf; poco-x8 is the owner's)")
+    if a.phone == "poco-x8" and not a.allow_owner_phone:
+        die("poco-x8 is owned by the owner's lane; pass --allow-owner-phone after coordinating")
+    devs = load_devices()
+    if a.phone not in devs:
+        die(f"no device '{a.phone}' in the device table")
+    ph = Phone(devs[a.phone])
+
+    plan = {"phone": a.phone, "driver": a.driver, "seconds": a.seconds, "uncapped": a.uncapped}
+    if a.dry_run:
+        print(json.dumps(plan, indent=1))
+        return 0
+
+    why = ph.admit(a.wait)
+    if why:
+        die(why, 3)
+    print(f"steam-present: {a.phone} via {ph.tid}", file=sys.stderr)
+
+    got_env = got_prefs = False
+    saved_env, saved_prefs = [], {}
+    touched = False
+    s = sweep = None
+    try:
+        j = need(ph.ctl("env", "list", timeout=40), "reading the session environment")
+        # We only write the one-shot ("next") scope, so that is the scope to capture and restore; fall back to
+        # "active" for a control build that does not report "pending".
+        key = "pending" if "pending" in j else "active"
+        if not isinstance(j.get(key), list):
+            die(f"session environment snapshot has no '{key}' list: {json.dumps(j)[:200]}")
+        saved_env, got_env = j[key], True
+        j = need(ph.ctl("prefs", "get", "session", timeout=40), "reading the session preferences")
+        vals = j.get("values")
+        if not isinstance(vals, dict):
+            die(f"session preference snapshot has no 'values' dict: {json.dumps(j)[:200]}")
+        saved_prefs, got_prefs = vals, True
+
+        touched = True
+        need(ph.ctl("stop", timeout=200), "stopping the running session")
+        env = ["BL_MANGOAPP=0", "VKBRIDGE_STATS=1"]
+        if a.uncapped:
+            env += ["MALIDECK_MODE=performance", "VKBRIDGE_SWAPCHAIN_IMAGES=8",
+                    "BL_VKBRIDGE_WEBHELPER_ARGS=--use-gl=angle --use-angle=vulkan +Vulkan "
+                    "+VulkanFromANGLE +DefaultANGLEVulkan --disable-frame-rate-limit --disable-gpu-vsync"]
+        if a.driver == "ours":
+            icd = a.icd or os.path.join(OURS, "mali_icd.json")
+            so = os.path.join(os.path.dirname(os.path.abspath(icd)), "libvulkan_mali.so")
+            if not (os.path.isfile(icd) and os.path.isfile(so)):
+                die(f"missing ICD build: {icd} / {so}; build with MALI_TARGET=a64-glibc-wl vk/build.sh")
+            for what, r in (("creating the ICD directory", ph.adb("shell", f"mkdir -p {DL}", timeout=15)),
+                            ("pushing libvulkan_mali.so", ph.adb("push", so, f"{DL}/libvulkan_mali.so", timeout=180))):
+                if r[0] != 0:
+                    die(f"{what} failed (rc {r[0]}): {r[1][-200:]}")
+            manifest = os.path.join("/tmp", "steam-present-icd.json")
+            open(manifest, "w").write(json.dumps(
+                {"file_format_version": "1.0.1",
+                 "ICD": {"library_path": f"{DL}/libvulkan_mali.so", "api_version": "1.3.0"}}))
+            r = ph.adb("push", manifest, f"{DL}/mali_icd.json", timeout=60)
+            os.unlink(manifest)
+            if r[0] != 0:
+                die(f"pushing the ICD manifest failed (rc {r[0]}): {r[1][-200:]}")
+            env += [f"BL_VK_DRIVER={DL}/mali_icd.json", "BL_VKBRIDGE=0",
+                    "BL_OPEN_DRIVER=1", "BL_DRM_STANDIN=/dev/mali0",
+                    "gamescope_composite_force=false"]
+        need(ph.ctl("env", "clear", "next", timeout=30), "clearing the next-session environment")
+        need(ph.ctl("env", "set", *env, timeout=40), "setting the session environment")
+        need(ph.ctl("prefs", "set", "session", "hudDeck", "false", "--type", "bool", timeout=40),
+             "setting hudDeck=false")
+        j = ph.ctl("start", "steam", "--wait", timeout=240)
+        if j.get("_rc") != 0:
+            die(f"session did not start: {json.dumps(j)[:300]}")
+
+        if a.driver == "ours":
+            logdir = tempfile.mkdtemp(prefix="steam-present-logs-")     # fresh per run: no stale marker
+            need(ph.ctl("logs", "latest", logdir, timeout=200), "collecting the session log")
+            try:
+                logs = "".join(open(os.path.join(logdir, f), errors="replace").read()
+                               for f in os.listdir(logdir) if f.endswith(".log"))
+            except OSError:
+                logs = ""
+            if "vulkan driver: imported" not in logs:
+                die("session did not import our ICD (no 'vulkan driver: imported' in the log)")
+
+        time.sleep(a.settle)
+        layer = layer_name(ph)
+        if not layer:
+            die("no DroidDeck SurfaceView layer: is the session on screen?")
+        rc, o = ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
+        if rc != 0:
+            die(f"clearing the latency history failed (rc {rc}): {o.strip()[-200:]}; "
+                "the first poll would count warmup frames as the window", 4)
+        cpu = cpu_sample(ph)
+        sweep = Sweep(ph)
+        sweep.start()
+        time.sleep(a.warmup)
+        # after input started: an idle menu can sit at 60 Hz until it is touched
+        mode = panel_mode(ph)
+        if mode is None:
+            die("could not read the active display mode (mActiveModeId): the base interval and any mode change "
+                "are unmeasurable without it", 4)
+        hz = panel_hz(ph, mode)
+        base = 1000.0 / hz
+        rc, o = ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
+        if rc != 0:
+            die(f"clearing the latency history before sampling failed (rc {rc}): {o.strip()[-200:]}", 4)
+        s = Sampler(ph, layer, a.seconds, mode)
+        s.start()
+        time.sleep(a.seconds)
+        stop_workers(s, sweep)
+        mode_end = panel_mode(ph)            # a fresh observation, not the starting id again
+        hz_end = panel_hz(ph, mode_end)
+        # A mode we could not read at the start, or during the window, is a sampling failure: an unobserved
+        # 60 -> 120 Hz switch would otherwise pass validation.
+        moved = sorted(x for x in s.modes if x != mode) if mode is not None else sorted(s.modes)
+        unobserved = not s.modes or s.no_mode or mode_end is None
+        if abs(hz_end - hz) > 0.5 or moved or unobserved:
+            die(f"panel mode changed during sampling (started at {hz} Hz mode {mode}, "
+                f"ended at {hz_end} Hz, modes seen {sorted(s.modes)}); the base interval is not stable", 4)
+        if s.gaps or s.errors:
+            die(f"sample invalid: {s.gaps} frame-history gaps and {s.errors} failed polls out of {s.calls} "
+                f"({s.err or 'no error text'}); SurfaceFlinger keeps only {HISTORY} frames per layer, so "
+                "frames were lost between polls. Rerun on a quiet link", 4)
+
+        stamps = sorted(s.stamps)
+        iv = [(b - a_) / 1e6 for a_, b in zip(stamps, stamps[1:]) if b > a_]
+        if len(iv) < 20:
+            die(f"only {len(iv)} frame intervals from {s.calls} polls; session idle or layer wrong", 4)
+        dur = (stamps[-1] - stamps[0]) / 1e9
+        srt = sorted(iv)
+        p50, p95, p99 = percentile(srt, .50), percentile(srt, .95), percentile(srt, .99)
+        fast = sum(1 for x in iv if x <= 1.3 * base) / len(iv)
+        row = {"bench": "steam-present", "phone": a.phone, "driver": a.driver,
+               "uncapped": a.uncapped, "seconds": round(dur, 1), "frames": len(stamps),
+               "mean_fps": round((len(stamps) - 1) / dur, 1),
+               "p50_ms": round(p50, 2), "p95_ms": round(p95, 2), "p99_ms": round(p99, 2),
+               "fast_fraction": round(fast, 3), "panel_hz": hz, "layer": layer,
+               "cpu_percent": cpu, "pacing": classify(iv, base, fast),
+               "date": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        print(json.dumps(row, indent=1))
+        if a.json:
+            with open(a.json, "a") as f:
+                f.write(json.dumps(row) + "\n")
+        return 0
+    finally:
+        stop_workers(s, sweep)          # no pad input may race the restore below
+        bad = []
+        if touched and not a.keep:
+            r = ph.ctl("stop", timeout=200)
+            if r.get("_rc") != 0:
+                bad.append(f"stopping the session ({json.dumps(r)[:200]})")
+        if got_prefs and touched:
+            r = ph.ctl("prefs", "set", "session", "hudDeck",
+                       str(bool(saved_prefs.get("hudDeck", True))).lower(), "--type", "bool", timeout=40)
+            if r.get("_rc") != 0:
+                bad.append(f"restoring hudDeck ({json.dumps(r)[:200]})")
+        if got_env and touched:
+            r = ph.ctl("env", "clear", "next", timeout=30)
+            if saved_env and r.get("_rc") == 0:
+                r = ph.ctl("env", "set", *saved_env, timeout=40)
+            if r.get("_rc") != 0:
+                bad.append(f"restoring the next-session environment ({json.dumps(r)[:200]})")
+        if bad:
+            # The saved values stay recoverable: print them before failing, so a failed restore can be
+            # replayed by hand instead of being lost when the process exits.
+            print("steam-present: RESTORATION FAILED: " + "; ".join(bad) + "\n"
+                  f"saved env: {json.dumps(saved_env)}\nsaved prefs: {json.dumps(saved_prefs)}",
+                  file=sys.stderr)
+            raise SystemExit(5)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
