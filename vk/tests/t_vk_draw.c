@@ -2218,6 +2218,63 @@ test_share_vin(void)
    return 1;
 }
 
+/* cs_grow: one command buffer of three render passes (1, 70 and 2 draws) whose draws each change viewport, scissor, push constants and the
+ * vertex offset, so the 70-draw pass needs more command-stream words than mali_frame_build reserves up front (it must grow) and the three
+ * streams are concatenated into one submission. The decoded stream goes to the golden dump (any lost, shifted or truncated word shows). */
+static int
+test_cs_grow(void)
+{
+   g_dxvk = 1;
+   struct scene s = {.mode = MODE_UBO};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) { g_dxvk = 0; return 0; }
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+   VkDeviceSize offs[2] = {0, 0};
+   static const int cnt[3] = {1, 70, 2};
+   int d = 0;
+   for (int pass = 0; pass < 3; pass++) {
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                                  .renderArea = {{0, 0}, {W, H}}, .clearValueCount = s.depth ? 2 : 1, .pClearValues = cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.dset[0], 0, NULL);
+      for (int i = 0; i < cnt[pass]; i++, d++) {
+         vp.x = (float)(d & 7);
+         sc.offset.x = d & 15;
+         sc.extent.width = W - (d & 15);
+         CmdSetViewport(cb, 0, 1, &vp);
+         CmdSetScissor(cb, 0, 1, &sc);
+         float pc[4] = {1, 0, 0, (float)d};
+         CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
+         CmdDrawIndexed(cb, 6, 1, 0, d & 3, 0);
+      }
+      CmdEndRenderPass(cb);
+   }
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+   FreeCommandBuffers(dev, s.pool, 1, &cb);
+   g_dxvk = 0;
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   printf("{\"test\":\"cs_grow\",\"draws\":%d,\"ok\":true}\n", d);
+   return 1;
+}
+
 /* full-screen quad cases: push-constant-only FS colour, sampled texture, uniform buffer, descriptor updates between draws */
 static int
 test_quad(const char *name, int mode)
@@ -2439,6 +2496,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("ubo")) ok &= test_quad("ubo", MODE_UBO);
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
+   if (ok && CASE_ON("cs_grow")) ok &= test_cs_grow();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

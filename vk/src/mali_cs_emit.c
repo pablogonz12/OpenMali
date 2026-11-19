@@ -1013,6 +1013,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       return -EINVAL;
    memset(&c, 0, sizeof c);
    bool geometry = f->ndraws > 0;
+   /* one allocation for the typical stream (~10 words per draw plus the frame prologue/epilogue) instead of doubling from 256 words: each doubling copies the stream */
+   if (geometry && (c.v = malloc((c.cap = 512 + f->ndraws * 12) * sizeof *c.v)) == NULL)
+      return -ENOMEM;
 
    void *smp = A(hw, sizeof kb_sample_positions, 64, &va_smp);
    uint32_t *tctx = A(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
