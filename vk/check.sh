@@ -68,11 +68,13 @@ for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MAL
 for g in v11 v13; do
    run "gs shim off $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_gs_shim" --direct "$OUT/libvulkan_mali.so" --expect off
    run "gs shim on $g"  0 MALI_ADVERTISE_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_gs_shim" --direct "$OUT/libvulkan_mali.so" --expect on
+done
 # MALI_ADVERTISE_CULL compatibility shim (not conformance): off by default; on only with the env; cull writes are ignored.
 for g in v11 v13; do
    run "cull shim off $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_cull_shim" --direct "$OUT/libvulkan_mali.so" --expect off
    run "cull shim on $g"  0 MALI_ADVERTISE_CULL=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_cull_shim" --direct "$OUT/libvulkan_mali.so" --expect on
    run "cull shim draw $g" 0 MALI_ADVERTISE_CULL=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull
+done
 # MALI_ADVERTISE_DESCIDX compatibility shim (not conformance): descriptorIndexing flag only; off by default.
 for g in v11 v13; do
    run "descidx shim off $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_descidx_shim" --direct "$OUT/libvulkan_mali.so" --expect off
