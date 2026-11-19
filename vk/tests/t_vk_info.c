@@ -247,6 +247,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, dualSrcBlend),             /* t_vk_draw --only fx_dual_* (passed on the Poco X8, v13) */
          offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_draw msaa_sample_shading; only advertised with MALI_EXPERIMENTAL_MSAA=1 */
          offsetof(VkPhysicalDeviceFeatures, shaderCullDistance),       /* t_cull_shim + t_vk_feat --only cull; only advertised with MALI_ADVERTISE_CULL=1 (non-conformant shim) */
+         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_feat samplerate (1 sample); t_vk_draw msaa_sample_shading (4 samples, MALI_EXPERIMENTAL_MSAA=1) */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
