@@ -177,6 +177,32 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
    return true;
 }
 
+static bool
+robust_filter(const nir_intrinsic_instr *i, const void *d)
+{
+   switch (i->intrinsic) {   /* descriptor-backed accesses only (not shared memory) */
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_ssbo:
+   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_store:
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Returns true (as "progress") when a buffer size query is present; changes nothing. */
+static bool
+has_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   return i->intrinsic == nir_intrinsic_get_ssbo_size || i->intrinsic == nir_intrinsic_get_ubo_size;
+}
+
 bool
 mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, char *err, size_t errsz)
 {
@@ -187,6 +213,15 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
+   if (layout->robust_access) {   /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
+      NIR_PASS(_, nir, nir_lower_robust_access, robust_filter, NULL);
+      /* TODO(robustness2): the Bifrost/Valhall backend has no get_ssbo_size/get_ubo_size (PanVK reads the size from its descriptor
+       * table); until the driver lowers it, refuse instead of letting the backend assert. Keeps robustBufferAccess2 unadvertised. */
+      if (nir_shader_intrinsics_pass(nir, has_size_query, nir_metadata_all, NULL)) {
+         if (err && errsz) snprintf(err, errsz, "robust buffer access: get_ssbo_size/get_ubo_size not supported by the backend yet");
+         return false;
+      }
+   }
    /* nonuniformEXT() indices: the hardware takes one resource handle per warp, so divergent handles become a waterfall loop
     * (same set of types as PanVK; runs after the UBO/SSBO IO lowering). */
    const enum nir_lower_non_uniform_access_type types =
