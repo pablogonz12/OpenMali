@@ -177,13 +177,31 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
    return true;
 }
 
+/* robustness2: an out-of-bounds buffer load returns 0. nir_lower_robust_access rewrites the offset to 0 instead (reads word 0). */
+static bool
+robust_zero_loads(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   bool ubo = i->intrinsic == nir_intrinsic_load_ubo;
+   if (!ubo && i->intrinsic != nir_intrinsic_load_ssbo)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *size = ubo ? nir_get_ubo_size(b, 32, i->src[0].ssa) : nir_get_ssbo_size(b, 32, i->src[0].ssa);
+   nir_def *last = nir_iadd_imm(b, i->src[1].ssa, i->num_components * (i->def.bit_size / 8) - 1);
+   nir_def *zero = nir_imm_zero(b, i->num_components, i->def.bit_size);
+   nir_push_if(b, nir_ult(b, last, size));
+   nir_instr *orig = nir_instr_clone(b->shader, &i->instr);
+   nir_builder_instr_insert(b, orig);
+   nir_pop_if(b, NULL);
+   nir_def_rewrite_uses(&i->def, nir_if_phi(b, &nir_instr_as_intrinsic(orig)->def, zero));
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
 static bool
 robust_filter(const nir_intrinsic_instr *i, const void *d)
 {
    switch (i->intrinsic) {   /* descriptor-backed accesses only (not shared memory) */
-   case nir_intrinsic_load_ubo:
-   case nir_intrinsic_load_ssbo:
-   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_store_ssbo:   /* buffer loads: robust_zero_loads below (Mesa's pass clamps them to offset 0) */
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
    case nir_intrinsic_image_load:
@@ -240,6 +258,7 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
    if (layout->robust_access) {   /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, robust_zero_loads, nir_metadata_none, NULL);
       NIR_PASS(_, nir, nir_lower_robust_access, robust_filter, NULL);
       struct size_ctx sc = { layout, push_base + mali_size_tab_off(layout), false };
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size, nir_metadata_control_flow, &sc);

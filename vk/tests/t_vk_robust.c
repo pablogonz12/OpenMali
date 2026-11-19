@@ -189,10 +189,10 @@ run_compute(int wild)
    for (unsigned i = 0; i < 16; i++) a[i] = 0;
    for (unsigned i = 0; i < 24; i++) a[16 + i] = CANARY_A + i;
    a[0] = 111; a[2] = 112;
-   for (unsigned i = 0; i < 4; i++) u[i] = 0;
-   u[1] = 222;
+   for (unsigned i = 0; i < 64; i++) u[i] = 0;
+   u[4] = 222;   /* std140: u[1].x is word 4 */
    c[0] = 0; c[1] = 555;
-   VkDescriptorBufferInfo bi[4] = {{A.b, 0, 64}, {R.b, 0, VK_WHOLE_SIZE}, {U.b, 0, 16}, {C.b, 0, 8}};   /* ranges end well before the buffers do */
+   VkDescriptorBufferInfo bi[4] = {{A.b, 0, 64}, {R.b, 0, VK_WHOLE_SIZE}, {U.b, 0, 32}, {C.b, 0, 8}};   /* ranges end well before the buffers do */
    VkWriteDescriptorSet w[3] = {
       {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi[0]},
       {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 2, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi[2]},
