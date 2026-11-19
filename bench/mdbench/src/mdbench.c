@@ -1072,9 +1072,10 @@ int main(int argc, char **argv)
       }
 
       int fi = (int)(frame % (uint64_t)F);
+      double t_wait0 = now_ms();
       VK(WaitForFences(dev, 1, &fen[fi], VK_TRUE, 20000000000ull));
       double t_w = now_ms();
-      R.wait[k] = t_w - t0;
+      R.wait[k] = t_w - t_wait0;   /* fence wait only: pipeline creation above stays in the frame time, not in the wait */
       if (have_ts && slot_frame[fi] >= 0) {
          uint64_t ts[2];
          if (GetQueryPoolResults(dev, qpool, (uint32_t)fi * 2, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
@@ -1132,7 +1133,11 @@ int main(int argc, char **argv)
       double tp0 = now_ms();
       if (!g_headless) {
          r = AcquireNextImageKHR(dev, swapchain, 20000000000ull, sem_acq[fi], VK_NULL_HANDLE, &idx);
-         if (r == VK_ERROR_OUT_OF_DATE_KHR) { nood++; destroy_targets(); DestroySwapchainKHR(dev, swapchain, NULL); create_targets(); R.n--; continue; }
+         if (r == VK_ERROR_OUT_OF_DATE_KHR) { nood++; destroy_targets(); DestroySwapchainKHR(dev, swapchain, NULL); create_targets();
+            /* row k is dropped and re-made after this point, so a creation batch recorded on it now falls into the previous row's frame time:
+             * move its association there (row 0 has none left) instead of keeping an index to a discarded row */
+            if (H.n && H.frame[H.n - 1] == k) H.frame[H.n - 1] = k ? k - 1 : (size_t)-1;
+            R.n--; continue; }
          if (r == VK_SUBOPTIMAL_KHR) nsub++; else if (r != VK_SUCCESS) FAIL("AcquireNextImageKHR = %d", (int)r);
       }
       double tp1 = now_ms();
@@ -1323,7 +1328,7 @@ int main(int argc, char **argv)
    size_t nhf = 0, nnf = 0;
    if (O.scene == SC_PIPEHITCH) {
       uint8_t *has = calloc(R.n ? R.n : 1, 1);
-      for (size_t i = 0; i < H.n; i++) has[H.frame[i]] = 1;
+      for (size_t i = 0; i < H.n; i++) if (H.frame[i] < R.n) has[H.frame[i]] = 1;
       for (size_t i = sa; i < sb; i++) { if (R.ft[i] != R.ft[i]) continue; if (has[i]) hf[nhf++] = R.ft[i]; else nf[nnf++] = R.ft[i]; }
       free(has);
    }
