@@ -532,7 +532,10 @@ mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const 
 /* fillModeNonSolid, polygonMode LINE / POINT: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges (LINE) or
  * POINT LIST of its vertices (POINT), per assembled triangle (mali_poly_assemble). Indices (u32, vertex numbers as the original draw would fetch
  * them, so vertexOffset/firstVertex stay in the draw) are generated here from the CPU view of the bound index buffer (the same submit-time read
- * the indirect draws use). Limits: cullMode and gl_FrontFacing are not honoured. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
+ * the indirect draws use). Limits: cullMode and gl_FrontFacing are not honoured; Flat varyings come from each generated point's / line's own
+ * provoking vertex, NOT the source triangle's (the spec wants the triangle's value for all of them). Index generation cannot express that:
+ * a point has one vertex, and an edge a-b cannot take the value of a third vertex c; a fix needs a VS variant that re-fetches the triangle's
+ * provoking vertex outputs. Visible only when Flat/integer varyings differ across a triangle in LINE/POINT mode. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
 static int
 poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw *o)
 {
