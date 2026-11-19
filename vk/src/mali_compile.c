@@ -32,10 +32,62 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 39 /* 39: legalize 8-bit ALU to 32 bits and fold extreme compares before the Mesa passes (output changes for those shaders) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
+
+/* i > INT_MAX (ilt(INT_MAX, i)) in a loop exit makes nir_loop_analyze compute limit + 1 and assert in nir_const_value_for_int.
+ * Compares against the extreme constants have a known result, so fold them before the Mesa passes see them. */
+static bool
+fold_extreme_compare(nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return false;
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   int r = -1;   /* -1: keep, else folded boolean */
+   if (alu->op != nir_op_ilt && alu->op != nir_op_ult && alu->op != nir_op_ige && alu->op != nir_op_uge)
+      return false;
+   unsigned bits = nir_src_bit_size(alu->src[0].src);
+   nir_scalar s0 = nir_scalar_resolved(alu->src[0].src.ssa, alu->src[0].swizzle[0]);
+   nir_scalar s1 = nir_scalar_resolved(alu->src[1].src.ssa, alu->src[1].swizzle[0]);
+   bool c0 = nir_scalar_is_const(s0), c1 = nir_scalar_is_const(s1);
+   uint64_t mask = bits == 64 ? ~0ull : (1ull << bits) - 1;
+   uint64_t imax = mask >> 1, imin = imax + 1;
+   uint64_t v0 = c0 ? nir_scalar_as_uint(s0) & mask : 0, v1 = c1 ? nir_scalar_as_uint(s1) & mask : 0;
+   switch (alu->op) {
+   case nir_op_ilt: if ((c0 && v0 == imax) || (c1 && v1 == imin)) r = 0; break;
+   case nir_op_ige: if ((c1 && v1 == imin) || (c0 && v0 == imax)) r = 1; break;
+   case nir_op_ult: if ((c0 && v0 == mask) || (c1 && v1 == 0)) r = 0; break;
+   case nir_op_uge: if ((c1 && v1 == 0) || (c0 && v0 == mask)) r = 1; break;
+   default: break;
+   }
+   if (r < 0)
+      return false;
+   b->cursor = nir_before_instr(instr);
+   nir_def_replace(&alu->def, nir_imm_bool(b, r));
+   return true;
+}
+
+static unsigned
+lower_alu8_to_32(const nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return 0;
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   if (alu->def.bit_size != 8 || alu->def.num_components != 1)
+      return 0;
+   switch (alu->op) {
+   case nir_op_iadd: case nir_op_isub: case nir_op_imul: case nir_op_ineg: case nir_op_iabs:
+   case nir_op_iadd_sat: case nir_op_uadd_sat: case nir_op_isub_sat: case nir_op_usub_sat:
+   case nir_op_iand: case nir_op_ior: case nir_op_ixor: case nir_op_inot:
+   case nir_op_ishl: case nir_op_ishr: case nir_op_ushr: case nir_op_imin: case nir_op_imax:
+   case nir_op_umin: case nir_op_umax:
+      return 32;
+   default:
+      return 0;
+   }
+}
 
 static atomic_ullong g_hits, g_misses, g_stores;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
@@ -442,6 +494,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_wpos_center);
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_shader_instructions_pass, fold_extreme_compare, nir_metadata_control_flow, NULL);
    pan_preprocess_nir(nir, arch);
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);
@@ -537,6 +591,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
+   /* 8-bit integer ALU on a constant that came from a 16-bit lane (uint8_t(packHalf2x16(..)) + 1) makes the Valhall
+    * constant lowering assert in va_resolve_swizzles. Do 8-bit ALU in 32 bits; the conversions around it are unchanged. */
+   NIR_PASS(_, nir, nir_lower_bit_size, lower_alu8_to_32, NULL);
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);

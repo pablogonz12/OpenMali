@@ -145,6 +145,27 @@ test_private_init(void)
    free(cs.w);
 }
 
+/* Shaders that used to reach Mesa asserts: 8-bit ALU on a constant swizzled out of a 16-bit lane (va_resolve_swizzles) and
+ * a loop exit compare against INT_MAX (nir_loop_analyze: nir_const_value_for_int). Each must compile on every arch. */
+static void
+test_legalize(void)
+{
+   printf("legalize shaders that assert in Mesa\n");
+   static const char *const names[] = { "legalize_i8.comp.spv", "legalize_cmp.comp.spv" };
+   for (unsigned n = 0; n < 2; n++) {
+      struct spv cs = load(names[n]);
+      if (!cs.w) continue;
+      for (unsigned arch = 10; arch <= 13; arch++) {
+         if (arch == 12) continue;
+         struct mali_compiled c;
+         if (compile(arch, MALI_STAGE_COMPUTE, &cs, NULL, "", &c)) { g_fail++; continue; }
+         CHECK(c.bin_size > 0 && c.bin_size % 8 == 0, "v%u %s binary size %u", arch, names[n], c.bin_size);
+         mali_compiled_free(&c);
+      }
+      free(cs.w);
+   }
+}
+
 static void
 test_compute(void)
 {
@@ -411,6 +432,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_private_init();
+   test_legalize();
    test_determinism_and_cache();
    test_ycbcr();
    test_wpos_center();

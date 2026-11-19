@@ -1,0 +1,7 @@
+#version 460
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(local_size_x = 1) in;
+layout(push_constant) uniform PC { uvec2 a; uint pu; } pc;
+layout(buffer_reference, std430) buffer B { uint x[]; };
+// i > INT_MAX as a loop exit: nir_loop_analyze asserted in nir_const_value_for_int (limit + 1 overflows)
+void main() { B x = B(pc.a); for (int i = 0; i < 8; i++) {x.x[i] = pc.pu; if (i > 2147483647) break; } }
