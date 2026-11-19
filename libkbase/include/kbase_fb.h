@@ -32,6 +32,7 @@ struct kb_fb_params {
 	uint64_t sample_locations_va; /* sample-position table (pattern 0 at offset 0); PanVK always sets it */
 	uint64_t tiler_va;            /* Tiler Context pointer; 0 = geometry-less frame */
 	/* experiment knobs (defaults 0 = the documented configuration) */
+	unsigned rt_no_store;         /* 1: colour storeOp DONT_CARE: Write Enable and Clean Tile Write off, the render target is never written back */
 	unsigned no_clean_tile_write; /* 0 (default): Clean Tile Write Enable set, empty tiles are written */
 	unsigned block_format;        /* 0 = linear (2) , 1 = tiled u-interleaved (1) */
 	/* depth attachment (genxml v11 "ZS Target" + FBD Z fields). Zero-initialised = none: output stays 192 B, identical to before. */

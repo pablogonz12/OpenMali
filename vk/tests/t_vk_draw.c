@@ -172,8 +172,8 @@ struct scene {
    int depth;
    VkShaderModule vs, fs;
    VkPipelineLayout layout;
-   VkRenderPass rp, rp2;
-   int second;   /* scene_draw uses rp2 (LOAD) */
+   VkRenderPass rp, rp2, rp3, rp4;
+   int second;   /* scene_draw uses rp2 (LOAD); 2 = rp3 (colour DONT_CARE store, depth stored); 3 = rp4 (colour CLEAR, depth LOAD) */
    VkPipeline pipe, pipe2;
    VkImage col, dep;
    VkDeviceMemory colmem, depmem, vbmem;
@@ -350,6 +350,15 @@ scene_create(struct scene *s, int depth)
       ad[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
       if (g_st.on) ad[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
       CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp2) == VK_SUCCESS, "render pass (LOAD)");
+      if (g_load == 2) {
+         ad[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+         ad[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+         CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp4) == VK_SUCCESS, "render pass (clear col, LOAD depth)");
+         ad[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+         ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+         ad[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+         CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp3) == VK_SUCCESS, "render pass (colour DONT_CARE)");
+      }
    }
    if (g_nocol)
       atts[0] = atts[1];
@@ -576,6 +585,8 @@ scene_destroy(struct scene *s)
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
    if (s->rp) DestroyRenderPass(dev, s->rp, NULL);
    if (s->rp2) DestroyRenderPass(dev, s->rp2, NULL);
+   if (s->rp3) DestroyRenderPass(dev, s->rp3, NULL);
+   if (s->rp4) DestroyRenderPass(dev, s->rp4, NULL);
    for (int i = 0; i < 2; i++) if (s->vb[i]) DestroyBuffer(dev, s->vb[i], NULL);
    if (s->smp) DestroySampler(dev, s->smp, NULL);
    if (s->tiv) DestroyImageView(dev, s->tiv, NULL);
@@ -626,7 +637,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       cv[0] = cv[1];
    if (g_clear_u)
       cv[0].color.uint32[0] = 200, cv[0].color.uint32[1] = 100, cv[0].color.uint32[2] = 50, cv[0].color.uint32[3] = 7;
-   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second == 3 ? s->rp4 : s->second == 2 ? s->rp3 : s->second ? s->rp2 : s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = g_nocol ? 1 : s->depth ? 2 : 1, .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
@@ -1527,6 +1538,51 @@ test_load(const char *name, int kind)
          CHECK(ok, "%s: two-pass centre %08x cov %u vs one-pass %08x cov %u (A %08x B %08x)", name, got, cgot, ref, cref, a, b);
          printf("{\"test\":\"%s\",\"centre\":\"%08x\",\"want\":\"%08x\",\"cov\":%u,\"ok\":%s}\n", name, got, ref, cgot, ok ? "true" : "false");
       }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* colour storeOp DONT_CARE (RT write + clean-tile-write off) then a second pass that CLEARs colour and LOADs the depth the first pass stored: if the colour
+   store were wrongly kept off the depth write-back, or the depth store skipped, B would show where A is in front. Colour stored + LOADed is test_load. */
+static int
+test_store_dc(const char *name)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_load = 2;
+   int ok = scene_create(&s, 1);
+   g_load = 0;
+   float AB[2][4] = {{1, 0, 0, 0}, {-1, 0, 0, 0}};
+   static const int PX[6][2] = {{128, 128}, {128, 90}, {128, 170}, {90, 150}, {166, 110}, {128, 40}};
+   uint32_t pref[6] = {0}, pb[6] = {0}, pgot[6] = {0}, clr = 0;
+   if (ok) ok = scene_draw(&s, 2, AB, f);               /* reference: A then B, one pass */
+   if (ok) for (int i = 0; i < 6; i++) pref[i] = px_at(&s, PX[i][0], PX[i][1]);
+   if (ok) ok = scene_draw(&s, 1, &AB[1], f);           /* B alone */
+   if (ok) { clr = px_at(&s, 5, 5); for (int i = 0; i < 6; i++) pb[i] = px_at(&s, PX[i][0], PX[i][1]); }
+   s.second = 2;
+   if (ok) ok = scene_draw(&s, 1, &AB[0], f);           /* pass 1: A, colour DONT_CARE, depth stored */
+   s.second = 3;
+   if (ok) ok = scene_draw(&s, 1, &AB[1], f);           /* pass 2: clear colour, LOAD depth, B */
+   s.second = 0;
+   if (ok) for (int i = 0; i < 6; i++) pgot[i] = px_at(&s, PX[i][0], PX[i][1]);
+   if (ok && g_fake) {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+   } else if (ok) {
+      int rej = 0;
+      for (int i = 0; i < 6; i++) {
+         uint32_t want = pref[i] == pb[i] ? pb[i] : clr;   /* B survives only where it beat A's loaded depth */
+         rej += want == clr && pb[i] != clr;
+         if (pgot[i] != want) {
+            printf("{\"fail\":\"%s: px (%d,%d) got %08x want %08x (B %08x clear %08x)\"}\n", name, PX[i][0], PX[i][1], pgot[i], want, pb[i], clr);
+            ok = 0;
+         }
+      }
+      CHECK(ok, "%s: depth stored under colour DONT_CARE did not reach pass 2", name);
+      printf("{\"test\":\"%s\",\"rejected_samples\":%d,\"ok\":true}\n", name, rej);
    }
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
@@ -2578,6 +2634,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
    if (ok && CASE_ON("cs_grow")) ok &= test_cs_grow();
+   if (ok && CASE_ON("store_dontcare")) ok &= test_store_dc("store_dontcare");
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
