@@ -61,11 +61,14 @@ never complete. That chain - compositor never releases image -> client blocks on
 here distinguishes it from an app-side wait. It is stated as a hypothesis, not as established behaviour.
 
 **On-device measurement that would confirm or kill it:** with the menu hung, run `gdb -p` (or `eu-stack`) on the
-client, or take two `perf record -p <pid> -g -- sleep 5` samples, and check for a stack of
-`vkQueuePresentKHR -> wsi_common_queue_present -> vk_common_WaitForFences -> vk_sync_wait -> kbase_fence_wait`.
-Capture the same stack whenever the hang is seen; if present never appears, the hypothesis is dead. Second half of
-the check: `dumpsys SurfaceFlinger --latency` (or `tools/steam-present`) during the hang shows whether the compositor
-is still consuming the surface.
+client, or take two `perf record -p <pid> -g -- sleep 5` samples, and look for either of two stacks:
+`vkQueuePresentKHR -> wsi_common_queue_present -> vk_common_WaitForFences -> vk_sync_wait -> kbase_fence_wait` (the
+present-fence form), or an acquire-side block - the client inside `vkAcquireNextImageKHR`/`wsi_common_acquire_next_image`
+waiting on the image's release (the Wayland buffer-release path, or the implicit dma-buf sync on the X11/shm path).
+Capture both stacks whenever the hang is seen; the hypothesis is dead only when **neither** appears while the UI is
+hung, because a client that is blocked on acquire never produces the present-fence stack. Second half of the check:
+`dumpsys SurfaceFlinger --latency` (or `tools/steam-present`) during the hang shows whether the compositor is still
+consuming the surface.
 
 ## 3. The dma-buf present costs no layout transition and no tile load/store
 
@@ -109,8 +112,10 @@ number of ioctls one sweep would issue. Then trace only `MEM_SYNC`, not all ioct
 presents in the *same* window. Take that count from an independent present counter, not from `MALI_PROF`:
 `PROF/frame` is printed only every 200th call and reports averages (`mali_cs_emit.c`, `if (++c % 200 == 0)`), and
 `MALI_FRAME_PROF` prints one `FRAMEPROF` line per retired submission, so neither equals the present count. Use
-SurfaceFlinger's frame counter for the app's layer (`dumpsys SurfaceFlinger --latency <layer>` over the same
-window) or a counter added on the `vkQueuePresentKHR` path.
+The denominator is the number of client `vkQueuePresentKHR` calls in the window: add a counter there, or read one
+from an existing present-path trace. SurfaceFlinger's latch count (`dumpsys SurfaceFlinger --latency <layer>`) can be
+lower, because the compositor may drop or combine queued buffers; use it only after a matched run on the target device
+shows both counts are equal in the Steam present mode.
 `perf stat -e syscalls:sys_enter_ioctl` and `strace -c -e ioctl` count every ioctl; they cannot yield MEM_SYNC per
 present and must not be used for this ratio.
 
