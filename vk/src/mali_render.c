@@ -190,6 +190,20 @@ mali_unorm8(float c)
    return (uint8_t)lroundf(c * 255.0f);
 }
 
+/* Fill the AFBC fields of a colour attachment for one mip/layer of an AFBC image (lay->afbc). Returns 0, or -1 when the image is not AFBC,
+ * the level/layer is out of range or the words cannot be built. `tile_px` = pixels per tile (1u << env->tile_log2). */
+int
+mali_render_att_afbc(struct mali_att *att, const struct mali_afbc_image_layout *al, bool afbc, uint64_t image_va, unsigned level,
+                     unsigned layer, unsigned vk_format, unsigned tile_px)
+{
+   att->afbc = false;
+   if (!afbc || level >= al->levels || layer >= al->layers) return -1;
+   const uint64_t hva = image_va + (uint64_t)layer * al->array_stride + al->level_offset[level];
+   if (mali_afbc_rt_words(MALI_AFBC_SB_16x16, vk_format, tile_px, hva, &al->level[level], &att->afbc_rt)) return -1;
+   att->afbc = true;
+   return 0;
+}
+
 int
 mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                      uint64_t sample_locations_va)
@@ -259,6 +273,10 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    int rc = kb_fb_pack(out, &p);
    if (rc)
       return rc;
+   if (f->has_colour && f->colour.afbc) {   /* default path: afbc is false, output untouched */
+      const bool ext = f->has_zs || f->has_st;
+      mali_afbc_rt_patch((uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (ext ? KB_FB_ZSEXT_SIZE : 0)), &f->colour.afbc_rt);
+   }
    if (env->arch == 13) {
       uint32_t *w = (uint32_t *)out;
       unsigned al = ((1u << env->tile_log2) * (f->colour.rt ? f->colour.rt->alloc : 4u)) >> 10;

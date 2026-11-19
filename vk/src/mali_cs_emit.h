@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mali_afbc.h"
 #include "mali_compile.h"
 
 #ifdef __cplusplus
@@ -217,6 +218,10 @@ struct mali_att {
    uint32_t surface_stride;               /* MSAA (frame.samples 4): bytes per sample plane of the multisampled image (samples consecutive) */
    uint64_t resolve_va;                   /* colour, MSAA: single-sample resolve target (hardware "Average" writeback); 0 = store the samples (Layered) */
    uint32_t resolve_row_stride;
+   /* MALI_AFBC=1 only: colour attachment rendered as AFBC. When set, mali_render_pack_fbd patches the packed RT with afbc_rt
+    * (header VA, row stride, body offset, block format, compression mode); va/row_stride above stay the linear values. Zero = default path. */
+   bool afbc;
+   struct mali_afbc_rt_words afbc_rt;
 };
 
 struct mali_frame {
@@ -249,6 +254,8 @@ int mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint6
 int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
 
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
+int mali_render_att_afbc(struct mali_att *att, const struct mali_afbc_image_layout *al, bool afbc, uint64_t image_va, unsigned level,
+                         unsigned layer, unsigned vk_format, unsigned tile_px);
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                          uint64_t sample_locations_va);
 /* Converts a 0..1 float to an 8-bit UNORM clear channel (round to nearest, clamped). */

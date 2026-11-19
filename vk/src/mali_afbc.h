@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdlib.h>
 
 #define MALI_AFBC_HEADER_BYTES 16u   /* one header per superblock */
@@ -351,6 +352,21 @@ mali_afbc_rt_patch(uint32_t rt[16], const struct mali_afbc_rt_words *w)
    rt[9] = (uint32_t)(w->header_va >> 32);
    rt[10] = w->row_stride;
    rt[11] = w->body_offset;
+}
+
+/* Header-buffer init for an AFBC image: zero the header area of every level and layer (the 'cleared' state; PanVK does no explicit init,
+ * so this is a determinism aid used only when MALI_AFBC=1). `base` is the CPU mapping of the image start. Returns bytes zeroed. */
+static inline uint64_t
+mali_afbc_image_header_init(const struct mali_afbc_image_layout *al, uint8_t *base)
+{
+   uint64_t n = 0;
+   for (uint32_t ly = 0; ly < al->layers; ly++)
+      for (uint32_t l = 0; l < al->levels; l++) {
+         const uint64_t b = (uint64_t)ly * al->array_stride + al->level_offset[l], z = mali_afbc_init_bytes(&al->level[l]);
+         memset(base + b, 0, z);
+         n += z;
+      }
+   return n;
 }
 
 #endif
