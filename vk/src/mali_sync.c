@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -143,6 +144,15 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
       pthread_mutex_unlock(&dev->sync_lock);
       if (fd < 0)
          return vk_error(vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      if (left == 0) {
+         /* A poll (vkGetFenceStatus, vkWaitForFences/AcquireNextImage with timeout 0): a pending fence answers at once from the fd and
+          * never queues behind another thread's blocking wait in the backend (kbase serialises those in 20 ms slices). */
+         struct pollfd pf = {fd, POLLIN, 0};
+         if (poll(&pf, 1, 0) == 0) {
+            close(fd);
+            return VK_TIMEOUT;
+         }
+      }
 
       /* Slices of 100 ms so that a reset/move/destroy on another thread and a device loss are noticed. */
       uint64_t ms = left / 1000000ull;
