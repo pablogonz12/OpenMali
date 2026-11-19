@@ -40,7 +40,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxMemoryAllocationCount = 4096,
       .maxSamplerAllocationCount = 4000,
       .bufferImageGranularity = 1,
-      .maxBoundDescriptorSets = 4,
+      .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
       .maxPerStageDescriptorSamplers = 16,
       .maxPerStageDescriptorUniformBuffers = 12,
       .maxPerStageDescriptorStorageBuffers = 4,

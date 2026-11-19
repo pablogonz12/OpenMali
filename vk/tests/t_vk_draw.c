@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -82,7 +82,7 @@ static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts *
 static const char *g_only, *g_spv = "shader";
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8 };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -191,7 +191,9 @@ struct scene {
    VkDescriptorSetLayout dsl;
    VkDescriptorPool dpool;
    VkDescriptorSet dset[2];
-   VkBuffer ubo[3];          /* uniform buffers (colours) */
+   VkDescriptorSet dset8[8]; /* MODE_SETS8: eight sets bound in one draw */
+   VkDescriptorSetLayout dsl8[8]; /* persistent set-layout array (a stack array dangled behind the pipeline layout) */
+   VkBuffer ubo[8];          /* uniform buffers (colours) */
    VkDeviceMemory ubomem;
    uint8_t *ubop;            /* mapped, 256 bytes per buffer */
    VkImage tim;
@@ -215,7 +217,8 @@ scene_create(struct scene *s, int depth)
    const char *vsn = g_inst ? "inst_attr.vert.spv" : g_sparse ? "rot_sparse.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
-   if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
+   if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) fsn = "ubo.frag.spv";
+   if (mode == MODE_SETS8) fsn = "sets8.frag.spv";
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
    s->vs = load_spv(vsn);
    s->fs = load_spv(fsn);
@@ -225,22 +228,24 @@ scene_create(struct scene *s, int depth)
    if (mode == MODE_PUSHFS) { pcr.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT; pcr.size = 32; }
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
-   if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD) {
+   if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) {
       VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
       VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                              .bindingCount = 1, .pBindings = &lb};
       CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &s->dsl) == VK_SUCCESS, "dsl");
-      pli.setLayoutCount = 1;
-      pli.pSetLayouts = &s->dsl;
-      VkDescriptorPoolSize ps = {lb.descriptorType, 2};
-      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
+      for (unsigned i = 0; i < 8; i++) s->dsl8[i] = s->dsl;
+      VkDescriptorSetLayout *l8 = s->dsl8;
+      unsigned nset = mode == MODE_SETS8 ? 8 : 2;   /* MODE_SETS8: eight identical layouts, all bound in one draw */
+      pli.setLayoutCount = mode == MODE_SETS8 ? 8 : 1;
+      pli.pSetLayouts = l8;
+      VkDescriptorPoolSize ps = {lb.descriptorType, nset};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = nset,
                                         .poolSizeCount = 1, .pPoolSizes = &ps};
       CHECK(CreateDescriptorPool(dev, &dpi, NULL, &s->dpool) == VK_SUCCESS, "dpool");
-      VkDescriptorSetLayout l2[2] = {s->dsl, s->dsl};
       VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = s->dpool,
-                                         .descriptorSetCount = 2, .pSetLayouts = l2};
-      CHECK(AllocateDescriptorSets(dev, &dai, s->dset) == VK_SUCCESS, "alloc sets");
+                                         .descriptorSetCount = nset, .pSetLayouts = l8};
+      CHECK(AllocateDescriptorSets(dev, &dai, mode == MODE_SETS8 ? s->dset8 : s->dset) == VK_SUCCESS, "alloc sets");
    }
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &s->layout) == VK_SUCCESS, "pipeline layout");
 
@@ -405,27 +410,29 @@ scene_create(struct scene *s, int depth)
    UnmapMemory(dev, s->ibmem);
    CHECK(BindBufferMemory(dev, s->ib, s->ibmem, 0) == VK_SUCCESS, "bind ib");
 
-   if (mode == MODE_UBO || mode == MODE_DESCUPD) {
-      /* three 256-byte uniform buffers in one allocation; colours written by the test */
+   if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) {
+      /* 256-byte uniform buffers in one allocation; colours written by the test. MODE_SETS8: one per set (0..7) */
+      const unsigned nubo = mode == MODE_SETS8 ? 8 : 3;
       VkBufferCreateInfo ui = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
       VkDeviceSize step = 0;
-      for (int i = 0; i < 3; i++) CHECK(CreateBuffer(dev, &ui, NULL, &s->ubo[i]) == VK_SUCCESS, "ubo");
+      for (unsigned i = 0; i < nubo; i++) CHECK(CreateBuffer(dev, &ui, NULL, &s->ubo[i]) == VK_SUCCESS, "ubo");
       GetBufferMemoryRequirements(dev, s->ubo[0], &mr);
       step = (256 + mr.alignment - 1) & ~(mr.alignment - 1);
-      VkMemoryAllocateInfo ua = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = step * 3,
+      VkMemoryAllocateInfo ua = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = step * nubo,
                                  .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
       CHECK(AllocateMemory(dev, &ua, NULL, &s->ubomem) == VK_SUCCESS, "ubo mem");
       CHECK(MapMemory(dev, s->ubomem, 0, VK_WHOLE_SIZE, 0, (void **)&s->ubop) == VK_SUCCESS, "map ubo");
       static const float colA[4] = {0.25f, 0.5f, 0.75f, 1.0f}, colB[4] = {1.0f, 0.0f, 0.5f, 1.0f}, colC[4] = {0.0f, 1.0f, 0.0f, 1.0f};
-      memcpy(s->ubop, colA, 16);
-      memcpy(s->ubop + step, colB, 16);
-      memcpy(s->ubop + 2 * step, colC, 16);
-      for (int i = 0; i < 3; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
-      /* set 0 = colour A, set 1 = colour B */
-      for (int i = 0; i < 2; i++) {
+      for (unsigned i = 0; i < nubo; i++) {
+         const float *c = i == 0 ? colA : i == 1 ? colB : colC;   /* sets 2..7 all red-herrings; set 7 = colC */
+         memcpy(s->ubop + step * i, c, 16);
+      }
+      for (unsigned i = 0; i < nubo; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
+      /* set 0 = colour A, set 1 = colour B, MODE_SETS8: set i = ubo[i], the shader reads set 7 = colour C */
+      for (unsigned i = 0; i < (mode == MODE_SETS8 ? 8u : 2u); i++) {
          VkDescriptorBufferInfo bi2 = {s->ubo[i], 0, 16};
-         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->dset[i], .dstBinding = 0,
+         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = mode == MODE_SETS8 ? s->dset8[i] : s->dset[i], .dstBinding = 0,
                                    .descriptorCount = 1, .descriptorType = g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
          UpdateDescriptorSets(dev, 1, &w, 0, NULL);
       }
@@ -690,6 +697,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
    if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
+   if (s->mode == MODE_SETS8)
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 8, s->dset8, 0, NULL);
    for (int i = 0; i < n; i++) {
       if (g_dirty == 1) {
          VkViewport vi = {(i & 1) ? W / 2 : 0, 0, W / 2, H, 0.0f, 1.0f};
@@ -1932,6 +1941,8 @@ test_quad(const char *name, int mode)
       const uint8_t *c = s.px + 128 * s.pitch + 128 * 4;
       if (mode == MODE_PUSHFS) CHECK(near3(c, 191, 64, 128, 2), "pc colour %u,%u,%u,%u", c[0], c[1], c[2], c[3]);
       if (mode == MODE_UBO) CHECK(near3(c, 64, 128, 191, 2), "ubo colour %u,%u,%u,%u", c[0], c[1], c[2], c[3]);
+      /* set 7 carries colour C and the shader reads ONLY set 7: the last of eight bound sets must reach the SRT */
+      if (mode == MODE_SETS8) CHECK(near3(c, 0, 255, 0, 2), "sets8 colour %u,%u,%u,%u (set 7's UBO)", c[0], c[1], c[2], c[3]);
       if (mode == MODE_DESCUPD) {
          const uint8_t *l = s.px + 128 * s.pitch + 64 * 4, *r = s.px + 128 * s.pitch + 192 * 4;
          CHECK(near3(l, 64, 128, 191, 2), "left (set 0) %u,%u,%u,%u", l[0], l[1], l[2], l[3]);
@@ -2145,6 +2156,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
    if (ok && CASE_ON("ubo")) ok &= test_quad("ubo", MODE_UBO);
+   if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
 
