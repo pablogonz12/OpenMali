@@ -145,6 +145,23 @@ test_private_init(void)
    free(cs.w);
 }
 
+/* bufferDeviceAddress in a fragment shader: nir_var_mem_global derefs used to be lowered only for compute and asserted in bi_emit_instr. */
+static void
+test_bda_frag(void)
+{
+   printf("buffer device address in fragment shaders\n");
+   struct spv fs = load("bda_frag.frag.spv");
+   if (!fs.w) return;
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct mali_compiled c;
+      if (compile(arch, MALI_STAGE_FRAGMENT, &fs, NULL, "", &c)) { g_fail++; continue; }
+      CHECK(c.bin_size > 0 && c.bin_size % 8 == 0, "v%u bda fs binary size %u", arch, c.bin_size);
+      mali_compiled_free(&c);
+   }
+   free(fs.w);
+}
+
 static void
 test_compute(void)
 {
@@ -463,6 +480,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_private_init();
+   test_bda_frag();
    test_determinism_and_cache();
    test_ycbcr();
    test_wpos_center();
