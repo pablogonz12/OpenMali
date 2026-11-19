@@ -145,6 +145,44 @@ test_private_init(void)
    free(cs.w);
 }
 
+/* OpArrayLength (get_ssbo_size) used to abort in the Mesa backend: it must be refused with an error. A fragment shader reading the whole
+ * 128 byte push block overflowed the default FAU reservation (assert in bi_emit_load_push_constant): it must compile. */
+static void
+test_refuse_and_push(void)
+{
+   printf("unlowered ops refused, wide push block\n");
+   struct spv cs = load("arraylen.comp.spv"), fs = load("pushwide.frag.spv");
+   if (!cs.w || !fs.w) return;
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct mali_compiled c;
+      struct mali_lbinding b = {.type = MALI_DT_STORAGE_BUFFER, .count = 1, .slot = 0, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER};
+      struct mali_compile_layout l;
+      memset(&l, 0, sizeof l);
+      l.nsets = 1;
+      l.set[0] = (struct mali_lset){.nbindings = 1, .slot_count = 1, .b = &b};
+      struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = cs.w, .spirv_words = cs.n, .cache_dir = "", .layout = &l };
+      char err[256] = "";
+      CHECK(mali_compile(&o, &c, err, sizeof err) != 0 && err[0], "v%u buffer size query is refused", arch);
+      if (compile(arch, MALI_STAGE_FRAGMENT, &fs, NULL, "", &c)) { g_fail++; continue; }
+      CHECK(c.push_const_bytes == 128 && c.fau_reserved >= 32, "v%u wide push: %u bytes, %u reserved words", arch, c.push_const_bytes, c.fau_reserved);
+      mali_compiled_free(&c);
+   }
+   free(cs.w); free(fs.w);
+   /* a constant push read at byte 624 needs more FAU words than exist: refused, not asserted/overflowed */
+   struct spv far = load("pushfar.frag.spv");
+   if (far.w) {
+      for (unsigned arch = 10; arch <= 13; arch++) {
+         if (arch == 12) continue;
+         struct mali_compiled c;
+         struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = far.w, .spirv_words = far.n, .cache_dir = "" };
+         char err[256] = "";
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0 && strstr(err, "push"), "v%u push read beyond FAU capacity is refused (err '%s')", arch, err);
+      }
+      free(far.w);
+   }
+}
+
 static void
 test_compute(void)
 {
@@ -411,6 +449,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_private_init();
+   test_refuse_and_push();
    test_determinism_and_cache();
    test_ycbcr();
    test_wpos_center();

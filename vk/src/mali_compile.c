@@ -450,6 +450,19 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, add_push_base, nir_metadata_control_flow, &pc);
    NIR_PASS(_, nir, nir_opt_constant_folding);
 
+   /* The push block lives in the reserved FAU words; a shader that reads further than the default reservation (VS: 56 bytes after the
+    * 40 byte header, FS on v10/v11: 32 bytes) asserted in bi_emit_load_push_constant. Grow the reservation to cover it. */
+   if (pc.max_end) {
+      unsigned end = pc.max_end == UINT32_MAX ? (o->layout ? o->layout->push_size : 128u) : pc.max_end;
+      /* Refuse BEFORE the reservation grows: the backend writes promoted constants into a 128-entry FAU word array, and an
+       * oversized reservation would overflow it (or hit the count < max assertion). Also reject reads past the layout's push range here. */
+      if ((uint64_t)push_base + end > 4u * 128u || (o->layout && pc.max_end != UINT32_MAX && pc.max_end > o->layout->push_size)) {
+         ralloc_free(nir);
+         return fail(err, errsz, "shader reads push constants beyond the FAU capacity or the layout's push range");
+      }
+      fau_reserved = MAX2(fau_reserved, (push_base + end + 3) / 4);
+   }
+
    struct pan_compile_inputs in = { .arch = arch, .model = model };
    struct pan_varying_layout vl;
    memset(&vl, 0, sizeof vl);
@@ -531,6 +544,27 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
    nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
 
+   /* Intrinsics nothing lowers: refuse with an error instead of an assert in the Mesa backend (a release build would emit garbage).
+    * OpArrayLength / .length() on an SSBO (get_ssbo_size) and the multiview / NumWorkGroups sysvals are not implemented. */
+   {
+      const char *bad = NULL;
+      nir_foreach_function_impl(impl, nir)
+         nir_foreach_block(blk, impl)
+            nir_foreach_instr(ins, blk) {
+               if (ins->type != nir_instr_type_intrinsic) continue;
+               switch (nir_instr_as_intrinsic(ins)->intrinsic) {
+               case nir_intrinsic_get_ssbo_size: bad = "OpArrayLength (buffer size query) is not supported"; break;
+               case nir_intrinsic_load_view_index: bad = "multiview (ViewIndex) is not supported"; break;
+               case nir_intrinsic_load_num_workgroups: bad = "NumWorkGroups is not supported"; break;
+               default: break;
+               }
+            }
+      if (bad) {
+         ralloc_free(nir);
+         return fail(err, errsz, bad);
+      }
+   }
+
    struct pan_shader_info info = {0};
    /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
    if (gcm_enabled(nir)) {
@@ -557,7 +591,8 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       ralloc_free(nir);
       return fail(err, errsz, "out of memory");
    }
-   memcpy(out->bin, util_dynarray_begin(&bin), out->bin_size);
+   if (out->bin_size)
+      memcpy(out->bin, util_dynarray_begin(&bin), out->bin_size);
    util_dynarray_fini(&bin);
 
    if (stage == MESA_SHADER_COMPUTE)
@@ -760,7 +795,8 @@ mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, c
       ralloc_free(nir);
       return fail(err, errsz, "out of memory");
    }
-   memcpy(out->bin, util_dynarray_begin(&bin), out->bin_size);
+   if (out->bin_size)
+      memcpy(out->bin, util_dynarray_begin(&bin), out->bin_size);
    util_dynarray_fini(&bin);
    out->work_reg_count = info.work_reg_count;
    out->tls_size = info.tls_size;
