@@ -52,7 +52,7 @@ if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0
 
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
-      $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c
+      $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c $V/src/mali_fprof.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
       $V/src/mali_format.c $V/src/mali_image.c $V/src/mali_buffer.c $V/src/mali_sampler.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c
@@ -135,6 +135,7 @@ J
 ${CC%% *} -std=c11 -O2 -Wall -Wextra -Werror -I"$MESA/include" -o "$OUT/t_icd" "$V/tests/t_icd.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -I"$MESA/include" -o "$OUT/t_queue" "$V/tests/t_queue.c" -ldl -pthread
 
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_frameprof" "$V/tests/t_frameprof.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_draw" "$V/tests/t_vk_draw.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_feat" "$V/tests/t_vk_feat.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_compute" "$V/tests/t_vk_compute.c" -ldl -lm -pthread
