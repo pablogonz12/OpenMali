@@ -24,6 +24,7 @@
 #include "kbase.h"
 #include "kbase_uapi.h"
 #include "kbase_draw.h"
+#include "kbase_fb.h"
 #if ARCH == 13
 #include "../../libkbase/tests/shaders_v13.h"
 #else
@@ -327,6 +328,43 @@ test_clear_words(void)
    check_clear_words(VK_FORMAT_A8B8G8R8_UINT_PACK32, f, 0x00000007, 0x00000007, 0x00000007, 0x00000007, "A8B8G8R8_UINT");
 }
 
+/* storeOp DONT_CARE/NONE: the FBD render target's Write Enable (word 1 bit 0) is off, so the tile is not written back; STORE and an MSAA
+ * resolve (which writes through the same RT) keep it on. */
+static unsigned
+fbd_rt_write_enable(bool store, bool resolve)
+{
+   struct mali_env env;
+   struct mali_frame f;
+   uint8_t fbd[KB_FB_DESC_SIZE_ZS];
+   memset(&env, 0, sizeof env);
+   memset(&f, 0, sizeof f);
+   memset(fbd, 0, sizeof fbd);
+   env.arch = 11;
+   f.width = f.height = 64;
+   f.has_colour = true;
+   f.samples = resolve ? 4 : 1;
+   f.colour.va = 0x100000;
+   f.colour.row_stride = 256;
+   f.colour.store = store;
+   if (resolve) {
+      f.colour.resolve_va = 0x200000;
+      f.colour.resolve_row_stride = 256;
+   }
+   int rc = mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000);
+   CHECK(rc == 0, "pack_fbd rc %d", rc);
+   uint32_t w1;
+   memcpy(&w1, fbd + KB_FB_FBD_SIZE + 4, 4);
+   return w1 & 1;
+}
+
+static void
+test_store_op(void)
+{
+   CHECK(fbd_rt_write_enable(true, false) == 1, "storeOp STORE must write the tile back");
+   CHECK(fbd_rt_write_enable(false, false) == 0, "storeOp DONT_CARE/NONE must not write the tile back (RT Write Enable)");
+   CHECK(fbd_rt_write_enable(false, true) == 1, "MSAA resolve needs the RT write");
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -339,6 +377,7 @@ int main(int argc, char **argv)
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
    test_clear_words();
+   test_store_op();
    fill_compiled();
    if (setup_kb())
       return 1;
