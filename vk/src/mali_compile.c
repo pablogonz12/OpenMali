@@ -32,11 +32,11 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
-#include <time.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22   /* 22: merge of 21 (cache entries carry a checksum (MALD), generated code unchanged) and 21 (MALI_OPT_GCM env pass, output unchanged when unset); 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 24 /* 24: pipeline-cache entries carry a checksum (MALD) and the cache UUID, generated code unchanged ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -186,6 +186,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
       blake3_hasher_update(&h, L->dyn_start, sizeof L->dyn_start);
       blake3_hasher_update(&h, &L->push_size, sizeof L->push_size);
+      blake3_hasher_update(&h, &L->robust_access, sizeof L->robust_access);
       for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
          blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
          blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);
@@ -290,15 +291,36 @@ trim_cmp(const void *a, const void *b)
    return (x->mtime > y->mtime) - (x->mtime < y->mtime);
 }
 
+/* "<64 hex>.bin" is an entry; "<64 hex>.bin.tmp<pid>.<n>" is an in-flight or abandoned write. Anything else is not ours. */
+static int
+cache_name_kind(const char *n)
+{
+   for (int i = 0; i < 64; i++)
+      if (!((n[i] >= '0' && n[i] <= '9') || (n[i] >= 'a' && n[i] <= 'f'))) return 0;
+   if (!strcmp(n + 64, ".bin")) return 1;
+   if (strncmp(n + 64, ".bin.tmp", 8)) return 0;
+   const char *q = n + 72;
+   int dots = 0, digits = 0;
+   for (; *q; q++) {
+      if (*q == '.') { if (!digits || dots++) return 0; digits = 0; }
+      else if (*q >= '0' && *q <= '9') digits++;
+      else return 0;
+   }
+   return dots == 1 && digits ? 2 : 0;
+}
+
 /* Removes temp files left by killed processes (older than 10 min: a live writer finishes in milliseconds) and, when the .bin entries
- * exceed max_bytes (0 = no limit), deletes the least recently used ones (mtime; a hit refreshes it) down to 90% of the cap. Safe to run in
- * several processes at once: unlink of a vanished file is ignored and a reader that already opened an entry keeps its data. */
+ * exceed max_bytes (0 = no limit), deletes the least recently used ones (mtime; a hit refreshes it) down to 90% of the cap. One trimmer per
+ * directory (flock): a second process scanning at the same time would act on sizes the first already deleted. A reader that already opened
+ * an entry keeps its data; unlink of a vanished file is ignored. */
 void
 mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
 {
    if (!cache_dir_trusted(dir)) return;
    DIR *d = opendir(dir);
    if (!d) return;
+   int lfd = openat(dirfd(d), ".trim.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0644);
+   if (lfd >= 0 && flock(lfd, LOCK_EX | LOCK_NB)) { close(lfd); closedir(d); return; }
    size_t cap = 256, n = 0;
    struct trim_ent *v = malloc(cap * sizeof *v);
    unsigned long long total = 0;
@@ -306,9 +328,10 @@ mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
    struct dirent *e;
    while (v && (e = readdir(d))) {
       size_t l = strlen(e->d_name);
-      if (l >= sizeof v->name || l < 5) continue;
-      int is_tmp = strstr(e->d_name, ".bin.tmp") != NULL;
-      if (!is_tmp && strcmp(e->d_name + l - 4, ".bin")) continue;
+      if (l >= sizeof v->name) continue;
+      int kind = cache_name_kind(e->d_name);
+      int is_tmp = kind == 2;
+      if (!kind) continue;
       struct stat st;
       if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode)) continue;
       if (is_tmp) {
@@ -331,6 +354,7 @@ mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
    }
    free(v);
    closedir(d);
+   if (lfd >= 0) close(lfd);   /* drops the lock */
 }
 
 static void
@@ -437,6 +461,34 @@ fail(char *err, size_t n, const char *m)
    return -1;
 }
 
+/* spirv_to_nir debug sink: keep the last ERROR message (e.g. "Unimplemented SPIR-V capability: X") so the caller sees why. */
+struct vtn_diag {
+   char msg[200];
+};
+
+static void
+vtn_diag_cb(void *priv, enum nir_spirv_debug_level level, size_t offset, const char *message)
+{
+   struct vtn_diag *d = priv;
+   if (level != NIR_SPIRV_DEBUG_LEVEL_ERROR)
+      return;
+   /* The message is multi-line ("SPIR-V parsing FAILED:", "In file ...", the reason, "N bytes into ..."): keep the reason lines. */
+   size_t n = 0;
+   d->msg[0] = 0;
+   for (const char *p = message; *p;) {
+      while (*p == ' ' || *p == '\n')
+         p++;
+      const char *e = strchr(p, '\n');
+      size_t len = e ? (size_t)(e - p) : strlen(p);
+      if (len && strncmp(p, "SPIR-V parsing", 14) && strncmp(p, "In file", 7) && n + 1 < sizeof d->msg)
+         n += snprintf(d->msg + n, sizeof d->msg - n, "%s%.*s", n ? "; " : "", (int)len, p);
+      p += len;
+   }
+   if (n >= sizeof d->msg)
+      n = sizeof d->msg - 1;
+   (void)offset;
+}
+
 static const struct vk_ycbcr_conversion_state *
 ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_index)
 {
@@ -486,8 +538,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                              o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
    const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
 
+   struct vtn_diag diag = {{0}};
    struct spirv_to_nir_options so = {
       .environment = NIR_SPIRV_VULKAN,
+      .debug = {.func = vtn_diag_cb, .private_data = &diag},
+      .skip_os_break_in_debug_build = true,   /* a bad shader must fail the compile, not trap a debug build */
       .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
       .ssbo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_64bit_global_32bit_offset,
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
@@ -509,8 +564,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
    nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
    free(se);
-   if (!nir)
-      return fail(err, errsz, "spirv_to_nir failed");
+   if (!nir) {
+      if (diag.msg[0] && err && errsz)
+         snprintf(err, errsz, "spirv_to_nir failed: %s", diag.msg);
+      else
+         return fail(err, errsz, "spirv_to_nir failed");
+      return -1;
+   }
 
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
@@ -532,7 +592,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
          }
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_entrypoints(nir);
@@ -543,6 +603,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_lower_system_values);
+   /* Vulkan: FragCoord.xy is x + 0.5 (sample position when sample shading); the hardware reports the integer corner. Before IO lowering. */
+   if (stage == MESA_SHADER_FRAGMENT)
+      NIR_PASS(_, nir, nir_lower_wpos_center);
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
    pan_preprocess_nir(nir, arch);
