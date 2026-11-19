@@ -14,6 +14,7 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <pthread.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -338,6 +339,32 @@ run_dyn(void)
    return 1;
 }
 
+/* 398: an application-provided allocator may only be called from the thread that issued the command, so a batch with
+ * VkAllocationCallbacks must not run on workers. These record the calling thread. */
+static pthread_t g_main_thread;
+static int g_alloc_calls, g_alloc_outside;
+static void *test_alloc(void *u, size_t size, size_t align, VkSystemAllocationScope sc)
+{
+   (void)u; (void)align; (void)sc;
+   if (!pthread_equal(pthread_self(), g_main_thread))
+      __atomic_add_fetch(&g_alloc_outside, 1, __ATOMIC_RELAXED);
+   __atomic_add_fetch(&g_alloc_calls, 1, __ATOMIC_RELAXED);
+   return malloc(size);
+}
+static void *test_realloc(void *u, void *p, size_t size, size_t align, VkSystemAllocationScope sc)
+{
+   (void)u; (void)align; (void)sc;
+   if (!pthread_equal(pthread_self(), g_main_thread))
+      __atomic_add_fetch(&g_alloc_outside, 1, __ATOMIC_RELAXED);
+   __atomic_add_fetch(&g_alloc_calls, 1, __ATOMIC_RELAXED);
+   return realloc(p, size);
+}
+static void test_free(void *u, void *p) { (void)u; free(p); }
+static void test_internal(void *u, size_t size, VkInternalAllocationType t, VkSystemAllocationScope sc) { (void)u; (void)size; (void)t; (void)sc; }
+static const VkAllocationCallbacks test_cb = { .pfnAllocation = test_alloc, .pfnReallocation = test_realloc,
+                                               .pfnFree = test_free, .pfnInternalAllocation = test_internal,
+                                               .pfnInternalFree = test_internal };
+
 /* Hitch: a batch of N pipelines in ONE vkCreateComputePipelines call must be compiled in parallel (MALI_PIPE_THREADS, default 4), so the
  * call's latency (what the render thread sees) is well under the sum of the same compiles done one at a time. Run with
  * MALI_SHADER_CACHE= (disabled) so every create really compiles. Reports max single-create latency and the batch latency. */
@@ -385,6 +412,18 @@ run_batch(void)
    if (getenv("MALI_SHADER_CACHE") && !*getenv("MALI_SHADER_CACHE") && par)
       CHECK(batch < seq * 0.75, "batch %.0f us not faster than sequential %.0f us", batch, seq);
    for (int i = 0; i < N; i++) { DestroyPipeline(dev, pb[i], NULL); DestroyPipeline(dev, ps[i], NULL); }
+
+   /* 398: the same batch with an application allocator stays on this thread (sequential create). */
+   g_main_thread = pthread_self();
+   g_alloc_calls = g_alloc_outside = 0;
+   VkPipeline pa[N];
+   VkResult ra = CreateComputePipelines(dev, VK_NULL_HANDLE, N, ci, &test_cb, pa);
+   CHECK(ra == VK_SUCCESS, "batch with app allocator = %d", ra);
+   CHECK(g_alloc_calls > 0, "app allocator was never called (%d)", g_alloc_calls);
+   CHECK(g_alloc_outside == 0, "%d of %d app-allocator calls ran on a worker thread", g_alloc_outside, g_alloc_calls);
+   for (int i = 0; i < N; i++)
+      if (pa[i] != VK_NULL_HANDLE)
+         DestroyPipeline(dev, pa[i], &test_cb);
    return 1;
 }
 

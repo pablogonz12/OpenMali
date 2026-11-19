@@ -356,6 +356,20 @@ struct batch {
    atomic_uint next;
 };
 
+/* The Vulkan memory chapter: an implementation must only call an application-provided allocator from the thread that
+ * issued the command. create_one/create_compute_one allocate the pipeline object through `alloc` and set up temporary
+ * state through dev->vk.alloc, so batching on workers is only allowed when both allocators are the driver's default.
+ * With an application allocator the batch runs sequentially on the caller's thread (same results, no extra latency for
+ * the usual n = 1..few case, and no thread-local allocator can be used from a worker). */
+static bool
+alloc_is_default(const struct mali_device *dev, const VkAllocationCallbacks *alloc)
+{
+   if (alloc)
+      return false;
+   const VkAllocationCallbacks *d = vk_default_allocator();
+   return dev->vk.alloc.pfnAllocation == d->pfnAllocation && dev->vk.alloc.pfnFree == d->pfnFree;
+}
+
 static VkResult create_one(struct mali_device *, const VkGraphicsPipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
 static VkResult create_compute_one(struct mali_device *, const VkComputePipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
 
@@ -385,6 +399,11 @@ static VkResult
 create_batch(struct mali_device *dev, bool compute, const void *ci, size_t stride, uint32_t n, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    VkResult result = VK_SUCCESS;
+   /* Spec: when the command fails and creates no pipeline, every pPipelines element is VK_NULL_HANDLE. This path can
+    * fail before a single worker runs (the calloc below), so null every entry up front; workers overwrite only the
+    * indices they successfully created, and the failure scan below relies on the rest being null already. */
+   for (uint32_t i = 0; i < n; i++)
+      out[i] = VK_NULL_HANDLE;
    VkResult *res = calloc(n ? n : 1, sizeof *res);
    if (!res)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -430,7 +449,7 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
-   if (n > 1 && pipe_threads(n) > 1)
+   if (n > 1 && pipe_threads(n) > 1 && alloc_is_default(dev, alloc))
       return create_batch(dev, false, ci, sizeof *ci, n, alloc, out);
    for (i = 0; i < n; i++) {
       VkResult r = create_one(dev, &ci[i], alloc, &out[i]);
@@ -513,7 +532,7 @@ mali_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
-   if (n > 1 && pipe_threads(n) > 1)
+   if (n > 1 && pipe_threads(n) > 1 && alloc_is_default(dev, alloc))
       return create_batch(dev, true, ci, sizeof *ci, n, alloc, out);
    for (i = 0; i < n; i++) {
       VkResult r = create_compute_one(dev, &ci[i], alloc, &out[i]);
