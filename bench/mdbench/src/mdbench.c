@@ -923,11 +923,12 @@ int main(int argc, char **argv)
       VK(AllocateDescriptorSets(dev, &ai, ds));
       for (int i = 0; i < F; i++) { dset[i] = ds[i]; dset_str[i] = ds[F + i]; }
       dset_cmp = ds[2 * F];
-      if (O.scene == SC_STREAM) for (int i = 0; i < F; i++) {   /* per-frame staging buffer + sampled image (overwritten by the upload each frame) */
+      const int use_str = O.scene == SC_STREAM || O.stream > 0;   /* --stream U also works on the other scenes: the same condition allocates and records */
+      if (use_str) for (int i = 0; i < F; i++) {   /* per-frame staging buffer + sampled image (overwritten by the upload each frame) */
          str_stg[i] = mkbuf(STREAM_BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
          str_img[i] = mkimg(VK_FORMAT_R8G8B8A8_UNORM, STREAM_DIM, STREAM_DIM, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0);
       }
-      if (O.scene == SC_STREAM) { str_src = malloc(STREAM_BYTES); uint32_t *q = (uint32_t *)str_src; for (size_t i = 0; i < STREAM_BYTES / 4; i++) q[i] = hash32((uint32_t)i) | 0xff000000u; }
+      if (use_str) { str_src = malloc(STREAM_BYTES); uint32_t *q = (uint32_t *)str_src; for (size_t i = 0; i < STREAM_BYTES / 4; i++) q[i] = hash32((uint32_t)i) | 0xff000000u; }
       for (int i = 0; i < F; i++) {
          VkDescriptorBufferInfo bi = {ubo[i].b, 0, 160};
          VkDescriptorImageInfo i0 = {sampler, tex0.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, i1 = {sampler, texa.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -937,7 +938,7 @@ int main(int argc, char **argv)
             {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dset[i], .dstBinding = 2, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &i1}};
          UpdateDescriptorSets(dev, 3, w, 0, NULL);
          /* scene "stream": same layout, binding 1/2 = this frame's streamed image (written only when that scene runs) */
-         VkImageView sv = O.scene == SC_STREAM ? str_img[i].view : tex0.view;
+         VkImageView sv = use_str ? str_img[i].view : tex0.view;
          VkDescriptorImageInfo si0 = {sampler, sv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
          VkWriteDescriptorSet w2[3] = {w[0], w[1], w[2]};
          w2[0].dstSet = w2[1].dstSet = w2[2].dstSet = dset_str[i];
@@ -1180,7 +1181,7 @@ int main(int argc, char **argv)
                CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl_gfx, 0, 1, (i & 1) ? &dset_str[fi] : &dset[fi], 1, &off);
                float spc[8] = {(float)i, 0, 0, 0, 0, 0, 0, 0};
                CmdPushConstants(cb, pl_gfx, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, spc);
-               if ((i & 3) == 0) { VkRect2D sc2 = {{0, 0}, {TW - (uint32_t)((i >> 2) & 7), TH}}; CmdSetScissor(cb, 0, 1, &sc2); }
+               if ((i & 3) == 0) { VkRect2D sc2 = {{0, 0}, {TW > (uint32_t)((i >> 2) & 7) ? TW - (uint32_t)((i >> 2) & 7) : 1u, TH}}; CmdSetScissor(cb, 0, 1, &sc2); }
                CmdDrawIndexed(cb, (uint32_t)O.draw_idx, 1, 0, 0, 0);
             }
             CmdSetScissor(cb, 0, 1, &scr);
@@ -1202,6 +1203,7 @@ int main(int argc, char **argv)
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_stream);
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl_gfx, 0, 1, &dset_str[fi], 1, &(uint32_t){0});
          CmdDraw(cb, 3, 1, 0, 0);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl_gfx, 0, 1, &dset[fi], 1, &(uint32_t){0});   /* tex.frag reads binding 2 as an array: back to the standard set */
       }
       if (cur.tex) {
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cur.fs_blend ? pipe_tex_b : pipe_tex);
