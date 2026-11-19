@@ -64,6 +64,7 @@ run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
 STEAM_MISSING=0
 # zink (STEAM-GAPS.md): logicOp and EXT_physical_device_drm still missing; lower only together with the passing test.
 ZINK_MISSING=2
+for g in v11 v13; do run "vk_headless $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_headless" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "steam_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 # MALI_ADVERTISE_GS compatibility shim (not conformance): off by default, on only with the env; a GS pipeline is rejected either way.

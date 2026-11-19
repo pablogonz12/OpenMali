@@ -37,6 +37,10 @@ if [ "$testonly" = false ]; then
    case $mach in AArch64*) ok "aarch64 ELF (importer isAarch64Elf)";; *) bad "not AArch64: $mach";; esac
    grep -aq 'libc.so.6' "$lib" && ok "contains libc.so.6 (importer isGlibc)" || bad "no libc.so.6 string"
 fi
+# WSI: ANGLE's VerifyExtensionsPresent needs VK_EXT_headless_surface (with the headless platform's vkCreateHeadlessSurfaceEXT compiled in)
+for n in VK_EXT_headless_surface vkCreateHeadlessSurfaceEXT VK_EXT_swapchain_colorspace; do
+   grep -aq "$n" "$lib" && ok "contains $n" || bad "no $n string (headless/colorspace WSI missing)"
+done
 # exports: loader entry points only
 syms=$(nm -D --defined-only "$lib" | awk '{print $3}' | sort | tr '\n' ' ')
 want="vk_icdGetInstanceProcAddr vk_icdGetPhysicalDeviceProcAddr vk_icdNegotiateLoaderICDInterfaceVersion "
