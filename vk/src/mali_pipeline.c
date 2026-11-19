@@ -205,6 +205,32 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          if (mali_blend_equation(&fx, &eq, &cm))
             has_blend = true;
       }
+      /* The blend shader is a single program bound for attachment 0 (mali_cmd.c:515 rejects the draw otherwise; the limit
+       * maxFragmentDualSrcAttachments = 1 says so). Reconcile the multi-RT case at pipeline creation: refuse a blend-shader
+       * RT0 with several colour attachments instead of failing later in the command buffer. */
+      if (has_blend && st.cb->attachment_count > 1) {
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: blend shader (dual-source / advanced blend) with %u colour attachments: RT0 only\n",
+                    st.cb->attachment_count);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
+      /* attachments 1..n: only fixed-function blend exists, so an op/factor pair the equation encoder cannot express is refused here */
+      for (unsigned i = 1; i < st.cb->attachment_count; i++) {
+         const struct vk_color_blend_attachment_state *ai = &st.cb->attachments[i];
+         if (!ai->blend_enable)
+            continue;
+         struct mali_fixed fx = {.blend_en = true, .src_c = ai->src_color_blend_factor, .dst_c = ai->dst_color_blend_factor,
+                                 .src_a = ai->src_alpha_blend_factor, .dst_a = ai->dst_alpha_blend_factor,
+                                 .op_c = ai->color_blend_op, .op_a = ai->alpha_blend_op};
+         uint32_t eq; unsigned cm;
+         if (mali_blend_equation(&fx, &eq, &cm)) {
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: advanced blend on colour attachment %u: blend shader is RT0 only\n", i);
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+      }
       if (has_blend) {
          if (!st.rp || st.rp->color_attachment_count < 1 || st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
              BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS)) {
