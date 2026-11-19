@@ -2324,6 +2324,32 @@ test_int8(void)
    return 1;
 }
 
+/* intdot_props: VkPhysicalDeviceShaderIntegerDotProductProperties must be fully written (0xCD garbage must be gone) and honest:
+ * no dot instruction exists in the backend, so every *Accelerated hint is VK_FALSE. Also checked through the Vulkan 1.3 properties chain. */
+static int
+test_intdot_props(void)
+{
+   if (!g_intdot) return 1;
+   VkPhysicalDeviceShaderIntegerDotProductProperties dp;
+   memset(&dp, 0xCD, sizeof(dp));
+   dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES; dp.pNext = NULL;
+   VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+   g_gp2(g_pd, &p2);
+   const VkBool32 *b = (const VkBool32 *)((const char *)&dp + offsetof(VkPhysicalDeviceShaderIntegerDotProductProperties, integerDotProduct8BitUnsignedAccelerated));
+   int n = (int)((sizeof(dp) - offsetof(VkPhysicalDeviceShaderIntegerDotProductProperties, integerDotProduct8BitUnsignedAccelerated)) / sizeof(VkBool32));
+   int bad = 0;
+   for (int i = 0; i < n; i++) if (b[i] != VK_FALSE) bad++;
+   VkPhysicalDeviceVulkan13Properties p13;
+   memset(&p13, 0xCD, sizeof(p13));
+   p13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES; p13.pNext = NULL;
+   p2.pNext = &p13;
+   g_gp2(g_pd, &p2);
+   if (p13.integerDotProduct8BitUnsignedAccelerated != VK_FALSE || p13.integerDotProduct64BitMixedSignednessAccelerated != VK_FALSE ||
+       p13.integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated != VK_FALSE) bad++;
+   printf("{\"test\":\"intdot_props\",\"fields\":%d,\"bad\":%d,\"ok\":%s}\n", n, bad, bad || n != 30 ? "false" : "true");
+   return !bad && n == 30;
+}
+
 /* shaderIntegerDotProduct: packed 4x8 u/s/mixed, accumulating-saturating and 8-/16-bit vector dot products against a C reference
  * (operands include 0xFF/0x80 bytes so signedness mistakes and missing saturation change the result). */
 static int
@@ -2598,7 +2624,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("int16")) ok &= test_int16();
    if (ok && CASE_ON("int64")) ok &= test_int64();
    if (ok && CASE_ON("int8")) ok &= test_int8();
-   if (ok && CASE_ON("intdot")) ok &= test_intdot();
+   if (ok && CASE_ON("intdot")) ok &= test_intdot() && test_intdot_props();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
