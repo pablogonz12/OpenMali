@@ -15,7 +15,7 @@
 
 static int g_fail;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL %s:%d %s: ", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\n"); g_fail = 1; } } while (0)
-#define REQ(c, ...) do { CHECK(c, __VA_ARGS__); if (!(c)) return 1; } while (0)
+#define REQ(c, ...) do { int ok_ = !!(c); CHECK(ok_, __VA_ARGS__); if (!ok_) return 1; } while (0)
 
 int
 main(int argc, char **argv)
@@ -43,7 +43,7 @@ main(int argc, char **argv)
 #define I(x) PFN_vk##x x = (PFN_vk##x)gipa(inst, "vk" #x)
    I(CreateHeadlessSurfaceEXT); I(DestroySurfaceKHR); I(EnumeratePhysicalDevices); I(CreateDevice); I(GetDeviceProcAddr);
    I(GetPhysicalDeviceSurfaceFormatsKHR); I(GetPhysicalDeviceSurfaceCapabilitiesKHR); I(GetPhysicalDeviceSurfaceSupportKHR);
-   I(GetPhysicalDeviceSurfacePresentModesKHR);
+   I(GetPhysicalDeviceSurfacePresentModesKHR); I(DestroyInstance);
    REQ(CreateHeadlessSurfaceEXT, "vkCreateHeadlessSurfaceEXT resolves through vkGetInstanceProcAddr");
 
    VkHeadlessSurfaceCreateInfoEXT hci = {.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
@@ -75,6 +75,8 @@ main(int argc, char **argv)
 #define D(x) PFN_vk##x x = (PFN_vk##x)GetDeviceProcAddr(dev, "vk" #x)
    D(GetDeviceQueue); D(CreateSwapchainKHR); D(GetSwapchainImagesKHR); D(AcquireNextImageKHR); D(QueuePresentKHR); D(DestroySwapchainKHR);
    D(CreateFence); D(DestroyFence); D(WaitForFences); D(DestroyDevice);
+   D(CreateCommandPool); D(DestroyCommandPool); D(AllocateCommandBuffers); D(FreeCommandBuffers);
+   D(BeginCommandBuffer); D(EndCommandBuffer); D(CmdPipelineBarrier); D(QueueSubmit); D(QueueWaitIdle);
    VkQueue q; GetDeviceQueue(dev, 0, 0, &q);
 
    VkSwapchainCreateInfoKHR sc = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = surf,
@@ -87,6 +89,19 @@ main(int argc, char **argv)
    REQ(r == VK_SUCCESS && chain, "vkCreateSwapchainKHR on the headless surface (%d)", r);
    uint32_t ni = 0; GetSwapchainImagesKHR(dev, chain, &ni, NULL);
    CHECK(ni >= 2, "swapchain has %u images", ni);
+   VkImage imgs[16];
+   uint32_t ni_have = ni < 16 ? ni : 16;
+   REQ(GetSwapchainImagesKHR(dev, chain, &ni_have, imgs) >= 0, "swapchain image handles");
+   CHECK(ni_have == ni, "%u of %u image handles", ni_have, ni);
+
+   VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                  .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = 0};
+   VkCommandPool pool;
+   REQ(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "command pool");
+   VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                      .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb;
+   REQ(AllocateCommandBuffers(dev, &cbi, &cb) == VK_SUCCESS, "command buffer");
 
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    VkFence f; REQ(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
@@ -98,14 +113,36 @@ main(int argc, char **argv)
       CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 5000000000ull) == VK_SUCCESS, "acquire fence signals");
       /* reset not loaded: use a fresh fence each frame */
       DestroyFence(dev, f, NULL); CreateFence(dev, &fi, NULL, &f);
+      /* The acquired image is UNDEFINED on its first use and PRESENT_SRC after an earlier present; QueuePresentKHR
+       * requires a presentation layout, so transition it and finish that before presenting. */
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+      REQ(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin transition %d", frame);
+      VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                 .oldLayout = frame ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .image = imgs[idx],
+                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &ib);
+      REQ(EndCommandBuffer(cb) == VK_SUCCESS, "end transition %d", frame);
+      VkSubmitInfo tsi = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      REQ(QueueSubmit(q, 1, &tsi, VK_NULL_HANDLE) == VK_SUCCESS, "submit transition %d", frame);
+      REQ(QueueWaitIdle(q) == VK_SUCCESS, "wait transition %d", frame);
       VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .swapchainCount = 1, .pSwapchains = &chain, .pImageIndices = &idx};
       r = QueuePresentKHR(q, &pi);
       CHECK(r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR, "present frame %d (%d)", frame, r);
    }
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   DestroyCommandPool(dev, pool, NULL);
    DestroyFence(dev, f, NULL);
    DestroySwapchainKHR(dev, chain, NULL);
    DestroyDevice(dev, NULL);
    DestroySurfaceKHR(inst, surf, NULL);
+   if (DestroyInstance)
+      DestroyInstance(inst, NULL);
    printf(g_fail ? "FAIL\n" : "ok: headless surface + swapchain acquire/present\n");
    return g_fail;
 }
