@@ -393,7 +393,7 @@ mali_afbc_tex_plane_words(unsigned arch, uint64_t modifier, unsigned vk_format, 
    if (header_va > ptr_max - 1 && wide) return -1;
    if (wide && (level->header_row_stride >= (1u << 27) || level->size >= (1ull << 48))) return -1;
    if (!wide && level->size > UINT32_MAX) return -1;
-   const unsigned sbsel = (modifier & 0xfu);   /* AFBC Superblock Size enum == drm SB bits (16x16=1, 32x8=2, 64x4=3) */
+   const unsigned sbsel = (unsigned)(modifier & 0xfu) - 1u;   /* genxml AFBC Superblock Size is 0-based (16x16=0, 32x8=1, 64x4=2); drm bits are 1-based */
    out[0] = 10u | (6u << 4) | (sbsel << 8) | ((modifier & MALI_AFBC_MOD_YTR) ? 1u << 16 : 0) |
             ((modifier & MALI_AFBC_MOD_SPLIT) ? 1u << 17 : 0) | ((modifier & MALI_AFBC_MOD_TILED) ? 1u << 19 : 0) | (1u << 20) |
             ((uint32_t)mali_afbc_compression_mode(vk_format) << 26);

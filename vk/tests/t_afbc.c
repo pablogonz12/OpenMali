@@ -189,12 +189,12 @@ int main(void)
    }
 
 
-   /* Stage 7: AFBC texture plane words. Hand-derived: w0 = Plane(10) | AFBC(6)<<4 | sb 1<<8 | prefetch 1<<20 | cm(RGBA8=10)<<26 = 0x2810016a. */
+   /* Stage 7: AFBC texture plane words. Hand-derived: w0 = Plane(10) | AFBC(6)<<4 | sb enum 0 (16x16; NOT the drm bits) | prefetch 1<<20 | cm(RGBA8=10)<<26 = 0x2810006a. */
    {
       struct mali_afbc_layout lv = {0};
       lv.header_row_stride = 0x1400; lv.header_size = 0xe100; lv.size = 0x123456780ull;
       uint32_t o[8];
-      const uint32_t v13[8] = { 0x2810016a, 0x23456780, 0x12345680, 0x0001abcd, 0x1400, 0xe100, 0, 0x02cf04ff };
+      const uint32_t v13[8] = { 0x2810006a, 0x23456780, 0x12345680, 0x0001abcd, 0x1400, 0xe100, 0, 0x02cf04ff };
       EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0xabcd12345680ull, &lv, 1280, 720, o), 0);
       for (int i = 0; i < 8; i++) EQ(o[i], v13[i]);
       EQ(mali_afbc_tex_plane_words(12, MALI_AFBC_SB_16x16, 37, 0xabcd12345680ull, &lv, 1280, 720, o), 0); EQ(o[3], 0x0001abcd);
@@ -203,7 +203,7 @@ int main(void)
       lv.size = 0x23456780u;
       for (unsigned a = 10; a <= 11; a++) {
          EQ(mali_afbc_tex_plane_words(a, MALI_AFBC_SB_16x16, 37, 0xffffabcd12345680ull, &lv, 1280, 720, o), 0);
-         EQ(o[0], 0x2810016a); EQ(o[1], 0x23456780); EQ(o[2], 0x12345680); EQ(o[3], 0xffffabcdu); EQ(o[4], 0x1400); EQ(o[5], 0xe100); EQ(o[6], 0); EQ(o[7], 0x02cf04ff);
+         EQ(o[0], 0x2810006a); EQ(o[1], 0x23456780); EQ(o[2], 0x12345680); EQ(o[3], 0xffffabcdu); EQ(o[4], 0x1400); EQ(o[5], 0xe100); EQ(o[6], 0); EQ(o[7], 0x02cf04ff);
       }
       CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0xffffabcd12345680ull, &lv, 1280, 720, o) == -1);   /* beyond 48 bits */
       lv.header_row_stride = 1u << 27;
@@ -212,14 +212,29 @@ int main(void)
       lv.header_row_stride = 0x1400;
       /* modifier bits and compression mode: 32x8 (2), YTR 1<<16, split 1<<17, tiled 1<<19; R5G6B5 mode 4 */
       EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_32x8 | MALI_AFBC_MOD_YTR | MALI_AFBC_MOD_SPLIT | MALI_AFBC_MOD_TILED, 37, 0x1000, &lv, 16, 16, o), 0);
-      EQ(o[0], 0x281b026a);
-      EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 4, 0x1000, &lv, 16, 16, o), 0); EQ(o[0], 0x1010016a);
+      EQ(o[0], 0x281b016a);
+      EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 4, 0x1000, &lv, 16, 16, o), 0); EQ(o[0], 0x1010006a);
       /* unsupported: arch 7..9, float, depth, no superblock, empty extent */
       for (unsigned a = 7; a <= 9; a++) CHECK(mali_afbc_tex_plane_words(a, MALI_AFBC_SB_16x16, 37, 0x1000, &lv, 16, 16, o) == -1);
       CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 109, 0x1000, &lv, 16, 16, o) == -1);
       CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 126, 0x1000, &lv, 16, 16, o) == -1);
       CHECK(mali_afbc_tex_plane_words(13, 0, 37, 0x1000, &lv, 16, 16, o) == -1);
       CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0x1000, &lv, 0, 16, o) == -1);
+      /* superblock enum (genxml AFBC Superblock Size) is 16x16=0, 32x8=1, 64x4=2, not the drm modifier bits (1,2,3): the drm value for
+       * 16x16 selected 32x8 on the X8, so sampled rows 64.. read garbage/zeros. */
+      {
+         static const struct { uint64_t mod; uint32_t sel; } sbs[] = { {MALI_AFBC_SB_16x16, 0}, {MALI_AFBC_SB_32x8, 1}, {MALI_AFBC_SB_64x4, 2} };
+         for (unsigned i = 0; i < 3; i++) { EQ(mali_afbc_tex_plane_words(13, sbs[i].mod, 37, 0x1000, &lv, 16, 16, o), 0); EQ((o[0] >> 8) & 7u, sbs[i].sel); }
+      }
+      /* 128-row image (64 headers, 8x8 SB): header row stride 128, header size 1024, body offset 1024 (128 aligned), 1 KiB payload per SB */
+      {
+         struct mali_afbc_layout g;
+         struct mali_afbc_params gp = {13, MALI_AFBC_SB_16x16, 32, 128, 128, 1};
+         EQ(mali_afbc_layout(&gp, &g), 0);
+         EQ(g.header_row_stride, 128); EQ(g.header_size, 1024); EQ(g.body_offset, 1024); EQ(g.payload_per_sb, 1024); EQ(g.size, 1024 + 64 * 1024);
+         EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0x10000, &g, 128, 128, o), 0);
+         EQ(o[4], 128); EQ(o[5], 1024); EQ(o[7], 0x007f007fu);
+      }
       CHECK(!mali_afbc_tex_supported(9, 37) && mali_afbc_tex_supported(10, 37) && mali_afbc_tex_supported(13, 37) && !mali_afbc_tex_supported(14, 37));
       /* eligibility: SAMPLED allowed only with sample_ok on arch 10..13; transfers / input attachment never; cube / mutable not with SAMPLED */
       struct mali_afbc_image_info s = {13, 0, 1, 1, 0x10 | 0x4, 0, 37, 1280, 720, true, true, true};
