@@ -1,0 +1,8 @@
+#version 450
+// t_compile dyn_index: an SSBO array indexed with a runtime value (push constant), covering the storage-buffer handle path
+// (same lowering as uboidx; the descriptor type differs, the handle arithmetic does not).
+layout(local_size_x = 1) in;
+layout(push_constant) uniform P { uint i; } pc;
+layout(set = 0, binding = 0, std430) buffer S { vec4 d; } ssbo[8];
+layout(set = 0, binding = 1, std430) buffer O { vec4 o; } outb;
+void main() { outb.o = ssbo[pc.i].d; }
