@@ -10,6 +10,7 @@
 
 #include "mali_cmd.h"
 #include "mali_cs_emit.h"
+#include "mali_descriptor.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
 #include "mali_msaa.h"

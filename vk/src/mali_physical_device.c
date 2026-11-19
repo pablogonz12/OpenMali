@@ -290,6 +290,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
       .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */
+      .descriptorIndexing = true,   /* umbrella: only the sub-features listed here are advertised; VUID 03830 requires it */
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,

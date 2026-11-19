@@ -20,6 +20,11 @@
  * pan_compiler.h:140); the driver reserves words 0..9 in the VS (push block at word 10) so a full block ends at word 73 of 128. */
 #define MALI_MAX_PUSH_BYTES      256u
 #define MALI_NO_IMM_SAMPLER      0xffffffffu
+/* Plain-C copy of VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT (same value), so the compiler-side lowering needs no Vulkan header. */
+#define MALI_DESC_BINDING_PARTIALLY_BOUND 0x00000004u
+/* All-zero descriptor in resource table 0: the hardware Null Descriptor (reads return zero, writes are dropped). Used for an
+ * out-of-range index into a partially-bound array; same slot the sampler-less path uses for its dummy sampler. */
+#define MALI_NULL_DESC_IDX       MALI_DUMMY_SAMPLER_IDX
 
 /* Values equal VkDescriptorType (so no Vulkan header is needed here). */
 enum mali_desc_type {
@@ -39,6 +44,7 @@ struct mali_lbinding {
    uint32_t ycbcr_planes; /* combined image sampler whose immutable samplers carry a YCbCr conversion: 2 (stride 3: luma, chroma, sampler); else 0 */
    uint32_t ycbcr_off;    /* index of element 0's conversion in the set's ycbcr array (mali_lset::ycbcr) */
    uint32_t inline_bytes; /* inline uniform block: data size in bytes (type = UNIFORM_BUFFER, count 1, stride 1 + data slots); else 0 */
+   uint32_t bflags;       /* VkDescriptorBindingFlags of the binding; the lowering reads PARTIALLY_BOUND for OOB -> null */
 };
 
 struct mali_lset {

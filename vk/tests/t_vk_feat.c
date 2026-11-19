@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxoob|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -1559,6 +1559,89 @@ test_didx(void)
 }
 
 
+/* didx_oob: out-of-range index into a partially-bound sampled-image array reads the Null Descriptor (zero), not garbage. */
+static int
+test_didx_oob(void)
+{
+   if (!g_didx) { printf("{\"test\":\"didxoob\",\"skipped\":\"descriptor indexing not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   static const uint8_t col[4][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}};
+   struct tex x[4];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+   for (int i = 0; i < 4; i++)
+      if (!tex_create(&t, &x[i], &ici, VK_IMAGE_VIEW_TYPE_2D, 1, col[i], 4, &reg, 1, &si)) return 0;
+
+   VkDescriptorBindingFlags bf[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+                                        VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT,
+                                     VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bfi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = 2, .pBindingFlags = bf};
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 8, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi,
+                                          .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                                     .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii[4];
+   for (int i = 0; i < 4; i++) ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   VkDescriptorImageInfo smpi = {x[0].smp, VK_NULL_HANDLE, 0};
+   VkWriteDescriptorSet w[2] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .dstArrayElement = 0, .descriptorCount = 4,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &smpi}};
+   UpdateDescriptorSets(dev, 2, w, 0, NULL);   /* slots 4..7 stay unwritten (partially bound) */
+
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "quad.vert.spv", "didx_oob.frag.spv", dsl, 16, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+   const float sc[4] = {1, 1, 0, 0};
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, sc);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int y = 8; y < 24; y++)
+         for (int xx = 8; xx < 24; xx++) {
+            if (xx & 2) {   /* out-of-range index: null descriptor, zero colour (alpha forced to 1) */
+               if (!near(pix(&t, xx, y), 0, 0, 0, 255, 2)) bad++;
+            } else {
+               int e = (xx & 1) + 2 * (y & 1);
+               if (!near(pix(&t, xx, y), col[e][0], col[e][1], col[e][2], 255, 2)) bad++;
+            }
+         }
+      CHECK(bad == 0, "%d of 256 probed pixels wrong (OOB must be zero, first %u,%u,%u,%u)", bad, pix(&t, 10, 8)[0], pix(&t, 10, 8)[1], pix(&t, 10, 8)[2], pix(&t, 10, 8)[3]);
+      printf("{\"test\":\"didxoob\",\"bad\":%d,\"ok\":true}\n", bad);
+   } else {
+      printf("{\"test\":\"didxoob\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 4; i++) tex_destroy(&x[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* robustness2 nullDescriptor: a VK_NULL_HANDLE descriptor must read as zero and swallow writes (no fault, no stray write). */
 static VkBool32 g_null;
 struct nd_case { const char *name; VkDescriptorType type; };
@@ -2992,8 +3075,9 @@ main(int argc, char **argv)
    g_i8 = f12.shaderInt8 && f12.storageBuffer8BitAccess;
    g_mirror = f12.samplerMirrorClampToEdge;
    g_bda = f12.bufferDeviceAddress;
-   g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
-            f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
+   g_didx = f12.descriptorIndexing && f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
+            f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending &&
+            !f12.descriptorBindingVariableDescriptorCount;
    {
       const char *fe = getenv("MALI_TEST_FORCE_DIDX_BUF");   /* test-only: probe the lowering before the bits are advertised */
       g_dbuf_force = fe && *fe == '1';
@@ -3068,6 +3152,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && CASE_ON("didxoob")) ok &= test_didx_oob();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
