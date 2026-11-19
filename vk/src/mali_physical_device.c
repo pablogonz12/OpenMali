@@ -3,6 +3,7 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_compile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -139,6 +140,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 
    /* ---- Vulkan 1.1 ---- R4-M1: only what is true. No subgroup operation or stage is advertised yet
     * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16). */
+   mali_compile_cache_uuid(gpu->gpu_id, p->pipelineCacheUUID);
    memcpy(p->driverUUID, "mali-own-vk\0\0\0\0\0", VK_UUID_SIZE);
    memcpy(p->deviceUUID, &gpu->gpu_id, sizeof(gpu->gpu_id));
    p->subgroupSize = 16;

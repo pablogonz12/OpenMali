@@ -5,6 +5,8 @@
 #include "../../libkbase/tests/shaders_compiled_v11.h"
 #include "../shader/golden_compiled_v13.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,7 +204,65 @@ test_determinism_and_cache(void)
    CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && !c.cache_hit && c.bin_size == a.bin_size &&
          !memcmp(c.bin, a.bin, a.bin_size), "corrupt cache entry recompiles correctly");
    mali_compiled_free(&c);
+   /* same-size corruption (one flipped byte in the code): only the checksum can catch it */
+   snprintf(cmd, sizeof cmd, "for f in %s/*.bin; do sz=$(stat -c %%s \"$f\"); printf '\\377' | dd of=\"$f\" bs=1 seek=$((sz - 40)) conv=notrunc 2>/dev/null; done", dir);
+   CHECK(system(cmd) == 0, "flip a byte");
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && !c.cache_hit && c.bin_size == a.bin_size &&
+         !memcmp(c.bin, a.bin, a.bin_size), "bit-flipped cache entry is rejected and recompiled");
+   mali_compiled_free(&c);
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c) && (getenv("MALI_OPT_GCM") || c.cache_hit == 1), "the recompiled entry replaced the bad one");
+   mali_compiled_free(&c);
+   {   /* size limit: oldest entries go first, newest survive, unrelated files stay */
+      char tdir[] = "/tmp/t_compile_trim.XXXXXX";
+      if (!mkdtemp(tdir)) { g_fail++; printf("  FAIL %s:%d: mkdtemp\n", __FILE__, __LINE__); goto trim_done; }
+      char p[600], buf[1000];
+      memset(buf, 7, sizeof buf);
+      for (int i = 0; i < 10; i++) {
+         snprintf(p, sizeof p, "%s/%063x%d.bin", tdir, 0, i);   /* 64 hex chars like a real key */
+         FILE *f = fopen(p, "wb");
+         CHECK(f != NULL, "fixture fopen");
+         if (!f) break;
+         fwrite(buf, 1, sizeof buf, f); fclose(f);
+         struct timespec ts[2] = {{1000000 + i, 0}, {1000000 + i, 0}};
+         utimensat(AT_FDCWD, p, ts, 0);
+      }
+      snprintf(p, sizeof p, "%s/keep.txt", tdir);
+      FILE *f = fopen(p, "wb");
+      CHECK(f != NULL, "fixture fopen");
+      if (f) { fwrite(buf, 1, sizeof buf, f); fclose(f); }
+      snprintf(p, sizeof p, "%s/model.bin", tdir);   /* looks like a cache file but is not ours */
+      f = fopen(p, "wb");
+      CHECK(f != NULL, "fixture fopen");
+      if (f) { fwrite(buf, 1, sizeof buf, f); fclose(f); }
+      mali_compile_cache_trim(tdir, 0);
+      snprintf(p, sizeof p, "%s/%063x0.bin", tdir, 0);
+      CHECK(access(p, F_OK) == 0, "limit 0 = unlimited");
+      mali_compile_cache_trim(tdir, 5500);   /* 10000 B > 5500: delete oldest until <= 4950 B = 4 entries */
+      int left = 0, newest_ok = 1;
+      for (int i = 0; i < 10; i++) {
+         snprintf(p, sizeof p, "%s/%063x%d.bin", tdir, 0, i);
+         int ex = access(p, F_OK) == 0;
+         left += ex;
+         if (i >= 6 && !ex) newest_ok = 0;
+         if (i < 6 && ex) newest_ok = 0;
+      }
+      CHECK(left == 4 && newest_ok, "trim keeps the 4 newest of 10 (left %d)", left);
+      snprintf(p, sizeof p, "%s/keep.txt", tdir);
+      CHECK(access(p, F_OK) == 0, "trim leaves foreign files alone");
+      snprintf(p, sizeof p, "%s/model.bin", tdir);
+      CHECK(access(p, F_OK) == 0, "trim leaves model.bin (not a cache key) alone");
+      snprintf(buf, sizeof buf, "rm -rf %s", tdir);
+      CHECK(system(buf) == 0, "cleanup");
+   }
+trim_done:
+   {
+      uint8_t u1[16], u2[16], u3[16];
+      mali_compile_cache_uuid(0x90930000, u1); mali_compile_cache_uuid(0x90930000, u2); mali_compile_cache_uuid(0xb8020000, u3);
+      static const uint8_t zero[16];
+      CHECK(!memcmp(u1, u2, 16) && memcmp(u1, u3, 16) && memcmp(u1, zero, 16), "pipelineCacheUUID: stable, per GPU, non-zero");
+   }
    mali_compile_stats(&s1);
+   s0.hits += 1;   /* the hit just above is not part of the stats window the next check reads */
    if (!getenv("MALI_OPT_GCM")) CHECK(s1.hits - s0.hits == 1, "stats: 1 hit, got %llu", (unsigned long long)(s1.hits - s0.hits));
    if (g_verbose) printf("  hit load %.0f us\n", t_hit * 1e6);
    mali_compiled_free(&a); mali_compiled_free(&b);

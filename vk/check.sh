@@ -139,11 +139,19 @@ for t in vk_draw vk_feat; do for g in v11 v13; do
       echo "ok    shader cache cold == warm $t $g ($n0 entries)"
    else echo "FAIL  shader cache cold != warm $t $g (entries $n0 -> $(ls "$CW" | wc -l)):"; diff -u "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt" | head -20 | sed 's/^/        /'; fail=1; fi
 done; done
-# teeth: an entry whose immediates differ (what a stale entry of an older lowering looks like) must change the warm dump
+# teeth: a valid entry (good checksum) holding another shader's code, what a stale entry of an older lowering looks like, must change the warm dump
 CW=$OUT/cw-cache-vk_draw-v11
+set -- "$CW"/*.bin
+# the largest entry over the smallest one: the swap stays loadable (checksum good) and shows in the dump however the hashes order the file names
+sw1=$(ls -S "$@" | head -1); sw2=$(ls -S "$@" | tail -1)
+[ "$(stat -c %s "$sw1")" != "$(stat -c %s "$sw2")" ] || sw1=
+if [ -n "$sw1" ]; then cp "$sw1" "$sw2"; fi
+if [ -n "$sw1" ] && cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (a wrong-but-valid entry changes the dump)"
+else echo "FAIL  cache cold/warm self-test: a swapped cache entry did not change the vk_draw dump"; fail=1; fi
+# and the checksum must reject a damaged entry: last byte flipped (inside the checksum) -> recompiled, dump identical to cold
 for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done
-if cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (damaged entries change the dump)"
-else echo "FAIL  cache cold/warm self-test: damaged cache entries did not change the vk_draw dump"; fail=1; fi
+if cwdump vk_draw v11 "$CW" cw-flip-vk_draw-v11 && cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-flip-vk_draw-v11.txt"; then echo "ok    cache checksum rejects damaged entries (dump unchanged)"
+else echo "FAIL  cache checksum: damaged entries changed the vk_draw dump"; fail=1; fi
 rm -rf "$OUT"/cw-cache-* "$GDIR"/cw-*
 # The cache key knows only MALI_COMPILE_VERSION: lowering sources and the recorded version must move together.
 if [ $bless = 1 ]; then "$V/tests/compile-guard.sh" --bless

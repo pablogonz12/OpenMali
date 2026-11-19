@@ -22,17 +22,21 @@
 #include "mali_descriptor_lower.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 24 /* 24: pipeline-cache entries carry a checksum (MALD) and the cache UUID, generated code unchanged ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -237,27 +241,139 @@ mkdirs(char *p)
    mkdir(p, 0755);
 }
 
-#define CACHE_MAGIC 0x4d414c43u   /* 'MALC' */
+#define CACHE_MAGIC 0x4d414c44u   /* 'MALD': v2 = payload checksum at the end (MALC entries are ignored and recompiled) */
+
+static void
+cache_sum(const struct mali_compiled *h, const uint8_t *bin, const struct mali_imm *imm, uint8_t out[16])
+{
+   blake3_hasher s;
+   blake3_hasher_init(&s);
+   blake3_hasher_update(&s, h, sizeof *h);
+   blake3_hasher_update(&s, bin, h->bin_size);
+   blake3_hasher_update(&s, imm, (size_t)h->nimm * sizeof *h->imm);
+   blake3_hasher_finalize(&s, out, 16);
+}
+
+/* Size limit of the disk cache: $MALI_SHADER_CACHE_MAX_KB (default 1 GiB, 0 = unlimited). Over the limit, the oldest entries (by mtime) go
+ * until the directory is at 90% of it; abandoned temp files (older than an hour) always go. Only our own .bin and .tmp files are touched. */
+#define CACHE_DEFAULT_MAX_KB (1024ull * 1024)
+
+static unsigned long long
+cache_max_bytes(void)
+{
+   const char *e = getenv("MALI_SHADER_CACHE_MAX_KB");
+   unsigned long long kb = CACHE_DEFAULT_MAX_KB;
+   if (e && *e) {
+      char *end;
+      unsigned long long v = strtoull(e, &end, 10);
+      if (!*end) kb = v;
+   }
+   return kb * 1024;
+}
+
+struct trim_ent { time_t mtime; off_t size; char name[256]; };
+
+static int
+trim_cmp(const void *a, const void *b)
+{
+   const struct trim_ent *x = a, *y = b;
+   return (x->mtime > y->mtime) - (x->mtime < y->mtime);
+}
+
+/* "<64 hex>.bin" is an entry; "<64 hex>.bin.tmp<pid>.<n>" is an in-flight or abandoned write. Anything else is not ours. */
+static int
+cache_name_kind(const char *n)
+{
+   for (int i = 0; i < 64; i++)
+      if (!((n[i] >= '0' && n[i] <= '9') || (n[i] >= 'a' && n[i] <= 'f'))) return 0;
+   if (!strcmp(n + 64, ".bin")) return 1;
+   if (strncmp(n + 64, ".bin.tmp", 8)) return 0;
+   const char *q = n + 72;
+   int dots = 0, digits = 0;
+   for (; *q; q++) {
+      if (*q == '.') { if (!digits || dots++) return 0; digits = 0; }
+      else if (*q >= '0' && *q <= '9') digits++;
+      else return 0;
+   }
+   return dots == 1 && digits ? 2 : 0;
+}
+
+void
+mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
+{
+   DIR *d = opendir(dir);
+   if (!d) return;
+   /* one trimmer per directory: a second process scanning at the same time would act on sizes the first already deleted */
+   char lp[1100];
+   snprintf(lp, sizeof lp, "%s/.trim.lock", dir);
+   int lfd = open(lp, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+   if (lfd >= 0 && flock(lfd, LOCK_EX | LOCK_NB)) { close(lfd); closedir(d); return; }
+   struct trim_ent *v = NULL;
+   size_t n = 0, cap = 0;
+   unsigned long long total = 0;
+   time_t now = time(NULL);
+   struct dirent *de;
+   while ((de = readdir(d))) {
+      int kind = cache_name_kind(de->d_name);
+      int is_bin = kind == 1, is_tmp = kind == 2;
+      if (!kind) continue;
+      char path[1400];
+      struct stat st;
+      snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+      if (stat(path, &st) || !S_ISREG(st.st_mode)) continue;
+      if (is_tmp) {
+         if (now - st.st_mtime > 3600) unlink(path);
+         continue;
+      }
+      if (n == cap) {
+         struct trim_ent *nv = realloc(v, (cap = cap ? cap * 2 : 256) * sizeof *v);
+         if (!nv) break;
+         v = nv;
+      }
+      v[n].mtime = st.st_mtime; v[n].size = st.st_size;
+      snprintf(v[n].name, sizeof v[n].name, "%s", de->d_name);
+      total += st.st_size;
+      n++;
+   }
+   closedir(d);
+   if (max_bytes && total > max_bytes && v) {
+      qsort(v, n, sizeof *v, trim_cmp);
+      unsigned long long goal = max_bytes / 10 * 9;
+      for (size_t i = 0; i < n && total > goal; i++) {
+         char path[1400];
+         snprintf(path, sizeof path, "%s/%s", dir, v[i].name);
+         if (unlink(path) == 0) total -= v[i].size;
+      }
+   }
+   free(v);
+   if (lfd >= 0) close(lfd);   /* drops the lock */
+}
 
 static void
 cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
 {
+   static atomic_uint seq;
    char path[1024], tmp[1100], d2[1024];
    snprintf(d2, sizeof d2, "%s", dir);
    mkdirs(d2);
    snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
-   snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
+   /* pid + per-process counter: two threads (or a thread and a fork) storing the same key must not share a temp file */
+   snprintf(tmp, sizeof tmp, "%s.tmp%d.%u", path, (int)getpid(), atomic_fetch_add(&seq, 1));
    FILE *f = fopen(tmp, "wb");
    if (!f) return;
    struct mali_compiled h = *c;
    uint32_t magic = CACHE_MAGIC;
    h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
+   uint8_t sum[16];
+   cache_sum(&h, c->bin, c->imm, sum);
    int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
             fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
-            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
+            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm) && fwrite(sum, 16, 1, f) == 1;
    ok = (fclose(f) == 0) && ok;
-   if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
-   else unlink(tmp);
+   if (ok && rename(tmp, path) == 0) {
+      /* the first store of a process and every 16th after it check the size, so a long-running game cannot grow the cache without bound */
+      if (!(atomic_fetch_add(&g_stores, 1) & 15)) mali_compile_cache_trim(dir, cache_max_bytes());
+   } else unlink(tmp);
 }
 
 static int
@@ -272,11 +388,20 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
    int ok = fread(&magic, 4, 1, f) == 1 && magic == CACHE_MAGIC && fread(&h, sizeof h, 1, f) == 1 &&
             h.bin_size < (64u << 20) && h.nimm < (1u << 20);
    if (ok) {
+      uint8_t sum[16], want[16];
       h.bin = malloc(h.bin_size ? h.bin_size : 1);
       h.imm = malloc((h.nimm ? h.nimm : 1) * sizeof *h.imm);
       ok = h.bin && h.imm && fread(h.bin, 1, h.bin_size, f) == h.bin_size &&
-           (!h.nimm || fread(h.imm, sizeof *h.imm, h.nimm, f) == h.nimm);
+           (!h.nimm || fread(h.imm, sizeof *h.imm, h.nimm, f) == h.nimm) && fread(sum, 16, 1, f) == 1;
       if (ok) { char x; ok = fread(&x, 1, 1, f) == 0; }   /* no trailing bytes */
+      if (ok) {   /* a bit flip inside the code must not reach the GPU */
+         uint8_t *bin = h.bin;
+         struct mali_imm *imm = h.imm;
+         h.bin = NULL; h.imm = NULL; h.cache_hit = 0;   /* hash the bytes as read (padding included), like cache_store */
+         cache_sum(&h, bin, imm, want);
+         h.bin = bin; h.imm = imm;
+         ok = !memcmp(sum, want, 16);
+      }
       if (!ok) { free(h.bin); free(h.imm); }
    }
    fclose(f);
@@ -284,6 +409,33 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
    h.cache_hit = 1;
    *c = h;
    return 1;
+}
+
+/* VkPhysicalDeviceProperties::pipelineCacheUUID: changes with anything that changes compiled output, so apps (DXVK, Fossilize) discard
+ * their saved VkPipelineCache blobs instead of replaying stale ones. */
+void
+mali_compile_cache_uuid(uint32_t gpu_id, uint8_t uuid[16])
+{
+   struct opts_key k;
+   memset(&k, 0, sizeof k);
+   k.version = MALI_COMPILE_VERSION;
+   k.sizeof_compiled = sizeof(struct mali_compiled);
+   k.max_sets = MALI_MAX_SETS;
+   k.dyn_table = MALI_DYN_TABLE;
+   k.dyn_buf_start = MALI_DYN_BUF_START;
+   k.dummy_sampler_idx = MALI_DUMMY_SAMPLER_IDX;
+   k.max_push_bytes = MALI_MAX_PUSH_BYTES;
+   snprintf(k.mesa, sizeof k.mesa, "%s", PACKAGE_VERSION);
+   blake3_hasher h;
+   blake3_hasher_init(&h);
+   blake3_hasher_update(&h, "mali-own-pc1", 12);
+   blake3_hasher_update(&h, &gpu_id, sizeof gpu_id);
+   blake3_hasher_update(&h, &k, sizeof k);
+   /* build identity: compiled output can change in sources the version bump does not cover; a different build must not reuse saved blobs */
+#ifdef MALI_GIT_SHA
+   blake3_hasher_update(&h, MALI_GIT_SHA, strlen(MALI_GIT_SHA));
+#endif
+   blake3_hasher_finalize(&h, uuid, 16);
 }
 
 /* ---- compile ---- */

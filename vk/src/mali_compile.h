@@ -107,6 +107,13 @@ void mali_compiled_free(struct mali_compiled *c);
 struct mali_compile_stats { uint64_t hits, misses, stores; };
 void mali_compile_stats(struct mali_compile_stats *s);
 
+/* 16-byte pipelineCacheUUID for a GPU id: changes with the compiler version, Mesa tag and every layout constant in the cache key. */
+void mali_compile_cache_uuid(uint32_t gpu_id, uint8_t uuid[16]);
+
+/* Disk cache size limit ($MALI_SHADER_CACHE_MAX_KB, default 1 GiB): delete the oldest entries of `dir` until it is at 90% of max_bytes
+ * (0 = no limit); stale temp files go in any case. Run automatically by the cache writer. */
+void mali_compile_cache_trim(const char *dir, unsigned long long max_bytes);
+
 #ifdef __cplusplus
 }
 #endif
