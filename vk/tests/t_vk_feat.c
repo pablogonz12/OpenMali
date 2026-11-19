@@ -2192,11 +2192,6 @@ test_samplerate(void)
    tgt_destroy(&t);
    return 1;
 }
-   DestroyPipeline(dev, pipe, NULL);
-   DestroyPipelineLayout(dev, lay, NULL);
-   tgt_destroy(&t);
-   return 1;
-}
 
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
 static int
