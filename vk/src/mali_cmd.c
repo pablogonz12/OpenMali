@@ -474,13 +474,22 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       }
       if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE))
          bp->gfx.prim_restart = dyn->ia.primitive_restart_enable;
-      /* fillModeNonSolid (pipeline polygonMode): the topology above is the API one (dyn->set also covers static state); map triangles */
-      if (bp->gfx.poly_mode && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
-         if (bp->gfx.prim >= 8) {
-            if (bp->gfx.poly_mode == 1) { bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
-            else bp->gfx.prim = 1;
-         } else
-            bp->gfx.poly_mode = 0;   /* non-triangle topology: polygonMode does not apply */
+      /* fillModeNonSolid: polygonMode (pipeline state or VK_EXT_extended_dynamic_state3 vkCmdSetPolygonModeEXT; dyn->set covers both) needs the
+       * API topology above. LINE = triangle edges (prim 2, rewritten to an indexed line list at frame build), POINT = the vertices as a point list */
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_RS_POLYGON_MODE) && BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+         const bool tri = bp->gfx.prim >= 8;
+         bp->gfx.poly_mode = 0;
+         bp->gfx.poly_prim = 0;
+         switch (dyn->rs.polygon_mode) {
+         case VK_POLYGON_MODE_FILL: break;
+         case VK_POLYGON_MODE_LINE:   /* a non-triangle topology: polygonMode does not apply */
+            if (tri) { bp->gfx.poly_mode = 1; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
+            break;
+         case VK_POLYGON_MODE_POINT:
+            if (tri) { bp->gfx.poly_mode = 2; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 1; }   /* prim_restart stays: the rewrite uses it to split strips */
+            break;
+         default: unsupported(cmd, "polygon mode");
+         }
       }
       /* colour attachment 0 blend */
       const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
@@ -1271,11 +1280,17 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       g_hw.job_begin(g_hw.user);   /* once per command buffer: all its frames form one submission */
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
-      bool ind = false;
-      for (unsigned k = 0; k < fr.ndraws; k++)
-         ind |= fr.draws[k].ind != NULL;
-      if (ind && g_hw.drain) {
-         /* indirect args are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
+      bool ind = false, poly_cpu = false;
+      const struct mali_bpipe *cur = NULL;   /* records are deltas: the pipe is set when MALI_D_PIPE/FX/VP/SC is dirty (mali_draw_expand) */
+      for (unsigned k = 0; k < fr.ndraws; k++) {
+         const struct mali_rec *rk = &fr.draws[k];
+         ind |= rk->ind != NULL;
+         if (rk->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC))
+            cur = rk->pipe;
+         poly_cpu |= cur && cur->gfx.poly_mode && rk->indexed;   /* poly_lines reads the index buffer on the CPU at frame build */
+      }
+      if ((ind || poly_cpu) && g_hw.drain) {
+         /* indirect args and polygon-mode index contents are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
          if (nall) {
             kb_wmb();
             if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {

@@ -1,4 +1,7 @@
 third_party/
+third_party
+vk/deqp/lists
+vk/deqp/out
 runs/
 vk/out/
 vk/deqp/*/
