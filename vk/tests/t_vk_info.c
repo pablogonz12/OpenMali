@@ -162,6 +162,28 @@ main(int argc, char **argv)
    VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
    VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
    GetPhysicalDeviceFeatures2(pd, &g2);
+   /* uab limits: each UAB limit >= its non-UAB twin; the types with UAB features (samplers, sampled images) reach the 500000 minimum */
+   CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
+         p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= L->maxPerStageDescriptorStorageBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= L->maxPerStageDescriptorSampledImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageImages >= L->maxPerStageDescriptorStorageImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindInputAttachments >= L->maxPerStageDescriptorInputAttachments &&
+         p12.maxPerStageUpdateAfterBindResources >= L->maxPerStageResources, "uab per-stage >= non-UAB");
+   CHECK(p12.maxDescriptorSetUpdateAfterBindSamplers >= L->maxDescriptorSetSamplers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffers >= L->maxDescriptorSetUniformBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic >= L->maxDescriptorSetUniformBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffers >= L->maxDescriptorSetStorageBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic >= L->maxDescriptorSetStorageBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindSampledImages >= L->maxDescriptorSetSampledImages &&
+         p12.maxDescriptorSetUpdateAfterBindStorageImages >= L->maxDescriptorSetStorageImages &&
+         p12.maxDescriptorSetUpdateAfterBindInputAttachments >= L->maxDescriptorSetInputAttachments, "uab per-set >= non-UAB");
+   if (f12.descriptorBindingSampledImageUpdateAfterBind) {
+      CHECK(p12.maxUpdateAfterBindDescriptorsInAllPools >= 500000 && p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= 500000 &&
+            p12.maxDescriptorSetUpdateAfterBindSampledImages >= 500000 && p12.maxPerStageUpdateAfterBindResources >= 500000,
+            "uab sampled image limits >= 500000");
+      CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 500000 && p12.maxDescriptorSetUpdateAfterBindSamplers >= 500000, "uab sampler limits >= 500000");
+   }
    eq("timelineSemaphore", f12.timelineSemaphore, ftl.timelineSemaphore);
    eq("hostQueryReset", f12.hostQueryReset, fhq.hostQueryReset);
    eq("synchronization2", f13.synchronization2, fs2.synchronization2);
@@ -257,6 +279,31 @@ main(int argc, char **argv)
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
    }
+   /* FormatProperties3 without-format / depth-comparison bits must agree with the advertised features and the storage/sampled bits of the same tiling */
+   {
+      const uint64_t RD = 0x80000000ull, WR = 0x100000000ull, DC = 0x200000000ull;
+      VkBool32 feat_rd = VK_FALSE, feat_wr = VK_FALSE;
+      feat_rd = f2.features.shaderStorageImageReadWithoutFormat; feat_wr = f2.features.shaderStorageImageWriteWithoutFormat;
+      unsigned nwr = 0, ndc = 0;
+      for (unsigned fmt = 1; fmt <= 184; fmt++) {
+         VkFormatProperties3 f3 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+         VkFormatProperties2 f2p = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &f3};
+         GetPhysicalDeviceFormatProperties2(pd, (VkFormat)fmt, &f2p);
+         const uint64_t t[3] = {f3.linearTilingFeatures, f3.optimalTilingFeatures, f3.bufferFeatures};
+         const uint64_t st[3] = {VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT, VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT, VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT};
+         for (int k = 0; k < 3; k++) {
+            CHECK(!(t[k] & RD) || feat_rd, "format %u set %d: READ_WITHOUT_FORMAT but shaderStorageImageReadWithoutFormat is false", fmt, k);
+            CHECK(!(t[k] & WR) || (feat_wr && (t[k] & st[k])), "format %u set %d: WRITE_WITHOUT_FORMAT without feature or without the storage bit", fmt, k);
+            CHECK(!(t[k] & RD) || (t[k] & st[k]), "format %u set %d: READ_WITHOUT_FORMAT without the storage bit", fmt, k);
+            if ((t[k] & st[k]) && feat_wr) { CHECK(t[k] & WR, "format %u set %d: storage bit without WRITE_WITHOUT_FORMAT", fmt, k); nwr++; }
+         }
+         CHECK(!(f3.optimalTilingFeatures & DC) || (f3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT), "format %u: DEPTH_COMPARISON without SAMPLED_IMAGE", fmt);
+         CHECK(!((f3.linearTilingFeatures | f3.bufferFeatures) & DC), "format %u: DEPTH_COMPARISON on linear/buffer", fmt);
+         ndc += (f3.optimalTilingFeatures & DC) != 0;
+      }
+      CHECK(nwr > 0 && ndc > 0, "format sweep saw no storage-capable (%u) or depth-comparison (%u) format", nwr, ndc);
+      CHECK(f2.features.shaderStorageImageWriteWithoutFormat, "writeWithoutFormat advertised");
+   }
 
    /* ---- device + probes ---- */
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
@@ -334,6 +381,26 @@ main(int argc, char **argv)
       CHECK(rr == VK_NOT_READY || rr == VK_SUCCESS, "results after host reset: %d", rr);
       for (int i = 0; i < 4; i++) CHECK(res[i * 2 + 1] == 0, "query %d available after reset", i);
       DestroyQueryPool(dev, qpool, NULL);
+   }
+   /* EARLY_RETURN_ON_FAILURE, ci.flags form and maintenance5 flags2 form: [0] has no shader (FEATURE_NOT_PRESENT), [1] is garbage SPIR-V
+      (INVALID_SHADER_NV). Early return reports the first failure, a plain batch the last one. */
+   {
+      PFN_vkCreateComputePipelines CCP = (PFN_vkCreateComputePipelines)gdpa(dev, "vkCreateComputePipelines");
+      uint32_t junk[5] = {0xdeadbeef, 0, 0, 0, 0};
+      VkShaderModuleCreateInfo smci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof junk, .pCode = junk};
+      VkPipelineCreateFlags2CreateInfoKHR f2 = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR, .flags = VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR};
+      for (int v = 0; v < 3; v++) {
+         VkComputePipelineCreateInfo pi[2] = {
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &smci, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+         };
+         if (v == 1) pi[0].flags = VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+         if (v == 2) pi[0].pNext = &f2;
+         VkPipeline pp[2] = {(VkPipeline)1, (VkPipeline)1};
+         VkResult rr = CCP(dev, VK_NULL_HANDLE, 2, pi, NULL, pp);
+         CHECK(rr == (v ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV), "early-return variant %d: result %d", v, rr);
+         CHECK(pp[0] == VK_NULL_HANDLE && pp[1] == VK_NULL_HANDLE, "early-return variant %d: handles not nulled", v);
+      }
    }
    /* synchronization2: submit2 + barrier2 + fence, and timeline signal via submit2 */
    {
