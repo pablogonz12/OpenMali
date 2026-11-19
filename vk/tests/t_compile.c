@@ -256,6 +256,16 @@ test_errors(void)
          CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "OpName with out-of-range target refused");
          m.w[at + 1] = keep;
       }
+      size_t ep = 0;
+      for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+         if ((m.w[i] & 0xffff) == 15) { ep = i; break; }
+      CHECK(ep, "var.frag has an OpEntryPoint");
+      if (ep) {
+         uint32_t keep = m.w[ep + 2];
+         m.w[ep + 2] = 0x50886f08u;
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "OpEntryPoint with out-of-range function id refused");
+         m.w[ep + 2] = keep;
+      }
       uint32_t last = 5, lw = 0;
       for (size_t i = 5; i < m.n; i += m.w[i] >> 16) { last = i; lw = m.w[i]; }
       m.w[last] = (lw & 0xffff) | ((uint32_t)(m.n - last + 3) << 16);   /* claims 3 words more than the module has */

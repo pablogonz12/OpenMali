@@ -653,6 +653,7 @@ spirv_structure_ok(const uint32_t *w, size_t nwords)
       if (wc == 0 || wc > nwords - i) return false;
       if (op == 5 && (wc < 3 || w[i + 1] >= bound)) return false;   /* OpName */
       if (op == 6 && (wc < 4 || w[i + 1] >= bound)) return false;   /* OpMemberName */
+      if (op == 15 && (wc < 4 || w[i + 2] >= bound)) return false;  /* OpEntryPoint: model, function id, name... (id indexes the id table unchecked) */
       i += wc;
    }
    return true;
