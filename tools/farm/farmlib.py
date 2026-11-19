@@ -213,6 +213,14 @@ def write_json(path, obj):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    try:                                                  # persist the directory entry the rename changed
+        dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 
 def read_json(path):

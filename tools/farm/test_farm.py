@@ -2234,7 +2234,8 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(len(ids), 20)
 
     def test_write_json_survives_and_flip_scan_ignores_corrupt_run(self):
-        p = os.path.join(os.environ["FARM_STATE_DIR"] if "FARM_STATE_DIR" in os.environ else L.state_dir(), "wj.json")
+        os.makedirs(self.d + "/state", exist_ok=True)
+        p = self.d + "/state/wj.json"
         L.write_json(p, {"a": 1})
         self.assertEqual(L.read_json(p), {"a": 1})
 
