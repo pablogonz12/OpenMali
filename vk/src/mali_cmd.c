@@ -1265,7 +1265,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
    uint64_t *all = NULL;
-   unsigned nall = 0, capall = 0, counted = 0;
+   unsigned nall = 0, counted = 0;
+   size_t capall = 0;
    VkResult res = VK_SUCCESS;
    if (g_hw.job_begin)
       g_hw.job_begin(g_hw.user);   /* once per command buffer: all its frames form one submission */
@@ -1306,11 +1307,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          }
          break;
       }
-      if (nall + n > capall) {
-         capall = (nall + n) * 2;
-         uint64_t *grown = realloc(all, capall * sizeof *all);
+      if ((size_t)nall + n > capall) {
+         size_t want = ((size_t)nall + n) * 2;
+         uint64_t *grown = realloc(all, want * sizeof *all);
          if (!grown) { free(all); free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
          all = grown;
+         capall = want;
       }
       memcpy(all + nall, cs, n * sizeof *all);
       nall += n;
