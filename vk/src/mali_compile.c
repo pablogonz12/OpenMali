@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 35 /* 35: MALI_OPT_GCM=post (opt-in post-lowering gcm for compute; output unchanged when unset) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -333,12 +333,14 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
    return (const struct vk_ycbcr_conversion_state *)l->set[set].ycbcr + b->ycbcr_off + array_index;
 }
 
-/* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
- * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
+/* MALI_OPT_GCM gate: compute shaders without any derivative are touched. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex
+ * only move earlier; belt and braces. MALI_OPT_GCM=1 runs it before pan_postprocess_nir (-5.3% instructions on the shaderdb corpus),
+ * MALI_OPT_GCM=post after it (-11.2%, see tools/shaderdb; but meta_blit.comp gains 608 B of spills and subgroup.comp doubles its work registers). */
 static bool
-gcm_enabled(nir_shader *nir)
+gcm_enabled(nir_shader *nir, bool post)
 {
-   if (!getenv("MALI_OPT_GCM") || nir->info.stage != MESA_SHADER_COMPUTE)
+   const char *e = getenv("MALI_OPT_GCM");
+   if (!e || nir->info.stage != MESA_SHADER_COMPUTE || (!strcmp(e, "post") != post))
       return false;
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -533,11 +535,15 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    struct pan_shader_info info = {0};
    /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
-   if (gcm_enabled(nir)) {
+   if (gcm_enabled(nir, false)) {
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
    pan_postprocess_nir(nir, &in, &info);
+   if (gcm_enabled(nir, true)) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
    in.fau.reserved = fau_reserved;
