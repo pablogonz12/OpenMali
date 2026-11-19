@@ -18,6 +18,7 @@
 #include "vk_shader.h"
 #include "mali_cs_emit.h"
 #include "mali_event.h"
+#include "mali_meta.h"
 #include "mali_private.h"
 
 /* A render target or depth image as the command buffer needs it. */
@@ -32,6 +33,7 @@ struct mali_cmd_target {
    uint64_t s_va;
    uint32_t s_row_stride;
    unsigned samples;     /* image sample count (1 or 4) */
+   uint64_t layer_stride;     /* bytes between array layers of the plane (a view's other layers sit at k * layer_stride) */
    uint32_t surface_stride;   /* bytes per sample plane (MSAA images: samples consecutive) */
    bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */
 };
@@ -58,6 +60,10 @@ struct mali_cmd_buffer {
    unsigned nframes, capframes;
    struct mali_frame cur;       /* the open one */
    bool in_render;
+   bool col_load;               /* the open rendering has a colour loadOp LOAD: col_psrc is its preload source (layer 0) */
+   struct mali_preload_src col_psrc;
+   bool col_target_valid;       /* col_target: the open rendering's colour view target (layer_stride for clears of other layers) */
+   struct mali_cmd_target col_target;
 
    struct mali_gfx_state gfx;
    bool have_gfx;

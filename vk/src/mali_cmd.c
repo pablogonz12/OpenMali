@@ -5,6 +5,7 @@
  *   - colour loadOp LOAD, more than one colour attachment, depth-only render passes (the FBD needs a colour RT)
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
+#include <alloca.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -809,6 +810,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    memset(f, 0, sizeof *f);
+   cmd->col_load = false;
+   cmd->col_target_valid = false;
    f->area[0] = ri->renderArea.offset.x;
    f->area[1] = ri->renderArea.offset.y;
    f->area[2] = (int32_t)ri->renderArea.extent.width;
@@ -878,6 +881,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       psrc.arg = kind | (srgb ? 0x100u : 0u);
       psrc.bpp = bpp;
    }
+   struct mali_cmd_target col_t = t;   /* the colour target, kept: the depth/stencil views below overwrite t */
    if (!no_col) {
    f->width = t.width;
    f->height = t.height;
@@ -1011,6 +1015,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
+   cmd->col_target_valid = !no_col;
+   if (!no_col)
+      cmd->col_target = col_t;
+   cmd->col_load = load && !no_col;
+   if (cmd->col_load)
+      cmd->col_psrc = psrc;
    cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;
 }
@@ -1081,9 +1091,86 @@ mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned mode)
    cmd->occ_mode = mode;
 }
 
+/* Colour clears of array layers above the view's base layer. The open frame renders layer 0 only, so each such layer gets its own frame
+ * (pushed at once: nothing else in the open rendering touches it). A whole-area rect = a clear-only frame; a sub-rect = loadOp LOAD preload
+ * of the layer plus the constant-colour quad. 0 = ok (unsupported() already called otherwise). */
+static int
+clear_color_layers(struct mali_cmd_buffer *cmd, const VkClearAttachment *a, uint32_t nr, const VkClearRect *rects)
+{
+   struct mali_frame *cf = &cmd->cur;
+   struct mali_cmd_target t;
+   if (!cf->has_colour || cf->samples > 1 || !cmd->col_target_valid) {
+      unsupported(cmd, "CmdClearAttachments layers: no single-sampled colour attachment");
+      return -1;
+   }
+   t = cmd->col_target;
+   for (uint32_t r = 0; r < nr; r++) {
+      uint32_t first = rects[r].baseArrayLayer ? rects[r].baseArrayLayer : 1;
+      uint32_t end = rects[r].baseArrayLayer + rects[r].layerCount;
+      const bool whole = rects[r].rect.offset.x == cf->area[0] && rects[r].rect.offset.y == cf->area[1] &&
+                         (int32_t)rects[r].rect.extent.width == cf->area[2] && (int32_t)rects[r].rect.extent.height == cf->area[3];
+      for (uint32_t k = first; k < end; k++) {
+         struct mali_frame f;
+         memset(&f, 0, sizeof f);
+         f.width = cf->width;
+         f.height = cf->height;
+         memcpy(f.area, cf->area, sizeof f.area);
+         f.has_colour = true;
+         f.colour.rt = cf->colour.rt;
+         f.colour.row_stride = cf->colour.row_stride;
+         f.colour.va = t.va + (uint64_t)k * t.layer_stride;
+         f.colour.store = true;
+         if (whole) {
+            f.colour.clear = true;
+            memcpy(f.colour.clear_color, a->clearValue.color.float32, sizeof f.colour.clear_color);
+         } else {
+            struct mali_preload_src ps;
+            struct mali_draw d;
+            if (!cmd->col_load) {
+               unsupported(cmd, "CmdClearAttachments sub-rect on a layer: the rendering has no colour loadOp LOAD");
+               return -1;
+            }
+            ps = cmd->col_psrc;
+            ps.va[0] += (uint64_t)k * t.layer_stride;
+            if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
+               unsupported(cmd, "CmdClearAttachments layer load (preload shader)");
+               return -1;
+            }
+            d.dirty = MALI_D_ALL;
+            for (int i = 0; i < 4; i++) d.sc[i] = f.area[i];
+            d.vp[0] = (float)f.area[0]; d.vp[1] = (float)f.area[1]; d.vp[2] = (float)f.area[2]; d.vp[3] = (float)f.area[3]; d.vp[5] = 1.0f;
+            if (mali_frame_add_draw(&f, &d)) goto oom;
+            memset(&ps, 0, sizeof ps);
+            ps.arg = 19 | (f.colour.rt && f.colour.rt->int_bits ? (f.colour.rt->is_signed ? 2u : 1u) << 16 : 0);
+            memcpy(ps.clear, a->clearValue.color.uint32, sizeof ps.clear);
+            if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
+               mali_frame_finish(&f);
+               unsupported(cmd, "CmdClearAttachments layer quad (preload shader)");
+               return -1;
+            }
+            d.dirty = MALI_D_ALL;
+            d.sc[0] = rects[r].rect.offset.x; d.sc[1] = rects[r].rect.offset.y;
+            d.sc[2] = (int32_t)rects[r].rect.extent.width; d.sc[3] = (int32_t)rects[r].rect.extent.height;
+            d.vp[0] = (float)f.area[0]; d.vp[1] = (float)f.area[1]; d.vp[2] = (float)f.area[2]; d.vp[3] = (float)f.area[3]; d.vp[5] = 1.0f;
+            if (mali_frame_add_draw(&f, &d)) goto oom;
+         }
+         push_frame(cmd, &f);
+         continue;
+oom:
+         mali_frame_finish(&f);
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return -1;
+      }
+   }
+   cmd->dirty = MALI_D_ALL;
+   return 0;
+}
+
 /* ---- clears ---- */
+static void clear_attachments_rects(struct mali_cmd_buffer *cmd, uint32_t na, const VkClearAttachment *att, uint32_t nr, const VkClearRect *rects);
+
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment *att, uint32_t nr, const VkClearRect *rects)
+mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment *att, uint32_t nr_in, const VkClearRect *rects_in)
 {
    CMD(h);
    struct mali_frame *f = &cmd->cur;
@@ -1091,6 +1178,51 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
       unsupported(cmd, "CmdClearAttachments outside a rendering");
       return;
    }
+   /* Layers: depth/stencil clears stay layer 0 only. Colour clears of layers above 0 go to their own frames (clear_color_layers); what
+    * follows sees only the rects that include layer 0, each as a single layer. */
+   bool layered = false;
+   for (uint32_t r = 0; r < nr_in; r++)
+      if (rects_in[r].baseArrayLayer != 0 || rects_in[r].layerCount != 1)
+         layered = true;
+   VkClearRect *l0 = NULL;
+   uint32_t nr = nr_in;
+   const VkClearRect *rects = rects_in;
+   if (layered) {
+      /* only the layer-0 rects continue below, each as a single layer (heap: nr_in is caller-controlled) */
+      l0 = malloc((nr_in ? nr_in : 1) * sizeof *l0);
+      if (!l0) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+      nr = 0;
+      for (uint32_t r = 0; r < nr_in; r++)
+         if (rects_in[r].baseArrayLayer == 0) {
+            l0[nr] = rects_in[r];
+            l0[nr++].layerCount = 1;
+         }
+      rects = l0;
+      for (uint32_t i = 0; i < na; i++) {
+         if (att[i].aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            unsupported(cmd, "CmdClearAttachments depth/stencil: layers");
+            free(l0);
+            return;
+         }
+         if ((att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && att[i].colorAttachment == 0 && clear_color_layers(cmd, &att[i], nr_in, rects_in)) {
+            free(l0);
+            return;
+         }
+      }
+   }
+   clear_attachments_rects(cmd, na, att, nr, rects);
+   free(l0);
+}
+
+static void
+clear_attachments_rects(struct mali_cmd_buffer *cmd, uint32_t na, const VkClearAttachment *att, uint32_t nr, const VkClearRect *rects)
+{
+   struct mali_frame *f = &cmd->cur;
+   if (!nr)
+      return;
    bool partial = false;
    for (uint32_t r = 0; r < nr; r++)
       if (rects[r].rect.offset.x != f->area[0] || rects[r].rect.offset.y != f->area[1] ||

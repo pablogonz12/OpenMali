@@ -65,6 +65,8 @@ struct fx {
    unsigned nsubmit;
 };
 static struct fx F;
+static uint64_t g_watch[4];
+static unsigned g_nwatch, g_watch_hits[4];
 
 static void *hw_alloc(void *u, size_t n, size_t al, uint64_t *va) { return kb_arena_alloc(&((struct fx *)u)->ar, n, al, va); }
 static void hw_job_begin(void *u) { kb_arena_begin(&((struct fx *)u)->ar); }
@@ -72,6 +74,9 @@ static int hw_submit(void *u, const uint64_t *cs, unsigned n)
 {
    struct fx *f = u;
    f->nsubmit++;
+   for (unsigned w = 0; w < g_nwatch; w++)   /* does this job's descriptor arena hold the watched VA (a render-target base)? */
+      for (size_t o = 0; o + 8 <= f->ar.bo.size; o += 8)
+         if (*(const uint64_t *)((const char *)f->ar.bo.cpu + o) == g_watch[w]) { g_watch_hits[w]++; break; }
 #if ARCH == 13
    /* v13 BOs are COHERENT_LOCAL: CPU->device MEM_SYNC before every submit (V13-NEXT2.md), as rung2_v13.h */
    struct kb_bo *bs[3] = {&f->ar.bo, &f->geo, &f->vb};
@@ -104,9 +109,14 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
 }
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
+   if ((uintptr_t)v == 2) {   /* a D32 depth view at its own VA and layer stride, never equal to the colour view's */
+      *o = (struct mali_cmd_target){.va = F.rt.gpu_va + 0x10000, .row_stride = W * 4, .width = W, .height = H, .zs_format = 1, .is_zs = true,
+                                    .samples = 1, .layer_stride = 0x4000};
+      return 0;
+   }
    if ((uintptr_t)v != 1)
       return -1;
-   *o = (struct mali_cmd_target){F.rt.gpu_va, W * 4, W, H, 0};
+   *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .samples = 1, .layer_stride = 0x2000};
    return 0;
 }
 static int res_image(VkImage i, struct mali_cmd_target *o) { return res_view((VkImageView)i, o); }
@@ -543,6 +553,69 @@ int main(int argc, char **argv)
       before = F.nsubmit;
       r = mali_cmd_submit(v4);
       CHECK(r == VK_SUCCESS && F.nsubmit == before + 1, "fold submit %d", r);
+      /* 4. layered vkCmdClearAttachments: layer 0 folds into the rendering, every layer above 0 gets its own frame.
+       *    {base 0, count 3} -> 1 + 2 frames; {base 1, count 2} -> 1 + 2 (layer 0 untouched, nothing folded into the rendering CLEAR);
+       *    {base 2, count 1} -> 1 + 1; {base 0, count 1} -> 1 (unchanged). A driver that ignored layerCount (the old behaviour) submits 1 frame in every case. */
+      {
+         static const struct { uint32_t base, count; unsigned want; } cases[] = {{0, 3, 3}, {1, 2, 3}, {0, 1, 1}, {2, 1, 2}};
+         for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
+            struct vk_command_buffer *vl = new_cmd(pool, &c2);
+            VkRenderingAttachmentInfo lca;
+            VkRenderingInfo lri = rendering_info(&lca, false);
+            lri.layerCount = cases[i].base + cases[i].count;   /* the cleared layers must lie inside the rendering's layer range (VUID-vkCmdClearAttachments-pRects-06937) */
+            mali_CmdBeginRendering(c2, &lri);
+            VkClearRect lr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = cases[i].base, .layerCount = cases[i].count};
+            mali_CmdClearAttachments(c2, 1, &cat, 1, &lr);
+            mali_CmdEndRendering(c2);
+            r = EndCommandBuffer(c2);
+            before = F.nsubmit;
+            int rs = r == VK_SUCCESS ? mali_cmd_submit(vl) : r;
+            CHECK(r == VK_SUCCESS && rs == VK_SUCCESS && F.nsubmit - before == cases[i].want,
+                  "layered clear base=%u count=%u end=%d frames=%u (want %u)", cases[i].base, cases[i].count, r, F.nsubmit - before, cases[i].want);
+         }
+         /* colour + depth views in one rendering: the layer frames must address the COLOUR view (rt + k * 0x2000), not the depth view
+          * (rt + 0x10000 + k * 0x4000) that BeginRendering resolved last. Visible on the fake backend as the base VA in the frame's descriptors. */
+         {
+            struct vk_command_buffer *vd = new_cmd(pool, &c2);
+            VkRenderingAttachmentInfo dca2 = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)(uintptr_t)2,
+                                              .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                              .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+            VkRenderingAttachmentInfo cca;
+            VkRenderingInfo dri2 = rendering_info(&cca, false);
+            dri2.pDepthAttachment = &dca2;
+            dri2.layerCount = 2;                           /* the clear below targets layer 1 */
+            memset(F.ar.bo.cpu, 0, F.ar.bo.size);          /* drop descriptors left by earlier layered cases: only this submission may hit the watch */
+            mali_CmdBeginRendering(c2, &dri2);
+            VkClearRect lr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 1, .layerCount = 1};
+            mali_CmdClearAttachments(c2, 1, &cat, 1, &lr);
+            mali_CmdEndRendering(c2);
+            r = EndCommandBuffer(c2);
+            g_watch[0] = F.rt.gpu_va + 0x2000;            /* colour layer 1 */
+            g_watch[1] = F.rt.gpu_va + 0x10000 + 0x4000;  /* depth layer 1: only if the depth target leaked into col_target */
+            g_nwatch = 2; g_watch_hits[0] = g_watch_hits[1] = 0;
+            int rs = r == VK_SUCCESS ? mali_cmd_submit(vd) : r;
+            g_nwatch = 0;
+            CHECK(r == VK_SUCCESS && rs == VK_SUCCESS, "layered clear with depth view end=%d submit=%d", r, rs);
+            CHECK(g_watch_hits[0] > 0 && g_watch_hits[1] == 0, "layer frame must address the colour view: colour-layer hits %u (want >0), depth-layer hits %u (want 0)",
+                  g_watch_hits[0], g_watch_hits[1]);
+         }
+         /* depth/stencil on layers above 0 is still unsupported: must be an error, not a silent layer-0 clear */
+         new_cmd(pool, &c2);
+         VkRenderingAttachmentInfo dca;
+         VkRenderingInfo dri = rendering_info(&dca, false);
+         dri.layerCount = 2;
+         VkRenderingAttachmentInfo zdca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)(uintptr_t)2,
+                                           .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+         dri.pDepthAttachment = &zdca;   /* a real depth target, so the rejection comes from the layered path and not from "no depth attachment" */
+         mali_CmdBeginRendering(c2, &dri);
+         VkClearAttachment dat = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT};
+         VkClearRect dr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 0, .layerCount = 2};
+         mali_CmdClearAttachments(c2, 1, &dat, 1, &dr);
+         mali_CmdEndRendering(c2);   /* close the rendering so the only possible error is the layered rejection */
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "layered depth clear must be rejected, end=%d", r);
+      }
       printf("{\"test\":\"t_cmd%d\",\"extra\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
