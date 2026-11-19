@@ -17,6 +17,17 @@
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance, const char *);
 
 static int g_fail;
+
+/* Linked with -Wl,--wrap=memset: counts memset(NULL, _, 0), which is UB even for n == 0 (UBSan nonnull-attribute). */
+extern void *__real_memset(void *, int, size_t);
+static int g_null_memset;
+void *__wrap_memset(void *p, int c, size_t n);
+void *__wrap_memset(void *p, int c, size_t n)
+{
+   if (!p && !n)
+      g_null_memset++;
+   return __real_memset(p, c, n);
+}
 #define CHECK(c, ...)                                                                                                    \
    do {                                                                                                                  \
       if (!(c)) {                                                                                                        \
@@ -154,6 +165,23 @@ run(void)
                                       .descriptorSetCount = 1, .pSetLayouts = &dsl};
    VkDescriptorSet set;
    CHECK(p_AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "set");
+
+   {  /* zero-capacity pool + zero-binding layout: alloc_set must not memset(NULL, 0, 0) */
+      VkDescriptorSetLayoutCreateInfo elci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+      VkDescriptorSetLayout edsl;
+      CHECK(p_CreateDescriptorSetLayout(dev, &elci, NULL, &edsl) == VK_SUCCESS, "empty dsl");
+      VkDescriptorPoolCreateInfo epci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1};
+      VkDescriptorPool epool;
+      CHECK(p_CreateDescriptorPool(dev, &epci, NULL, &epool) == VK_SUCCESS, "empty pool");
+      VkDescriptorSetAllocateInfo edai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = epool,
+                                          .descriptorSetCount = 1, .pSetLayouts = &edsl};
+      VkDescriptorSet eset;
+      int before = g_null_memset;
+      CHECK(p_AllocateDescriptorSets(dev, &edai, &eset) == VK_SUCCESS, "empty set");
+      CHECK(g_null_memset == before, "memset(NULL,0,0) in alloc_set");
+      p_DestroyDescriptorPool(dev, epool, NULL);
+      p_DestroyDescriptorSetLayout(dev, edsl, NULL);
+   }
 
    VkDescriptorBufferInfo bi0 = {buf, 256, 512}, bi2 = {buf, 1024, VK_WHOLE_SIZE};
    VkDescriptorImageInfo ii = {smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
