@@ -120,7 +120,7 @@ $CXX -o "$OUT/libvulkan_mali.so" -shared -fPIC -Wl,--as-needed -Wl,--no-undefine
 eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
 # shellcheck disable=SC2086
 $CXX -o "$OUT/t_resources" $OBJ/t_resources.o $OBJS \
-   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+   -Wl,--wrap=memset -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
 # 5. Loader manifest + test.
 cat > "$OUT/mali_icd.json" <<J
