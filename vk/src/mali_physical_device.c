@@ -36,7 +36,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxTexelBufferElements = 65536,
       .maxUniformBufferRange = 16384,
       .maxStorageBufferRange = 1u << 27,
-      .maxPushConstantsSize = 128,
+      .maxPushConstantsSize = 256,   /* 64 FAU words. Hardware: 64 FAU slots = 128 words (Mesa pan_compiler.h PAN_MAX_PUSH, all known
+                                      * Bifrost/Valhall); PanVK advertises 256 on the same GPUs. VS/reserved words 0..9 leave 118
+                                      * words, FS (v13 blend words 4,5) and CS start at word 6/0. DXVK 3.1.x requires >= 256. */
       .maxMemoryAllocationCount = 4096,
       .maxSamplerAllocationCount = 4000,
       .bufferImageGranularity = 1,
