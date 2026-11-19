@@ -398,9 +398,9 @@ int main(int argc, char **argv)
 
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
-   const char *dext[] = {"VK_KHR_swapchain"};
+   const char *dext[] = {"VK_KHR_swapchain", "VK_KHR_incremental_present"};   /* the 2nd name must be accepted: present below chains VkPresentRegionsKHR */
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
-                            .enabledExtensionCount = 1, .ppEnabledExtensionNames = dext};
+                            .enabledExtensionCount = 2, .ppEnabledExtensionNames = dext};
    VK(CreateDevice_i(pd, &di, NULL, &dev));
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr_i(dev, "vk" #n); if (!n) FAIL("missing vk" #n);
    DEV_FNS(LOAD)
@@ -604,7 +604,11 @@ int main(int argc, char **argv)
                          .pWaitDstStageMask = &wst, .commandBufferCount = 1, .pCommandBuffers = &cb,
                          .signalSemaphoreCount = 1, .pSignalSemaphores = &done[fi]};
       VK(QueueSubmit(queue, 1, &si, fen[fi]));
-      VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done[fi],
+      /* VK_KHR_incremental_present: alternate a full-frame damage rect (whole frame changes), an empty region (rectangleCount 0 == whole image) and a NULL pRegions entry */
+      VkRectLayerKHR rect = {.offset = {0, 0}, .extent = {S.w, S.h}, .layer = 0};
+      VkPresentRegionKHR reg = {.rectangleCount = (frames % 3 == 0) ? 1 : 0, .pRectangles = &rect};
+      VkPresentRegionsKHR prg = {.sType = VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR, .swapchainCount = 1, .pRegions = (frames % 3 == 2) ? NULL : &reg};
+      VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &prg, .waitSemaphoreCount = 1, .pWaitSemaphores = &done[fi],
                              .swapchainCount = 1, .pSwapchains = &S.sc, .pImageIndices = &idx};
       r = QueuePresentKHR(queue, &pi);
       if (r == VK_ERROR_OUT_OF_DATE_KHR) { ood++; create_swapchain(S.w, S.h); recreates++; }

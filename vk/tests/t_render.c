@@ -107,7 +107,7 @@ mkframe(void)
    struct mali_frame f;
    memset(&f, 0, sizeof f);
    f.width = 64; f.height = 32; f.has_colour = true;
-   f.colour.va = 0x10000; f.colour.clear = true;
+   f.colour.va = 0x10000; f.colour.clear = true; f.colour.store = true;
    f.colour.clear_color[0] = 1.0f; f.colour.clear_color[2] = 0.5f; f.colour.clear_color[3] = 1.0f;
    return f;
 }
