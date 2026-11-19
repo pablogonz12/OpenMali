@@ -186,10 +186,14 @@ struct mali_afbc_image_info {
    uint32_t width, height;
    bool afbc_env;          /* mali_afbc_enabled() (injected so tests do not depend on the environment) */
    bool render_only;       /* image is only rendered to: reject SAMPLED / TRANSFER_SRC/DST / INPUT_ATTACHMENT (no AFBC sampling or decompress path yet) */
+   bool sample_ok;         /* the AFBC texture-plane path exists: SAMPLED is allowed (arch 10..13 and a supported format); TRANSFER/INPUT_ATTACHMENT stay rejected */
 };
 
 #define MALI_AFBC_USAGE_STORAGE        0x08u
 #define MALI_AFBC_USAGE_NON_RENDER     (0x01u | 0x02u | 0x04u | 0x80u)   /* TRANSFER_SRC | TRANSFER_DST | SAMPLED | INPUT_ATTACHMENT */
+#define MALI_AFBC_USAGE_SAMPLED        0x04u
+#define MALI_AFBC_FLAG_MUTABLE         0x8u
+#define MALI_AFBC_FLAG_CUBE            0x10u
 #define MALI_AFBC_USAGE_HOST_TRANSFER  0x400000u   /* VK_IMAGE_USAGE_HOST_TRANSFER_BIT (EXT/1.4) */
 #define MALI_AFBC_FLAG_SPARSE_BINDING  0x1u
 #define MALI_AFBC_FLAG_SPARSE_RESIDENT 0x2u
@@ -223,7 +227,13 @@ mali_afbc_image_eligible(const struct mali_afbc_image_info *i, unsigned *bpp_out
    if (i->image_type != 1) return MALI_AFBC_REJ_TYPE;
    if (i->samples != 1) return MALI_AFBC_REJ_SAMPLES;
    if (i->usage & (MALI_AFBC_USAGE_STORAGE | MALI_AFBC_USAGE_HOST_TRANSFER)) return MALI_AFBC_REJ_USAGE;
-   if (i->render_only && (i->usage & MALI_AFBC_USAGE_NON_RENDER)) return MALI_AFBC_REJ_USAGE;
+   uint32_t nonrender = MALI_AFBC_USAGE_NON_RENDER;
+   if (i->sample_ok && i->arch >= 10 && i->arch <= 13 && mali_afbc_format_bpp(i->format)) {
+      nonrender &= ~MALI_AFBC_USAGE_SAMPLED;
+      /* sampled through a (possibly re-interpreting) view or as a cube: not covered by the plane path */
+      if ((i->usage & MALI_AFBC_USAGE_SAMPLED) && (i->flags & (MALI_AFBC_FLAG_MUTABLE | MALI_AFBC_FLAG_CUBE))) return MALI_AFBC_REJ_FLAGS;
+   }
+   if (i->render_only && (i->usage & nonrender)) return MALI_AFBC_REJ_USAGE;
    if (i->flags & (MALI_AFBC_FLAG_DISJOINT | MALI_AFBC_FLAG_ALIAS | MALI_AFBC_FLAG_SPARSE_BINDING |
                    MALI_AFBC_FLAG_SPARSE_RESIDENT | MALI_AFBC_FLAG_SPARSE_ALIASED))
       return MALI_AFBC_REJ_FLAGS;
@@ -355,6 +365,47 @@ mali_afbc_rt_patch(uint32_t rt[16], const struct mali_afbc_rt_words *w)
    rt[9] = (uint32_t)(w->header_va >> 32);
    rt[10] = w->row_stride;
    rt[11] = w->body_offset;
+}
+
+/* ---- Stage 7 (host part): AFBC texture Plane descriptor (genxml "AFBC Plane", 8 words; v10 == v11, v12 == v13).
+ * Supported GPU classes: arch 10, 11, 12, 13 (the Valhall/5th-gen layouts below). Arch 7..9 (Bifrost/early Valhall) have a different
+ * plane encoding that is not implemented: mali_afbc_tex_supported() is false and such images stay linear for SAMPLED.
+ * Differences: v10/v11 hold a 64-bit pointer in words 2-3, a 32-bit header row stride in word 4 and a 32-bit slice stride (no hi part);
+ * v12/v13 hold a 48-bit pointer (word 2 + word 3 bits 0..15), Size hi in word 3 bits 16..31, a 27-bit row stride in word 4 bits 0..26
+ * and Header slice stride hi in word 4 bits 27..31. Slice stride is 0 for a 2D image (one slice per descriptor). */
+static inline bool
+mali_afbc_tex_supported(unsigned arch, unsigned vk_format)
+{
+   return arch >= 10 && arch <= 13 && mali_afbc_compression_mode(vk_format) >= 0;
+}
+
+/* `level` is the layout of the sampled mip, header_va the VA of that level's header (image va + level offset + layer * array stride),
+ * w/h the extent of that mip. Returns 0 or -1 (unsupported arch/format/modifier, or a value that does not fit the field). */
+static inline int
+mali_afbc_tex_plane_words(unsigned arch, uint64_t modifier, unsigned vk_format, uint64_t header_va,
+                          const struct mali_afbc_layout *level, unsigned w, unsigned h, uint32_t out[8])
+{
+   for (unsigned i = 0; i < 8; i++) out[i] = 0;
+   uint32_t sw, sh;
+   if (!mali_afbc_tex_supported(arch, vk_format) || !mali_afbc_sb_size(modifier, &sw, &sh) || !w || !h || w > 65536 || h > 65536) return -1;
+   const bool wide = arch >= 12;
+   const uint64_t ptr_max = wide ? (1ull << 48) : UINT64_MAX;
+   if (header_va > ptr_max - 1 && wide) return -1;
+   if (wide && (level->header_row_stride >= (1u << 27) || level->size >= (1ull << 48))) return -1;
+   if (!wide && level->size > UINT32_MAX) return -1;
+   const unsigned sbsel = (modifier & 0xfu);   /* AFBC Superblock Size enum == drm SB bits (16x16=1, 32x8=2, 64x4=3) */
+   out[0] = 10u | (6u << 4) | (sbsel << 8) | ((modifier & MALI_AFBC_MOD_YTR) ? 1u << 16 : 0) |
+            ((modifier & MALI_AFBC_MOD_SPLIT) ? 1u << 17 : 0) | ((modifier & MALI_AFBC_MOD_TILED) ? 1u << 19 : 0) | (1u << 20) |
+            ((uint32_t)mali_afbc_compression_mode(vk_format) << 26);
+   out[1] = (uint32_t)level->size;
+   out[2] = (uint32_t)header_va;
+   out[3] = (uint32_t)(header_va >> 32);
+   if (wide) out[3] = (out[3] & 0xffffu) | ((uint32_t)(level->size >> 32) << 16);
+   out[4] = level->header_row_stride;
+   out[5] = (uint32_t)level->header_size;
+   out[6] = 0;
+   out[7] = (w - 1) | ((h - 1) << 16);
+   return 0;
 }
 
 /* Header-buffer init for an AFBC image: zero the header area of every level and layer (the 'cleared' state; PanVK does no explicit init,

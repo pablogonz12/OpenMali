@@ -365,12 +365,52 @@ test_afbc_wiring(unsigned arch)
    CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && !on.afbc, "float image AFBC");
    /* render-only: sampling / transfers have no AFBC path yet, so such images stay linear even with the flag on */
    {
-      static const VkImageUsageFlags bad[] = { VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      static const VkImageUsageFlags bad[] = { VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                                 VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT };
-      for (unsigned i = 0; i < 4; i++) {
+      for (unsigned i = 0; i < 3; i++) {
          c2 = ci; c2.usage |= bad[i];
          CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc && on.size == plain.size, "usage 0x%x must stay linear", (unsigned)bad[i]);
       }
+   }
+   /* SAMPLED is allowed on AFBC images on arch 10..13 (texture plane path), but not cube-compatible / mutable-format images */
+   c2 = ci; c2.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && on.afbc && on.size == 22016, "sampled AFBC image");
+   c2.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "sampled cube-compatible must stay linear");
+   c2.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "sampled mutable must stay linear");
+   c2 = ci; c2.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   /* render-only: unchanged policy */
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && on.afbc, "render-only mutable");
+   c2 = ci; c2.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+   CHECK(mali_image_layout_init(arch, &d, &on) == 0 && !mali_image_afbc_apply(9, &c2, true, &on) && !on.afbc, "sampled on arch 9 must stay linear (no plane path)");
+   CHECK(mali_image_layout_init(arch, &d, &on) == 0 && mali_image_afbc_apply(9, &ci, true, &on) && on.afbc, "render-only on arch 9 still AFBC");
+   /* sampled-view emission through the AFBC plane: 2 layers x 2 levels, layer-major, hand-derived (see docs/afbc-plan.md stage 7) */
+   {
+      struct mali_image_layout a; VkImageCreateInfo c3 = c2; c3.arrayLayers = 2; struct mali_image_desc d3 = d; d3.layers = 2;
+      CHECK(mali_image_plain_layout(arch, &c3, &d3, true, &a) == 0 && a.afbc && a.afbc_lay.array_stride == 22016, "emit layout");
+      const uint64_t iva = 0x7f0000100000ull;
+      uint32_t pay[4 * 8]; struct mali_hw_desc tex;
+      struct mali_view_desc v = { .format = d3.format, .type = VK_IMAGE_VIEW_TYPE_2D_ARRAY, .aspect = VK_IMAGE_ASPECT_COLOR_BIT, .levels = 2, .layers = 2,
+                                  .swizzle = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A } };
+      CHECK(mali_view_payload_entries(&a, &v) == 4, "afbc entries");
+      CHECK(mali_view_emit(arch, &a, iva, &v, pay, 0x7f0000300000ull, &tex) == 0, "afbc emit");
+      /* entry 0 = layer 0 level 0: header at base, size 16640, row stride 64, header size 256, 64x64 */
+      const uint32_t g0[8] = { 0x2810016a, 0x4100, 0x00100000, 0x7f00, 0x40, 0x100, 0, 0x003f003f };
+      /* entry 3 = layer 1 level 1: base + 16640 + 22016 = 0x7f0000109700, size 4224, row stride 32, header size 64, 32x32 */
+      const uint32_t g3[8] = { 0x2810016a, 0x1080, 0x00109700, 0x7f00, 0x20, 0x40, 0, 0x001f001f };
+      cmp_words("afbc plane 0", pay, g0, 0);
+      cmp_words("afbc plane 3", pay + 24, g3, 0);
+      CHECK(tex.w[2] == (0x688u | 0x1000u | 0x10000u), "afbc tex w2 %08x (interleave must be set)", tex.w[2]);
+      v.type = VK_IMAGE_VIEW_TYPE_CUBE; v.layers = 6;
+      CHECK(mali_view_emit(arch, &a, iva, &v, pay, 0, &tex) != 0, "cube view of AFBC image");
+      v.type = VK_IMAGE_VIEW_TYPE_2D_ARRAY; v.layers = 2; v.format = VK_FORMAT_R8G8B8A8_SRGB;
+      CHECK(mali_view_emit(arch, &a, iva, &v, pay, 0, &tex) == 0, "sRGB view of RGBA8 AFBC (same mode)");
+      v.format = VK_FORMAT_R5G6B5_UNORM_PACK16;
+      CHECK(mali_view_emit(arch, &a, iva, &v, pay, 0, &tex) != 0, "view with different compression mode");
+      /* the same view of the linear image is unchanged (Generic planes) */
+      struct mali_image_layout lin;
+      v.format = d3.format;
+      CHECK(mali_image_layout_init(arch, &d3, &lin) == 0 && mali_view_emit(arch, &lin, iva, &v, pay, 0, &tex) == 0 && (pay[0] & 0xff) == (10u | 16u), "linear view stays Generic");
    }
    /* bind-time header init: zero headers only, never touch linear images or an image that does not fit */
    {

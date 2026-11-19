@@ -100,7 +100,7 @@ int main(void)
    CHECK(afbc < 0.55 * full && afbc > 0.5 * full);   /* headers add ~1.6% over 50% */
 
    /* Stage 1: eligibility. Base: 1280x720 RGBA8_UNORM optimal 2D, colour attachment|sampled, v13, flag on. */
-   struct mali_afbc_image_info e = {13, 0, 1, 1, 0x10 | 0x4 | 0x1 | 0x2, 0, 37, 1280, 720, true};
+   struct mali_afbc_image_info e = {13, 0, 1, 1, 0x10 | 0x4 | 0x1 | 0x2, 0, 37, 1280, 720, true, false, false};
    unsigned bpp = 0;
    EQ(mali_afbc_image_eligible(&e, &bpp), MALI_AFBC_OK); EQ(bpp, 32);
    struct mali_afbc_image_info e2;
@@ -186,6 +186,52 @@ int main(void)
       mali_afbc_tile_block(256, &tw, &th); EQ(tw, 16); EQ(th, 16);
       mali_afbc_tile_block(128, &tw, &th); EQ(tw, 16); EQ(th, 8);
       mali_afbc_tile_block(32, &tw, &th); EQ(tw, 8); EQ(th, 4);
+   }
+
+
+   /* Stage 7: AFBC texture plane words. Hand-derived: w0 = Plane(10) | AFBC(6)<<4 | sb 1<<8 | prefetch 1<<20 | cm(RGBA8=10)<<26 = 0x2810016a. */
+   {
+      struct mali_afbc_layout lv = {0};
+      lv.header_row_stride = 0x1400; lv.header_size = 0xe100; lv.size = 0x123456780ull;
+      uint32_t o[8];
+      const uint32_t v13[8] = { 0x2810016a, 0x23456780, 0x12345680, 0x0001abcd, 0x1400, 0xe100, 0, 0x02cf04ff };
+      EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0xabcd12345680ull, &lv, 1280, 720, o), 0);
+      for (int i = 0; i < 8; i++) EQ(o[i], v13[i]);
+      EQ(mali_afbc_tex_plane_words(12, MALI_AFBC_SB_16x16, 37, 0xabcd12345680ull, &lv, 1280, 720, o), 0); EQ(o[3], 0x0001abcd);
+      /* v10/v11: 64-bit pointer (word 3 = pointer hi, no size hi), size must fit 32 bits */
+      CHECK(mali_afbc_tex_plane_words(11, MALI_AFBC_SB_16x16, 37, 0xabcd12345680ull, &lv, 1280, 720, o) == -1);
+      lv.size = 0x23456780u;
+      for (unsigned a = 10; a <= 11; a++) {
+         EQ(mali_afbc_tex_plane_words(a, MALI_AFBC_SB_16x16, 37, 0xffffabcd12345680ull, &lv, 1280, 720, o), 0);
+         EQ(o[0], 0x2810016a); EQ(o[1], 0x23456780); EQ(o[2], 0x12345680); EQ(o[3], 0xffffabcdu); EQ(o[4], 0x1400); EQ(o[5], 0xe100); EQ(o[6], 0); EQ(o[7], 0x02cf04ff);
+      }
+      CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0xffffabcd12345680ull, &lv, 1280, 720, o) == -1);   /* beyond 48 bits */
+      lv.header_row_stride = 1u << 27;
+      CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0x1000, &lv, 16, 16, o) == -1);   /* 27-bit row stride */
+      EQ(mali_afbc_tex_plane_words(11, MALI_AFBC_SB_16x16, 37, 0x1000, &lv, 16, 16, o), 0); EQ(o[4], 1u << 27);
+      lv.header_row_stride = 0x1400;
+      /* modifier bits and compression mode: 32x8 (2), YTR 1<<16, split 1<<17, tiled 1<<19; R5G6B5 mode 4 */
+      EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_32x8 | MALI_AFBC_MOD_YTR | MALI_AFBC_MOD_SPLIT | MALI_AFBC_MOD_TILED, 37, 0x1000, &lv, 16, 16, o), 0);
+      EQ(o[0], 0x281b026a);
+      EQ(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 4, 0x1000, &lv, 16, 16, o), 0); EQ(o[0], 0x1010016a);
+      /* unsupported: arch 7..9, float, depth, no superblock, empty extent */
+      for (unsigned a = 7; a <= 9; a++) CHECK(mali_afbc_tex_plane_words(a, MALI_AFBC_SB_16x16, 37, 0x1000, &lv, 16, 16, o) == -1);
+      CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 109, 0x1000, &lv, 16, 16, o) == -1);
+      CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 126, 0x1000, &lv, 16, 16, o) == -1);
+      CHECK(mali_afbc_tex_plane_words(13, 0, 37, 0x1000, &lv, 16, 16, o) == -1);
+      CHECK(mali_afbc_tex_plane_words(13, MALI_AFBC_SB_16x16, 37, 0x1000, &lv, 0, 16, o) == -1);
+      CHECK(!mali_afbc_tex_supported(9, 37) && mali_afbc_tex_supported(10, 37) && mali_afbc_tex_supported(13, 37) && !mali_afbc_tex_supported(14, 37));
+      /* eligibility: SAMPLED allowed only with sample_ok on arch 10..13; transfers / input attachment never; cube / mutable not with SAMPLED */
+      struct mali_afbc_image_info s = {13, 0, 1, 1, 0x10 | 0x4, 0, 37, 1280, 720, true, true, true};
+      EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_OK);
+      s.sample_ok = false; EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_REJ_USAGE); s.sample_ok = true;
+      s.arch = 9; EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_REJ_USAGE); s.arch = 14; EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_REJ_USAGE);
+      s.arch = 10; EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_OK); s.arch = 13;
+      static const unsigned nu[] = {0x1, 0x2, 0x80};
+      for (unsigned k = 0; k < 3; k++) { s.usage = 0x10 | 0x4 | nu[k]; EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_REJ_USAGE); }
+      s.usage = 0x10 | 0x4; s.flags = MALI_AFBC_FLAG_CUBE;    EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_REJ_FLAGS);
+      s.flags = MALI_AFBC_FLAG_MUTABLE;                       EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_REJ_FLAGS);
+      s.usage = 0x10; EQ(mali_afbc_image_eligible(&s, NULL), MALI_AFBC_OK);   /* render-only keeps mutable/cube */
    }
 
    printf(fails ? "t_afbc: %d FAILED\n" : "t_afbc: all ok\n", fails);
