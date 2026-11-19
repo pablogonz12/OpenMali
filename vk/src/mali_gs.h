@@ -72,6 +72,21 @@ int mali_gs_analyze(const struct mali_compile_opts *o, struct mali_gs_info *out,
 struct nir_shader *mali_gs_passthrough_nir(const struct nir_shader_compiler_options *opts,
                                            const struct mali_gs_info *gs, unsigned pc_off);
 
+/* Flags for mali_gs_kernel_nir. */
+#define MALI_GS_LOWER_TEST_NO_TRUNC 0x1   /* mutation hook for tests: drop the vertex-count truncation */
+
+/* GS body -> compute kernel (port of panvk_gpu_prerast_lower_gs, minimal subset): list input topologies
+ * (points/lines/triangles), one invocation, constant-offset IO. One thread = one input primitive:
+ * gl_GlobalInvocationID.x. It first fills its index slot with 0xffffffff, then each EmitVertex that fits in
+ * vertices_out writes the current outputs into record (slot * vertices_out + vcount) and appends that record
+ * index; EndPrimitive advances the index position (leaving the restart value). Vertices past vertices_out are
+ * dropped. vs_outputs is the real VS's outputs_written (its record slots are popcount-ranked). Reads
+ * struct mali_gs_params at pc_off. Returns a MESA_SHADER_COMPUTE nir_shader (caller ralloc_free()s), NULL on
+ * error. */
+struct nir_shader *mali_gs_kernel_nir(const struct mali_compile_opts *o, const struct mali_gs_info *gs,
+                                      uint64_t vs_outputs, unsigned pc_off, unsigned flags,
+                                      char *err, size_t errsz);
+
 #ifdef __cplusplus
 }
 #endif
