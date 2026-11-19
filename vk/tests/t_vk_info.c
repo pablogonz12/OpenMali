@@ -92,7 +92,7 @@ main(int argc, char **argv)
    CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "CreateInstance 1.3");
    if (!inst) return 1;
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceProperties2); I(GetPhysicalDeviceFeatures2);
-   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2);
+   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2); I(GetPhysicalDeviceImageFormatProperties);
    I(CreateDevice); I(DestroyInstance);
 
    uint32_t n = 1;
@@ -164,6 +164,16 @@ main(int argc, char **argv)
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
+   {  /* 4x is advertised iff pipeline creation accepts it (MALI_EXPERIMENTAL_MSAA=1) */
+      const char *g = getenv("MALI_EXPERIMENTAL_MSAA");
+      VkSampleCountFlags want = (g && g[0] == '1') ? VK_SAMPLE_COUNT_4_BIT : 0;
+      VkImageFormatProperties ifp;
+      VkResult r = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &ifp);
+      CHECK((L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb colour samples follow the MSAA gate");
+      CHECK((L->framebufferDepthSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb depth samples follow the MSAA gate");
+      CHECK(r == VK_SUCCESS && (ifp.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x image format samples follow the MSAA gate");
+   }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 
    /* ---- features ---- */

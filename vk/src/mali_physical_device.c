@@ -17,9 +17,8 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   /* KNOWN GAP (feat-audit): 1x|4x is advertised unconditionally (dEQP relies on it; the multisample lane is making 4x real), but 4x pipelines
-    * are still rejected unless MALI_EXPERIMENTAL_MSAA=1 (mali_pipeline.c) and resolve/LOAD/depth cases are limited (vk/README.md "Known gaps"). */
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+   /* 4x is advertised only with MALI_EXPERIMENTAL_MSAA=1: without it 4x pipelines are rejected (mali_pipeline.c), so advertising it would lie. */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
