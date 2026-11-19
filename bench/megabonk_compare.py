@@ -25,14 +25,15 @@ def classify_driver(text):
     loaded, hints, unrec = [], [], []
     for line in text.splitlines():
         n = _name(line)
-        is_loaded = re.search(r"driverName|driverInfo|library_path|\.so\b|vkBridge", line, re.I)
+        is_hint = re.search(r"VK_(DRIVER_FILES|ICD_FILENAMES)=.+", line, re.I)
+        is_loaded = not is_hint and re.search(r"driverName|driverInfo|library_path|\.so\b|vkBridge", line, re.I)
         if not n:
             if is_loaded:
                 unrec.append(line.strip())   # a loaded record we cannot name still outranks every hint
             continue
         if is_loaded:
             loaded.append((n, line.strip()))
-        elif re.search(r"VK_(DRIVER_FILES|ICD_FILENAMES)=.+", line, re.I):
+        elif is_hint:
             hints.append((n, line.strip()))
     if unrec and not loaded:
         return "unknown", unrec[0][:300]   # only unrecognized loaded records: never fall back to a configuration hint

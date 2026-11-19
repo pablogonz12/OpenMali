@@ -41,6 +41,11 @@ class T(unittest.TestCase):
         drv, ev = m.classify_driver(txt)
         self.assertEqual(drv, "unknown"); self.assertIn("SwiftShader", ev)
 
+    def test_bridge_named_hint_is_not_loaded_evidence(self):
+        txt = "driverName = SwiftShader Device (Subzero)\nVK_ICD_FILENAMES=/opt/vkBridge.json"
+        drv, ev = m.classify_driver(txt)
+        self.assertEqual(drv, "unknown"); self.assertIn("SwiftShader", ev)
+
     def test_non_numeric_values_are_damaged_not_fatal(self):
         import tempfile
         with tempfile.TemporaryDirectory() as t:
