@@ -331,7 +331,11 @@ main(int argc, char **argv)
       CHECK(CreateImage(dev, &ic, NULL, &im) == VK_SUCCESS, "CreateImage for bind test");
       VkBindImageMemorySwapchainInfoKHR sw = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR, .swapchain = (VkSwapchainKHR)(uintptr_t)0x1234, .imageIndex = 0};
       VkBindImageMemoryInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .pNext = &sw, .image = im, .memory = VK_NULL_HANDLE};
+      VkResult bst = VK_SUCCESS;
+      VkBindMemoryStatus bs = {.sType = VK_STRUCTURE_TYPE_BIND_MEMORY_STATUS, .pResult = &bst};
+      sw.pNext = &bs;
       CHECK(BindImageMemory2(dev, 1, &bi) == VK_ERROR_UNKNOWN, "BindImageMemory2 with an unimplemented swapchain bind must return VK_ERROR_UNKNOWN");
+      CHECK(bst == VK_ERROR_UNKNOWN, "the failed bind reports VK_ERROR_UNKNOWN through VkBindMemoryStatus (got %d)", (int)bst);
       DestroyImage(dev, im, NULL);
    }
    /* hostQueryReset */
