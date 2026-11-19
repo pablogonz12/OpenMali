@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22   /* 22: carry Mesa patches vk/mesa-patches (va_optimize OOB, num_subgroups): generated code can differ ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 23   /* 23: Mesa patches 0003-0007 (atest discard v9, CSE before vectorize, panvk fixes): generated code can differ ; 22: carry Mesa patches vk/mesa-patches (va_optimize OOB, num_subgroups): generated code can differ ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -469,7 +469,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                if (loc == FRAG_RESULT_DEPTH || loc == FRAG_RESULT_STENCIL)
                   nir->info.outputs_written |= BITFIELD64_BIT(loc);
             }
-         NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, 0);
+         NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, arch, model, 0); /* v26.3.0+0003: (skip_atest, arch, model, fragcolor_nr_cbufs) */
          if (o->link_vs && o->link_vs->size == sizeof vl) {
             memcpy(&vl, o->link_vs->data, sizeof vl);
             in.varying_layout = &vl;
