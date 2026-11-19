@@ -6,6 +6,9 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <pthread.h>
 
 #include "mali_cmd.h"
 #include "mali_cs_emit.h"
@@ -15,6 +18,7 @@
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
+#include "vk_pipeline_cache.h"
 #include "vk_pipeline_layout.h"
 #include "vk_shader_module.h"
 #include "util/bitscan.h"
@@ -103,8 +107,59 @@ static const uint32_t null_fs_spv[] = {
    0x00010038,                                     /* OpFunctionEnd */
 };
 
+/* VkPipelineCache: compiled shaders live in the runtime cache as raw objects keyed by mali_compile_key(), so vkGetPipelineCacheData/vkMergePipelineCaches
+ * carry real data. The runtime header (cache UUID) discards foreign blobs; an entry that fails its checksum is recompiled. MALI_STATS=1 prints the counts. */
+static atomic_uint g_pc_hits, g_pc_misses, g_pc_rejected;
+
+static void
+pc_stats_atexit(void)
+{
+   fprintf(stderr, "mali_vk: pipeline cache: hits %u misses %u rejected %u\n", atomic_load(&g_pc_hits), atomic_load(&g_pc_misses), atomic_load(&g_pc_rejected));
+}
+
+static void
+pc_stats_arm(void)
+{
+   const char *e = getenv("MALI_STATS");
+   if (e && *e && strcmp(e, "0")) atexit(pc_stats_atexit);
+}
+
+static int
+compile_cached(struct mali_device *dev, struct vk_pipeline_cache *pc, const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
+{
+   uint8_t key[32];
+   if (!pc || mali_compile_key(o, key))
+      return mali_compile(o, out, err, errsz);
+   {  static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, pc_stats_arm); }
+   bool found = false;
+   struct vk_pipeline_cache_object *obj = vk_pipeline_cache_lookup_object(pc, key, sizeof key, &vk_raw_data_cache_object_ops, &found);
+   if (obj) {
+      const struct vk_raw_data_cache_object *raw = container_of(obj, struct vk_raw_data_cache_object, base);
+      int bad = mali_compiled_unpack(raw->data, raw->data_size, out);
+      vk_pipeline_cache_object_unref(&dev->vk, obj);
+      if (!bad) {
+         atomic_fetch_add(&g_pc_hits, 1);
+         return 0;
+      }
+      atomic_fetch_add(&g_pc_rejected, 1);
+   }
+   atomic_fetch_add(&g_pc_misses, 1);
+   int r = mali_compile(o, out, err, errsz);
+   size_t n = 0;
+   void *blob = r == 0 && !obj ? mali_compiled_pack(out, &n) : NULL;   /* a rejected entry keeps its slot: the runtime does not replace a key */
+   if (blob) {
+      struct vk_raw_data_cache_object *raw = vk_raw_data_cache_object_create(&dev->vk, key, sizeof key, blob, n);
+      free(blob);
+      if (raw) {
+         obj = vk_pipeline_cache_add_object(pc, &raw->base);
+         vk_pipeline_cache_object_unref(&dev->vk, obj);
+      }
+   }
+   return r;
+}
+
 static VkResult
-create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
+create_one(struct mali_device *dev, struct vk_pipeline_cache *pc, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
@@ -160,7 +215,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv_words = vwords;
    o.entry = vss->pName;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   if (mali_compile(&o, &p->vs, err, sizeof err)) {
+   if (compile_cached(dev, pc, &o, &p->vs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -182,7 +237,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
    const bool rs_discard = st.rs && st.rs->rasterizer_discard_enable;
-   if ((fss || !rs_discard) && mali_compile(&o, &p->fs, err, sizeof err)) {
+   if ((fss || !rs_discard) && compile_cached(dev, pc, &o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -341,11 +396,12 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
                              const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
+   VK_FROM_HANDLE(vk_pipeline_cache, pc, cache);
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
    for (i = 0; i < n; i++) {
-      VkResult r = create_one(dev, &ci[i], alloc, &out[i]);
+      VkResult r = create_one(dev, pc, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
          result = r;
          out[i] = VK_NULL_HANDLE;
@@ -359,7 +415,7 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
 }
 
 static VkResult
-create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
+create_compute_one(struct mali_device *dev, struct vk_pipeline_cache *pc, const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
@@ -386,7 +442,7 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    o.entry = ci->stage.pName;
    struct mali_spec_entry specbuf[MALI_SPEC_MAX];
    set_spec(&o, specbuf, ci->stage.pSpecializationInfo);
-   if (mali_compile(&o, &p->cs, err, sizeof err)) {
+   if (compile_cached(dev, pc, &o, &p->cs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: CS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
@@ -417,11 +473,12 @@ mali_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const
                             const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
+   VK_FROM_HANDLE(vk_pipeline_cache, pc, cache);
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
    for (i = 0; i < n; i++) {
-      VkResult r = create_compute_one(dev, &ci[i], alloc, &out[i]);
+      VkResult r = create_compute_one(dev, pc, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
          result = r;
          out[i] = VK_NULL_HANDLE;

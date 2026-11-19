@@ -50,7 +50,7 @@ static const char *g_only, *g_spv = "shader";
    X(ResetCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)         \
    X(CmdBindPipeline) X(CmdPushConstants) X(CmdDispatch) X(CmdDispatchIndirect)                    \
    X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout) X(CreateDescriptorPool)             \
-   X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CmdBindDescriptorSets)
+   X(CreatePipelineCache) X(DestroyPipelineCache) X(GetPipelineCacheData) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CmdBindDescriptorSets)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -337,6 +337,72 @@ run_dyn(void)
    rmbuf(&src); rmbuf(&dst);
    return 1;
 }
+/* VkPipelineCache: a compiled shader goes into the cache, comes back out of GetPipelineCacheData, a cache created from that data serves it, and a
+ * foreign or damaged blob is ignored without failing the pipeline. check.sh runs this with MALI_STATS=1 and the disk cache off and greps the
+ * ICD's "pipeline cache: hits 1 misses 3 rejected 1" line (hit: cache B; misses: A, the foreign blob C, the damaged entry D). */
+static VkResult
+pc_pipeline(VkPipelineCache pc, VkPipelineLayout pl, VkShaderModule sm)
+{
+   VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main"}};
+   VkPipeline p = VK_NULL_HANDLE;
+   VkResult r = CreateComputePipelines(dev, pc, 1, &pci, NULL, &p);
+   if (r == VK_SUCCESS) DestroyPipeline(dev, p, NULL);
+   return r;
+}
+
+static int
+run_pcache(void)
+{
+   VkShaderModule sm = load_spv("saxpy.comp.spv");
+   CHECK(sm, "load saxpy.comp.spv");
+   VkDescriptorSetLayoutBinding lb[2];
+   for (int i = 0; i < 2; i++)
+      lb[i] = (VkDescriptorSetLayoutBinding){.binding = i, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayout dsl;
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkPushConstantRange pcr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
+   VkPipelineLayout pl;
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+                                     .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+
+   VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+   VkPipelineCache a = NULL, b = NULL, c = NULL, d = NULL;
+   size_t s0 = 0, s1 = 0, s2 = 0;
+   CHECK(CreatePipelineCache(dev, &ci, NULL, &a) == VK_SUCCESS, "cache A");
+   CHECK(GetPipelineCacheData(dev, a, &s0, NULL) == VK_SUCCESS, "empty size");
+   CHECK(pc_pipeline(a, pl, sm) == VK_SUCCESS, "pipeline into A");
+   CHECK(GetPipelineCacheData(dev, a, &s1, NULL) == VK_SUCCESS && s1 > s0 + 200, "A holds the compiled shader (%zu -> %zu bytes)", s0, s1);
+   uint8_t *blob = malloc(s1);
+   size_t got = s1;
+   CHECK(blob && GetPipelineCacheData(dev, a, &got, blob) == VK_SUCCESS && got == s1, "A data");
+   if (!blob) return 0;
+
+   ci.initialDataSize = s1; ci.pInitialData = blob;
+   CHECK(CreatePipelineCache(dev, &ci, NULL, &b) == VK_SUCCESS, "cache B from A's data");
+   CHECK(pc_pipeline(b, pl, sm) == VK_SUCCESS, "pipeline from B (hit)");
+   CHECK(GetPipelineCacheData(dev, b, &s2, NULL) == VK_SUCCESS && s2 == s1, "B data is as big as A's (%zu vs %zu)", s2, s1);
+
+   uint8_t *bad = malloc(s1);
+   memcpy(bad, blob, s1);
+   bad[16] ^= 0xff;   /* VkPipelineCacheHeaderVersionOne::pipelineCacheUUID[0]: a blob of another driver build */
+   ci.pInitialData = bad;
+   CHECK(CreatePipelineCache(dev, &ci, NULL, &c) == VK_SUCCESS, "cache C from a foreign blob");
+   CHECK(pc_pipeline(c, pl, sm) == VK_SUCCESS, "pipeline with C (miss, blob ignored)");
+   memcpy(bad, blob, s1);
+   bad[s1 - 20] ^= 0x01;   /* inside the stored shader image */
+   CHECK(CreatePipelineCache(dev, &ci, NULL, &d) == VK_SUCCESS, "cache D from a damaged blob");
+   CHECK(pc_pipeline(d, pl, sm) == VK_SUCCESS, "pipeline with D (damaged entry rejected, recompiled)");
+
+   free(bad); free(blob);
+   DestroyPipelineCache(dev, a, NULL); DestroyPipelineCache(dev, b, NULL); DestroyPipelineCache(dev, c, NULL); DestroyPipelineCache(dev, d, NULL);
+   DestroyPipelineLayout(dev, pl, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyShaderModule(dev, sm, NULL);
+   return !g_fail;
+}
 
 int
 main(int argc, char **argv)
@@ -395,6 +461,7 @@ main(int argc, char **argv)
 
    int ok = 1;
    if (CASE_ON("dyn")) ok &= run_dyn();
+   if (ok && g_only && !strcmp(g_only, "pcache")) ok &= run_pcache();
    if (ok && CASE_ON("saxpy")) ok &= run_case("saxpy", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 0);
    if (ok && CASE_ON("saxpy_ind")) ok &= run_case("saxpy_ind", K_SAXPY, "saxpy.comp.spv", 64, (100000 + 63) / 64, 1);
    if (ok && CASE_ON("atomic")) ok &= run_case("atomic", K_ATOMIC, "atomic.comp.spv", 64, 100, 0);

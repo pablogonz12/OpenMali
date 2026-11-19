@@ -112,6 +112,13 @@ struct mali_compile_stats {
    uint64_t rejected;                    /* entries found but dropped (truncated, bit-flipped); also counted in misses */
 };
 void mali_compile_stats(struct mali_compile_stats *s);
+/* In-memory VkPipelineCache support (mali_pipeline.c): the 32-byte key mali_compile() would use (blake3 of SPIR-V + every option that changes the output;
+ * 0 on success, -1 on bad arguments), and a self-checking byte image of a result. unpack() rejects (-1) a foreign, truncated, oversized or bit-flipped image
+ * and leaves *out untouched; free the result with mali_compiled_free(). pack() returns a malloc'ed buffer (NULL on failure). */
+int mali_compile_key(const struct mali_compile_opts *o, uint8_t key[32]);
+void *mali_compiled_pack(const struct mali_compiled *c, size_t *size);
+int mali_compiled_unpack(const void *data, size_t size, struct mali_compiled *out);
+
 /* One line with all counters; MALI_STATS=1 makes the process print it to stderr at exit. */
 void mali_compile_stats_print(FILE *f);
 

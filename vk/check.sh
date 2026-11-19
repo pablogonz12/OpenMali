@@ -57,6 +57,11 @@ for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT
 for g in v11 v13; do run "vk_qerr $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_qerr" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
 for g in v11 v13; do run "angle_seq $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_angle_seq" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do   # VkPipelineCache: hit from a cache built out of GetPipelineCacheData; foreign and damaged blobs are ignored (counts printed by the ICD at exit)
+   pc_out=$(timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$g MALI_SHADER_CACHE= MALI_STATS=1 "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only pcache 2>&1); pc_rc=$?
+   if [ $pc_rc -eq 0 ] && grep -q 'pipeline cache: hits 1 misses 3 rejected 1$' <<<"$pc_out"; then echo "ok    pipeline_cache $g"
+   else echo "FAIL  pipeline_cache $g (exit $pc_rc)"; echo "$pc_out" | sed 's/^/        /'; fail=1; fi
+done
 run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
 # Steam session (STEAM-GAPS.md): none of gamescope's vkCreateDevice requirements is missing any more.
 STEAM_MISSING=0

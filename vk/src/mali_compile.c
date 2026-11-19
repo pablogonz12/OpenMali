@@ -779,6 +779,71 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    return r;
 }
 
+int
+mali_compile_key(const struct mali_compile_opts *o, uint8_t key[32])
+{
+   if (!o || !key || !o->spirv || !o->spirv_words || (o->arch != 10 && o->arch != 11 && o->arch != 13) || o->stage > MALI_STAGE_COMPUTE)
+      return -1;
+   unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
+   unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0));
+   char hex[65];
+   mkey(o, fau_reserved, push_base, hex);
+   for (int i = 0; i < 32; i++) {
+      unsigned v;
+      sscanf(hex + 2 * i, "%2x", &v);
+      key[i] = (uint8_t)v;
+   }
+   return 0;
+}
+
+/* Same layout as a disk entry (magic, header with NULL pointers, code, immediates, checksum), minus the file. */
+void *
+mali_compiled_pack(const struct mali_compiled *c, size_t *size)
+{
+   size_t n = 4 + sizeof *c + c->bin_size + (size_t)c->nimm * sizeof *c->imm + 16;
+   uint8_t *buf = malloc(n), *w = buf;
+   if (!buf) return NULL;
+   struct mali_compiled h = *c;
+   uint32_t magic = CACHE_MAGIC;
+   h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
+   memcpy(w, &magic, 4); w += 4;
+   memcpy(w, &h, sizeof h); w += sizeof h;
+   if (c->bin_size) memcpy(w, c->bin, c->bin_size);
+   w += c->bin_size;
+   if (c->nimm) memcpy(w, c->imm, (size_t)c->nimm * sizeof *c->imm);
+   w += (size_t)c->nimm * sizeof *c->imm;
+   cache_sum(&h, c->bin, c->imm, w);
+   *size = n;
+   return buf;
+}
+
+int
+mali_compiled_unpack(const void *data, size_t size, struct mali_compiled *out)
+{
+   const uint8_t *r = data;
+   struct mali_compiled h;
+   uint32_t magic;
+   if (!data || size < 4 + sizeof h + 16) return -1;
+   memcpy(&magic, r, 4);
+   memcpy(&h, r + 4, sizeof h);
+   if (magic != CACHE_MAGIC || h.bin_size >= (64u << 20) || h.nimm >= (1u << 20) ||
+       size != 4 + sizeof h + h.bin_size + (size_t)h.nimm * sizeof *h.imm + 16)
+      return -1;
+   const uint8_t *code = r + 4 + sizeof h, *imm = code + h.bin_size, *sum = imm + (size_t)h.nimm * sizeof *h.imm;
+   uint8_t want[16];
+   if (h.bin || h.imm || h.cache_hit) return -1;   /* pack() stores these zeroed: anything else is damage the checksum would not see */
+   cache_sum(&h, code, (const struct mali_imm *)imm, want);   /* hash the bytes as stored, like mali_compiled_pack */
+   if (memcmp(want, sum, 16)) return -1;
+   h.bin = malloc(h.bin_size ? h.bin_size : 1);
+   h.imm = malloc((h.nimm ? h.nimm : 1) * sizeof *h.imm);
+   if (!h.bin || !h.imm) { free(h.bin); free(h.imm); return -1; }
+   memcpy(h.bin, code, h.bin_size);
+   memcpy(h.imm, imm, (size_t)h.nimm * sizeof *h.imm);
+   h.cache_hit = 1;
+   *out = h;
+   return 0;
+}
+
 void
 mali_compiled_free(struct mali_compiled *c)
 {

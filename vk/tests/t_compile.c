@@ -150,6 +150,60 @@ test_compute(void)
    free(cs.w);
 }
 
+/* In-memory VkPipelineCache support: key, pack, unpack. */
+static void
+test_pack_unpack(void)
+{
+   printf("pipeline cache key and pack/unpack\n");
+   struct spv vs = load("rot.vert.spv");
+   if (!vs.w) return;
+   struct mali_compiled a, b;
+   CHECK(!compile(11, MALI_STAGE_VERTEX, &vs, NULL, "", &a), "compile");
+   struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = vs.w, .spirv_words = vs.n, .cache_dir = "" };
+   uint8_t k1[32], k2[32], k3[32];
+   CHECK(!mali_compile_key(&o, k1) && !mali_compile_key(&o, k2) && !memcmp(k1, k2, 32), "key is stable");
+   o.arch = 13;
+   CHECK(!mali_compile_key(&o, k3) && memcmp(k1, k3, 32), "arch changes the key");
+   o.arch = 11; o.strip_psiz = 1;
+   CHECK(!mali_compile_key(&o, k3) && memcmp(k1, k3, 32), "options change the key");
+   o.spirv = NULL;
+   CHECK(mali_compile_key(&o, k3) < 0, "bad options have no key");
+
+   size_t n = 0;
+   uint8_t *img = mali_compiled_pack(&a, &n);
+   CHECK(img && n > a.bin_size, "pack");
+   if (!img) return;
+   memset(&b, 0, sizeof b);
+   CHECK(!mali_compiled_unpack(img, n, &b), "unpack own image");
+   CHECK(b.cache_hit == 1 && b.bin_size == a.bin_size && !memcmp(b.bin, a.bin, a.bin_size), "round trip: code");
+   CHECK(b.nimm == a.nimm && !memcmp(b.imm, a.imm, a.nimm * sizeof *a.imm), "round trip: immediates");
+   CHECK(b.preload == a.preload && b.generic_size_B == a.generic_size_B && !memcmp(b.varying, a.varying, sizeof b.varying), "round trip: metadata");
+   mali_compiled_free(&b);
+   /* every damaged image is refused and *out is left alone */
+   struct mali_compiled z;
+   memset(&z, 0xab, sizeof z);
+   CHECK(mali_compiled_unpack(img, n - 1, &z) < 0, "truncated by one byte");
+   CHECK(mali_compiled_unpack(img, 0, &z) < 0 && mali_compiled_unpack(NULL, 40, &z) < 0, "empty");
+   uint8_t *big = malloc(n + 1);
+   memcpy(big, img, n); big[n] = 0;
+   CHECK(mali_compiled_unpack(big, n + 1, &z) < 0, "trailing byte");
+   free(big);
+   for (size_t at = 0; at < n; at += n / 61 + 1) {   /* a flipped bit anywhere: magic, header, code, immediates, checksum */
+      img[at] ^= 0x10;
+      if (!mali_compiled_unpack(img, n, &z)) { CHECK(0, "bit flip at %zu accepted", at); mali_compiled_free(&z); memset(&z, 0xab, sizeof z); }
+      img[at] ^= 0x10;
+   }
+   CHECK(z.bin_size == 0xabababab, "a refused image leaves the output untouched");
+   img[0] ^= 1;
+   CHECK(mali_compiled_unpack(img, n, &z) < 0, "foreign magic");
+   img[0] ^= 1;
+   CHECK(!mali_compiled_unpack(img, n, &b), "intact image still unpacks");
+   mali_compiled_free(&b);
+   free(img);
+   mali_compiled_free(&a);
+   free(vs.w);
+}
+
 static void
 test_determinism_and_cache(void)
 {
@@ -626,6 +680,7 @@ main(int argc, char **argv)
    test_pairing();
    test_compute();
    test_determinism_and_cache();
+   test_pack_unpack();
    test_cache_disk();
    test_stats_exit(argv[0]);
    test_ycbcr();
