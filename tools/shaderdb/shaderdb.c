@@ -64,7 +64,7 @@ build_layout(const uint32_t *w, size_t n, struct layout_store *L)
          if (p[1] < bound) { t[p[1]].op = op; t[p[1]].w = p; }
          break;
       }
-      if ((op == 59 || op == 43) && p[2] < bound) { t[p[2]].op = 59; t[p[2]].w = p; }
+      if ((op == 59 || op == 43) && p[2] < bound) { t[p[2]].op = op; t[p[2]].w = p; }
       i += wc;
    }
    unsigned nsets = 0, slot[MALI_MAX_SETS] = {0}, nb[MALI_MAX_SETS] = {0};
@@ -133,7 +133,13 @@ main(int argc, char **argv)
       size_t n = fread(w, 1, sz, f) / 4;
       fclose(f);
       int st = stage_of(w, n);
-      const char *b = strrchr(argv[a], '/'); b = b ? b + 1 : argv[a];
+      /* TSV id: the path as given, minus a leading SHADERDB_STRIP prefix (colon list), so same-named files in different dirs stay distinct */
+      const char *b = argv[a];
+      for (const char *sp = getenv("SHADERDB_STRIP"); sp && *sp;) {
+         size_t l = strcspn(sp, ":");
+         if (l && !strncmp(b, sp, l)) { b += l; break; }
+         sp += l + (sp[l] == ':');
+      }
       for (unsigned i = 0; i < na; i++) {
          if (st < 0) { printf("%s\t%u\t-\tNOSTAGE\t0\t0\t0\t0\t0\t0\t0\t0\n", b, archs[i]); continue; }
          struct mali_compile_opts o = { .arch = archs[i], .stage = st, .spirv = w, .spirv_words = n, .cache_dir = "" };
