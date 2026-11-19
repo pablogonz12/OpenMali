@@ -4,9 +4,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 O=out/a64-bionic; D=/data/local/tmp/afbc_hw
-for f in $O/libvulkan_mali.so $O/t_afbc_hw shader/rot.vert.spv shader/var.frag.spv; do [ -f "$f" ] || { echo "missing $f (run vk/build.sh)"; exit 2; }; done
+for f in $O/libvulkan_mali.so $O/t_afbc_hw shader/rot.vert.spv shader/var.frag.spv shader/tex.vert.spv shader/tex.frag.spv; do [ -f "$f" ] || { echo "missing $f (run vk/build.sh)"; exit 2; }; done
 adb shell "rm -rf $D; mkdir -p $D/s" && adb push $O/libvulkan_mali.so $O/t_afbc_hw $D/ >/dev/null &&
-adb push shader/rot.vert.spv shader/var.frag.spv $D/s/ >/dev/null && adb shell "chmod +x $D/t_afbc_hw" || { echo "push failed"; exit 2; }
+adb push shader/rot.vert.spv shader/var.frag.spv shader/tex.vert.spv shader/tex.frag.spv $D/s/ >/dev/null && adb shell "chmod +x $D/t_afbc_hw" || { echo "push failed"; exit 2; }
 adb shell "cd $D && ./t_afbc_hw --direct $D/libvulkan_mali.so --spv-dir s >ref.log 2>&1; echo \$? >ref.rc"
 echo "== reference (linear) =="; adb shell "cat $D/ref.log; echo rc=\$(cat $D/ref.rc)"
 if [ "$(adb shell "cat $D/ref.rc" | tr -d '\r')" != 0 ]; then echo "reference failed: device/driver problem, not AFBC; stopping"; exit 1; fi

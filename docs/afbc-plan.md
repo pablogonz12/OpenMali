@@ -77,23 +77,43 @@ farm hold <x8-device> --max 20 -- vk/tests/afbc_hw_run.sh           # exit 0 = b
 `<x8-device>`: see `farm status`. Run the reference half first; a failing reference means the device/driver is unusable, not an AFBC bug. Exit 124 =
 hold ended while running (kill, check `qrestore` output). Expected on success: `{"afbc_hw":"PASS","mode":"afbc"}`.
 
-### Stage 6 (next): reading back a render-only AFBC image. Route chosen: sample it through an AFBC texture plane descriptor
+### Stage 7: sampling an AFBC image through the AFBC texture Plane descriptor, DONE on the host, still MALI_AFBC=1 only
 
-Options weighed:
-1. Host AFBC decoder + CPU dump of the BO: no descriptor work, but needs a bit-exact software decoder (solid / uncompressed / split / YTR sub-block
-   modes) that nothing else uses, and is only a test aid. Rejected: more code than the descriptor, and it proves nothing about what the GPU samples.
-2. Decompress with compute/meta: impossible, compute cannot read AFBC.
-3. **Chosen:** emit the `AFBC Plane` of the texture descriptor (v13.xml:1994; Mesa `pan_texture.c emit_afbc_plane`, `afbc_compression_tag` at :73:
-   YTR/wide/split/tiled-header flags, plane type, superblock size, header pointer, row stride in superblocks) for images that are AFBC. Then the existing
-   graphics path (full-screen draw sampling the image into a linear attachment, which t_vk_draw's texture case already does) decompresses in hardware.
-   This is also the feature real use needs (sampled reads, stage 5 of the table), so nothing is thrown away.
+Route (chosen in the previous PR): sample it through the `AFBC Plane` descriptor (v13.xml:1994; Mesa `pan_texture.c emit_afbc_plane` / `get_afbc_plane_props`),
+so the hardware decompresses while sampling. A host decoder (more code, proves nothing about what the GPU samples) and compute decompress (compute cannot read AFBC) were rejected.
 
-Work, in order (about 6-8 h): (a) pure `mali_afbc_tex_plane_words` + goldens from v13.xml (host); (b) allow SAMPLED on AFBC images; view format must keep the same
-compression mode (reject otherwise, per the existing rule); keep TRANSFER_*/INPUT_ATTACHMENT linear; (c) descriptor code emits it when `lay->afbc`;
-(d) extend `t_afbc_hw` with `--sample`: second pass draws the image into a linear target and compares the pixels with the reference run (decode check for real);
-(e) layout-transition/barrier for render->sample (cache flush only, same format, no decompress); (f) second phone run.
-Risk: the descriptor is only validated on hardware; golden tests catch bit positions, not semantics.
+Code: `mali_afbc_tex_plane_words` (`mali_afbc.h`, pure) and the hook in `mali_view_emit` (`mali_image.c`): when `lay->afbc`, the 32-byte payload entry of each
+(layer, level) is the AFBC plane instead of the Generic plane (header VA = image + `level_offset[lev]` + layer * `array_stride`; size = level size; row stride in
+BYTES = `header_row_stride`; header slice size = `header_size`; slice stride 0; extent of the mip), and the texture descriptor sets the interleave bit like Mesa
+(`texel_interleave = modifier != LINEAR`). Words (genxml, all classes): w0 = Plane(10) | AFBC plane type(6)<<4 | superblock size<<8 | YTR<<16 | split<<17 | tiled header<<19 |
+prefetch<<20 (Mesa always sets it) | compression mode<<26; w1 = size lo; w7 = (w-1) | (h-1)<<16.
 
-Remaining after this PR: stage 6 above; then v13 RT bit positions (kb_fb_pack TODO(v13): the packer still emits v11 descriptors on v13, so the first phone run may
-fault there: that is exactly what the first test is meant to show), valid-start check for zeroed headers, copies/blits (table stage 6), depth, hardening.
-Hours: ~1.5 this PR (test + plan); about 13 of 55-60 total.
+GPU classes (decided by `arch`, from `v10.xml`, `v11.xml`, `v12.xml`, `v13.xml`; the AFBC Plane struct of v10 == v11 and v12 == v13):
+
+| class | arch | pointer | size | row stride | slice stride | status |
+|---|---|---|---|---|---|---|
+| v10, v11 (G-series 5th gen early) | 10, 11 | 64-bit, words 2-3 | 32 bit (w1); a larger level is refused (-1) | 32 bit, word 4 | 32 bit, word 6 | supported |
+| v12, v13 | 12, 13 | 48-bit: word 2 + word 3 bits 0..15 | 48 bit: w1 + `Size hi` in word 3 bits 16..31 | 27 bit, word 4 bits 0..26 (larger: -1) | word 6 + `slice stride hi` word 4 bits 27..31 (always 0 for 2D) | supported |
+| arch 7..9 (Bifrost, Valhall v9) and unknown >13 | | plane encoding differs / unverified | | | | NOT supported: SAMPLED images stay linear, render-only AFBC unchanged |
+
+Eligibility (`mali_afbc_image_eligible`, `sample_ok`): SAMPLED is allowed on an AFBC image only for arch 10..13 and an AFBC colour format (same table as render). TRANSFER_SRC,
+TRANSFER_DST and INPUT_ATTACHMENT stay linear (no decompress/copy path). Also kept linear when SAMPLED: CUBE_COMPATIBLE and MUTABLE_FORMAT images (cube views and re-interpreting views
+are not covered), storage / host-transfer as before. Views of an AFBC image must be 2D or 2D_ARRAY, not storage, and have the image's compression mode (sRGB vs UNORM of the same
+format is the same mode and fine); otherwise `mali_view_emit` fails with -EINVAL. Default (flag off) path and the golden are unchanged.
+
+Tests: `t_afbc` has hand-derived words per class (v13 with a >4 GiB size and 48-bit pointer, v12, v10/v11 with a 64-bit pointer, 27-bit stride overflow, modifier bits, R5G6B5 mode, unsupported
+archs/formats) and the eligibility matrix; `t_image` checks the emitted payload of a 2 layer x 2 level view (layer-major, hand-derived header addresses/sizes/strides) plus the
+interleave bit, view rejects, and that a linear image still gets Generic planes. 12 mutants (arch class, size hi, compression mode shift, prefetch, header size, cube flag,
+interleave, layer stride, level offset, mode check, eligibility arch window) are all caught. `t_afbc_hw` gets `--case sample` (default: runs after clear and draw): the SAMPLED AFBC image
+is rendered, then drawn 1:1 through the tex shaders into a linear target; every target pixel must be the clear colour or the triangle red and about 2048 red pixels must be present. Reference mode runs
+the same pass on a linear image. On the fake backend only the bind-time part is checked (and that the SAMPLED image really is AFBC-sized).
+
+Remaining before a hardware run (honest list; the descriptor semantics can only be checked on hardware, golden tests catch bit positions, not meaning):
+1. v13 RT bit positions: `kb_fb_pack` TODO(v13) still emits v11 descriptors on v13, so the first phone run may fault in the render pass (the stage-5 test shows that first).
+2. Render -> sample barrier: no layout-transition/cache flush is emitted for an AFBC image; the test uses a separate submit with the fence in between. Needs the barrier work for in-queue use.
+3. Zeroed headers: the AFBC "cleared" state is believed to be all-zero headers for a never-written image (PanVK does no init); unverified, and a sampled-before-rendered image depends on it.
+4. Copies/blits, TRANSFER_*, INPUT_ATTACHMENT, MSAA, LOAD ops, depth/stencil, 3D, cube, mutable views, storage: all still linear/refused.
+5. Hardening: modifier exposure (nothing advertised), kb_fb_pack for lower archs, mip/array sampling on hardware, BW numbers.
+6. Run the phone test (`farm hold`, X8 first), see above; `afbc_hw_run.sh` now also pushes the tex shaders.
+
+Hours: ~3.5 this PR (descriptor words, view wiring, eligibility, tests, mutation checks, sample pass, doc); about 16.5 of 55-60 total.

@@ -101,7 +101,7 @@ mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, 
    const struct mali_afbc_image_info info = {
       .arch = arch, .tiling = (unsigned)ci->tiling, .image_type = (unsigned)ci->imageType, .samples = (unsigned)ci->samples,
       .usage = ci->usage, .flags = ci->flags, .format = (unsigned)ci->format, .width = ci->extent.width, .height = ci->extent.height,
-      .render_only = true, .afbc_env = true,
+      .render_only = true, .afbc_env = true, .sample_ok = true,
    };
    unsigned bpp = 0;
    if (mali_afbc_image_eligible(&info, &bpp) != MALI_AFBC_OK) return false;
@@ -195,6 +195,14 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    const bool vol = v->type == VK_IMAGE_VIEW_TYPE_3D;
    const bool slices = d->type == VK_IMAGE_TYPE_3D && !vol;   /* 2D (array) view of a 3D image: each layer = one z slice */
    const unsigned ordering = d->tiled ? 1 : 2;
+   const bool afbc = l->afbc && p == &l->plane[0];
+   if (afbc) {
+      /* AFBC sampling (MALI_AFBC=1 images only): single-sample 2D colour views, same compression mode as the image. */
+      if (v->type != VK_IMAGE_VIEW_TYPE_2D && v->type != VK_IMAGE_VIEW_TYPE_2D_ARRAY) return -EINVAL;
+      if (v->storage || !mali_afbc_tex_supported(arch, d->format) ||
+          mali_afbc_compression_mode(v->format) != mali_afbc_compression_mode(d->format))
+         return -EINVAL;
+   }
 
    /* Payload order (Mesa pan_emit_iview_texture_payload, v7+): layer-major, then mip level. */
    uint8_t *out = payload;
@@ -216,6 +224,11 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
             ss = d->samples > 1 ? s->surface_stride : 0;
          }
          struct mali_hw_desc pl;
+         if (afbc) {
+            memset(&pl, 0, sizeof pl);
+            const uint64_t hva = image_va + l->afbc_lay.level_offset[lev] + (uint64_t)layer * l->afbc_lay.array_stride;
+            if (mali_afbc_tex_plane_words(arch, MALI_AFBC_SB_16x16, d->format, hva, &l->afbc_lay.level[lev], w, h, pl.w)) return -EINVAL;
+         } else
          mali_pack_plane(&pl, ordering, clump, va, size, s->row_stride, ss, div_up(w, 1), div_up(h, 1));
          memcpy(out, &pl, 32);
          out += 32;
@@ -233,7 +246,7 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    unsigned swz = 0x688;   /* identity RGBA */
    if (!v->storage)
       swz = swz_sel(v->swizzle.r, 0) | (swz_sel(v->swizzle.g, 1) << 3) | (swz_sel(v->swizzle.b, 2) << 6) | (swz_sel(v->swizzle.a, 3) << 9);
-   const bool interleave = d->tiled || vf.compressed;
+   const bool interleave = d->tiled || vf.compressed || afbc;   /* Mesa: texel_interleave = modifier != LINEAR */
    tex->w[0] = 2u | (dim << 4) | (hw << 10);
    tex->w[1] = (w0 - 1) | ((h0 - 1) << 16);
    tex->w[2] = swz | ((unsigned)interleave << 12) | ((levels - 1) << 16);
