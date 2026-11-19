@@ -256,6 +256,37 @@ ycc_compile(unsigned arch, VkSamplerYcbcrModelConversion model, VkSamplerYcbcrRa
    return r;
 }
 
+/* Vulkan: gl_FragCoord.xy is a pixel centre (+0.5). The hardware gives the integer corner; the compiler adds the half pixel
+ * (nir_lower_wpos_center). fragcoord.frag only scales FragCoord, so the folded constants x - 99.5 and y - 199.5 exist only if the lowering ran. */
+/* the folded constants are literals inside the clause words (nimm is 0), so look for the float bit pattern in the binary */
+static int
+bin_has_f(const struct mali_compiled *c, float f)
+{
+   for (unsigned i = 0; i + 4 <= c->bin_size; i++)
+      if (!memcmp((const char *)c->bin + i, &f, 4)) return 1;
+   return 0;
+}
+
+static void
+test_wpos_center(void)
+{
+   printf("gl_FragCoord pixel centre\n");
+   for (unsigned arch = 10; arch <= 13; arch++) {
+      if (arch == 12) continue;
+      struct spv fs = load("fragcoord.frag.spv");
+      if (!fs.w) continue;
+      struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n, .cache_dir = ""};
+      struct mali_compiled c;
+      char err[256] = "";
+      int r = mali_compile(&o, &c, err, sizeof err);
+      CHECK(r == 0, "v%u fragcoord.frag compiles: %s", arch, err);
+      if (r == 0)
+         CHECK(bin_has_f(&c, -99.5f) && bin_has_f(&c, -199.5f) && !bin_has_f(&c, -100.0f) && !bin_has_f(&c, -200.0f),
+               "v%u FragCoord carries the half-pixel centre", arch);
+      free(fs.w);
+   }
+}
+
 static void
 test_ycbcr(void)
 {
@@ -364,6 +395,7 @@ main(int argc, char **argv)
    test_compute();
    test_determinism_and_cache();
    test_ycbcr();
+   test_wpos_center();
    test_spec();
    test_errors();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);

@@ -33,9 +33,20 @@ int main(void)
    r |= b->bo_alloc(k, 65536, 0, &internal);
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT, &src);
    if (r) { printf("FAIL  bo_alloc\n"); return 1; }
+   struct mali_bo hot;
+   int hr = b->bo_alloc(k, 65536, MALI_BO_HOT | MALI_BO_COH, &hot);
+   if (hr) { printf("FAIL  bo_alloc hot\n"); return 1; }
    int fd = b->bo_export(k, &src);
    if (fd < 0 || b->bo_import(k, fd, 65536, 0, &imp)) { printf("FAIL  bo_export/import\n"); return 1; }
 
+   {  /* hot BO (arena): written only by the frame build, so host_sync leaves it to submit_cs: exactly one MEM_SYNC per CS submit */
+      unsigned h0n = kb_fake_memsync_count(hot.gpu_va);
+      b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(hot.gpu_va) == h0n, "host_sync: hot BO not synced (%u)", kb_fake_memsync_count(hot.gpu_va) - h0n);
+      uint64_t c0s[8] = {0};
+      b->submit_cs(k, c0s, 0);
+      EXPECT(kb_fake_memsync_count(hot.gpu_va) - h0n == 1, "submit_cs: hot BO synced once (%u)", kb_fake_memsync_count(hot.gpu_va) - h0n);
+   }
    unsigned e0 = kb_fake_memsync_count(exp.gpu_va), c0 = kb_fake_memsync_count(expc.gpu_va), h0 = kb_fake_memsync_count(hl.gpu_va),
             i0 = kb_fake_memsync_count(imp.gpu_va), n0 = kb_fake_memsync_count(internal.gpu_va);
    uint64_t cs[8] = {0};

@@ -102,6 +102,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .sampledImageStencilSampleCounts = samples_1_4,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
+      .maxClipDistances = 8,                 /* shaderClipDistance: VARYING_SLOT_CLIP_DIST0/1 (t_vk_feat clip8) */
+      .maxCullDistances = 0,                 /* shaderCullDistance stays off: no cull lowering */
+      .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
       .pointSizeRange = {1.0f, 1.0f},
@@ -128,6 +131,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA "unknown"
+#endif
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
             gpu->fake ? ", fake backend" : "");
 
@@ -151,7 +157,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
     * no msrtss); an unregistered id would lose them. Revisit only if a PanVK quirk turns out wrong for us. */
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
-   snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
+   snprintf(p->driverInfo, sizeof(p->driverInfo), "mali-open %s (mali-own), not conformant", MALI_GIT_SHA);
    /* conformanceVersion stays 0.0.0.0: we do not claim conformance. */
    p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
    p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
@@ -210,6 +216,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
+      .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
       .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; logicOp/patchControlPoints stay off */
@@ -225,6 +232,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
+      .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
@@ -265,6 +273,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .shaderExpectAssume = true,  /* t_dxvk_caps */
       .maintenance6 = true,
+      .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
