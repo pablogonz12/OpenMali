@@ -16,8 +16,12 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (5k/10k/20k draw scal
 | cmf | v11 | ours | 46631edd8 | triangle-20k | 94.7 | 59.3 | 0 | 7.85 | 6.21 | 116.1 | 6.18 | 5.26 | present mailbox/3img/fif3/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-19 |
 | cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 203.5 | 87.3 | 0 | 0.73 | 3.34 | 290.4 | 0.69 | 2.68 | present immediate/3img/fif2; offscreen mailbox/0img/fif2 | 2026-11-19 |
 | cmf | v11 | ours | 46631edd8 | triangle-3k | 334.1 | 119.4 | 0 | 1.50 | 1.95 | 632.6 | 1.02 | 1.24 | present mailbox/3img/fif3/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-19 |
+| poco-x8 | v13 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-3k | 341.5 | 127.2 | 0 | 0.79 | 1.88 | 496.7 | 0.91 | 1.59 | present fifo/4img/fif2; offscreen mailbox/0img/fif2 | 2026-11-19 |
+| poco-x8 | v13 | ours | 46631edd8 | triangle-3k | 850.6 | 373.0 | 0 | 0.58 | 0.89 | 663.7 | 0.68 | 1.11 | present mailbox/3img/fif3/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-19 |
 | cmf | v11 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-5k | 137.5 | 61.3 | 0 | 1.37 | 5.05 | 183.5 | 1.17 | 3.85 | present mailbox/3img/fif3; offscreen mailbox/0img/fif2 | 2026-11-19 |
 | cmf | v11 | ours | 46631edd8 | triangle-5k | 261.5 | 100.1 | 0 | 2.04 | 2.69 | 423.5 | 1.59 | 1.71 | present mailbox/4img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-19 |
+| poco-x8 | v13 | bridge | malideck p25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) | triangle-5k | 261.7 | 104.8 | 0 | 1.12 | 2.64 | 324.6 | 1.12 | 2.55 | present fifo/4img/fif2; offscreen mailbox/0img/fif2 | 2026-11-19 |
+| poco-x8 | v13 | ours | 46631edd8 | triangle-5k | 735.7 | 385.9 | 0 | 0.74 | 1.10 | 606.3 | 0.80 | 1.34 | present mailbox/3img/fif3/MALI_RING=67108864+MALI_GEOM_SIZE=67108864; offscreen mailbox/0img/fif2/MALI_RING=67108864+MALI_GEOM_SIZE=67108864 | 2026-11-19 |
 
 ### mali-open befc62510 (2026-11-18)
 
