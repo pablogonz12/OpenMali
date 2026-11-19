@@ -138,7 +138,7 @@ driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/p
 
 - Not conformant: dEQP numbers above are a sample, 27 sample cases fail on the v13 run. The committed `vk/deqp/ours-daily-sample-*.tsv` baselines are older (301-302 pass) and are refreshed by `farm bless`.
 - v13 coverage is thinner than v11. A geometry-buffer size regression broke v13 draws and was fixed, so recheck draws on every change.
-- MSAA is experimental and off by default (`MALI_EXPERIMENTAL_MSAA=1`; the 4x `a2r10g10b10` case still flakes), no geometry or tessellation shaders, no GPL, no robustness2 bounds clamping.
+- MSAA is experimental and off by default (`MALI_EXPERIMENTAL_MSAA=1`; the 4x `a2r10g10b10` case still flakes), no geometry or tessellation shaders (an opt-in `MALI_ADVERTISE_GS=1` shim only fakes the device feature for DXVK device creation, GS pipelines still fail; not conformance; see vk/README.md), no GPL, no robustness2 bounds clamping.
 - Firmware support is a fixed list (uAPI 1.21 and 1.30). Other versions are refused on purpose.
 - Games were not yet run end to end through DXVK. That is the R4 gate.
 - The licence of the project itself is not yet decided: see `LICENSE-NOTES.md`.
