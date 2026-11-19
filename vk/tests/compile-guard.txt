@@ -1,3 +1,3 @@
-version 21
-sha256 84f02d2b553e9e575744cf310c685cb42e045252999918ef6c11bc434016e85c
+version 22
+sha256 2c8cb17881e0b87d3df37b8ec78103111b7eca7865e7db9de2c00aaeef096ceb
 files src/mali_compile.c src/mali_descriptor_lower.c src/mali_descriptor_lower.h src/mali_pipeline_layout_flat.h
