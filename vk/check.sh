@@ -140,6 +140,8 @@ if cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_dra
 else echo "FAIL  cache cold/warm self-test: damaged cache entries did not change the vk_draw dump"; fail=1; fi
 rm -rf "$OUT"/cw-cache-* "$GDIR"/cw-*
 # The cache key knows only MALI_COMPILE_VERSION: lowering sources and the recorded version must move together.
+# vk/mesa-patches apply in order (scratch copy of the touched files; only effective in the Mesa roll-in)
+if out=$("$V/tests/mesa-patches.sh" 2>&1); then echo "ok    $out"; else echo "FAIL  mesa patches:"; echo "$out" | sed 's/^/        /'; fail=1; fi
 if [ $bless = 1 ]; then "$V/tests/compile-guard.sh" --bless
 elif out=$("$V/tests/compile-guard.sh" 2>&1); then echo "ok    $out"; else echo "FAIL  compile guard:"; echo "$out" | sed 's/^/        /'; fail=1; fi
 # The rules must have teeth: each one is made to fire on a deliberately damaged dump / fault-injected backend.

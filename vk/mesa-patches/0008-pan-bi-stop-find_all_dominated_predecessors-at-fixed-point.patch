@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mali-open
+Date: Thu, 19 Nov 2026 05:40:00 +0100
+Subject: [PATCH] pan/bi: stop find_all_dominated_predecessors at the fixed point
+
+bi_find_loop_blocks ran |blocks|-1 full CFG sweeps per loop header with no
+early exit (17% self time of the whole shaderdb corpus, v13). The set only
+grows, so break as soon as a sweep adds nothing; skip blocks already in
+the set. Result is bit-identical (shaderdb TSV identical over 290 compiles).
+shaderdb compile time, sum over 142 shaders: v11 566 -> 463 ms, v13 559 -> 459 ms (-18%).
+---
+--- a/src/panfrost/compiler/bifrost/bifrost_compile.c
++++ b/src/panfrost/compiler/bifrost/bifrost_compile.c
+@@ -4661,18 +4661,27 @@
+    BITSET_CLEAR_COUNT(out, 0, ctx->num_blocks);
+ 
+    /* If the CFG was one long chain, we would require |blocks|-1 iters to
+-    * propagate the in_loop info all the way through.
++    * propagate the in_loop info all the way through. Stop at the fixed point:
++    * most loops converge in a few iterations, so running all |blocks|-1 of
++    * them made this O(blocks^2) per loop header for nothing.
+     */
+    for (uint32_t iter = 0; iter < ctx->num_blocks - 1; ++iter) {
++      bool progress = false;
+       bi_foreach_block(ctx, block) {
++         if (BITSET_TEST(out, block->index) ||
++             !BITSET_TEST(dominators, block->index))
++            continue;
++
+          bi_foreach_successor(block, succ) {
+-            if ((succ == b || BITSET_TEST(out, succ->index)) &&
+-                BITSET_TEST(dominators, block->index)) {
++            if (succ == b || BITSET_TEST(out, succ->index)) {
+                BITSET_SET(out, block->index);
++               progress = true;
+                break;
+             }
+          }
+       }
++      if (!progress)
++         break;
+    }
+ }
+ 
