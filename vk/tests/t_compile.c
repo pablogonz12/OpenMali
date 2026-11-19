@@ -285,6 +285,43 @@ test_errors(void)
          CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "struct with a member lacking Offset refused");
          m.w[md + 2] = 1;
       }
+      /* Offset 0 for member 0 delivered through a decoration group (OpDecorationGroup + OpDecorate <grp> Offset 0 + OpGroupMemberDecorate
+       * <grp> P 0, a valid 4-word instruction) while member 1 keeps its direct Offset 16: valid SPIR-V, must compile and must not trip the guard.
+       * With a second pair (word count 6) naming a member that does not exist, the guard must refuse. */
+      if (md) {
+         size_t d0 = 0;
+         for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+            if ((m.w[i] & 0xffff) == 72 && m.w[i + 2] == 0 && m.w[i + 3] == 35) { d0 = i; break; }
+         CHECK(d0, "pc.frag has a member 0 Offset");
+         if (d0) {
+            uint32_t grp = m.w[3], pid = m.w[d0 + 1];
+            for (int bad = 0; bad < 2; bad++) {
+               uint32_t *g = malloc((m.n + 16) * 4);
+               size_t n = d0;
+               memcpy(g, m.w, d0 * 4);
+               g[n++] = (2u << 16) | 73;                 /* OpDecorationGroup %grp */
+               g[n++] = grp;
+               g[n++] = (4u << 16) | 71; g[n++] = grp; g[n++] = 35; g[n++] = 0;   /* OpDecorate %grp Offset 0 */
+               if (!bad) { g[n++] = (4u << 16) | 75; g[n++] = grp; g[n++] = pid; g[n++] = 0; }   /* OpGroupMemberDecorate %grp %P 0 */
+               else      { g[n++] = (6u << 16) | 75; g[n++] = grp; g[n++] = pid; g[n++] = 0; g[n++] = pid; g[n++] = 7; }   /* + (%P, 7): no member 7 */
+               memcpy(g + n, m.w + d0 + 5, (m.n - d0 - 5) * 4);
+               n += m.n - d0 - 5;
+               g[3] = grp + 1;                            /* new id */
+               o.spirv = g; o.spirv_words = n;
+               if (!bad) {
+                  FILE *f = fopen("/tmp/t_compile_grp.spv", "wb");   /* spirv-val gate: the mutated module must be valid, or this tests nothing */
+                  if (f) { fwrite(g, 4, n, f); fclose(f); }
+                  if (f && system("spirv-val --target-env vulkan1.1 /tmp/t_compile_grp.spv >/dev/null 2>&1") == 0)
+                     printf("  grouped-offset module passes spirv-val\n");
+                  else if (f && system("command -v spirv-val >/dev/null 2>&1") == 0) { printf("  grouped-offset module FAILS spirv-val\n"); g_fail++; }
+                  CHECK(mali_compile(&o, &c, err, sizeof err) == 0, "struct with direct + grouped member Offsets accepted (%s)", err);
+               } else
+                  CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "grouped Offset naming a nonexistent member refused");
+               free(g);
+            }
+            o.spirv = m.w; o.spirv_words = m.n;
+         }
+      }
       free(m.w);
       m = load("var.frag.spv");
       o.spirv = m.w; o.spirv_words = m.n;

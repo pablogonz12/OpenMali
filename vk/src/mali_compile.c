@@ -657,16 +657,28 @@ spirv_offsets_ok(const uint32_t *w, size_t nwords, uint32_t bound)
       if ((w[i] & 0xffff) == 30 && (w[i] >> 16) >= 2 && w[i + 1] < bound) { base[w[i + 1]] = pool + 1; nmem[w[i + 1]] = (w[i] >> 16) - 2; pool += (w[i] >> 16) - 2; }
    uint8_t *seen = calloc(pool ? pool : 1, 1);
    uint32_t *have = calloc(bound, sizeof *have);
-   if (!seen || !have) ok = false;
+   uint8_t *grpoff = calloc(bound, 1);   /* decoration groups (OpDecorate <group> Offset) that carry an Offset */
+   if (!seen || !have || !grpoff) ok = false;
+   for (size_t i = 5; ok && i < nwords; i += w[i] >> 16)
+      if ((w[i] & 0xffff) == 71 && (w[i] >> 16) >= 4 && w[i + 2] == 35 && w[i + 1] < bound) grpoff[w[i + 1]] = 1;
    for (size_t i = 5; ok && i < nwords; i += w[i] >> 16) {
-      if ((w[i] & 0xffff) != 72 || (w[i] >> 16) < 4 || w[i + 3] != 35) continue;   /* OpMemberDecorate ... Offset */
+      uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+      if (op == 75 && wc >= 2 && w[i + 1] < bound && grpoff[w[i + 1]]) {   /* OpGroupMemberDecorate <group> (target, member)...: grouped Offsets */
+         for (size_t k = i + 2; ok && k + 1 < i + wc; k += 2) {
+            uint32_t id = w[k], mem = w[k + 1];
+            if (id >= bound || !base[id] || mem >= nmem[id]) { ok = false; break; }
+            if (!seen[base[id] - 1 + mem]) { seen[base[id] - 1 + mem] = 1; have[id]++; }
+         }
+         continue;
+      }
+      if (op != 72 || wc < 4 || w[i + 3] != 35) continue;   /* OpMemberDecorate ... Offset */
       uint32_t id = w[i + 1], mem = w[i + 2];
-      if ((w[i] >> 16) < 5 || id >= bound || !base[id] || mem >= nmem[id]) { ok = false; break; }
+      if (wc < 5 || id >= bound || !base[id] || mem >= nmem[id]) { ok = false; break; }
       if (!seen[base[id] - 1 + mem]) { seen[base[id] - 1 + mem] = 1; have[id]++; }
    }
    for (uint32_t id = 0; ok && id < bound; id++)
       if (have[id] && have[id] != nmem[id]) ok = false;
-   free(have); free(seen); free(base);
+   free(grpoff); free(have); free(seen); free(base);
    return ok;
 }
 
