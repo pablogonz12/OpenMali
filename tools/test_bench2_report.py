@@ -26,7 +26,8 @@ class T(unittest.TestCase):
         old = B.metrics(run(500, 80, 7, 3), "ours")
         del old["over25"]   # record cached before over25 existed
         a = B.agg([old, B.metrics(run(520, 90, 5, 1), "ours")])
-        self.assertEqual(a["over25"], 5)
+        self.assertIsNone(a["over25"])                      # partial sample: not reported as the run median
+        self.assertEqual(a["low1"], 85)
         self.assertIsNone(B.agg([old])["over25"])
 
     def test_report_has_offscreen_columns(self):

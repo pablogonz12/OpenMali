@@ -232,7 +232,10 @@ def med(v):
 
 
 def agg(ms):
-    return {k: med([m.get(k) for m in ms]) for k in ("fps", "low1", "over25", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
+    out = {k: med([m.get(k) for m in ms]) for k in ("fps", "low1", "over25", "over50", "cpu_ms", "rec_ms", "sub_ms", "gpu_ms", "frame_p99")} | {"n": len(ms)}
+    if any(m.get("over25") is None for m in ms):
+        out["over25"] = None        # cached records from before over25 existed: a median of the few fresh ones would look like the whole run's
+    return out
 
 
 BASE_PRES = dict(mode="mailbox", images=3, fif=2)
