@@ -33,7 +33,9 @@ struct mali_varying_slot {
 /* One VkSpecializationMapEntry: constant id, byte offset into spec_data, byte size. */
 struct mali_spec_entry { uint32_t id, offset, size; };
 
+#define MALI_COMPILE_REQUIRED 2   /* mali_compile() return: cache_only and the shader is not in the disk cache */
 struct mali_compile_opts {
+   int cache_only;                /* FAIL_ON_PIPELINE_COMPILE_REQUIRED: never compile, return MALI_COMPILE_REQUIRED on a cache miss */
    unsigned arch;                 /* 11 or 13 */
    enum mali_stage stage;
    const uint32_t *spirv;

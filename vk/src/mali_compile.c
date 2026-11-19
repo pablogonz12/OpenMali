@@ -593,6 +593,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       }
    }
    atomic_fetch_add(&g_misses, 1);
+   if (o->cache_only)
+      return MALI_COMPILE_REQUIRED;
    int r = do_compile(o, fau_reserved, push_base, out, err, errsz);
    if (r == 0 && use_cache)
       cache_store(dir, hex, out);

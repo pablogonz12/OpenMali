@@ -160,9 +160,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv_words = vwords;
    o.entry = vss->pName;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   if (mali_compile(&o, &p->vs, err, sizeof err)) {
-      fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
-      res = VK_ERROR_INVALID_SHADER_NV;
+   o.cache_only = !!(ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT);
+   int rc = mali_compile(&o, &p->vs, err, sizeof err);
+   if (rc) {
+      if (rc != MALI_COMPILE_REQUIRED)
+         fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
+      res = rc == MALI_COMPILE_REQUIRED ? VK_PIPELINE_COMPILE_REQUIRED : VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
@@ -182,9 +185,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
    const bool rs_discard = st.rs && st.rs->rasterizer_discard_enable;
-   if ((fss || !rs_discard) && mali_compile(&o, &p->fs, err, sizeof err)) {
-      fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
-      res = VK_ERROR_INVALID_SHADER_NV;
+   rc = 0;
+   if (fss || !rs_discard) rc = mali_compile(&o, &p->fs, err, sizeof err);
+   if (rc) {
+      if (rc != MALI_COMPILE_REQUIRED)
+         fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
+      res = rc == MALI_COMPILE_REQUIRED ? VK_PIPELINE_COMPILE_REQUIRED : VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
 
@@ -225,6 +231,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
                uses_src1 = true;
          if (!bo.src0_type || (uses_src1 && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
             res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         if (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) {   /* blend shaders are not cached */
+            res = VK_PIPELINE_COMPILE_REQUIRED;
             goto fail;
          }
          if (mali_compile_blend(&bo, &p->blend, err, sizeof err)) {
@@ -376,9 +386,12 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    o.entry = ci->stage.pName;
    struct mali_spec_entry specbuf[MALI_SPEC_MAX];
    set_spec(&o, specbuf, ci->stage.pSpecializationInfo);
-   if (mali_compile(&o, &p->cs, err, sizeof err)) {
-      fprintf(stderr, "mali_vk: CS compile failed: %s\n", err);
-      res = VK_ERROR_INVALID_SHADER_NV;
+   o.cache_only = !!(ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT);
+   int rc = mali_compile(&o, &p->cs, err, sizeof err);
+   if (rc) {
+      if (rc != MALI_COMPILE_REQUIRED)
+         fprintf(stderr, "mali_vk: CS compile failed: %s\n", err);
+      res = rc == MALI_COMPILE_REQUIRED ? VK_PIPELINE_COMPILE_REQUIRED : VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
    if (getenv("MALI_PIPE_DBG"))

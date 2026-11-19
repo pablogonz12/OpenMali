@@ -45,6 +45,7 @@ static int test_cachectl(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static int g_pipe_allow_required;   /* make_pipe: accept VK_PIPELINE_COMPILE_REQUIRED (null pipeline, returns 2) */
 static VkPipelineCreateFlags g_pipe_flags;   /* make_pipe: VkGraphicsPipelineCreateInfo.flags (test cachectl) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
@@ -274,6 +275,7 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
    if (g_modless) { free(vcode); free(fcode); }
    else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
+   if (g_pipe_allow_required && r == VK_PIPELINE_COMPILE_REQUIRED) { CHECK(*pipe == VK_NULL_HANDLE, "COMPILE_REQUIRED leaves a null handle"); return 2; }
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
    return 1;
 }
@@ -1895,7 +1897,7 @@ test_terminate(void)
 }
 
 /* pipelineCreationCacheControl: FAIL_ON_PIPELINE_COMPILE_REQUIRED / EARLY_RETURN_ON_FAILURE on a pipeline and EXTERNALLY_SYNCHRONIZED on a cache
- * must be accepted. The driver always compiles, so the pipeline must come back VK_SUCCESS (never COMPILE_REQUIRED), and still draw. */
+ * must be accepted; a pipeline whose shaders are not cached returns VK_PIPELINE_COMPILE_REQUIRED, a warm one succeeds and draws. */
 static int
 test_cachectl(void)
 {
@@ -1908,9 +1910,25 @@ test_cachectl(void)
    if (!tgt_create(&t)) return 0;
    VkPipelineLayout lay;
    VkPipeline pipe;
+   /* cold cache (private empty dir): the flagged create must return COMPILE_REQUIRED and a null handle; after a normal create warms it, the flagged one succeeds */
+   char cdir[] = "/tmp/mali-cachectl-XXXXXX";
+   CHECK(mkdtemp(cdir) != NULL, "temp cache dir");
+   char *oldc = getenv("MALI_SHADER_CACHE") ? strdup(getenv("MALI_SHADER_CACHE")) : NULL;
+   setenv("MALI_SHADER_CACHE", cdir, 1);
    g_pipe_flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT | VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
-   int ok = make_pipe(&t, "quad.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);   /* CHECKs == VK_SUCCESS */
+   g_pipe_allow_required = 1;
+   VkPipelineLayout lay0; VkPipeline pipe0 = VK_NULL_HANDLE;
+   int cold = make_pipe(&t, "quad.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 16, &lay0, &pipe0);
+   g_pipe_allow_required = 0;
+   CHECK(cold == 2, "cold pipeline with FAIL_ON_PIPELINE_COMPILE_REQUIRED must return VK_PIPELINE_COMPILE_REQUIRED");
    g_pipe_flags = 0;
+   VkPipelineLayout lay1; VkPipeline pipe1 = VK_NULL_HANDLE;
+   if (make_pipe(&t, "quad.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 16, &lay1, &pipe1)) { DestroyPipeline(dev, pipe1, NULL); DestroyPipelineLayout(dev, lay1, NULL); }   /* retry without the flag: compiles and fills the cache */
+   g_pipe_flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT | VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+   int ok = make_pipe(&t, "quad.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);   /* warm: CHECKs == VK_SUCCESS */
+   g_pipe_flags = 0;
+   if (oldc) { setenv("MALI_SHADER_CACHE", oldc, 1); free(oldc); } else unsetenv("MALI_SHADER_CACHE");
+   { char cmd[64]; snprintf(cmd, sizeof cmd, "rm -rf %s", cdir); if (system(cmd)) {} }
    if (!ok) return 0;
    VkCommandBuffer cb = cb_begin(&t);
    CHECK(cb, "cmdbuf");
@@ -2555,7 +2573,7 @@ main(int argc, char **argv)
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock, .shaderTerminateInvocation = f13.shaderTerminateInvocation};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
