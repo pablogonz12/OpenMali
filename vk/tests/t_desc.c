@@ -266,6 +266,7 @@ test_compile(unsigned arch)
       o.layout = &rl;
       err[0] = 0;
       CHECK(mali_compile(&o, &cr, err, sizeof err) != 0 && strstr(err, "get_ssbo_size"), "robust compute with SSBO/UBO must be refused until size queries exist: %s", err);
+      CHECK(mali_compile(&o, &cr, NULL, 0) != 0 && mali_compile(&o, &cr, NULL, sizeof err) != 0, "robust refusal with err == NULL must fail cleanly, not crash");
       o.layout = &fl.c;
       err[0] = 0;
       CHECK(mali_compile(&o, &cr, err, sizeof err) == 0, "default (robust off) compute still compiles: %s", err);

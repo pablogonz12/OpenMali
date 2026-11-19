@@ -218,7 +218,7 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
       /* TODO(robustness2): the Bifrost/Valhall backend has no get_ssbo_size/get_ubo_size (PanVK reads the size from its descriptor
        * table); until the driver lowers it, refuse instead of letting the backend assert. Keeps robustBufferAccess2 unadvertised. */
       if (nir_shader_intrinsics_pass(nir, has_size_query, nir_metadata_all, NULL)) {
-         snprintf(err, errsz, "robust buffer access: get_ssbo_size/get_ubo_size not supported by the backend yet");
+         if (err && errsz) snprintf(err, errsz, "robust buffer access: get_ssbo_size/get_ubo_size not supported by the backend yet");
          return false;
       }
    }
