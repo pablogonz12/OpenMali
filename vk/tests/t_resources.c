@@ -381,6 +381,79 @@ test_leaks(void)
    return 0;
 }
 
+/* vkCmdCopyBuffer allocated one device BO (kernel alloc + mmap on hardware) per copy for its 64 B descriptor set. Many copies in one command
+ * buffer must share a few BOs, the copies must still be distinct descriptor sets (distinct VAs), and a pool reset gives every BO back. */
+static int
+test_meta_slab(void)
+{
+   VkPhysicalDevice pd;
+   uint32_t n = 1;
+   PFN_vkEnumeratePhysicalDevices en = (PFN_vkEnumeratePhysicalDevices)vk_icdGetInstanceProcAddr(inst, "vkEnumeratePhysicalDevices");
+   CHECK(en(inst, &n, &pd) == VK_SUCCESS && n == 1, "pd");
+   PFN_vkCreateDevice cd = (PFN_vkCreateDevice)vk_icdGetInstanceProcAddr(inst, "vkCreateDevice");
+   float prio = 1.0f;
+   VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
+   VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
+   VkDevice D;
+   CHECK(cd(pd, &dci, NULL, &D) == VK_SUCCESS, "device");
+   PFN_vkVoidFunction (*gp)(VkDevice, const char *) = (PFN_vkVoidFunction(*)(VkDevice, const char *))vk_icdGetInstanceProcAddr(inst, "vkGetDeviceProcAddr");
+#define G(nm) PFN_vk##nm q_##nm = (PFN_vk##nm)gp(D, "vk" #nm)
+   G(CreateBuffer); G(DestroyBuffer); G(GetBufferMemoryRequirements); G(AllocateMemory); G(FreeMemory); G(BindBufferMemory);
+   G(CreateCommandPool); G(DestroyCommandPool); G(ResetCommandPool); G(AllocateCommandBuffers); G(BeginCommandBuffer); G(EndCommandBuffer);
+   G(CmdCopyBuffer); G(DestroyDevice);
+   CHECK(q_CreateBuffer && q_CmdCopyBuffer && q_ResetCommandPool && q_DestroyDevice, "entrypoints");
+   struct mali_device *md = mali_device_from_handle(D);
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+   VkBuffer b[2];
+   CHECK(q_CreateBuffer(D, &bci, NULL, &b[0]) == VK_SUCCESS && q_CreateBuffer(D, &bci, NULL, &b[1]) == VK_SUCCESS, "buffers");
+   VkMemoryRequirements mr;
+   q_GetBufferMemoryRequirements(D, b[0], &mr);
+   VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size * 2, .memoryTypeIndex = 0};
+   VkDeviceMemory mem;
+   CHECK(q_AllocateMemory(D, &mai, NULL, &mem) == VK_SUCCESS, "memory");
+   CHECK(q_BindBufferMemory(D, b[0], mem, 0) == VK_SUCCESS && q_BindBufferMemory(D, b[1], mem, mr.size) == VK_SUCCESS, "bind");
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkCommandPool pool;
+   CHECK(q_CreateCommandPool(D, &pci, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb;
+   CHECK(q_AllocateCommandBuffers(D, &cai, &cb) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   {  /* warm-up: the first copy compiles and uploads the (long-lived) meta shader */
+      VkBufferCopy w = {0, 0, 256};
+      CHECK(q_BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+      q_CmdCopyBuffer(cb, b[0], b[1], 1, &w);
+      CHECK(q_EndCommandBuffer(cb) == VK_SUCCESS && q_ResetCommandPool(D, pool, 0) == VK_SUCCESS, "warm-up");
+   }
+   unsigned base = mali_fake_live_bos(md->kdev);
+   const int copies = 200;
+   for (int pass = 0; pass < 2; pass++) {
+      CHECK(q_BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+      VkBufferCopy rc = {0, 0, 256};
+      for (int i = 0; i < copies; i++) {
+         rc.srcOffset = (i & 7) * 256;
+         rc.dstOffset = (i & 3) * 256;
+         q_CmdCopyBuffer(cb, b[0], b[1], 1, &rc);
+         if (pass == 0 && i == 0)
+            CHECK(mali_fake_live_bos(md->kdev) > base, "the first copy allocates device memory for its descriptor set");
+      }
+      CHECK(q_EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      unsigned live = mali_fake_live_bos(md->kdev) - base;
+      CHECK(live >= 1 && live <= 8, "%d copies hold %u BOs (want a few shared ones, was one per copy)", copies, live);
+      CHECK(q_ResetCommandPool(D, pool, 0) == VK_SUCCESS, "reset");
+      CHECK(mali_fake_live_bos(md->kdev) == base, "pool reset gives the meta BOs back: %u vs %u", mali_fake_live_bos(md->kdev), base);
+   }
+   q_DestroyCommandPool(D, pool, NULL);
+   q_DestroyBuffer(D, b[0], NULL);
+   q_DestroyBuffer(D, b[1], NULL);
+   q_FreeMemory(D, mem, NULL);
+   q_DestroyDevice(D, NULL);
+   printf("{\"test\":\"meta_slab\",\"ok\":true}\n");
+   return 0;
+}
+
 int
 main(void)
 {
@@ -392,6 +465,7 @@ main(void)
    int r = test_attr_instance();
    if (!r) r = run();
    if (!r) r = test_leaks();
+   if (!r) r = test_meta_slab();
    printf("{\"test\":\"t_resources\",\"pass\":%s}\n", r || g_fail ? "false" : "true");
    return r || g_fail;
 }

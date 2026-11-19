@@ -100,7 +100,13 @@ void *mali_meta_dev_alloc(size_t size, size_t align, uint64_t *va);
 void mali_meta_dev_free(void *cpu, uint64_t va, size_t size);
 
 /* Persistent allocations of one command buffer (descriptor sets, staged update data). Release on reset/destroy of the command buffer. */
-struct mali_meta_mem { struct { void *cpu; uint64_t va; size_t size; } *a; unsigned n, cap; };
+struct mali_meta_mem {
+   struct { void *cpu; uint64_t va; size_t size; } *a;
+   unsigned n, cap;
+   uint8_t *slab;       /* bump allocator over the last chunk in a[]: small requests (descriptor sets, inline data) share one device BO */
+   uint64_t slab_va;
+   size_t slab_left, slab_next;   /* bytes left in the chunk, size of the next chunk */
+};
 void mali_meta_mem_release(struct mali_meta_mem *m);
 
 /* Compiles (once per arch/shader) and uploads the shader of job j. */
