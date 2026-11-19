@@ -89,7 +89,7 @@ If your feature needs a change in a hot file:
 2. Put the hot-file part in `vk/patches/<name>.patch` (a plain `git diff` against current `origin/main`, applicable with `git apply` from the repo root) next to `vk/patches/<name>.NOTE.md`. (The maintainer's in-flight lanes keep the same pairs in a `patches/` directory next to their worktrees; older docs such as `vk/STEAM-GAPS.md` refer to that location. In a PR, use `vk/patches/`.) The note says: what the patch does, which files it touches, why it is correct, which test covers it, what must be run on hardware before merging, and the follow-up steps after applying (for example `vk/check.sh --bless`).
 3. Say in the PR that the patch is waiting for the hot-file owner. The owner applies it, re-runs the gates and commits it.
 
-Examples: `vk/patches/*.patch`, and `vk/STEAM-GAPS.md` for how pending patches are tracked. Patches go stale as the hot files move (the two files in `vk/patches/` no longer apply to current main), so regenerate against fresh `origin/main` before sending. Before sending a patch, test that it applies and that `vk/check.sh` is OK with it applied, then revert it so your PR stays patch-only.
+Example: `vk/STEAM-GAPS.md` shows how pending patches are tracked (`vk/patches/` is empty when nothing is pending; the two older patches were removed once their content was merged or superseded). Patches go stale as the hot files move, so regenerate against fresh `origin/main` before sending. Before sending a patch, test that it applies and that `vk/check.sh` is OK with it applied, then revert it so your PR stays patch-only.
 
 ## 5. Phones and the device farm
 
