@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer C: CSF queue group (one group, one queue) and notification decoding. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
