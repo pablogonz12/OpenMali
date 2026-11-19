@@ -114,7 +114,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(r, 0, 0, 4, 0);                                      /* Writeback Mode: compat */
 	put(r, 0, 4, 12, 0);                                     /* Internal Buffer Offset >> 4 */
 	put(r, 0, 26, 6, p->rt_internal ? p->rt_internal : 1);                                  /* Internal Format: R8G8B8A8 */
-	put(r, 1, 0, 1, !p->rt_none);                            /* Write Enable (off for a colour-less frame) */
+	put(r, 1, 0, 1, !p->rt_none && !p->rt_no_store);                         /* Write Enable (off for a colour-less frame) */
 	put(r, 1, 3, 5, p->rt_internal ? p->rt_wb : 19);                                    /* Writeback colour format R8G8B8A8 */
 	put(r, 1, 8, 4, p->block_format ? 1 : 2);                /* Block format: 2 linear, 1 tiled u-interleaved */
 	put(r, 1, 12, 2, p->rt_msaa);                            /* MSAA: 0 single, 1 average (resolve), 3 layered */
