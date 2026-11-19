@@ -91,6 +91,8 @@ struct kb_bo {
 	bool same_va;
 	bool hot;        /* driver-level: CPU rewrites it every frame (synced on every CS submit, others once per queue submit) */
 	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
+	uint64_t gpu_writes;   /* driver-level: GPU-write marks (kb_bo_wrote) since allocation */
+	uint64_t synced_writes; /* driver-level: gpu_writes value the last device->CPU MEM_SYNC covered */
 };
 
 /* ioctl with optional per-request counters: MALI_IOCTL_PROF=1 prints count and time by request (type/nr) at exit */
@@ -144,10 +146,27 @@ struct kb_queue {
 
 enum kb_kick { KB_KICK_IOCTL = 0, KB_KICK_DOORBELL = 1 };
 
+/* Instructions per kb_queue_submit call for a ring of `ring_size` bytes: a quarter of the ring, 64-byte units.
+ * Every stream size fits (the caller loops), a frame larger than the ring is submitted as several pieces, and
+ * the free three quarters absorb the GPU's own progress, so wait_ring_space cannot spin on a piece that can
+ * never fit. Always >= 1. */
+unsigned kb_queue_piece_instrs(uint32_t ring_size);
+
 /* GPU timestamp counter frequency in Hz, measured against CLOCK_MONOTONIC_RAW (GET_CPU_GPU_TIMEINFO); 0 if unavailable. */
 uint64_t kb_timestamp_hz(struct kb_ctx *ctx);
 /* One GET_CPU_GPU_TIMEINFO call: GPU timestamp counter (ticks); 0 or -errno. */
 int kb_gpu_timestamp(struct kb_ctx *ctx, uint64_t *ticks);
+/* One GET_CPU_GPU_TIMEINFO call with MONOTONIC|TIMESTAMP, both fields of the same instant (kbase_uapi.h,
+ * "KBASE_IOCTL_GET_CPU_GPU_TIMEINFO"). cpu_ns is CLOCK_MONOTONIC_RAW of the CPU at the ioctl, ts_ticks the GPU
+ * timestamp counter (period 1/kb_timestamp_hz). Both are global to the GPU, not per context, and the counter runs
+ * with the GPU clock whether the GPU is busy or idle: it measures elapsed time, not busy time. cycle_ticks stays 0
+ * (this uapi has no cycle-count request flag); 0 or -errno. */
+struct kb_timeinfo {
+	uint64_t cpu_ns;
+	uint64_t ts_ticks;
+	uint64_t cycle_ticks;
+};
+int kb_timeinfo(struct kb_ctx *ctx, struct kb_timeinfo *out);
 int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct kb_queue *q);
 /* Append instructions (padded with NOPs to 64 bytes), advance CS_INSERT, then kick. -EAGAIN if the ring is full. */
 int kb_queue_submit(struct kb_queue *q, const uint64_t *ins, size_t n, enum kb_kick how);

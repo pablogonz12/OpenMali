@@ -54,6 +54,37 @@ unsupported(struct mali_cmd_buffer *cmd, const char *what)
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
+/* M15: record a GPU write against this command buffer so the platform layer only CSYNCs BOs that changed
+ * (vk/MEMORY.md). Over-subscribing is harmless; missing a write is stale data, so every write path calls this. */
+void
+mali_cmd_mark_written(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
+{
+   if (!cmd || !mem)
+      return;
+   for (unsigned i = 0; i < cmd->nwrote; i++)
+      if (cmd->wrote[i] == mem)
+         return;
+   if (cmd->nwrote < MALI_CMD_WROTE_MAX) {
+      cmd->wrote[cmd->nwrote++] = mem;
+   } else {
+      cmd->wrote_full = true;   /* submit asks for one full sweep instead of guessing */
+   }
+}
+
+void
+mali_cmd_mark_buffer_written(struct mali_cmd_buffer *cmd, VkBuffer b)
+{
+   if (cmd && g_res.buffer_mem)
+      mali_cmd_mark_written(cmd, g_res.buffer_mem(b));
+}
+
+void
+mali_cmd_mark_image_written(struct mali_cmd_buffer *cmd, VkImage i)
+{
+   if (cmd && g_res.image_mem)
+      mali_cmd_mark_written(cmd, g_res.image_mem(i));
+}
+
 static void
 reset_state(struct mali_cmd_buffer *cmd)
 {
@@ -81,6 +112,8 @@ reset_state(struct mali_cmd_buffer *cmd)
    free(cmd->def_ops);
    cmd->def_ops = NULL;
    cmd->ndef = cmd->capdef = 0;
+   cmd->nwrote = 0;
+   cmd->wrote_full = false;
    mali_meta_cmd_forget(cmd);
 }
 
@@ -225,6 +258,11 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          return;
       }
       struct mali_dset *ds = mali_dset_from_handle(sets[i]);
+      /* M15: storage descriptors of a bound set can write their memory */
+      for (unsigned k = 0; ds && k < ds->nwrote; k++)
+         mali_cmd_mark_written(cmd, ds->wrote[k]);
+      if (ds && ds->wrote_full)
+         cmd->wrote_full = true;
       if (ds->layout && ds->layout->dyn_count) {
          /* dynamic buffers: this set's dyn_start = dynamic descriptors of the lower sets of the pipeline layout (matches mali_pipeline_layout_flatten) */
          unsigned start = 0;
@@ -846,6 +884,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "colour attachment view");
       return;
    }
+   /* M15: the colour target is GPU-written in this frame */
+   if (!no_col && g_res.image_view_mem)
+      mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
    if (!no_col)
       load = is_load_op(ca->loadOp);
    if (load) {
@@ -933,6 +974,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    bool zload = false, sload = false;
    if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
       const VkRenderingAttachmentInfo *da = ri->pDepthAttachment;
+      /* M15: GPU-written (late depth/stencil tests) */
+      if (g_res.image_view_mem)
+         mali_cmd_mark_written(cmd, g_res.image_view_mem(da->imageView));
       if (g_res.image_view(da->imageView, &t) || !t.zs_format) {
          unsupported(cmd, "depth attachment view");
          return;
@@ -970,6 +1014,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->zs.store = da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    }
    if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
+      if (g_res.image_view_mem)
+         mali_cmd_mark_written(cmd, g_res.image_view_mem(ri->pStencilAttachment->imageView));
       const VkRenderingAttachmentInfo *sa = ri->pStencilAttachment;
       if (g_res.image_view(sa->imageView, &t) || !t.has_s) {
          unsupported(cmd, "stencil attachment view");
@@ -1236,6 +1282,7 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    CMD(h);
    struct mali_cmd_target t;
    struct mali_frame f;
+   mali_cmd_mark_image_written(cmd, image);   /* M15: GPU-written by this clear */
    /* Fast path (proven in M9): a render-target clear of a whole single-subresource RGBA8 image. Everything else: M12 compute clears. */
    memset(&t, 0, sizeof t);
    if (nr != 1 || ranges[0].baseMipLevel != 0 || ranges[0].baseArrayLayer != 0 || cmd->in_render || !g_res.image ||
@@ -1278,6 +1325,14 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    VkResult res = VK_SUCCESS;
    if (g_hw.job_begin)
       g_hw.job_begin(g_hw.user);   /* once per command buffer: all its frames form one submission */
+   /* M15: hand the GPU-write marks to the backend before the submission that performs them, so the fence wait
+    * for it CSYNCs exactly these BOs. An unplaced write (wrote_full) asks for one full sweep. */
+   if (g_hw.bo_wrote) {
+      for (unsigned i = 0; i < cmd->nwrote; i++)
+         g_hw.bo_wrote(g_hw.user, &cmd->wrote[i]->bo);
+      if (cmd->wrote_full)
+         g_hw.bo_wrote(g_hw.user, NULL);
+   }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
       bool ind = false, poly_cpu = false;

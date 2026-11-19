@@ -108,6 +108,11 @@ Env: `MALI_FAULT_INJECT=n` (n-th submit fails -> DEVICE_LOST), `MALI_FAKE_SLOW_U
 Status: offline all green; CMF all cases pass incl. 10000 unwaited and 10000 waited submits (2026-11-16). The ring must never be completely full
 (`insert - extract == size` gives CS_CONFIG_FAULT): one 64-byte unit stays free, see R3-PLAN.md. Cached allocations are zeroed at alloc.
 
+Per-frame profiling (`src/mali_fprof.c`): `MALI_FRAME_PROF=1` (stderr) or `=<path>` prints CPU submit time, a GPU busy
+*estimate* and the present interval per frame, plus a summary at device teardown; `tools/frameprof <log>` summarises a log.
+Off (no ioctl, no clock read) when unset. What it measures and its accuracy: `FRAME-PROF.md`.
+Test: `out/<target>/t_frameprof --direct lib.so [--off]` (`--off` = no output at all when unset).
+
 ## M9: graphics pipelines, queue wiring, client draw test
 
 `mali_pipeline.c` compiles VS+FS through `mali_compile`; `mali_queue_submit` runs the M8 command buffers via `mali_cmd_submit` (one frame at a time).

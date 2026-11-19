@@ -722,6 +722,9 @@ class T(unittest.TestCase):
         f = m.Farm(True, True, 1)
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), [])
         self.assertEqual(f.phone_env(f.devs["dev-a"])["QSAFE_HELD"], "cmf")
+        e = f.phone_env(f.devs["dev-a"])                          # quick.py resolves the lock name through <LOCK>_SERIAL
+        self.assertEqual(e["CMF_SERIAL"], e["ANDROID_SERIAL"])
+        self.assertTrue(e["CMF_SERIAL"])
         p = self.d + "/devices.toml"
         txt = open(p).read()
         open(p, "w").write(txt.replace('baseline = "poco"\n', 'baseline = "poco"\nwireless = ["198.51.100.5:5555"]\n') + "\n")

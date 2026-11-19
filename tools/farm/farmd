@@ -132,6 +132,9 @@ class Farm:
         t = self.tid.get(dev["alias"]) or dev["serial"]
         e = dict(os.environ, ANDROID_SERIAL=t, ADB_SERIAL=t, QSAFE_HELD=dev["lock"])      # farmd holds the phone lock: children run under it
         e["ADB_SERIAL_" + dev["lock"].upper()] = t
+        # quick.py (qrestore, qpreflight ...) maps the lock name to a serial only through <LOCK>_SERIAL (CMF_SERIAL, POCO_SERIAL): without it
+        # it ran `adb -s  get-state` with an empty serial and every hold ended with "RESTORE PROBLEM adb missing"
+        e[re.sub(r"\W", "_", dev["lock"]).upper() + "_SERIAL"] = t
         e.update(extra or {})
         return e
 

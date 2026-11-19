@@ -3,6 +3,7 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include "mali_fprof.h"
 #include <time.h>
 static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
 static double prof_acc[6]; static unsigned prof_n;
@@ -53,6 +54,7 @@ struct mali_hwctx {
    int light_pending;             /* see mali_env.light_pending */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
    struct mali_meta_dev md;
+   struct mali_fprof fp;          /* M15: MALI_FRAME_PROF; off (all no-ops) unless the env var asks for it */
    struct mali_hwctx *below;      /* previously current device (stack of live devices) */
 };
 
@@ -78,6 +80,16 @@ bind_hw(struct mali_hwctx *h)
       mali_cmd_set_res(NULL);
       mali_meta_set_dev(NULL);
    }
+}
+
+/* M15: per-BO write tracking for the fence-wait CSYNC (mali_backend.h bo_wrote, vk/MEMORY.md). */
+static void
+hw_bo_wrote(void *user, struct mali_bo *bo)
+{
+   struct mali_hwctx *h = user;
+   const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   if (be->bo_wrote)
+      be->bo_wrote(h->dev->kdev, bo);
 }
 
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
@@ -237,7 +249,10 @@ static int
 hw_wait(struct mali_hwctx *h, uint64_t target)
 {
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
-   return be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, target, h->wait_ms);
+   int r = be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, target, h->wait_ms);
+   if (r == 0 && h->fp.on)
+      mali_fprof_retired(&h->fp, h->dev, target);   /* M15: prompt retire observation (the CPU is blocked here anyway) */
+   return r;
 }
 
 static void
@@ -268,6 +283,8 @@ hw_retire(struct mali_hwctx *h, unsigned max_left)
       unsigned k = 0;
       while (k < h->nfl && h->fl[k].expected <= c)
          k++;
+      if (k && h->fp.on)
+         mali_fprof_retired(&h->fp, h->dev, c);   /* M15: the retire this pass can see (one GPU-clock sample) */
       if (k) {
          memmove(h->fl, h->fl + k, (h->nfl - k) * sizeof h->fl[0]);
          h->nfl -= k;
@@ -342,8 +359,16 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
          fclose(fp);
       }
    }
+   /* M15 (MALI_FRAME_PROF): `pending` is what the GPU had *not* retired at the kick, read at the kick (lag-free).
+    * submit_us below covers only the backend kick; the command stream was built before this call. */
+   if (h->fp.on) {
+      uint64_t done = *(volatile uint64_t *)h->sync.cpu;
+      mali_fprof_kick(&h->fp, h->dev, h->expected + nframes, h->expected > done ? (unsigned)(h->expected - done) : 0);
+   }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
+   if (h->fp.on && r == 0)
+      mali_fprof_kicked(&h->fp, prof_now() - q0);
    if (getenv("MALI_PROF")) {
       static double acc; static unsigned cnt;
       acc += prof_now() - q0;
@@ -412,6 +437,7 @@ mali_hw_finish(struct mali_device *dev)
       be->bo_free(dev->kdev, &h->meta_sh[i]);
    if (h->heap_live)
       be->heap_destroy(dev->kdev, &h->heap);
+   mali_fprof_finish(&h->fp);
    if (h->tls_live)
       be->bo_free(dev->kdev, &h->tls);
    if (h->arena_live)
@@ -437,6 +463,7 @@ mali_hw_init(struct mali_device *dev)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    h->dev = dev;
    dev->hw = h;
+   mali_fprof_init(&h->fp, dev);
    const char *t = getenv("MALI_FRAME_TIMEOUT_MS");
    h->wait_ms = t ? (unsigned)strtoul(t, NULL, 0) : 10000;
    if (be->bo_alloc(dev->kdev, ARENA_BYTES, MALI_BO_HOT, &h->arena))
@@ -456,7 +483,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain, .bo_wrote = hw_bo_wrote};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,
@@ -601,6 +628,10 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       }
    }
    close(fd);
+   /* M15: vk_common's present submit has no command buffers, the image acquire semaphores as waits and the render
+    * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
+   if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
+      mali_fprof_present(&dev->hw->fp);
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;

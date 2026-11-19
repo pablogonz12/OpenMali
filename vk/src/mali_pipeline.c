@@ -704,4 +704,26 @@ res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *
    return -ENOTSUP;   /* shader objects: not exposed */
 }
 
-const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute, res_pipeline_dyn};
+static struct mali_memory *
+res_buffer_mem(VkBuffer b)
+{
+   struct mali_buffer *mb = mali_buffer_from_handle(b);
+   return mb ? mb->mem : NULL;
+}
+
+static struct mali_memory *
+res_image_mem(VkImage i)
+{
+   struct mali_image *mi = mali_image_from_handle(i);
+   return mi ? mi->mem : NULL;
+}
+
+static struct mali_memory *
+res_image_view_mem(VkImageView v)
+{
+   struct mali_image_view *iv = mali_image_view_from_handle(v);
+   return iv && iv->vk.image ? container_of(iv->vk.image, struct mali_image, vk)->mem : NULL;
+}
+
+const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute, res_pipeline_dyn,
+                                              res_buffer_mem, res_image_mem, res_image_view_mem};

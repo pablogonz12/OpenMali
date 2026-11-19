@@ -75,9 +75,17 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
+
+# M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
+# silent output: the unset path is the normal driver path, and the test fails if anything is printed or written.
+for g in v11 v13; do
+   run "frameprof $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_frameprof" --direct "$OUT/libvulkan_mali.so"
+   run "frameprof $g unset" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_frameprof" --direct "$OUT/libvulkan_mali.so" --off
+done
 
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
@@ -86,6 +94,7 @@ for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$O
 for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_draw many $g"  0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only many_draws
+   run "vk_draw sets8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only sets8
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
 done
 
@@ -181,6 +190,7 @@ run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
 run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200
 run "vk_draw many v10"  0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only many_draws
+run "vk_draw sets8 v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only sets8
 run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
