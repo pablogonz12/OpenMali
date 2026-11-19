@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""steam-present: measure the Steam Big Picture menu frame rate in the DroidDeck guest.
+
+  tools/steam-present/steam-present cmf [--seconds 30] [--driver bridge|ours] [--uncapped]
+  tools/steam-present/steam-present cmf --help
+
+The primary counter is SurfaceFlinger `--latency <layer>`: per-frame
+desiredPresent/actualPresent/frameReady timestamps of the session's
+SurfaceView layer.  It sees the pixels that reached the screen, independent
+of which Vulkan driver produced them, needs no guest change and shows no
+overlay.  gamescope's own `-T/--stats-path` counter (one `fps=` line every
+300 paints) is only used as a coarse cross-check; Steam's overlay and
+MangoApp change what they measure.
+
+`--driver ours` pushes the a64-glibc-wl ICD to the guest and starts the next
+session with BL_VKBRIDGE=0 + BL_VK_DRIVER, then checks the session log for
+"vulkan driver: imported".  `--driver bridge` leaves the installed bridge.
+
+Phones: `cmf` (this lane).  `poco-x8` is the owner's daily phone: refused
+unless --allow-owner-phone is passed after coordinating with its lane.
+poco-x4 has no guest route for this suite.
+
+Output: mean fps, p50/p95/p99 frame interval and the pacing class:
+  * uniform ~8.33 ms                  -> display-paced at 120
+  * uniform ~16.67 ms, <10 % fast     -> 60 fps cap (not a 120 render)
+  * 15-85 % fast frames               -> bimodal: CPU stalls / missed vsyncs
+  * p50 > 1.25 x base                 -> client/GPU bound
+"""
+import argparse
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import threading
+import time
+import tomllib
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(REPO, "tools", "farm"))
+import farmlib as L          # noqa: E402
+import gate as G             # noqa: E402
+
+DEVICES = os.environ.get("MALI_FARM_DEVICES") or os.path.expanduser("~/.config/mali-farm/devices.toml")
+FARM_CFG = os.path.expanduser("~/.config/mali-farm/farm.toml")
+PKG = os.environ.get("DROIDDECK_PACKAGE", "com.ludashi.benchmark")
+DL = "/storage/emulated/0/Download/steam-present"
+OURS = os.path.join(REPO, "vk", "out", "a64-glibc-wl")
+PROFILES = ("bridge", "ours")
+
+
+def sh(cmd, timeout=60, env=None):
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+        return p.returncode, p.stdout.decode(errors="replace") + p.stderr.decode(errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, "timeout"
+
+
+def die(msg, rc=2):
+    print("steam-present:", msg, file=sys.stderr)
+    sys.exit(rc)
+
+
+def load_devices():
+    try:
+        devs = tomllib.load(open(DEVICES, "rb")).get("device", [])
+    except OSError as e:
+        die(f"cannot read the device table: {e}")
+    return {d["alias"]: d for d in devs}
+
+
+def quick_root():
+    try:
+        return os.path.expanduser(tomllib.load(open(FARM_CFG, "rb"))["quick_root"])
+    except (OSError, KeyError) as e:
+        die(f"cannot read quick_root from the farm config: {e}")
+
+
+class Phone:
+    def __init__(self, dev):
+        self.dev = dev
+        self.alias = dev["alias"]
+        self.lock = None
+        self.tid = None
+        self.root = quick_root()
+        self.env = dict(os.environ, DROIDDECK_PACKAGE=PKG,
+                        PATH=os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", ""))
+
+    def adb(self, *a, timeout=60):
+        return sh(["timeout", "-k", "3", str(timeout), "adb", "-s", self.tid, *a], timeout + 10, env=self.env)
+
+    def ctl(self, *a, timeout=150):
+        p = sh([sys.executable, "-I", os.path.join(self.root, "tools", "droiddeckctl"),
+                "--serial", self.tid, *a], timeout, env=self.env)
+        i = p[1].find("{")
+        try:
+            j = json.loads(p[1][i:]) if i >= 0 else {}
+        except ValueError:
+            j = {"text": p[1][-300:]}
+        j["_rc"] = p[0]
+        return j
+
+    def admit(self, wait):
+        if G.disabled(self.dev["lock"], self.alias):
+            return "disabled by owner"
+        if os.environ.get("QSAFE_HELD") == self.dev["lock"]:   # an ancestor (farmd/qsafe) already holds it
+            self.lock = None
+        elif not L.PhoneLock(self.dev).acquire():
+            import fcntl
+            fd = open(f"/tmp/qsafe-{self.dev['lock']}.lock", "a")
+            if wait <= 0:
+                fd.close()
+                return "PHONE BUSY (qsafe lock held by another worker)"
+            t0 = time.time()
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.lock = L.PhoneLock(self.dev)
+                    self.lock.fd = fd
+                    break
+                except OSError:
+                    if time.time() - t0 >= wait:
+                        fd.close()
+                        return "PHONE BUSY (qsafe lock held by another worker)"
+                    time.sleep(2)
+            self.lock.fd = fd
+        self.tid = L.resolve(self.dev, connect=True)
+        if not self.tid:
+            return "offline (no adb route)"
+        h = G.read_adb(self.tid)
+        st, why = G.check(self.dev["lock"], h, G.thresholds(self.dev.get("serial")))
+        return None if st == "ok" else f"gated ({st}): {why}"
+
+
+def percentile(s, q):
+    if not s:
+        return None
+    i = min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))
+    return s[i]
+
+
+def panel_hz(ph):
+    _, o = ph.adb("shell", "dumpsys display | grep -m1 -o 'mActiveModeId=[0-9]*'", 20)
+    _, d = ph.adb("shell", "dumpsys display | grep -m1 'DisplayDeviceInfo{'", 20)
+    m = re.search(r"fps=([0-9.]+)", d)
+    if m:
+        return float(m.group(1))
+    _, p = ph.adb("shell", "settings get system peak_refresh_rate", 15)
+    try:
+        return float(p.strip())
+    except ValueError:
+        return 120.0
+
+
+def layer_name(ph):
+    _, o = ph.adb("shell", "dumpsys SurfaceFlinger --list", 30)
+    cand = [l.strip() for l in o.splitlines()
+            if f"SurfaceView[{PKG}/" in l and "SessionActivity" in l]
+    if not cand:
+        cand = [l.strip() for l in o.splitlines() if "droiddeck_wayland_game" in l]
+    if not cand:
+        return None
+    cand.sort(key=lambda l: ("(BLAST)" not in l, l))
+    return cand[0]
+
+
+def parse_latency(text):
+    out = []
+    lines = text.replace("\r\n", "\n").splitlines()
+    for l in lines[1:]:
+        p = l.split()
+        if len(p) >= 2:
+            try:
+                a = int(p[1])
+            except ValueError:
+                continue
+            if a > 0:
+                out.append(a)
+    return out
+
+
+class Sampler(threading.Thread):
+    def __init__(self, ph, layer, seconds):
+        super().__init__(daemon=True)
+        self.ph, self.layer, self.seconds = ph, layer, seconds
+        self.stamps, self.err, self.calls = set(), None, 0
+        self.stop = threading.Event()
+
+    def run(self):
+        q = self.layer.replace('"', '\\"')
+        while not self.stop.is_set():
+            rc, o = self.ph.adb("shell", f'dumpsys SurfaceFlinger --latency "{q}"', 20)
+            self.calls += 1
+            if rc != 0:
+                self.err = o.strip()[-200:]
+                time.sleep(0.2)
+                continue
+            self.stamps.update(parse_latency(o))
+            time.sleep(0.15)
+
+
+class Sweep(threading.Thread):
+    """Keep the menu moving: a pad press every ~0.7 s, alternating direction."""
+
+    def __init__(self, ph):
+        super().__init__(daemon=True)
+        self.ph = ph
+        self.stop = threading.Event()
+        self.n = 0
+
+    def run(self):
+        while not self.stop.is_set():
+            btn = "right" if (self.n // 6) % 2 == 0 else "left"
+            self.ph.ctl("input", "pad", btn, timeout=25)
+            self.n += 1
+            time.sleep(0.7)
+
+
+def cpu_sample(ph):
+    _, o = ph.adb("shell", "top -b -n 1 -m 40", 30)
+    total = 0.0
+    for l in o.splitlines():
+        if not re.search(r"steamwebhelper|gamescope|steam\b", l):
+            continue
+        p = l.split()
+        val = None
+        if len(p) > 8 and re.fullmatch(r"[0-9.]+", p[8]):
+            val = float(p[8])                      # PID USER PR NI VIRT RES SHR S %CPU ...
+        else:
+            m = re.search(r"\s([0-9.]+)\s+[0-9.]+\s+[0-9:]+", l)
+            val = float(m.group(1)) if m else None
+        if val is not None:
+            total += val
+    return round(total, 1)
+
+
+def classify(iv, base, fast_frac):
+    p50 = percentile(sorted(iv), 0.50)
+    if p50 is None:
+        return "no frames"
+    if 0.15 <= fast_frac <= 0.85:
+        return "bimodal: CPU stalls / missed vsyncs"
+    if p50 <= 1.25 * base and fast_frac >= 0.9:
+        return f"display-paced at {round(1000 / base)} Hz (uniform {base:.2f} ms)"
+    if abs(p50 - 2 * base) <= 0.12 * base and fast_frac < 0.10:
+        return (f"60 fps cap: uniform {p50:.2f} ms at half of a {round(1000 / base)} Hz panel "
+                "(a 120 render dropping alternate frames would leave an 8.3/16.7 mix)")
+    if p50 > 1.25 * base:
+        return f"client/GPU bound (p50 {p50:.2f} ms, {1000 / p50:.1f} fps)"
+    return f"mixed (p50 {p50:.2f} ms, {100 * fast_frac:.0f} % at panel cadence)"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("phone", nargs="?", choices=["cmf", "poco-x8"], help="farm alias (poco-x8 needs --allow-owner-phone)")
+    ap.add_argument("--seconds", type=float, default=30.0, help="sampling window (default 30)")
+    ap.add_argument("--driver", choices=PROFILES, default="bridge", help="bridge = installed ICD; ours = push vk/out/a64-glibc-wl")
+    ap.add_argument("--icd", help="ICD manifest to use with --driver ours (default vk/out/a64-glibc-wl/mali_icd.json)")
+    ap.add_argument("--uncapped", action="store_true", help="lift the known frame limiters for this session (see README)")
+    ap.add_argument("--settle", type=float, default=30.0, help="seconds after the session starts before warmup (default 30)")
+    ap.add_argument("--warmup", type=float, default=5.0, help="seconds of input before sampling (default 5)")
+    ap.add_argument("--wait", type=float, default=0.0, help="block up to N s for the qsafe lock (default: fail PHONE BUSY)")
+    ap.add_argument("--keep", action="store_true", help="leave the session running")
+    ap.add_argument("--json", help="write the result row here")
+    ap.add_argument("--allow-owner-phone", action="store_true", help="allow poco-x8 (owner lane; coordinate first)")
+    ap.add_argument("--dry-run", action="store_true", help="print the plan, touch nothing")
+    a = ap.parse_args()
+    if not a.phone:
+        ap.error("a phone alias is required (cmf; poco-x8 is the owner's)")
+    if a.phone == "poco-x8" and not a.allow_owner_phone:
+        die("poco-x8 is owned by the owner's lane; pass --allow-owner-phone after coordinating")
+    devs = load_devices()
+    if a.phone not in devs:
+        die(f"no device '{a.phone}' in the device table")
+    ph = Phone(devs[a.phone])
+
+    plan = {"phone": a.phone, "driver": a.driver, "seconds": a.seconds, "uncapped": a.uncapped}
+    if a.dry_run:
+        print(json.dumps(plan, indent=1))
+        return 0
+
+    why = ph.admit(a.wait)
+    if why:
+        die(why, 3)
+    print(f"steam-present: {a.phone} via {ph.tid}", file=sys.stderr)
+
+    saved_env, saved_prefs = [], {}
+    try:
+        j = ph.ctl("env", "list", timeout=40)
+        saved_env = j.get("active") or []
+        j = ph.ctl("prefs", "get", "session", timeout=40)
+        saved_prefs = j.get("values") if isinstance(j.get("values"), dict) else j
+
+        ph.ctl("stop", timeout=200)
+        env = ["BL_MANGOAPP=0", "VKBRIDGE_STATS=1"]
+        if a.uncapped:
+            env += ["MALIDECK_MODE=performance", "VKBRIDGE_SWAPCHAIN_IMAGES=8",
+                    "BL_VKBRIDGE_WEBHELPER_ARGS=--use-gl=angle --use-angle=vulkan +Vulkan "
+                    "+VulkanFromANGLE +DefaultANGLEVulkan --disable-frame-rate-limit --disable-gpu-vsync"]
+        if a.driver == "ours":
+            icd = a.icd or os.path.join(OURS, "mali_icd.json")
+            so = os.path.join(os.path.dirname(os.path.abspath(icd)), "libvulkan_mali.so")
+            if not (os.path.isfile(icd) and os.path.isfile(so)):
+                die(f"missing ICD build: {icd} / {so}; build with MALI_TARGET=a64-glibc-wl vk/build.sh")
+            ph.adb("shell", f"mkdir -p {DL}", 15)
+            ph.adb("push", so, f"{DL}/libvulkan_mali.so", timeout=180)
+            manifest = os.path.join("/tmp", "steam-present-icd.json")
+            open(manifest, "w").write(json.dumps(
+                {"file_format_version": "1.0.1",
+                 "ICD": {"library_path": f"{DL}/libvulkan_mali.so", "api_version": "1.3.0"}}))
+            ph.adb("push", manifest, f"{DL}/mali_icd.json", timeout=60)
+            os.unlink(manifest)
+            env += [f"BL_VK_DRIVER={DL}/mali_icd.json", "BL_VKBRIDGE=0",
+                    "BL_OPEN_DRIVER=1", "BL_DRM_STANDIN=/dev/mali0",
+                    "gamescope_composite_force=false"]
+        ph.ctl("env", "clear", "next", timeout=30)
+        ph.ctl("env", "set", *env, timeout=40)
+        ph.ctl("prefs", "set", "session", "hudDeck", "false", "--type", "bool", timeout=40)
+        j = ph.ctl("start", "steam", "--wait", timeout=240)
+        if j.get("_rc") != 0:
+            die(f"session did not start: {json.dumps(j)[:300]}")
+
+        if a.driver == "ours":
+            logdir = "/tmp/steam-present-logs"
+            ph.ctl("logs", "latest", logdir, timeout=200)
+            try:
+                logs = "".join(open(os.path.join(logdir, f), errors="replace").read()
+                               for f in os.listdir(logdir) if f.endswith(".log"))
+            except OSError:
+                logs = ""
+            if "vulkan driver: imported" not in logs:
+                die("session did not import our ICD (no 'vulkan driver: imported' in the log)")
+
+        time.sleep(a.settle)
+        hz = panel_hz(ph)
+        base = 1000.0 / hz
+        layer = layer_name(ph)
+        if not layer:
+            die("no DroidDeck SurfaceView layer: is the session on screen?")
+        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", 20)
+        cpu = cpu_sample(ph)
+        sweep = Sweep(ph)
+        sweep.start()
+        time.sleep(a.warmup)
+        stamp = time.time()
+        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", 20)
+        s = Sampler(ph, layer, a.seconds)
+        s.start()
+        time.sleep(a.seconds)
+        s.stop.set()
+        sweep.stop.set()
+        s.join(5)
+        sweep.join(5)
+
+        stamps = sorted(s.stamps)
+        iv = [(b - a_) / 1e6 for a_, b in zip(stamps, stamps[1:]) if b > a_]
+        if len(iv) < 20:
+            die(f"only {len(iv)} frame intervals from {s.calls} polls; session idle or layer wrong", 4)
+        dur = (stamps[-1] - stamps[0]) / 1e9
+        srt = sorted(iv)
+        p50, p95, p99 = percentile(srt, .50), percentile(srt, .95), percentile(srt, .99)
+        fast = sum(1 for x in iv if x <= 1.3 * base) / len(iv)
+        row = {"bench": "steam-present", "phone": a.phone, "driver": a.driver,
+               "uncapped": a.uncapped, "seconds": round(dur, 1), "frames": len(stamps),
+               "mean_fps": round((len(stamps) - 1) / dur, 1),
+               "p50_ms": round(p50, 2), "p95_ms": round(p95, 2), "p99_ms": round(p99, 2),
+               "fast_fraction": round(fast, 3), "panel_hz": hz, "layer": layer,
+               "cpu_percent": cpu, "pacing": classify(iv, base, fast),
+               "date": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        print(json.dumps(row, indent=1))
+        if a.json:
+            with open(a.json, "a") as f:
+                f.write(json.dumps(row) + "\n")
+        return 0
+    finally:
+        if not a.keep:
+            ph.ctl("stop", timeout=200)
+        ph.ctl("prefs", "set", "session", "hudDeck",
+               str(bool(saved_prefs.get("hudDeck", True))).lower(), "--type", "bool", timeout=40)
+        ph.ctl("env", "clear", "next", timeout=30)
+        if saved_env:
+            ph.ctl("env", "set", *saved_env, timeout=40)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
