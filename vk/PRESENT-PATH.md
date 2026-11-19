@@ -112,7 +112,9 @@ presents in the *same* window. Take that count from an independent present count
 SurfaceFlinger's frame counter for the app's layer (`dumpsys SurfaceFlinger --latency <layer>` over the same
 window) or a counter added on the `vkQueuePresentKHR` path.
 `perf stat -e syscalls:sys_enter_ioctl` and `strace -c -e ioctl` count every ioctl; they cannot yield MEM_SYNC per
-present and must not be used for this ratio. The request filter counts every MEM_SYNC, not only the WSI wait's: submit-time CPU->device syncs and other waits'
+present and must not be used for this ratio.
+
+The request filter counts every MEM_SYNC, not only the WSI wait's: submit-time CPU->device syncs and other waits'
 device->CPU syncs stay in the trace. So attribute the difference rather than the absolute count: run the same
 fixed workload twice - once on main and once with #262's guards (matched runs, same scene, same window) - and use
 the delta in MEM_SYNCs per present as the cost the skip removes; any residual both runs share is not #262's.
@@ -125,19 +127,21 @@ bounded by N = non-lazy BOs from the `PROF/memsync` line; after it, 0.
 The history this audit was written against, as it stands on main now: #255's timeout-0 poll fast path in
 `kbase_fence_wait` (a poll must not queue behind another thread's 20 ms `wait_lock` slice) is on main, and #248
 (per-BO write tracking for the fence-wait CSYNC) landed on top of it as `f2cabad` **without** deleting the poll
-branch. The CSYNC skip described below is not part of either: it is PR #262, branch `lane/present-audit`: the rebased commit is
-`f4ea8ab` (on main `7b7a3d1`, so with #248; its pre-rebase original is `7f2e860`, which predates #248), and it
-applies its `if (!mali_fence_wait_no_csync)` guards to both
-MEM_SYNC sites in `kbase_fence_wait` - the poll return (line 535) and the blocking-wait return (line 553).
+branch. The CSYNC skip described below is not part of either: it is PR #262, branch `lane/present-audit`, whose pushed head
+is `7f2e860`. That commit **predates** #248, so its tree does not contain the per-BO write tracking, even though its
+parent is the same main as #248's. It applies its `if (!mali_fence_wait_no_csync)` guards to both MEM_SYNC sites in
+`kbase_fence_wait` - the poll return (line 518) and the blocking-wait return (line 536). #262 must be rebased over
+main (which now has #248) before any combined behaviour can be read out of it; the rebase is not published, so do
+not cite a rebased hash until it is.
 
-So there is nothing left to rebase here: #248 is already merged, #262 is on top of it, and #228's ring-sized pieces
-are also on main. Adding another fence-wait change on top of #262 must keep all three.
+So what is left to do is only #262's rebase: #248 is already merged, and #228's ring-sized pieces are on main.
+Adding another fence-wait change on top of the rebased #262 must keep all three.
 
 ## Current state: the wsi CSYNC skip lives in #262, not in this PR
 
 This PR only adds this document; it changes no code. The behaviour under audit is PR #262 (branch
-`lane/present-audit`; the rebased commit is `f4ea8ab`, on top of main with #248, and the pre-rebase original is
-`7f2e860`; not on main at the time of writing): in that branch `mali_wsi.c` wraps
+`lane/present-audit`, pushed head `7f2e860`, which predates #248 and needs the rebase described above; not on main at
+the time of writing): in that branch `mali_wsi.c` wraps
 `pdev->wsi.WaitForFences` (the same way it already wraps `DestroyQueryPool`) and sets the thread-local
 `mali_fence_wait_no_csync` for the duration, and `kbase_fence_wait` skips the device->CPU sweep when it is set. If
 that branch is not in your checkout, none of this code is here - treat it as a prerequisite of the numbers in
