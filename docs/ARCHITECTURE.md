@@ -29,7 +29,7 @@ pointers as of this commit and drift; search for the symbol if one is off. Desig
 
 | Layer | File | Role |
 |---|---|---|
-| A context | `ctx.c` | `kb_open` (`ctx.c:191`): version handshake, GPU props parse (`ctx.c:81`), CSF setup, `MEM_EXEC_INIT` + `MEM_JIT_INIT`. Capability table keyed by uAPI version (`kb_caps_lookup`, `ctx.c:72`); other versions are refused. `kb_ioctl` retries EINTR (`ctx.c:56`). |
+| A context | `ctx.c` | `kb_open` (`ctx.c:191`): version handshake, GPU props parse (`ctx.c:81`), CSF setup, `MEM_EXEC_INIT` + `MEM_JIT_INIT`. Capability table keyed by uAPI version (`kb_caps_lookup`, `ctx.c:72`); other versions are refused, unless the research-only `opts->allow_unknown_uapi` is set, which continues with the newest known layouts. `kb_ioctl` retries EINTR (`ctx.c:56`). |
 | B memory | `bo.c` | `kb_bo_alloc` (`bo.c:20`), `kb_bo_import_dmabuf` (`bo.c:84`), cache maintenance `kb_bo_cache_flush_inv` (`bo.c:168`), dma-heap allocation (`bo.c:195`), dma-buf sync_file import/export (`bo.c:217`, `bo.c:226`). |
 | C queue | `queue.c` | One CSF group with one queue. `kb_queue_create` (`queue.c:17`), `kb_queue_submit` (`queue.c:123`: write ring, bump `CS_INSERT`, doorbell or ioctl kick), `kb_queue_extract/idle/faulted` (`queue.c:119-121`), notification decode `kb_event_read` (`queue.c:213`). |
 | D sync | `sync.c` | KCPU queue: CQS wait (`sync.c:52`), CQS set (`sync.c:71`), fence signal returning a sync_file fd (`sync.c:90`), `kb_fence_wait` (`sync.c:118`). |
@@ -69,12 +69,14 @@ Recording and building are deliberately separate: `vkCmd*` only snapshots state;
    Draws go into the open frame; `vkCmdBeginRendering` (`:800`) opens a frame and `vkCmdEndRendering` (`:1019`) closes
    it (`mali_frame_finish`, `mali_cs_emit.c:1247`). Dispatches become compute frames (`record_dispatch`, `:708`).
    Transfer, clear, blit and BC work are expressed as meta shader jobs (`mali_cmd_push_ops`, `:1044`) planned by
-   `mali_meta_plan_*` (`mali_meta.c:129-205`) and executed as compute. Anything unsupported fails loudly through
+   `mali_meta_plan_*` (`mali_meta.c:129-205`) and executed as compute. Exception: a clear of a whole single-subresource RGBA8 color image becomes a fragment-only clear frame (no compute job); compute handles the remaining clear cases. Anything unsupported fails loudly through
    `unsupported()` (`mali_cmd.c:50`).
 2. **Submit** (`mali_queue_submit`, `mali_queue.c:505`). Waits are resolved first (section 4), then
    `mali_cmd_submit` (`mali_cmd.c:1262`) runs per command buffer. Frames that read indirect arguments on the CPU force a
-   drain of earlier work (`mali_cmd.c:1280-1291`, `expand_indirect` `:641`). All frames of one command buffer are built
-   and concatenated into one stream.
+   drain of earlier work (`mali_cmd.c:1280-1291`, `expand_indirect` `:641`). In the normal path all frames of one command
+   buffer are built and concatenated into one stream; an indirect frame is a submission boundary: the stream accumulated
+   so far is submitted and drained, the indirect arguments are read and the draw expanded, and the remaining frames are
+   submitted as a further stream.
 3. **Build** (`mali_frame_build`, `mali_cs_emit.c:975`). Picks the path: meta ops (`mali_ops_build`), compute
    (`build_compute`, `:781`), or graphics. Graphics emits tiler context, shader program descriptors, attributes,
    blend/ZS, DCDs and the FBD (`mali_render.c`, built on `kb_fb_pack`), then `RUN_IDVS` and `RUN_FRAGMENT`. Arch is
@@ -158,7 +160,9 @@ see `vk/README.md`). There is no DRM node behind kbase, so `supports_modifiers` 
 
 - **dma-buf path (real GPU).** Swapchain images are ordinary driver images on `MALI_BO_EXPORT` BOs (dma-heap), exported as
   dma-bufs for the compositor (zero copy). `wsi_common` attaches the frame's sync_file to the buffer
-  (`DMA_BUF_IOCTL_IMPORT/EXPORT_SYNC_FILE`, libkbase `bo.c:217-226`) so the compositor does not sample a half-drawn frame.
+  (`DMA_BUF_IOCTL_IMPORT/EXPORT_SYNC_FILE`, libkbase `bo.c:217-226`) so the compositor does not sample a half-drawn frame. If the kernel cannot import a sync_file into the dma-buf (for example
+  5.10 on poco-x4 returns ENOTTY; needs kernel >= 6.0), no fence travels with the buffer and the queue keeps its CPU wait
+  before the present returns (`mali_present_fence_ok`, `mali_queue.c:485`; `MALI_PRESENT_FENCE=0/1` forces it).
 - **Software path.** On the fake backend, or with `MALI_WSI=sw`, wsi copies into a CPU-visible linear buffer
   (`mali_wsi_use_sw`, `mali_wsi.c:47`); `MALI_WSI=dmabuf` forces the first path.
 - Details of the Steam/gamescope present leg and X11 are in `vk/STEAM-GAPS.md`; frame pacing and the in-flight limit
@@ -188,7 +192,10 @@ Shader sources for meta/BC kernels are in `vk/shader/` (GLSL + prebuilt `.spv`, 
 
 - `vk/check.sh`: builds the ICD and runs the loader and direct-dlopen cases on the fake backend for v11 and v13, compares
   decoded streams to `vk/tests/golden/`, optional ASan/UBSan (`MALI_SAN=1`) and host dEQP (`--deqp-host`).
-- `libkbase/check.sh`: libkbase with the `KB_FAKE` backend and `libkbase/golden/`.
+- `libkbase/check.sh`: libkbase with the `KB_FAKE` backend and `libkbase/golden/`. The v11 `t_triangle` comparison needs an external
+  trace: `GOLDEN` defaults to `../../runs/20261115-cmf-libkbase/panvk-trace/draw-flat.jsonl`, outside this repository
+  (only `allow-v11.txt` lives in `libkbase/golden/`). The script does not check that file and does not set `pipefail`, so a missing trace
+  does not stop it from printing `OK`: set `GOLDEN` to a real trace and do not read `OK` as proof that the golden comparison ran.
 - Hardware runs (phones) go through the farm and `vk/deqp/`; the fake backend cannot reproduce cache coherency,
   scheduling or fault behaviour, so a stream that matches golden is necessary, not sufficient.
 
