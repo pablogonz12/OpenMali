@@ -1082,6 +1082,8 @@ class Farm:
                 p = l.rstrip("\n").split("\t")
                 if len(p) >= 2:
                     got[p[0]] = (p[1], p[2] if len(p) > 2 else "")
+        if rc == 81:
+            got = {}                                             # unstable run (crash bursts): its prefix must not be recorded; a legitimate pause keeps its partial rows
         return rc, out, got, sok, sgot
 
     def suite_cases(self, job, dev):

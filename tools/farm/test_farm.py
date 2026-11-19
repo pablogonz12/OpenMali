@@ -2153,6 +2153,19 @@ class SmokeRoute(unittest.TestCase):
         f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (0, bad)
         self.assertEqual(f.suite_smoke(dict(self.JOB), self.dev)["verdict"], "fail")
 
+    def test_exec_list_discards_rows_of_an_unstable_shell_run(self):
+        f = self.farm()
+        self.dev["route"] = "shell"
+        f.unstaged = lambda out: False
+        for rc, want in ((81, {}), (75, {"a": ("Pass", ""), "b": ("Fail", "")})):
+            def rs(job, dev, mode, rid, extra, tmo, nodim=False, rc=rc):
+                open(extra[extra.index("--out") + 1], "w").write("a\tPass\nb\tFail\n")
+                return rc, ""
+            f.run_shellroute = rs
+            with tempfile.TemporaryDirectory() as wd:
+                r = f.exec_list(dict(self.JOB), self.dev, ["a", "b"], "r1", wd, 60, "sw0")
+            self.assertEqual(r[2], want, rc)
+
     def test_job_built_before_the_fallback_gets_its_bionic_build_on_demand(self):
         f = self.farm()
         f.tree = lambda jid: tempfile.gettempdir()
