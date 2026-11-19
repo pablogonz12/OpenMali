@@ -498,6 +498,16 @@ test_cache_disk(void)
       snprintf(cmd, sizeof cmd, "rm -rf %s", dir2); if (system(cmd)) g_fail++;
    }
 
+   /* ---- an existing leaf made by an earlier version (0755) is tightened to 0700 on the next store ---- */
+   char dir5[] = "/tmp/t_compile_old.XXXXXX";
+   if (mkdtemp(dir5)) {
+      chmod(dir5, 0755);
+      CHECK(!compile_fau(&vs, dir5, 16, &c), "compile into an old 0755 leaf"); mali_compiled_free(&c);
+      struct stat st5;
+      CHECK(!stat(dir5, &st5) && !(st5.st_mode & 077), "old leaf tightened to private (mode %o)", (unsigned)(st5.st_mode & 0777));
+      snprintf(cmd, sizeof cmd, "rm -rf %s", dir5); if (system(cmd)) g_fail++;
+   }
+
    /* ---- no HOME / XDG (an Android app process): never write to /.cache, fall back to TMPDIR; explicit env wins ---- */
    char tdir[] = "/tmp/t_compile_tmpdir.XXXXXX";
    if (mkdtemp(tdir)) {

@@ -237,6 +237,9 @@ mkdirs(char *p)
    for (char *s = p + 1; *s; s++)
       if (*s == '/') { *s = 0; mkdir(p, 0755); *s = '/'; }
    mkdir(p, 0700);   /* the leaf holds GPU code: private to the user */
+   struct stat st;   /* a leaf made by an earlier version (0755) stays readable otherwise: tighten an owned real directory */
+   if (!lstat(p, &st) && S_ISDIR(st.st_mode) && st.st_uid == geteuid() && (st.st_mode & 077) && !(st.st_mode & 022))   /* never a writable one: entries may already be planted */
+      chmod(p, 0700);
 }
 
 /* Entries are only checksummed, not authenticated: anyone who can write the directory can plant code that runs on the GPU (and the CPU
