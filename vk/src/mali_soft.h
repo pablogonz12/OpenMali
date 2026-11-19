@@ -22,6 +22,7 @@ extern "C" {
 #endif
 
 #define MALI_SOFT_VARY 8
+#define MALI_SOFT_MRT 4   /* colour attachments the rasteriser can write in one pass */
 
 struct mali_soft_program {
    const char *name;
@@ -32,6 +33,10 @@ struct mali_soft_program {
               unsigned vertex_id, unsigned instance_id, float clip[4], float vary[MALI_SOFT_VARY][4]);
    /* Fragment stage: interpolated varyings at pixel (x, y), the fragment-stage push constants; writes RGBA. */
    void (*fs)(void *user, const float vary[MALI_SOFT_VARY][4], const uint8_t *push, unsigned x, unsigned y, float out[4]);
+   /* Optional multi-render-target fragment stage: writes RGBA for every attachment of the frame (out[rt]). Used instead of
+    * `fs` when set; required for frames with more than one colour attachment. */
+   void (*fs_mrt)(void *user, const float vary[MALI_SOFT_VARY][4], const uint8_t *push, unsigned x, unsigned y,
+                  float out[MALI_SOFT_MRT][4]);
 };
 
 struct mali_soft_stats {
