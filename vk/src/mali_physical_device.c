@@ -35,7 +35,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxImageDimensionCube = 4096,
       .maxImageArrayLayers = 256,
       .maxTexelBufferElements = 65536,
-      .maxUniformBufferRange = 16384,
+      .maxUniformBufferRange = 1u << 20,   /* 1 MiB = PanVK-on-Poco ceiling (R4-ORACLE vulkaninfo-panvk-poco.txt), the largest UBO range proven on this HW with the same generic 32-bit-size Buffer descriptor (mali_pack_buffer). Larger values are not exercised by any test; see R4-PLAN.md */
       .maxStorageBufferRange = 1u << 27,
       .maxPushConstantsSize = 128,
       .maxMemoryAllocationCount = 4096,
