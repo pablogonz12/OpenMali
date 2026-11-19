@@ -105,15 +105,15 @@ recreate(VkExtent2D e, VkPresentModeKHR mode, uint32_t min_img, int wait_idle)
       .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR, .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = mode,
       .clipped = VK_TRUE, .oldSwapchain = sc};
-   VkSwapchainKHR n = VK_NULL_HANDLE;
-   VkResult r = CreateSwapchainKHR(dev, &ci, NULL, &n);
-   CHECK(r == VK_SUCCESS, "CreateSwapchain -> %d", r);
-   if (r != VK_SUCCESS) { printf("FAIL cannot continue\n"); exit(1); }
-   if (!wait_idle && sc && g_last_ok_pid) {   /* presents still wait on prs[]: let the newest one finish (frame() only waits pid-2) */
+   if (!wait_idle && sc && g_last_ok_pid) {   /* presents still wait on prs[]: let the newest one finish, before CreateSwapchainKHR retires sc (VUID-vkWaitForPresentKHR-swapchain-04997) (frame() only waits pid-2) */
       STEP("wait outstanding presents");
       VkResult wr = WaitForPresentKHR(dev, sc, g_last_ok_pid, 5000000000ull);
       CHECK(wr == VK_SUCCESS || wr == VK_ERROR_OUT_OF_DATE_KHR, "wait outstanding present id %llu -> %d", (unsigned long long)g_last_ok_pid, wr);
    }
+   VkSwapchainKHR n = VK_NULL_HANDLE;
+   VkResult r = CreateSwapchainKHR(dev, &ci, NULL, &n);
+   CHECK(r == VK_SUCCESS, "CreateSwapchain -> %d", r);
+   if (r != VK_SUCCESS) { printf("FAIL cannot continue\n"); exit(1); }
    destroy_sync();
    if (sc) DestroySwapchainKHR(dev, sc, NULL);
    sc = n; ext = e; g_present_id = 0; g_last_ok_pid = 0;
