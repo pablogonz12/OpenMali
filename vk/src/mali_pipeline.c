@@ -179,6 +179,16 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       res = VK_ERROR_FEATURE_NOT_PRESENT;
       goto fail;
    }
+   /* MSAA with several colour attachments is not implemented (mali_cmd.c rejects it at vkCmdBeginRendering): the FBD would need
+    * per-attachment rt_msaa/resolve fields and every RT a 4x layered write-back, and a LOAD preload per attachment. Refuse the
+    * pipeline here instead of failing after the render pass has been recorded. */
+   if (samples > 1 && st.cb && st.cb->attachment_count > 1) {
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: %u-sample pipeline with %u colour attachments: MSAA + MRT unsupported\n", samples,
+                 st.cb->attachment_count);
+      res = VK_ERROR_FEATURE_NOT_PRESENT;
+      goto fail;
+   }
    o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
