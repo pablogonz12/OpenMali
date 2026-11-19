@@ -160,6 +160,7 @@ main(int argc, char **argv)
    CHECK(L->maxFragmentOutputAttachments <= 8 && L->maxVertexInputAttributes >= 16 && L->maxVertexInputBindings >= 16, "vertex/frag");
    CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
    CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
+   CHECK(L->maxClipDistances >= 8 && L->maxCombinedClipAndCullDistances >= L->maxClipDistances, "clip distance limits (shaderClipDistance on: min 8)");
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
@@ -179,6 +180,12 @@ main(int argc, char **argv)
    VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
    VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
    GetPhysicalDeviceFeatures2(pd, &g2);
+   {  /* VK_EXT_image_view_min_lod: the advertised minLod feature must be reported true (t_image view_min_lod covers the descriptor field) */
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 m2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &m2);
+      CHECK(ml.minLod == VK_TRUE, "minLod feature advertised true (got %u)", ml.minLod);
+   }
    /* uab limits: each UAB limit >= its non-UAB twin; the types with UAB features (samplers, sampled images) reach the 500000 minimum */
    CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
          p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
@@ -271,10 +278,10 @@ main(int argc, char **argv)
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
-                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d),
+                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d), idp = (unsigned)((const VkBool32 *)&f13.shaderIntegerDotProduct - d),   /* t_vk_feat intdot */
                      sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */

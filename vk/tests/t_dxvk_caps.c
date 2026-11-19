@@ -135,6 +135,14 @@ main(int argc, char **argv)
       CHECK(adv == (int)dce.depthClipEnable, "VK_EXT_depth_clip_enable advertised=%d but depthClipEnable=%u", adv, dce.depthClipEnable);
    }
    {
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_image_view_min_lod");
+      CHECK(adv == (int)ml.minLod, "VK_EXT_image_view_min_lod advertised=%d but minLod=%u", adv, ml.minLod);
+   }
+   {
       VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
       VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds};
       GetPhysicalDeviceFeatures2(pd, &q);
