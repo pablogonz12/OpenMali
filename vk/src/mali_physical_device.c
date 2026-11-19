@@ -4,6 +4,7 @@
 #include "mali_format.h"
 #include "mali_msaa.h"
 #include "mali_gs_shim.h"
+#include "mali_cull_shim.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -111,7 +112,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
       .maxClipDistances = 8,                 /* shaderClipDistance: VARYING_SLOT_CLIP_DIST0/1 (t_vk_feat clip8) */
-      .maxCullDistances = 0,                 /* shaderCullDistance stays off: no cull lowering */
+      .maxCullDistances = mali_advertise_cull() ? 8 : 0,   /* MALI_ADVERTISE_CULL=1 shim only (mali_cull_shim.h): cull writes are ignored */
       .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
@@ -302,6 +303,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
       .samplerYcbcrConversion = true,                                   /* t_vk_feat ycbcr (NV12 only; pixels on hardware, smoke) */
+      .shaderCullDistance = mali_advertise_cull(),   /* MALI_ADVERTISE_CULL=1 shim only (mali_cull_shim.h): gl_CullDistance writes are ignored; t_cull_shim */
       .shaderClipDistance = true,                                       /* t_vk_feat clip */
       .shaderImageGatherExtended = true,                                /* t_vk_feat gather */
       .fragmentStoresAndAtomics = true,                                 /* t_vk_feat fsstore */
