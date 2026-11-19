@@ -230,6 +230,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
+      .robustBufferAccess = true,  /* buffer loads/stores/atomics bounds-checked (mali_descriptor_lower.c); OOB loads 0, writes dropped; X8 t_vk_robust. Images/shared memory are not covered (not required) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
