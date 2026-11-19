@@ -405,6 +405,57 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       return -1;
    }
 
+   /* Modules the driver cannot compile fail here instead of tripping an assert (or emitting garbage in a release Mesa) deep in the
+    * backend: fuzz_spirv.c found each of these from mutated repo shaders that still pass spirv-val. */
+   if (!o->layout) {
+      nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo | nir_var_mem_ssbo) {
+         (void)var;
+         ralloc_free(nir);
+         return fail(err, errsz, "shader uses UBO/SSBO descriptors but the pipeline has no layout");
+      }
+   }
+   /* ClipDistance/CullDistance arrays longer than maxClipDistances (8) trip an assert in nir_clip_cull_distance_io_utils */
+   nir_foreach_variable_with_modes(var, nir, nir_var_shader_in | nir_var_shader_out) {
+      const struct glsl_type *t = glsl_without_array_or_matrix(var->type);   /* gl_PerVertex[] (GS/TCS style) too */
+      bool bad = false;
+      if (glsl_type_is_struct(t)) {
+         for (unsigned i = 0; i < glsl_get_length(t); i++) {
+            unsigned loc = var->members ? var->members[i].location : 0;
+            const struct glsl_type *ft = glsl_get_struct_field(t, i);
+            if ((loc == VARYING_SLOT_CLIP_DIST0 || loc == VARYING_SLOT_CULL_DIST0) && glsl_type_is_array(ft) && glsl_get_length(ft) > 8)
+               bad = true;
+         }
+      } else if ((var->data.location == VARYING_SLOT_CLIP_DIST0 || var->data.location == VARYING_SLOT_CULL_DIST0) &&
+                 glsl_type_is_array(var->type) && glsl_get_length(var->type) > 8)
+         bad = true;
+      if (bad) {
+         ralloc_free(nir);
+         return fail(err, errsz, "ClipDistance/CullDistance array longer than 8");
+      }
+   }
+   /* varying locations past the slot table (limits are far below this) index off the end of the backend's per-slot arrays */
+   if (stage == MESA_SHADER_VERTEX) {
+      nir_foreach_shader_out_variable(var, nir) {
+         if (var->data.location >= VARYING_SLOT_MAX) {
+            ralloc_free(nir);
+            return fail(err, errsz, "vertex output location out of range");
+         }
+      }
+   }
+   if (stage == MESA_SHADER_FRAGMENT) {
+      nir_foreach_shader_in_variable(var, nir) {
+         if (var->data.location >= VARYING_SLOT_MAX) {
+            ralloc_free(nir);
+            return fail(err, errsz, "fragment input location out of range");
+         }
+      }
+      nir_foreach_shader_out_variable(var, nir) {
+         if (var->data.location > FRAG_RESULT_DATA7) {
+            ralloc_free(nir);
+            return fail(err, errsz, "fragment output location beyond colour attachment 7");
+         }
+      }
+   }
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
    if (stage == MESA_SHADER_VERTEX) {
@@ -444,6 +495,10 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    NIR_PASS(_, nir, nir_opt_constant_folding);
    struct push_ctx pc = { push_base, 0 };
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, add_push_base, nir_metadata_control_flow, &pc);
+   if (pc.max_end != UINT32_MAX && push_base + pc.max_end > fau_reserved * 4) {   /* the backend asserts the push words fit the reserved FAU */
+      ralloc_free(nir);
+      return fail(err, errsz, "shader reads push constants beyond the reserved FAU range");
+   }
    NIR_PASS(_, nir, nir_opt_constant_folding);
 
    struct pan_compile_inputs in = { .arch = arch, .model = model };

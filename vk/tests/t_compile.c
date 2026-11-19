@@ -215,6 +215,79 @@ test_errors(void)
    CHECK(strstr(err, "Unimplemented SPIR-V capability") != NULL, "error names the capability: '%s'", err);
 }
 
+/* Rewrites the value of the nth 32-bit OpConstant equal to from. */
+static int
+patch_const(struct spv *s, uint32_t from, uint32_t to)
+{
+   for (size_t i = 5; i < s->n;) {
+      uint32_t op = s->w[i] & 0xffff, wc = s->w[i] >> 16;
+      if (!wc || i + wc > s->n) break;
+      if (op == 43 && wc == 4 && s->w[i + 3] == from) { s->w[i + 3] = to; return 1; }
+      i += wc;
+   }
+   return 0;
+}
+
+/* Hardening found by tests/fuzz_spirv.c: modules that pass spirv-val but used to assert inside the backend must now fail cleanly.
+ * patch_deco() rewrites the value of the nth OpDecorate/OpMemberDecorate with the given decoration (30 Location, 35 Offset). */
+static int
+patch_deco(struct spv *s, unsigned deco, int nth, uint32_t from, uint32_t to, int add)
+{
+   for (size_t i = 5; i < s->n;) {
+      uint32_t op = s->w[i] & 0xffff, wc = s->w[i] >> 16;
+      if (!wc || i + wc > s->n) break;
+      unsigned dpos = op == 71 ? 2 : op == 72 ? 3 : 0;   /* OpDecorate target,deco,val / OpMemberDecorate struct,member,deco,val */
+      if (dpos && wc == dpos + 2 && s->w[i + dpos] == deco && (add || s->w[i + dpos + 1] == from) && nth-- == 0) {
+         s->w[i + dpos + 1] = add ? s->w[i + dpos + 1] + to : to;
+         return 1;
+      }
+      i += wc;
+   }
+   return 0;
+}
+
+static void
+expect_reject(const char *what, enum mali_stage st, unsigned arch, const struct spv *s, const char *want)
+{
+   struct mali_compile_opts o = { .arch = arch, .stage = st, .spirv = s->w, .spirv_words = s->n, .cache_dir = "" };
+   struct mali_compiled c = {0};
+   char err[256] = "";
+   int r = mali_compile(&o, &c, err, sizeof err);
+   CHECK(r != 0 && strstr(err, want), "%s: want error '%s', got r=%d '%s'", what, want, r, err);
+   if (!r) mali_compiled_free(&c);
+}
+
+static void
+test_hardening(void)
+{
+   printf("hardening\n");
+   for (unsigned arch = 11; arch <= 13; arch += 2) {
+      struct spv fs = load("tex.frag.spv");
+      if (fs.w && patch_deco(&fs, 30, 0, 0, 8, 0))
+         expect_reject("fs output location 8", MALI_STAGE_FRAGMENT, arch, &fs, "beyond colour attachment 7");
+      else CHECK(0, "patch tex.frag");
+      free(fs.w);
+      struct spv vs = load("fxz.vert.spv");
+      if (vs.w && patch_deco(&vs, 30, 1, 0, 1769472, 0))   /* 2nd Location decoration = the v_col output */
+         expect_reject("vs output location 1769472", MALI_STAGE_VERTEX, arch, &vs, "out of range");
+      else CHECK(0, "patch fxz.vert");
+      free(vs.w);
+      struct spv pc = load("fxz.vert.spv");   /* push constant block at offset 0 -> 256: past the reserved FAU words */
+      if (pc.w && patch_deco(&pc, 35, 0, 0, 256, 1))
+         expect_reject("push constant past the FAU", MALI_STAGE_VERTEX, arch, &pc, "push constants");
+      else CHECK(0, "patch fxz.vert offset");
+      free(pc.w);
+      struct spv cl = load("clip.vert.spv");   /* float[3] ClipDistance -> float[12]: used to assert in nir_clip_cull_distance_io_utils */
+      if (cl.w && patch_const(&cl, 3, 12))
+         expect_reject("clip distance array of 12", MALI_STAGE_VERTEX, arch, &cl, "ClipDistance");
+      else CHECK(0, "patch clip.vert");
+      free(cl.w);
+      struct spv ub = load("desc.frag.spv");   /* UBO with no pipeline layout: used to hit 'Unhandled intrinsic vulkan_resource_index' */
+      if (ub.w) expect_reject("ubo without layout", MALI_STAGE_FRAGMENT, arch, &ub, "no layout");
+      free(ub.w);
+   }
+}
+
 /* YCbCr: the conversion of an immutable NV12 sampler is lowered into the shader (nir_vk_lower_ycbcr_tex: two plane samples, model/range
  * constants, siting). Compile tex.frag with a plain combined sampler and with converted ones and look at what changed. */
 static int
@@ -366,6 +439,7 @@ main(int argc, char **argv)
    test_ycbcr();
    test_spec();
    test_errors();
+   test_hardening();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;
 }
