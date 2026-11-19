@@ -15,6 +15,7 @@ Upstream commits after the 26.3.0 tag that we carry (bi_ backend, not kraid). Ap
 | 0008 | local (not upstream) | pan/bi: `find_all_dominated_predecessors` stops at the fixed point (was |blocks|-1 sweeps per loop header; 17% of corpus compile time). Output identical (shaderdb TSV), so no MALI_COMPILE_VERSION bump; -18% compile time |
 | 0009 | local (not upstream) | wsi/wayland: legacy FIFO throttle wait (no wp_fifo) is bounded to 500 ms; was an infinite wait when frame callbacks never arrive (hidden window, guest compositor); no codegen change |
 | 0010 | local (not upstream) | pan/bi: RA cost: `bi_compute_liveness_ssa` keeps the live-set popcount incrementally (was a full popcount per instruction), `bi_mark_interference` skips dead node stretches 8 at a time, `lcra_add_node_interference` stops its shift loop at the highest mask bit. Output identical (shaderdb TSV), no MALI_COMPILE_VERSION bump; ~-30% compile time on top of 0008 |
+| 0011 | local (not upstream) | pan/bi: `lcra_add_node_interference` skips repeated adds via a small direct-mapped cache (adds are idempotent ORs); RA liveness ORs/compares live sets word-wise. Output identical (shaderdb TSV), no MALI_COMPILE_VERSION bump; ~-3..5% compile time on top of 0010 |
 
 Patches only take effect in the Mesa roll-in (apply-mesa-patches.sh, then rebuild the Mesa trees); `tests/mesa-patches.sh` (run by check.sh) checks that they apply in order on a scratch copy and never touches the shared tree.
 

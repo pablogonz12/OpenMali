@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mali-open
+Date: Thu, 19 Nov 2026 16:00:00 +0100
+Subject: [PATCH] pan/bi: skip repeated LCRA interference adds, word-wise RA liveness
+
+bi_mark_interference adds the same (node, node, masks) interference once per
+instruction both are live across; adding is a bitwise OR, so repeats are
+no-ops that still cost a sorted-array search. Keep a small direct-mapped
+cache of recent adds and skip hits. RA liveness ORs successor live-in eight
+bytes at a time and compares live-in with memcmp.
+Bit-identical output (shaderdb TSV identical over 300 compiles, v11+v13).
+shaderdb compile time, sum over 150 shaders, on top of 0010: median ~985 -> ~954 ms (-3..5%, noisy host).
+---
+--- a/src/panfrost/compiler/bifrost/bi_ra.c
++++ b/src/panfrost/compiler/bifrost/bi_ra.c
+@@ -10,8 +10,19 @@
+ #include "nodearray.h"
+ #include "valhall.h"
+ 
++/* Interference between the same two nodes with the same masks is added once
++ * per instruction they are simultaneously live across. Adding is idempotent
++ * (a bitwise OR), so a small direct-mapped cache of recent additions lets us
++ * skip the repeats. */
++struct lcra_memo {
++   unsigned i, j, cmask_i, cmask_j;
++};
++
++#define LCRA_MEMO_SIZE 2048
++
+ struct lcra_state {
+    unsigned node_count;
++   struct lcra_memo *memo;
+    uint64_t *affinity;
+ 
+    /* Linear constraints imposed. For each node there there is a
+@@ -49,6 +60,7 @@
+    l->linear = calloc(sizeof(l->linear[0]), node_count);
+    l->solutions = calloc(sizeof(l->solutions[0]), node_count);
+    l->affinity = calloc(sizeof(l->affinity[0]), node_count);
++   l->memo = calloc(LCRA_MEMO_SIZE, sizeof(l->memo[0]));
+ 
+    memset(l->solutions, ~0, sizeof(l->solutions[0]) * node_count);
+ 
+@@ -63,6 +75,7 @@
+ 
+    free(l->linear);
+    free(l->affinity);
++   free(l->memo);
+    free(l->solutions);
+    free(l);
+ }
+@@ -74,6 +87,18 @@
+    if (i == j)
+       return;
+ 
++   struct lcra_memo *m =
++      &l->memo[(i * 0x9e3779b1u ^ j * 0x85ebca6bu ^ (cmask_i << 5) ^ cmask_j) %
++               LCRA_MEMO_SIZE];
++   if (m->i == i && m->j == j && m->cmask_i == cmask_i &&
++       m->cmask_j == cmask_j)
++      return;
++
++   m->i = i;
++   m->j = j;
++   m->cmask_i = cmask_i;
++   m->cmask_j = cmask_j;
++
+    nodearray_value constraint_fw = 0;
+    nodearray_value constraint_bw = 0;
+ 
+@@ -224,7 +249,18 @@
+ 
+    /* live_out[s] = sum { p in succ[s] } ( live_in[p] ) */
+    bi_foreach_successor(blk, succ) {
+-      for (unsigned i = 0; i < temp_count; ++i)
++      unsigned i = 0;
++
++      /* OR eight bytes at a time */
++      for (; i + 8 <= temp_count; i += 8) {
++         uint64_t a, b;
++         memcpy(&a, blk->live_out + i, 8);
++         memcpy(&b, succ->live_in + i, 8);
++         a |= b;
++         memcpy(blk->live_out + i, &a, 8);
++      }
++
++      for (; i < temp_count; ++i)
+          blk->live_out[i] |= succ->live_in[i];
+    }
+ 
+@@ -236,8 +272,7 @@
+ 
+    /* To figure out progress, diff live_in */
+ 
+-   for (unsigned i = 0; (i < temp_count) && !progress; ++i)
+-      progress |= (blk->live_in[i] != live[i]);
++   progress = memcmp(blk->live_in, live, temp_count) != 0;
+ 
+    ralloc_free(blk->live_in);
+    blk->live_in = live;
