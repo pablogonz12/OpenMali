@@ -550,6 +550,9 @@ test_logicop(void)
          }
          (void)eq;
       }
+   }
+}
+
 /* dyn_index: arrays of UBOs and SSBOs indexed with a runtime value (Unity 2023.2's per-object UBO arrays do this). The descriptor
  * lowering sees the variable index as nir_intrinsic_vulkan_resource_index (nir_lower_explicit_io makes it from the deref) and must
  * (a) clamp it against count - 1 and (b) add it to the first element's handle. MALI_NIR_DUMP prints the lowered NIR, so the check
@@ -586,10 +589,8 @@ dyn_compile(unsigned arch, const char *spv, unsigned count, unsigned dyn_idx, st
       {.type = MALI_DT_UNIFORM_BUFFER, .count = count, .slot = 0, .stride = 1, .dyn_idx = dyn_idx, .imm_off = MALI_NO_IMM_SAMPLER},
       {.type = MALI_DT_STORAGE_BUFFER, .count = 1, .slot = count, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER},
    };
-   if (!strcmp(spv, "ssboidx.comp.spv")) {   /* the indexed array is the SSBO (binding 0): swap the descriptor types of the two bindings */
+   if (!strcmp(spv, "ssboidx.comp.spv"))   /* the indexed array is the SSBO (binding 0); binding 1 stays a storage buffer */
       b[0].type = MALI_DT_STORAGE_BUFFER;
-      b[1].type = MALI_DT_UNIFORM_BUFFER;
-   }
    struct mali_compile_layout l;
    memset(&l, 0, sizeof l);
    l.nsets = 1;
@@ -601,7 +602,7 @@ dyn_compile(unsigned arch, const char *spv, unsigned count, unsigned dyn_idx, st
    setenv("MALI_NIR_DUMP", g_nir_dump, 1);
    int r = mali_compile(&o, c, err, sizeof err);
    unsetenv("MALI_NIR_DUMP");
-   if (r) printf("  compile error: %s\n", err);
+   if (r) { printf("  compile error: %s\n", err); g_fail++; }
    dump[0] = 0;
    FILE *f = fopen(g_nir_dump, "r");
    if (f) {
@@ -679,10 +680,13 @@ test_dyn_index(void)
       if (dyn_compile(arch, "uboidx.comp.spv", 4, 0, &c4, d4, sizeof d4)) continue;
       if (dyn_compile(arch, "uboidx.comp.spv", 8, 0, &c8, d8, sizeof d8)) { mali_compiled_free(&c4); continue; }
       CHECK(strstr(d4, "umin") != NULL, "v%u uboidx: the runtime index is clamped (no umin in the lowered NIR)", arch);
-      struct res_idx ri4, ri8;
-      CHECK(res_index(d4, &ri4) && res_index(d8, &ri8), "v%u uboidx: no resource-index vec3 in the lowered NIR", arch);
-      CHECK(ri4.dynamic && ri8.dynamic, "v%u uboidx: the array index is still dynamic after lowering (constant -> the add was dropped)", arch);
-      CHECK(ri4.count_m1 == 3 && ri8.count_m1 == 7, "v%u uboidx clamp count-1: count 4 -> %u, count 8 -> %u", arch, ri4.count_m1, ri8.count_m1);
+      struct res_idx ri4 = {0}, ri8 = {0};
+      bool parsed = res_index(d4, &ri4) && res_index(d8, &ri8);
+      CHECK(parsed, "v%u uboidx: no resource-index vec3 in the lowered NIR", arch);
+      if (parsed) {
+         CHECK(ri4.dynamic && ri8.dynamic, "v%u uboidx: the array index is still dynamic after lowering (constant -> the add was dropped)", arch);
+         CHECK(ri4.count_m1 == 3 && ri8.count_m1 == 7, "v%u uboidx clamp count-1: count 4 -> %u, count 8 -> %u", arch, ri4.count_m1, ri8.count_m1);
+      }
       CHECK(strstr(d4, "umin %") != NULL, "v%u uboidx: the index is clamped with umin", arch);
       mali_compiled_free(&c4);
       mali_compiled_free(&c8);
@@ -690,10 +694,13 @@ test_dyn_index(void)
       struct mali_compiled s4, s8;
       if (dyn_compile(arch, "ssboidx.comp.spv", 4, 0, &s4, d4, sizeof d4)) continue;
       if (dyn_compile(arch, "ssboidx.comp.spv", 8, 0, &s8, d8, sizeof d8)) { mali_compiled_free(&s4); continue; }
-      struct res_idx sj4, sj8;
-      CHECK(res_index(d4, &sj4) && res_index(d8, &sj8), "v%u ssboidx: no resource-index vec3 in the lowered NIR", arch);
-      CHECK(sj4.dynamic && sj8.dynamic, "v%u ssboidx: the array index is still dynamic after lowering", arch);
-      CHECK(sj4.count_m1 == 3 && sj8.count_m1 == 7, "v%u ssboidx clamp count-1: count 4 -> %u, count 8 -> %u", arch, sj4.count_m1, sj8.count_m1);
+      struct res_idx sj4 = {0}, sj8 = {0};
+      bool sparsed = res_index(d4, &sj4) && res_index(d8, &sj8);
+      CHECK(sparsed, "v%u ssboidx: no resource-index vec3 in the lowered NIR", arch);
+      if (sparsed) {
+         CHECK(sj4.dynamic && sj8.dynamic, "v%u ssboidx: the array index is still dynamic after lowering", arch);
+         CHECK(sj4.count_m1 == 3 && sj8.count_m1 == 7, "v%u ssboidx clamp count-1: count 4 -> %u, count 8 -> %u", arch, sj4.count_m1, sj8.count_m1);
+      }
       /* the clamp constant rides in the FAU immediates, not the code, so compare both */
       CHECK(!same_code(&s4, &s8), "v%u ssboidx count 4 and 8 produce different code (immediates included)", arch);
       mali_compiled_free(&s4);
