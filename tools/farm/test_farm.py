@@ -2422,6 +2422,22 @@ class Review(T):
         self.assertEqual(p["state"], "cancelled")
         self.assertIsNone(p.get("verdict"))
 
+    def test_h5_second_worker_does_not_start_a_part_another_worker_already_runs(self):
+        jid = self.submit_v11()
+        self.attach("dev-a")
+        f = self.load_farm()
+        j = L.find_job(jid)
+        j["parts"]["v11"].update(state="running", device="dev-b")             # worker B won the pending->running transition
+        L.write_json(L.job_path(jid), j)
+        f._run_part(jid, "v11", "dev-a")
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual((p["state"], p["device"]), ("running", "dev-b"))
+        self.assertIsNone(p.get("verdict"))
+
+
+for _n in [n for n in dir(T) if n.startswith("test_") and n not in Review.__dict__]:
+    setattr(Review, _n, None)        # discovery must not re-run T's tests under Review (None is not collected)
+
 
 T_NAMES = None
 if __name__ == "__main__":
