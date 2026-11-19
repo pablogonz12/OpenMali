@@ -740,6 +740,16 @@ class T(unittest.TestCase):
         self.assertTrue(BL.publishable(row("ours", 2.5)))
         self.assertEqual(len(BL.merge_rows([], rows)), 3)
 
+    def test_merge_rows_uses_already_published_bridge_as_peer(self):
+        def row(drv, gpu):
+            return {"phone": "poco-x8", "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}
+        # ours-only job: the bridge row of the same commit is already in the file; 1.4 ms is valid (bridge 1.32), not under the 2 ms fallback floor
+        merged = BL.merge_rows([row("bridge", 1.32)], [row("ours", 1.40)])
+        self.assertEqual([r["driver"] for r in merged], ["bridge", "ours"])
+        self.assertEqual(len(BL.merge_rows([row("bridge", 1.32)], [row("ours", 0.4)])), 1)
+        # a new bridge row replaces the old one: the stale 1.32 ms must not vouch for an ours row that is implausible against the new 10 ms
+        self.assertEqual([r["driver"] for r in BL.merge_rows([row("bridge", 1.32)], [row("bridge", 10.0), row("ours", 2.5)])], ["bridge"])    # still rejects the invalid-winner symptom
+
     def test_bench_owner_pending_is_gated_not_invalid(self):
         """bench2 stopping with 'PENDING: focus rule violated' pushed nothing: the .so left on the phone by an earlier job must not make the job
         INVALID (2026-11-18: three INVALIDs in 21 s used up the v13 attempts). A finished chunk with a foreign .so is still INVALID."""
@@ -2255,6 +2265,82 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(H.end_reason(h, 1, False, now=101), "max time reached")
         self.assertIn("caller lost", H.end_reason(h, H.HB_STALE + 1, False, now=50))
         self.assertEqual(H.end_reason(h, 1, False, now=50, disabled=True), "disabled by owner")
+
+
+class Bench2Rank(unittest.TestCase):
+    """bench2's presented-config winner: by fps (a FIFO run flat at the display cap must not beat mailbox 450 fps on 1% low), and stored best entries
+    that were not swept under the current ranking/candidate list are re-swept"""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("bench2_mod", os.path.join(HERE, "..", "bench2"))
+        cls.b = importlib.util.module_from_spec(importlib.util.spec_from_loader("bench2_mod", ld))
+        ld.exec_module(cls.b)
+
+    def test_cube_winner_is_fastest_not_steadiest(self):
+        pres = {"pres:fifo/4img/fif2": {"fps": 120.4, "low1": 107.0, "cpu_ms": 1.1},
+                "pres:mailbox/2img/fif2": {"fps": 457.0, "low1": 90.0, "cpu_ms": 0.4}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube")), "pres:mailbox/2img/fif2")
+
+    def test_cube_tie_goes_to_better_low1(self):
+        pres = {"a": {"fps": 100.0, "low1": 50.0, "cpu_ms": 1}, "b": {"fps": 100.0, "low1": 80.0, "cpu_ms": 1}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube")), "b")
+
+    def test_triangle_winner_by_fps_then_cpu(self):
+        pres = {"a": {"fps": 600.0, "low1": 1, "cpu_ms": 0.9}, "b": {"fps": 600.0, "low1": 1, "cpu_ms": 0.5}, "c": {"fps": 500.0, "low1": 9, "cpu_ms": 0.1}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "triangle")), "b")
+
+    def test_env_penalty_still_applies(self):
+        pres = {"a": {"fps": 100.0, "low1": 1, "cpu_ms": 1}, "b": {"fps": 103.0, "low1": 1, "cpu_ms": 1}}
+        pen = lambda k: 1.05 if k == "b" else 1.0
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube", pen)), "a")
+
+    def test_readmission_keeps_the_phone_lock(self):
+        """the recursive re-sweep calls admit() again on the same Phone: the first admission's flock must survive (QSAFE_HELD is then set by
+        ourselves, which must not be mistaken for an ancestor's lock and drop ours)"""
+        b = self.b
+        dev = {"alias": "poco-x8", "class": "x8", "lock": "unit-test-lock"}
+        ph = b.Phone(dev, {"quick_root": "/nonexistent"})
+        got = []
+        ph.acquire_wait = lambda secs: (setattr(ph.lock, "fd", object()), got.append(ph.lock), True)[-1]
+        ph.health = lambda: None
+        saved = (b.L.resolve, b.L.disabled_dir, b.G.disabled, os.environ.pop("QSAFE_HELD", None))
+        b.L.resolve, b.L.disabled_dir, b.G.disabled = (lambda *a, **k: "tid"), (lambda: None), (lambda *a: False)
+        try:
+            self.assertIsNone(ph.admit())
+            first = ph.lock
+            self.assertIsNotNone(first)
+            self.assertIsNone(ph.admit())
+            self.assertIs(ph.lock, first)            # not replaced / not dropped
+            self.assertIsNotNone(first.fd)
+            self.assertEqual(len(got), 1)            # and not re-acquired
+        finally:
+            b.L.resolve, b.L.disabled_dir, b.G.disabled = saved[:3]
+            os.environ.pop("QSAFE_HELD", None)
+            if saved[3] is not None:
+                os.environ["QSAFE_HELD"] = saved[3]
+
+    def test_stored_best_must_carry_the_current_sig(self):
+        v, d = "cube-native", "ours"
+        today = __import__("datetime").date(2026, 11, 18)
+        mk = lambda **k: {"poco-x8": {d: {v: {"date": "2026-11-18", **k}}}}
+        self.assertIsNone(self.b.best_stale(mk(sig=self.b.sweep_sig(v, d)), "poco-x8", d, v, today))
+        self.assertTrue(self.b.best_stale(mk(), "poco-x8", d, v, today))                 # no sig: unvouched (this is how a fifo winner survived)
+        self.assertTrue(self.b.best_stale(mk(sig="old-ranking"), "poco-x8", d, v, today))
+
+    def test_rank_version_changes_the_sig(self):
+        s0 = self.b.sweep_sig("cube-native", "ours")
+        self.b.RANK_VER += 1
+        try:
+            self.assertNotEqual(s0, self.b.sweep_sig("cube-native", "ours"))
+        finally:
+            self.b.RANK_VER -= 1
+
+    def test_draw_count_variants_are_in_the_default_set(self):
+        for v in ("triangle-3k", "triangle-5k", "triangle-10k", "triangle-20k"):
+            self.assertIn(v, self.b.WORK)
+            self.assertIn(f"--n {int(v.split('-')[1][:-1]) * 1000} ", self.b.WORK[v][1] + " ")
 
 
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
