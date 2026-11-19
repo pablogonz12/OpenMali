@@ -245,7 +245,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageWriteWithoutFormat), /* t_vk_feat storfmt_nf */
          offsetof(VkPhysicalDeviceFeatures, dualSrcBlend),             /* t_vk_draw --only fx_dual_* (passed on the Poco X8, v13) */
-         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_draw msaa_sample_shading; only advertised with MALI_EXPERIMENTAL_MSAA=1 */
+         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_feat samplerate (1 sample); t_vk_draw msaa_sample_shading (4 samples, MALI_EXPERIMENTAL_MSAA=1) */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
@@ -278,10 +278,10 @@ main(int argc, char **argv)
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
-                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d),
+                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d), idp = (unsigned)((const VkBool32 *)&f13.shaderIntegerDotProduct - d),   /* t_vk_feat intdot */
                      sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */

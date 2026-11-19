@@ -88,10 +88,10 @@ Plans: `R3-PLAN.md` (ICD milestones M1-M14), `R4-PLAN.md` (Vulkan 1.3 and the DX
 | Meta ops (copy, blit, clear, resolve), queries, events | Wired, hardware-tested on v11; partial elsewhere |
 | WSI (Wayland, swapchain, dma-heap images) | Passed on v11; v13 pending |
 | BC1-BC7 texture decode (compute emulation) | Offline done; hardware wiring pending |
-| DXVK-required features | 5 of 47 still false on main (`check.sh`, `DXVK_MISSING=5`): sampleRateShading (env-gated MSAA), shaderCullDistance, robustBufferAccess, descriptorIndexing (full), geometryShader (rejected on purpose until R5) |
+| DXVK-required features | 4 of 47 still false on main (`check.sh`, `DXVK_MISSING=4`): shaderCullDistance, robustBufferAccess, descriptorIndexing (full), geometryShader (rejected on purpose until R5) |
 | EXT/KHR_line_rasterization | `rectangularLines` only (Bresenham and smooth lines not advertised); `t_vk_feat linerast` |
 | dualSrcBlend, multiViewport (state only, viewport 0 used), inlineUniformBlock, depth clamp/clip, custom border colour, calibrated timestamps | Done, each backed by a `t_vk_feat`/`t_vk_draw` test |
-| MSAA (4x draws, `sampleRateShading`) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
+| MSAA (4x draws; `sampleRateShading` itself is advertised, 1-sample no-op) | Experimental: only with `MALI_EXPERIMENTAL_MSAA=1`, off by default (the 4x `a2r10g10b10` case still flakes) |
 | logicOp, geometry/tessellation, GPL, Bresenham/smooth lines | Not done / not advertised |
 
 **dEQP-VK** (see `vk/deqp/TRIAGE.md`; daily sample of 1381 cases, G925 phone):
