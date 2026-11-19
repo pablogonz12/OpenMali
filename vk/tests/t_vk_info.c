@@ -153,7 +153,7 @@ main(int argc, char **argv)
    CHECK(L->minTexelGatherOffset == -8 && L->maxTexelGatherOffset == 7 && L->minTexelOffset == -8 && L->maxTexelOffset == 7, "texel (gather) offset limits (t_vk_feat gatherlim)");
    CHECK(L->maxPushConstantsSize >= 128 && L->maxPushConstantsSize <= 256, "push constants");
    CHECK(L->maxUniformBufferRange >= 16384 && L->maxUniformBufferRange <= 1048576, "ubo range");
-   CHECK(L->maxBoundDescriptorSets >= 4 && L->maxBoundDescriptorSets <= 7, "bound sets");
+   CHECK(L->maxBoundDescriptorSets == 8, "bound sets %u (8 SRT tables: t_vk_draw sets8 binds all)", L->maxBoundDescriptorSets);
    CHECK(L->maxComputeWorkGroupInvocations >= 128 && L->maxComputeWorkGroupInvocations <= 1024, "wg invocations");
    CHECK(L->maxComputeSharedMemorySize >= 16384 && L->maxComputeSharedMemorySize <= 32768, "shared mem");
    CHECK(L->maxSamplerAnisotropy <= 16.0f && L->maxViewports >= 1 && L->maxViewports <= 16, "aniso/viewports");

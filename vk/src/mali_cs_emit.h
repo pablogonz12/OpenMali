@@ -25,7 +25,7 @@ extern "C" {
 
 #define MALI_MAX_VB 8
 #define MALI_MAX_ATTR 16
-#define MALI_CMD_SETS 4
+#define MALI_CMD_SETS 8
 #define MALI_MAX_DYN 16        /* dynamic UBO/SSBO descriptors per draw (graphics) */
 #define MALI_PUSH_MAX 256      /* == MALI_MAX_PUSH_BYTES (VkPhysicalDeviceLimits::maxPushConstantsSize) */
 
