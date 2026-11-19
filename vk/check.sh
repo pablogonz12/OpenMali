@@ -98,6 +98,14 @@ for g in v11 v13; do
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
 done
 
+# Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
+# colour attachment read back by vkCmdCopyImageToBuffer. The fake backend executes nothing, so this is the record-side gate
+# that keeps the client honest; the RADV reference run and the phone comparison are documented commands, not check.sh cases.
+for g in v11 v13; do
+   run "vk_ref $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_ref" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
+done
+run "refdiff selftest" 0 python3 -I "$V/tests/refdiff.py" --selftest
+
 # R4-B2: DXVK-required core feature tests (pixels only on hardware).
 for g in v11 v13; do
    run "vk_feat $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
@@ -192,6 +200,7 @@ run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 2
 run "vk_draw many v10"  0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only many_draws
 run "vk_draw sets8 v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only sets8
 run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
+run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
