@@ -12,7 +12,10 @@ Upstream commits after the 26.3.0 tag that we carry (bi_ backend, not kraid). Ap
 | 0005 | 0a65740a | panvk: flush after copy_fbd (Mesa 26.2.7 fix; panvk only, not linked) |
 | 0006 | 75217eab | panvk: restore zero flush_id after copy_fbd (part of the same fix; needs 0005) |
 | 0007 | 1fe05a79 | pan/bi: run CSE before load_store_vectorize |
+| 0008 | local (not upstream) | pan/bi: `find_all_dominated_predecessors` stops at the fixed point (was |blocks|-1 sweeps per loop header; 17% of corpus compile time). Output identical (shaderdb TSV), so no MALI_COMPILE_VERSION bump; -18% compile time |
+
+Patches only take effect in the Mesa roll-in (apply-mesa-patches.sh, then rebuild the Mesa trees); `tests/mesa-patches.sh` (run by check.sh) checks that they apply in order on a scratch copy and never touches the shared tree.
 
 Checked and NOT carried: ee34430a4 (push_ubo OOB) and d0379e79f (RA spill cost) are already in the 26.3.0 tag.
 Still not carried: aa0c65155 (fpow to fmul chains), da2d47315 (drop bi_lower_divergent_indirects), fa252c1c (nir idiv).
-Any change here changes generated code: bump MALI_COMPILE_VERSION and re-bless (`check.sh --bless`).
+Any change here that changes generated code (0008 does not): bump MALI_COMPILE_VERSION and re-bless (`check.sh --bless`).
