@@ -52,6 +52,7 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dyn3;                    /* EDS3 depth: 1 = depthClampEnable, 2 = depthClipEnable set per draw (draw 0: wrong value, draw 1: the case's value) */
    int dynpoly;                 /* poly is set with vkCmdSetPolygonModeEXT (pipeline polygonMode FILL + VK_DYNAMIC_STATE_POLYGON_MODE_EXT) */
    int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
@@ -76,6 +77,9 @@ static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstIn
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
 static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
+static int g_have_eds3_clamp, g_have_eds3_clip;   /* extendedDynamicState3DepthClampEnable / DepthClipEnable enabled */
+static PFN_vkCmdSetDepthClampEnableEXT CmdSetDepthClampEnableEXT_;
+static PFN_vkCmdSetDepthClipEnableEXT CmdSetDepthClipEnableEXT_;
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
@@ -509,8 +513,10 @@ scene_create(struct scene *s, int depth)
    if (g_fx.on) {
       rs.cullMode = g_fx.dyn ? VK_CULL_MODE_NONE : g_fx.cull;
       rs.frontFace = (g_fx.cw != 0) != (g_fx.dyn != 0) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-      rs.depthClampEnable = g_fx.clamp;
-      if (g_fx.dclip) { g_dce.depthClipEnable = g_fx.dclip == 2; rs.pNext = &g_dce; }
+      rs.depthClampEnable = (g_fx.dyn3 & 1) ? 0 : g_fx.clamp;   /* dyn3 & 1: static value is wrong on purpose */
+      if ((g_fx.dyn3 & 2) && !g_fx.dclip) g_fx.dclip = 2;
+      if (g_fx.dyn3 & 2) { g_dce.depthClipEnable = 1; rs.pNext = &g_dce; }   /* static clip TRUE: ignoring the dynamic value clips everything */
+      else if (g_fx.dclip) { g_dce.depthClipEnable = g_fx.dclip == 2; rs.pNext = &g_dce; }
       rs.depthBiasEnable = g_fx.bias;
       if (!g_fx.dyn) { rs.depthBiasConstantFactor = g_fx.bias_c; rs.depthBiasSlopeFactor = g_fx.bias_s; rs.depthBiasClamp = g_fx.bias_clamp; }
       cba.blendEnable = g_fx.blend;
@@ -521,13 +527,15 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
-   VkDynamicState dyn[11] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+   VkDynamicState dyn[14] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
    if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    if (g_fx.dynpoly) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+   if (g_fx.dyn3 & 1) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT;
+   if (g_fx.dyn3 & 2) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
       for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
       dys.dynamicStateCount += 3;
@@ -697,6 +705,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          VkRect2D si = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
          CmdSetScissor(cb, 0, 1, &si);
       }
+      if (g_fx.dyn3 & 1) CmdSetDepthClampEnableEXT_(cb, (i & 1) ? VK_TRUE : VK_FALSE);
+      if (g_fx.dyn3 & 2) CmdSetDepthClipEnableEXT_(cb, (i & 1) ? VK_FALSE : VK_TRUE);
       if (g_share == 2) {
          VkRect2D sci = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
          CmdSetScissor(cb, 0, 1, &sci);
@@ -1509,6 +1519,8 @@ static void s_dyn_bias(void) { s_bias_on(); g_fx.dyn = 1; }
 static void s_clamp(void) { g_fx.clamp = 1; }
 static void s_clamp_noclip(void) { g_fx.clamp = 1; g_fx.dclip = 1; }   /* clamp + depthClipEnable FALSE: same as plain clamp */
 static void s_clamp_clip(void) { g_fx.clamp = 1; g_fx.dclip = 2; }     /* clamp + depthClipEnable TRUE: z 1.5 is clipped */
+static void s_dyn_clamp(void) { g_fx.dyn3 = 1; }                      /* draw 0 clamp off (z 1.5 clipped), draw 1 clamp on: covered */
+static void s_dyn_clip(void) { g_fx.clamp = 1; g_fx.dyn3 = 2; }       /* clamp on; draw 0 clip on (clipped), draw 1 clip off: covered */
 static void s_bias_pos(void) { g_fx.bias = 1; g_fx.bias_c = 1e7f; }   /* z 0.5 + huge bias: fails LESS against the 1.0 clear */
 static void s_bias_pos_clamp(void) { s_bias_pos(); g_fx.bias_clamp = 0.25f; }   /* clamped to +0.25: z 0.75 passes */
 static void s_bias_neg_clamp(void) { g_fx.bias = 1; g_fx.bias_c = -1e7f; g_fx.bias_clamp = -0.25f; }   /* z 1.0 - 0.25 passes */
@@ -1632,6 +1644,27 @@ test_fx(void)
       }
    }
    return ok;
+}
+
+/* EDS3 depthClampEnable / depthClipEnable set dynamically between two draws (pipeline static values wrong on purpose, draw 0 sets the value that
+ * clips z 1.5, draw 1 the one that lets it through). Hardware: the second draw's pixels exist (coverage 8192). Fake backend: the decoded streams (golden)
+ * of the two draws differ in the ZSD clamp/clip bits. */
+static int
+test_dyn3(const char *name, void (*set)(void))
+{
+   struct fxcase c = {name, 0, 2, {1.5f, 1.5f}, EXP_COV, 8192, 0, set};
+   uint8_t px[4];
+   uint32_t cov = 0;
+   if (!g_have_eds3_clamp || !g_have_eds3_clip || !g_have_dclip || !g_feat.depthClamp) {
+      printf("{\"test\":\"%s\",\"skipped\":\"EDS3 depthClamp/depthClip not advertised\",\"ok\":true}\n", name);
+      return 1;
+   }
+   if (!fx_run(&c, px, &cov)) return 0;
+   if (g_fake) { printf("{\"test\":\"%s\",\"ok\":true,\"skipped\":\"pixels: fake backend\"}\n", name); return 1; }
+   int good = fabs((double)cov - c.cov) <= c.cov * 0.02 + 8;
+   if (!good) { printf("{\"fail\":\"%s: coverage %u expected %.0f\"}\n", name, cov, c.cov); g_fail++; }
+   else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
+   return good;
 }
 
 /* ring of 3 frames: three command buffers in one vkQueueSubmit, then three separate submits with a fence ring */
@@ -2029,12 +2062,19 @@ main(int argc, char **argv)
          g_have_eds3 = 1;
          /* enable polygonMode only: the other bits are not what this test exercises */
          VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
-                                                               .extendedDynamicState3PolygonMode = VK_TRUE};
+                                                               .extendedDynamicState3PolygonMode = VK_TRUE,
+                                                               .extendedDynamicState3DepthClampEnable = eds3_f.extendedDynamicState3DepthClampEnable,
+                                                               .extendedDynamicState3DepthClipEnable = eds3_f.extendedDynamicState3DepthClipEnable};
+         g_have_eds3_clamp = e3.extendedDynamicState3DepthClampEnable;
+         g_have_eds3_clip = e3.extendedDynamicState3DepthClipEnable;
          eds3_f = e3;
          eds3_f.pNext = NULL;
          en_ext[di.enabledExtensionCount++] = dce_ext[1];
          chain = &eds3_f;
       }
+      /* caps agreement: the EDS3 bits mirror the features the driver reads at draw time (mali_cmd.c snapshot) */
+      if (has3 && (f2.features.depthClamp != 0) != (eds3_f.extendedDynamicState3DepthClampEnable != 0)) { printf("{\"fail\":\"caps: depthClamp %d vs extendedDynamicState3DepthClampEnable %d\"}\n", (int)f2.features.depthClamp, (int)eds3_f.extendedDynamicState3DepthClampEnable); g_fail++; return 1; }
+      if (has3 && has && (dce_f.depthClipEnable != 0) != (eds3_f.extendedDynamicState3DepthClipEnable != 0)) { printf("{\"fail\":\"caps: depthClipEnable %d vs extendedDynamicState3DepthClipEnable %d\"}\n", (int)dce_f.depthClipEnable, (int)eds3_f.extendedDynamicState3DepthClipEnable); g_fail++; return 1; }
       if (has && dce_f.depthClipEnable) {
          g_have_dclip = 1;
          dce_f.pNext = chain;
@@ -2049,6 +2089,9 @@ main(int argc, char **argv)
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
    CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
+   CmdSetDepthClampEnableEXT_ = (PFN_vkCmdSetDepthClampEnableEXT)GDPA(dev, "vkCmdSetDepthClampEnableEXT");
+   CmdSetDepthClipEnableEXT_ = (PFN_vkCmdSetDepthClipEnableEXT)GDPA(dev, "vkCmdSetDepthClipEnableEXT");
+   if (g_have_eds3 && !(CmdSetDepthClampEnableEXT_ && CmdSetDepthClipEnableEXT_)) { printf("{\"fail\":\"missing vkCmdSetDepthClamp/ClipEnableEXT\"}\n"); return 1; }
    if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
@@ -2110,6 +2153,10 @@ main(int argc, char **argv)
       ok &= test_poly_dyn("poly_dyn_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
       ok &= test_poly_dyn("poly_dyn_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
       ok &= test_poly_dyn("poly_dyn_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
+   }
+   if (ok && CASE_ON("dyn3")) {
+      ok &= test_dyn3("dyn3_depth_clamp", s_dyn_clamp);
+      ok &= test_dyn3("dyn3_depth_clip", s_dyn_clip);
    }
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);

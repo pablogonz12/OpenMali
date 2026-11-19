@@ -199,7 +199,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_swapchain_mutable_format = true,
       .EXT_image_drm_format_modifier = true, /* LINEAR only */
       .EXT_depth_clip_enable = true,         /* t_dxvk_caps; pixels: t_vk_draw fx_dclip_* */
-      .EXT_extended_dynamic_state3 = true,   /* polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
+      .EXT_extended_dynamic_state3 = true,   /* polygonMode, depthClampEnable, depthClipEnable (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
       .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
@@ -259,6 +259,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .extendedDynamicState3PolygonMode = true,   /* mali_cmd.c: dyn->rs.polygon_mode -> gfx.poly_mode */
+      .extendedDynamicState3DepthClampEnable = true,   /* mali_cmd.c: dyn->rs.depth_clamp_enable -> ZSD clamp; t_vk_draw dyn3_depth_clamp */
+      .extendedDynamicState3DepthClipEnable = true,    /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD clip; t_vk_draw dyn3_depth_clip */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .maintenance6 = true,
