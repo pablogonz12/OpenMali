@@ -1,6 +1,6 @@
 # Changelog
 
-History of mali-open generated from `git log` and merged PRs (2026-11-17 to 2026-11-18, 439 commits on main at the time of writing).
+History of mali-open generated from `git log` and merged PRs (2026-11-17 to 2026-11-19, PRs up to #121; 439 commits on main at the time of writing).
 The project is pre-release (0.1.0), not conformant. dEQP-VK numbers come from the 1381-case daily sample on the G925 phone (Poco, v13) and are recorded in `vk/deqp/TRIAGE.md`.
 Commit hashes are short SHAs. "Unreleased" covers everything so far; there are no tags yet.
 
@@ -77,6 +77,14 @@ The 971 NotSupported cases count against the 2 % gate.
 
 ### Docs
 - README, ROADMAP, LICENSE-NOTES, R3/R4 plans, TRIAGE rounds; PR #23 README status and limits; PR #25 DXVK-GAP re-verified against DXVK/VKD3D-Proton source; PR #38 `CONTRIBUTING.md`; PR #82 `docs/REVIEW-CHECKLIST.md` from recurring review findings; PR #77 README/ROADMAP/CHANGELOG corrected against main; PR #94 stale `STEAM-GAPS` statements fixed. PR #28 this changelog; PR #36 feature-audit known gaps (MSAA counts, one colour attachment, driverID).
+
+### 2026-11-18/19 merges not listed above
+- Vulkan: PR #96 `VK_EXT_extended_dynamic_state`, PR #103 `VK_EXT_extended_dynamic_state2` (logicOp and patchControlPoints stay off), PR #105 `VK_KHR_shader_expect_assume`. PR #58 truthful `maxDrawIndirectCount` (65535) with multiDrawIndirect limit/stride tests.
+- Compile: PR #40 `spirv_to_nir` errors name the cause (e.g. `Unimplemented SPIR-V capability: X`) and no longer break into the OS in debug builds.
+- WSI: PR #121 `DestroyQueryPool` guard is per physical device (no process global); `supports_modifiers` only on the dma-buf path.
+- Tests: PR #88 `t_vk_draw` `dyn_stride_rebind` (dynamic vertex stride re-bind, `STEAM-GAPS` now says fixed); PR #107 `t_vk_qerr` query pool edge cases through the ICD.
+- Warnings: PR #110 `-Wmissing-field-initializers` (clang/NDK) and a missing prototype fixed.
+- Docs: PR #29 farm user and troubleshooting guide; PR #106 CHANGELOG entries for PRs 31-101; PR #118 stale `vk/patches` removed (merged/superseded).
 
 ## Foundations (2026-11-17 snapshot `fe0c5bb`)
 - libkbase (kernel base driver user space) and the Vulkan front end milestones M1-M14 (M12/M13 wired), with plans. Own Vulkan ICD for Mali-G610 (v10), G615 (v11) and G925 (v13).
