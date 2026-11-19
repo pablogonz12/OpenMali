@@ -142,6 +142,39 @@ def digest_lines(rows):
     return out
 
 
+REGRESS_PCT = 10.0                                # a newest-vs-previous move worse than this is flagged
+
+
+def regressions(rows, pct=REGRESS_PCT):
+    """newest bench row of each (phone, driver, variant) vs the previous row of a different commit -> list of text lines.
+    Flags offscreen fps dropping, or offscreen cpu_ms rising, by more than pct percent. Rows lacking a number are skipped."""
+    hist = {}                                              # (phone, driver, variant, metric) -> [(commit_full, value)]
+    for r in rows:                                         # file order = time order
+        if r.get("commit_full") is None or not isinstance(r.get("offscreen"), dict):
+            continue
+        for key in ("fps", "cpu_ms"):
+            v = r["offscreen"].get(key)
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue                                   # an unusable measurement never replaces usable history
+            h = hist.setdefault((r.get("phone"), r.get("driver"), r.get("variant"), key), [])
+            if h and h[-1][0] == r["commit_full"]:
+                h[-1] = (r["commit_full"], v)              # re-run of the same commit replaces it
+            else:
+                h.append((r["commit_full"], v))
+    out = []
+    for (ph, drv, var, key), h in sorted(hist.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        if len(h) < 2:
+            continue
+        (ca, a), (cb, b) = h[-2], h[-1]
+        if a <= 0:
+            continue
+        d = (b - a) / a * 100.0
+        eps = 1e-9                                         # exactly pct% (e.g. 2.0 -> 2.2) must not trip on float rounding
+        if (d > pct + eps) if key == "cpu_ms" else (d < -pct - eps):
+            out.append(f"REGRESSION {ph} {drv} {var} offscreen {key} {a:g} -> {b:g} ({d:+.0f}%) {ca[:7]}..{cb[:7]}")
+    return out
+
+
 def menu_digest_lines(state):
     return M.digest_lines(M.load_rows(M.menu_path(state)))
 
