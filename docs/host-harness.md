@@ -15,8 +15,8 @@ Verified on this host on 2026-11-19 (see `tools/hostcheck --inventory` for the l
 |---|---|---|---|
 | Offline gate | `vk/check.sh` (builds first) or `vk/check.sh --no-build` | the front end built for x86-64, on the fake backend for v10/v11/v13: instance/device/procaddr, format props, descriptor lowering, command-stream goldens (R-VA/R-GEOM/R-HEAP/R-SET/R-CS/R-FLAGS), shader cache cold==warm, sanitizer and leak variants, `vulkaninfo --summary` and full | nothing renders: the fake backend accepts and discards every command stream. Any test that checks pixels reports "skipped" |
 | Native x86-64 ICD | `MALI_TARGET=native vk/build.sh` → `vk/out/native/libvulkan_mali.so` | the whole Vulkan layer above the kernel: object lifetimes, entrypoint tables, pipeline/descriptor lowering, the CSF **word** building for v11 **and** v13 | the kernel uAPI, cache maintenance, real tiling. `MALI_BACKEND=fake` never touches kbase |
-| DXVK/Steam negotiation | `MALI_BACKEND=fake MALI_FAKE_GPU=v13 out/native/t_steam_caps --direct out/native/libvulkan_mali.so` | the exact `vkCreateDevice` extension/feature set DXVK 2.7 and the Steam client ask for; unresolved extension commands; foreign-queue barriers | DXVK's own code paths: no d3d11 render happens. Vendor-specific extension *behaviour*, only presence |
-| dEQP extension block | `out/native/t_dxvk_caps --direct … --expect-missing …` | the feature bits the DXVK gap list depends on | anything below the API |
+| DXVK/Steam negotiation | `MALI_BACKEND=fake MALI_FAKE_GPU=v13 vk/out/native/t_steam_caps --direct vk/out/native/libvulkan_mali.so` | the exact `vkCreateDevice` extension/feature set DXVK 2.7 and the Steam client ask for; unresolved extension commands; foreign-queue barriers | DXVK's own code paths: no d3d11 render happens. Vendor-specific extension *behaviour*, only presence |
+| dEQP extension block | `vk/out/native/t_dxvk_caps --direct … --expect-missing …` | the feature bits the DXVK gap list depends on | anything below the API |
 | X11/WSI | `vk/tests/xwsi-host.sh vk/out/native v10` (`vk/check.sh` runs it) | a real `VK_KHR_xcb_surface` swapchain: create/acquire/clear; present x3 (`t_vk_xcb`), and `glxinfo -B` through zink (kopper needs a working xcb surface + swapchain) | the real compositor, scanout, dmabuf import/export. Runs under `gamescope --backend headless`; skips itself (exit 0, "skipped") without gamescope/Xwayland or `t_vk_xcb` |
 | Host dEQP-VK | `vk/check.sh --deqp-host` (opt-in, ~15 min) | ~200 dEQP-VK cases against the fake backend through the real loader | functional pixel results: dEQP runs but every draw is a no-op, so only Crash/Timeout/NotSupported are gated |
 | Guest aarch64 build | `vk/cross/build-cross.sh glibc` | the 32-bit-ABI / bionic-libc differences of the same sources | nothing is executed on the host: there is no aarch64 user-mode runner wired here (`qemu-aarch64-static` is installed but no script uses it, and the sysroot's `ld.so` is not set up). Arch-specific *words* are already checked natively by the goldens: they are data, not code |
@@ -41,9 +41,19 @@ Say exactly which of these a passing `soft-frame.sh` does **not** prove:
   SPIR-V. It proves vertex fetch, clipping-less triangle setup (triangles reaching behind the eye are dropped, not
   near-clipped), interpolation, and the whole fixed-function output path; it says nothing about the compiled Valhall
   shader, descriptor tables or texture sampling.
-* **Sampling, MSAA, stencil, compute, indirect draws, non-triangle topologies.** Each makes `mali_soft_frame` return
-  `-ENOTSUP` (the submit fails loudly, it never draws nothing silently). `t_soft_frame` covers single-sample colour +
-  depth, triangle lists, direct draws.
+* **Sampling, MSAA, stencil, compute, indirect draws, non-triangle topologies, indexed primitive restart.** Each makes
+  `mali_soft_frame` return `-ENOTSUP` (the submit fails loudly, it never draws nothing silently). `t_soft_frame` covers
+  single-sample colour + depth, triangle lists, direct draws. Restart is rejected rather than split, because a restart
+  index is a primitive boundary, not a vertex to fetch.
+* **Shared-edge sample ownership.** Every sample centre inside a triangle, edge samples included, is covered by it, so two
+  triangles that share an edge both cover the samples on that edge (no top-left tie-break). With blending that diagonal
+  is blended twice and differs from the rest of the quad by up to one blend step; without blending the result is
+  identical. A result that depends on exactly-once coverage of a shared edge is not proven by this rasteriser.
+* **A rejected frame may already have cleared its attachments.** The colour and depth clears happen before the per-draw
+  validation (program registered, topology, indirect origin, attribute format), so when `mali_soft_frame` returns false
+  the attachments may hold the clear colour. The submit fails with `VK_ERROR_FEATURE_NOT_PRESENT` and no command stream
+  is executed, so the frame never "succeeds" with a partial image, but a caller must not read the attachment after a
+  rejected submit. Render-into-staging would be needed to leave the resources untouched.
 
 ## What the host cannot prove, ever
 
