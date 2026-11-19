@@ -565,10 +565,15 @@ int main(int argc, char **argv)
          VkRenderingAttachmentInfo dca;
          VkRenderingInfo dri = rendering_info(&dca, false);
          dri.layerCount = 2;
+         VkRenderingAttachmentInfo zdca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)(uintptr_t)2,
+                                           .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+         dri.pDepthAttachment = &zdca;   /* a real depth target, so the rejection comes from the layered path and not from "no depth attachment" */
          mali_CmdBeginRendering(c2, &dri);
          VkClearAttachment dat = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT};
          VkClearRect dr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 0, .layerCount = 2};
          mali_CmdClearAttachments(c2, 1, &dat, 1, &dr);
+         mali_CmdEndRendering(c2);   /* close the rendering so the only possible error is the layered rejection */
          r = EndCommandBuffer(c2);
          CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "layered depth clear must be rejected, end=%d", r);
       }
