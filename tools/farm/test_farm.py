@@ -668,6 +668,73 @@ class T(unittest.TestCase):
         self.assertIn("# keep", open(p).read())
         self.assertFalse(L.store_route("dev-c", "198.51.100.22:5555", p))
 
+    def test_store_route_keeps_file_mode(self):
+        p = self.d + "/devices.toml"
+        os.chmod(p, 0o644)
+        self.assertTrue(L.store_route("dev-b", "198.51.100.8:5555", p))
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o644)                          # mkstemp's 0600 must not leak through
+
+    def test_run_watched_kills_the_group_when_alive_raises(self):
+        pidf = self.d + "/child.pid"
+        def boom():
+            raise RuntimeError("alive broke")
+        with self.assertRaises(RuntimeError):
+            L.run_watched(["sh", "-c", "echo $$ > %s; exec sleep 60" % pidf], 100, boom, poll=0.5)
+        pid = int(open(pidf).read())
+        time.sleep(0.3)
+        self.assertFalse(os.path.exists("/proc/%d" % pid) and "sleep" in open("/proc/%d/cmdline" % pid).read())
+
+    def test_run_part_read_error_releases_the_phone_lock(self):
+        import importlib.machinery, importlib.util, threading
+        ld = importlib.machinery.SourceFileLoader("farmd_rp", HERE + "/farmd")
+        fd = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_rp", ld))
+        ld.exec_module(fd)
+        f = object.__new__(fd.Farm)
+        dev = {"alias": "dev-a", "class": "v11", "serial": "S", "lock": "cmf"}
+        f.fake, f.devs, f.cool, f.stop_reason, f.jl = True, {"dev-a": dev}, {}, {}, threading.Lock()
+        f.is_disabled = lambda d: False
+        L.write_json(L.job_path("jx"), {"id": "jx", "suite": "smoke", "parts": {"v11": {"state": "pending"}}})
+        real, n = L.read_json, [0]
+        def flaky(path):
+            if path == L.job_path("jx") and n[0] >= 1:
+                raise ValueError("torn json")
+            n[0] += 1
+            return real(path)
+        L.read_json = flaky
+        self.addCleanup(setattr, L, "read_json", real)
+        err = None
+        try:
+            f._run_part("jx", "v11", "dev-a")
+        except Exception as e:
+            err = e                                                                  # keeps the traceback (and so any leaked lock fd) alive
+        L.read_json = real
+        self.assertIsNotNone(err)
+        lk = L.PhoneLock(dev, True)
+        self.assertTrue(lk.acquire(), "lock leaked by _run_part")
+        lk.release()
+
+    def test_cancelled_part_removes_the_cancel_marker(self):
+        import importlib.machinery, importlib.util, threading
+        ld = importlib.machinery.SourceFileLoader("farmd_cm", HERE + "/farmd")
+        fd = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_cm", ld))
+        ld.exec_module(fd)
+        f = object.__new__(fd.Farm)
+        dev = {"alias": "dev-a", "class": "v11", "serial": "S", "lock": "cmf"}
+        f.fake, f.devs, f.cool, f.stop_reason, f.jl, f.restore_pending = True, {"dev-a": dev}, {}, {}, threading.Lock(), set()
+        f.is_disabled = lambda d: False
+        f.gate_check = lambda d, starting=False: ("ok", "", {})
+        f.preflight = lambda d: (True, "")
+        f.build = lambda job: ("sha", "")
+        f.qrestore = lambda d: None
+        f.suite_smoke = lambda job, d: (f.stop_reason.update({"dev-a": "cancelled"}), {"lost": True})[1]      # owner cancelled mid-run
+        L.write_json(L.job_path("jc"), {"id": "jc", "suite": "smoke", "parts": {"v11": {"state": "pending", "attempts": 0}}})
+        os.makedirs(self.d + "/state/cancel", exist_ok=True)
+        marker = self.d + "/state/cancel/jc"
+        open(marker, "w").close()
+        f._run_part("jc", "v11", "dev-a")
+        self.assertEqual(L.read_json(L.job_path("jc"))["parts"]["v11"]["state"], "cancelled")
+        self.assertFalse(os.path.exists(marker))
+
     def test_unreachable_stored_route_is_a_soft_miss(self):
         calls = []
         L._ROUTE_MISS.clear()
