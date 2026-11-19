@@ -74,6 +74,7 @@ struct mali_kdev {
    pthread_mutex_t lock;
    unsigned long submits, fault_at;
    unsigned slow_us;
+   pthread_mutex_t wait_lock;   /* models kbase's notification-read lock: a blocking fence wait holds it for <= 20 ms slices */
    unsigned long cs_submits, cs_instr;
    uint64_t next_va;
    bool lost;
@@ -230,6 +231,7 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    if (!k)
       return -ENOMEM;
    pthread_mutex_init(&k->lock, NULL);
+   pthread_mutex_init(&k->wait_lock, NULL);
    pthread_condattr_t ca; /* initialised once here, so a failed timer start never re-inits it; monotonic for the timed wait */
    pthread_condattr_init(&ca);
    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
@@ -477,16 +479,29 @@ fake_submit_signal(struct mali_kdev *k, int *fence_fd)
 static int
 fake_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
+   /* Like kbase_fence_wait: one waiter at a time in <= 20 ms slices, so a poll that needs the lock can stall behind a blocking waiter. */
    struct pollfd pf = {fence_fd, POLLIN, 0};
+   struct timespec t0;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
    for (;;) {
-      int r = poll(&pf, 1, timeout_ms);
+      struct timespec t1;
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      long long el = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+      long long left = timeout_ms < 0 ? 1000000 : timeout_ms - el;
+      if (left < 0)
+         left = 0;
+      int slice = left > 20 ? 20 : (int)left;
+      pthread_mutex_lock(&k->wait_lock);
+      int r = poll(&pf, 1, slice);
+      pthread_mutex_unlock(&k->wait_lock);
       if (r < 0 && errno == EINTR)
          continue;
       if (r < 0)
          return -errno;
-      if (r == 0)
+      if (r > 0)
+         return (pf.revents & POLLERR) ? -EIO : 0;
+      if (timeout_ms >= 0 && left <= slice)
          return -ETIMEDOUT;
-      return (pf.revents & POLLERR) ? -EIO : 0;
    }
 }
 

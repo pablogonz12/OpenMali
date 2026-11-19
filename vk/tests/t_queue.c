@@ -245,6 +245,49 @@ test_teardown(void)
    return 1;
 }
 
+/* Poll latency (MALI_FAKE_SLOW_US=300000): a thread sits in a blocking wait on a pending fence (the fake backend, like kbase,
+ * serialises waiters in 20 ms slices); vkGetFenceStatus and a timeout-0 vkWaitForFences on that pending fence must answer
+ * NOT_READY/TIMEOUT at once instead of queueing behind the slice, and the later signal must still be seen. */
+static void *
+poll0_waiter(void *a)
+{
+   WaitForFences(dev, 1, (VkFence *)a, VK_TRUE, 5000000000ull);
+   return NULL;
+}
+
+static int
+test_poll0(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   pthread_t th;
+   pthread_create(&th, NULL, poll0_waiter, &f);
+   usleep(5000); /* the waiter is inside its first slice */
+   double worst = 0;
+   int pending = 0;
+   for (int i = 0; i < 8; i++) {
+      double t = now_us();
+      VkResult a = GetFenceStatus(dev, f), b = WaitForFences(dev, 1, &f, VK_TRUE, 0);
+      t = now_us() - t;
+      if (a == VK_NOT_READY && b == VK_TIMEOUT)
+         pending++;
+      if (t > worst)
+         worst = t;
+      usleep(2000);
+   }
+   CHECK(pending >= 4, "fence was pending in only %d of 8 polls", pending);
+   CHECK(worst < 8000, "timeout-0 poll took %.0f us behind a blocking waiter (limit 8000)", worst);
+   pthread_join(th, NULL);
+   CHECK(GetFenceStatus(dev, f) == VK_SUCCESS, "signalled fence seen by a poll");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 0) == VK_SUCCESS, "signalled fence, timeout 0");
+   DestroyFence(dev, f, NULL);
+   printf("{\"test\":\"poll0\",\"pending\":%d,\"worst_us\":%.0f,\"ok\":true}\n", pending, worst);
+   return 1;
+}
+
 static int
 test_binary(void)
 {
@@ -657,6 +700,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
    if (ok && CASE_ON("syncfile")) ok &= test_syncfile();
+   if (ok && g_only && !strcmp(g_only, "poll0")) ok &= test_poll0();
    if (ok && g_only && !strcmp(g_only, "gpufence")) ok &= test_gpufence();
    if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);

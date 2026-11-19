@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <time.h>
@@ -493,6 +494,28 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
    /* kb_fence_wait reads kbase notifications from the shared fd, so only one thread at a time; slice
     * the wait so that others (and the timeout) get their turn. */
+   if (timeout_ms == 0) {
+      /* A poll must not queue behind another thread's slice on wait_lock (up to 20 ms): the sync_file itself says signalled or not,
+       * and a signalled fence has no notification left to read. Error state is still reported (POLLERR / faulted queue). */
+      struct pollfd pf = {fence_fd, POLLIN, 0};
+      int pr;
+      while ((pr = poll(&pf, 1, 0)) < 0 && errno == EINTR) {}
+      if (pr < 0)
+         return -errno;
+      if (pr == 0) {
+         if (kb_queue_faulted(&k->queue)) {
+            k->lost = true;
+            return -EIO;
+         }
+         return -ETIMEDOUT;
+      }
+      if (pf.revents & POLLERR) {
+         k->lost = true;
+         return -EIO;
+      }
+      mem_sync_all(k, 2);
+      return 0;
+   }
    struct timespec t0;
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (;;) {
