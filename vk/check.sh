@@ -95,6 +95,8 @@ for g in v11 v13; do
    run "vk_draw many $g"  0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only many_draws
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
 done
+# hwbench: the three bottleneck microbenchmarks (fake backend: the API sequence, shader compile and submit path).
+for g in v11 v13; do run "hwbench $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_bench" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --quick --json-only; done
 
 # R4-B2: DXVK-required core feature tests (pixels only on hardware).
 for g in v11 v13; do
