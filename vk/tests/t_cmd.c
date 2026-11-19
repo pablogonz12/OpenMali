@@ -523,6 +523,7 @@ int main(int argc, char **argv)
             struct vk_command_buffer *vl = new_cmd(pool, &c2);
             VkRenderingAttachmentInfo lca;
             VkRenderingInfo lri = rendering_info(&lca, false);
+            lri.layerCount = cases[i].base + cases[i].count;   /* the cleared layers must lie inside the rendering's layer range (VUID-vkCmdClearAttachments-pRects-06937) */
             mali_CmdBeginRendering(c2, &lri);
             VkClearRect lr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = cases[i].base, .layerCount = cases[i].count};
             mali_CmdClearAttachments(c2, 1, &cat, 1, &lr);
@@ -543,6 +544,8 @@ int main(int argc, char **argv)
             VkRenderingAttachmentInfo cca;
             VkRenderingInfo dri2 = rendering_info(&cca, false);
             dri2.pDepthAttachment = &dca2;
+            dri2.layerCount = 2;                           /* the clear below targets layer 1 */
+            memset(F.ar.bo.cpu, 0, F.ar.bo.size);          /* drop descriptors left by earlier layered cases: only this submission may hit the watch */
             mali_CmdBeginRendering(c2, &dri2);
             VkClearRect lr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 1, .layerCount = 1};
             mali_CmdClearAttachments(c2, 1, &cat, 1, &lr);
@@ -561,6 +564,7 @@ int main(int argc, char **argv)
          new_cmd(pool, &c2);
          VkRenderingAttachmentInfo dca;
          VkRenderingInfo dri = rendering_info(&dca, false);
+         dri.layerCount = 2;
          mali_CmdBeginRendering(c2, &dri);
          VkClearAttachment dat = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT};
          VkClearRect dr = {.rect = {{0, 0}, {W, H}}, .baseArrayLayer = 0, .layerCount = 2};
