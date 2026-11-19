@@ -1,0 +1,30 @@
+From 0a65740a965ebdf442437bd19b37663b38b8545b Mon Sep 17 00:00:00 2001
+From: Erik Faye-Lund
+Date: Wed, 4 Nov 2026 15:17:18 +0100
+Subject: [PATCH] panvk: add missing flush after copy_fbd
+
+After writing the scratch fbd, we need to flush stores to make sure
+these finish before RUN_FRAGMENT runs.
+
+Fixes: 5a7159f86987 ("panfrost: Remove duplicated flushes before RUN_FRAGMENT[2]")
+Reviewed-by: Lars-Ivar Hesselberg Simonsen
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/45956>
+---
+ src/panfrost/vulkan/csf/panvk_vX_exception_handler.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c b/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
+index 5b9b0a758985..d6b0b63a8a56 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
+@@ -269,6 +269,7 @@ generate_tiler_oom_handler(struct panvk_device *dev,
+ 
+          copy_fbd(&b, has_zs_ext, rt_count, current_fbd_ptr_reg, ir_descs_ptr,
+                   scratch_fbd_ptr_reg);
++         cs_flush_stores(&b);
+ 
+ #if PAN_ARCH >= 14
+          /* Emit the scratch fbd layer state. */
+-- 
+GitLab
+

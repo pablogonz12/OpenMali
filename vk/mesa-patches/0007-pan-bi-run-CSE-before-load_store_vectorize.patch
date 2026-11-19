@@ -1,0 +1,59 @@
+From 1fe05a796556db4f7bcdf148a4cf44d12554bb23 Mon Sep 17 00:00:00 2001
+From: Christoph Pillmayer
+Date: Mon, 16 Nov 2026 10:36:27 +0100
+Subject: [PATCH] pan/bi: Run CSE before load_store_vectorize
+
+opt_load_store_vectorize uses src0 in @load_ubo as entry_key::resource.
+Entries targeting different resources end up in different lists of
+vectorization candidates and are never vectorized as a result. Running CSE
+before exposes loads that target the same resource.
+
+The resource is different because lower_explicit_io loads matrix and
+vector components individually with each load having it's own address
+computation. For example loading a mat4 for some lighting computation
+can turn into 16 @load_ubo instructions. With this patch, they get
+turned back into 4 32x4 loads.
+
+The vectorized loads can increase spilling in the following situation:
+Before:
+   load(a)
+   use(a)
+   load(b)
+   use(b)
+After:
+   load(a, b)
+   use(a)
+   use(b)
+
+-> b needs to be live across use(a)
+The spill/fill increase is outweighed by the overall LS savings.
+
+Reviewed-by: Lorenzo Rossi
+Reviewed-by: Lars-Ivar Hesselberg Simonsen
+Reviewed-by: Faith Ekstrand
+Reviewed-by: Erik Faye-Lund
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/46347>
+---
+ src/panfrost/compiler/bifrost/bifrost_nir.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/panfrost/compiler/bifrost/bifrost_nir.c b/src/panfrost/compiler/bifrost/bifrost_nir.c
+index f43606abab15..0d1c401e7c60 100644
+--- a/src/panfrost/compiler/bifrost/bifrost_nir.c
++++ b/src/panfrost/compiler/bifrost/bifrost_nir.c
+@@ -918,6 +918,12 @@ bifrost_postprocess_nir(nir_shader *nir,
+    if (bi_use_kraid(nir, gpu_arch) && nir->info.stage == MESA_SHADER_FRAGMENT)
+       NIR_PASS(_, nir, pan_nir_opt_var_tex, gpu_arch);
+ 
++   /* CSE helps expose loads from the same resource. load_store_vectorize
++    * does not vectorize loads if they are not from the same resource
++    * (determined by the SSA value of the source).
++    */
++   NIR_PASS(_, nir, nir_opt_cse);
++
+    /* Why aren't we vectorizing nir_var_shader_temp?
+     * Basically, the current RA doesn't know rematerialization and is still
+     * learning spills, if we vectorize temp stores it might create long-lived
+-- 
+GitLab
+

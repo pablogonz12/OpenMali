@@ -1,0 +1,57 @@
+From 75217eabfa8a7499de5875bbafa03b39d02418e6 Mon Sep 17 00:00:00 2001
+From: Erik Faye-Lund
+Date: Wed, 4 Nov 2026 15:08:04 +0100
+Subject: [PATCH] panvk: restore zero-value for flush_id after copy_fbd
+
+The copy_fbd() function overwrites flush_id, so it's no longer zero when
+we flush. Restore the value first.
+
+This is analogous to !44109, but for PanVK instead of Panfrost.
+
+The flakes are removed speculatively, because these are the same tests
+as that MR was fixing, just when running through Angle instead. Seems
+likely that these are fixed, and we can always add back flakes in the
+future if we're wrong.
+
+Fixes: eaf68f744b7a ("panvk/csf: rework IR descriptor handling for tiler OOM")
+Reviewed-by: Lars-Ivar Hesselberg Simonsen
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/45956>
+---
+ src/panfrost/ci/panfrost-g925-flakes.txt             | 8 --------
+ src/panfrost/vulkan/csf/panvk_vX_exception_handler.c | 1 +
+ 2 files changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/src/panfrost/ci/panfrost-g925-flakes.txt b/src/panfrost/ci/panfrost-g925-flakes.txt
+index cb6976668314..ba7bfaf67ea9 100644
+--- a/src/panfrost/ci/panfrost-g925-flakes.txt
++++ b/src/panfrost/ci/panfrost-g925-flakes.txt
+@@ -25,14 +25,6 @@ angle-dEQP-GLES3.functional.multisample.fbo_4_samples.proportionality_sample_cov
+ angle-dEQP-GLES3.functional.multisample.fbo_max_samples.constancy_alpha_to_coverage
+ angle-KHR-GLES31.core.compute_shader.sso-case2
+ angle-KHR-GLES31.core.shader_image_load_store.basic-allTargets-loadStoreVS
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_combined_grid_500x500_drawcount_2500
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_combined_grid_1000x1000_drawcount_1
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_separate_grid_500x500_drawcount_1
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_separate_grid_500x500_drawcount_8
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_separate_grid_500x500_drawcount_2500
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_separate_grid_1200x1200_drawcount_1
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_separate_grid_1200x1200_drawcount_8
+-angle-multisample-dEQP-GLES31.functional.draw_indirect.compute_interop.large.drawelements_separate_grid_1500x1500_drawcount_1
+ 
+ # Appears just beforehand:
+ # 19:50:56.843: [   92.880197] panthor 48000000.gpu: [drm] *ERROR* CSG 7 update request timedout
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c b/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
+index cc1b5d5a250b..5b9b0a758985 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
+@@ -347,6 +347,7 @@ generate_tiler_oom_handler(struct panvk_device *dev,
+ 
+       /* We need to flush the texture caches so future preloads see the new
+        * content. */
++      cs_move32_to(&b, flush_id, 0);
+       cs_flush_caches(&b, MALI_CS_FLUSH_MODE_NONE, MALI_CS_FLUSH_MODE_NONE,
+                       MALI_CS_OTHER_FLUSH_MODE_INVALIDATE, flush_id,
+                       cs_defer(SB_IMM_MASK, SB_ID(IMM_FLUSH)));
+-- 
+GitLab
+

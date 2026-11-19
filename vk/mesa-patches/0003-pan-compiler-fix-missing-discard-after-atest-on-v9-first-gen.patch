@@ -1,0 +1,135 @@
+From 03bc0ff2bc9c04f5181c31dced86e68373b62e1e Mon Sep 17 00:00:00 2001
+From: Lorenzo Rossi
+Date: Fri, 30 Oct 2026 15:46:51 +0100
+Subject: [PATCH] pan/compiler: Fix missing discard after atest on v9 first gen
+
+On Mali G57/G77 a hardware bug prevented helper thread discards after the
+ATEST instruction.
+
+Signed-off-by: Lorenzo Rossi
+Reviewed-by: Faith Ekstrand
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/45761>
+---
+ src/panfrost/compiler/bifrost/bi_quirks.h       |  2 +-
+ src/panfrost/compiler/bifrost/bifrost_nir.c     |  4 ++--
+ src/panfrost/compiler/pan_nir.h                 |  3 ++-
+ .../compiler/pan_nir_lower_fs_outputs.c         | 17 +++++++++++++++--
+ src/panfrost/model/pan_model.h                  |  2 ++
+ src/panfrost/vulkan/panvk_vX_shader.c           |  2 +-
+ 6 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/src/panfrost/compiler/bifrost/bi_quirks.h b/src/panfrost/compiler/bifrost/bi_quirks.h
+index 2d0bbc3b4c07..8a30f7cfbb0d 100644
+--- a/src/panfrost/compiler/bifrost/bi_quirks.h
++++ b/src/panfrost/compiler/bifrost/bi_quirks.h
+@@ -35,7 +35,7 @@ bifrost_get_quirks(unsigned arch, const struct pan_model *model)
+     */
+    unsigned arch_minor = 0;
+    if (model)
+-      arch_minor = (model->gpu_prod_id >> 8) & 0xff;
++      arch_minor = PAN_PROD_ID_ARCH_MINOR(model->gpu_prod_id);
+ 
+    /* Applies to archs before 6.2 */
+    unsigned quirks = 0;
+diff --git a/src/panfrost/compiler/bifrost/bifrost_nir.c b/src/panfrost/compiler/bifrost/bifrost_nir.c
+index 0d1c401e7c60..db1024a923e2 100644
+--- a/src/panfrost/compiler/bifrost/bifrost_nir.c
++++ b/src/panfrost/compiler/bifrost/bifrost_nir.c
+@@ -875,8 +875,8 @@ bifrost_postprocess_nir(nir_shader *nir,
+          nir->info.outputs_written & (BITFIELD_BIT(FRAG_RESULT_DEPTH) |
+                                       BITFIELD_BIT(FRAG_RESULT_STENCIL));
+       const bool skip_atest = inputs->is_blit && !emit_zs;
+-      NIR_PASS(_, nir, pan_nir_lower_fs_outputs, skip_atest,
+-               inputs->fragcolor_nr_cbufs);
++      NIR_PASS(_, nir, pan_nir_lower_fs_outputs, skip_atest, gpu_arch,
++               inputs->model, inputs->fragcolor_nr_cbufs);
+    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
+       NIR_PASS(_, nir, nir_lower_viewport_transform);
+       NIR_PASS(_, nir, nir_lower_point_size, 1.0, 0.0);
+diff --git a/src/panfrost/compiler/pan_nir.h b/src/panfrost/compiler/pan_nir.h
+index f4b296c4d21a..ecbf3fe0a28b 100644
+--- a/src/panfrost/compiler/pan_nir.h
++++ b/src/panfrost/compiler/pan_nir.h
+@@ -356,7 +356,8 @@ bool pan_nir_lower_framebuffer(nir_shader *shader,
+                                unsigned blend_shader_nr_samples,
+                                bool broken_ld_special);
+ 
+-bool pan_nir_lower_fs_outputs(nir_shader *shader, bool skip_atest,
++bool pan_nir_lower_fs_outputs(nir_shader *shader, bool skip_atest, unsigned arch,
++                              const struct pan_model *model,
+                               unsigned fragcolor_nr_cbufs);
+ 
+ uint32_t pan_nir_collect_noperspective_varyings_fs(nir_shader *s);
+diff --git a/src/panfrost/compiler/pan_nir_lower_fs_outputs.c b/src/panfrost/compiler/pan_nir_lower_fs_outputs.c
+index 2acc691fc629..d4645d936403 100644
+--- a/src/panfrost/compiler/pan_nir_lower_fs_outputs.c
++++ b/src/panfrost/compiler/pan_nir_lower_fs_outputs.c
+@@ -3,6 +3,7 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include "panfrost/model/pan_model.h"
+ #include "pan_nir.h"
+ #include "nir_builder.h"
+ 
+@@ -88,7 +89,8 @@ gather_output_intrin(nir_builder *b, nir_intrinsic_instr *intrin, void *_data)
+ }
+ 
+ bool
+-pan_nir_lower_fs_outputs(nir_shader *shader, bool skip_atest,
++pan_nir_lower_fs_outputs(nir_shader *shader, bool skip_atest, unsigned arch,
++                         const struct pan_model *model,
+                          unsigned fragcolor_nr_cbufs)
+ {
+    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
+@@ -147,9 +149,20 @@ pan_nir_lower_fs_outputs(nir_shader *shader, bool skip_atest,
+     * alpha value is only used for alpha-to-coverage, a stage which is
+     * skipped for pure integer framebuffers, so the issue is moot.
+     */
+-   if (!skip_atest)
++   if (!skip_atest) {
+       coverage = nir_atest_pan(b, coverage, alpha);
+ 
++      /* Mali-G77 has a hardware bug where it does not automatically demote
++       * threads, it instead needs to call DISCARD manually.  The bug has been
++       * fixed in G78
++       */
++      bool needs_manual_discard = arch == 9 &&
++         (model == NULL || PAN_PROD_ID_ARCH_MINOR(model->gpu_prod_id) < 2);
++      if (needs_manual_discard) {
++         nir_demote_if(b, nir_ieq_imm(b, nir_u2u16(b, coverage), 0));
++      }
++   }
++
+    /* We discard depth/stencil writes if early fragment tests is forced. */
+    if ((out.depth || out.stencil) && !shader->info.fs.early_fragment_tests) {
+       /* EMIT_ZS requires an ATEST */
+diff --git a/src/panfrost/model/pan_model.h b/src/panfrost/model/pan_model.h
+index b48f93b69016..18462737271e 100644
+--- a/src/panfrost/model/pan_model.h
++++ b/src/panfrost/model/pan_model.h
+@@ -39,6 +39,8 @@ struct pan_tiler_features {
+ #define PAN_PROD_ID(arch_major, arch_minor, prod_major)                        \
+    (((arch_major) << 16) | ((arch_minor) << 8) | (prod_major))
+ 
++#define PAN_PROD_ID_ARCH_MINOR(prod_id) (((prod_id) >> 8) & 0xff)
++
+ /* GPU revision (rXpY) */
+ #define PAN_REV(ver_major, ver_minor) (((ver_major) << 8) | ((ver_minor)))
+ 
+diff --git a/src/panfrost/vulkan/panvk_vX_shader.c b/src/panfrost/vulkan/panvk_vX_shader.c
+index 4da2535034a0..98e65962bafd 100644
+--- a/src/panfrost/vulkan/panvk_vX_shader.c
++++ b/src/panfrost/vulkan/panvk_vX_shader.c
+@@ -1777,7 +1777,7 @@ panvk_compile_shader(struct panvk_device *dev,
+        * to a driver-provided FAU instead of using the blend descriptors
+        * uploaded by the hardware.  See panvk_vX_blend.c for details.
+        */
+-      NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false,
++      NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, PAN_ARCH, inputs.model,
+                0 /* fragcolor_nr_cbufs */);
+ 
+       variant->own_bin = true;
+-- 
+GitLab
+

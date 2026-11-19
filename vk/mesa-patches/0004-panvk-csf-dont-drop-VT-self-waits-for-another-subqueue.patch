@@ -1,0 +1,65 @@
+From a2de3317a3e25b95b50a52f0d4578d3222d314e4 Mon Sep 17 00:00:00 2001
+From: Olivia Lee
+Date: Thu, 23 Apr 2026 01:59:10 -0700
+Subject: [PATCH] panvk/csf: don't drop VT self-waits needed for another
+ subqueue
+
+We need self-waits on all of the src subqueues of cross-subqueue
+dependencies. So tiler subqueue self-waits are unnecessary to
+synchronize within the tiler subqueue, but they are still needed if
+another subqueue waits on the tiler subqueue. This situation is
+currently impossible because
+
+> VUID-vkCmdPipelineBarrier2-None-07892 If vkCmdPipelineBarrier2 is called within a render pass instance, the source and destination stage masks of any memory barriers must only include graphics pipeline stages
+
+Which rules out tiler->compute barriers inside a renderpass. And
+
+> VUID-vkCmdPipelineBarrier2-None-07890 If vkCmdPipelineBarrier2 is called within a render pass instance, and the source stage masks of any memory barriers include framebuffer-space stages, destination stage masks of all memory barriers must only include framebuffer-space stages
+
+Which rules out tiler->fragment barriers. However, with GS/XFB the
+vertex/geometry/xfb stages can be executed on the compute subqueue,
+allowing for vertex subqueue -> compute subqueue dependencies inside a
+renderpass.
+
+Signed-off-by: Olivia Lee
+Reviewed-by: Lars-Ivar Hesselberg Simonsen
+Reviewed-by: Eric R. Smith
+Reviewed-by: Ryan Zhang
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44118>
+---
+ src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c b/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
+index a7e2f72dafbb..eb198441f102 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
+@@ -436,8 +436,23 @@ collect_cs_deps(struct panvk_cmd_buffer *cmdbuf, const VkDependencyInfo *info,
+       /* skip the tiler subqueue self-wait because we use the same
+        * scoreboard slot for the idvs jobs
+        */
+-      wait_masks[PANVK_SUBQUEUE_VERTEX_TILER] &=
+-         ~BITFIELD_BIT(PANVK_SUBQUEUE_VERTEX_TILER);
++      if (wait_masks[PANVK_SUBQUEUE_VERTEX_TILER] &
++          BITFIELD_BIT(PANVK_SUBQUEUE_VERTEX_TILER)) {
++         /* the self-wait is still needed to synchronize across subqueues
++          * though, so we can't drop it if any other subqueues wait on the
++          * tiler subqueue
++          */
++         bool self_wait_needed = false;
++         for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++) {
++            if (i != PANVK_SUBQUEUE_VERTEX_TILER)
++               self_wait_needed |=
++                  wait_masks[i] & BITFIELD_BIT(PANVK_SUBQUEUE_VERTEX_TILER);
++         }
++
++         if (!self_wait_needed)
++            wait_masks[PANVK_SUBQUEUE_VERTEX_TILER] &=
++               ~BITFIELD_BIT(PANVK_SUBQUEUE_VERTEX_TILER);
++      }
+    }
+ 
+    for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++) {
+-- 
+GitLab
+
