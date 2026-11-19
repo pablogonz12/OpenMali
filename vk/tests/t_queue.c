@@ -3,7 +3,7 @@
  * timeline semaphores, sync_file export/import, many empty submits, device loss. Loader-free: dlopens
  * the ICD like t_icd --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle]
+ *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|teardown]
  *   fault mode needs MALI_FAULT_INJECT=n in the environment (n-th submission fails).
  */
 #define _DEFAULT_SOURCE
@@ -226,6 +226,22 @@ test_idle(void)
    CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "queue idle");
    CHECK(DeviceWaitIdle(dev) == VK_SUCCESS, "device idle");
    printf("{\"test\":\"idle\",\"n\":%d,\"ok\":true}\n", g_burst);
+   return 1;
+}
+
+/* Device teardown with a delayed fence still pending (MALI_FAKE_SLOW_US=100000): the fake backend's timer must be stopped and joined in
+ * DestroyDevice. main() then dlclose()s the ICD and waits past the delay: a stray backend thread would wake in unmapped code (SEGV). */
+static int
+test_teardown(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   for (int i = 0; i < 4; i++)
+      CHECK(QueueSubmit(queue, 1, &si, i == 3 ? f : VK_NULL_HANDLE) == VK_SUCCESS, "submit %d", i);
+   DestroyFence(dev, f, NULL); /* not waited: the signal is still in flight */
+   printf("{\"test\":\"teardown\",\"ok\":true}\n");
    return 1;
 }
 
@@ -542,6 +558,32 @@ test_fault(void)
    return 1;
 }
 
+/* A submission without signals must not run submit_signal (the fake backend counts only those towards MALI_FAULT_INJECT=n):
+ * many signal-less submits survive, and the n-th FENCED one is the lost one. */
+static int
+test_nofence(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   const char *e = getenv("MALI_FAULT_INJECT");
+   int n = e ? atoi(e) : 0;
+   CHECK(n > 1, "MALI_FAULT_INJECT (>1) not set");
+   for (int i = 0; i < 4 * n; i++)
+      CHECK(QueueSubmit(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS, "signal-less submit %d consumed a fence slot", i);
+   for (int i = 0; i < n - 1; i++) {
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "fenced submit %d", i);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "wait %d", i);
+      ResetFences(dev, 1, &f);
+   }
+   VkResult r = QueueSubmit(queue, 1, &si, f);
+   CHECK(r == VK_ERROR_DEVICE_LOST, "n-th fenced submit: expected DEVICE_LOST, got %d", r);
+   DestroyFence(dev, f, NULL);
+   printf("{\"test\":\"nofence\",\"inject\":%d,\"ok\":true}\n", n);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -619,12 +661,27 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
+   if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
 
-   DeviceWaitIdle(dev);
+   int td = g_only && !strcmp(g_only, "teardown");
+   if (ok && td) ok &= test_teardown();
+   if (!td) DeviceWaitIdle(dev);
+   struct timespec t0, t1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
    DestroyDevice(dev, NULL);
+   clock_gettime(CLOCK_MONOTONIC, &t1);
    DestroyInstance(inst, NULL);
    dlclose(lib);
+   const char *sl = getenv("MALI_FAKE_SLOW_US");
+   unsigned slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
+   if (td) usleep(slow_us + 100000); /* longer than the delay: any thread left behind runs now */
+   double dms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+   if (td && dms > slow_us / 2000.0) { /* destroy must cut the pending delay short, not sit it out */
+      printf("{\"fail\":\"DestroyDevice took %.0f ms with a %u us fence delay\"}\n", dms, slow_us);
+      g_fail = 1;
+   }
    int fds1 = count_fds();
+   if (td && fds1 != fds0) { printf("{\"fail\":\"teardown fds %d -> %d\"}\n", fds0, fds1); g_fail = 1; }
    printf("{\"fds\":[%d,%d],\"pass\":%s}\n", fds0, fds1, (ok && !g_fail) ? "true" : "false");
    return (ok && !g_fail) ? 0 : 1;
 }
