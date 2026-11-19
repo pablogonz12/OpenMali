@@ -1391,7 +1391,7 @@ test_msaa_store_resolve_oq(void)
       CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
       float rot[4] = {1, 0, 0, 0};
       CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot);
-      if (withq) CmdBeginQuery(cb, qp, 0, VK_QUERY_CONTROL_PRECISE_BIT);
+      if (withq) CmdBeginQuery(cb, qp, 0, 0);
       CmdDraw(cb, 3, 1, 0, 0);
       if (withq) CmdEndQuery(cb, qp, 0);
       CmdEndRenderPass(cb);
