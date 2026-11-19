@@ -119,7 +119,19 @@ main(int argc, char **argv)
    eq("driverID", p12.driverID, drv.driverID);
    CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
    CHECK(!strcmp(drv.driverName, "mali-own"), "driverName '%s'", drv.driverName);
-   CHECK(!strncmp(drv.driverInfo, "mali-open ", 10) && strstr(drv.driverInfo, " (mali-own)"), "driverInfo '%s'", drv.driverInfo);
+#ifdef MALI_EXPECT_SHA
+   { /* full identity: "mali-open <sha|unknown>[-dirty] (mali-own), not conformant"; build.sh passes the sha it compiled in */
+      char want[VK_MAX_DRIVER_INFO_SIZE];
+      snprintf(want, sizeof want, "mali-open %s (mali-own), not conformant", MALI_EXPECT_SHA);
+      CHECK(!strcmp(drv.driverInfo, want), "driverInfo '%s' != '%s'", drv.driverInfo, want);
+   }
+#else
+   { /* no expected sha known (prebuilt test): still require the exact shape with a non-empty id */
+      const char *id = drv.driverInfo + 10, *sp = strchr(id, ' ');
+      CHECK(!strncmp(drv.driverInfo, "mali-open ", 10) && sp && sp > id &&
+            !strcmp(sp, " (mali-own), not conformant"), "driverInfo '%s'", drv.driverInfo);
+   }
+#endif
    CHECK(strstr(pr.properties.deviceName, "mali-own"), "deviceName '%s'", pr.properties.deviceName);
    CHECK(drv.conformanceVersion.major == 0 && drv.conformanceVersion.minor == 0 && drv.conformanceVersion.subminor == 0 &&
          drv.conformanceVersion.patch == 0, "conformanceVersion must stay 0.0.0.0");
