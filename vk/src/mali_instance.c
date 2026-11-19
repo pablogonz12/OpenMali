@@ -38,6 +38,8 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
 #ifdef VK_USE_PLATFORM_XLIB_KHR
    .KHR_xlib_surface = true,
 #endif
+   .EXT_headless_surface = true,       /* wsi_common_headless.c is compiled on every non-Windows build (ANGLE's VerifyExtensionsPresent needs it) */
+   .EXT_swapchain_colorspace = true,   /* wsi_common only offers colour spaces the surface really supports (sRGB-nonlinear everywhere) */
    .EXT_debug_utils = true,
 };
 

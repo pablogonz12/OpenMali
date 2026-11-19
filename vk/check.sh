@@ -63,7 +63,8 @@ run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
 # Steam session (STEAM-GAPS.md): none of gamescope's vkCreateDevice requirements is missing any more.
 STEAM_MISSING=0
 # zink (STEAM-GAPS.md): logicOp and EXT_physical_device_drm still missing; lower only together with the passing test.
-ZINK_MISSING=1
+ZINK_MISSING=1   # logicOp is on main; only VK_EXT_physical_device_drm is left (the fake backend has no DRM node). headless_surface is not in zink's list
+for g in v11 v13; do run "vk_headless $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_headless" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "steam_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
