@@ -289,6 +289,15 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    int rc = kb_fb_pack(out, &p);
    if (rc)
       return rc;
+   if (env->arch != 13 && f->has_colour && f->ncolour > 1) {
+      /* v10/v11: Color Buffer Allocation (word 11 bits 31:24, KiB at 1024 px = bytes per pixel) must cover every render target, or
+       * RT n's Internal Buffer Offset lies outside it and the targets alias in the tile buffer (RT0 read back RT1's colour). */
+      uint32_t *w = (uint32_t *)out;
+      unsigned bpp = f->colour.rt ? f->colour.rt->alloc : 4u;
+      for (unsigned n = 0; n + 1 < f->ncolour && n < 3; n++)
+         bpp += f->colour_x[n].rt ? f->colour_x[n].rt->alloc : 4u;
+      w[11] = (w[11] & ~(0xffu << 24)) | (bpp << 24);
+   }
    if (env->arch == 13) {
       uint32_t *w = (uint32_t *)out;
       unsigned bpp = f->colour.rt ? f->colour.rt->alloc : 4u;
