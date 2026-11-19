@@ -504,6 +504,10 @@ mali_CreateImageView(VkDevice _dev, const VkImageViewCreateInfo *ci, const VkAll
    }
    if (img->bc && !img->native_view) {
       v->vd.format = img->bc_lay.fmt->shadow;
+      /* mutable ASTC (UNORM <-> SRGB, same block size): the view keeps the requested colour interpretation of the decoded bytes */
+      const struct mali_bc_fmt *vf = mali_bc_format(v->vk.view_format ? v->vk.view_format : v->vk.format);
+      if (vf && mali_bc_is_astc(vf->vk) && mali_bc_is_astc(img->bc_lay.fmt->vk) && vf->bw == img->bc_lay.fmt->bw && vf->bh == img->bc_lay.fmt->bh)
+         v->vd.format = vf->shadow;
       v->vd.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
    }
    v->ycbcr = v->vk.format == MALI_YCBCR_FORMAT && (v->vk.aspects & VK_IMAGE_ASPECT_PLANE_0_BIT) && (v->vk.aspects & VK_IMAGE_ASPECT_PLANE_1_BIT);
