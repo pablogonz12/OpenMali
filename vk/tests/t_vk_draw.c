@@ -426,7 +426,8 @@ scene_create(struct scene *s, int depth)
       static const float colA[4] = {0.25f, 0.5f, 0.75f, 1.0f}, colB[4] = {1.0f, 0.0f, 0.5f, 1.0f}, colC[4] = {0.0f, 1.0f, 0.0f, 1.0f};
       static const float colD[4] = {0.5f, 0.0f, 1.0f, 1.0f};   /* sets 2..6: never read, must never alias to set 7 */
       for (unsigned i = 0; i < nubo; i++) {
-         const float *c = i == 0 ? colA : i == 1 ? colB : i == 7 ? colC : colD;   /* only set 7 is green */
+         /* MODE_SETS8: only set 7 is green. UBO/DESCUPD: ubo[2] is the green one the descriptor update binds */
+         const float *c = i == 0 ? colA : i == 1 ? colB : (mode == MODE_SETS8 ? i == 7 : i == 2) ? colC : colD;
          memcpy(s->ubop + step * i, c, 16);
       }
       for (unsigned i = 0; i < nubo; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
