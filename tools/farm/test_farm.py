@@ -1163,6 +1163,16 @@ class T(unittest.TestCase):
         self.assertTrue(any("fps 100 -> 85" in o for o in out) and any("cpu_ms 2 -> 2.5" in o for o in out))
         self.assertEqual(BL.regressions(rows[:1] + [row("a", 1, 9.0)]), [])             # same commit re-run is not a regression pair
 
+    def test_bench_regressions_incomplete_rerun_and_exact_boundary(self):
+        def row(c, fps, cpu, off=True):
+            return {"phone": "p", "commit_full": c * 40, "driver": "ours", "variant": "v", "offscreen": {"fps": fps, "cpu_ms": cpu} if off else {}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("b", 0, 0, off=False)]
+        self.assertEqual(len(BL.regressions(rows)), 2)                                  # incomplete rerun keeps the valid A..B pair
+        self.assertEqual(BL.regressions([row("a", 100, 2.0), row("b", 90, 2.2)]), [])   # exactly 10% on both metrics (2.0 -> 2.2 is 10.000000000000009)
+        self.assertEqual(len(BL.regressions([row("a", 100, 2.0), row("b", 89, 2.21)])), 2)
+        part = [row("a", 100, 2.0), {"phone": "p", "commit_full": "b" * 40, "driver": "ours", "variant": "v", "offscreen": {"cpu_ms": 2.5}}]
+        self.assertEqual(len(BL.regressions(part)), 1)                                  # missing fps skips only that metric
+
     def nosweep(self):
         os.environ.pop("MALI_FARM_SWEEP_LIST", None)          # an earlier sweep test leaves it in os.environ: a sweep would loop in these passes
         self.env.pop("MALI_FARM_SWEEP_LIST", None)
