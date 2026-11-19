@@ -293,6 +293,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .geometryShader = mali_advertise_gs(),   /* MALI_ADVERTISE_GS=1 shim only (mali_gs_shim.h): GS pipelines are rejected; t_gs_shim */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
+      .robustBufferAccess = true,  /* buffer loads/stores/atomics bounds-checked (mali_descriptor_lower.c); OOB loads 0, writes dropped; X8 t_vk_robust. Images/shared memory are not covered (not required) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
       .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
@@ -317,6 +318,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
+      .robustBufferAccess2 = true, /* same buffer lowering as robustBufferAccess (robust_zero_loads + Mesa's pass; byte-granular bounds, OOB loads 0, stores/atomics dropped). robustImageAccess2 stays FALSE: image loads/stores are not bounds-checked. t_vk_feat nulld */
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */

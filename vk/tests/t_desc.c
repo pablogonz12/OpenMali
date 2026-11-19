@@ -565,21 +565,31 @@ test_compile(unsigned arch)
    r = mali_compile(&o, &c, err, sizeof err);
    CHECK(r == 0, "comp compile: %s", err);
    if (r == 0) { CHECK(c.bin_size > 0 && c.ubo_count >= 1 && c.push_const_bytes == 4, "comp ubo %u push %u", c.ubo_count, c.push_const_bytes); mali_compiled_free(&c); }
-   /* robust_access (robustBufferAccess2/robustImageAccess2 lowering, default off): nir_lower_robust_access runs and inserts
-    * get_ssbo_size/get_ubo_size queries, which the backend cannot do yet -> the compile is refused cleanly (not an assert). The
-    * features stay unadvertised until the size lowering exists. */
+   /* robust_access (robustBufferAccess2/robustImageAccess2 lowering, default off): nir_lower_robust_access inserts get_ssbo_size/get_ubo_size,
+    * which the driver lowers to a load of the Buffer descriptor's size word from the table VAs it passes in the push block after the API
+    * push constants. Without that lowering the backend asserts on the size intrinsics, so a successful compile proves it ran. */
    {
       struct mali_compile_layout rl = fl.c;
       rl.robust_access = 1;
-      struct mali_compiled cr;
-      o.layout = &rl;
-      err[0] = 0;
-      CHECK(mali_compile(&o, &cr, err, sizeof err) != 0 && strstr(err, "get_ssbo_size"), "robust compute with SSBO/UBO must be refused until size queries exist: %s", err);
-      CHECK(mali_compile(&o, &cr, NULL, 0) != 0 && mali_compile(&o, &cr, NULL, sizeof err) != 0, "robust refusal with err == NULL must fail cleanly, not crash");
+      struct mali_compiled cr, cd;
       o.layout = &fl.c;
       err[0] = 0;
-      CHECK(mali_compile(&o, &cr, err, sizeof err) == 0, "default (robust off) compute still compiles: %s", err);
-      mali_compiled_free(&cr);
+      CHECK(mali_compile(&o, &cd, err, sizeof err) == 0, "default (robust off) compute compiles: %s", err);
+      CHECK(cd.size_tab_off == 0 && cd.size_tab_nsets == 0, "default compile needs no size table (off %u)", cd.size_tab_off);
+      o.layout = &rl;
+      err[0] = 0;
+      r = mali_compile(&o, &cr, err, sizeof err);
+      CHECK(r == 0, "robust compute with SSBO/UBO compiles (size queries lowered): %s", err);
+      if (r == 0) {
+         CHECK(cr.size_tab_off == 1 + mali_size_tab_off(&rl) && cr.size_tab_nsets == rl.nsets, "size table at push offset %u (got %u), nsets %u (got %u)",
+               mali_size_tab_off(&rl), cr.size_tab_off, rl.nsets, cr.size_tab_nsets);
+         CHECK(cr.bin_size != cd.bin_size || memcmp(cr.bin, cd.bin, cd.bin_size), "robust compile must differ from the default one");
+         CHECK(cr.fau_count > cd.fau_count, "the table VAs are FAU words (%u vs %u)", cr.fau_count, cd.fau_count);
+         CHECK(cr.push_const_bytes == cd.push_const_bytes, "table VAs are not API push constants (%u vs %u)", cr.push_const_bytes, cd.push_const_bytes);
+         mali_compiled_free(&cr);
+      }
+      mali_compiled_free(&cd);
+      o.layout = &fl.c;
    }
    /* without layout the old descriptor-free path still compiles the plain shaders */
    free(fs.w); free(cs.w);
