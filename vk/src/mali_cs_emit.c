@@ -532,7 +532,10 @@ mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const 
 /* fillModeNonSolid, polygonMode LINE / POINT: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges (LINE) or
  * POINT LIST of its vertices (POINT), per assembled triangle (mali_poly_assemble). Indices (u32, vertex numbers as the original draw would fetch
  * them, so vertexOffset/firstVertex stay in the draw) are generated here from the CPU view of the bound index buffer (the same submit-time read
- * the indirect draws use). Limits: cullMode and gl_FrontFacing are not honoured. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
+ * the indirect draws use). Limits: cullMode and gl_FrontFacing are not honoured; Flat varyings come from each generated point's / line's own
+ * provoking vertex, NOT the source triangle's (the spec wants the triangle's value for all of them). Index generation cannot express that:
+ * a point has one vertex, and an edge a-b cannot take the value of a third vertex c; a fix needs a VS variant that re-fetches the triangle's
+ * provoking vertex outputs. Visible only when Flat/integer varyings differ across a triangle in LINE/POINT mode. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
 static int
 poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw *o)
 {
@@ -1027,18 +1030,24 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
       if (f->samples == 4 && v13)
          tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
+      unsigned prev_prim = 0;
       struct mali_draw x, pv;   /* the running full draw (updated by the groups each record renewed) and what build_draw_descs needs of the previous one */
       memset(&x, 0, sizeof x);
       memset(&pv, 0, sizeof pv);
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
-         const struct mali_draw *dr = &x;
+         struct mali_draw *dr = &x;
          if (dr->gfx.poly_mode) {
             if (!mod && !(mod = calloc(f->ndraws, sizeof *mod))) { rc = -ENOMEM; goto out; }
             if ((rc = poly_lines(hw, dr, &mod[i])))
                goto out;
             dr = &mod[i];
          }
+         /* poly_lines rewrites gfx.prim (an empty POINT draw even picks a different one than a non-empty one) behind the record-time dirty
+          * mask's back: a change of the EFFECTIVE primitive, in either direction, must not reuse the previous draw's descriptors. */
+         if (i && prev_prim != dr->gfx.prim)
+            dr->dirty |= MALI_D_PIPE;
+         prev_prim = dr->gfx.prim;
          if ((rc = build_draw_descs(hw, f, dr, &dd[i], i ? &pv : NULL, i ? &dd[i - 1] : NULL)))
             goto out;
          if (check_dirty())
