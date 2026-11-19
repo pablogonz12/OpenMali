@@ -45,6 +45,8 @@ static int test_sepds(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static VkPipelineCreateFlags g_pipe_flags;   /* make_pipe: graphics pipeline create flags */
+static VkResult *g_pipe_res;   /* make_pipe: when set, the create result is stored here instead of being required to be VK_SUCCESS */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
@@ -269,11 +271,12 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
                                       .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
-                                      .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
+                                      .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp, .flags = g_pipe_flags};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+   if (g_pipe_res) *g_pipe_res = r;
    if (g_modless) { free(vcode); free(fcode); }
    else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
-   CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+   CHECK(g_pipe_res || r == VK_SUCCESS, "graphics pipeline = %d", r);
    return 1;
 }
 
@@ -1856,19 +1859,29 @@ test_demote(void)
 }
 
 /* pipelineCreationCacheControl: FAIL_ON_PIPELINE_COMPILE_REQUIRED must fail with VK_PIPELINE_COMPILE_REQUIRED (no cache hit exists) and write
- * VK_NULL_HANDLE; EARLY_RETURN_ON_FAILURE stops the array. The create infos are otherwise garbage on purpose: the flag must be honoured
- * before anything is read (a driver that ignores the flag fails on the empty stage instead, or creates a pipeline). */
+ * VK_NULL_HANDLE; EARLY_RETURN_ON_FAILURE stops the array. The create infos are valid (real shader, layout, render pass): only the flag decides. */
 static VkBool32 g_cachectl, g_sepds;
 static int
 test_cachectl(void)
 {
    CHECK(g_cachectl, "pipelineCreationCacheControl is required by Vulkan 1.3 (feature table) and implemented here");
    if (!g_cachectl) return 0;
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout clay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &clay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("spec.comp.spv");
+   CHECK(m, "shader");
    VkComputePipelineCreateInfo c[2];
    memset(c, 0, sizeof c);
    for (int i = 0; i < 2; i++) {
       c[i].sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
       c[i].flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+      c[i].layout = clay;
+      c[i].stage = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"};
    }
    VkPipeline p[2] = {(VkPipeline)(uintptr_t)0x1234, (VkPipeline)(uintptr_t)0x1234};
    VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 2, c, NULL, p);
@@ -1878,13 +1891,24 @@ test_cachectl(void)
    p[0] = p[1] = (VkPipeline)(uintptr_t)0x1234;
    r = CreateComputePipelines(dev, VK_NULL_HANDLE, 2, c, NULL, p);
    CHECK(r == VK_PIPELINE_COMPILE_REQUIRED && p[0] == VK_NULL_HANDLE && p[1] == VK_NULL_HANDLE, "compute early return: %d %p %p", r, (void *)p[0], (void *)p[1]);
-   VkGraphicsPipelineCreateInfo gi;
-   memset(&gi, 0, sizeof gi);
-   gi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-   gi.flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+   DestroyShaderModule(dev, m, NULL);
+   DestroyPipelineLayout(dev, clay, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   /* graphics: the complete make_pipe inputs plus the flag */
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
    VkPipeline gp = (VkPipeline)(uintptr_t)0x1234;
-   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gi, NULL, &gp);
-   CHECK(r == VK_PIPELINE_COMPILE_REQUIRED && gp == VK_NULL_HANDLE, "graphics FAIL_ON_COMPILE_REQUIRED = %d %p", r, (void *)gp);
+   VkResult gr = VK_SUCCESS;
+   g_pipe_flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+   g_pipe_res = &gr;
+   int ok = make_pipe(&t, "inst.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &gp);
+   g_pipe_flags = 0;
+   g_pipe_res = NULL;
+   if (!ok) return 0;
+   CHECK(gr == VK_PIPELINE_COMPILE_REQUIRED && gp == VK_NULL_HANDLE, "graphics FAIL_ON_COMPILE_REQUIRED = %d %p", gr, (void *)gp);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
    printf("{\"test\":\"cachectl\",\"ok\":true}\n");
    return 1;
 }
@@ -1897,14 +1921,36 @@ test_sepds(void)
    CHECK(g_sepds, "separateDepthStencilLayouts is required by Vulkan 1.2 (feature table) and implemented here");
    if (!g_sepds) return 0;
    struct tgt t;
-   if (!tgt_create(&t)) return 0;
-   VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-      .newLayout = VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .image = t.img, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   if (!tgt_create(&t)) return 0;   /* only for the command buffer / fence helpers */
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT_S8_UINT,
+                           .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                           .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImage zs;
+   CHECK(CreateImage(dev, &ii, NULL, &zs) == VK_SUCCESS, "depth/stencil image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, zs, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory zm;
+   CHECK(AllocateMemory(dev, &ai, NULL, &zm) == VK_SUCCESS, "depth/stencil memory");
+   CHECK(BindImageMemory(dev, zs, zm, 0) == VK_SUCCESS, "bind depth/stencil");
+   /* depth and stencil leave UNDEFINED into different layouts, then swap roles: only legal with separateDepthStencilLayouts */
+   const struct { VkImageAspectFlags a; VkImageLayout from, to; } step[4] = {
+      {VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL},
+      {VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL},
+      {VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+      {VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL}};
+   VkImageMemoryBarrier b[4];
+   for (int i = 0; i < 4; i++)
+      b[i] = (VkImageMemoryBarrier){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = step[i].from, .newLayout = step[i].to,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = zs, .subresourceRange = {step[i].a, 0, 1, 0, 1}};
    VkCommandBuffer cb = cb_begin(&t);
    CHECK(cb, "cmdbuf");
-   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 2, b);
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 2, b + 2);
    if (!cb_submit(&t, cb)) return 0;
+   DeviceWaitIdle(dev);
+   DestroyImage(dev, zs, NULL);
+   FreeMemory(dev, zm, NULL);
    printf("{\"test\":\"sepds\",\"ok\":true}\n");
    tgt_destroy(&t);
    return 1;
