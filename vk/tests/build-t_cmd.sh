@@ -59,6 +59,7 @@ PANLIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midg
 LIBS="$PANLIBS src/vulkan/util/libvulkan_util.a src/compiler/nir/libnir.a src/compiler/libcompiler.a
       src/compiler/spirv/libvtn.a src/util/libmesa_util.a src/util/libmesa_util_simd.a
       src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/util/libxmlconfig.a"
+for l in src/loader/libloader_wayland_helper.a src/x11/libloader_x11.a src/loader/libloader.a; do [ -f "$l" ] && LIBS="$LIBS $l"; done   # WSI trees (wayland/x11) need the loader archives; absent in the default tree
 for l in src/util/libmesa_util_clflush.a src/util/libmesa_util_clflushopt.a; do [ -f "$l" ] && LIBS="$LIBS $l"; done
 OBJS=""; for f in $ICD $M8; do OBJS="$OBJS $OUT/$f.o"; done
 for f in ctx bo queue sync heap fb draw draw_v13 backend_fake; do OBJS="$OBJS $OUT/kb_$f.o"; done
