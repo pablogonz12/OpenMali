@@ -13,13 +13,16 @@
  *     host ResetQueryPool),
  *   - CmdBlitImage / CmdResolveImage / CmdCopyBufferToImage / mip chain generation, CmdFillBuffer/UpdateBuffer, compute dispatch,
  *   - NFRAMES frames (default 300) of the above with per-frame resource churn.
- *   t_dxvk_replay --direct <icd.so> [--frames N]
+ *   t_dxvk_replay --direct <icd.so> [--frames N] [--msaa-gate]
+ *   --msaa-gate: the run has MALI_EXPERIMENTAL_MSAA=1, so every 4x pipeline must build and 4x frames + resolves must be recorded;
+ *   without it the known 4x pipeline rejection is tolerated and noted.
  * Exit 0 = pass, 1 = a call failed, 3 = watchdog (hang). */
 #define _DEFAULT_SOURCE
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,12 +202,26 @@ int main(int argc, char **argv)
 {
    int nframes = 300;
    const char *icd = NULL;
+   int msaa_gate = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
-      else if (!strcmp(argv[i], "--frames") && i + 1 < argc) nframes = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--msaa-gate")) msaa_gate = 1;
+      else if (!strcmp(argv[i], "--frames") && i + 1 < argc) {
+         char *end = NULL;
+         errno = 0;
+         long v = strtol(argv[++i], &end, 10);
+         if (errno || end == argv[i] || *end || v < 1 || v > 100000) {
+            fprintf(stderr, "bad --frames value '%s' (want 1..100000)\n", argv[i]);
+            return 2;
+         }
+         nframes = (int)v;
+      } else {
+         fprintf(stderr, "unknown or incomplete argument '%s'\n", argv[i]);
+         return 2;
+      }
    }
    if (!icd) {
-      fprintf(stderr, "usage: %s --direct <icd.so> [--frames N]\n", argv[0]);
+      fprintf(stderr, "usage: %s --direct <icd.so> [--frames N] [--msaa-gate]\n", argv[0]);
       return 2;
    }
    setvbuf(stdout, NULL, _IONBF, 0);
@@ -226,6 +243,16 @@ int main(int argc, char **argv)
    VkPhysicalDevice pd;
    OK(vkEnumeratePhysicalDevices(inst, &np, &pd));
    vkGetPhysicalDeviceMemoryProperties(pd, &memprops);
+   {
+      /* the instance asks for 1.3 and the replay chains the 1.3 feature structs: the device must report at least that.
+       * (the v11/v13 in check.sh are the Mali GPU architecture classes, not Vulkan versions) */
+      VkPhysicalDeviceProperties2 pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+      vkGetPhysicalDeviceProperties2(pd, &pp);
+      printf("device apiVersion %u.%u.%u\n", VK_VERSION_MAJOR(pp.properties.apiVersion), VK_VERSION_MINOR(pp.properties.apiVersion),
+             VK_VERSION_PATCH(pp.properties.apiVersion));
+      CHECK(pp.properties.apiVersion >= VK_API_VERSION_1_3, "device apiVersion 0x%x < 1.3 but the replay uses 1.3 features", pp.properties.apiVersion);
+      if (g_fail) return 1;
+   }
 
    uint32_t ne = 0;
    vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);
@@ -254,8 +281,16 @@ int main(int argc, char **argv)
    VkQueueFamilyProperties *qf = calloc(nq + 1, sizeof *qf);
    vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
    uint32_t qfi = 0;
+   int qfound = 0;
    for (uint32_t i = 0; i < nq; i++)
-      if ((qf[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) { qfi = i; break; }
+      if ((qf[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) &&
+          qf[i].timestampValidBits > 0) { qfi = i; qfound = 1; break; }
+   CHECK(qfound, "no graphics+compute queue family with timestampValidBits > 0 (timestamp queries are replayed)");
+   CHECK(f12.hostQueryReset, "hostQueryReset is not advertised: DXVK resets query pools from the host");
+   if (g_fail) return 1;
+   /* precise occlusion is optional: without it the replay uses imprecise occlusion queries and says so */
+   int have_precise = f2.features.occlusionQueryPrecise;
+   if (!have_precise) printf("note: occlusionQueryPrecise is false: replaying imprecise occlusion queries only\n");
    float prio = 1.0f;
    VkDeviceQueueCreateInfo dq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = qfi, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &dq,
@@ -335,8 +370,8 @@ int main(int argc, char **argv)
                            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
                            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE, VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
    VkVertexInputBindingDescription vb[2] = {{0, sizeof(struct vtx), VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_INSTANCE}};
-   (void)vb[1];
-   VkVertexInputAttributeDescription va[3] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32_SFLOAT, 16}, {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 24}};
+   VkVertexInputAttributeDescription va[4] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32_SFLOAT, 16}, {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 24},
+                                              {3, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}};
    for (int i = 0; i < NPIPE; i++) {
       VkBool32 sc_flip = i & 1; uint32_t sc_n = 1 + (i % 4); int32_t sc_mode = (i >> 1) & 1;
       VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
@@ -347,8 +382,8 @@ int main(int argc, char **argv)
       VkPipelineShaderStageCreateInfo st[2] = {
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main", .pSpecializationInfo = &si_v},
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main", .pSpecializationInfo = &si_f}};
-      VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .vertexBindingDescriptionCount = 1,
-                                                 .pVertexBindingDescriptions = vb, .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = va};
+      VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .vertexBindingDescriptionCount = 2,
+                                                 .pVertexBindingDescriptions = vb, .vertexAttributeDescriptionCount = 4, .pVertexAttributeDescriptions = va};
       static const VkPrimitiveTopology topo[4] = {VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
                                                   VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_POINT_LIST};
       VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = topo[(i >> 2) & 3]};
@@ -374,7 +409,7 @@ int main(int argc, char **argv)
                                          .pMultisampleState = &ms, .pDepthStencilState = &ds, .pColorBlendState = &cb, .pDynamicState = &dyi,
                                          .layout = (have_push && (i % 7 == 3)) ? plp : pl, .subpass = 0, .basePipelineIndex = -1};
       VkResult gr = vkCreateGraphicsPipelines(dev, i < NPIPE / 2 ? pcache : pcache2, 1, &gp, NULL, &pipes[i]);
-      if (gr == VK_ERROR_FEATURE_NOT_PRESENT && ms.rasterizationSamples != VK_SAMPLE_COUNT_1_BIT) {
+      if (gr == VK_ERROR_FEATURE_NOT_PRESENT && ms.rasterizationSamples != VK_SAMPLE_COUNT_1_BIT && !msaa_gate) {
          /* KNOWN GAP (mali_pipeline.c, vk/README.md): 4x is advertised but 4x pipelines need MALI_EXPERIMENTAL_MSAA=1 */
          msaa_gap++;
          pipes[i] = VK_NULL_HANDLE;
@@ -382,6 +417,10 @@ int main(int argc, char **argv)
       }
       CHECK(gr == VK_SUCCESS, "pipeline %d (topology %d cull %d samples %d depthBias %d stencil %d blend %d) -> %d", i, ia.topology, rs.cullMode,
             ms.rasterizationSamples, rs.depthBiasEnable, ds.stencilTestEnable, cba.blendEnable, gr);
+   }
+   if (msaa_gate) {
+      CHECK(msaa == VK_SAMPLE_COUNT_4_BIT, "MALI_EXPERIMENTAL_MSAA run but 4x is not reported for RGBA8 colour attachments");
+      CHECK(!msaa_gap, "MALI_EXPERIMENTAL_MSAA run rejected %d 4x pipelines", msaa_gap);
    }
    VkPipeline cpipe;
    {
@@ -408,7 +447,7 @@ int main(int argc, char **argv)
       if (sz > 8) {
          size_t part = sz / 2;
          VkResult r = vkGetPipelineCacheData(dev, pcache, &part, blob);
-         CHECK(r == VK_INCOMPLETE || r == VK_SUCCESS, "truncated GetPipelineCacheData %d", r);
+         CHECK(r == VK_INCOMPLETE, "truncated GetPipelineCacheData %d (want VK_INCOMPLETE)", r);
       }
       vkDestroyPipelineCache(dev, pcache3, NULL);
       free(blob);
@@ -430,11 +469,14 @@ int main(int argc, char **argv)
    struct buf sbuf = mkbuf(4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0);
    struct buf qbuf = mkbuf(4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1);
    struct buf indbuf = mkbuf(256, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, 1);
+   if (g_fail || !vbuf.p || !ubuf.p || !stag.p || !qbuf.p || !indbuf.p) { printf("FAIL: setup buffer allocation or map failed\n"); return 1; }
    memset(stag.p, 0x7f, stag.size);
    {
       struct vtx v[4] = {{{-1, -1, 0.5f, 1}, {0, 0}, {1, 0, 0, 1}}, {{1, -1, 0.5f, 1}, {1, 0}, {0, 1, 0, 1}},
                          {{-1, 1, 0.5f, 1}, {0, 1}, {0, 0, 1, 1}}, {{1, 1, 0.5f, 1}, {1, 1}, {1, 1, 1, 1}}};
       memcpy(vbuf.p, v, sizeof v);
+      float inst[8] = {1, 1, 1, 1, 0.5f, 0.75f, 1, 1};   /* per-instance data, binding 1 at vbuf+1024 */
+      memcpy((char *)vbuf.p + 1024, inst, sizeof inst);
       uint16_t idx[6] = {0, 1, 2, 2, 1, 3};
       memcpy((char *)vbuf.p + 2048, idx, sizeof idx);
       VkDrawIndirectCommand dc = {4, 1, 0, 0};
@@ -496,6 +538,7 @@ int main(int argc, char **argv)
    uint64_t tl_val = 0, host_val = 0;
    VkImageLayout tex_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
    uint64_t frame_done[NFIF] = {0, 0};
+   int msaa_frames = 0;
    for (int f = 0; f < nframes && !g_fail; f++) {
       alarm(240);
       int s = f % NFIF;
@@ -504,8 +547,10 @@ int main(int argc, char **argv)
          VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &tl, .pValues = &frame_done[s]};
          VkResult r = vkWaitSemaphores(dev, &wi, 10ull * 1000000000ull);
          CHECK(r == VK_SUCCESS, "frame %d: vkWaitSemaphores(%llu) -> %d", f, (unsigned long long)frame_done[s], r);
+         if (g_fail) break;   /* the GPU may still own this slot's objects: do not reset them */
       }
       OK(vkWaitForFences(dev, 1, &fences[s], VK_TRUE, 10ull * 1000000000ull));
+      if (g_fail) break;
       OK(vkResetFences(dev, 1, &fences[s]));
       uint64_t cur = 0;
       OK(vkGetSemaphoreCounterValue(dev, tl, &cur));
@@ -513,19 +558,21 @@ int main(int argc, char **argv)
       if (f % 3 == 0) OK(vkResetCommandPool(dev, cpool[s], f % 6 == 0 ? VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT : 0));
       else OK(vkResetCommandBuffer(cbs[s], 0));
       OK(vkResetDescriptorPool(dev, dpool[s], 0));
-      /* host query reset (hostQueryReset) every 4th frame, command reset otherwise */
+      /* previous results of this slot (frame f-2 is complete: timeline + fence waited), host read BEFORE any reset.
+       * It wrote occlusion queries 0..15 and timestamps 0 and 1: the ones read here must all be available. */
+      if (f >= NFIF) {
+         uint64_t res[4 * 2];
+         VkResult r = vkGetQueryPoolResults(dev, qo[s], 0, 4, sizeof res, res, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+         CHECK(r == VK_SUCCESS, "GetQueryPoolResults occlusion %d", r);
+         for (int k = 0; k < 4; k++) CHECK(r != VK_SUCCESS || res[2 * k + 1] != 0, "frame %d: occlusion query %d unavailable", f, k);
+         uint64_t ts[2 * 2];
+         r = vkGetQueryPoolResults(dev, qt[s], 0, 2, sizeof ts, ts, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+         CHECK(r == VK_SUCCESS, "GetQueryPoolResults timestamp %d", r);
+         for (int k = 0; k < 2; k++) CHECK(r != VK_SUCCESS || ts[2 * k + 1] != 0, "frame %d: timestamp %d unavailable", f, k);
+      }
+      /* host query reset (hostQueryReset, required above) every 4th frame, command reset otherwise */
       int host_reset = f % 4 == 1;
       if (host_reset) { vkResetQueryPool(dev, qo[s], 0, 16); vkResetQueryPool(dev, qt[s], 0, 8); }
-
-      /* previous results of this slot, host read */
-      if (f >= NFIF) {
-         uint64_t res[16 * 2];
-         VkResult r = vkGetQueryPoolResults(dev, qo[s], 0, 4, sizeof res, res, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-         CHECK(r == VK_SUCCESS || r == VK_NOT_READY, "GetQueryPoolResults occlusion %d", r);
-         uint64_t ts[8];
-         r = vkGetQueryPoolResults(dev, qt[s], 0, 4, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT);
-         CHECK(r == VK_SUCCESS || r == VK_NOT_READY, "GetQueryPoolResults timestamp %d", r);
-      }
 
       VkCommandBuffer c = cbs[s];
       VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
@@ -575,7 +622,8 @@ int main(int argc, char **argv)
       vkCmdDispatch(c, 16, 1, 1);
       membarrier(c);
 
-      int msaa_frame = f % 5 == 4 && !msaa_gap;
+      int msaa_frame = f % 5 == 4 && !msaa_gap && msaa == VK_SAMPLE_COUNT_4_BIT;
+      if (msaa_frame) msaa_frames++;
       struct img *target = msaa_frame ? &msrt : &rt;
       barrier(c, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 1);
       struct img *dtarget = msaa_frame ? &msdep : &dep;
@@ -595,13 +643,13 @@ int main(int argc, char **argv)
       float bconst[4] = {0.5f, 0.5f, 0.5f, 0.5f};
       vkCmdSetBlendConstants(c, bconst);
       vkCmdSetLineWidth(c, 1.0f);
-      VkBuffer vbs[1] = {vbuf.b};
-      VkDeviceSize vo[1] = {0}, vsz[1] = {sizeof(struct vtx) * 4}, vst[1] = {sizeof(struct vtx)};
-      vkCmdBindVertexBuffers2(c, 0, 1, vbs, vo, vsz, vst);
+      VkBuffer vbs[2] = {vbuf.b, vbuf.b};
+      VkDeviceSize vo[2] = {0, 1024}, vsz[2] = {sizeof(struct vtx) * 4, 32}, vst[2] = {sizeof(struct vtx), 16};
+      vkCmdBindVertexBuffers2(c, 0, 2, vbs, vo, vsz, vst);
       vkCmdBindIndexBuffer(c, vbuf.b, 2048, VK_INDEX_TYPE_UINT16);
       int nd = 0;
       for (int i = 0; i < NPIPE; i++) {
-         int pipe_msaa = (i % 5 == 4) && !msaa_gap;
+         int pipe_msaa = (i % 5 == 4) && !msaa_gap && msaa == VK_SAMPLE_COUNT_4_BIT;
          if (pipe_msaa != msaa_frame) continue;
          if (!pipes[i]) continue;
          vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipes[i]);
@@ -634,7 +682,7 @@ int main(int argc, char **argv)
          vkCmdSetPrimitiveRestartEnable(c, 0);
          int q_i = nd % 16;
          int use_q = nd < 16;
-         if (use_q) vkCmdBeginQuery(c, qo[s], q_i, (i & 1) ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+         if (use_q) vkCmdBeginQuery(c, qo[s], q_i, ((i & 1) && have_precise) ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
          if (i % 3 == 0) vkCmdDrawIndexed(c, 6, 1 + (i % 2), 0, 0, 0);
          else if (i % 3 == 1) vkCmdDraw(c, 4, 1, 0, 0);
          else vkCmdDrawIndirect(c, indbuf.b, 0, 1, 16);
@@ -663,6 +711,13 @@ int main(int argc, char **argv)
       VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {RT_W, RT_H, 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {RT_W / 2, RT_H / 2, 1}}};
       vkCmdBlitImage(c, rt.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, half.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+      {  /* the flipped blit overwrites part of the full blit's destination: order write-after-write */
+         VkMemoryBarrier2 waw = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+         VkDependencyInfo wd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &waw};
+         vkCmdPipelineBarrier2(c, &wd);
+      }
       /* flipped + partial blit (D3D11 CopySubresourceRegion with mismatching size) */
       VkImageBlit bl2 = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{10, 10, 0}, {200, 200, 1}},
                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{100, 100, 0}, {4, 4, 1}}};
@@ -745,6 +800,7 @@ int main(int argc, char **argv)
    vkDestroyDevice(dev, NULL);
    vkDestroyInstance(inst, NULL);
    free(eps); free(use); free(qf);
+   if (msaa_gate) CHECK(msaa_frames > 0 || g_fail, "MALI_EXPERIMENTAL_MSAA run recorded no 4x frame / resolve");
    if (msaa_gap) printf("note: %d of %d pipelines (4x MSAA) rejected: known gap, advertised 4x but MALI_EXPERIMENTAL_MSAA is off\n", msaa_gap, NPIPE);
    printf("%s: %d frames\n", g_fail ? "FAIL" : "dxvk_replay ok", nframes);
    return g_fail;
