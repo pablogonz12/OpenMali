@@ -16,6 +16,7 @@ static double prof_acc[6]; static unsigned prof_n;
 
 #include "kbase_cs.h"
 #include "kbase_draw.h"
+#include "mali_backend.h"
 #include "mali_cmd.h"
 #include "mali_event.h"
 #include "mali_meta.h"
@@ -70,6 +71,10 @@ bind_hw(struct mali_hwctx *h)
       mali_cmd_set_hw(&h->hw);
       mali_cmd_set_res(&mali_cmd_res);
       mali_meta_set_dev(&h->md);
+      /* Not on the fake backend: the goldens dump its whole BO table, and the compile BOs a background prewarm allocates would land in it
+         at a thread-timing-dependent index. The fake device has no first-use hitch to hide. */
+      if (mali_device_pdev(h->dev)->backend != &mali_backend_fake)
+         mali_meta_prewarm();
    } else {
       mali_cmd_set_hw(NULL);
       mali_cmd_set_res(NULL);

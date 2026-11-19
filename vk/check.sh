@@ -106,6 +106,9 @@ done
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
 for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
+   # A batch of 8 compute pipelines in one call goes through the parallel create path (cache is cold here, so it really compiles). The
+   # batch<seq timing assert stays off: MALI_SHADER_CACHE is a path, and a timing check would flake on a loaded host.
+   run "vk_compute batch $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only batch
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
 
