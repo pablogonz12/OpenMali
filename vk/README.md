@@ -2,7 +2,7 @@
 
 Own ICD on Mesa's `vk_*` runtime. Plan and milestones: `../R3-PLAN.md`. State: M2 (cross builds, kbase backend, both phones enumerate and create a device).
 
-## One-time Mesa setup (pinned, unmodified mesa-26.3.0)
+## One-time Mesa setup (pinned mesa-26.3.0 + `mesa-patches/`, run `./apply-mesa-patches.sh` after unpacking)
 
     cd ../third_party
     PATH=$PWD/venv/bin:$PATH meson setup build-vk mesa -Dbuildtype=release -Dgallium-drivers= \
@@ -69,6 +69,7 @@ varying slots, VS secondary shader, FS flags). v11 and v13, VS/FS/compute stub (
 Pairing: compile the VS, pass `vs.layout` as `link_vs` of the FS (FS reads the varying buffer); `link_vs = NULL` = R2's attribute-descriptor FS.
 Disk cache: `$MALI_SHADER_CACHE`, else `$XDG_CACHE_HOME`/`~/.cache/mali-gaming/shaders`; `cache_dir=""` disables. Key = blake3(SPIR-V, arch,
 stage, fau_reserved, push_base, VS layout, entry, Mesa tag, `MALI_COMPILE_VERSION`); atomic write, corrupt entries recompile.
+The key does not cover the Mesa patch set (`mesa-patches/`): clear the cache after applying or changing patches (`apply-mesa-patches.sh` reminds you).
 Test: `tests/build-t_compile.sh [-v]` (x86 Mesa tree, ~1.5 s build, 0.01 s run). `rot.vert`/`var.frag` via SPIR-V are byte-identical to
 `libkbase/tests/shaders_compiled_v11.h` and to `shader/golden_compiled_v13.h` (`shader/gen-golden.sh`); SPIR-V from `shader/gen-spv.sh` (glslang).
 Not yet: blend shaders, descriptor lowering (M7), `vk_device_shader_ops`/`vk_pipeline_cache` wiring, the 300-module dEQP cache corpus (needs M3).
