@@ -356,22 +356,30 @@ main(int argc, char **argv)
    else CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT || r == VK_ERROR_EXTENSION_NOT_PRESENT, "an unsupported request must be refused, got %d", r);
 
    CHECK(has(eps, ne, "VK_EXT_hdr_metadata"), "VK_EXT_hdr_metadata must be advertised");
-   if (has(eps, ne, "VK_EXT_hdr_metadata")) {   /* own device: the gamescope request above does not enable it, and dispatch is per enabled extension */
-      const char *hx[] = {"VK_EXT_hdr_metadata"};
+   if (has(eps, ne, "VK_EXT_hdr_metadata") && has(eps, ne, "VK_KHR_swapchain") && has(iep, nie, "VK_KHR_surface")) {   /* own instance + device: hdr_metadata requires VK_KHR_swapchain, which requires VK_KHR_surface */
+      const char *sx = "VK_KHR_surface";
+      VkInstanceCreateInfo hici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app, .enabledExtensionCount = 1, .ppEnabledExtensionNames = &sx};
+      VkInstance hinst = NULL;
+      CHECK(CreateInstance(&hici, NULL, &hinst) == VK_SUCCESS, "instance with VK_KHR_surface");
+      PFN_vkEnumeratePhysicalDevices hEPD = hinst ? (PFN_vkEnumeratePhysicalDevices)gipa(hinst, "vkEnumeratePhysicalDevices") : NULL;
+      PFN_vkCreateDevice hCD = hinst ? (PFN_vkCreateDevice)gipa(hinst, "vkCreateDevice") : NULL;
+      PFN_vkGetDeviceProcAddr hGDPA = hinst ? (PFN_vkGetDeviceProcAddr)gipa(hinst, "vkGetDeviceProcAddr") : NULL;
+      PFN_vkDestroyInstance hDI = hinst ? (PFN_vkDestroyInstance)gipa(hinst, "vkDestroyInstance") : NULL;
+      uint32_t hn = 1;
+      VkPhysicalDevice hpd = NULL;
+      if (hEPD) hEPD(hinst, &hn, &hpd);
+      const char *hx[] = {"VK_KHR_swapchain", "VK_EXT_hdr_metadata"};
       VkDeviceQueueCreateInfo hq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
       VkDeviceCreateInfo hdi = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &hq,
-                                .enabledExtensionCount = 1, .ppEnabledExtensionNames = hx};
+                                .enabledExtensionCount = 2, .ppEnabledExtensionNames = hx};
       VkDevice hdev = NULL;
-      CHECK(CreateDevice(pd, &hdi, NULL, &hdev) == VK_SUCCESS, "device with VK_EXT_hdr_metadata");
+      if (hpd && hCD) CHECK(hCD(hpd, &hdi, NULL, &hdev) == VK_SUCCESS, "device with VK_KHR_swapchain + VK_EXT_hdr_metadata");
       if (hdev) {
-         PFN_vkSetHdrMetadataEXT hdr = (PFN_vkSetHdrMetadataEXT)GetDeviceProcAddr(hdev, "vkSetHdrMetadataEXT");
-         CHECK(hdr != NULL, "vkSetHdrMetadataEXT resolves with VK_EXT_hdr_metadata enabled");
-         if (hdr) {   /* wsi_common: zero swapchains is a legal no-op (no surface exists on the fake backend) */
-            VkHdrMetadataEXT md = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT, .maxLuminance = 1000.0f, .minLuminance = 0.01f};
-            hdr(hdev, 0, NULL, &md);
-         }
-         ((PFN_vkDestroyDevice)GetDeviceProcAddr(hdev, "vkDestroyDevice"))(hdev, NULL);
+         /* resolution only: vkSetHdrMetadataEXT needs a valid swapchain (swapchainCount > 0), and the fake backend has no surface */
+         CHECK(hGDPA(hdev, "vkSetHdrMetadataEXT") != NULL, "vkSetHdrMetadataEXT resolves with VK_EXT_hdr_metadata enabled");
+         ((PFN_vkDestroyDevice)hGDPA(hdev, "vkDestroyDevice"))(hdev, NULL);
       }
+      if (hDI) hDI(hinst, NULL);
    }
 
    if (dev && has(eps, ne, "VK_EXT_queue_family_foreign")) {
