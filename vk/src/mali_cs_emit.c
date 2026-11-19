@@ -655,8 +655,12 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    if (!nort && nrt > 1 && g->fs)
       rtm = g->fs->fs_colour_mask & ((1u << nrt) - 1);
    const unsigned rtn = rtm ? nrt : 0;
-   if (rtm && rtm != ((1u << nrt) - 1))
-      dop.allow_fpk = 0;   /* writes only some of the targets (the per-target LOAD preload draws): a later full-area draw of another target must not forward-kill it */
+   if (rtm && rtm != ((1u << nrt) - 1)) {
+      /* writes only some of the targets (the per-target LOAD preload draws): another target's full-area draw over the same pixels must neither
+       * forward-kill it (allow_fpk) nor be killed by it (allow_fpk_killed): the kill logic is per pixel, not per render target */
+      dop.allow_fpk = 0;
+      dop.allow_fpk_killed = 0;
+   }
    if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
       dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
       dop.zs_update = 3;
