@@ -1426,6 +1426,19 @@ class T(unittest.TestCase):
         self.assertTrue(28 <= pct <= 38, line)                                           # was counted as idle before
         self.assertIn("held (agent hold) 0%", next(l for l in out.splitlines() if l.startswith("dev-a")))
 
+    def test_util_window_starts_at_an_earlier_hold(self):
+        import datetime as dt
+        iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        now = time.time()
+        H.new_hold("dev-b", 60)
+        h = H.list_holds()[0]
+        h.update(state="done", started=iso(now - 1800), ended=iso(now - 600))
+        L.write_json(H.path(h["id"]), h)
+        L.write_json(os.path.join(L.state_dir(), "runs", "x-v13.json"), {"job": "x", "device": "dev-b", "class": "v13", "started": iso(now - 300), "wall_s": 60})
+        out = self.farm("util", "--since", "1h")[1]
+        self.assertIn("util since " + time.strftime("%m-%d %H:%M", time.localtime(now - 1800)), out)   # window starts at the earlier hold, not at the run
+        self.assertEqual(H.KEEP_S, 7 * 86400)
+
     def test_smoke_log_and_only(self):
         self.attach("dev-a")
         _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--only", "triangle,buf")

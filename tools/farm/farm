@@ -632,7 +632,7 @@ def util_data(since, now, devs, jobs):
     except OSError:
         pass
     busy, builds, sweep, demand, held = {}, {}, {}, {}, {}
-    firsts = [since]
+    firsts, hfirst = [since], []
     hd = os.path.join(sd, "holds")                                # agent holds (farm hold) own the phone lock but are no runs: without them that time showed up as idle
     for f in os.listdir(hd) if os.path.isdir(hd) else []:
         if f.endswith(".json"):
@@ -642,6 +642,7 @@ def util_data(since, now, devs, jobs):
                     e = ts(h["ended"]) if h.get("ended") else now
                     if e >= since:
                         held.setdefault(h["device"], []).append((ts(h["started"]), e))
+                        hfirst.append(max(since, ts(h["started"])))
             except (OSError, ValueError, KeyError):
                 pass
     for r in runs:
@@ -668,7 +669,7 @@ def util_data(since, now, devs, jobs):
         for cls, p in j["parts"].items():
             if p["state"] == "pending":
                 demand.setdefault(cls, []).append((ts(j["created"]), now))
-    start = min(firsts[1:] or [since])
+    start = min(Xor [since])        # with runs, an earlier agent hold moves the window start back too
     start = max(since, start)
     return start, busy, builds, sweep, demand, ev, held
 
@@ -680,6 +681,8 @@ def cmd_util(a):
     since = parse_since(a.since)
     start, busy, builds, sweep, demand, ev, held = util_data(since, now, devs, jobs)
     n = max(int(now - start), 1)
+    if now - since > H.KEEP_S:
+        print(f"note: finished agent holds are kept {H.KEEP_S // 86400}d, so held% is incomplete before that")
     print(f"util since {time.strftime('%m-%d %H:%M', time.localtime(start))} ({n // 3600}h{n % 3600 // 60:02d}m window; busy = a job part holds the phone, build = its driver build under the lock)")
     for al, d in devs.items():
         cat = bytearray(n)                                    # 0 no work, 1 queue gap, 2.. gate states, 250 sweep, 252 agent hold, 251 busy

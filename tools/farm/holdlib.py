@@ -88,8 +88,11 @@ def end_reason(h, hb_age, rel, now=None, disabled=False):
     return ""
 
 
-def gc(keep_s=86400):
-    """drop finished hold files older than a day"""
+KEEP_S = 7 * 86400
+
+
+def gc(keep_s=KEEP_S):
+    """drop finished hold files older than KEEP_S (7 days: `farm util --since` can look back that far)"""
     now = time.time()
     for h in list_holds():
         if h["state"] == "done" and now - os.path.getmtime(path(h["id"])) > keep_s:
