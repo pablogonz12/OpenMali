@@ -1305,15 +1305,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
