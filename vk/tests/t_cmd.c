@@ -25,6 +25,7 @@
 #include "kbase_uapi.h"
 #include "kbase_draw.h"
 #include "kbase_fb.h"
+#include "kbase_samples.h"
 #if ARCH == 13
 #include "../../libkbase/tests/shaders_v13.h"
 #else
@@ -66,7 +67,19 @@ struct fx {
 };
 static struct fx F;
 
-static void *hw_alloc(void *u, size_t n, size_t al, uint64_t *va) { return kb_arena_alloc(&((struct fx *)u)->ar, n, al, va); }
+/* provoking-vertex test hook: the frame build allocates the sample table, then the tiler context (KB_TILER_CTX_SIZE), ..., the FBD (KB_FB_DESC_SIZE_ZS) */
+static uint32_t *g_tctx;
+static uint8_t *g_fbd;
+static int g_after_smp;
+static void *hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
+{
+   void *p = kb_arena_alloc(&((struct fx *)u)->ar, n, al, va);
+   if (n == sizeof kb_sample_positions) { g_after_smp = 1; return p; }
+   if (g_after_smp && n == KB_TILER_CTX_SIZE) g_tctx = p;
+   if (n == KB_FB_DESC_SIZE_ZS) g_fbd = p;
+   g_after_smp = 0;
+   return p;
+}
 static void hw_job_begin(void *u) { kb_arena_begin(&((struct fx *)u)->ar); }
 static int hw_submit(void *u, const uint64_t *cs, unsigned n)
 {
@@ -460,6 +473,29 @@ test_ringwrap(void)
    return g_fail ? 1 : 0;
 }
 
+/* VK_EXT_provoking_vertex: the mode reaches both hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx word 2 bit 18) */
+static void
+test_provoking(VkCommandPool pool, VkBuffer vbh)
+{
+   DFN(EndCommandBuffer);
+   for (int last = 0; last < 2; last++) {
+      VkCommandBuffer c;
+      struct vk_command_buffer *vc = new_cmd(pool, &c);
+      /* snapshot_draw reads the runtime state a bound pipeline (VkPipelineRasterizationProvokingVertexStateCreateInfoEXT) would have set */
+      vc->dynamic_graphics_state.rs.provoking_vertex = last ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT : VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT;
+      record_scene(c, &k_scenes[0], vbh);
+      CHECK(EndCommandBuffer(c) == VK_SUCCESS, "provoking end");
+      g_tctx = NULL; g_fbd = NULL;
+      CHECK(mali_cmd_submit(vc) == VK_SUCCESS, "provoking submit");
+      CHECK(g_tctx && g_fbd, "provoking: tiler ctx / FBD allocations not seen");
+      if (!g_tctx || !g_fbd) return;
+      uint32_t f11;
+      memcpy(&f11, g_fbd + 44, 4);
+      CHECK(((f11 >> 14) & 1) == (last ? 0u : 1u), "provoking %s: FBD word 11 = %08x bit 14 wrong", last ? "LAST" : "FIRST", f11);
+      CHECK(((g_tctx[2] >> 18) & 1) == (last ? 0u : 1u), "provoking %s: tiler ctx word 2 = %08x bit 18 wrong", last ? "LAST" : "FIRST", g_tctx[2]);
+   }
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -530,6 +566,11 @@ int main(int argc, char **argv)
       CHECK(r == VK_SUCCESS, "mali_cmd_submit %d", r);
       CHECK(F.nsubmit == 1, "frames submitted %u", F.nsubmit);
       printf("{\"test\":\"t_cmd%d\",\"scene\":%d,\"frames\":%u,\"pass\":%s}\n", ARCH, scene, F.nsubmit, g_fail ? "false" : "true");
+   }
+   if (extra) {
+      uint32_t n0 = F.nsubmit;
+      test_provoking(pool, vbh);
+      (void)n0;
    }
 
    if (m13) {

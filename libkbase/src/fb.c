@@ -71,7 +71,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 11, 3, 3, p->sample_pattern);                     /* Sample Pattern (0 single, 2 rotated 4x) */
 	put(f, 11, 6, 3, 2);                                     /* Tie-break rule: MINUS_180_IN_0_OUT (Mesa default) */
 	put(f, 11, 9, 4, p->tile_log2 ? p->tile_log2 : 10);                                    /* Effective Tile Size log2(1024 px) = 32x32, as PanVK (matches hierarchy mask 0xfe, smallest bin 32) */
-	put(f, 11, 14, 1, 1);                                    /* First provoking vertex (PanVK sets it, also in the tiler context) */
+	put(f, 11, 14, 1, !p->provoking_last);                 /* First provoking vertex (PanVK sets it unless VK_PROVOKING_VERTEX_MODE_LAST; also in the tiler context) */
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
 	put(f, 11, 19, 4, 0);                                    /* Render Target Count - 1 */
 	put(f, 11, 24, 8, p->rt_internal && p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */

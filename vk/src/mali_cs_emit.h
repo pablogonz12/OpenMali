@@ -226,6 +226,7 @@ struct mali_frame {
    unsigned width, height;                /* framebuffer size (attachment extent) */
    int32_t area[4];                       /* render area x, y, w, h */
    bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
+   bool provoking_last;                   /* VK_EXT_provoking_vertex LAST_VERTEX for this render pass: clears 'First provoking vertex' in the FBD (word 11 bit 14) and tiler ctx (word 2 bit 18) */
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
    struct mali_att colour, zs, st;
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */

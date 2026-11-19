@@ -1026,6 +1026,8 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
          kb_draw_tiler_ctx(tctx, f->width, f->height, env->hmask, env->geo_va, geom);
+      if (f->provoking_last)
+         tctx[2] &= ~(1u << 18);   /* First provoking vertex off = last vertex (v11 word 2 bit 18, v13.xml:2636 same) */
       if (f->samples == 4)
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
       if (f->samples == 4 && v13)
