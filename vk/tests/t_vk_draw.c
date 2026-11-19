@@ -1185,6 +1185,12 @@ test_mrt(const char *name, int nrt, int clear_att)
    int ok = 0;
    unsigned bad = 0;
 #define MRT_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+#define MRT_DUMP(tag) do { if (!g_fake && clear_att == 2) for (int i_ = 0; i_ < nrt; i_++) { \
+      unsigned nz_ = 0, nzr_ = 0; \
+      for (int y_ = 0; y_ < H; y_++) for (int x_ = 0; x_ < W; x_++) { const uint8_t *q_ = px[i_] + (size_t)y_ * pitch[i_] + (size_t)x_ * 4; \
+         if (q_[0] | q_[1] | q_[2] | q_[3]) { nz_++; if (y_ == 8) nzr_++; } } \
+      const uint8_t *a_ = px[i_] + 8 * (size_t)pitch[i_] + (size_t)(W / 4) * 4, *b_ = px[i_] + 8 * (size_t)pitch[i_] + (size_t)(3 * W / 4) * 4, *c_ = px[i_] + (size_t)(H - 1) * pitch[i_] + (size_t)(W - 1) * 4; \
+      printf("{\"dump\":\"%s rt%d\",\"nonzero\":%u,\"row8\":%u,\"drawpx\":\"%02x%02x%02x%02x\",\"clearpx\":\"%02x%02x%02x%02x\",\"corner\":\"%02x%02x%02x%02x\"}\n", tag, i_, nz_, nzr_, a_[0], a_[1], a_[2], a_[3], b_[0], b_[1], b_[2], b_[3], c_[0], c_[1], c_[2], c_[3]); } } while (0)
    MRT_CHECK(vs && fs, "shaders");
    for (int i = 0; i < nrt; i++) {
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
@@ -1304,6 +1310,7 @@ test_mrt(const char *name, int nrt, int clear_att)
    MRT_CHECK(r == VK_SUCCESS, "submit = %d", r);
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    MRT_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   MRT_DUMP("after pass1");
    if (clear_att == 2) {   /* pass 2: LOAD every target, draw 1 pixel at the bottom right corner only */
       VkCommandBuffer cb2;
       MRT_CHECK(AllocateCommandBuffers(dev, &cai, &cb2) == VK_SUCCESS, "alloc cb2");
@@ -1326,6 +1333,7 @@ test_mrt(const char *name, int nrt, int clear_att)
       r = WaitForFences(dev, 1, &fence2, VK_TRUE, 20000000000ull);
       MRT_CHECK(r == VK_SUCCESS, "wait 2 = %d", r);
    }
+   MRT_DUMP("after pass2");
    ok = 1;
    if (!g_fake) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
       for (int i = 0; i < nrt; i++)
