@@ -310,7 +310,7 @@ def job_prio(job):
 def stable_ref(ref):
     """a plain branch/tag name: not empty, not HEAD, not a batch, not a revision expression (HEAD~1, main^, @{u}, a commit hash) that moves or is not a ref"""
     return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", ref or "")) and ref != "HEAD" and not ref.startswith("HEAD") \
-        and not re.fullmatch(r"[0-9a-f]{7,40}", ref)
+        and not re.fullmatch(r"[0-9a-f]{7,40}", ref) and not ref.endswith("_HEAD")   # FETCH_HEAD, ORIG_HEAD, MERGE_HEAD...: operation refs that move
 
 
 def supersede_old_gates(new, jobs, is_ancestor):
@@ -338,7 +338,7 @@ def supersede_old_gates(new, jobs, is_ancestor):
             cs = [c for c in cs if fresh["parts"].get(c, {}).get("state") == "pending"]
             j = fresh
         except (OSError, ValueError, KeyError):
-            pass
+            continue                                      # cannot confirm the current state: skip this job rather than write a stale snapshot over it
         if not cs:
             continue
         for c in cs:
