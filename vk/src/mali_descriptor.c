@@ -2,6 +2,7 @@
 /* M7 descriptor sets over the Vulkan runtime. See mali_descriptor.h. */
 #include "mali_descriptor.h"
 #include "mali_format.h"
+#include "mali_descidx.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -85,6 +86,16 @@ mem_free(struct vk_device *dev, void *p, size_t size)
 
 /* ---- set layout ---- */
 
+/* VK_EXT_descriptor_indexing stage 1 gate (default off). -1 = read MALI_DESCIDX_FLAGS; tests force 0/1. */
+static int g_descidx = -1;
+void mali_desc_set_descidx(int v) { g_descidx = v; }
+static bool
+descidx_on(void)
+{
+   if (g_descidx < 0) { const char *e = getenv("MALI_DESCIDX_FLAGS"); g_descidx = e && e[0] == '1'; }
+   return g_descidx;
+}
+
 static bool
 type_ok(VkDescriptorType t)
 {
@@ -116,8 +127,14 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
       nb = MAX2(nb, b->binding + 1);
       if (b->pImmutableSamplers) nimm += b->descriptorCount;
    }
+   bool uab_pool = false;
+   if (descidx_on()) {
+      VkResult cr = mali_descidx_check_layout(ci, NULL, &uab_pool);
+      if (cr != VK_SUCCESS) return cr;
+   }
    struct mali_dsl *d = vk_descriptor_set_layout_zalloc(dev, sizeof *d, ci);
    if (!d) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   d->uab_pool = uab_pool;
    d->vk.destroy = dsl_destroy;
    d->b = vk_zalloc(&dev->alloc, (nb ? nb : 1) * sizeof *d->b, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    d->imm = vk_zalloc(&dev->alloc, (nimm ? nimm : 1) * sizeof *d->imm, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
@@ -215,6 +232,7 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
          ok &= b->descriptorCount <= MALI_MAX_INLINE_BYTES && !(b->descriptorCount & 3);
       else slots += (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
    }
+   if (ok && descidx_on()) ok = mali_descidx_check_layout(ci, NULL, NULL) == VK_SUCCESS;
    s->supported = ok && slots < (1u << 20);
 }
 
@@ -312,6 +330,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
 {
    uint32_t bytes = l->slot_count * MALI_DESC_SLOT_SIZE;
    if (p->nsets >= p->max_sets) return VK_ERROR_OUT_OF_POOL_MEMORY;
+   if (!mali_descidx_pool_ok(l->uab_pool, p->flags)) return VK_ERROR_OUT_OF_POOL_MEMORY;
    struct mali_dset **link = &p->sets;
    uint32_t at = 0;
    while (*link && (*link)->off - at < bytes) {
