@@ -58,8 +58,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDescriptorSetSampledImages = 96,
       .maxDescriptorSetStorageImages = 24,
       .maxDescriptorSetInputAttachments = 4,
-      .maxVertexInputAttributes = 16,
-      .maxVertexInputBindings = 16,
+      .maxVertexInputAttributes = 16,   /* MALI_MAX_ATTR = KB_VS_ATTRS: the VS driver set has 16 attribute descriptors (t_vk_feat vb16) */
+      .maxVertexInputBindings = 16,     /* MALI_MAX_VB, entries 17..33 of the 64-entry driver set; Vulkan requires >= 16 (t_vk_feat vb16) */
       .maxVertexInputAttributeOffset = 2047,
       .maxVertexInputBindingStride = 2048,
       .maxVertexOutputComponents = 64,
