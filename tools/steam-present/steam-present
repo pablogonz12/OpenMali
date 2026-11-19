@@ -143,7 +143,8 @@ class Phone:
         if not self.tid:
             return "offline (no adb route)"
         h = G.read_adb(self.tid)
-        st, why = G.check(self.dev["lock"], h, G.thresholds(self.dev.get("serial")))
+        # starting=True: a job that begins at temp_start is gated now, not twenty minutes in at temp_stop
+        st, why = G.check(self.dev["lock"], h, G.thresholds(self.dev.get("serial")), starting=True)
         return None if st == "ok" else f"gated ({st}): {why}"
 
 
