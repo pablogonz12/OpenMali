@@ -70,6 +70,7 @@ struct mali_compiled {
    uint32_t uses_ld_var, wait_6, wait_7, writes_global;
    /* FS */
    uint32_t fs_can_discard, fs_writes_depth, fs_writes_stencil, fs_writes_colour, fs_early_fragment_tests, fs_can_early_z, fs_can_fpk, fs_sidefx, fs_reads_frag_coord;
+   uint32_t fs_writes_memory;   /* NIR info.writes_memory (SSBO/image stores, atomics): sidefx also counts discard, which is replay-safe */
    /* VS */
    uint32_t vs_writes_point_size, vs_secondary_enable, vs_secondary_offset, vs_secondary_work_reg_count;
    uint64_t vs_secondary_preload;

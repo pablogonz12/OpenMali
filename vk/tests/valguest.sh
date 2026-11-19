@@ -9,7 +9,7 @@ cd $T; ok=1; RAN=""
 for e in $(cat $D/val_env.txt 2>/dev/null); do export $e; done
 LOOP=$(cat $D/val_loop.txt 2>/dev/null || echo 20)
 ONLY=$(cat $D/val_only.txt 2>/dev/null | tr ',' ' ')
-DRAW=" triangle rot two depth load_depth load_depth16 load_stencil load_colour_f16 load_colour_a2b10 load_colour_rgba8ui load_colour_rg16sint load_colour_rgba8snorm load_colour_rgba16unorm load_colour_r32f load_colour_rgba16uint depth16 depth32s8 stencil poly idx16 idx32 mdi scissor viewport multivp clearatt clearquad fx msaa_resolve4 msaa_sample_shading ring occlusion pushfs ubo descupd texture int_clear_rgba8ui int_clear_rg16ui int_clear_r8ui rt_clear_r8snorm rt_clear_rgba8snorm rt_clear_a8b8g8r8snorm rt_clear_r16unorm rt_clear_rg16snorm rt_clear_r32f rt_clear_rgba32f rt_clear_a8b8g8r8ui rt_clear_a2b10g10r10ui "
+DRAW=" triangle rot two depth load_depth load_depth16 load_stencil load_colour_f16 load_colour_a2b10 load_colour_rgba8ui load_colour_rg16sint load_colour_rgba8snorm load_colour_rgba16unorm load_colour_r32f load_colour_rgba16uint depth16 depth32s8 stencil poly idx16 idx32 mdi scissor viewport multivp clearatt clearquad fx msaa_resolve4 msaa_store_resolve msaa_store_resolve_oq msaa_sample_shading ring occlusion pushfs ubo descupd texture int_clear_rgba8ui int_clear_rg16ui int_clear_r8ui rt_clear_r8snorm rt_clear_rgba8snorm rt_clear_a8b8g8r8snorm rt_clear_r16unorm rt_clear_rg16snorm rt_clear_r32f rt_clear_rgba32f rt_clear_a8b8g8r8ui rt_clear_a2b10g10r10ui "
 META=" buf fill img copyimg blit clearc cleard resolve event ts "
 FEAT=" storfmt_nf ycbcr spec linerast divisor "   # t_vk_feat cases the smoke set runs (Steam-session features; the rest of t_vk_feat is run by hand)
 for c in "t_vk_draw --loop $LOOP" "t_vk_compute --loop 5" "t_vk_meta" "t_vk_feat"; do

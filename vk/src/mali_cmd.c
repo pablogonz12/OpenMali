@@ -360,6 +360,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    const int32_t *a = cmd->cur.area;
    struct mali_frame *fr = &cmd->cur;
+   /* MSAA colour STORE + resolve is built twice at submit (mali_cmd_submit), so every draw runs its fragment work twice: an
+    * occlusion counter would count double and fragment-shader memory writes/atomics would repeat. Reject those draws. */
+   if (fr->samples == 4 && fr->colour.resolve_va && fr->colour.store &&
+       (cmd->occ_va || (cmd->gfx.fs && cmd->gfx.fs->fs_writes_memory)))
+      unsupported(cmd, "occlusion query or fragment memory writes with MSAA colour STORE + resolve (the frame is built twice)");
    const struct mali_rec *pv = fr->ndraws ? &fr->draws[fr->ndraws - 1] : NULL;
    /* dirty mask: setter bits plus the runtime's dynamic-state dirty bits (viewport and scissor apart from everything else) */
    uint32_t m = cmd->dirty;
@@ -910,10 +915,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, "MSAA colour loadOp LOAD");
          return;
       }
-      if (f->colour.resolve_va && f->colour.store) {
-         unsupported(cmd, "MSAA colour storeOp STORE together with a resolve (hardware writes the average or the samples, not both)");
-         return;
-      }
+      /* storeOp STORE together with a resolve: the hardware writes the average or the samples, not both, so mali_cmd_submit
+       * builds the frame twice (Average into the resolve image, then Layered into the sample image). */
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
@@ -1290,10 +1293,15 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          res = VK_ERROR_OUT_OF_HOST_MEMORY;
          break;
       }
+      /* MSAA colour STORE + resolve: pass 0 resolves (Average), pass 1 stores the samples (Layered) */
+      bool both = fr.samples == 4 && fr.colour.resolve_va && fr.colour.store;
+      for (int pass = 0; pass < (both ? 2 : 1); pass++) {
+      if (pass)
+         fr.colour.resolve_va = 0;
       uint64_t *cs = NULL;
       unsigned n = 0;
       int rc = mali_frame_build(&g_hw, &fr, &cs, &n);
-      if (ind)
+      if (ind && (rc || pass == (both ? 1 : 0)))
          free(fr.draws);
       if (rc) {
          if (rc == -ENOMEM)
@@ -1315,6 +1323,9 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       nall += n;
       counted++;
       free(cs);
+      }
+      if (res != VK_SUCCESS)
+         break;
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();
