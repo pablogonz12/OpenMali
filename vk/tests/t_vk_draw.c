@@ -2011,7 +2011,7 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading, .shaderClipDistance = g_feat.shaderClipDistance};
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
@@ -2065,7 +2065,8 @@ main(int argc, char **argv)
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
-   if (ok && CASE_ON("psiz_tri")) { g_psiz = 1; ok &= test_triangle(); g_psiz = 0; }   /* gl_PointSize written by a triangle-list VS: NIR validation aborted after strip_psiz retyped the variable */
+   if (ok && CASE_ON("psiz_tri") && !g_feat.shaderClipDistance) printf("{\"test\":\"psiz_tri\",\"skipped\":\"shaderClipDistance not advertised\",\"ok\":true}\n");
+   else if (ok && CASE_ON("psiz_tri")) { g_psiz = 1; ok &= test_triangle(); g_psiz = 0; }   /* gl_PointSize written by a triangle-list VS: NIR validation aborted after strip_psiz retyped the variable */
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
