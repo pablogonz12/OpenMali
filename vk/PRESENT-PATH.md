@@ -23,8 +23,9 @@ get a 2-image chain. `maxImageCount` is 0 (no limit, `wsi_common_wayland.c` ~192
 
 Consequence for the 120 Hz question: **a 2-image FIFO swapchain is unreachable, so "every late frame falls to 60"
 cannot come from that.** The depth that matters is `image_count - 1` pipelined frames, and `wsi_common` throttles
-present on the *per-image* fence (`wsi_common.c` ~2440-2470), so with 3 images a frame waits for the present two
-frames back, not for the one it just queued. No change is proposed here. What we default to is Mesa's default, i.e.
+present on the *per-image* fence (`wsi_common.c` ~2440-2470): a present waits for the previous use of **that image**,
+not for the one it just queued. With a 3-image chain that is usually the present two frames back, but the offset
+follows the app's acquire order (any free image may be reacquired) and is not a fixed number. No change is proposed here. What we default to is Mesa's default, i.e.
 `FIFO` unless the app asks otherwise; `MESA_VK_WSI_PRESENT_MODE` (Mesa's own option) overrides, not a `MALI_*` switch.
 
 **On-device** (to confirm which row applies to the Steam menu): log three numbers and `presentMode` once (zink passes
@@ -47,11 +48,17 @@ No spin exists in the present path after #255: a timeout-0 poll answers from the
 **Hypothesis for the Steam UI hangs (stated as a hypothesis, not established):** `wsi_common_queue_present` waits on
 the per-image throttle fence with `timeout = ~0ull` before *every* present (`wsi_common.c` ~2469; the X11 present
 thread does the same at `wsi_common_x11.c` ~2557, the software path at `wsi_common.c` ~2890). There is no bound and no
-`OUT_OF_DATE` path out of it. A compositor that never releases an image — e.g. one that stopped consuming because a
-buffer was damaged, or a gamescope that dropped the surface — therefore blocks `vkQueuePresentKHR` of the client
-forever, which matches "the Steam UI stops responding" rather than "the Steam UI is slow". This is consistent with
-the code, but it is not reproduced: the compositor's buffer-release side is outside the driver and nothing here
-distinguishes it from an app-side wait.
+`OUT_OF_DATE` path out of it.
+
+That fence is the driver's own: it signals after the present's GPU work and the client wait semaphores, not when the
+compositor releases the image. So the compositor cannot block it directly. The dependency that could carry compositor
+retention into `vkQueuePresentKHR` is the other side of the same loop: the image stays unusable until the compositor
+releases it, and the release arrives as the acquire-side wait for that image (the Wayland buffer release, or an
+implicit dma-buf sync on the exported buffer on the X11/shm path). If a compositor stops releasing, the app's next
+acquire/render for that image waits there, and if it holds an already-acquired image the present of that image may
+never complete. That chain - compositor never releases image -> client blocks on the acquire-side wait for that image
+-> the UI stops responding - is a hypothesis: it is consistent with the code, but it is not reproduced, and nothing
+here distinguishes it from an app-side wait. It is stated as a hypothesis, not as established behaviour.
 
 **On-device measurement that would confirm or kill it:** with the menu hung, run `gdb -p` (or `eu-stack`) on the
 client, or take two `perf record -p <pid> -g -- sleep 5` samples, and check for a stack of
@@ -99,19 +106,28 @@ CMF, run the Steam menu with `MALI_PROF=1` and read the `PROF/memsync nbos=... n
 number of ioctls one sweep would issue. Then trace only `MEM_SYNC`, not all ioctls: `strace -f -e trace=ioctl -o
 /tmp/io.log -p <pid>` for a fixed window (10 s), keep the calls whose request is `KBASE_IOCTL_MEM_SYNC`
 (`_IOW(KBASE_IOCTL_TYPE, 15, ...)`; grep the request number if strace prints it raw), and divide by the number of
-presents in the *same* window - one `PROF/frame` line per present-shaped submit, or SurfaceFlinger's frame counter.
+presents in the *same* window. Take that count from an independent present counter, not from `MALI_PROF`:
+`PROF/frame` is printed only every 200th call and reports averages (`mali_cs_emit.c`, `if (++c % 200 == 0)`), and
+`MALI_FRAME_PROF` prints one `FRAMEPROF` line per retired submission, so neither equals the present count. Use
+SurfaceFlinger's frame counter for the app's layer (`dumpsys SurfaceFlinger --latency <layer>` over the same
+window) or a counter added on the `vkQueuePresentKHR` path.
 `perf stat -e syscalls:sys_enter_ioctl` and `strace -c -e ioctl` count every ioctl; they cannot yield MEM_SYNC per
-present and must not be used for this ratio. Expect up to N MEM_SYNCs per present before the skip and 0 for wsi
-waits after it; if N x ioctl cost is under ~1 % of 8.3 ms, this is a micro-optimisation and should not gate the
-present work; if it is over ~5 %, it is a frame-time item.
+present and must not be used for this ratio. The request filter counts every MEM_SYNC, not only the WSI wait's: submit-time CPU->device syncs and other waits'
+device->CPU syncs stay in the trace. So attribute the difference rather than the absolute count: run the same
+fixed workload twice - once on main and once with #262's guards (matched runs, same scene, same window) - and use
+the delta in MEM_SYNCs per present as the cost the skip removes; any residual both runs share is not #262's.
+If that delta x ioctl cost is under ~1 % of 8.3 ms, this is a micro-optimisation and should not gate the present
+work; if it is over ~5 %, it is a frame-time item. Before the skip, the per-present count for the WSI wait alone is
+bounded by N = non-lazy BOs from the `PROF/memsync` line; after it, 0.
 
 ### Coordination: #248, #255 and the CSYNC skip (#262)
 
 The history this audit was written against, as it stands on main now: #255's timeout-0 poll fast path in
 `kbase_fence_wait` (a poll must not queue behind another thread's 20 ms `wait_lock` slice) is on main, and #248
 (per-BO write tracking for the fence-wait CSYNC) landed on top of it as `f2cabad` **without** deleting the poll
-branch. The CSYNC skip described below is not part of either: it is PR #262 (commit `7f2e860`, branch
-`lane/present-audit`), which is rebased on that main and applies its `if (!mali_fence_wait_no_csync)` guards to both
+branch. The CSYNC skip described below is not part of either: it is PR #262, branch `lane/present-audit`: the rebased commit is
+`f4ea8ab` (on main `7b7a3d1`, so with #248; its pre-rebase original is `7f2e860`, which predates #248), and it
+applies its `if (!mali_fence_wait_no_csync)` guards to both
 MEM_SYNC sites in `kbase_fence_wait` - the poll return (line 535) and the blocking-wait return (line 553).
 
 So there is nothing left to rebase here: #248 is already merged, #262 is on top of it, and #228's ring-sized pieces
@@ -119,8 +135,9 @@ are also on main. Adding another fence-wait change on top of #262 must keep all 
 
 ## Current state: the wsi CSYNC skip lives in #262, not in this PR
 
-This PR only adds this document; it changes no code. The behaviour under audit is PR #262 (commit `7f2e860`, branch
-`lane/present-audit`, not on main at the time of writing): in that branch `mali_wsi.c` wraps
+This PR only adds this document; it changes no code. The behaviour under audit is PR #262 (branch
+`lane/present-audit`; the rebased commit is `f4ea8ab`, on top of main with #248, and the pre-rebase original is
+`7f2e860`; not on main at the time of writing): in that branch `mali_wsi.c` wraps
 `pdev->wsi.WaitForFences` (the same way it already wraps `DestroyQueryPool`) and sets the thread-local
 `mali_fence_wait_no_csync` for the duration, and `kbase_fence_wait` skips the device->CPU sweep when it is set. If
 that branch is not in your checkout, none of this code is here - treat it as a prerequisite of the numbers in
