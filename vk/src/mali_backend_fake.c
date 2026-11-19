@@ -70,6 +70,19 @@ fake_probe(struct mali_gpu_info *out)
  * MALI_FAULT_INJECT=n makes the n-th submission fail (device lost). MALI_FAKE_SLOW_US=n delays the
  * signal by n us (a helper thread writes the eventfd) so that waits really block. */
 struct slow_ev;
+
+/* Fault injection (tests/t_vk_fault.c): MALI_FAKE_FAIL=op:N[,op:N...] (read at device creation) fails the N-th call (1-based) of a backend
+ * op for this device and logs "mali-fake INJECT <op> #N" on stderr (the sweep driver uses the line to know the workload reached N).
+ *   alloc import export heap ts cs submit  -> -ENOMEM (cs: -EBUSY, submit: -ENOMEM; a failed submit/cs does not mark the device lost)
+ *   fault   the N-th submit_signal / submit_cs is a GPU fault: -EIO and the device is lost
+ *   wait    the N-th fence_wait returns -EIO (GPU fault event while waiting) and the device is lost
+ *   counter the N-th wait_counter returns -EIO and the device is lost
+ *   stuck   the N-th submit_signal returns a fence that never signals; ~50 ms later a waiter sees the GPU fault (-EIO, device lost),
+ *           like the kernel's fatal-fault notification arriving for a hung job
+ * MALI_FAKE_ERRNO=EBUSY|ENOMEM|EINTR|ENOSPC|EIO overrides the -errno of the alloc/import/export/heap/ts/cs/submit ops. */
+enum fop { FO_ALLOC, FO_IMPORT, FO_EXPORT, FO_HEAP, FO_TS, FO_CS, FO_SUBMIT, FO_FAULT, FO_WAIT, FO_COUNTER, FO_STUCK, FO_N };
+static const char *const fop_name[FO_N] = {"alloc", "import", "export", "heap", "ts", "cs", "submit", "fault", "wait", "counter", "stuck"};
+
 struct mali_kdev {
    pthread_mutex_t lock;
    unsigned long submits, fault_at;
@@ -77,6 +90,9 @@ struct mali_kdev {
    unsigned long cs_submits, cs_instr;
    uint64_t next_va;
    bool lost;
+   unsigned long inj_at[FO_N], inj_cnt[FO_N];
+   int inj_errno;
+   uint64_t stuck_deadline_ns;   /* >0: a stuck fence exists; its fault becomes visible at this time */
    /* Offline checking (MALI_FAKE_DUMP=path|-): BO registry + decoded-stream dump, see tests/golden.py */
    struct fake_bo *bos;
    unsigned nbos, capbos, id, kicks;
@@ -95,6 +111,43 @@ struct slow_ev {
    uint64_t due_ns;
 };
 
+
+static void
+inject_parse(struct mali_kdev *k)
+{
+   k->inj_errno = ENOMEM;
+   const char *e = getenv("MALI_FAKE_ERRNO");
+   if (e) {
+      static const struct { const char *n; int v; } tab[] = {{"EBUSY", EBUSY}, {"ENOMEM", ENOMEM}, {"EINTR", EINTR}, {"ENOSPC", ENOSPC}, {"EIO", EIO}};
+      for (unsigned i = 0; i < sizeof tab / sizeof *tab; i++)
+         if (!strcmp(e, tab[i].n))
+            k->inj_errno = tab[i].v;
+   }
+   const char *f = getenv("MALI_FAKE_FAIL");
+   while (f && *f) {
+      for (int o = 0; o < FO_N; o++) {
+         size_t l = strlen(fop_name[o]);
+         if (!strncmp(f, fop_name[o], l) && f[l] == ':')
+            k->inj_at[o] = strtoul(f + l + 1, NULL, 10);
+      }
+      f = strchr(f, ',');
+      if (f)
+         f++;
+   }
+}
+
+/* True when this is the call to fail. Callers hold no lock (counters are atomic). */
+static bool
+inject(struct mali_kdev *k, enum fop op)
+{
+   if (!k || !k->inj_at[op])
+      return false;
+   unsigned long n = __atomic_add_fetch(&k->inj_cnt[op], 1, __ATOMIC_RELAXED);
+   if (n != k->inj_at[op])
+      return false;
+   fprintf(stderr, "mali-fake INJECT %s #%lu\n", fop_name[op], n);
+   return true;
+}
 
 /* ---- offline checking: BO registry, BO flag rules, command-stream dump (read by tests/golden.py) ----
  * VAs are a deterministic bump allocator and BOs are numbered in creation order, so a dump has no host pointers/timestamps. */
@@ -237,6 +290,7 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    pthread_condattr_destroy(&ca);
    const char *f = getenv("MALI_FAULT_INJECT"), *sl = getenv("MALI_FAKE_SLOW_US");
    k->fault_at = f ? strtoul(f, NULL, 10) : 0;
+   inject_parse(k);
    k->slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
    k->next_va = 0x5f00000000ull;
    k->id = g_fake_ndev++;
@@ -292,8 +346,8 @@ fake_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *
       return -EINVAL;
    }
    size = (size + 4095) & ~(size_t)4095;
-   if (size > (1ull << 32))
-      return -ENOMEM;
+   if (size > (1ull << 32) || inject(k, FO_ALLOC))
+      return -(size > (1ull << 32) ? ENOMEM : k->inj_errno);
    int fd = (int)syscall(SYS_memfd_create, "mali-fake-bo", 1u /* MFD_CLOEXEC */); /* no libc wrapper below API 30 */
    if (fd < 0)
       return -errno;
@@ -318,6 +372,8 @@ static int
 fake_bo_import(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct mali_bo *out)
 {
    size = (size + 4095) & ~(size_t)4095;
+   if (inject(k, FO_IMPORT))
+      return -k->inj_errno;
    struct stat st;
    if (fstat(fd, &st) || (size_t)st.st_size < size)
       return -EINVAL;
@@ -369,6 +425,8 @@ fake_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
 {
    if (bo->dmabuf_fd < 0)
       return -EINVAL;
+   if (inject(k, FO_EXPORT))
+      return -k->inj_errno;
    int fd = fcntl(bo->dmabuf_fd, F_DUPFD_CLOEXEC, 3);
    return fd < 0 ? -errno : fd;
 }
@@ -445,20 +503,27 @@ slow_queue(struct mali_kdev *k, int fd, unsigned us)
 static int
 fake_submit_signal(struct mali_kdev *k, int *fence_fd)
 {
+   bool inj_fault = inject(k, FO_FAULT), inj_submit = inject(k, FO_SUBMIT), inj_stuck = inject(k, FO_STUCK);
    pthread_mutex_lock(&k->lock);
-   bool bad = k->lost || (k->fault_at && k->submits + 1 == k->fault_at);
+   bool bad = k->lost || inj_fault || (k->fault_at && k->submits + 1 == k->fault_at);
    if (bad)
       k->lost = true;
-   else
+   else if (!inj_submit)
       k->submits++;
    unsigned slow = k->slow_us;
+   if (inj_stuck && !bad && !inj_submit)
+      k->stuck_deadline_ns = now_ns() + 50000000ull;
    pthread_mutex_unlock(&k->lock);
    if (bad)
       return -EIO;
+   if (inj_submit)
+      return -k->inj_errno;
 
-   int fd = eventfd(slow ? 0 : 1, EFD_CLOEXEC | EFD_NONBLOCK);
+   int fd = eventfd((slow || inj_stuck) ? 0 : 1, EFD_CLOEXEC | EFD_NONBLOCK);
    if (fd < 0)
       return -errno;
+   if (inj_stuck)
+      slow = 0;
    if (slow) {
       int d = dup(fd);
       if (d >= 0 && !slow_queue(k, d, slow)) {
@@ -478,15 +543,34 @@ static int
 fake_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
    struct pollfd pf = {fence_fd, POLLIN, 0};
+   if (inject(k, FO_WAIT)) {
+      pthread_mutex_lock(&k->lock);
+      k->lost = true;
+      pthread_mutex_unlock(&k->lock);
+      return -EIO;
+   }
+   uint64_t t_end = timeout_ms < 0 ? UINT64_MAX : now_ns() + (uint64_t)timeout_ms * 1000000ull;
    for (;;) {
-      int r = poll(&pf, 1, timeout_ms);
+      /* poll in <=10 ms slices so a fault (stuck fence) or a device loss on another thread wakes a waiter, like the kernel's fatal-fault event */
+      uint64_t now = now_ns();
+      uint64_t left_ms = now >= t_end ? 0 : (t_end - now) / 1000000ull;
+      int slice = left_ms > 10 ? 10 : (int)left_ms;
+      int r = poll(&pf, 1, slice);
       if (r < 0 && errno == EINTR)
          continue;
       if (r < 0)
          return -errno;
-      if (r == 0)
+      if (r > 0)
+         return (pf.revents & POLLERR) ? -EIO : 0;
+      pthread_mutex_lock(&k->lock);
+      bool fault = k->lost || (k->stuck_deadline_ns && now_ns() >= k->stuck_deadline_ns);
+      if (fault)
+         k->lost = true;
+      pthread_mutex_unlock(&k->lock);
+      if (fault)
+         return -EIO;
+      if (now_ns() >= t_end)
          return -ETIMEDOUT;
-      return (pf.revents & POLLERR) ? -EIO : 0;
    }
 }
 
@@ -500,8 +584,15 @@ fake_device_lost(struct mali_kdev *k)
 static int
 fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 {
+   bool inj_fault = inject(k, FO_FAULT), inj_cs = inject(k, FO_CS);
    pthread_mutex_lock(&k->lock);
+   if (inj_fault)
+      k->lost = true;
    bool lost = k->lost;
+   if (inj_cs && !lost) {
+      pthread_mutex_unlock(&k->lock);
+      return -k->inj_errno;
+   }
    k->cs_submits++;
    k->cs_instr += n;
    dump_kick(k, cs, n);
@@ -512,6 +603,12 @@ fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 static int
 fake_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t target, int timeout_ms)
 {
+   if (inject(k, FO_COUNTER)) {
+      pthread_mutex_lock(&k->lock);
+      k->lost = true;
+      pthread_mutex_unlock(&k->lock);
+      return -EIO;
+   }
    /* nothing executes: the wait stands for the GPU retiring the frames, so advance the event counter (else hw_retire spins on a full in-flight list) */
    if (*c < target)
       *(volatile uint64_t *)c = target;
@@ -521,6 +618,8 @@ fake_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t targ
 static int
 fake_heap_create(struct mali_kdev *k, uint32_t chunk, uint32_t initial, uint32_t max, struct mali_heap *out)
 {
+   if (inject(k, FO_HEAP))
+      return -k->inj_errno;
    *out = (struct mali_heap){.ctx_va = 0xf0000000ull, .first_chunk_va = 0xf1000000ull, .chunk_size = chunk};
    pthread_mutex_lock(&k->lock);
    reg_bo(k, out->ctx_va, 4096, 0, 1, NULL);
@@ -538,6 +637,8 @@ fake_heap_destroy(struct mali_kdev *k, struct mali_heap *heap)
 static int
 fake_gpu_timestamp(struct mali_kdev *k, uint64_t *ticks)
 {
+   if (inject(k, FO_TS))
+      return -k->inj_errno;
    struct timespec ts;
    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
    *ticks = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
