@@ -1356,6 +1356,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          }
          g_hw.drain(g_hw.user);
       }
+      if (ind && g_hw.soft) {
+         /* MALI_SOFT=1: the rasteriser rejects an indirect draw on the frame record, and expansion below would
+          * erase that origin before it ever sees it. Reject here, while the record still says "indirect". */
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         break;
+      }
       if (ind && expand_indirect(&fr)) {
          res = VK_ERROR_OUT_OF_HOST_MEMORY;
          break;
