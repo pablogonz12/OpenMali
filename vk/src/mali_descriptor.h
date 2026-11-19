@@ -85,8 +85,8 @@ void mali_dyn_buf_pack(unsigned arch, struct mali_hw_desc *d, const struct mali_
 VkResult mali_create_descriptor_set_layout(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci,
                                            VkDescriptorSetLayout *out);
 void mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci, VkDescriptorSetLayoutSupport *s);
-VkResult mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescriptorPoolCreateInfo *ci, VkDescriptorPool *out);
-void mali_destroy_descriptor_pool(struct vk_device *dev, VkDescriptorPool pool);
+VkResult mali_create_descriptor_pool(struct vk_device *dev, unsigned arch, const VkDescriptorPoolCreateInfo *ci, const VkAllocationCallbacks *alloc, VkDescriptorPool *out);
+void mali_destroy_descriptor_pool(struct vk_device *dev, VkDescriptorPool pool, const VkAllocationCallbacks *alloc);
 VkResult mali_reset_descriptor_pool(struct vk_device *dev, VkDescriptorPool pool);
 VkResult mali_allocate_descriptor_sets(struct vk_device *dev, const VkDescriptorSetAllocateInfo *ai, VkDescriptorSet *out);
 VkResult mali_free_descriptor_sets(struct vk_device *dev, VkDescriptorPool pool, uint32_t n, const VkDescriptorSet *sets);
