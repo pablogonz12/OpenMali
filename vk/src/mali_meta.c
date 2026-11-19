@@ -320,7 +320,6 @@ void
 mali_meta_set_dev(const struct mali_meta_dev *dev)
 {
    pthread_mutex_lock(&g_lock);
-   g_gen++;
    bool join = g_pw_run;
    g_pw_run = false;
    pthread_t pw = g_pw;
@@ -328,6 +327,11 @@ mali_meta_set_dev(const struct mali_meta_dev *dev)
    if (join)
       pthread_join(pw, NULL);   /* the worker sees the new generation and drops its result; never held under g_lock */
    pthread_mutex_lock(&g_lock);
+   /* Bump the generation in the same critical section that installs the device. Bumping it in the earlier
+    * section left a window where g_gen was new but g_dev still described the old device: a compile there
+    * captured the new generation with the old arch, and the install did not change g_gen again, so its
+    * publication check passed and an old-arch binary was uploaded to the new device. */
+   g_gen++;
    for (int i = 0; i < MALI_META_NSHADERS; i++)
       if (g_sh[i].ok) {
          mali_compiled_free(&g_sh[i].c);
@@ -413,6 +417,9 @@ meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[2], unsigned
 static int
 shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
 {
+   /* A generation change does not mean "no device": set(A) after set(B) is legal while A is still recording. Retry a
+    * small number of times against the device that is installed now; only a cleared device is -ENODEV. */
+   for (unsigned attempt = 0;; attempt++) {
    pthread_mutex_lock(&g_lock);
    if (!g_dev_set) {
       pthread_mutex_unlock(&g_lock);
@@ -456,6 +463,10 @@ shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *v
    int r = 0;
    if (!g_dev_set || g_gen != gen) {
       mali_compiled_free(&comp);
+      if (g_dev_set && attempt < 3) {   /* device swapped underneath: recompile for the installed one */
+         pthread_mutex_unlock(&g_lock);
+         continue;
+      }
       r = -ENODEV;
    } else if (g_sh[sh].ok) {
       mali_compiled_free(&comp);
@@ -472,6 +483,7 @@ shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *v
    }
    pthread_mutex_unlock(&g_lock);
    return r;
+   }
 }
 
 int
