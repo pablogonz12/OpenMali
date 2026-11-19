@@ -306,7 +306,7 @@ Indexed draws (idx16, idx32) and the cases scissor, viewport, clearatt, ring, pu
 - **BC decode (R4-M7) uses the M12 meta compute path**: new compute jobs (`mali_bc*`, shaders `bc1/bc4/bc6h/bc7`) need a meta materialise path for shader ids >= `MALI_META_NSHADERS`; see `vk/R4-GAP.md` 'BC'.
 
 ## M12/M13 status (wiring + CMF hardware, in progress 2026-11-17)
-- Offline (earlier): meta planner/reference (`mali_meta*`), query core, ops-frame CS builder (`mali_event*`), `patches/occlusion-cs-emit.patch`. Not wired before this section.
+- Offline (earlier): meta planner/reference (`mali_meta*`), query core, ops-frame CS builder (`mali_event*`), `occlusion-cs-emit` (since merged, M13). Not wired before this section.
 - Wiring plan (one worker owns `vk/src`): (1) `mali_frame` gets an ops list (`nops/ops`), `mali_frame_build` dispatches to `mali_ops_build`; (2) `mali_cmd.c` exports
   `mali_cmd_push_frame / mali_cmd_push_ops / mali_cmd_set_occlusion`, ops recorded inside a render pass are deferred to after the pass frame; (3) occlusion patch
   applied to `mali_cs_emit.[ch]` (clean), `mali_draw.occ_*` filled from the command buffer; (4) `mali_meta_set_dev` installed in `mali_hw_init`; (5) events
