@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mali-open
+Date: Thu, 19 Nov 2026 13:30:00 +0100
+Subject: [PATCH] pan/bi: cheaper RA liveness and interference construction
+
+bi_compute_liveness_ssa recounted the live set (a popcount over the whole
+bitset) before every instruction to track ssa_max_live: keep the count
+incrementally instead. bi_mark_interference scanned all nodes per destination
+(O(instrs x nodes)): skip dead stretches eight nodes at a time.
+lcra_add_node_interference always ran its 8 shift iterations: stop at the
+highest set bit of the masks (single-register masks need one).
+Bit-identical output (shaderdb TSV identical over 300 compiles, v11+v13).
+shaderdb compile time, sum over 150 shaders, on top of 0008: v11 ~-30%, v13 ~-30%.
+---
+--- a/src/panfrost/compiler/bifrost/bi_liveness.c
++++ b/src/panfrost/compiler/bifrost/bi_liveness.c
+@@ -49,6 +49,7 @@
+ 
+       /* Update its liveness information */
+       __bitset_copy(blk->ssa_live_in, blk->ssa_live_out, words);
++      unsigned live_count = __bitset_count(blk->ssa_live_in, words);
+ 
+       bi_foreach_instr_in_block_rev(blk, I) {
+          /* Phi nodes are handled separately, so we skip them. As phi nodes are
+@@ -58,9 +59,24 @@
+          if (I->op == BI_OPCODE_PHI)
+             break;
+ 
+-         blk->ssa_max_live =
+-            MAX2(__bitset_count(blk->ssa_live_in, words), blk->ssa_max_live);
+-         bi_liveness_ins_update_ssa(blk->ssa_live_in, I);
++         blk->ssa_max_live = MAX2(live_count, blk->ssa_max_live);
++
++         /* bi_liveness_ins_update_ssa, keeping the population count */
++         bi_foreach_dest(I, d) {
++            if (BITSET_TEST(blk->ssa_live_in, I->dest[d].value)) {
++               BITSET_CLEAR(blk->ssa_live_in, I->dest[d].value);
++               live_count--;
++            }
++         }
++
++         bi_foreach_ssa_src(I, s) {
++            bool was_live = BITSET_TEST(blk->ssa_live_in, I->src[s].value);
++            I->src[s].kill_ssa = !was_live;
++            if (!was_live) {
++               BITSET_SET(blk->ssa_live_in, I->src[s].value);
++               live_count++;
++            }
++         }
+       }
+ 
+       /* Propagate the live in of the successor (blk) to the live out of
+--- a/src/panfrost/compiler/bifrost/bi_ra.c
++++ b/src/panfrost/compiler/bifrost/bi_ra.c
+@@ -81,7 +81,12 @@
+     * allocation can be done in parallel for every possible solution,
+     * with lower-order bits representing smaller registers. */
+ 
+-   for (unsigned D = 0; D < 8; ++D) {
++   /* A shift by D can only overlap the other mask while D is below the
++    * highest set bit of either mask: stop there (single-register masks need
++    * one iteration instead of eight). */
++   const unsigned max_d = MIN2(8u, util_last_bit(cmask_i | cmask_j));
++
++   for (unsigned D = 0; D < max_d; ++D) {
+       if (cmask_i & (cmask_j << D)) {
+          constraint_fw |= (1 << (7 + D));
+          constraint_bw |= (1 << (7 - D));
+@@ -349,6 +354,16 @@
+          l->affinity[node] &= affinity;
+ 
+          for (unsigned i = 0; i < node_count; ++i) {
++            /* skip dead stretches eight nodes at a time */
++            if ((i & 7) == 0 && i + 8 <= node_count) {
++               uint64_t w;
++               memcpy(&w, live + i, 8);
++               if (!w) {
++                  i += 7;
++                  continue;
++               }
++            }
++
+             uint8_t r = live[i];
+ 
+             /* Nodes only interfere if they occupy
