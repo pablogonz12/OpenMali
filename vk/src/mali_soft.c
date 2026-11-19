@@ -13,6 +13,10 @@
 
 #include <vulkan/vulkan_core.h>
 
+/* One frame (and one registry change) at a time: g_st and g_prog are process-wide, and a pipeline destroy can run on
+ * another thread than the frame that is using its program. */
+static atomic_flag g_busy = ATOMIC_FLAG_INIT;
+
 /* ---- program registry (keyed by the compiled shader pointers the frame record carries) ---- */
 #define MAX_PROGS 32
 static struct {
@@ -26,26 +30,33 @@ void
 mali_soft_bind_program(const struct mali_compiled *vs, const struct mali_compiled *fs,
                        const struct mali_soft_program *p)
 {
+   while (atomic_flag_test_and_set_explicit(&g_busy, memory_order_acquire))
+      ;
    for (unsigned i = 0; i < g_nprog; i++)
       if (g_prog[i].vs == vs && g_prog[i].fs == fs) {
          g_prog[i].p = *p;
+         atomic_flag_clear_explicit(&g_busy, memory_order_release);
          return;
       }
    if (g_nprog == MAX_PROGS) {
       g_st.unsupported++;
       snprintf(g_st.why, sizeof g_st.why, "program registry full");
-      return;
+   } else {
+      g_prog[g_nprog].vs = vs;
+      g_prog[g_nprog].fs = fs;
+      g_prog[g_nprog].p = *p;
+      g_nprog++;
    }
-   g_prog[g_nprog].vs = vs;
-   g_prog[g_nprog].fs = fs;
-   g_prog[g_nprog].p = *p;
-   g_nprog++;
+   atomic_flag_clear_explicit(&g_busy, memory_order_release);
 }
 
 void
 mali_soft_clear_programs(void)
 {
+   while (atomic_flag_test_and_set_explicit(&g_busy, memory_order_acquire))
+      ;
    g_nprog = 0;
+   atomic_flag_clear_explicit(&g_busy, memory_order_release);
 }
 
 void
@@ -54,11 +65,14 @@ mali_soft_retire(const struct mali_compiled *vs, const struct mali_compiled *fs)
    /* The key is the address of the pipeline's own compiled-shader members, so a freed pipeline's storage can be reused
     * by a new one and a stale entry would then answer for a program that was never registered. Drop the entry here,
     * before the pipeline's memory goes back to the allocator. */
+   while (atomic_flag_test_and_set_explicit(&g_busy, memory_order_acquire))
+      ;
    for (unsigned i = 0; i < g_nprog; i++)
       if (g_prog[i].vs == vs && g_prog[i].fs == fs) {
          g_prog[i] = g_prog[--g_nprog];
-         return;
+         break;
       }
+   atomic_flag_clear_explicit(&g_busy, memory_order_release);
 }
 
 static const struct mali_soft_program *
@@ -472,8 +486,6 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
       }
    }
 }
-
-static atomic_flag g_busy = ATOMIC_FLAG_INIT;
 
 static bool
 soft_frame(const struct mali_hw *hw, const struct mali_frame *f)
