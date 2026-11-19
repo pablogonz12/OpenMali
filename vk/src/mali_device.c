@@ -65,6 +65,11 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
       return result;
    }
 
+   {  /* hardware probe hook (t_vk_robust): lower robust accesses without advertising robustBufferAccess2 */
+      const char *fr = getenv("MALI_TEST_FORCE_ROBUST");
+      if (fr && fr[0] == '1') dev->vk.enabled_features.robustBufferAccess2 = true;
+   }
+
    mali_resources_init();
    mali_queue_device_init(dev);
    result = pdev->backend->device_create(&pdev->gpu, &dev->kdev);
