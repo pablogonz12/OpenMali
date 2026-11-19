@@ -49,8 +49,10 @@ void mali_soft_clear_programs(void);
  * members inside the pipeline, and a freed pipeline's storage can be handed to a new one. */
 void mali_soft_retire(const struct mali_compiled *vs, const struct mali_compiled *fs);
 
-/* hw->soft: render one frame into its attachments. Returns false (and records why) when the frame needs something the
- * rasteriser does not do, so the caller can report it instead of silently drawing nothing. */
+/* hw->soft: render one frame into its attachments. The result is a BOOLEAN, not an errno: false means "this frame needs
+ * something the rasteriser does not do", with the reason in mali_soft_last()->why. The only caller,
+ * mali_frame_build() in mali_cs_emit.c, maps false to -ENOTSUP, which mali_cmd.c reports as
+ * VK_ERROR_FEATURE_NOT_PRESENT; nothing here returns -ENOTSUP itself. */
 bool mali_soft_frame(const struct mali_hw *hw, const struct mali_frame *f);
 
 /* The compiled-shader pointers a graphics pipeline's frame records carry (mali_pipeline.c), for mali_soft_bind_program. */
