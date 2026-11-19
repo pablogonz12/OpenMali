@@ -123,16 +123,19 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		unsigned wb = n ? p->rt_extra[n - 1].wb : p->rt_wb;
 		unsigned sw = n ? p->rt_extra[n - 1].swizzle : p->rt_swizzle;
 		unsigned ibo = n ? p->rt_extra[n - 1].internal_offset : 0;
+		/* storeOp is per attachment: a discarded target keeps Write Enable and Clean Tile Write off, the next one still stores.
+		 * RT0's own DONT_CARE lives in kb_fb_params.rt_no_store (PR #217): this branch only owns RT 1..3. */
+		unsigned ns = n ? p->rt_extra[n - 1].no_store : p->rt_no_store;
 		const uint32_t *cl = n ? p->rt_extra[n - 1].clear : p->rt_clear;
 		put(q, 0, 0, 4, 0);                                  /* Writeback Mode: compat */
 		put(q, 0, 4, 12, ibo >> 4);                          /* Internal Buffer Offset >> 4 */
 		put(q, 0, 26, 6, in ? in : 1);                       /* Internal Format: R8G8B8A8 */
-		put(q, 1, 0, 1, !p->rt_none && (n || !p->rt_no_store)); /* Write Enable (off for a colour-less frame or RT0 DONT_CARE) */
+		put(q, 1, 0, 1, !p->rt_none && !ns);                 /* Write Enable (off for a colour-less frame or a discarded target) */
 		put(q, 1, 3, 5, in ? wb : 19);                       /* Writeback colour format R8G8B8A8 */
 		put(q, 1, 8, 4, p->block_format ? 1 : 2);            /* Block format: 2 linear, 1 tiled u-interleaved */
 		put(q, 1, 12, 2, p->rt_msaa);                        /* MSAA: 0 single, 1 average (resolve), 3 layered */
 		put(q, 1, 16, 12, in ? sw : (0 | 1 << 3 | 2 << 6 | 3 << 9));   /* Swizzle RGBA identity */
-		put(q, 1, 31, 1, !p->no_clean_tile_write);           /* Clean Tile Write Enable (default on) */
+		put(q, 1, 31, 1, !p->no_clean_tile_write && (!n || !ns));    /* Clean Tile Write Enable (default on, off for a discarded target) */
 		put(q, 8, 0, 32, (uint32_t)va);                      /* RT Buffer base */
 		put(q, 9, 0, 32, (uint32_t)(va >> 32));
 		put(q, 10, 0, 32, rs);                               /* Row stride */
