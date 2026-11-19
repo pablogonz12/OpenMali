@@ -17,3 +17,4 @@ __pycache__/
 *.pyc
 bench/raw/
 bench/mdbench/out/
+tools/release/out/
