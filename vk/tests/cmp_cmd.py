@@ -210,6 +210,13 @@ for arch in (11, 13):
     if e.returncode or '"extra":true,"pass":true' not in e.stdout:
         fails.append('v%d extra: %s' % (arch, (e.stdout + e.stderr).strip()[-400:]))
 
+    # ring wrap + chunking: a stream longer than a 4 KiB ring through kb_queue_piece_instrs pieces (fake kbase backend)
+    w = run(['%s/t_cmd%d' % (out, arch), '--ringwrap'], {'KB_FAKE_ARCH': str(arch)})
+    if w.returncode or '"test":"ringwrap"' not in w.stdout or '"pass":true' not in w.stdout.split('"test":"ringwrap"')[1]:
+        fails.append('v%d ringwrap: %s' % (arch, (w.stdout + w.stderr).strip()[-400:]))
+    else:
+        print(w.stdout.strip().splitlines()[-1])
+
     # M13: occlusion draw + deferred op + ops frame (t_cmd --m13), our dump only: static rules, and the decoded stream must contain what was recorded
     md = '%s/m%d.jsonl' % (out, arch)
     if os.path.exists(md):
