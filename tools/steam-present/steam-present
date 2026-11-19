@@ -23,7 +23,7 @@ poco-x4 has no guest route for this suite.
 
 Output: mean fps, p50/p95/p99 frame interval and the pacing class:
   * uniform ~8.33 ms                  -> display-paced at 120
-  * uniform ~16.67 ms, <10 % fast     -> 60 fps cap (not a 120 render)
+  * uniform ~16.67 ms, <10 % fast     -> half-panel cadence (cap not established)
   * 15-85 % fast frames               -> bimodal: CPU stalls / missed vsyncs
   * p50 > 1.25 x base                 -> client/GPU bound
 """
@@ -49,6 +49,8 @@ PKG = os.environ.get("DROIDDECK_PACKAGE", "com.ludashi.benchmark")
 DL = "/storage/emulated/0/Download/steam-present"
 OURS = os.path.join(REPO, "vk", "out", "a64-glibc-wl")
 PROFILES = ("bridge", "ours")
+PENDING = 9223372036854775807
+HISTORY = 128             # SurfaceFlinger frame-history ring per layer
 
 
 def sh(cmd, timeout=60, env=None):
@@ -103,12 +105,20 @@ class Phone:
         j["_rc"] = p[0]
         return j
 
+    def _take(self):
+        """Acquire the qsafe lock and KEEP the object: a temporary would close its fd and drop the lock."""
+        lk = L.PhoneLock(self.dev)
+        if lk.acquire():
+            self.lock = lk
+            return True
+        return False
+
     def admit(self, wait):
         if G.disabled(self.dev["lock"], self.alias):
             return "disabled by owner"
         if os.environ.get("QSAFE_HELD") == self.dev["lock"]:   # an ancestor (farmd/qsafe) already holds it
             self.lock = None
-        elif not L.PhoneLock(self.dev).acquire():
+        elif not self._take():
             import fcntl
             fd = open(f"/tmp/qsafe-{self.dev['lock']}.lock", "a")
             if wait <= 0:
@@ -143,12 +153,12 @@ def percentile(s, q):
 
 
 def panel_hz(ph):
-    _, o = ph.adb("shell", "dumpsys display | grep -m1 -o 'mActiveModeId=[0-9]*'", 20)
-    _, d = ph.adb("shell", "dumpsys display | grep -m1 'DisplayDeviceInfo{'", 20)
+    _, o = ph.adb("shell", "dumpsys display | grep -m1 -o 'mActiveModeId=[0-9]*'", timeout=20)
+    _, d = ph.adb("shell", "dumpsys display | grep -m1 'DisplayDeviceInfo{'", timeout=20)
     m = re.search(r"fps=([0-9.]+)", d)
     if m:
         return float(m.group(1))
-    _, p = ph.adb("shell", "settings get system peak_refresh_rate", 15)
+    _, p = ph.adb("shell", "settings get system peak_refresh_rate", timeout=15)
     try:
         return float(p.strip())
     except ValueError:
@@ -156,7 +166,7 @@ def panel_hz(ph):
 
 
 def layer_name(ph):
-    _, o = ph.adb("shell", "dumpsys SurfaceFlinger --list", 30)
+    _, o = ph.adb("shell", "dumpsys SurfaceFlinger --list", timeout=30)
     cand = [l.strip() for l in o.splitlines()
             if f"SurfaceView[{PKG}/" in l and "SessionActivity" in l]
     if not cand:
@@ -177,7 +187,7 @@ def parse_latency(text):
                 a = int(p[1])
             except ValueError:
                 continue
-            if a > 0:
+            if 0 < a < PENDING:      # SurfaceFlinger prints INT64_MAX for an unresolved fence
                 out.append(a)
     return out
 
@@ -187,18 +197,29 @@ class Sampler(threading.Thread):
         super().__init__(daemon=True)
         self.ph, self.layer, self.seconds = ph, layer, seconds
         self.stamps, self.err, self.calls = set(), None, 0
+        self.errors = 0          # failed polls
+        self.gaps = 0            # polls whose window no longer overlaps what we had: history was lost
+        self.last_max = None
         self.stop = threading.Event()
 
     def run(self):
         q = self.layer.replace('"', '\\"')
         while not self.stop.is_set():
-            rc, o = self.ph.adb("shell", f'dumpsys SurfaceFlinger --latency "{q}"', 20)
+            rc, o = self.ph.adb("shell", f'dumpsys SurfaceFlinger --latency "{q}"', timeout=20)
             self.calls += 1
             if rc != 0:
                 self.err = o.strip()[-200:]
+                self.errors += 1
                 time.sleep(0.2)
                 continue
-            self.stamps.update(parse_latency(o))
+            st = parse_latency(o)
+            if st:
+                # SurfaceFlinger keeps the last 128 frames per layer.  A full window with nothing at or below
+                # the newest stamp we already hold means frames fell out of the ring between two polls.
+                if self.last_max is not None and len(st) >= HISTORY - 1 and min(st) > self.last_max:
+                    self.gaps += 1
+                self.last_max = max(st + [self.last_max or 0])
+                self.stamps.update(st)
             time.sleep(0.15)
 
 
@@ -219,8 +240,28 @@ class Sweep(threading.Thread):
             time.sleep(0.7)
 
 
+def stop_workers(*ws):
+    """Signal every started worker, then wait until each has really exited (a Sweep may be inside a 25 s ctl call)."""
+    ws = [w for w in ws if w is not None]
+    for w in ws:
+        w.stop.set()
+    for w in ws:
+        if w.is_alive():
+            w.join(90)
+        if w.is_alive():
+            print(f"steam-present: worker {type(w).__name__} still running after 90 s; "
+                  "restoring anyway", file=sys.stderr)
+
+
+def need(j, what):
+    """A phone operation that must have succeeded before the benchmark means anything."""
+    if j.get("_rc") != 0:
+        die(f"{what} failed: {json.dumps(j)[:300]}")
+    return j
+
+
 def cpu_sample(ph):
-    _, o = ph.adb("shell", "top -b -n 1 -m 40", 30)
+    _, o = ph.adb("shell", "top -b -n 1 -m 40", timeout=30)
     total = 0.0
     for l in o.splitlines():
         if not re.search(r"steamwebhelper|gamescope|steam\b", l):
@@ -245,9 +286,15 @@ def classify(iv, base, fast_frac):
         return "bimodal: CPU stalls / missed vsyncs"
     if p50 <= 1.25 * base and fast_frac >= 0.9:
         return f"display-paced at {round(1000 / base)} Hz (uniform {base:.2f} ms)"
+    half = sum(1 for x in iv if abs(x - 2 * base) <= 0.12 * base) / len(iv)
     if abs(p50 - 2 * base) <= 0.12 * base and fast_frac < 0.10:
-        return (f"60 fps cap: uniform {p50:.2f} ms at half of a {round(1000 / base)} Hz panel "
-                "(a 120 render dropping alternate frames would leave an 8.3/16.7 mix)")
+        if half >= 0.90:
+            return (f"half-panel cadence: {half * 100:.0f} % of intervals at {p50:.2f} ms "
+                    f"(every 2nd vsync of a {round(1000 / base)} Hz panel); presentation timestamps alone "
+                    "cannot tell a 60 fps render cap from a faster producer whose alternate frames are "
+                    "dropped, so the cap is not established")
+        return (f"slow tail: median {p50:.2f} ms but only {half * 100:.0f} % of intervals are at half-panel "
+                f"cadence ({100 * sum(1 for x in iv if x >= 2.5 * base) / len(iv):.0f} % are >= 2.5 x base)")
     if p50 > 1.25 * base:
         return f"client/GPU bound (p50 {p50:.2f} ms, {1000 / p50:.1f} fps)"
     return f"mixed (p50 {p50:.2f} ms, {100 * fast_frac:.0f} % at panel cadence)"
@@ -287,14 +334,23 @@ def main():
         die(why, 3)
     print(f"steam-present: {a.phone} via {ph.tid}", file=sys.stderr)
 
+    got_env = got_prefs = False
     saved_env, saved_prefs = [], {}
+    touched = False
+    s = sweep = None
     try:
-        j = ph.ctl("env", "list", timeout=40)
-        saved_env = j.get("active") or []
-        j = ph.ctl("prefs", "get", "session", timeout=40)
-        saved_prefs = j.get("values") if isinstance(j.get("values"), dict) else j
+        j = need(ph.ctl("env", "list", timeout=40), "reading the session environment")
+        if not isinstance(j.get("active"), list):
+            die(f"session environment snapshot has no 'active' list: {json.dumps(j)[:200]}")
+        saved_env, got_env = j["active"], True
+        j = need(ph.ctl("prefs", "get", "session", timeout=40), "reading the session preferences")
+        vals = j.get("values")
+        if not isinstance(vals, dict):
+            die(f"session preference snapshot has no 'values' dict: {json.dumps(j)[:200]}")
+        saved_prefs, got_prefs = vals, True
 
-        ph.ctl("stop", timeout=200)
+        touched = True
+        need(ph.ctl("stop", timeout=200), "stopping the running session")
         env = ["BL_MANGOAPP=0", "VKBRIDGE_STATS=1"]
         if a.uncapped:
             env += ["MALIDECK_MODE=performance", "VKBRIDGE_SWAPCHAIN_IMAGES=8",
@@ -305,20 +361,25 @@ def main():
             so = os.path.join(os.path.dirname(os.path.abspath(icd)), "libvulkan_mali.so")
             if not (os.path.isfile(icd) and os.path.isfile(so)):
                 die(f"missing ICD build: {icd} / {so}; build with MALI_TARGET=a64-glibc-wl vk/build.sh")
-            ph.adb("shell", f"mkdir -p {DL}", 15)
-            ph.adb("push", so, f"{DL}/libvulkan_mali.so", timeout=180)
+            for what, r in (("creating the ICD directory", ph.adb("shell", f"mkdir -p {DL}", timeout=15)),
+                            ("pushing libvulkan_mali.so", ph.adb("push", so, f"{DL}/libvulkan_mali.so", timeout=180))):
+                if r[0] != 0:
+                    die(f"{what} failed (rc {r[0]}): {r[1][-200:]}")
             manifest = os.path.join("/tmp", "steam-present-icd.json")
             open(manifest, "w").write(json.dumps(
                 {"file_format_version": "1.0.1",
                  "ICD": {"library_path": f"{DL}/libvulkan_mali.so", "api_version": "1.3.0"}}))
-            ph.adb("push", manifest, f"{DL}/mali_icd.json", timeout=60)
+            r = ph.adb("push", manifest, f"{DL}/mali_icd.json", timeout=60)
             os.unlink(manifest)
+            if r[0] != 0:
+                die(f"pushing the ICD manifest failed (rc {r[0]}): {r[1][-200:]}")
             env += [f"BL_VK_DRIVER={DL}/mali_icd.json", "BL_VKBRIDGE=0",
                     "BL_OPEN_DRIVER=1", "BL_DRM_STANDIN=/dev/mali0",
                     "gamescope_composite_force=false"]
-        ph.ctl("env", "clear", "next", timeout=30)
-        ph.ctl("env", "set", *env, timeout=40)
-        ph.ctl("prefs", "set", "session", "hudDeck", "false", "--type", "bool", timeout=40)
+        need(ph.ctl("env", "clear", "next", timeout=30), "clearing the next-session environment")
+        need(ph.ctl("env", "set", *env, timeout=40), "setting the session environment")
+        need(ph.ctl("prefs", "set", "session", "hudDeck", "false", "--type", "bool", timeout=40),
+             "setting hudDeck=false")
         j = ph.ctl("start", "steam", "--wait", timeout=240)
         if j.get("_rc") != 0:
             die(f"session did not start: {json.dumps(j)[:300]}")
@@ -340,20 +401,21 @@ def main():
         layer = layer_name(ph)
         if not layer:
             die("no DroidDeck SurfaceView layer: is the session on screen?")
-        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", 20)
+        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
         cpu = cpu_sample(ph)
         sweep = Sweep(ph)
         sweep.start()
         time.sleep(a.warmup)
         stamp = time.time()
-        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", 20)
+        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
         s = Sampler(ph, layer, a.seconds)
         s.start()
         time.sleep(a.seconds)
-        s.stop.set()
-        sweep.stop.set()
-        s.join(5)
-        sweep.join(5)
+        stop_workers(s, sweep)
+        if s.gaps or s.errors:
+            die(f"sample invalid: {s.gaps} frame-history gaps and {s.errors} failed polls out of {s.calls} "
+                f"({s.err or 'no error text'}); SurfaceFlinger keeps only {HISTORY} frames per layer, so "
+                "frames were lost between polls. Rerun on a quiet link", 4)
 
         stamps = sorted(s.stamps)
         iv = [(b - a_) / 1e6 for a_, b in zip(stamps, stamps[1:]) if b > a_]
@@ -376,13 +438,16 @@ def main():
                 f.write(json.dumps(row) + "\n")
         return 0
     finally:
-        if not a.keep:
+        stop_workers(s, sweep)          # no pad input may race the restore below
+        if touched and not a.keep:
             ph.ctl("stop", timeout=200)
-        ph.ctl("prefs", "set", "session", "hudDeck",
-               str(bool(saved_prefs.get("hudDeck", True))).lower(), "--type", "bool", timeout=40)
-        ph.ctl("env", "clear", "next", timeout=30)
-        if saved_env:
-            ph.ctl("env", "set", *saved_env, timeout=40)
+        if got_prefs and touched:
+            ph.ctl("prefs", "set", "session", "hudDeck",
+                   str(bool(saved_prefs.get("hudDeck", True))).lower(), "--type", "bool", timeout=40)
+        if got_env and touched:
+            ph.ctl("env", "clear", "next", timeout=30)
+            if saved_env:
+                ph.ctl("env", "set", *saved_env, timeout=40)
 
 
 if __name__ == "__main__":
