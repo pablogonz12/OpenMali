@@ -14,3 +14,21 @@ Honest `descriptorIndexing` needs the whole spec minimum set (see PR #166 notes:
 | 8 | Advertise `descriptorIndexing`, CTS dEQP-VK.descriptor_indexing.* on X8, drop shim | 2-3 | todo |
 
 Remaining after stage 1: ~25-35 h. Stage 1 does not change compiler output (no compile-version bump).
+
+## Stage 2 (this PR, reused from #81)
+The alloc-sizing and `maxVariableDescriptorCount` code is #81's commit 74f8b53 cherry-picked (not duplicated); here it is gated on
+`MALI_DESCIDX_FLAGS=1` (default off: flag ignored, support reports 0, as before). If #81 merges first, rebase drops the duplicate
+hunks; the gate is the only delta. Host test: `t_desc` `test_variable_count` (5 mutants killed incl. gate and count check).
+
+## Descriptor tables (stages 3/4/5 design)
+Today a shader addresses descriptors through fixed slots (4 sets / 24 slot caps in the lowering). Real UAB limits (500000 per stage)
+need one indirection: a per-set table `mali_dtab_entry[binding]` = {slot, stride, count, flags} uploaded next to the set (or
+derived from the layout, which the compiler already receives), and lowering `addr = set_va + (slot + idx*stride) * slot_size`.
+`vk/src/mali_desctable.h` is the pure core: `mali_dtab_slot` (binding+index -> slot, OOB/missing-binding never yield a slot, so the
+lowering clamps to a null slot), `mali_dtab_write_allowed` (stage 3 write-while-in-use rule) and `mali_dtab_may_skip_unwritten`
+(PARTIALLY_BOUND). Not wired anywhere: compiler output unchanged, **no compile version bump** in this PR.
+
+Wiring estimates (lane-hours): write enforcement in vkUpdateDescriptorSets + in-use tracking per set 2-3; push table pointer through
+the CS (new per-set table VA in the resource table, hot file mali_cs_emit.c) 3-4; compiler lowering for non-constant indices with
+bounds clamp 4-6 (bumps compile version to 38 when it first changes output); limits struct + advertise 1-2. Total ~10-15 h on top of the
+table core.
