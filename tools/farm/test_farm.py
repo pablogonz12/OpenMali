@@ -295,6 +295,7 @@ class ShellRoute(unittest.TestCase):
 class T(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)                          # sweep_env() leaks it into os.environ: later tests would idle-sweep a stale list until farmd times out
         open(os.path.join(self.d, "devices.toml"), "w").write(TOML)
         self.env = dict(os.environ, MALI_FARM_STATE=self.d + "/state", MALI_FARM_DEVICES=self.d + "/devices.toml",
                         MALI_FARM_DOWN_AFTER="1")
