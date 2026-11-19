@@ -1806,6 +1806,78 @@ out:
    return ok;
 }
 
+/* MSAA + MRT must fail cleanly: a 4x pipeline over two colour attachments is refused at creation (mali_pipeline.c), while the
+ * same 4x pipeline over one attachment still works under MALI_EXPERIMENTAL_MSAA=1 (the control proves the gate is about the
+ * attachment count, not MSAA). */
+static int
+test_mrt_msaa_gate(void)
+{
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv("mrt2.frag.spv");
+   VkRenderPass rp1 = VK_NULL_HANDLE, rp2 = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline p1 = VK_NULL_HANDLE, p2 = VK_NULL_HANDLE;
+   const char *old = getenv("MALI_EXPERIMENTAL_MSAA");
+   int ok = 0;
+#define MG_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   MG_CHECK(vs && fs, "shaders");
+   setenv("MALI_EXPERIMENTAL_MSAA", "1", 1);
+   for (int n = 1; n <= 2; n++) {
+      VkAttachmentDescription ad[2];
+      VkAttachmentReference ar[2];
+      for (int i = 0; i < n; i++) {
+         ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_4_BIT,
+                                           .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                           .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                           .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+         ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+      }
+      VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = (uint32_t)n, .pColorAttachments = ar};
+      VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = (uint32_t)n, .pAttachments = ad,
+                                    .subpassCount = 1, .pSubpasses = &sp};
+      VkRenderPass *rp = n == 1 ? &rp1 : &rp2;
+      MG_CHECK(CreateRenderPass(dev, &rpi, NULL, rp) == VK_SUCCESS, "render pass %d", n);
+   }
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   MG_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_4_BIT};
+   VkPipelineColorBlendAttachmentState cba[2] = {{.colorWriteMask = 0xf}, {.colorWriteMask = 0xf}};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = cba};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .layout = pl, .renderPass = rp1};
+   VkResult r1 = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &p1);
+   MG_CHECK(r1 == VK_SUCCESS, "4x pipeline with 1 attachment = %d, want success", (int)r1);
+   cbs.attachmentCount = 2;
+   gp.renderPass = rp2;
+   VkResult r2 = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &p2);
+   MG_CHECK(r2 == VK_ERROR_FEATURE_NOT_PRESENT, "4x pipeline with 2 attachments = %d, want FEATURE_NOT_PRESENT", (int)r2);
+   ok = 1;
+   printf("{\"test\":\"mrt_msaa_gate\",\"one\":%d,\"two\":%d,\"ok\":true}\n", (int)r1, (int)r2);
+out:
+   if (old) setenv("MALI_EXPERIMENTAL_MSAA", old, 1); else unsetenv("MALI_EXPERIMENTAL_MSAA");
+   DeviceWaitIdle(dev);
+   if (p1) DestroyPipeline(dev, p1, NULL);
+   if (p2) DestroyPipeline(dev, p2, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (rp2) DestroyRenderPass(dev, rp2, NULL);
+   if (rp1) DestroyRenderPass(dev, rp1, NULL);
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef MG_CHECK
+   return ok;
+}
+
 /* rasterizer discard: draws produce nothing (both stages present, or a vertex-only pipeline); the next pipeline draws normally */
 static int
 test_discard(const char *name, int mode)
@@ -2735,6 +2807,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt_blend_min_rt1")) ok &= test_mrt_blend_gate("mrt_blend_min_rt1", 1);
    if (ok && CASE_ON("mrt_blend_min_rt0")) ok &= test_mrt_blend_gate("mrt_blend_min_rt0", 2);
    if (ok && CASE_ON("mrt_blend_ok")) ok &= test_mrt_blend_gate("mrt_blend_ok", 3);
+   if (ok && CASE_ON("mrt_msaa_gate")) ok &= test_mrt_msaa_gate();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
