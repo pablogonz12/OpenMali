@@ -742,13 +742,18 @@ expand_indirect(struct mali_frame *f)
 #define push_frame mali_cmd_push_frame
 
 /* ---- compute (M11): every dispatch is its own frame record, executed in order with the render passes ---- */
-/* VK_KHR_load_store_op_none: LOAD_OP_NONE means "contents preserved", which for our tiled path is the same work as LOAD (preload draw for
- * colour, depth and stencil; MSAA and D24 depth/stencil LOAD are rejected, and NONE the same way). STORE_OP_NONE leaves the memory untouched: for
- * depth/stencil that is "not stored" (the ==STORE tests below), colour is always stored by the FBD. */
+/* Only LOAD preserves the previous contents and needs a preload draw (colour, depth, stencil; MSAA and D24 depth are rejected for LOAD
+ * only). VK_ATTACHMENT_LOAD_OP_NONE_KHR and DONT_CARE both leave the contents within the render area undefined, so neither may read
+ * them: NONE is VK_KHR_load_store_op_none's explicit "do not load" and DONT_CARE is the same permission with the read allowed to be
+ * skipped as a hint. The decision is per attachment (colour `load`, depth `zload`, stencil `sload`), mirroring the per-attachment store
+ * flags (`colour.store`, `zs.store`, `st.store`): a pass may LOAD colour and DONT_CARE depth, or LOAD depth and DONT_CARE stencil.
+ * With no load the FBD clears the tile to 0 (mali_render.c), which is legal for an undefined start.
+ * STORE_OP_NONE leaves the memory untouched: for depth/stencil that is "not stored" (the ==STORE tests below), colour is always stored
+ * by the FBD. */
 static inline bool
 is_load_op(VkAttachmentLoadOp op)
 {
-   return op == VK_ATTACHMENT_LOAD_OP_LOAD || op == VK_ATTACHMENT_LOAD_OP_NONE_KHR;
+   return op == VK_ATTACHMENT_LOAD_OP_LOAD;
 }
 
 static void
