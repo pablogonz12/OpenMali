@@ -307,6 +307,12 @@ def job_prio(job):
     return SUITE_PRIO.get(job.get("suite"), 0)
 
 
+def stable_ref(ref):
+    """a plain branch/tag name: not empty, not HEAD, not a batch, not a revision expression (HEAD~1, main^, @{u}, a commit hash) that moves or is not a ref"""
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", ref or "")) and ref != "HEAD" and not ref.startswith("HEAD") \
+        and not re.fullmatch(r"[0-9a-f]{7,40}", ref)
+
+
 def supersede_old_gates(new, jobs, is_ancestor):
     """a new gate job (smoke/daily) obsoletes the pending parts of older gate jobs of the same line of commits: same repo, suite, env and
     --only, an older commit that is an ancestor of the new one (is_ancestor(old, new)), and only the classes the new job covers. Running and
@@ -320,12 +326,19 @@ def supersede_old_gates(new, jobs, is_ancestor):
         same = (j.get("suite") == new["suite"] and (j.get("env") or {}) == (new.get("env") or {})
                 and (j.get("only") or "") == (new.get("only") or ""))
         ref = new.get("ref") or ""
-        sibling = (not same and j.get("suite") in SUPERSEDE_SUITES and ref not in ("", "HEAD") and not ref.startswith("batch:")
-                   and j.get("ref") == ref)
+        sibling = (not same and j.get("suite") != new["suite"] and j.get("suite") in SUPERSEDE_SUITES and stable_ref(ref) and j.get("ref") == ref)
         if (j["id"] == new["id"] or not (same or sibling) or j.get("repo") != new.get("repo") or j.get("auto")
                 or j["commit"] == new["commit"] or j.get("seq", 0) > new.get("seq", 0) or not is_ancestor(j["commit"], new["commit"])):
             continue
         cs = [c for c, p in j["parts"].items() if p["state"] == "pending" and c in new["parts"]]
+        if not cs:
+            continue
+        try:                                              # re-read right before the write: a part farmd moved to running since the snapshot must not be reset
+            fresh = read_json(job_path(j["id"]))
+            cs = [c for c in cs if fresh["parts"].get(c, {}).get("state") == "pending"]
+            j = fresh
+        except (OSError, ValueError, KeyError):
+            pass
         if not cs:
             continue
         for c in cs:

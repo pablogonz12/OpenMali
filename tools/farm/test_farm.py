@@ -1285,6 +1285,17 @@ class T(unittest.TestCase):
         self.assertEqual(other_ref["parts"]["v13"]["state"], "pending")
         self.assertEqual(L.supersede_old_gates(dict(new, ref="HEAD"), [mk("c2", suite="cases", ref="HEAD")], lambda o, n: True), [])
 
+    def test_supersede_sibling_needs_other_suite_and_stable_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        new = mk("new", commit="z", seq=5)
+        run = lambda n, js: L.supersede_old_gates(n, js, lambda o, m: True)
+        self.assertEqual(run(new, [mk("o1", only="draw"), mk("o2", env={"X": "1"})]), [])               # same suite, other only/env: kept
+        for r in ("HEAD~1", "main^", "@{u}", "abc1234", "HEAD^2"):
+            self.assertEqual(run(mk("n2", commit="z", seq=5, ref=r), [mk("c", suite="cases", ref=r)]), [], r)
+        self.assertEqual([g[0] for g in run(new, [mk("c3", suite="cases")])], ["c3"])
+
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
         g = L.new_job("b", "3" * 40, False, "smoke", ["v11"], {}, "t")
