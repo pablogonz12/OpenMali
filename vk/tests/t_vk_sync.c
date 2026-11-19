@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <signal.h>
 #include <unistd.h>
 
 static int g_fail;
@@ -66,9 +67,20 @@ wait_ms(VkFence f, uint64_t ms)
    return WaitForFences(dev, 1, &f, VK_TRUE, ms * 1000000ull);
 }
 
+static void
+on_alarm(int sig)
+{
+   static const char m[] = "FAIL: t_vk_sync watchdog expired (a fence wait never returned)\n";
+   (void)sig;
+   if (write(2, m, sizeof m - 1)) {}
+   _exit(1);
+}
+
 int
 main(int argc, char **argv)
 {
+   signal(SIGALRM, on_alarm);
+   alarm(60);   /* a broken timeout check must fail the test, not hang it */
    const char *icd = NULL;
    for (int i = 1; i < argc; i++)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc)
