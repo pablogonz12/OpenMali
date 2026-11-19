@@ -1505,9 +1505,13 @@ test_wmask_dyn(const char *name, int kind)
    int ok = scene_draw(&s, 2, rot, f);
    int good = ok;
    if (ok && !g_fake) {
-      uint32_t cov = count_cov(&s);
+      /* count_cov counts ALPHA: a red-only mask (kind 2) must leave alpha 0 and green/blue 0, so count red instead there */
+      uint32_t cov = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++)
+            cov += (kind == 2 ? s.px[y * s.pitch + x * 4] : s.px[y * s.pitch + x * 4 + 3]) != 0;
       const uint8_t *c = s.px + 106 * s.pitch + 128 * 4;
-      good = cov > 8000 && c[0] > 60 && (kind == 2 ? (c[1] == 0 && c[2] == 0) : 1);
+      good = cov > 8000 && c[0] > 60 && (kind != 2 || (c[1] == 0 && c[2] == 0 && c[3] == 0));
       if (!good) { printf("{\"fail\":\"%s: cov %u px %u,%u,%u,%u\"}\n", name, cov, c[0], c[1], c[2], c[3]); g_fail++; }
       else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
    } else if (ok)
