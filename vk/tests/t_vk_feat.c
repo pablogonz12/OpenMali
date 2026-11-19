@@ -1784,9 +1784,14 @@ test_didxbuf(void)
          uint32_t want[6] = {0xA000u + di * 16, 0xA000u + nu * 16 + 1, 0xB000u + di * 256 + tt, 0xB000u + nu * 256 + tt,
                              0xC000u + di * 0x100u + y * IW + x, 0xC000u + nu * 0x100u + y * IW + x};
          for (int k = 0; k < 6; k++) if (o[tt * 6 + k] != want[k]) BAD(k, o[tt * 6 + k]);
-         const uint32_t *s = (const uint32_t *)(const void *)sb[nu].p;
-         if (s[64 + tt] != 0x5000u + tt * 8u + nu) BAD(6, s[64 + tt]);                       /* non-uniform SSBO write */
-         if (((const uint32_t *)(const void *)sb[di].p)[128 + tt] != 0x6000u + tt) BAD(7, 0);   /* dynamic SSBO write */
+         /* every SSBO, both write regions: the selected one holds the written value, all others stay 0xEEEEEEEE */
+         for (uint32_t i = 0; i < 4; i++) {
+            const uint32_t *s = (const uint32_t *)(const void *)sb[i].p;
+            uint32_t w6 = i == nu ? 0x5000u + tt * 8u + nu : 0xEEEEEEEEu; /* non-uniform SSBO write */
+            uint32_t w7 = i == di ? 0x6000u + tt : 0xEEEEEEEEu;           /* dynamic SSBO write */
+            if (s[64 + tt] != w6) BAD(6, s[64 + tt]);
+            if (s[128 + tt] != w7) BAD(7, s[128 + tt]);
+         }
       }
       int ibad = 0;
       for (int i = 0; i < 4; i++)
