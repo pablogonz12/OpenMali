@@ -32,12 +32,13 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 23 /* 23: cache_store writes a unique temporary (pid + sequence, O_EXCL); generated code unchanged ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
 
 static atomic_ullong g_hits, g_misses, g_stores;
+static atomic_uint g_tmp_seq;   /* makes cache_store's temporary name unique between threads of one process */
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
@@ -246,18 +247,28 @@ cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
    snprintf(d2, sizeof d2, "%s", dir);
    mkdirs(d2);
    snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
-   snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
-   FILE *f = fopen(tmp, "wb");
-   if (!f) return;
-   struct mali_compiled h = *c;
-   uint32_t magic = CACHE_MAGIC;
-   h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
-   int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
-            fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
-            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
-   ok = (fclose(f) == 0) && ok;
-   if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
-   else unlink(tmp);
+   /* pid + a per-process sequence. Two workers storing the same key at the same time used to share "<path>.tmp<pid>":
+    * one could truncate the file the other was writing and then rename half-written data into the cache (cache_load
+    * rejects it, so it cost a recompile rather than a wrong shader). "x" makes the create exclusive: a collision is an
+    * error we retry, never a silent truncation. The temporary is unlinked on every failure path below. */
+   for (unsigned try_ = 0; try_ < 8; try_++) {
+      snprintf(tmp, sizeof tmp, "%s.tmp%d.%u", path, (int)getpid(), atomic_fetch_add(&g_tmp_seq, 1));
+      FILE *f = fopen(tmp, "wbx");
+      if (f) {
+         struct mali_compiled h = *c;
+         uint32_t magic = CACHE_MAGIC;
+         h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
+         int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
+                  fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
+                  (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
+         ok = (fclose(f) == 0) && ok;
+         if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
+         else unlink(tmp);
+         return;
+      }
+      if (errno != EEXIST) return;
+   }
+   return;
 }
 
 static int
