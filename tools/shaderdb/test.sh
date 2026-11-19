@@ -49,4 +49,6 @@ SHADERDB_NO_DXVK=1 SHADERDB_CACHE=$T/cache MALI_SHADERDB_REPS=1 "$D/tools/shader
 grep -qF "$T/a b/t.spv" "$OUT" || fail "path with space not compiled/identified"
 grep -qF "$T/c/t.spv" "$OUT" || fail "same-basename shader collapsed"
 [ "$(cut -f1 "$OUT" | grep -c "/t\.spv$")" = 2 ] || fail "expected 2 distinct t.spv rows"
+# 3. a missing corpus path is an error, not a silent skip
+if SHADERDB_NO_DXVK=1 SHADERDB_CACHE=$T/cache "$D/tools/shaderdb/run.sh" -n -a 11 -o "$T/x.tsv" "$T/nope.spv" 2>/dev/null; then fail "missing path accepted"; fi
 echo "shaderdb test OK"
