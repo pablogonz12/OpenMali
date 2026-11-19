@@ -1152,6 +1152,27 @@ class T(unittest.TestCase):
         self.assertIn("tri CPU ours 1.91 / bridge 3.20 ms", out[0])
         self.assertIn("cube GPU ours 12.34 / bridge 11.00 ms", out[0])
 
+    def test_bench_regressions_flag_over_10_percent(self):
+        def row(c, fps, cpu, drv="ours", var="triangle-3k"):
+            return {"phone": "p", "commit_full": c * 40, "driver": drv, "variant": var, "offscreen": {"fps": fps, "cpu_ms": cpu}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("a", 50, 1.0, "bridge"), row("b", 48, 1.05, "bridge"),
+                row("a", 100, 2.0, var="cube-720p"), row("b", 95, 2.1, var="cube-720p"), row("c", 90, 2.0, var="solo")]
+        out = BL.regressions(rows)
+        self.assertEqual(len(out), 2)                                                   # ours triangle: fps -15% and cpu +25%
+        self.assertTrue(all("ours triangle-3k" in o for o in out))
+        self.assertTrue(any("fps 100 -> 85" in o for o in out) and any("cpu_ms 2 -> 2.5" in o for o in out))
+        self.assertEqual(BL.regressions(rows[:1] + [row("a", 1, 9.0)]), [])             # same commit re-run is not a regression pair
+
+    def test_bench_regressions_incomplete_rerun_and_exact_boundary(self):
+        def row(c, fps, cpu, off=True):
+            return {"phone": "p", "commit_full": c * 40, "driver": "ours", "variant": "v", "offscreen": {"fps": fps, "cpu_ms": cpu} if off else {}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("b", 0, 0, off=False)]
+        self.assertEqual(len(BL.regressions(rows)), 2)                                  # incomplete rerun keeps the valid A..B pair
+        self.assertEqual(BL.regressions([row("a", 100, 2.0), row("b", 90, 2.2)]), [])   # exactly 10% on both metrics (2.0 -> 2.2 is 10.000000000000009)
+        self.assertEqual(len(BL.regressions([row("a", 100, 2.0), row("b", 89, 2.21)])), 2)
+        part = [row("a", 100, 2.0), {"phone": "p", "commit_full": "b" * 40, "driver": "ours", "variant": "v", "offscreen": {"cpu_ms": 2.5}}]
+        self.assertEqual(len(BL.regressions(part)), 1)                                  # missing fps skips only that metric
+
     def nosweep(self):
         os.environ.pop("MALI_FARM_SWEEP_LIST", None)          # an earlier sweep test leaves it in os.environ: a sweep would loop in these passes
         self.env.pop("MALI_FARM_SWEEP_LIST", None)

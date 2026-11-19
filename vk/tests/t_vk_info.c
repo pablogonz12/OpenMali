@@ -118,6 +118,23 @@ main(int argc, char **argv)
    CHECK(pr.properties.vendorID == 0x13b5, "vendor");
    eq("driverID", p12.driverID, drv.driverID);
    CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
+   CHECK(!strcmp(drv.driverName, "mali-own"), "driverName '%s'", drv.driverName);
+#ifdef MALI_EXPECT_SHA
+   { /* full identity: "mali-open <sha|unknown>[-dirty] (mali-own), not conformant"; build.sh passes the sha it compiled in */
+      char want[VK_MAX_DRIVER_INFO_SIZE];
+      snprintf(want, sizeof want, "mali-open %s (mali-own), not conformant", MALI_EXPECT_SHA);
+      CHECK(!strcmp(drv.driverInfo, want), "driverInfo '%s' != '%s'", drv.driverInfo, want);
+   }
+#else
+   { /* no expected sha known (prebuilt test): still require the exact shape with a non-empty id */
+      const char *id = drv.driverInfo + 10, *sp = strchr(id, ' ');
+      CHECK(!strncmp(drv.driverInfo, "mali-open ", 10) && sp && sp > id &&
+            !strcmp(sp, " (mali-own), not conformant"), "driverInfo '%s'", drv.driverInfo);
+   }
+#endif
+   CHECK(strstr(pr.properties.deviceName, "mali-own"), "deviceName '%s'", pr.properties.deviceName);
+   CHECK(drv.conformanceVersion.major == 0 && drv.conformanceVersion.minor == 0 && drv.conformanceVersion.subminor == 0 &&
+         drv.conformanceVersion.patch == 0, "conformanceVersion must stay 0.0.0.0");
    CHECK(!memcmp(p11.driverUUID, idp.driverUUID, VK_UUID_SIZE) && !memcmp(p11.deviceUUID, idp.deviceUUID, VK_UUID_SIZE), "UUID mismatch 1.1 vs ID struct");
    eq("subgroupSize", p11.subgroupSize, sg.subgroupSize);
    CHECK(p11.subgroupSize == 16 && p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16, "subgroup 16");
