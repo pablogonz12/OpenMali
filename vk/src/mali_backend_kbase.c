@@ -196,12 +196,15 @@ track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
          k->capbos = nc;
       }
       k->bos[k->nbos++] = bo;
+      bo->track_idx = k->nbos;
    } else {
-      for (unsigned i = 0; i < k->nbos; i++)
-         if (k->bos[i] == bo) {
-            k->bos[i] = k->bos[--k->nbos];
-            break;
-         }
+      unsigned i = bo->track_idx - 1;   /* O(1): the slot is stored in the BO */
+      if (bo->track_idx && i < k->nbos && k->bos[i] == bo) {
+         struct kb_bo *last = k->bos[--k->nbos];
+         k->bos[i] = last;
+         last->track_idx = i + 1;
+         bo->track_idx = 0;
+      }
    }
    pthread_mutex_unlock(&k->bo_lock);
 }

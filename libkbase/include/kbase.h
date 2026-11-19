@@ -91,6 +91,7 @@ struct kb_bo {
 	bool same_va;
 	bool hot;        /* driver-level: CPU rewrites it every frame (synced on every CS submit, others once per queue submit) */
 	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
+	unsigned track_idx; /* driver-level: 1 + slot in the backend's tracked-BO array (0 = not tracked), makes untracking O(1) */
 };
 
 /* ioctl with optional per-request counters: MALI_IOCTL_PROF=1 prints count and time by request (type/nr) at exit */
