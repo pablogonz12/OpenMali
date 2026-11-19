@@ -444,6 +444,23 @@ check_afbc(struct run *r, const char *name)
    printf("\",\"hdr_mid\":\"");
    for (int i = 0; i < 16; i++) printf("%02x", r->hdr[(size_t)(r->nhdr / 2 + sx / 2) * 16 + i]);
    printf("\"}\n");
+   if (!g_fake) {
+      /* diagnostic: header words and the first body bytes of the superblocks in block rows 0, 3, 4 (pixel rows 64+) and 7, columns 0 and 7 */
+      static const uint32_t rows[] = {0, 3, 4, 7}, cols[] = {0, 7};
+      for (unsigned a = 0; a < 4; a++)
+         for (unsigned b = 0; b < 2; b++) {
+            const uint32_t y = rows[a], x = cols[b];
+            if (y >= sy || x >= sx) continue;
+            const uint8_t *h = r->hdr + (size_t)(y * sx + x) * 16;
+            uint32_t bp;
+            memcpy(&bp, h, 4);
+            printf("{\"blk\":[%u,%u],\"hdr\":\"", y, x);
+            for (int i = 0; i < 16; i++) printf("%02x", h[i]);
+            printf("\",\"body_off\":%u,\"expect_slot\":%llu,\"body16\":\"", bp, (unsigned long long)(L->body_offset + (uint64_t)(y * sx + x) * L->payload_per_sb));
+            if (bp + 16 <= r->img_size) for (int i = 0; i < 16; i++) printf("%02x", r->map[bp + i]);
+            printf("\"}\n");
+         }
+   }
    if (g_fake) {
       if (r->nonzero) FAIL("%s: fake backend but %u headers non-zero (bind-time init did not zero them)", name, r->nonzero);
    } else if (r->nonzero != r->nhdr) FAIL("%s: %u of %u superblock headers still zero: the GPU did not write them", name, r->nhdr - r->nonzero, r->nhdr);
