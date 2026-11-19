@@ -48,6 +48,15 @@ class Evidence(unittest.TestCase):
         self.assertEqual(self.kind(OURS_NO_NAME + "env=VK_DRIVER_FILES=/tmp/mali-open.json\n"), "unknown")
         self.assertEqual(self.kind(OURS_NO_NAME + "env=VK_DRIVER_FILES=/x/panvk_icd.json\n"), "conflict")
 
+    def test_unproven_ours_still_checks_incompatibilities(self):
+        cfg = "env=VK_DRIVER_FILES=/tmp/mali-open.json\n"
+        self.assertEqual(self.kind("driver_pref=ours\ndebug_pref=on\nvkBridge=true\n" + cfg), "conflict")
+        self.assertEqual(self.kind("driver_pref=ours\ndebug_pref=on\nvkBridge=true\n"), "conflict")
+        self.assertEqual(self.kind("driver_pref=ours\ndebug_pref=off\nvkBridge=false\n"), "conflict")
+        self.assertEqual(self.kind("driver_pref=ours\ndebug_pref=on\nvkBridge=false\n" + cfg), "unknown")   # still valid pre-launch
+        rc, _ = self.cli("driver_pref=ours\ndebug_pref=on\nvkBridge=true\n" + cfg)
+        self.assertEqual(rc, 3)
+
     def test_cli_refusal(self):
         rc, out = self.cli("driver_pref=bridge\ndebug_pref=on\nvkBridge=true\n")
         self.assertEqual(rc, 3)

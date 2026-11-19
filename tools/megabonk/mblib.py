@@ -74,14 +74,18 @@ def classify(d):
         kind = proof.pop()
     elif {pref, cfg} & {"bridge", "panvk"}:
         kind = "bridge" if "bridge" in {pref, cfg} else "panvk"
-    elif d["vkBridge"] is True and not d["icd"]:
+    elif d["vkBridge"] is True and not d["icd"] and pref != "ours":
         kind = "bridge"
     else:
         kind = "unknown"
-    if kind in ("ours", "panvk") and d["vkBridge"] is True:
+    if kind == "unknown" and "ours" in (pref, cfg):
+        kind = "ours?"               # selected but unproven: the incompatibility guards below still apply
+    if kind in ("ours", "ours?", "panvk") and d["vkBridge"] is True:
         kind = "conflict"            # vkBridge=true routes Vulkan through MaliBridge whatever the ICD says
-    if kind == "ours" and d["debug_pref"] not in (None, "on", "true"):
+    if kind in ("ours", "ours?") and d["debug_pref"] not in (None, "on", "true"):
         kind = "conflict"            # MediaDeck ignores the driver selection while Debug is off
+    if kind == "ours?":
+        kind = "unknown"
     return kind
 
 
