@@ -3,6 +3,7 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_compile.h"
 
 #include <dirent.h>
 #include <limits.h>
@@ -144,10 +145,12 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
             gpu->fake ? ", fake backend" : "");
 
    /* ---- Vulkan 1.1 ---- R4-M1: only what is true. No subgroup operation or stage is advertised yet
-    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16). */
+    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16, and Mesa's
+    * pan_subgroup_size() is 16 for every arch >= 9: shader_present 0xee0057 is non-contiguous, the warp is not). */
    memcpy(p->driverUUID, "mali-own-vk\0\0\0\0\0", VK_UUID_SIZE);
    memcpy(p->deviceUUID, &gpu->gpu_id, sizeof(gpu->gpu_id));
-   p->subgroupSize = 16;
+   const unsigned subgroup_size = mali_subgroup_size_for_arch(gpu->arch_major);
+   p->subgroupSize = subgroup_size;
    /* subgroup ops: same set as PanVK on this compiler (bifrost_nir.c lowers the rest); not in vertex shaders (PanVK: no helper-lane guarantees) */
    p->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* fragment stage only after a pixel test */
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
@@ -170,10 +173,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
    /* ---- Vulkan 1.3 ---- */
-   p->minSubgroupSize = 16;
-   p->maxSubgroupSize = 16;
+   p->minSubgroupSize = subgroup_size;
+   p->maxSubgroupSize = subgroup_size;
    p->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* min == max == 16: the only size; t_vk_feat sgctl */
-   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
+   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / subgroup_size;
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->maxBufferSize = 1u << 30;
