@@ -173,6 +173,285 @@ test_pool(void)
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }
 
+
+/* ---- pool / set lifetime, write spill, copy, dynamic, inline, template stride, immutable samplers (fake backend) ---- */
+static VkDescriptorPool
+mk_pool(unsigned arch, uint32_t max_sets, VkDescriptorType t, uint32_t count, VkDescriptorPoolCreateFlags fl)
+{
+   VkDescriptorPoolSize ps = { t, count };
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = max_sets, .poolSizeCount = 1, .pPoolSizes = &ps, .flags = fl };
+   VkDescriptorPool p = VK_NULL_HANDLE;
+   CHECK(mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, &p) == VK_SUCCESS, "pool create");
+   return p;
+}
+
+static VkResult
+alloc_n(VkDescriptorPool pool, uint32_t n, struct mali_dsl *l, VkDescriptorSet *out)
+{
+   VkDescriptorSetLayout hl[8];
+   for (uint32_t i = 0; i < n; i++) hl[i] = mali_dsl_to_handle(l);
+   VkDescriptorSetAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = n, .pSetLayouts = hl };
+   return mali_allocate_descriptor_sets(&g_dev, &ai, out);
+}
+
+static void
+test_pool_limits(unsigned arch)
+{
+   printf("pool limits, v%u\n", arch);
+   VkDescriptorSetLayoutBinding b1 = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2, .stageFlags = VK_SHADER_STAGE_ALL };
+   struct mali_dsl *l = mk_layout(arch, 1, &b1);   /* 2 slots = 64 bytes */
+   VkDescriptorSet s[4] = {0};
+
+   /* maxSets limit with plenty of bytes */
+   VkDescriptorPool p = mk_pool(arch, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64, VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
+   CHECK(alloc_n(p, 2, l, s) == VK_SUCCESS && s[0] && s[1], "2 sets within maxSets");
+   VkDescriptorSet x = VK_NULL_HANDLE;
+   CHECK(alloc_n(p, 1, l, &x) == VK_ERROR_OUT_OF_POOL_MEMORY && x == VK_NULL_HANDLE, "maxSets exhausted");
+   mali_free_descriptor_sets(&g_dev, p, 1, &s[0]);
+   CHECK(mali_dpool_from_handle(p)->nsets == 1, "nsets after free");
+   CHECK(alloc_n(p, 1, l, &x) == VK_SUCCESS, "slot frees up after free");
+   mali_destroy_descriptor_pool(&g_dev, p, NULL);
+
+   /* byte capacity limit with a high maxSets: 3 UBO descriptors = 96 bytes, a set needs 64 */
+   p = mk_pool(arch, 100, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3, VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
+   CHECK(mali_dpool_from_handle(p)->cap == 96, "pool capacity bytes %u", mali_dpool_from_handle(p)->cap);
+   CHECK(alloc_n(p, 1, l, &s[0]) == VK_SUCCESS, "first fits");
+   CHECK(alloc_n(p, 1, l, &s[1]) == VK_ERROR_OUT_OF_POOL_MEMORY && s[1] == VK_NULL_HANDLE, "second does not fit in bytes");
+   /* all or nothing: a two-set request that only half fits leaves the pool untouched */
+   mali_free_descriptor_sets(&g_dev, p, 1, &s[0]);
+   VkDescriptorSet two[2] = { (VkDescriptorSet)(uintptr_t)1, (VkDescriptorSet)(uintptr_t)1 };
+   CHECK(alloc_n(p, 2, l, two) == VK_ERROR_OUT_OF_POOL_MEMORY, "half-fitting request fails");
+   CHECK(two[0] == VK_NULL_HANDLE && two[1] == VK_NULL_HANDLE, "failed request returns only null handles");
+   CHECK(mali_dpool_from_handle(p)->nsets == 0 && mali_dpool_from_handle(p)->sets == NULL, "failed request rolled back (nsets %u)", mali_dpool_from_handle(p)->nsets);
+   CHECK(alloc_n(p, 1, l, &s[0]) == VK_SUCCESS, "pool still usable after rollback");
+
+   /* double free and freeing into the wrong pool must not corrupt the live list or the count */
+   VkDescriptorPool q = mk_pool(arch, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8, VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
+   VkDescriptorSet qs = VK_NULL_HANDLE;
+   CHECK(alloc_n(q, 1, l, &qs) == VK_SUCCESS, "alloc in q");
+   mali_free_descriptor_sets(&g_dev, p, 1, &qs);   /* wrong pool */
+   CHECK(mali_dpool_from_handle(q)->nsets == 1 && mali_dpool_from_handle(p)->nsets == 1, "foreign free is a no-op");
+   VkDescriptorSet nul = VK_NULL_HANDLE;
+   mali_free_descriptor_sets(&g_dev, q, 1, &nul);   /* VK_NULL_HANDLE is ignored */
+   CHECK(mali_dpool_from_handle(q)->nsets == 1, "null free ignored");
+   struct mali_dset *keep = mali_dset_from_handle(qs);
+   mali_free_descriptor_sets(&g_dev, q, 1, &qs);
+   CHECK(mali_dpool_from_handle(q)->nsets == 0 && mali_dpool_from_handle(q)->sets == NULL, "free ok");
+   (void)keep;   /* freed memory: not touched again; a second free would be UB by spec, only the foreign/null cases are tested */
+
+   /* reset clears all sets and zeroes pool memory; destroy with live sets must not leak or crash */
+   struct mali_dset *live = mali_dset_from_handle(s[0]);
+   memset(live->cpu, 0x5a, live->bytes);
+   uint8_t *mem = mali_dpool_from_handle(p)->cpu;
+   CHECK(mali_reset_descriptor_pool(&g_dev, p) == VK_SUCCESS && mali_dpool_from_handle(p)->nsets == 0 && mali_dpool_from_handle(p)->sets == NULL, "reset");
+   int dirty = 0;
+   for (uint32_t i = 0; i < 96; i++) dirty |= mem[i];
+   CHECK(!dirty, "reset zeroes pool memory");
+   CHECK(alloc_n(p, 1, l, &s[0]) == VK_SUCCESS && mali_dset_from_handle(s[0])->off == 0, "alloc restarts at offset 0 after reset");
+   mali_destroy_descriptor_pool(&g_dev, p, NULL);   /* one live set */
+   CHECK(alloc_n(q, 1, l, &qs) == VK_SUCCESS, "q alive");
+   mali_destroy_descriptor_pool(&g_dev, q, NULL);   /* one live set */
+   mali_destroy_descriptor_pool(&g_dev, VK_NULL_HANDLE, NULL);
+
+   /* creation errors */
+   VkDescriptorPoolSize bad = { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 };
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &bad };
+   VkDescriptorPool np = VK_NULL_HANDLE;
+   CHECK(mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, &np) == VK_ERROR_FEATURE_NOT_PRESENT, "unsupported pool type");
+   VkDescriptorPoolSize huge = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0x10000000u };
+   pi.pPoolSizes = &huge;
+   CHECK(mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, &np) == VK_ERROR_OUT_OF_DEVICE_MEMORY, "pool over 1 GiB rejected");
+   vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+}
+
+static void
+test_write_copy(unsigned arch)
+{
+   printf("write spill, copy, dynamic, null, v%u\n", arch);
+   VkDescriptorSetLayoutBinding b[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .descriptorCount = 3, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+   };
+   struct mali_dsl *l = mk_layout(arch, 4, b);
+   CHECK(l->slot_count == 5 && l->dyn_count == 3, "layout %u slots %u dyn", l->slot_count, l->dyn_count);
+   VkDescriptorPool pool = mk_pool(arch, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64, 0);
+   VkDescriptorSet hs[2];
+   CHECK(alloc_n(pool, 2, l, hs) == VK_SUCCESS, "alloc");
+   struct mali_dset *a = mali_dset_from_handle(hs[0]), *c = mali_dset_from_handle(hs[1]);
+   CHECK(a->dyn && c->dyn, "dyn arrays allocated");
+
+   /* a write of 3 descriptors at binding 0 element 1 spills into binding 1 (spec: following bindings) */
+   VkDescriptorBufferInfo bi[3] = { { (VkBuffer)1, 0x10, 64 }, { (VkBuffer)1, 0x20, 128 }, { (VkBuffer)1, 0x30, VK_WHOLE_SIZE } };
+   VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hs[0], .dstBinding = 0, .dstArrayElement = 1, .descriptorCount = 3,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = bi };
+   mali_update_descriptor_sets(&g_dev, 1, &w, 0, NULL);
+   struct mali_hw_desc e[3], z;
+   mali_pack_buffer(arch, &e[0], g_buf_va + 0x10, 64);
+   mali_pack_buffer(arch, &e[1], g_buf_va + 0x20, 128);
+   mali_pack_buffer(arch, &e[2], g_buf_va + 0x30, g_buf_size - 0x30);
+   memset(&z, 0, sizeof z);
+   CHECK(!memcmp(a->cpu, &z, 32), "element 0 untouched");
+   CHECK(!memcmp(a->cpu + 32, &e[0], 32), "b0[1] written");
+   CHECK(!memcmp(a->cpu + 64, &e[1], 32), "spill into b1[0]");
+   CHECK(!memcmp(a->cpu + 96, &e[2], 32), "spill into b1[1], WHOLE_SIZE = buffer size - offset");
+
+   /* a write past the last binding is dropped and does not touch the neighbouring slot (b3) nor the next set */
+   w.dstBinding = 3; w.dstArrayElement = 0; w.descriptorCount = 3;
+   uint8_t before[32];
+   memcpy(before, c->cpu, 32);
+   mali_update_descriptor_sets(&g_dev, 1, &w, 0, NULL);
+   mali_pack_buffer(arch, &e[0], g_buf_va + 0x10, 64);
+   CHECK(!memcmp(a->cpu + 128, &e[0], 32), "b3[0] written, rest dropped");
+   CHECK(!memcmp(c->cpu, before, 32), "overflowing write did not run into the next set");
+
+   /* dynamic buffers: base va and range stored, offset applied at bind time; spill inside the dynamic binding */
+   VkDescriptorBufferInfo db[3] = { { (VkBuffer)1, 0x100, 16 }, { (VkBuffer)1, 0x200, VK_WHOLE_SIZE }, { VK_NULL_HANDLE, 0, 0 } };
+   VkWriteDescriptorSet dw = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hs[0], .dstBinding = 2, .descriptorCount = 3,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = db };
+   mali_update_descriptor_sets(&g_dev, 1, &dw, 0, NULL);
+   CHECK(a->dyn[0].va == g_buf_va + 0x100 && a->dyn[0].size == 16, "dyn[0]");
+   CHECK(a->dyn[1].va == g_buf_va + 0x200 && a->dyn[1].size == g_buf_size - 0x200, "dyn[1] whole size");
+   CHECK(a->dyn[2].va == 0 && a->dyn[2].size == 0, "dyn[2] null buffer");
+   struct mali_hw_desc d, ref;
+   mali_dyn_buf_pack(arch, &d, &a->dyn[0], 0x40);
+   mali_pack_buffer(arch, &ref, g_buf_va + 0x140, 16);
+   CHECK(!memcmp(&d, &ref, 32), "dyn offset added to va, range kept");
+   memset(&d, 0xcc, sizeof d);
+   mali_dyn_buf_pack(arch, &d, &a->dyn[2], 0x40);
+   CHECK(!memcmp(&d, &z, 32), "null dynamic buffer stays a null descriptor whatever the offset");
+
+   /* null buffer in a non-dynamic binding writes a null descriptor over old data */
+   VkDescriptorBufferInfo nb = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+   VkWriteDescriptorSet nw = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hs[0], .dstBinding = 0, .dstArrayElement = 1, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &nb };
+   mali_update_descriptor_sets(&g_dev, 1, &nw, 0, NULL);
+   CHECK(!memcmp(a->cpu + 32, &z, 32), "null UBO overwrites old descriptor");
+
+   /* copy across bindings and sets: 2 elements from a.b1[0..1] to c.b0[0..1] (spill source is NOT followed by copies: count limited) */
+   VkCopyDescriptorSet cp = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs[0], .srcBinding = 1, .dstSet = hs[1], .dstBinding = 0, .descriptorCount = 2 };
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
+   mali_pack_buffer(arch, &e[0], g_buf_va + 0x20, 128);
+   mali_pack_buffer(arch, &e[1], g_buf_va + 0x30, g_buf_size - 0x30);
+   CHECK(!memcmp(c->cpu, &e[0], 32) && !memcmp(c->cpu + 32, &e[1], 32), "array copy of 2 elements");
+   /* copy with element offsets, count clipped to the destination binding (dst elem 1 has room for 1) */
+   memset(c->cpu, 0, 64);
+   cp.srcArrayElement = 0; cp.dstArrayElement = 1; cp.descriptorCount = 2;
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
+   CHECK(!memcmp(c->cpu, &z, 32) && !memcmp(c->cpu + 32, &e[0], 32), "copy honours dstArrayElement");
+   CHECK(!memcmp(c->cpu + 64, &z, 32), "copy clipped at the end of the destination binding");
+   /* dynamic copy */
+   VkCopyDescriptorSet dc = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs[0], .srcBinding = 2, .srcArrayElement = 1, .dstSet = hs[1],
+                              .dstBinding = 2, .dstArrayElement = 0, .descriptorCount = 2 };
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &dc);
+   CHECK(c->dyn[0].va == a->dyn[1].va && c->dyn[0].size == a->dyn[1].size && c->dyn[1].va == 0, "dynamic descriptors copied");
+   CHECK(c->dyn[2].va == 0, "dynamic copy stayed inside its range");
+   /* copy between a dynamic and a slot binding is ignored (no memory is mixed up) */
+   memcpy(before, c->cpu, 32);
+   VkCopyDescriptorSet mc = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs[0], .srcBinding = 2, .dstSet = hs[1], .dstBinding = 0, .descriptorCount = 1 };
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &mc);
+   CHECK(!memcmp(c->cpu, before, 32), "dynamic -> slot copy ignored");
+
+   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
+   vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+}
+
+static void
+test_inline_template_imm(unsigned arch)
+{
+   printf("inline uniform, template stride, immutable samplers, v%u\n", arch);
+   VkDescriptorSetLayoutBinding bad[] = { { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, .descriptorCount = 6, .stageFlags = VK_SHADER_STAGE_ALL } };
+   VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = bad };
+   struct mali_dsl *dd = NULL;
+   CHECK(mali_dsl_create(&g_dev, arch, &ci, &dd) == VK_ERROR_FEATURE_NOT_PRESENT, "inline size not a multiple of 4 rejected");
+   bad[0].descriptorCount = 260;
+   CHECK(mali_dsl_create(&g_dev, arch, &ci, &dd) == VK_ERROR_FEATURE_NOT_PRESENT, "inline size over 256 rejected");
+
+   VkSampler imm[1] = { (VkSampler)(uintptr_t)7 };
+   VkDescriptorSetLayoutBinding b[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, .descriptorCount = 40, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = imm },
+      { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 3, .stageFlags = VK_SHADER_STAGE_ALL },
+   };
+   struct mali_dsl *l = mk_layout(arch, 3, b);
+   CHECK(l->b[0].inline_bytes == 40 && l->b[0].stride == 3 && l->b[1].slot == 3 && l->b[2].slot == 5, "inline occupies 1 header + 2 data slots (%u %u %u)", l->b[0].stride, l->b[1].slot, l->b[2].slot);
+   VkDescriptorPoolSize ps[] = { { VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 80 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 } };
+   VkDescriptorPoolInlineUniformBlockCreateInfo pib = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO, .maxInlineUniformBlockBindings = 2 };
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .pNext = &pib, .maxSets = 2, .poolSizeCount = 3, .pPoolSizes = ps };
+   VkDescriptorPool pool;
+   CHECK(mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, &pool) == VK_SUCCESS, "pool with inline size");
+   VkDescriptorSet hs[2];
+   CHECK(alloc_n(pool, 2, l, hs) == VK_SUCCESS, "alloc");
+   struct mali_dset *s = mali_dset_from_handle(hs[0]), *t = mali_dset_from_handle(hs[1]);
+   CHECK(s->bytes == 8 * 32, "set bytes %u", s->bytes);
+
+   /* alloc writes the inline header (buffer descriptor -> data slots) and the immutable sampler without any update */
+   struct mali_hw_desc h, ref;
+   mali_pack_buffer(arch, &ref, s->va + 32, 40);
+   memcpy(&h, s->cpu, 32);
+   CHECK(!memcmp(&h, &ref, 32), "inline header points at slot+1 with the byte size");
+   mali_pack_sampler(11, &ref, 1, 1, 9);   /* fake r_smp output */
+   CHECK(!memcmp(s->cpu + 3 * 32 + 32, &ref, 32), "immutable sampler written at alloc (second slot of the combined element)");
+
+   /* inline writes: byte offsets, bounds */
+   uint8_t data[64];
+   for (int i = 0; i < 64; i++) data[i] = (uint8_t)(i + 1);
+   VkWriteDescriptorSetInlineUniformBlock ib = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK, .dataSize = 8, .pData = data };
+   VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &ib, .dstSet = hs[0], .dstBinding = 0, .dstArrayElement = 4, .descriptorCount = 8,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK };
+   mali_update_descriptor_sets(&g_dev, 1, &w, 0, NULL);
+   CHECK(!memcmp(s->cpu + 32 + 4, data, 8) && s->cpu[32 + 3] == 0 && s->cpu[32 + 12] == 0, "inline write at byte offset 4");
+   w.dstArrayElement = 36; w.descriptorCount = 8; ib.dataSize = 8;   /* 36 + 8 > 40: dropped entirely */
+   mali_update_descriptor_sets(&g_dev, 1, &w, 0, NULL);
+   CHECK(s->cpu[32 + 36] == 0 && s->cpu[32 + 40] == 0, "out-of-range inline write dropped, no bytes spilled into the next binding");
+   w.dstArrayElement = 0; w.descriptorCount = 40; ib.dataSize = 40;
+   mali_update_descriptor_sets(&g_dev, 1, &w, 0, NULL);
+   CHECK(!memcmp(s->cpu + 32, data, 40) && s->cpu[32 + 40] == 0, "full-size inline write stops at the block end");
+
+   /* inline copy: byte offsets and counts */
+   VkCopyDescriptorSet cp = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs[0], .srcBinding = 0, .srcArrayElement = 8, .dstSet = hs[1], .dstBinding = 0,
+                              .dstArrayElement = 4, .descriptorCount = 12 };
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
+   CHECK(!memcmp(t->cpu + 32 + 4, data + 8, 12) && t->cpu[32 + 3] == 0 && t->cpu[32 + 16] == 0, "inline copy by bytes");
+   cp.descriptorCount = 40;   /* 40 bytes at src offset 8 overruns the block: ignored */
+   memset(t->cpu + 32, 0, 40);
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
+   CHECK(t->cpu[32 + 4] == 0, "overrunning inline copy ignored");
+
+   /* update template: user stride bigger than the Vulkan struct, element offset, inline entry (bytes, count = size) */
+   struct user { VkDescriptorBufferInfo bi; char pad[24]; };
+   struct blob { uint8_t inl[40]; struct user u[3]; } blob;
+   memset(&blob, 0, sizeof blob);
+   for (int i = 0; i < 40; i++) blob.inl[i] = (uint8_t)(0xa0 + i);
+   for (int i = 0; i < 3; i++) blob.u[i].bi = (VkDescriptorBufferInfo){ (VkBuffer)1, 0x100u * (i + 1), 32u * (i + 1) };
+   struct vk_descriptor_update_template *tp = calloc(1, sizeof *tp + 2 * sizeof(struct vk_descriptor_template_entry));
+   tp->entry_count = 2;
+   tp->entries[0] = (struct vk_descriptor_template_entry){ VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 0, 0, 40, offsetof(struct blob, inl), 0 };
+   tp->entries[1] = (struct vk_descriptor_template_entry){ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, 1, 2, offsetof(struct blob, u[1]), sizeof(struct user) };
+   VkDescriptorSet h3[1];
+   VkDescriptorPoolSize ps2[] = { { VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, 80 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 } };
+   pi.maxSets = 1; pi.pPoolSizes = ps2;
+   VkDescriptorPool pool2;
+   CHECK(mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, &pool2) == VK_SUCCESS, "pool2");
+   CHECK(alloc_n(pool2, 1, l, h3) == VK_SUCCESS, "alloc 3");
+   struct mali_dset *u = mali_dset_from_handle(h3[0]);
+   mali_dset_update_template(u, tp, &blob);
+   CHECK(!memcmp(u->cpu + 32, blob.inl, 40), "template inline bytes");
+   /* elements 1 and 2 of binding 2 get user[1] and user[2], element 0 untouched */
+   struct mali_hw_desc z; memset(&z, 0, sizeof z);
+   mali_pack_buffer(arch, &ref, g_buf_va + 0x200, 64);
+   CHECK(!memcmp(u->cpu + (5 + 0) * 32, &z, 32), "template: binding 2 element 0 untouched");
+   CHECK(!memcmp(u->cpu + (5 + 1) * 32, &ref, 32), "template: element 1 from user[1] (stride %zu)", sizeof(struct user));
+   mali_pack_buffer(arch, &ref, g_buf_va + 0x300, 96);
+   CHECK(!memcmp(u->cpu + (5 + 2) * 32, &ref, 32), "template: element 2 from user[2]");
+   free(tp);
+
+   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
+   mali_destroy_descriptor_pool(&g_dev, pool2, NULL);
+   vk_descriptor_set_layout_unref(&g_dev, &l->vk);
+}
+
 /* ---- compile with a layout ---- */
 struct spv { uint32_t *w; size_t n; };
 static struct spv
@@ -276,6 +555,11 @@ main(int argc, char **argv)
    test_bytes(11);
    test_bytes(13);
    test_pool();
+   for (unsigned a = 11; a <= 13; a += 2) {
+      test_pool_limits(a);
+      test_write_copy(a);
+      test_inline_template_imm(a);
+   }
    test_compile(11);
    test_compile(13);
    clock_gettime(CLOCK_MONOTONIC, &b);
