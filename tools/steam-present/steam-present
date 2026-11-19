@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import statistics
 import subprocess
 import sys
@@ -153,9 +154,24 @@ def percentile(s, q):
     return s[i]
 
 
-def panel_hz(ph):
-    _, o = ph.adb("shell", "dumpsys display | grep -m1 -o 'mActiveModeId=[0-9]*'", timeout=20)
+def panel_mode(ph):
+    """The active display mode id.  One adb call, cheap enough to poll during sampling."""
+    _, o = ph.adb("shell", "dumpsys display | grep -m1 -o 'mActiveModeId=[0-9]*'", timeout=15)
+    m = re.search(r"mActiveModeId=(\d+)", o)
+    return m.group(1) if m else None
+
+
+def panel_hz(ph, mode=None):
+    """Refresh rate of the ACTIVE mode.  The DisplayDeviceInfo line prints the active mode as a bare
+    id and lists `supportedModes` in a fixed order, so the first `fps=` belongs to whatever mode sorts
+    first, not to the one that is running."""
     _, d = ph.adb("shell", "dumpsys display | grep -m1 'DisplayDeviceInfo{'", timeout=20)
+    mid = mode if mode is not None else panel_mode(ph)
+    if mid is not None:
+        e = re.search(r"\{[^{}]*\b(?:id|modeId)=%s\b[^{}]*\}" % re.escape(mid), d)
+        f = re.search(r"fps=([0-9.]+)", e.group(0)) if e else None
+        if f:
+            return float(f.group(1))
     m = re.search(r"fps=([0-9.]+)", d)
     if m:
         return float(m.group(1))
@@ -179,7 +195,10 @@ def layer_name(ph):
 
 
 def parse_latency(text):
-    out = []
+    """(valid present timestamps, raw record count).  The raw count includes a pending fence, so it is
+    the real ring occupancy; History::insert writes the INT64_MAX sentinel for a frame whose fence has
+    not signalled yet."""
+    out, nraw = [], 0
     lines = text.replace("\r\n", "\n").splitlines()
     for l in lines[1:]:
         p = l.split()
@@ -188,36 +207,45 @@ def parse_latency(text):
                 a = int(p[1])
             except ValueError:
                 continue
+            if a > 0:
+                nraw += 1
             if 0 < a < PENDING:      # SurfaceFlinger prints INT64_MAX for an unresolved fence
                 out.append(a)
-    return out
+    return out, nraw
 
 
 class Sampler(threading.Thread):
-    def __init__(self, ph, layer, seconds):
+    def __init__(self, ph, layer, seconds, mode=None):
         super().__init__(daemon=True)
-        self.ph, self.layer, self.seconds = ph, layer, seconds
+        self.ph, self.layer, self.seconds, self.mode = ph, layer, seconds, mode
         self.stamps, self.err, self.calls = set(), None, 0
         self.errors = 0          # failed polls
         self.gaps = 0            # polls whose window no longer overlaps what we had: history was lost
+        self.modes = set()       # active display mode id seen during the window
         self.last_max = None
         self.stop = threading.Event()
 
     def run(self):
-        q = self.layer.replace('"', '\\"')
+        # The layer name comes from `dumpsys --list` and reaches the device shell, so quote it for that
+        # shell: escaping only `"` still lets $(...) and backticks through.
+        q = shlex.quote(self.layer)
         while not self.stop.is_set():
-            rc, o = self.ph.adb("shell", f'dumpsys SurfaceFlinger --latency "{q}"', timeout=20)
+            rc, o = self.ph.adb("shell", f"dumpsys SurfaceFlinger --latency {q}", timeout=20)
             self.calls += 1
             if rc != 0:
                 self.err = o.strip()[-200:]
                 self.errors += 1
                 time.sleep(0.2)
                 continue
-            st = parse_latency(o)
+            m = panel_mode(self.ph)
+            if m is not None:
+                self.modes.add(m)
+            st, nraw = parse_latency(o)
             if st:
-                # SurfaceFlinger keeps the last 128 frames per layer.  A full window with nothing at or below
-                # the newest stamp we already hold means frames fell out of the ring between two polls.
-                if self.last_max is not None and len(st) >= HISTORY - 1 and min(st) > self.last_max:
+                # SurfaceFlinger keeps the last 128 frames per layer.  A full window (raw occupancy: a
+                # pending sentinel still fills a slot) with nothing at or below the newest stamp we
+                # already hold means frames fell out of the ring between two polls.
+                if self.last_max is not None and nraw >= HISTORY - 1 and min(st) > self.last_max:
                     self.gaps += 1
                 self.last_max = max(st + [self.last_max or 0])
                 self.stamps.update(st)
@@ -408,16 +436,20 @@ def main():
         sweep = Sweep(ph)
         sweep.start()
         time.sleep(a.warmup)
-        hz = panel_hz(ph)        # after input started: an idle menu can sit at 60 Hz until it is touched
+        # after input started: an idle menu can sit at 60 Hz until it is touched
+        mode = panel_mode(ph)
+        hz = panel_hz(ph, mode)
         base = 1000.0 / hz
         ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
-        s = Sampler(ph, layer, a.seconds)
+        s = Sampler(ph, layer, a.seconds, mode)
         s.start()
         time.sleep(a.seconds)
         stop_workers(s, sweep)
-        hz_end = panel_hz(ph)
-        if abs(hz_end - hz) > 0.5:
-            die(f"panel mode changed during sampling ({hz} -> {hz_end} Hz); the base interval is not stable", 4)
+        hz_end = panel_hz(ph, mode)
+        moved = sorted(x for x in s.modes if x != mode) if mode is not None else []
+        if abs(hz_end - hz) > 0.5 or moved:
+            die(f"panel mode changed during sampling (started at {hz} Hz mode {mode}, "
+                f"ended at {hz_end} Hz, modes seen {sorted(s.modes)}); the base interval is not stable", 4)
         if s.gaps or s.errors:
             die(f"sample invalid: {s.gaps} frame-history gaps and {s.errors} failed polls out of {s.calls} "
                 f"({s.err or 'no error text'}); SurfaceFlinger keeps only {HISTORY} frames per layer, so "
@@ -445,15 +477,29 @@ def main():
         return 0
     finally:
         stop_workers(s, sweep)          # no pad input may race the restore below
+        bad = []
         if touched and not a.keep:
-            ph.ctl("stop", timeout=200)
+            r = ph.ctl("stop", timeout=200)
+            if r.get("_rc") != 0:
+                bad.append(f"stopping the session ({json.dumps(r)[:200]})")
         if got_prefs and touched:
-            ph.ctl("prefs", "set", "session", "hudDeck",
-                   str(bool(saved_prefs.get("hudDeck", True))).lower(), "--type", "bool", timeout=40)
+            r = ph.ctl("prefs", "set", "session", "hudDeck",
+                       str(bool(saved_prefs.get("hudDeck", True))).lower(), "--type", "bool", timeout=40)
+            if r.get("_rc") != 0:
+                bad.append(f"restoring hudDeck ({json.dumps(r)[:200]})")
         if got_env and touched:
-            ph.ctl("env", "clear", "next", timeout=30)
-            if saved_env:
-                ph.ctl("env", "set", *saved_env, timeout=40)
+            r = ph.ctl("env", "clear", "next", timeout=30)
+            if saved_env and r.get("_rc") == 0:
+                r = ph.ctl("env", "set", *saved_env, timeout=40)
+            if r.get("_rc") != 0:
+                bad.append(f"restoring the next-session environment ({json.dumps(r)[:200]})")
+        if bad:
+            # The saved values stay recoverable: print them before failing, so a failed restore can be
+            # replayed by hand instead of being lost when the process exits.
+            print("steam-present: RESTORATION FAILED: " + "; ".join(bad) + "\n"
+                  f"saved env: {json.dumps(saved_env)}\nsaved prefs: {json.dumps(saved_prefs)}",
+                  file=sys.stderr)
+            raise SystemExit(5)
 
 
 if __name__ == "__main__":

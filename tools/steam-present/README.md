@@ -59,7 +59,7 @@ the session log says `vulkan driver: imported`. Build the guest ICD with
 |---|---|
 | p50 <= 1.25 * base and fast >= 90 % | display-paced at the panel rate (120 fps) |
 | p50 ~ 2 * base (within 12 %), fast < 10 %, >= 90 % of intervals at 2 * base | **half-panel cadence**: every frame lands on every second vsync. This does not prove a 60 fps cap |
-| p50 ~ 2 * base but < 90 % of intervals there | slow tail: a share of the frames take much longer than the median |
+| p50 ~ 2 * base, fast < 10 %, but < 90 % of intervals there | half-panel median with a tail: the rest are split between intervals shorter than 2 * base (a minority at the panel rate, too few for the bimodal row) and intervals longer than 2 * base |
 | 15 % <= fast <= 85 % | bimodal: CPU stalls / missed vsyncs (frames alternate cadence) |
 | p50 > 1.25 * base (and not the cap case) | client or GPU bound |
 
@@ -73,7 +73,9 @@ frame-rate flags), so a gain with it is not evidence of a cap: a GPU-bound sessi
 performance mode. To attribute a gain to one limiter, change one limiter per run and compare.
 
 A sample is rejected (exit 4) when SurfaceFlinger's 128-frame history ring lost frames between two
-polls, or any poll failed: a gap would otherwise be counted as one very long frame.
+polls (raw occupancy, including a pending-fence sentinel), any poll failed, or the active display mode
+changed during the window: a gap would otherwise be counted as one very long frame, and a mode change
+would measure intervals against the wrong base.
 
 `cpu_percent` is the summed `%CPU` of `steamwebhelper` / `gamescope` / `steam` from one `top -b -n 1`
 sample. High CPU plus bimodal intervals points at CPU stalls; low CPU plus a uniform interval at a
