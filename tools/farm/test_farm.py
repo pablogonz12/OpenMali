@@ -1148,6 +1148,8 @@ class T(unittest.TestCase):
         done = bench(now - BL.STARVE_SECS - 1)
         done["parts"]["v10"]["state"] = "running"                                                    # no longer pending: no reservation
         self.assertEqual(ids([smoke, done]), ["smoke", "bench"])
+        cases = dict(bench(now - BL.STARVE_SECS - 1), id="cases", suite="cases")
+        self.assertEqual(ids([smoke, cases]), ["smoke", "cases"])                                    # not a bench job: gates stay first
 
     def test_bench_priority_order(self):
         jobs = [{"id": "auto1", "auto": True, "seq": 1}, {"id": "ex2", "seq": 2}, {"id": "ex3", "seq": 3}, {"id": "auto0", "auto": True, "seq": 0}]

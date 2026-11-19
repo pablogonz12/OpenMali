@@ -105,8 +105,10 @@ STARVE_SECS = 600                                # a part gated hot (temp_start)
 
 
 def starved(job, now=None):
-    """a pending part that has been gated for heat for > STARVE_SECS (set by farmd when the start gate says "cooling")"""
+    """(bench jobs only) a pending part that has been gated for heat for > STARVE_SECS (set by farmd when the start gate says "cooling")"""
     now = time.time() if now is None else now
+    if job.get("suite") != "bench":                  # only bench work is promoted: a gated exploratory run (cases) must not jump ahead of the gates
+        return False
     return any(p.get("state") == "pending" and p.get("gated_since") and now - p["gated_since"] > STARVE_SECS for p in job.get("parts", {}).values())
 
 
