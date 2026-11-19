@@ -84,6 +84,7 @@ main(int argc, char **argv)
    uint8_t *p = NULL, *q = NULL;
    CHECK(MapMemory(dev, m, 0, VK_WHOLE_SIZE, 0, (void **)&p) == VK_SUCCESS && p, "map");
    CHECK(MapMemory(dev, m, 0, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "second map must fail");
+   if (g_fail || !p) { printf("FAIL: alloc/map failed, remaining map tests need the mapping\n"); return 1; }   /* p[] below would dereference NULL */
    p[0] = 0x5a; p[65535] = 0xa5;
    UnmapMemory(dev, m);
    CHECK(MapMemory(dev, m, 65536, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "offset == size must fail");
