@@ -114,7 +114,7 @@ case_skipped(const char *n)
    X(DestroyRenderPass) X(CreateFramebuffer) X(DestroyFramebuffer) X(CreateGraphicsPipelines)       \
    X(DestroyPipeline) X(CreateCommandPool) X(DestroyCommandPool) X(ResetCommandPool)                \
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
-   X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
+   X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdPipelineBarrier) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
    X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
@@ -1270,6 +1270,10 @@ test_mrt(const char *name, int nrt)
    CmdSetScissor(cb, 0, 1, &sc);
    CmdDraw(cb, 6, 1, 0, 0);
    CmdEndRenderPass(cb);
+   {  /* make the colour writes available to the host before the readback below (a fence alone is not a memory dependency) */
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+   }
    MRT_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    MRT_CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");

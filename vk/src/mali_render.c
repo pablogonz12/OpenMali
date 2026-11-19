@@ -243,6 +243,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
          }
          off += (a->rt ? a->rt->alloc : 4u) * tpx;
       }
+      p.rt_alloc = off / tpx;   /* every arch: the FBD tile allocation covers all targets, not RT0 only */
    }
    p.rt_none = !f->has_colour;
    if (p.rt_none)

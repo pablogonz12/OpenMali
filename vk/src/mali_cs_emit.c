@@ -655,6 +655,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    if (!nort && nrt > 1 && g->fs)
       rtm = g->fs->fs_colour_mask & ((1u << nrt) - 1);
    const unsigned rtn = rtm ? nrt : 0;
+   const bool fs_skips_target = nrt > 1 && rtm != ((1u << nrt) - 1u);   /* an attached target this draw leaves untouched: forward pixel kill could drop an earlier draw's fragment */
    if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
       dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
       dop.zs_update = 3;
@@ -667,6 +668,8 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
       if (d->fx.blend_en || d->fx.wmask != 0xf)
+         dop.allow_fpk = 0;
+      if (fs_skips_target)
          dop.allow_fpk = 0;
       for (unsigned i = 1; i < nrt; i++)
          if (d->fx.rtb[i - 1].blend_en || d->fx.rtb[i - 1].wmask != 0xf)
