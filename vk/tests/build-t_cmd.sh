@@ -29,7 +29,7 @@ CC=$(sed -E 's# -MD -MQ [^ ]+ -MF [^ ]+##; s# -o [^ ]+ -c [^ ]+$##; s# -I[^ ]*sr
 LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[A-Za-z0-9_+.-]+|-pthread)$' | tr '\n' ' ')
 CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 
-ICD="mali_instance mali_physical_device mali_device mali_memory mali_sync mali_queue mali_backend_fake mali_backend_kbase
+ICD="mali_instance mali_physical_device mali_device mali_memory mali_sync mali_queue mali_fprof mali_backend_fake mali_backend_kbase
  mali_format mali_image mali_buffer mali_sampler mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_compile mali_resources"
 M8="mali_cs_emit mali_render mali_cmd mali_pipeline mali_wsi mali_meta mali_bc mali_meta_vk mali_query mali_query_core mali_event mali_event_vk"
 W="-Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -I$GEN -I$V/src -I$KB/include"
