@@ -703,7 +703,13 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdSetCullMode(cb, (i & 1) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
       else if (g_dirty == 3)
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
-      else if (g_dirty == 4) {
+      else if (g_dirty == 5 || g_dirty == 6) {   /* share_vin: alternate two pipelines with the same vertex input (6: and move the vertex buffer) */
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (i & 1) ? s->pipe2 : s->pipe);
+         if (g_dirty == 6) {
+            VkDeviceSize o2[2] = {(i & 1) ? 16 : 0, 0};
+            CmdBindVertexBuffers(cb, 0, 2, vbs, o2);
+         }
+      } else if (g_dirty == 4) {
          VkRect2D si = {{(i & 1) ? W / 2 : 0, 0}, {W / 2, H}};
          CmdSetScissor(cb, 0, 1, &si);
       }
@@ -1967,6 +1973,41 @@ test_share_dirty(void)
    return ok;
 }
 
+/* share_vin (fake backend byte counter): a pipeline switch that keeps the vertex input and the vertex buffers must reuse the previous draw's
+ * VS driver set; the same switches with the vertex buffer offset moving (frame 6) must build one per draw. 4 draws: 3 later ones differ. */
+static int
+test_share_vin(void)
+{
+   if (!g_fake) {
+      printf("{\"test\":\"share_vin\",\"skipped\":\"fake backend byte counter\",\"ok\":true}\n");
+      return 1;
+   }
+   alloc_stats_start();
+   float rot[4][4] = {{0}};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   unsigned long long ab[3];
+   int ok = 1;
+   g_dxvk = 1;
+   for (int pass = 0; ok && pass < 3; pass++) {
+      g_dirty = pass == 0 ? 0 : 4 + pass;   /* 0 (warm-up), 5, 6 */
+      struct scene s = {.mode = MODE_TRI};
+      ok = scene_create(&s, 0) && scene_draw(&s, 4, rot, f);
+      ab[pass] = alloc_bytes();
+      scene_destroy(&s);
+   }
+   g_dirty = 0;
+   g_dxvk = 0;
+   DestroyFence(dev, f, NULL);
+   if (!ok) return 0;
+   unsigned long long same = ab[1] - ab[0], mv = ab[2] - ab[1];
+   int good = mv >= same + 3 * 17 * 32;
+   printf("{\"test\":\"share_vin\",\"alloc_pipeline_switch\":%llu,\"alloc_with_vb_move\":%llu,\"ok\":%s}\n", same, mv, good ? "true" : "false");
+   CHECK(good, "share_vin: pipeline switches rebuilt the driver set (%llu vs %llu bytes with a moving vertex buffer)", same, mv);
+   return 1;
+}
+
 /* full-screen quad cases: push-constant-only FS colour, sampled texture, uniform buffer, descriptor updates between draws */
 static int
 test_quad(const char *name, int mode)
@@ -2180,6 +2221,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
    if (ok && CASE_ON("share")) ok &= test_share_inst();
    if (ok && CASE_ON("share")) ok &= test_share_dirty();
+   if (ok && CASE_ON("share_vin")) ok &= test_share_vin();
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
