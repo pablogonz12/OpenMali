@@ -102,6 +102,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .sampledImageStencilSampleCounts = samples_1_4,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
+      .maxClipDistances = 8,                 /* shaderClipDistance: VARYING_SLOT_CLIP_DIST0/1 (t_vk_feat clip8) */
+      .maxCullDistances = 0,                 /* shaderCullDistance stays off: no cull lowering */
+      .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
       .pointSizeRange = {1.0f, 1.0f},
