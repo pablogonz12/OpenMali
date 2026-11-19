@@ -35,6 +35,7 @@ import statistics
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import tomllib
 
@@ -340,9 +341,12 @@ def main():
     s = sweep = None
     try:
         j = need(ph.ctl("env", "list", timeout=40), "reading the session environment")
-        if not isinstance(j.get("active"), list):
-            die(f"session environment snapshot has no 'active' list: {json.dumps(j)[:200]}")
-        saved_env, got_env = j["active"], True
+        # We only write the one-shot ("next") scope, so that is the scope to capture and restore; fall back to
+        # "active" for a control build that does not report "pending".
+        key = "pending" if "pending" in j else "active"
+        if not isinstance(j.get(key), list):
+            die(f"session environment snapshot has no '{key}' list: {json.dumps(j)[:200]}")
+        saved_env, got_env = j[key], True
         j = need(ph.ctl("prefs", "get", "session", timeout=40), "reading the session preferences")
         vals = j.get("values")
         if not isinstance(vals, dict):
@@ -385,8 +389,8 @@ def main():
             die(f"session did not start: {json.dumps(j)[:300]}")
 
         if a.driver == "ours":
-            logdir = "/tmp/steam-present-logs"
-            ph.ctl("logs", "latest", logdir, timeout=200)
+            logdir = tempfile.mkdtemp(prefix="steam-present-logs-")     # fresh per run: no stale marker
+            need(ph.ctl("logs", "latest", logdir, timeout=200), "collecting the session log")
             try:
                 logs = "".join(open(os.path.join(logdir, f), errors="replace").read()
                                for f in os.listdir(logdir) if f.endswith(".log"))
@@ -396,8 +400,6 @@ def main():
                 die("session did not import our ICD (no 'vulkan driver: imported' in the log)")
 
         time.sleep(a.settle)
-        hz = panel_hz(ph)
-        base = 1000.0 / hz
         layer = layer_name(ph)
         if not layer:
             die("no DroidDeck SurfaceView layer: is the session on screen?")
@@ -406,12 +408,16 @@ def main():
         sweep = Sweep(ph)
         sweep.start()
         time.sleep(a.warmup)
-        stamp = time.time()
+        hz = panel_hz(ph)        # after input started: an idle menu can sit at 60 Hz until it is touched
+        base = 1000.0 / hz
         ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
         s = Sampler(ph, layer, a.seconds)
         s.start()
         time.sleep(a.seconds)
         stop_workers(s, sweep)
+        hz_end = panel_hz(ph)
+        if abs(hz_end - hz) > 0.5:
+            die(f"panel mode changed during sampling ({hz} -> {hz_end} Hz); the base interval is not stable", 4)
         if s.gaps or s.errors:
             die(f"sample invalid: {s.gaps} frame-history gaps and {s.errors} failed polls out of {s.calls} "
                 f"({s.err or 'no error text'}); SurfaceFlinger keeps only {HISTORY} frames per layer, so "
