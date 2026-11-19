@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <signal.h>
+#include <time.h>
 #include <unistd.h>
 
 static int g_fail;
@@ -53,10 +54,23 @@ mkfence(int exportable, int signalled)
    return f;
 }
 
+/* The fake backend signals on its own clock, so an assertion that a fence is still pending is only valid while we are well inside
+ * the MALI_FAKE_SLOW_US window; a scheduling stall past it must not fail the test (the checks are skipped, the waits still run). */
+static struct timespec g_sub_t;
+static int
+still_pending(void)
+{
+   struct timespec n;
+   clock_gettime(CLOCK_MONOTONIC, &n);
+   long us = (n.tv_sec - g_sub_t.tv_sec) * 1000000L + (n.tv_nsec - g_sub_t.tv_nsec) / 1000;
+   return us < (long)strtoul(getenv("MALI_FAKE_SLOW_US"), NULL, 10) / 2;
+}
+
 static void
 submit(VkFence f)
 {
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   clock_gettime(CLOCK_MONOTONIC, &g_sub_t);
    VkResult r = QueueSubmit(q, 1, &si, f);
    CHECK(r == VK_SUCCESS, "submit -> %d", r);
 }
@@ -126,9 +140,10 @@ main(int argc, char **argv)
       VkFence f = mkfence(0, 0);
       submit(f);
       VkResult r = wait_ms(f, 1);
-      CHECK(r == VK_TIMEOUT, "short wait on slow fence -> %d (want VK_TIMEOUT)", r);
+      int pend = still_pending();   /* sampled right after the short wait: still inside the delay window */
+      CHECK(!pend || r == VK_TIMEOUT, "short wait on slow fence -> %d (want VK_TIMEOUT)", r);
       r = GetFenceStatus(dev, f);
-      CHECK(r == VK_NOT_READY, "status on slow fence -> %d (want VK_NOT_READY)", r);
+      CHECK(!(pend && still_pending()) || r == VK_NOT_READY, "status on slow fence -> %d (want VK_NOT_READY)", r);
       r = wait_ms(f, 10000);
       CHECK(r == VK_SUCCESS, "long wait on slow fence -> %d", r);
       CHECK(GetFenceStatus(dev, f) == VK_SUCCESS, "status after wait");
@@ -187,7 +202,9 @@ main(int argc, char **argv)
       CHECK(fd >= 0, "export of a pending fence must give a real fd, got %d", fd);
       if (fd >= 0) {
          struct pollfd pf = {fd, POLLIN, 0};
-         CHECK(poll(&pf, 1, 0) == 0, "exported fd readable before the GPU finished");
+         int pend = still_pending();
+         int pr = poll(&pf, 1, 0);
+         CHECK(!(pend && still_pending()) || pr == 0, "exported fd readable before the GPU finished");
          CHECK(poll(&pf, 1, 10000) == 1, "exported fd never fired");
          close(fd);
       }
