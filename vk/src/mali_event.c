@@ -41,6 +41,14 @@ flush(struct b *b, const struct regs *R)
    E(b, kb_cs_wait(1u << KB_CS_SLOT_LS));
 }
 
+/* Set when a light ops frame was built: its words rely on the head flush of the next submit_signal (mali_queue_submit must not skip it). */
+static int g_light_pending;
+int
+mali_ops_take_light(void)
+{
+   return __atomic_exchange_n(&g_light_pending, 0, __ATOMIC_RELAXED);
+}
+
 int
 mali_ops_build(const struct mali_env *env, const struct mali_op *ops, unsigned nops, uint64_t **out, unsigned *nout)
 {
@@ -88,6 +96,8 @@ mali_ops_build(const struct mali_env *env, const struct mali_op *ops, unsigned n
          light = false;
    if (!light)
       flush(&b, R);
+   else
+      __atomic_store_n(&g_light_pending, 1, __ATOMIC_RELAXED);
    E(&b, kb_cs_move48(R->addr, env->sync_va));
    E(&b, kb_cs_move48(R->val, 1));
    E(&b, kb_cs_sync_add64(R->addr, R->val, KB_CS_SCOPE_SYSTEM));

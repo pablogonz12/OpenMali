@@ -16,6 +16,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "kbase_cs.h"
 #include "kbase_draw.h"
 #include "mali_cmd.h"
+#include "mali_event.h"
 #include "mali_meta.h"
 #include "vk_command_buffer.h"
 
@@ -567,7 +568,16 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 
    double p2 = prof_now();
    int fd = -1;
-   int r = be->submit_signal(dev->kdev, &fd);
+   /* The fence is only consumed through submit->signals (VkFence, semaphores, QueueWaitIdle and present all signal), so a
+    * submission without signals skips the 2 KCPU ioctls, the kick and the fd close. Exception: a light ops frame (event.c)
+    * relies on submit_signal's head flush; MALI_FENCE_ALWAYS=1 keeps the old behaviour. */
+   static int always = -1;
+   if (always < 0)
+      always = getenv("MALI_FENCE_ALWAYS") != NULL;
+   bool light = mali_ops_take_light();
+   int r = 0;
+   if (submit->signal_count || light || always)
+      r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);
