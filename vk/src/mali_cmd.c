@@ -486,7 +486,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
             if (tri) { bp->gfx.poly_mode = 1; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
             break;
          case VK_POLYGON_MODE_POINT:
-            if (tri) { bp->gfx.poly_mode = 2; bp->gfx.prim = 1; bp->gfx.prim_restart = false; }
+            if (tri) { bp->gfx.poly_mode = 2; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 1; }   /* prim_restart stays: the rewrite uses it to split strips */
             break;
          default: unsupported(cmd, "polygon mode");
          }
