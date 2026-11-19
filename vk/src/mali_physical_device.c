@@ -302,6 +302,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
+      .shaderTerminateInvocation = true,   /* t_vk_feat terminate: spirv_to_nir OpTerminateInvocation -> discard */
+      .pipelineCreationCacheControl = true, /* FAIL_ON_PIPELINE_COMPILE_REQUIRED: a shader missing from the disk cache returns VK_PIPELINE_COMPILE_REQUIRED (t_vk_feat cachectl) */
       .extendedDynamicState3PolygonMode = true,   /* mali_cmd.c: dyn->rs.polygon_mode -> gfx.poly_mode */
       .shaderIntegerDotProduct = true,                                  /* t_vk_feat intdot (vtn lowers OpSDot/UDot/SUDot; bifrost_nir.c lowers the unaccelerated forms) */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
