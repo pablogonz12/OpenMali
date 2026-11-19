@@ -125,6 +125,10 @@ for g in v11 v13; do
    # batch<seq timing assert stays off: MALI_SHADER_CACHE is a path, and a timing check would flake on a loaded host.
    run "vk_compute batch $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only batch
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
+   # Swapchain content with zink's usage and layouts: the frames run on the CPU (MALI_SOFT=1 + the meta reference runner), so the
+   # readback is real. Renders a clear into the swapchain image in GENERAL and in COLOR_ATTACHMENT_OPTIMAL, and blits RGBA8 -> BGRA8
+   # with a scale into it, then copies it out and checks the colour.
+   run "vk_meta swapblit $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g MALI_SOFT=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only swapblit
 done
 
 # Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs

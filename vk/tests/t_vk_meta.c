@@ -51,6 +51,8 @@ static const char *g_only;
    X(CmdCopyBuffer) X(CmdFillBuffer) X(CmdUpdateBuffer) X(CmdCopyBufferToImage)                    \
    X(CmdCopyImageToBuffer) X(CmdCopyImage) X(CmdBlitImage) X(CmdClearColorImage)                   \
    X(CmdClearDepthStencilImage) X(CmdResolveImage)                                                 \
+   X(CreateImageView) X(DestroyImageView) X(CreateRenderPass) X(DestroyRenderPass)                 \
+   X(CreateFramebuffer) X(DestroyFramebuffer) X(CmdBeginRenderPass) X(CmdEndRenderPass)             \
    X(CreateEvent) X(DestroyEvent) X(GetEventStatus) X(SetEvent) X(ResetEvent)                      \
    X(CmdSetEvent) X(CmdResetEvent) X(CmdWaitEvents)                                                \
    X(CreateQueryPool) X(DestroyQueryPool) X(GetQueryPoolResults) X(CmdResetQueryPool)              \
@@ -572,6 +574,139 @@ case_copybc(void)
    return 1;
 }
 
+/* Render a clear into `view` with a 1.0 render pass ending in `lay` (what zink's kopper pass does through the runtime's emulation). */
+static void
+render_clear(VkCommandBuffer cb, VkFormat fmt, VkImageView view, VkImageLayout lay, uint32_t w, uint32_t h, const float c[4])
+{
+   VkAttachmentDescription ad = {.format = fmt, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = lay, .finalLayout = lay};
+   VkAttachmentReference cref = {.attachment = 0, .layout = lay};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   if (CreateRenderPass(dev, &rpi, NULL, &rp) != VK_SUCCESS) {
+      g_fail = 1;
+      printf("{\"fail\":\"render pass\"}\n");
+      return;
+   }
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1,
+                                  .pAttachments = &view, .width = w, .height = h, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   if (CreateFramebuffer(dev, &fbi, NULL, &fb) != VK_SUCCESS) {
+      g_fail = 1;
+      printf("{\"fail\":\"framebuffer\"}\n");
+      DestroyRenderPass(dev, rp, NULL);
+      return;
+   }
+   VkClearValue cv;
+   memcpy(cv.color.float32, c, sizeof cv.color.float32);
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {w, h}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdEndRenderPass(cb);
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+}
+
+/* Swapchain content with zink's usage and layouts (the GL black screen). vkcube renders straight into the swapchain image in
+ * COLOR_ATTACHMENT_OPTIMAL; zink carries COLOR_ATTACHMENT|TRANSFER_SRC|TRANSFER_DST|SAMPLED, keeps the image in VK_IMAGE_LAYOUT_GENERAL
+ * (driver_workarounds.general_layout, because we advertise VK_KHR_unified_image_layouts) and blits its display target into it, often
+ * through an sRGB view. Our barriers are no-ops and every image is linear, so no layout can make content stale: the plausible remaining
+ * differences are the usage bits, the destination format (BGRA / sRGB) and the blit itself. Each row below writes a known colour into a
+ * fresh swapchain-shaped image, copies the image out (what wsi_common does to present) and checks every texel. A blit that returns
+ * success without writing shows up here as a row of zeros.
+ * Needs MALI_SOFT=1 (set for --only swapblit), so the desktop harness executes the frames and the bytes are real. */
+static int
+swap_row(const char *name, VkFormat fmt, VkImageUsageFlags usage, VkImageLayout lay, int blit, VkFilter filter, VkFormat mid_fmt,
+         uint32_t mw, const float c[4], const uint8_t want[4])
+{
+   const uint32_t w = 48, h = 48;
+   struct buf out = {0};
+   struct img sw = {0}, mid = {0};
+   TRY(mkbuf(&out, w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   TRY(mkimg(&sw, fmt, w, h, usage, VK_SAMPLE_COUNT_1_BIT));
+   if (blit) TRY(mkimg(&mid, mid_fmt, mw, mw, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SAMPLE_COUNT_1_BIT));
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView vsw = VK_NULL_HANDLE, vmid = VK_NULL_HANDLE;
+   vci.image = sw.i;
+   CHECK(CreateImageView(dev, &vci, NULL, &vsw) == VK_SUCCESS, "%s: view", name);
+   if (blit) {
+      vci.image = mid.i; vci.format = mid_fmt;
+      CHECK(CreateImageView(dev, &vci, NULL, &vmid) == VK_SUCCESS, "%s: intermediate view", name);
+   }
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   uint8_t *p = out.p;
+   memset(p, 0xEE, w * h * 4);
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   if (!blit) {
+      layout_tr(cb, sw.i, VK_IMAGE_LAYOUT_UNDEFINED, lay, VK_IMAGE_ASPECT_COLOR_BIT);
+      render_clear(cb, fmt, vsw, lay, w, h, c);
+   } else {
+      layout_tr(cb, mid.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      render_clear(cb, mid_fmt, vmid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mw, mw, c);
+      layout_tr(cb, sw.i, VK_IMAGE_LAYOUT_UNDEFINED, lay, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {(int)mw, (int)mw, 1}},
+                        .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {(int)w, (int)h, 1}}};
+      CmdBlitImage(cb, mid.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sw.i, lay, 1, &bl, filter);
+   }
+   layout_tr(cb, sw.i, lay, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+   CmdCopyImageToBuffer(cb, sw.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.b, 1, &dn);
+   int ok = submit_wait(cb);
+   if (!ok) printf("{\"case\":\"%s\",\"fail\":\"submit\"}\n", name);
+   int bad = 0;
+   for (uint32_t i = 0; ok && i < w * h; i++) {
+      const uint8_t *t = p + i * 4;
+      if (abs(t[0] - want[0]) > 1 || abs(t[1] - want[1]) > 1 || abs(t[2] - want[2]) > 1 || t[3] != want[3]) {
+         if (!bad)
+            printf("{\"case\":\"%s\",\"texel\":%u,\"got\":\"%d,%d,%d,%d\",\"want\":\"%d,%d,%d,%d\"}\n", name, i, t[0], t[1], t[2],
+                   t[3], want[0], want[1], want[2], want[3]);
+         bad++;
+      }
+   }
+   if (vmid) DestroyImageView(dev, vmid, NULL);
+   DestroyImageView(dev, vsw, NULL);
+   rmimg(&sw); rmimg(&mid); rmbuf(&out);
+   CHECK(ok && !bad, "swapchain %s: %d/%u texels wrong", name, bad, w * h);
+   return 1;
+}
+
+static int
+case_swapblit(void)
+{
+   const char *soft = getenv("MALI_SOFT");
+   if (!soft || !soft[0] || !strcmp(soft, "0")) {
+      printf("{\"test\":\"swapblit\",\"skipped\":\"needs MALI_SOFT=1 to execute the frames\",\"ok\":true}\n");
+      return 1;
+   }
+   const float c[4] = { 0.5f, 0.25f, 0.125f, 1.0f };
+   const uint8_t want[4] = { 32, 64, 128, 255 };   /* BGRA bytes of (R 0.5, G 0.25, B 0.125) */
+   const VkImageUsageFlags zink = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+   TRY(swap_row("render_general", VK_FORMAT_B8G8R8A8_UNORM, zink, VK_IMAGE_LAYOUT_GENERAL, 0, VK_FILTER_NEAREST,
+                VK_FORMAT_UNDEFINED, 0, c, want));
+   TRY(swap_row("render_optimal", VK_FORMAT_B8G8R8A8_UNORM, zink, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_FILTER_NEAREST,
+                VK_FORMAT_UNDEFINED, 0, c, want));
+   /* zink's blit: RGBA8 display target scaled and format-converted into the BGRA8 swapchain image, zink's usage set */
+   TRY(swap_row("blit_scale", VK_FORMAT_B8G8R8A8_UNORM, zink, VK_IMAGE_LAYOUT_GENERAL, 1, VK_FILTER_LINEAR, VK_FORMAT_R8G8B8A8_UNORM,
+                64, c, want));
+   /* the narrow usage set a client that only presents negotiates: no TRANSFER_SRC, no SAMPLED */
+   TRY(swap_row("blit_nosrc", VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                VK_IMAGE_LAYOUT_GENERAL, 1, VK_FILTER_NEAREST, VK_FORMAT_R8G8B8A8_UNORM, 48, c, want));
+   /* 1:1 blit into the swapchain image, no scaling (zink's exact-size present path) */
+   TRY(swap_row("blit_1to1", VK_FORMAT_B8G8R8A8_UNORM, zink, VK_IMAGE_LAYOUT_GENERAL, 1, VK_FILTER_NEAREST,
+                VK_FORMAT_R8G8B8A8_UNORM, 48, c, want));
+   /* NOT covered here: an sRGB destination (zink's sRGB swapchain view). A UNORM -> *_SRGB blit takes the blit shader's generic path, and
+    * mali_meta_ref_run() only implements the "8-bit UNORM or 32-bit float, RGBA/BGRA" class, so the desktop harness cannot check its
+    * pixels: run on hardware (t_vk_feat) until the reference learns the generic path. */
+   report("swapblit", NULL);
+   return 1;
+}
+
 static int
 case_clearc(void)
 {
@@ -868,6 +1003,10 @@ main(int argc, char **argv)
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    const char *be = getenv("MALI_BACKEND");
    g_fake = be && !strcmp(be, "fake");
+   /* swapblit needs frames executed to see pixels: the desktop harness (mali_soft.c + the meta reference runner) runs them when the
+    * device is created with MALI_SOFT. Only this case asks for it, so a full run keeps the plain fake backend. */
+   if (g_only && !strcmp(g_only, "swapblit") && !getenv("MALI_SOFT"))
+      setenv("MALI_SOFT", "1", 1);
 
    void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
    if (!lib) { printf("{\"fail\":\"dlopen: %s\"}\n", dlerror()); return 1; }
@@ -931,6 +1070,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("blit3d_l16")) ok &= case_blit3d(VK_FILTER_LINEAR, 16, "blit3d_l16");   /* 1:1 in z: bilinear only */
    if (ok && CASE_ON("blit3d_l24")) ok &= case_blit3d(VK_FILTER_LINEAR, 24, "blit3d_l24");   /* z magnified */
    if (ok && CASE_ON("blit3d_n4")) ok &= case_blit3d(VK_FILTER_NEAREST, 4, "blit3d_n4");
+   if (ok && CASE_ON("swapblit")) ok &= case_swapblit();
    if (ok && CASE_ON("clearc")) ok &= case_clearc();
    if (ok && CASE_ON("cleard")) ok &= case_cleard();
    if (ok && CASE_ON("d16")) ok &= case_dsfmt("d16", VK_FORMAT_D16_UNORM);

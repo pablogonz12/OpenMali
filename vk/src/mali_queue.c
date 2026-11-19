@@ -20,6 +20,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "mali_cmd.h"
 #include "mali_event.h"
 #include "mali_meta.h"
+#include "mali_meta_vk.h"
 #include "mali_soft.h"
 #include "vk_command_buffer.h"
 
@@ -356,10 +357,19 @@ mali_soft_device_hw(VkDevice dev_handle)
    return h ? &h->hw : NULL;
 }
 
+static void *
+hw_va_cpu(void *u, uint64_t va, size_t size);
+
 static bool
 hw_soft(void *u, const struct mali_frame *f)
 {
    struct mali_hwctx *h = u;
+   /* compute frames of the meta operations (copies, blits, clears): run the dispatch with the reference runner so the harness checks
+    * the bytes, not just the recording. Anything else (BC decode) stays -ENOTSUP in mali_frame_build. */
+   if (f->compute && !f->nops)
+      return mali_meta_vk_host_run(&f->disp, hw_va_cpu, u);
+   if (f->compute)
+      return false;
    return mali_soft_frame(&h->hw, f);
 }
 
