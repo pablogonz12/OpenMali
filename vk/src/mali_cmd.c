@@ -398,6 +398,14 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    const int32_t *a = cmd->cur.area;
    struct mali_frame *fr = &cmd->cur;
+   /* The hardware divides (firstInstance + i) by the attribute divisor; Vulkan wants firstInstance + i / divisor. The two differ for
+    * firstInstance != 0 with divisor > 1 (supportsNonZeroFirstInstance = false): refuse the command buffer instead of mis-rendering. */
+   if (first_inst)
+      for (unsigned i = 0; i < cmd->gfx.nattr; i++)
+         if (cmd->gfx.attr[i].divisor > 1) {
+            unsupported(cmd, "draw with firstInstance != 0 and a vertex attribute divisor > 1 (supportsNonZeroFirstInstance = false)");
+            break;
+         }
    const struct mali_rec *pv = fr->ndraws ? &fr->draws[fr->ndraws - 1] : NULL;
    /* dirty mask: setter bits plus the runtime's dynamic-state dirty bits (viewport and scissor apart from everything else) */
    uint32_t m = cmd->dirty;
