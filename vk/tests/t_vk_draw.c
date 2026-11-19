@@ -14,6 +14,7 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <stdbool.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1569,6 +1570,165 @@ out:
    return ok;
 }
 
+/* per-attachment LOAD across passes: pass 1 fills both targets, pass 2 sets RT0 loadOp DONT_CARE and RT1 loadOp LOAD with STORE on both,
+ * then draws a single pixel. RT1 must keep pass 1's picture everywhere (a LOAD that is dropped or turned into a clear shows up as
+ * zeros); RT0 is DONT_CARE and is not checked. The fake backend's golden stream carries the RT1 preload draw. */
+static int
+test_mrt_rt1_load(void)
+{
+   static const float c0[4] = {0, 0, 0, 1}, c1[4] = {1, 1, 1, 1};
+   VkImage im[2] = {0};
+   VkDeviceMemory mem[2] = {0};
+   VkImageView iv[2] = {0};
+   uint8_t *px[2] = {0};
+   uint32_t pitch[2] = {0};
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv("mrt2.frag.spv");
+   VkRenderPass rp1 = VK_NULL_HANDLE, rp2 = VK_NULL_HANDLE;
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE;
+   int ok = 0;
+   unsigned bad = 0;
+#define RL_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   RL_CHECK(vs && fs, "shaders");
+   for (int i = 0; i < 2; i++) {
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      RL_CHECK(CreateImage(dev, &ii, NULL, &im[i]) == VK_SUCCESS, "image %d", i);
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, im[i], &mr);
+      int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      RL_CHECK(mt >= 0, "no host visible type");
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      RL_CHECK(AllocateMemory(dev, &ai, NULL, &mem[i]) == VK_SUCCESS, "mem %d", i);
+      RL_CHECK(BindImageMemory(dev, im[i], mem[i], 0) == VK_SUCCESS, "bind %d", i);
+      RL_CHECK(MapMemory(dev, mem[i], 0, VK_WHOLE_SIZE, 0, (void **)&px[i]) == VK_SUCCESS, "map %d", i);
+      VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+      VkSubresourceLayout sl;
+      GetImageSubresourceLayout(dev, im[i], &sr, &sl);
+      pitch[i] = (uint32_t)sl.rowPitch;
+      px[i] += sl.offset;
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = VK_FORMAT_R8G8B8A8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      RL_CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view %d", i);
+   }
+   VkAttachmentDescription ad[2] = {
+      {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL},
+      {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL}};
+   VkAttachmentReference ar[2] = {{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 2, .pColorAttachments = ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2, .pAttachments = ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   RL_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp1) == VK_SUCCESS, "render pass 1");
+   ad[0].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   /* RT0: undefined, not checked */
+   ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;        /* RT1: must survive the pass */
+   for (int i = 0; i < 2; i++) ad[i].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+   RL_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "render pass 2 (RT1 LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp1, .attachmentCount = 2,
+                                  .pAttachments = iv, .width = W, .height = H, .layers = 1};
+   RL_CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   RL_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba[2] = {{.colorWriteMask = 0xf}, {.colorWriteMask = 0xf}};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 2, .pAttachments = cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = pl, .renderPass = rp1};
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   RL_CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   RL_CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "pool");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   RL_CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D full = {{0, 0}, {W, H}}, one = {{W - 1, H - 1}, {1, 1}};
+   VkClearValue cv[2];
+   memcpy(cv[0].color.float32, c0, 16);
+   memcpy(cv[1].color.float32, c1, 16);
+   for (int pass = 0; pass < 2; pass++) {
+      VkCommandBuffer cb;
+      VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      RL_CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "alloc cb %d", pass);
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+      RL_CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin %d", pass);
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = pass ? rp2 : rp1, .framebuffer = fb,
+                                  .renderArea = {{0, 0}, {W, H}}, .clearValueCount = pass ? 0 : 2, .pClearValues = cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkRect2D sc = pass ? one : full;
+      CmdSetViewport(cb, 0, 1, &vp);
+      CmdSetScissor(cb, 0, 1, &sc);
+      CmdDraw(cb, 6, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      RL_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end %d", pass);
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      r = QueueSubmit(queue, 1, &si, fence);
+      RL_CHECK(r == VK_SUCCESS, "submit %d = %d", pass, r);
+      r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+      RL_CHECK(r == VK_SUCCESS, "wait %d = %d", pass, r);
+      ResetFences(dev, 1, &fence);
+   }
+   ok = 1;
+   if (!g_fake) {   /* RT1 everywhere: green on the left half from pass 1, white on the right; pass 2 must not disturb any of it */
+      for (int y = 0; y < H && bad < 4; y += 7)
+         for (int x = 0; x < W && bad < 4; x += 7) {
+            const uint8_t *p = px[1] + (size_t)y * pitch[1] + (size_t)x * 4;
+            const bool left = x < W / 2;
+            const uint8_t want[4] = {left ? 0 : 255, left ? 255 : 255, left ? 0 : 255, 255};
+            if (memcmp(p, want, 4)) {
+               printf("{\"detail\":\"rt1 (%d,%d) got %02x%02x%02x%02x want %02x%02x%02x%02x\"}\n", x, y, p[0], p[1], p[2], p[3],
+                      want[0], want[1], want[2], want[3]);
+               bad++;
+            }
+         }
+      ok = bad == 0;
+   }
+   printf("{\"test\":\"mrt_rt1_load\",\"bad\":%u,\"ok\":%s%s}\n", bad, ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend\"" : "");
+   if (!ok) g_fail = 1;
+out:
+   DeviceWaitIdle(dev);
+   if (fence) DestroyFence(dev, fence, NULL);
+   if (pool) DestroyCommandPool(dev, pool, NULL);
+   if (pipe) DestroyPipeline(dev, pipe, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (fb) DestroyFramebuffer(dev, fb, NULL);
+   if (rp2) DestroyRenderPass(dev, rp2, NULL);
+   if (rp1) DestroyRenderPass(dev, rp1, NULL);
+   for (int i = 0; i < 2; i++) {
+      if (iv[i]) DestroyImageView(dev, iv[i], NULL);
+      if (im[i]) DestroyImage(dev, im[i], NULL);
+      if (mem[i]) FreeMemory(dev, mem[i], NULL);
+   }
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef RL_CHECK
+   return ok;
+}
+
 /* rasterizer discard: draws produce nothing (both stages present, or a vertex-only pipeline); the next pipeline draws normally */
 static int
 test_discard(const char *name, int mode)
@@ -2551,6 +2711,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt2_mixed")) ok &= test_mrt_mixed("mrt2_mixed", 2);
    if (ok && CASE_ON("mrt3_mixed")) ok &= test_mrt_mixed("mrt3_mixed", 3);
    if (ok && CASE_ON("mrt4_mixed")) ok &= test_mrt_mixed("mrt4_mixed", 4);
+   if (ok && CASE_ON("mrt_rt1_load")) ok &= test_mrt_rt1_load();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
