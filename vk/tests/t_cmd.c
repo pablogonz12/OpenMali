@@ -104,6 +104,10 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
 }
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
+   if ((uintptr_t)v == 2) {   /* D32 depth-only attachment (--extra logicOp-retained case) */
+      *o = (struct mali_cmd_target){F.rt.gpu_va, W * 4, W, H, .zs_format = 1, .is_zs = true};
+      return 0;
+   }
    if ((uintptr_t)v != 1)
       return -1;
    *o = (struct mali_cmd_target){F.rt.gpu_va, W * 4, W, H, 0};
@@ -644,6 +648,28 @@ int main(int argc, char **argv)
       before = F.nsubmit;
       r = mali_cmd_submit(v4);
       CHECK(r == VK_SUCCESS && F.nsubmit == before + 1, "fold submit %d", r);
+
+      /* logicOpEnable is command-buffer state, not a draw property: a depth-only pass can retain it from an
+       * earlier colour pipeline. It cannot change any output there, so the draw must stay valid. */
+      {
+         struct vk_command_buffer *vz = new_cmd(pool, &c2);
+         vz->dynamic_graphics_state.cb.logic_op_enable = true;
+         VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                         .imageView = (VkImageView)(uintptr_t)2,
+                                         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+         da.clearValue.depthStencil.depth = 1.0f;
+         VkRenderingInfo zr = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {W, H}}, .layerCount = 1,
+                               .colorAttachmentCount = 0, .pDepthAttachment = &da};
+         mali_CmdBeginRendering(c2, &zr);
+         CmdBindPipeline(c2, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+         VkDeviceSize zoff = 0;
+         CmdBindVertexBuffers(c2, 0, 1, &vbh, &zoff);
+         CmdDraw(c2, 3, 1, 0, 0);
+         mali_CmdEndRendering(c2);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_SUCCESS, "depth-only retained logicOp end=%d", r);
+      }
       printf("{\"test\":\"t_cmd%d\",\"extra\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
