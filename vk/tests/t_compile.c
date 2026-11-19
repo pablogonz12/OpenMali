@@ -241,6 +241,29 @@ test_errors(void)
    o.arch = 12;
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
 
+   /* fuzz findings: an OpName with an out-of-range target id (wild write in spirv_to_nir) and a truncated last instruction
+    * (assert(w == end)) must be refused, not crash; the unmodified module compiles */
+   struct spv m = load("var.frag.spv");
+   if (m.w) {
+      size_t at = 0;
+      for (size_t i = 5; i < m.n && m.w[i] >> 16; i += m.w[i] >> 16)
+         if ((m.w[i] & 0xffff) == 5) { at = i; break; }
+      CHECK(at, "var.frag has an OpName");
+      o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_FRAGMENT, .spirv = m.w, .spirv_words = m.n, .cache_dir = "" };
+      if (at) {
+         uint32_t keep = m.w[at + 1];
+         m.w[at + 1] = 0x50886f08u;
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "OpName with out-of-range target refused");
+         m.w[at + 1] = keep;
+      }
+      uint32_t last = 5, lw = 0;
+      for (size_t i = 5; i < m.n; i += m.w[i] >> 16) { last = i; lw = m.w[i]; }
+      m.w[last] = (lw & 0xffff) | ((uint32_t)(m.n - last + 3) << 16);   /* claims 3 words more than the module has */
+      CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "truncated last instruction refused");
+      m.w[last] = lw;
+      free(m.w);
+   }
+
    /* A module that declares a capability Mesa does not implement: the error must name it (not just "spirv_to_nir failed"). */
    uint32_t badcap[] = {0x07230203, 0x00010500, 0, 1, 0, 0x00020011, 0x7ffffff0u /* OpCapability <unknown> */};
    o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = badcap, .spirv_words = 7, .cache_dir = "" };
