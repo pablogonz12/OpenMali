@@ -1159,7 +1159,7 @@ test_int_clear_f(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0, c
    return ok;
 }
 
-static int g_mrt_skip = -1;
+static int g_mrt_skip = -1, g_mrt_sc = 0;   /* g_mrt_sc: pass-2 scissor 0 = 1px corner, 1 = full area, 2 = 1px at (0,0) */
 /* multiple render targets: nrt (2 or 4) RGBA8 colour attachments, one draw of a left-half quad whose fragment shader
  * writes a distinct constant colour to each output. Each target is cleared to its own value (0/1 channels), so the
  * left half must hold that target's draw colour and the right half its clear colour.
@@ -1187,11 +1187,11 @@ test_mrt(const char *name, int nrt, int clear_att)
    unsigned bad = 0;
 #define MRT_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
 #define MRT_DUMP(tag) do { if (!g_fake && clear_att == 2) for (int i_ = 0; i_ < nrt; i_++) { \
-      unsigned nz_ = 0, nzr_ = 0; \
+      unsigned nz_ = 0, nzr_ = 0, bx0_ = 9999, by0_ = 9999, bx1_ = 0, by1_ = 0; \
       for (int y_ = 0; y_ < H; y_++) for (int x_ = 0; x_ < W; x_++) { const uint8_t *q_ = px[i_] + (size_t)y_ * pitch[i_] + (size_t)x_ * 4; \
-         if (q_[0] | q_[1] | q_[2] | q_[3]) { nz_++; if (y_ == 8) nzr_++; } } \
+         if (q_[0] | q_[1] | q_[2] | q_[3]) { nz_++; if (y_ == 8) nzr_++; if ((unsigned)x_ < bx0_) bx0_ = x_; if ((unsigned)x_ > bx1_) bx1_ = x_; if ((unsigned)y_ < by0_) by0_ = y_; if ((unsigned)y_ > by1_) by1_ = y_; } } \
       const uint8_t *a_ = px[i_] + 8 * (size_t)pitch[i_] + (size_t)(W / 4) * 4, *b_ = px[i_] + 8 * (size_t)pitch[i_] + (size_t)(3 * W / 4) * 4, *c_ = px[i_] + (size_t)(H - 1) * pitch[i_] + (size_t)(W - 1) * 4; \
-      printf("{\"dump\":\"%s %s rt%d\",\"nonzero\":%u,\"row8\":%u,\"drawpx\":\"%02x%02x%02x%02x\",\"clearpx\":\"%02x%02x%02x%02x\",\"corner\":\"%02x%02x%02x%02x\"}\n", name, tag, i_, nz_, nzr_, a_[0], a_[1], a_[2], a_[3], b_[0], b_[1], b_[2], b_[3], c_[0], c_[1], c_[2], c_[3]); } } while (0)
+      printf("{\"dump\":\"%s %s rt%d\",\"bbox\":\"%u,%u-%u,%u\",\"nonzero\":%u,\"row8\":%u,\"drawpx\":\"%02x%02x%02x%02x\",\"clearpx\":\"%02x%02x%02x%02x\",\"corner\":\"%02x%02x%02x%02x\"}\n", name, tag, i_, bx0_, by0_, bx1_, by1_, nz_, nzr_, a_[0], a_[1], a_[2], a_[3], b_[0], b_[1], b_[2], b_[3], c_[0], c_[1], c_[2], c_[3]); } } while (0)
    MRT_CHECK(vs && fs, "shaders");
    for (int i = 0; i < nrt; i++) {
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
@@ -1323,6 +1323,7 @@ test_mrt(const char *name, int nrt, int clear_att)
       CmdBeginRenderPass(cb2, &rb2, VK_SUBPASS_CONTENTS_INLINE);
       CmdBindPipeline(cb2, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
       VkRect2D sc2 = {{W - 1, H - 1}, {1, 1}};
+      if (g_mrt_sc == 1) sc2 = (VkRect2D){{0, 0}, {W, H}}; else if (g_mrt_sc == 2) sc2 = (VkRect2D){{0, 0}, {1, 1}};
       CmdSetViewport(cb2, 0, 1, &vp);
       CmdSetScissor(cb2, 0, 1, &sc2);
       CmdDraw(cb2, 6, 1, 0, 0);
@@ -2300,10 +2301,11 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4, 0);
    if (ok && CASE_ON("mrt4_clearatt")) ok &= test_mrt("mrt4_clearatt", 4, 1);
    if (ok && !g_fake && CASE_ON("mrt4_load")) {   /* p86b diagnostics: which preload draws / RT counts break the LOAD frame (results ignored by ok) */
-      static const struct { const char *n; int nrt, skip; } ex[] = {{"mrt2_load", 2, -1}, {"mrt3_load", 3, -1}, {"mrt4_load_realonly", 4, 15},
-                                                                      {"mrt4_load_rt0pre", 4, 14}, {"mrt4_load_rt123pre", 4, 1}};
+      static const struct { const char *n; int nrt, skip, sc; } ex[] = {{"mrt2_load_full", 2, -1, 1}, {"mrt2_load_tl", 2, -1, 2}, {"mrt4_load_full", 4, -1, 1},
+                                                                      {"mrt4_load_tl", 4, -1, 2}, {"mrt4_load_rt0pre_full", 4, 14, 1}};
       const int fail0 = g_fail;
-      for (unsigned e = 0; e < sizeof ex / sizeof *ex; e++) { g_mrt_skip = ex[e].skip; test_mrt(ex[e].n, ex[e].nrt, 2); }
+      for (unsigned e = 0; e < sizeof ex / sizeof *ex; e++) { g_mrt_skip = ex[e].skip; g_mrt_sc = ex[e].sc; test_mrt(ex[e].n, ex[e].nrt, 2); }
+      g_mrt_sc = 0;
       g_mrt_skip = -1;
       g_fail = fail0;
    }
