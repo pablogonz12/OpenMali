@@ -65,7 +65,7 @@ static const struct ext dev_exts[] = {
    {"VK_EXT_extended_dynamic_state3", "ANGLE(optional)", 0},
    {"VK_EXT_shader_stencil_export", "ANGLE(optional)", 0},
    {"VK_EXT_index_type_uint8", "ANGLE(optional)", 0},
-   {"VK_KHR_incremental_present", "ANGLE(optional)", 0},
+   {"VK_KHR_incremental_present", "ANGLE(optional)", 1},
 };
 
 static const struct ext inst_exts[] = {

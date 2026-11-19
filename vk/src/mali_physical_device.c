@@ -17,9 +17,8 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   /* KNOWN GAP (feat-audit): 1x|4x is advertised unconditionally (dEQP relies on it; the multisample lane is making 4x real), but 4x pipelines
-    * are still rejected unless MALI_EXPERIMENTAL_MSAA=1 (mali_pipeline.c) and resolve/LOAD/depth cases are limited (vk/README.md "Known gaps"). */
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+   /* 4x is advertised only with MALI_EXPERIMENTAL_MSAA=1: without it 4x pipelines are rejected (mali_pipeline.c), so advertising it would lie. */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -102,6 +101,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .sampledImageStencilSampleCounts = samples_1_4,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
+      .maxClipDistances = 8,                 /* shaderClipDistance: VARYING_SLOT_CLIP_DIST0/1 (t_vk_feat clip8) */
+      .maxCullDistances = 0,                 /* shaderCullDistance stays off: no cull lowering */
+      .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
       .pointSizeRange = {1.0f, 1.0f},
@@ -128,6 +130,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA "unknown"
+#endif
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
             gpu->fake ? ", fake backend" : "");
 
@@ -151,7 +156,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
     * no msrtss); an unregistered id would lose them. Revisit only if a PanVK quirk turns out wrong for us. */
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
-   snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
+   snprintf(p->driverInfo, sizeof(p->driverInfo), "mali-open %s (mali-own), not conformant", MALI_GIT_SHA);
    /* conformanceVersion stays 0.0.0.0: we do not claim conformance. */
    p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
    p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
@@ -172,6 +177,38 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
    p->maxCombinedImageSamplerDescriptorCount = 1; /* maintenance6; blockTexelViewCompatibleMultipleLayers stays false */
    p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
+   /* ---- shaderIntegerDotProduct properties: honest. No Bifrost/Valhall dot instruction is used (vtn + bifrost_nir.c lower to mul+add),
+    * so every *Accelerated hint is false. The runtime writes the whole struct from vk_properties (t_vk_feat intdot_props fills it with 0xCD first). */
+   p->integerDotProduct16BitMixedSignednessAccelerated = false;
+   p->integerDotProduct16BitSignedAccelerated = false;
+   p->integerDotProduct16BitUnsignedAccelerated = false;
+   p->integerDotProduct32BitMixedSignednessAccelerated = false;
+   p->integerDotProduct32BitSignedAccelerated = false;
+   p->integerDotProduct32BitUnsignedAccelerated = false;
+   p->integerDotProduct4x8BitPackedMixedSignednessAccelerated = false;
+   p->integerDotProduct4x8BitPackedSignedAccelerated = false;
+   p->integerDotProduct4x8BitPackedUnsignedAccelerated = false;
+   p->integerDotProduct64BitMixedSignednessAccelerated = false;
+   p->integerDotProduct64BitSignedAccelerated = false;
+   p->integerDotProduct64BitUnsignedAccelerated = false;
+   p->integerDotProduct8BitMixedSignednessAccelerated = false;
+   p->integerDotProduct8BitSignedAccelerated = false;
+   p->integerDotProduct8BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating16BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating32BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating32BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating64BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating64BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = false;
 }
 
 static VkResult
@@ -199,6 +236,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_swapchain_mutable_format = true,
       .EXT_image_drm_format_modifier = true, /* LINEAR only */
       .EXT_depth_clip_enable = true,         /* t_dxvk_caps; pixels: t_vk_draw fx_dclip_* */
+      .EXT_extended_dynamic_state3 = true,   /* polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
       .KHR_shader_expect_assume = true,      /* t_dxvk_caps: spirv_to_nir default caps include ExpectAssumeKHR (OpExpectKHR passthrough, OpAssumeTrueKHR dropped) */
       .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
@@ -206,10 +244,12 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_custom_border_color = true,       /* t_vk_feat cbc: runtime border_color_value -> sampler descriptor words 4..7 (same path as the fixed colours) */
       .KHR_maintenance5 = true,              /* t_vk_feat maint5: BindIndexBuffer2, module-less stages (zink requires it, STEAM-GAPS.md) */
       .EXT_vertex_attribute_divisor = true, .KHR_vertex_attribute_divisor = true,   /* t_vk_feat divisor */
+      .KHR_shader_integer_dot_product = true, /* t_vk_feat intdot */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
       .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
+      .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
       .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; logicOp/patchControlPoints stay off */
@@ -225,6 +265,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
+      .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
@@ -242,7 +283,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
-      .sampleRateShading = mali_experimental_msaa(),   /* MALI_EXPERIMENTAL_MSAA=1 */
+      .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
@@ -260,11 +301,14 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
+      .extendedDynamicState3PolygonMode = true,   /* mali_cmd.c: dyn->rs.polygon_mode -> gfx.poly_mode */
+      .shaderIntegerDotProduct = true,                                  /* t_vk_feat intdot (vtn lowers OpSDot/UDot/SUDot; bifrost_nir.c lowers the unaccelerated forms) */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .extendedDynamicState = true,
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .shaderExpectAssume = true,  /* t_dxvk_caps */
       .maintenance6 = true,
+      .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
