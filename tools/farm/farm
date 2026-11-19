@@ -639,7 +639,7 @@ def util_data(since, now, devs, jobs):
             try:
                 h = L.read_json(os.path.join(hd, f))
                 if h.get("started") and h.get("device"):
-                    e = ts(h["ended"]) if h.get("ended") else now
+                    e = ts(h["ended"]) if h.get("ended") else (now - H.age(h["id"], "live", now) if H.age(h["id"], "live", now) < 1e9 else now)   # unfinished: farmd refreshes `live` while it owns the lock
                     if e >= since:
                         held.setdefault(h["device"], []).append((ts(h["started"]), e))
                         hfirst.append(max(since, ts(h["started"])))
@@ -681,8 +681,9 @@ def cmd_util(a):
     since = parse_since(a.since)
     start, busy, builds, sweep, demand, ev, held = util_data(since, now, devs, jobs)
     n = max(int(now - start), 1)
-    if now - since > H.KEEP_S:
-        print(f"note: finished agent holds are kept {H.KEEP_S // 86400}d, so held% is incomplete before that")
+    cov = H.coverage_start()
+    if now - since > H.KEEP_S or (cov is not None and since < cov - 86400) or (cov is None and now - since > 86400):
+        print(f"note: finished agent holds are kept {H.KEEP_S // 86400}d (before that, and for the first day after the retention change, held% is incomplete)")
     print(f"util since {time.strftime('%m-%d %H:%M', time.localtime(start))} ({n // 3600}h{n % 3600 // 60:02d}m window; busy = a job part holds the phone, build = its driver build under the lock)")
     for al, d in devs.items():
         cat = bytearray(n)                                    # 0 no work, 1 queue gap, 2.. gate states, 250 sweep, 252 agent hold, 251 busy

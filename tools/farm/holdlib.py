@@ -91,12 +91,31 @@ def end_reason(h, hb_age, rel, now=None, disabled=False):
 KEEP_S = 7 * 86400
 
 
+def lock_lost_iso(hid):
+    """end of an active hold whose farmd died: the last time farmd refreshed it (the `live` file), so the downtime is not held time; now if none"""
+    a = age(hid, "live")
+    return L.now() if a >= 1e9 else time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - a))
+
+
+def coverage_start():
+    """when 7-day retention began: the marker is written once by gc(). The older 1-day GC may have dropped holds before marker - 1 day"""
+    p = os.path.join(holds_dir(), ".keep7d-since")
+    try:
+        return float(open(p).read())
+    except (OSError, ValueError):
+        return None
+
+
 def gc(keep_s=KEEP_S):
     """drop finished hold files older than KEEP_S (7 days: `farm util --since` can look back that far)"""
     now = time.time()
+    p = os.path.join(holds_dir(), ".keep7d-since")
+    if not os.path.exists(p):
+        with open(p, "w") as f:
+            f.write(str(now))
     for h in list_holds():
         if h["state"] == "done" and now - os.path.getmtime(path(h["id"])) > keep_s:
-            for e in ("json", "hb", "rel"):
+            for e in ("json", "hb", "rel", "live"):
                 try:
                     os.unlink(path(h["id"], e))
                 except OSError:

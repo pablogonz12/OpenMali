@@ -1439,6 +1439,34 @@ class T(unittest.TestCase):
         self.assertIn("util since " + time.strftime("%m-%d %H:%M", time.localtime(now - 1800)), out)   # window starts at the earlier hold, not at the run
         self.assertEqual(H.KEEP_S, 7 * 86400)
 
+    def test_util_unfinished_hold_ends_at_the_last_live_refresh(self):
+        """farmd died mid-hold: the held time ends when farmd last refreshed the hold (`live`), not at now / at the restart"""
+        import datetime as dt
+        iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        now = time.time()
+        H.new_hold("dev-b", 60)
+        h = H.list_holds()[0]
+        h.update(state="active", started=iso(now - 1800))
+        L.write_json(H.path(h["id"]), h)
+        H.touch(h["id"], "live")
+        os.utime(H.path(h["id"], "live"), (now - 600, now - 600))                           # farmd last alive 10 min ago
+        out = self.farm("util", "--since", "1h")[1]
+        pct = int(next(l for l in out.splitlines() if l.startswith("dev-b")).split("held (agent hold) ")[1].split("%")[0])
+        self.assertTrue(28 <= pct <= 38, pct)                                               # 20 of 60 min, not 30
+        lost = dt.datetime.fromisoformat(H.lock_lost_iso(h["id"])).timestamp()
+        self.assertTrue(abs(lost - (now - 600)) < 5, lost - now)
+        os.unlink(H.path(h["id"], "live"))
+        self.assertTrue(abs(dt.datetime.fromisoformat(H.lock_lost_iso(h["id"])).timestamp() - time.time()) < 5)   # no marker: now
+
+    def test_util_warns_during_the_retention_transition(self):
+        self.assertNotIn("incomplete", self.farm("util", "--since", "6h")[1])
+        self.assertIn("incomplete", self.farm("util", "--since", "2d")[1])                  # no marker yet: the old 1-day GC may have dropped it
+        H.gc()                                                                              # writes the marker (now)
+        self.assertIn("incomplete", self.farm("util", "--since", "3d")[1])                  # before marker - 1 day
+        self.assertNotIn("incomplete", self.farm("util", "--since", "6h")[1])
+        open(os.path.join(H.holds_dir(), ".keep7d-since"), "w").write(str(time.time() - 6 * 86400))
+        self.assertNotIn("incomplete", self.farm("util", "--since", "5d")[1])               # marker 6 days old: 5 days is covered
+
     def test_smoke_log_and_only(self):
         self.attach("dev-a")
         _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--only", "triangle,buf")
