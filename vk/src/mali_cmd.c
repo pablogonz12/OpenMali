@@ -1306,15 +1306,21 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          }
          break;
       }
-      if (nall + n > capall) {
-         capall = (nall + n) * 2;
-         all = realloc(all, capall * sizeof *all);
-         if (!all) { free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+      if (!all) {   /* first stream of the submission: take the buffer instead of copying it */
+         all = cs;
+         nall = capall = n;
+      } else {
+         if (nall + n > capall) {
+            capall = (nall + n) * 2;
+            uint64_t *na = realloc(all, capall * sizeof *all);
+            if (!na) { free(all); free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+            all = na;
+         }
+         memcpy(all + nall, cs, n * sizeof *all);
+         nall += n;
+         free(cs);
       }
-      memcpy(all + nall, cs, n * sizeof *all);
-      nall += n;
       counted++;
-      free(cs);
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();
