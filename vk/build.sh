@@ -50,6 +50,7 @@ if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit
 # MALI_COV=1: gcov instrumented driver objects (MALI_TARGET=native-cov; see tools/coverage.sh). -O0 so line counts map to source.
 if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
 
+# MALI_RELINK=1: reuse the objects already in $OBJ and only relink (tests/build-wsi-patched.sh swaps the WSI archive).
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c
@@ -66,7 +67,7 @@ KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
 OBJS=""
 for s in $KBSRCS; do
    o=$OBJ/kb_$(basename "$s" .c).o
-   eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
+   [ "${MALI_RELINK:-0}" = 1 ] || eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
    OBJS="$OBJS $o"
 done
 # Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
@@ -82,7 +83,7 @@ else
 fi
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   [ "${MALI_RELINK:-0}" = 1 ] || eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
 
@@ -116,6 +117,7 @@ $CXX -o "$OUT/libvulkan_mali.so" -shared -fPIC -Wl,--as-needed -Wl,--no-undefine
    -Wl,--version-script "$MESA/src/vulkan/vulkan.sym" -Wl,-Bsymbolic -Wl,--gc-sections \
    -Wl,--build-id=sha1 $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
+[ "${MALI_RELINK:-0}" = 1 ] && { echo "relinked $OUT/libvulkan_mali.so"; exit 0; }
 # 4b. t_resources: M5/M7 end-to-end, linked statically with the driver objects (white-box, reads descriptor memory).
 eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
 # shellcheck disable=SC2086

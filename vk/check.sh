@@ -184,6 +184,15 @@ run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
+for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
+# vk/mesa-patches/0009 (bounded legacy FIFO throttle): private ICD with the patched wsi_common_wayland.c relinked (shared Mesa untouched), then the mock-compositor
+# FIFO + no-frame-callback case must NOT hang. Skips without a Mesa build tree / libwayland-server.
+WS=$(mktemp -d); wo=$("$V/tests/build-wsi-patched.sh" "$WS" "$OUT" 2>&1); wrc=$?
+if [ $wrc = 77 ]; then echo "ok    wl mock patched (skipped: no Mesa build tree)"
+elif [ $wrc != 0 ]; then echo "FAIL  wl mock patched: build"; echo "$wo" | tail -8 | sed 's/^/        /'; fail=1
+elif wo=$("$V/tests/wlmock-host.sh" "$V/out/native-wsi" v13 patched 2>&1); then echo "ok    wl mock patched (0009 bounded FIFO throttle)"
+else echo "FAIL  wl mock patched"; echo "$wo" | sed 's/^/        /'; fail=1; fi
+rm -rf "$WS"
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
 run "vk_meta v10"     0 $F "$OUT/t_vk_meta" $DL --loop 20
