@@ -44,6 +44,9 @@ LDLINE=$(tail -1 <<<"$CMDS")
 CC=$(sed -E 's# -MD -MQ [^ ]+ -MF [^ ]+##; s# -o [^ ]+ -c [^ ]+$##; s# -I[^ ]*src/panfrost/vulkan[^ ]*##g' <<<"$CCLINE")
 LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[A-Za-z0-9_+.-]+|-pthread)$' | tr '\n' ' ')
 CXX=$(cut -d' ' -f1 <<<"$LDLINE")
+# A Meson tree configured with ccache installed prefixes every compile line with the launcher; callers below use the first word as the
+# compiler ("${CC%% *}" -> "ccache: invalid option -- t"), so drop the launcher (the objects built here are not cached anyway).
+CC=$(sed -E 's#^(/[^ ]*/)?ccache +##' <<<"$CC"); CXX=$(sed -E 's#^(/[^ ]*/)?ccache +##' <<<"$CXX")
 # MALI_SAN=1: ASAN+UBSAN driver objects (use with LD_PRELOAD=$(gcc -print-file-name=libasan.so) and MALI_TARGET=native-san)
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
 
