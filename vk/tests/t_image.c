@@ -114,6 +114,30 @@ test_rgba8(unsigned arch)
 }
 
 static void
+test_view_min_lod(unsigned arch)
+{
+   /* VK_EXT_image_view_min_lod: minLod counts from image level 0; the descriptor's minimum-LOD field (word 3, 8.8 fixed) from the view's first level. */
+   struct mali_image_desc d = { VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, { 8, 8, 1 }, 4, 1, 1, false };
+   struct mali_image_layout l;
+   CHECK(mali_image_layout_init(arch, &d, &l) == 0, "min_lod layout");
+   const struct { unsigned base, levels; float min_lod; bool storage; unsigned want; } c[] = {
+      { 0, 4, 0.0f, false, 0 }, { 0, 4, 2.5f, false, 640 }, { 1, 3, 2.5f, false, 384 },
+      { 2, 2, 2.0f, false, 0 }, { 1, 3, 0.0f, false, 0 }, { 0, 4, 2.5f, true, 0 },
+   };
+   for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+      struct mali_view_desc v = { .format = d.format, .type = VK_IMAGE_VIEW_TYPE_2D, .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .base_level = c[i].base, .levels = c[i].levels, .base_layer = 0, .layers = 1, .min_lod = c[i].min_lod,
+                                  .storage = c[i].storage,
+                                  .swizzle = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A } };
+      uint32_t payload[64] = { 0 };
+      struct mali_hw_desc tex;
+      CHECK(mali_view_payload_entries(&l, &v) <= 16, "min_lod case %u payload", i);
+      CHECK(mali_view_emit(arch, &l, 0x7f0000100000ull, &v, payload, 0x7f0000300000ull, &tex) == 0, "min_lod case %u emit", i);
+      CHECK((tex.w[3] & 0x1fff) == c[i].want, "min_lod case %u (base %u, minLod %.1f, storage %d): field %u want %u", i, c[i].base, c[i].min_lod, c[i].storage, tex.w[3] & 0x1fff, c[i].want);
+   }
+}
+
+static void
 test_attr(unsigned arch)
 {
    struct mali_fmt f;
@@ -238,6 +262,19 @@ test_sampler(unsigned arch)
    CHECK((o.w[0] >> 30) == 3, "mipmap mode");
    CHECK(((o.w[1] >> 13) & 7) == 1, "compare func %u", (o.w[1] >> 13) & 7);
    CHECK(((o.w[1] >> 16) & 0x1fff) == 1024, "max lod %u", (o.w[1] >> 16) & 0x1fff);
+
+   /* border colour swizzle: unset mapping is identity; BGRA view mapping swaps R/B in the descriptor; ONE/ZERO channels do not move data */
+   s.border_color_value.uint32[0] = 1; s.border_color_value.uint32[1] = 2; s.border_color_value.uint32[2] = 3; s.border_color_value.uint32[3] = 4;
+   VkSamplerBorderColorComponentMappingCreateInfoEXT bcm = { .sType = VK_STRUCTURE_TYPE_SAMPLER_BORDER_COLOR_COMPONENT_MAPPING_CREATE_INFO_EXT };
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(o.w[4] == 1 && o.w[5] == 2 && o.w[6] == 3 && o.w[7] == 4, "identity border");
+   ci.pNext = &bcm;
+   bcm.components = (VkComponentMapping){ VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A };
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(o.w[4] == 3 && o.w[5] == 2 && o.w[6] == 1 && o.w[7] == 4, "bgra border %u %u %u %u", o.w[4], o.w[5], o.w[6], o.w[7]);
+   bcm.components = (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_R };
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(o.w[4] == 4 && o.w[5] == 2 && o.w[6] == 3 && o.w[7] == 4, "one/a->r border %u %u %u %u", o.w[4], o.w[5], o.w[6], o.w[7]);
 }
 
 static void
@@ -313,6 +350,7 @@ main(int argc, char **argv)
       test_rgba8(a);
       test_rtfmt(a);
       test_attr(a);
+      test_view_min_lod(a);
       test_depth(a);
       test_layout(a);
       test_sampler(a);
