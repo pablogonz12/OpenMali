@@ -181,6 +181,18 @@ test_refuse_and_push(void)
       }
       free(far.w);
    }
+   /* a dynamic read plus a constant read at byte 624: the dynamic one must not hide the far constant end */
+   struct spv mix = load("pushmix.frag.spv");
+   if (mix.w) {
+      for (unsigned arch = 10; arch <= 13; arch++) {
+         if (arch == 12) continue;
+         struct mali_compiled c;
+         struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = mix.w, .spirv_words = mix.n, .cache_dir = "" };
+         char err[256] = "";
+         CHECK(mali_compile(&o, &c, err, sizeof err) != 0 && strstr(err, "push"), "v%u dynamic + far constant push read is refused (err '%s')", arch, err);
+      }
+      free(mix.w);
+   } else CHECK(0, "load pushmix.frag.spv");
 }
 
 static void

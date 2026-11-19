@@ -78,7 +78,7 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
    return true;
 }
 
-struct push_ctx { unsigned base; unsigned max_end; };
+struct push_ctx { unsigned base; unsigned max_end; unsigned const_end; };
 
 /* The hardware instance id already includes the IDVS instance offset (= firstInstance). nir_lower_system_values makes
  * InstanceIndex = instance_id + base_instance and InstanceId = instance_id, so: instance_id := hw_id - base_instance
@@ -101,9 +101,10 @@ add_push_base(nir_builder *b, nir_intrinsic_instr *i, void *d)
    if (i->intrinsic != nir_intrinsic_load_push_constant)
       return false;
    unsigned bytes = i->def.num_components * (i->def.bit_size / 8);
-   if (nir_src_is_const(i->src[0]))
+   if (nir_src_is_const(i->src[0])) {
       c->max_end = MAX2(c->max_end, nir_src_as_uint(i->src[0]) + bytes);
-   else
+      c->const_end = MAX2(c->const_end, nir_src_as_uint(i->src[0]) + bytes);   /* kept apart: a dynamic read sets max_end to UINT32_MAX */
+   } else
       c->max_end = UINT32_MAX;
    /* bifrost_compile.c asserts range == 0 (the value is ignored in release builds) */
    bool changed = nir_intrinsic_range(i) != 0;
@@ -446,7 +447,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);
    NIR_PASS(_, nir, nir_opt_constant_folding);
-   struct push_ctx pc = { push_base, 0 };
+   struct push_ctx pc = { push_base, 0, 0 };
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, add_push_base, nir_metadata_control_flow, &pc);
    NIR_PASS(_, nir, nir_opt_constant_folding);
 
@@ -454,9 +455,10 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
     * 40 byte header, FS on v10/v11: 32 bytes) asserted in bi_emit_load_push_constant. Grow the reservation to cover it. */
    if (pc.max_end) {
       unsigned end = pc.max_end == UINT32_MAX ? (o->layout ? o->layout->push_size : 128u) : pc.max_end;
+      end = MAX2(end, pc.const_end);
       /* Refuse BEFORE the reservation grows: the backend writes promoted constants into a 128-entry FAU word array, and an
        * oversized reservation would overflow it (or hit the count < max assertion). Also reject reads past the layout's push range here. */
-      if ((uint64_t)push_base + end > 4u * 128u || (o->layout && pc.max_end != UINT32_MAX && pc.max_end > o->layout->push_size)) {
+      if ((uint64_t)push_base + end > 4u * 128u || (o->layout && pc.const_end > o->layout->push_size)) {
          ralloc_free(nir);
          return fail(err, errsz, "shader reads push constants beyond the FAU capacity or the layout's push range");
       }
