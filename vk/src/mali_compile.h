@@ -2,6 +2,7 @@
 /* mali_compile(): SPIR-V -> NIR -> Mesa panfrost compiler (Valhall v11/v13) -> binary + metadata.
  * Plain C, no Mesa headers: the .c is the only user of Mesa internals. */
 #pragma once
+#include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -104,8 +105,15 @@ int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, c
 void mali_compiled_free(struct mali_compiled *c);
 
 /* Cache statistics of this process. */
-struct mali_compile_stats { uint64_t hits, misses, stores; };
+struct mali_compile_stats {
+   uint64_t hits, misses, stores;
+   uint64_t bytes_read, bytes_written;   /* entry bytes loaded by hits / written by stores */
+   uint64_t evictions, evicted_bytes;    /* entries removed by the LRU trimmer */
+   uint64_t rejected;                    /* entries found but dropped (truncated, bit-flipped); also counted in misses */
+};
 void mali_compile_stats(struct mali_compile_stats *s);
+/* One line with all counters; MALI_STATS=1 makes the process print it to stderr at exit. */
+void mali_compile_stats_print(FILE *f);
 
 /* 16-byte pipelineCacheUUID for a GPU id: changes with the compiler version, Mesa tag and every layout constant in the cache key. */
 void mali_compile_cache_uuid(uint32_t gpu_id, uint8_t uuid[16]);

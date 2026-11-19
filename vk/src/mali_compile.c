@@ -41,7 +41,9 @@
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
 
+static void stats_arm(void);
 static atomic_ullong g_hits, g_misses, g_stores;
+static atomic_ullong g_bytes_read, g_bytes_written, g_evictions, g_evicted_bytes, g_rejected;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
@@ -324,7 +326,11 @@ mali_compile_cache_trim(const char *dir, unsigned long long max_bytes)
    if (v && max_bytes && total > max_bytes) {
       qsort(v, n, sizeof *v, trim_cmp);
       for (size_t i = 0; i < n && total > max_bytes / 10 * 9; i++)
-         if (!unlinkat(dirfd(d), v[i].name, 0)) total -= v[i].size;
+         if (!unlinkat(dirfd(d), v[i].name, 0)) {
+            total -= v[i].size;
+            atomic_fetch_add(&g_evictions, 1);
+            atomic_fetch_add(&g_evicted_bytes, (unsigned long long)v[i].size);
+         }
    }
    free(v);
    closedir(d);
@@ -353,6 +359,7 @@ cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
             (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm) && fwrite(sum, 16, 1, f) == 1;
    ok = (fclose(f) == 0) && ok;
    if (ok && rename(tmp, path) == 0) {
+      atomic_fetch_add(&g_bytes_written, 4 + sizeof h + c->bin_size + (unsigned long long)c->nimm * sizeof *c->imm + 16);
       /* the first store of a process and every 16th after it check the size, so a long-running game cannot grow the cache without bound */
       if (!(atomic_fetch_add(&g_stores, 1) & 15)) mali_compile_cache_trim(dir, cache_max_bytes());
    } else unlink(tmp);
@@ -392,7 +399,8 @@ cache_load(const char *dir, const char *hex, struct mali_compiled *c)
       if (!ok) { free(h.bin); free(h.imm); }
    }
    fclose(f);
-   if (!ok) return 0;
+   if (!ok) { atomic_fetch_add(&g_rejected, 1); return 0; }   /* present but unreadable/corrupt: counted apart from a plain miss */
+   atomic_fetch_add(&g_bytes_read, 4 + sizeof h + h.bin_size + (unsigned long long)h.nimm * sizeof *h.imm + 16);
    h.cache_hit = 1;
    *c = h;
    {  /* LRU for the trimmer: refresh the mtime of an entry not used for a day */
@@ -755,6 +763,7 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
 
    char dir[900], hex[65];
+   {  static pthread_once_t so = PTHREAD_ONCE_INIT; pthread_once(&so, stats_arm); }
    int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
    if (use_cache) {
       mkey(o, fau_reserved, push_base, hex);
@@ -785,6 +794,35 @@ mali_compile_stats(struct mali_compile_stats *s)
    s->hits = g_hits;
    s->misses = g_misses;
    s->stores = g_stores;
+   s->bytes_read = g_bytes_read;
+   s->bytes_written = g_bytes_written;
+   s->evictions = g_evictions;
+   s->evicted_bytes = g_evicted_bytes;
+   s->rejected = g_rejected;
+}
+
+void
+mali_compile_stats_print(FILE *f)
+{
+   struct mali_compile_stats s;
+   mali_compile_stats(&s);
+   fprintf(f, "mali_vk: shader cache: hits %llu misses %llu (rejected %llu) stores %llu read %llu B written %llu B evictions %llu (%llu B)\n",
+           (unsigned long long)s.hits, (unsigned long long)s.misses, (unsigned long long)s.rejected, (unsigned long long)s.stores,
+           (unsigned long long)s.bytes_read, (unsigned long long)s.bytes_written, (unsigned long long)s.evictions, (unsigned long long)s.evicted_bytes);
+}
+
+static void
+stats_atexit(void)
+{
+   mali_compile_stats_print(stderr);
+}
+
+/* MALI_STATS=1: print the counters once when the process exits (registered by the first compile, so a process that never compiles stays silent). */
+static void
+stats_arm(void)
+{
+   const char *e = getenv("MALI_STATS");
+   if (e && *e && strcmp(e, "0")) atexit(stats_atexit);
 }
 
 /* ---- blend shader ---- */

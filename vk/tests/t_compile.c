@@ -238,6 +238,11 @@ test_determinism_and_cache(void)
    }
    mali_compile_stats(&s1);
    s0.hits += 1;   /* the hit just above is not part of the stats window the next check reads */
+   if (!getenv("MALI_OPT_GCM")) {
+      CHECK(s1.rejected - s0.rejected == 2, "stats: truncated + bit-flipped entries counted as rejected, got %llu", (unsigned long long)(s1.rejected - s0.rejected));
+      CHECK(s1.bytes_written > s0.bytes_written && s1.bytes_read > s0.bytes_read && s1.bytes_read - s0.bytes_read <= s1.bytes_written - s0.bytes_written,
+            "stats: bytes written and read are counted");
+   }
    if (!getenv("MALI_OPT_GCM")) CHECK(s1.hits - s0.hits == 1, "stats: 1 hit, got %llu", (unsigned long long)(s1.hits - s0.hits));
    if (g_verbose) printf("  hit load %.0f us\n", t_hit * 1e6);
    mali_compiled_free(&a); mali_compiled_free(&b);
@@ -467,11 +472,18 @@ test_cache_disk(void)
          n++;
       }
    if (d) closedir(d);
+   struct mali_compile_stats e0, e1;
+   mali_compile_stats(&e0);
    mali_compile_cache_trim(dir, one * 4);   /* fits: nothing goes */
+   mali_compile_stats(&e1);
+   CHECK(e1.evictions == e0.evictions && e1.evicted_bytes == e0.evicted_bytes, "stats: nothing evicted under the cap");
    CHECK(count_files(dir, ".bin") == 4, "under the cap nothing is evicted");
    mali_compile_cache_trim(dir, one * 3);   /* 90% of 3 entries = 2.7: two oldest go to get below it */
    CHECK(count_files(dir, ".bin") == 2, "over the cap: evicted down to 90%% (2 left), got %u", count_files(dir, ".bin"));
    CHECK(access(names[0], F_OK) && access(names[1], F_OK) && !access(names[2], F_OK) && !access(names[3], F_OK), "the oldest entries were evicted, not the newest");
+   mali_compile_stats(&e1);
+   CHECK(e1.evictions - e0.evictions == 2 && e1.evicted_bytes - e0.evicted_bytes == 2 * one, "stats: 2 evictions of %llu B each, got %llu / %llu B",
+         (unsigned long long)one, (unsigned long long)(e1.evictions - e0.evictions), (unsigned long long)(e1.evicted_bytes - e0.evicted_bytes));
    mali_compile_cache_trim(dir, 0);
    CHECK(count_files(dir, ".bin") == 2, "cap 0 = unlimited");
 
@@ -556,9 +568,51 @@ test_cache_disk(void)
    free(vs.w);
 }
 
+/* Child of test_stats_exit: one miss (stored) then one hit, then a normal exit; the atexit dump is what the parent looks at. */
+static int
+stats_child(const char *dir)
+{
+   struct spv vs = load("rot.vert.spv");
+   struct mali_compiled c;
+   if (!vs.w) return 2;
+   for (int i = 0; i < 2; i++) {
+      if (compile(11, MALI_STAGE_VERTEX, &vs, NULL, dir, &c)) return 3;
+      mali_compiled_free(&c);
+   }
+   return 0;
+}
+
+static void
+test_stats_exit(const char *self)
+{
+   printf("MALI_STATS exit line\n");
+   char dir[] = "/tmp/t_compile_stats.XXXXXX", cmd[1600], line[512];
+   if (!mkdtemp(dir)) { g_fail++; return; }
+   for (int on = 1; on >= 0; on--) {
+      snprintf(cmd, sizeof cmd, "%s %s --stats-child %s %s 2>&1 >/dev/null", on ? "MALI_STATS=1" : "env -u MALI_STATS", self, dir, g_dir ? g_dir : "");
+      if (!on) { snprintf(line, sizeof line, "rm -rf %s/*.bin", dir); if (system(line)) g_fail++; }
+      FILE *p = popen(cmd, "r");
+      char out[2048] = "";
+      size_t n = 0;
+      while (p && n < sizeof out - 1 && fgets(out + n, sizeof out - n, p)) n = strlen(out);
+      int rc = p ? pclose(p) : -1;
+      CHECK(rc == 0, "stats child exits 0 (on=%d, rc %d)", on, rc);
+      if (on) {
+         CHECK(strstr(out, "shader cache: hits 1 misses 1 (rejected 0) stores 1 ") != NULL, "MALI_STATS=1 prints hits 1 misses 1 stores 1 at exit, got: %s", out);
+         CHECK(strstr(out, "evictions 0") != NULL, "exit line reports evictions");
+      } else CHECK(!*out, "no MALI_STATS: nothing printed, got: %s", out);
+   }
+   snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+   if (system(cmd)) g_fail++;
+}
+
 int
 main(int argc, char **argv)
 {
+   if (argc >= 3 && !strcmp(argv[1], "--stats-child")) {
+      if (argc > 3) g_dir = argv[3];
+      return stats_child(argv[2]);
+   }
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "-v")) g_verbose = 1;
       else g_dir = argv[i];
@@ -573,6 +627,7 @@ main(int argc, char **argv)
    test_compute();
    test_determinism_and_cache();
    test_cache_disk();
+   test_stats_exit(argv[0]);
    test_ycbcr();
    test_spec();
    test_errors();
