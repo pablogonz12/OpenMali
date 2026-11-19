@@ -327,6 +327,16 @@ fail:
    return res;
 }
 
+/* maintenance5: VkPipelineCreateFlags2CreateInfo::flags replaces ci.flags when chained */
+static bool
+early_return(VkPipelineCreateFlags flags, const void *pNext)
+{
+   const VkPipelineCreateFlags2CreateInfoKHR *f2 = vk_find_struct_const(pNext, PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (f2)
+      return (f2->flags & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) != 0;
+   return (flags & VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT) != 0;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const VkGraphicsPipelineCreateInfo *ci,
                              const VkAllocationCallbacks *alloc, VkPipeline *out)
@@ -340,7 +350,7 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
       if (r != VK_SUCCESS) {
          result = r;
          out[i] = VK_NULL_HANDLE;
-         if (ci[i].flags & VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT)
+         if (early_return(ci[i].flags, ci[i].pNext))
             break;
       }
    }
@@ -417,7 +427,7 @@ mali_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const
       if (r != VK_SUCCESS) {
          result = r;
          out[i] = VK_NULL_HANDLE;
-         if (ci[i].flags & VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT)
+         if (early_return(ci[i].flags, ci[i].pNext))
             break;
       }
    }
