@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 #include "mali_backend.h"
 
 extern const struct mali_backend_ops mali_backend_kbase;
@@ -71,6 +73,72 @@ int main(void)
    static volatile uint64_t cnt = 1;
    b->wait_counter(k, &cnt, 1, 100);
    EXPECT(kb_fake_memsync_count(exp.gpu_va) > before, "mapped export: device->CPU invalidate after a counter wait");
+
+   /* ---- present path: wsi_common waits on its own per-image throttle fence before every present (wsi_common.c:2469)
+    * and that wait precedes no CPU read of driver memory, so the device->CPU sweep must be skipped there. The app's
+    * own vkWaitForFences must keep it. li = mapped BOs the sweep covers (exp, expc, hl). ---- */
+   {
+      #define SWEPT() (kb_fake_memsync_count(exp.gpu_va) + kb_fake_memsync_count(expc.gpu_va) + kb_fake_memsync_count(hl.gpu_va))
+      int fd = -1;
+      EXPECT(b->submit_signal(k, &fd) == 0 && fd > 0, "submit_signal: fence fd (%d)", fd);
+      unsigned w0 = SWEPT();
+      EXPECT(b->fence_wait(k, fd, 100) == 0, "app fence wait: signalled");
+      EXPECT(SWEPT() > w0, "app fence wait (vkWaitForFences): still invalidates every mapped BO (%u)", SWEPT() - w0);
+
+      /* the throttle wait, blocking (wsi_common.c:2469: timeout ~0ull) and as the timeout-0 poll zink issues */
+      w0 = SWEPT();
+      mali_fence_wait_no_csync++;
+      EXPECT(b->fence_wait(k, fd, 100) == 0, "wsi throttle wait (blocking): signalled");
+      EXPECT(SWEPT() == w0, "wsi throttle wait: no MEM_SYNC sweep (%u)", SWEPT() - w0);
+      EXPECT(b->fence_wait(k, fd, 0) == 0, "wsi throttle wait (poll, timeout 0): signalled");
+      EXPECT(SWEPT() == w0, "wsi throttle poll: no MEM_SYNC sweep (%u)", SWEPT() - w0);
+      mali_fence_wait_no_csync--;
+      close(fd);
+
+      /* mutation check: with the flag clear the same poll must sweep again, otherwise the case above could pass
+       * because the sweep never runs at all. */
+      fd = -1;
+      b->submit_signal(k, &fd);
+      w0 = SWEPT();
+      EXPECT(b->fence_wait(k, fd, 0) == 0, "flag clear, poll: signalled");
+      EXPECT(SWEPT() > w0, "flag clear, poll: the sweep runs (mutation check, %u)", SWEPT() - w0);
+      close(fd);
+
+      /* measurement: 300 present-shaped frames (frame CS + signal + throttle wait), old sweep vs skipped */
+      enum { FR = 300 };
+      double best[2] = {1e30, 1e30};
+      unsigned n[2] = {0, 0};
+      for (int pass = 0; pass < 3; pass++) {
+         for (int skip = 0; skip < 2; skip++) {
+            unsigned tot = 0;
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            for (int f = 0; f < FR; f++) {
+               int f2 = -1;
+               b->submit_cs(k, cs, 0);
+               if (b->submit_signal(k, &f2) != 0 || f2 < 0) { EXPECT(0, "present bench: submit_signal"); break; }
+               unsigned b0 = SWEPT();
+               if (skip)
+                  mali_fence_wait_no_csync++;
+               b->fence_wait(k, f2, (f & 1) ? 0 : 100);   /* both wsi wait shapes */
+               if (skip)
+                  mali_fence_wait_no_csync--;
+               close(f2);
+               tot += SWEPT() - b0;
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double us = (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
+            if (us < best[skip]) best[skip] = us;
+            n[skip] = tot;
+         }
+      }
+      printf("present-path bench (host fake kernel, 300 presents, 3 mapped BOs):\n");
+      printf("  throttle wait sweeping (today): MEM_SYNC %u = %.2f/present, %.2f us/present\n", n[0], n[0] / 300.0, best[0] / 300.0);
+      printf("  throttle wait skipped (fix):    MEM_SYNC %u = %.2f/present, %.2f us/present\n", n[1], n[1] / 300.0, best[1] / 300.0);
+      EXPECT(n[1] == 0, "300 presents: the throttle wait issues no MEM_SYNC at all (%u)", n[1]);
+      EXPECT(n[0] >= 300, "300 presents without the fix: at least one MEM_SYNC sweep per present (%u)", n[0]);
+      #undef SWEPT
+   }
    b->device_destroy(k);
    printf("{\"test\":\"t_memsync\",\"pass\":%s}\n", fails ? "false" : "true");
    return fails != 0;
