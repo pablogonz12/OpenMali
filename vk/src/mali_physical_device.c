@@ -213,6 +213,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
+      .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
       .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; logicOp/patchControlPoints stay off */
@@ -269,6 +270,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .shaderExpectAssume = true,  /* t_dxvk_caps */
       .maintenance6 = true,
+      .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
       .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */

@@ -179,6 +179,12 @@ main(int argc, char **argv)
    VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
    VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
    GetPhysicalDeviceFeatures2(pd, &g2);
+   {  /* VK_EXT_image_view_min_lod: the advertised minLod feature must be reported true (t_image view_min_lod covers the descriptor field) */
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 m2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &m2);
+      CHECK(ml.minLod == VK_TRUE, "minLod feature advertised true (got %u)", ml.minLod);
+   }
    /* uab limits: each UAB limit >= its non-UAB twin; the types with UAB features (samplers, sampled images) reach the 500000 minimum */
    CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
          p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
