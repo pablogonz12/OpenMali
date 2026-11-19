@@ -791,10 +791,255 @@ fetch(const struct mali_meta_job *j, const struct rb *src, int x, int y, uint32_
    }
 }
 
+/* ---- generic colour class (fmt bit 4): mirrors gmain() of meta_blit.comp. A pixel is described per logical channel R,G,B,A
+ * (bit offset | size << 8 | type << 16) and the class / sRGB flags live in gfmt (push[5]). An sRGB channel is decoded on read and
+ * encoded on write for R,G,B only; alpha is never transferred through a transfer function (Vulkan). Types 6/7 (R11G11B10,
+ * E5B9G9R9) and 16-bit float are not modelled: mali_meta_ref_oob makes that loud instead of silent. ---- */
+struct gchan { uint32_t off, size, type; };
+
+static struct gchan
+gchan_of(uint32_t w)
+{
+   return (struct gchan){ w & 255u, (w >> 8) & 63u, (w >> 16) & 7u };
+}
+
+static uint32_t
+gmask(uint32_t size)
+{
+   return size >= 32u ? 0xffffffffu : (1u << size) - 1u;
+}
+
+/* `size` little-endian bits at bit `off` of the pixel that starts at byte `base`. */
+static uint32_t
+gbits_rd(const struct rb *b, uint32_t base, uint32_t off, uint32_t size)
+{
+   uint32_t v = 0;
+   for (uint32_t i = 0; i < size && i < 32u; i++) {
+      uint32_t bp = off + i;
+      v |= ((rd8(b, base + (bp >> 3)) >> (bp & 7)) & 1u) << i;
+   }
+   return v;
+}
+
+static void
+gbits_wr(const struct rb *b, uint32_t base, uint32_t off, uint32_t size, uint32_t v)
+{
+   for (uint32_t i = 0; i < size && i < 32u; i++) {
+      uint32_t bp = off + i, byte = base + (bp >> 3), o = byte & ~3u;
+      uint32_t sh = (byte - o) * 8u + (bp & 7u), w = rd32(b, o);
+      w = (w & ~(1u << sh)) | (((v >> i) & 1u) << sh);
+      wr32(b, o, w);
+   }
+}
+
+static float
+gsrgb_to_lin(float c) { return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
+
+static float
+glin_to_srgb(float c) { return c <= 0.0031308f ? c * 12.92f : 1.055f * powf(c, 1.0f / 2.4f) - 0.055f; }
+
+struct gctx {
+   const struct mali_meta_job *j;
+   const struct rb *src, *dst;
+   struct gchan s[4], d[4];
+   uint32_t sbs, dbs, cls, mode, ns;
+   bool ssrgb, dsrgb;
+   int sw, sh, sx0, sy0, dx0, dy0;
+};
+
+/* Floating-point fetch of one source tap: unorm/snorm/float32 to [0,1]-ish, sRGB decoded. */
+static void
+gfetch(const struct gctx *c, int x, int y, uint32_t s, float v[4])
+{
+   const uint32_t *p = c->j->push;
+   x = x < 0 ? 0 : x > c->sw - 1 ? c->sw - 1 : x;
+   y = y < 0 ? 0 : y > c->sh - 1 ? c->sh - 1 : y;
+   uint32_t o = p[0] + s * p[2] + (uint32_t)y * p[1] + (uint32_t)x * c->sbs;
+   v[0] = v[1] = v[2] = 0.0f;
+   v[3] = 1.0f;
+   for (unsigned k = 0; k < 4; k++) {
+      struct gchan ch = c->s[k];
+      if (ch.type == 0)
+         continue;
+      uint32_t raw = gbits_rd(c->src, o, ch.off, ch.size);
+      float f;
+      switch (ch.type) {
+      case 1: f = (float)raw / (float)gmask(ch.size); break;
+      case 2: f = (float)((int32_t)(raw << (32 - ch.size)) >> (32 - ch.size)) / (float)gmask(ch.size - 1); break;
+      case 5:
+         if (ch.size != 32) { mali_meta_ref_oob++; continue; }
+         memcpy(&f, &raw, 4);
+         break;
+      default: mali_meta_ref_oob++; continue;   /* integer class uses gi_fetch; 6/7 / 16-bit float unmodelled */
+      }
+      if (k < 3 && c->ssrgb)
+         f = gsrgb_to_lin(f);
+      v[k] = f;
+   }
+}
+
+/* Integer fetch (class 1/2): sRGB does not apply to integer formats. */
+static void
+gi_fetch(const struct gctx *c, int x, int y, int32_t v[4])
+{
+   const uint32_t *p = c->j->push;
+   x = x < 0 ? 0 : x > c->sw - 1 ? c->sw - 1 : x;
+   y = y < 0 ? 0 : y > c->sh - 1 ? c->sh - 1 : y;
+   uint32_t o = p[0] + (uint32_t)y * p[1] + (uint32_t)x * c->sbs;
+   v[0] = v[1] = v[2] = 0;
+   v[3] = 1;
+   for (unsigned k = 0; k < 4; k++) {
+      struct gchan ch = c->s[k];
+      if (ch.type == 0)
+         continue;
+      uint32_t raw = gbits_rd(c->src, o, ch.off, ch.size);
+      v[k] = ch.type == 4 ? (int32_t)(raw << (32 - ch.size)) >> (32 - ch.size) : (int32_t)raw;
+   }
+}
+
+static void
+ref_blit_generic(const struct mali_meta_job *j, const struct rb *src, const struct rb *dst)
+{
+   const uint32_t *p = j->push;
+   struct gctx c;
+   memset(&c, 0, sizeof c);
+   c.j = j;
+   c.src = src;
+   c.dst = dst;
+   uint32_t gf = p[5];
+   c.sbs = gf & 255u;
+   c.dbs = (gf >> 8) & 255u;
+   c.cls = (gf >> 16) & 3u;
+   c.ssrgb = (gf & (1u << 20)) != 0;
+   c.dsrgb = (gf & (1u << 21)) != 0;
+   for (unsigned k = 0; k < 4; k++) {
+      c.s[k] = gchan_of(p[24 + k]);
+      c.d[k] = gchan_of(p[28 + k]);
+   }
+   c.sw = (int)p[18];
+   c.sh = (int)p[19];
+   c.sx0 = (int)p[6];
+   c.sy0 = (int)p[7];
+   c.dx0 = (int)p[10];
+   c.dy0 = (int)p[11];
+   c.mode = p[21];
+   c.ns = p[22];
+   int sx1 = (int)p[8], sy1 = (int)p[9], dx1 = (int)p[12];
+   int cx0 = (int)p[14], cy0 = (int)p[15], cy1 = (int)p[17];
+   uint32_t lw = p[23];
+   if (!c.sbs || !c.dbs || c.cls > 2) {
+      mali_meta_ref_oob++;
+      return;
+   }
+   uint64_t total = (uint64_t)lw * (uint32_t)(cy1 - cy0);
+   if (total > (uint64_t)j->groups[0] * j->groups[1] * 64)
+      mali_meta_ref_oob++;
+   for (uint64_t i = 0; i < total; i++) {
+      int ox = cx0 + (int)(i % lw), oy = cy0 + (int)(i / lw);
+      uint32_t o = p[3] + (uint32_t)oy * p[4] + (uint32_t)ox * c.dbs;
+      if (c.cls) {
+         int32_t v[4];
+         gi_fetch(&c, ox, oy, v);
+         for (unsigned k = 0; k < 4; k++) {
+            struct gchan d = c.d[k];
+            if (d.type == 0)
+               continue;
+            uint32_t raw;
+            if (d.type == 4) {
+               int32_t lo = d.size >= 32u ? (-2147483647 - 1) : -(1 << (d.size - 1u));
+               int32_t hi = d.size >= 32u ? 2147483647 : (1 << (d.size - 1u)) - 1;
+               int32_t cl = v[k] < lo ? lo : v[k] > hi ? hi : v[k];
+               raw = (uint32_t)cl;
+            } else {
+               raw = (uint32_t)v[k] < gmask(d.size) ? (uint32_t)v[k] : gmask(d.size);
+            }
+            gbits_wr(dst, o, d.off, d.size, raw);
+         }
+         continue;
+      }
+      float v[4];
+      (void)sx1; (void)sy1;
+      if (c.mode == 2) {
+         v[0] = v[1] = v[2] = v[3] = 0.0f;
+         for (uint32_t s = 0; s < c.ns; s++) {
+            float a[4];
+            gfetch(&c, ox - c.dx0 + c.sx0, oy - c.dy0 + c.sy0, s, a);
+            for (unsigned k = 0; k < 4; k++)
+               v[k] += a[k];
+         }
+         for (unsigned k = 0; k < 4; k++)
+            v[k] /= (float)c.ns;
+      } else {
+         float u = ((float)ox + 0.5f - (float)c.dx0) / (float)(dx1 - c.dx0);
+         float w = ((float)oy + 0.5f - (float)c.dy0) / (float)((int)p[13] - c.dy0);
+         float fx = (float)c.sx0 + u * (float)(sx1 - c.sx0), fy = (float)c.sy0 + w * (float)(sy1 - c.sy0);
+         if (c.mode == 0) {
+            gfetch(&c, (int)floorf(fx), (int)floorf(fy), 0, v);
+         } else {
+            fx -= 0.5f;
+            fy -= 0.5f;
+            int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
+            float ax = fx - (float)x0, ay = fy - (float)y0;
+            float a[4], b[4], d[4], e[4];
+            gfetch(&c, x0, y0, 0, a);
+            gfetch(&c, x0 + 1, y0, 0, b);
+            gfetch(&c, x0, y0 + 1, 0, d);
+            gfetch(&c, x0 + 1, y0 + 1, 0, e);
+            for (unsigned k = 0; k < 4; k++) {
+               float t0 = a[k] * (1 - ax) + b[k] * ax, t1 = d[k] * (1 - ax) + e[k] * ax;
+               v[k] = t0 * (1 - ay) + t1 * ay;
+            }
+            float wz;
+            memcpy(&wz, &c.ns, 4);   /* trilinear: the second slice weighted wz */
+            if (wz != 0.0f) {
+               float a1[4], b1[4], d1[4], e1[4];
+               gfetch(&c, x0, y0, 1, a1);
+               gfetch(&c, x0 + 1, y0, 1, b1);
+               gfetch(&c, x0, y0 + 1, 1, d1);
+               gfetch(&c, x0 + 1, y0 + 1, 1, e1);
+               for (unsigned k = 0; k < 4; k++) {
+                  float t0 = a1[k] * (1 - ax) + b1[k] * ax, t1 = d1[k] * (1 - ax) + e1[k] * ax;
+                  v[k] = v[k] * (1 - wz) + (t0 * (1 - ay) + t1 * ay) * wz;
+               }
+            }
+         }
+      }
+      for (unsigned k = 0; k < 4; k++) {
+         struct gchan d = c.d[k];
+         if (d.type == 0)
+            continue;
+         float f = v[k];
+         uint32_t raw;
+         switch (d.type) {
+         case 1:
+            if (k < 3 && c.dsrgb)
+               f = glin_to_srgb(f < 0 ? 0 : f > 1 ? 1 : f);
+            f = f < 0 ? 0 : f > 1 ? 1 : f;
+            raw = (uint32_t)(f * (float)gmask(d.size) + 0.5f);
+            break;
+         case 2:
+            f = f < -1 ? -1 : f > 1 ? 1 : f;
+            raw = (uint32_t)(int32_t)lrintf(f * (float)gmask(d.size - 1));
+            break;
+         case 5:
+            if (d.size != 32) { mali_meta_ref_oob++; continue; }
+            memcpy(&raw, &f, 4);
+            break;
+         default: mali_meta_ref_oob++; continue;
+         }
+         gbits_wr(dst, o, d.off, d.size, raw);
+      }
+   }
+}
+
 static void
 ref_blit(const struct mali_meta_job *j, const struct rb *src, const struct rb *dst)
 {
    const uint32_t *p = j->push;
+   if (p[20] & 16u) {   /* generic colour class (any plain format, incl. sRGB) */
+      ref_blit_generic(j, src, dst);
+      return;
+   }
    int sx0 = (int)p[6], sy0 = (int)p[7], sx1 = (int)p[8], sy1 = (int)p[9];
    int dx0 = (int)p[10], dy0 = (int)p[11], dx1 = (int)p[12], dy1 = (int)p[13];
    int cx0 = (int)p[14], cy0 = (int)p[15], cy1 = (int)p[17];

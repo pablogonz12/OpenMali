@@ -675,6 +675,72 @@ swap_row(const char *name, VkFormat fmt, VkImageUsageFlags usage, VkImageLayout 
    return 1;
 }
 
+/* The sRGB swapchain view zink presents through. A UNORM <-> *_SRGB blit is not the shader's 8-bit/float class: it takes the
+ * generic colour class, which decodes the source R,G,B and encodes the destination R,G,B (alpha is never gamma-transformed).
+ * The source is filled from a buffer with exact bytes, so the expectation is the transfer function applied to those bytes. */
+static uint8_t
+lin_to_srgb8(uint8_t v)
+{
+   float c = (float)v / 255.0f;
+   float s = c <= 0.0031308f ? c * 12.92f : 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
+   return (uint8_t)(s * 255.0f + 0.5f);
+}
+
+static uint8_t
+srgb_to_lin8(uint8_t v)
+{
+   float c = (float)v / 255.0f;
+   float l = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+   return (uint8_t)(l * 255.0f + 0.5f);
+}
+
+static int
+swap_row_xf(const char *name, VkFormat dstfmt, VkFormat srcfmt, uint32_t mw, VkFilter filter, const uint8_t px[4], const uint8_t want[4])
+{
+   const uint32_t w = 48, h = 48;
+   struct buf out = {0}, in = {0};
+   struct img sw = {0}, src = {0};
+   TRY(mkbuf(&out, w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   TRY(mkbuf(&in, mw * mw * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkimg(&sw, dstfmt, w, h, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&src, srcfmt, mw, mw, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SAMPLE_COUNT_1_BIT));
+   uint8_t *sp = in.p;
+   for (uint32_t i = 0; i < mw * mw * 4; i += 4)
+      memcpy(sp + i, px, 4);
+   uint8_t *p = out.p;
+   memset(p, 0xEE, w * h * 4);
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   layout_tr(cb, src.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy up = {.imageSubresource = sl, .imageExtent = {mw, mw, 1}};
+   CmdCopyBufferToImage(cb, in.b, src.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+   layout_tr(cb, src.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   layout_tr(cb, sw.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {(int)mw, (int)mw, 1}},
+                     .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {(int)w, (int)h, 1}}};
+   CmdBlitImage(cb, src.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sw.i, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, filter);
+   layout_tr(cb, sw.i, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {w, h, 1}};
+   CmdCopyImageToBuffer(cb, sw.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.b, 1, &dn);
+   int ok = submit_wait(cb);
+   if (!ok) printf("{\"case\":\"%s\",\"fail\":\"submit\"}\n", name);
+   int bad = 0;
+   for (uint32_t i = 0; ok && i < w * h; i++) {
+      const uint8_t *t = p + i * 4;
+      if (abs(t[0] - want[0]) > 1 || abs(t[1] - want[1]) > 1 || abs(t[2] - want[2]) > 1 || t[3] != want[3]) {
+         if (!bad)
+            printf("{\"case\":\"%s\",\"texel\":%u,\"got\":\"%d,%d,%d,%d\",\"want\":\"%d,%d,%d,%d\"}\n", name, i, t[0], t[1], t[2],
+                   t[3], want[0], want[1], want[2], want[3]);
+         bad++;
+      }
+   }
+   rmimg(&sw); rmimg(&src); rmbuf(&out); rmbuf(&in);
+   CHECK(ok && !bad, "swapchain %s: %d/%u texels wrong", name, bad, w * h);
+   return 1;
+}
+
 static int
 case_swapblit(void)
 {
@@ -700,9 +766,16 @@ case_swapblit(void)
    /* 1:1 blit into the swapchain image, no scaling (zink's exact-size present path) */
    TRY(swap_row("blit_1to1", VK_FORMAT_B8G8R8A8_UNORM, zink, VK_IMAGE_LAYOUT_GENERAL, 1, VK_FILTER_NEAREST,
                 VK_FORMAT_R8G8B8A8_UNORM, 48, c, want));
-   /* NOT covered here: an sRGB destination (zink's sRGB swapchain view). A UNORM -> *_SRGB blit takes the blit shader's generic path, and
-    * mali_meta_ref_run() only implements the "8-bit UNORM or 32-bit float, RGBA/BGRA" class, so the desktop harness cannot check its
-    * pixels: run on hardware (t_vk_feat) until the reference learns the generic path. */
+   /* zink's sRGB swapchain view: the blit shader's generic class, gamma-encoding R,G,B into an sRGB destination and decoding an
+    * sRGB source back to UNORM. The reference runner models that class (ref_blit_generic), so these rows check real bytes. */
+   const uint8_t unorm_px[4] = { 128, 64, 32, 255 };   /* R8G8B8A8_UNORM: R 0.5, G 0.25, B 0.125 */
+   const uint8_t srgb_px[4] = { 187, 137, 99, 255 };   /* B8G8R8A8_SRGB: encoded B, G, R of the same colour */
+   const uint8_t to_srgb[4] = { lin_to_srgb8(32), lin_to_srgb8(64), lin_to_srgb8(128), 255 };
+   const uint8_t to_unorm[4] = { srgb_to_lin8(99), srgb_to_lin8(137), srgb_to_lin8(187), 255 };
+   TRY(swap_row_xf("blit_srgb_dst", VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, 48, VK_FILTER_NEAREST, unorm_px, to_srgb));
+   TRY(swap_row_xf("blit_srgb_dst_scale", VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, 96, VK_FILTER_LINEAR, unorm_px, to_srgb));
+   TRY(swap_row_xf("blit_srgb_src", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB, 48, VK_FILTER_NEAREST, srgb_px, to_unorm));
+   TRY(swap_row_xf("blit_srgb_src_scale", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB, 96, VK_FILTER_LINEAR, srgb_px, to_unorm));
    report("swapblit", NULL);
    return 1;
 }
