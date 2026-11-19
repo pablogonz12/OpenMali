@@ -1715,6 +1715,97 @@ out:
    return ok;
 }
 
+/* advanced-blend advertisement gate for MRT: the blend shader (dual-source SRC1 factors, MIN/MAX and other equations fixed
+ * function cannot express) is compiled for attachment 0 only, so vkCreateGraphicsPipelines must refuse it with several colour
+ * attachments instead of a later command-buffer error. mode: 0 dual-source on RT0, 1 MIN on RT1, 2 MIN on RT0, 3 plain
+ * SRC_ALPHA/ONE on RT1 (must still be accepted: fixed function per attachment). */
+static int
+test_mrt_blend_gate(const char *name, int mode)
+{
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv(mode == 0 ? "dual.frag.spv" : "mrt2.frag.spv");
+   VkRenderPass rp = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   int ok = 0;
+#define BG_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   BG_CHECK(vs && fs, "shaders");
+   VkAttachmentDescription ad[2];
+   VkAttachmentReference ar[2];
+   for (int i = 0; i < 2; i++) {
+      ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+      ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   }
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 2, .pColorAttachments = ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2, .pAttachments = ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   BG_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   BG_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba[2] = {{.colorWriteMask = 0xf}, {.colorWriteMask = 0xf}};
+   if (mode == 0) {
+      cba[0].blendEnable = VK_TRUE;
+      cba[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC1_COLOR;
+      cba[0].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+      cba[0].colorBlendOp = VK_BLEND_OP_ADD;
+      cba[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      cba[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+      cba[0].alphaBlendOp = VK_BLEND_OP_ADD;
+   } else if (mode == 1) {
+      cba[1].blendEnable = VK_TRUE;
+      cba[1].colorBlendOp = VK_BLEND_OP_MIN;
+      cba[1].alphaBlendOp = VK_BLEND_OP_MIN;
+      cba[1].srcColorBlendFactor = cba[1].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      cba[1].dstColorBlendFactor = cba[1].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+   } else if (mode == 2) {
+      cba[0].blendEnable = VK_TRUE;
+      cba[0].colorBlendOp = VK_BLEND_OP_MIN;
+      cba[0].alphaBlendOp = VK_BLEND_OP_MIN;
+      cba[0].srcColorBlendFactor = cba[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      cba[0].dstColorBlendFactor = cba[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+   } else {
+      cba[1].blendEnable = VK_TRUE;
+      cba[1].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      cba[1].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      cba[1].colorBlendOp = VK_BLEND_OP_ADD;
+      cba[1].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      cba[1].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      cba[1].alphaBlendOp = VK_BLEND_OP_ADD;
+   }
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 2, .pAttachments = cba};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .layout = pl, .renderPass = rp};
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   const VkResult want = mode == 3 ? VK_SUCCESS : VK_ERROR_FEATURE_NOT_PRESENT;
+   BG_CHECK(r == want, "pipeline = %d, want %d", (int)r, (int)want);
+   ok = 1;
+   printf("{\"test\":\"%s\",\"mode\":%d,\"result\":%d,\"ok\":true}\n", name, mode, (int)r);
+out:
+   DeviceWaitIdle(dev);
+   if (pipe) DestroyPipeline(dev, pipe, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (rp) DestroyRenderPass(dev, rp, NULL);
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef BG_CHECK
+   return ok;
+}
+
 /* rasterizer discard: draws produce nothing (both stages present, or a vertex-only pipeline); the next pipeline draws normally */
 static int
 test_discard(const char *name, int mode)
@@ -2640,6 +2731,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt3_mixed")) ok &= test_mrt_mixed("mrt3_mixed", 3);
    if (ok && CASE_ON("mrt4_mixed")) ok &= test_mrt_mixed("mrt4_mixed", 4);
    if (ok && CASE_ON("mrt_rt1_load")) ok &= test_mrt_rt1_load();
+   if (ok && CASE_ON("mrt_blend_rt0")) ok &= test_mrt_blend_gate("mrt_blend_rt0", 0);
+   if (ok && CASE_ON("mrt_blend_min_rt1")) ok &= test_mrt_blend_gate("mrt_blend_min_rt1", 1);
+   if (ok && CASE_ON("mrt_blend_min_rt0")) ok &= test_mrt_blend_gate("mrt_blend_min_rt0", 2);
+   if (ok && CASE_ON("mrt_blend_ok")) ok &= test_mrt_blend_gate("mrt_blend_ok", 3);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
