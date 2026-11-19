@@ -498,7 +498,7 @@ sweep(const char *name, VkResult (*fn)(void), int kind, int is_dev)
     * Mesa's own spirv_to_nir/ralloc does not survive malloc returning NULL (vtn_create_builder), which is outside this driver. */
    static char *sc_orig; static int sc_have;   /* the cache dir check.sh set, captured once */
    if (!sc_have) { const char *e = getenv("MALI_SHADER_CACHE"); sc_orig = e ? strdup(e) : NULL; sc_have = 1; }
-   if (kind == LIBC) { if (sc_orig) setenv("MALI_SHADER_CACHE", sc_orig, 1); }
+   if (kind == LIBC) { if (sc_orig) setenv("MALI_SHADER_CACHE", sc_orig, 1); else unsetenv("MALI_SHADER_CACHE"); }   /* unset at startup: restore the absence, "" would disable the cache */
    else setenv("MALI_SHADER_CACHE", "", 1);
    const long fds0 = count_dir("/proc/self/fd"), maps0 = count_maps();
    if (kind == LIBC) {   /* warm-up: lazily created process-wide state must not count as a leak of the failing runs */
