@@ -92,7 +92,7 @@ main(int argc, char **argv)
    CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "CreateInstance 1.3");
    if (!inst) return 1;
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceProperties2); I(GetPhysicalDeviceFeatures2);
-   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2);
+   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2); I(GetPhysicalDeviceImageFormatProperties);
    I(CreateDevice); I(DestroyInstance);
 
    uint32_t n = 1;
@@ -118,6 +118,23 @@ main(int argc, char **argv)
    CHECK(pr.properties.vendorID == 0x13b5, "vendor");
    eq("driverID", p12.driverID, drv.driverID);
    CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
+   CHECK(!strcmp(drv.driverName, "mali-own"), "driverName '%s'", drv.driverName);
+#ifdef MALI_EXPECT_SHA
+   { /* full identity: "mali-open <sha|unknown>[-dirty] (mali-own), not conformant"; build.sh passes the sha it compiled in */
+      char want[VK_MAX_DRIVER_INFO_SIZE];
+      snprintf(want, sizeof want, "mali-open %s (mali-own), not conformant", MALI_EXPECT_SHA);
+      CHECK(!strcmp(drv.driverInfo, want), "driverInfo '%s' != '%s'", drv.driverInfo, want);
+   }
+#else
+   { /* no expected sha known (prebuilt test): still require the exact shape with a non-empty id */
+      const char *id = drv.driverInfo + 10, *sp = strchr(id, ' ');
+      CHECK(!strncmp(drv.driverInfo, "mali-open ", 10) && sp && sp > id &&
+            !strcmp(sp, " (mali-own), not conformant"), "driverInfo '%s'", drv.driverInfo);
+   }
+#endif
+   CHECK(strstr(pr.properties.deviceName, "mali-own"), "deviceName '%s'", pr.properties.deviceName);
+   CHECK(drv.conformanceVersion.major == 0 && drv.conformanceVersion.minor == 0 && drv.conformanceVersion.subminor == 0 &&
+         drv.conformanceVersion.patch == 0, "conformanceVersion must stay 0.0.0.0");
    CHECK(!memcmp(p11.driverUUID, idp.driverUUID, VK_UUID_SIZE) && !memcmp(p11.deviceUUID, idp.deviceUUID, VK_UUID_SIZE), "UUID mismatch 1.1 vs ID struct");
    eq("subgroupSize", p11.subgroupSize, sg.subgroupSize);
    CHECK(p11.subgroupSize == 16 && p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16, "subgroup 16");
@@ -143,9 +160,20 @@ main(int argc, char **argv)
    CHECK(L->maxFragmentOutputAttachments <= 8 && L->maxVertexInputAttributes >= 16 && L->maxVertexInputBindings >= 16, "vertex/frag");
    CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
    CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
+   CHECK(L->maxClipDistances >= 8 && L->maxCombinedClipAndCullDistances >= L->maxClipDistances, "clip distance limits (shaderClipDistance on: min 8)");
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
+   {  /* 4x is advertised iff pipeline creation accepts it (MALI_EXPERIMENTAL_MSAA=1) */
+      const char *g = getenv("MALI_EXPERIMENTAL_MSAA");
+      VkSampleCountFlags want = (g && g[0] == '1') ? VK_SAMPLE_COUNT_4_BIT : 0;
+      VkImageFormatProperties ifp;
+      VkResult r = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &ifp);
+      CHECK((L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb colour samples follow the MSAA gate");
+      CHECK((L->framebufferDepthSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb depth samples follow the MSAA gate");
+      CHECK(r == VK_SUCCESS && (ifp.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x image format samples follow the MSAA gate");
+   }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 
    /* ---- features ---- */
@@ -162,6 +190,12 @@ main(int argc, char **argv)
    VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
    VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
    GetPhysicalDeviceFeatures2(pd, &g2);
+   {  /* VK_EXT_image_view_min_lod: the advertised minLod feature must be reported true (t_image view_min_lod covers the descriptor field) */
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 m2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &m2);
+      CHECK(ml.minLod == VK_TRUE, "minLod feature advertised true (got %u)", ml.minLod);
+   }
    /* uab limits: each UAB limit >= its non-UAB twin; the types with UAB features (samplers, sampled images) reach the 500000 minimum */
    CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
          p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
@@ -221,7 +255,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageWriteWithoutFormat), /* t_vk_feat storfmt_nf */
          offsetof(VkPhysicalDeviceFeatures, dualSrcBlend),             /* t_vk_draw --only fx_dual_* (passed on the Poco X8, v13) */
-         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_draw msaa_sample_shading; only advertised with MALI_EXPERIMENTAL_MSAA=1 */
+         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_feat samplerate (1 sample); t_vk_draw msaa_sample_shading (4 samples, MALI_EXPERIMENTAL_MSAA=1) */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
@@ -254,10 +288,10 @@ main(int argc, char **argv)
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
-                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d),
+                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d), idp = (unsigned)((const VkBool32 *)&f13.shaderIntegerDotProduct - d),   /* t_vk_feat intdot */
                      sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */
