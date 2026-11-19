@@ -249,6 +249,66 @@ test_errors(void)
    CHECK(strstr(err, "Unimplemented SPIR-V capability") != NULL, "error names the capability: '%s'", err);
 }
 
+/* 256-byte push block in the VS, the FS and the CS. Each shader reads the last word (offset 252) and repeats constants 6x so the
+ * compiler promotes them to FAU immediates. The emitter writes the immediates and then the push block into one FAU table
+ * (mali_cs_emit.c: kb_draw_fau_imm + memcpy), so the reservation must cover the push block: with the old default (24 VS, 8 FS/CS,
+ * 16 FS-v13) an immediate landed inside the block for anything above 56 B in the VS and 32 B in the CS/FS-v11 and one of the two
+ * was silently corrupted. Fails if the reservation stops covering the block. */
+static void
+test_push256(void)
+{
+   printf("push constants: 256-byte block vs promoted immediates\n");
+   struct mali_lbinding sb = {MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER};
+   static const struct { const char *f; enum mali_stage st; } cases[] = {
+      {"push252.vert.spv", MALI_STAGE_VERTEX}, {"push252.frag.spv", MALI_STAGE_FRAGMENT}, {"push252.comp.spv", MALI_STAGE_COMPUTE},
+   };
+   for (unsigned a = 0; a < 3; a++) {
+      for (unsigned k = 0; k < 3; k++) {
+         unsigned arch = a == 0 ? 10 : a == 1 ? 11 : 13;
+         struct spv s = load(cases[k].f);
+         if (!s.w) continue;
+         struct mali_compile_layout lay = {0};
+         lay.push_size = 256;
+         if (cases[k].st == MALI_STAGE_COMPUTE) { lay.nsets = 1; lay.set[0] = (struct mali_lset){1, 1, 0, &sb}; }
+         struct mali_compile_opts o = {.arch = arch, .stage = cases[k].st, .spirv = s.w, .spirv_words = s.n, .layout = &lay, .cache_dir = ""};
+         struct mali_compiled c;
+         char err[256] = "";
+         if (mali_compile(&o, &c, err, sizeof err)) { g_fail++; printf("  v%u %s: %s\n", arch, cases[k].f, err); free(s.w); continue; }
+         /* the push block ends at: VS word 10 (byte 40) + 64, FS v13 word 6 (byte 24) + 64, else word 0 + 64 */
+         unsigned push_base = cases[k].st == MALI_STAGE_VERTEX ? 40 : (arch == 13 && cases[k].st == MALI_STAGE_FRAGMENT ? 24 : 0);
+         unsigned end = (push_base + 256) / 4;
+         CHECK(c.push_const_bytes == 256, "v%u %s: reads the word at offset 252 (push_const_bytes %u)", arch, cases[k].f, c.push_const_bytes);
+         CHECK(c.fau_reserved >= end, "v%u %s: fau_reserved %u does not cover the push block (needs %u)", arch, cases[k].f, c.fau_reserved, end);
+         CHECK(c.fau_count <= 128, "v%u %s: FAU %u words > 128 (PAN_MAX_PUSH)", arch, cases[k].f, c.fau_count);   /* PAN_MAX_PUSH */
+         CHECK(c.nimm > 0, "v%u %s: no promoted immediates (the overlap cannot happen, test has no teeth)", arch, cases[k].f);
+         /* what the emitter does: immediates first, then the push block over the same table */
+         uint32_t fau[128] = {0};
+         for (unsigned i = 0; i < c.nimm; i++) {
+            CHECK(c.imm[i].word < 128, "v%u %s: immediate word %u out of range", arch, cases[k].f, c.imm[i].word);
+            CHECK(c.imm[i].word >= end, "v%u %s: immediate at word %u is inside the push block (words %u..%u)", arch, cases[k].f,
+                  c.imm[i].word, push_base / 4, end - 1);
+            if (c.imm[i].word < 128) fau[c.imm[i].word] = c.imm[i].value;
+         }
+         uint8_t block[256];
+         for (unsigned i = 0; i < 256; i++) block[i] = (uint8_t)(0x40 + i);
+         memcpy((uint8_t *)fau + push_base, block, 256);
+         for (unsigned i = 0; i < c.nimm; i++)
+            CHECK(fau[c.imm[i].word] == c.imm[i].value, "v%u %s: immediate 0x%08x at word %u clobbered by the push block", arch,
+                  cases[k].f, c.imm[i].value, c.imm[i].word);
+         for (unsigned i = 0; i < 256; i += 4) {
+            uint32_t w;
+            memcpy(&w, block + i, 4);
+            CHECK(fau[(push_base + i) / 4] == w, "v%u %s: push byte %u clobbered", arch, cases[k].f, i);
+         }
+         if (g_verbose)
+            printf("  v%u %s: reserved %u/%u, %u immediates, first at word %u\n", arch, cases[k].f, c.fau_reserved, c.fau_count,
+                   c.nimm, c.nimm ? c.imm[0].word : 0);
+         mali_compiled_free(&c);
+         free(s.w);
+      }
+   }
+}
+
 /* YCbCr: the conversion of an immutable NV12 sampler is lowered into the shader (nir_vk_lower_ycbcr_tex: two plane samples, model/range
  * constants, siting). Compile tex.frag with a plain combined sampler and with converted ones and look at what changed. */
 static int
@@ -427,6 +487,7 @@ main(int argc, char **argv)
    else printf("golden: skipped (stale, T_COMPILE_GOLDEN=1 to run)\n");
    test_pairing();
    test_compute();
+   test_push256();
    test_private_init();
    test_bda_frag();
    test_determinism_and_cache();
