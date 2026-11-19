@@ -431,7 +431,10 @@ def main():
         layer = layer_name(ph)
         if not layer:
             die("no DroidDeck SurfaceView layer: is the session on screen?")
-        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
+        rc, o = ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
+        if rc != 0:
+            die(f"clearing the latency history failed (rc {rc}): {o.strip()[-200:]}; "
+                "the first poll would count warmup frames as the window", 4)
         cpu = cpu_sample(ph)
         sweep = Sweep(ph)
         sweep.start()
@@ -440,14 +443,20 @@ def main():
         mode = panel_mode(ph)
         hz = panel_hz(ph, mode)
         base = 1000.0 / hz
-        ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
+        rc, o = ph.adb("shell", "dumpsys SurfaceFlinger --latency-clear", timeout=20)
+        if rc != 0:
+            die(f"clearing the latency history before sampling failed (rc {rc}): {o.strip()[-200:]}", 4)
         s = Sampler(ph, layer, a.seconds, mode)
         s.start()
         time.sleep(a.seconds)
         stop_workers(s, sweep)
-        hz_end = panel_hz(ph, mode)
-        moved = sorted(x for x in s.modes if x != mode) if mode is not None else []
-        if abs(hz_end - hz) > 0.5 or moved:
+        mode_end = panel_mode(ph)            # a fresh observation, not the starting id again
+        hz_end = panel_hz(ph, mode_end)
+        # A mode we could not read at the start, or during the window, is a sampling failure: an unobserved
+        # 60 -> 120 Hz switch would otherwise pass validation.
+        moved = sorted(x for x in s.modes if x != mode) if mode is not None else sorted(s.modes)
+        unobserved = (mode is not None and not s.modes) or mode_end is None
+        if abs(hz_end - hz) > 0.5 or moved or unobserved:
             die(f"panel mode changed during sampling (started at {hz} Hz mode {mode}, "
                 f"ended at {hz_end} Hz, modes seen {sorted(s.modes)}); the base interval is not stable", 4)
         if s.gaps or s.errors:
