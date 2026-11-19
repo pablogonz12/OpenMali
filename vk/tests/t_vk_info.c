@@ -118,6 +118,23 @@ main(int argc, char **argv)
    CHECK(pr.properties.vendorID == 0x13b5, "vendor");
    eq("driverID", p12.driverID, drv.driverID);
    CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
+   CHECK(!strcmp(drv.driverName, "mali-own"), "driverName '%s'", drv.driverName);
+#ifdef MALI_EXPECT_SHA
+   { /* full identity: "mali-open <sha|unknown>[-dirty] (mali-own), not conformant"; build.sh passes the sha it compiled in */
+      char want[VK_MAX_DRIVER_INFO_SIZE];
+      snprintf(want, sizeof want, "mali-open %s (mali-own), not conformant", MALI_EXPECT_SHA);
+      CHECK(!strcmp(drv.driverInfo, want), "driverInfo '%s' != '%s'", drv.driverInfo, want);
+   }
+#else
+   { /* no expected sha known (prebuilt test): still require the exact shape with a non-empty id */
+      const char *id = drv.driverInfo + 10, *sp = strchr(id, ' ');
+      CHECK(!strncmp(drv.driverInfo, "mali-open ", 10) && sp && sp > id &&
+            !strcmp(sp, " (mali-own), not conformant"), "driverInfo '%s'", drv.driverInfo);
+   }
+#endif
+   CHECK(strstr(pr.properties.deviceName, "mali-own"), "deviceName '%s'", pr.properties.deviceName);
+   CHECK(drv.conformanceVersion.major == 0 && drv.conformanceVersion.minor == 0 && drv.conformanceVersion.subminor == 0 &&
+         drv.conformanceVersion.patch == 0, "conformanceVersion must stay 0.0.0.0");
    CHECK(!memcmp(p11.driverUUID, idp.driverUUID, VK_UUID_SIZE) && !memcmp(p11.deviceUUID, idp.deviceUUID, VK_UUID_SIZE), "UUID mismatch 1.1 vs ID struct");
    eq("subgroupSize", p11.subgroupSize, sg.subgroupSize);
    CHECK(p11.subgroupSize == 16 && p13.minSubgroupSize == 16 && p13.maxSubgroupSize == 16, "subgroup 16");
@@ -143,6 +160,7 @@ main(int argc, char **argv)
    CHECK(L->maxFragmentOutputAttachments <= 8 && L->maxVertexInputAttributes >= 16 && L->maxVertexInputBindings >= 16, "vertex/frag");
    CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
    CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
+   CHECK(L->maxClipDistances >= 8 && L->maxCombinedClipAndCullDistances >= L->maxClipDistances, "clip distance limits (shaderClipDistance on: min 8)");
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
@@ -162,6 +180,34 @@ main(int argc, char **argv)
    VkPhysicalDevicePrivateDataFeatures fpd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES, .pNext = &fm4};
    VkPhysicalDeviceFeatures2 g2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpd};
    GetPhysicalDeviceFeatures2(pd, &g2);
+   {  /* VK_EXT_image_view_min_lod: the advertised minLod feature must be reported true (t_image view_min_lod covers the descriptor field) */
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 m2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &m2);
+      CHECK(ml.minLod == VK_TRUE, "minLod feature advertised true (got %u)", ml.minLod);
+   }
+   /* uab limits: each UAB limit >= its non-UAB twin; the types with UAB features (samplers, sampled images) reach the 500000 minimum */
+   CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= L->maxPerStageDescriptorSamplers &&
+         p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= L->maxPerStageDescriptorUniformBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= L->maxPerStageDescriptorStorageBuffers &&
+         p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= L->maxPerStageDescriptorSampledImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindStorageImages >= L->maxPerStageDescriptorStorageImages &&
+         p12.maxPerStageDescriptorUpdateAfterBindInputAttachments >= L->maxPerStageDescriptorInputAttachments &&
+         p12.maxPerStageUpdateAfterBindResources >= L->maxPerStageResources, "uab per-stage >= non-UAB");
+   CHECK(p12.maxDescriptorSetUpdateAfterBindSamplers >= L->maxDescriptorSetSamplers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffers >= L->maxDescriptorSetUniformBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic >= L->maxDescriptorSetUniformBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffers >= L->maxDescriptorSetStorageBuffers &&
+         p12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic >= L->maxDescriptorSetStorageBuffersDynamic &&
+         p12.maxDescriptorSetUpdateAfterBindSampledImages >= L->maxDescriptorSetSampledImages &&
+         p12.maxDescriptorSetUpdateAfterBindStorageImages >= L->maxDescriptorSetStorageImages &&
+         p12.maxDescriptorSetUpdateAfterBindInputAttachments >= L->maxDescriptorSetInputAttachments, "uab per-set >= non-UAB");
+   if (f12.descriptorBindingSampledImageUpdateAfterBind) {
+      CHECK(p12.maxUpdateAfterBindDescriptorsInAllPools >= 500000 && p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= 500000 &&
+            p12.maxDescriptorSetUpdateAfterBindSampledImages >= 500000 && p12.maxPerStageUpdateAfterBindResources >= 500000,
+            "uab sampled image limits >= 500000");
+      CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 500000 && p12.maxDescriptorSetUpdateAfterBindSamplers >= 500000, "uab sampler limits >= 500000");
+   }
    eq("timelineSemaphore", f12.timelineSemaphore, ftl.timelineSemaphore);
    eq("hostQueryReset", f12.hostQueryReset, fhq.hostQueryReset);
    eq("synchronization2", f13.synchronization2, fs2.synchronization2);
@@ -178,6 +224,7 @@ main(int argc, char **argv)
       /* multiDrawIndirect: backed by t_vk_draw --only mdi (drawCount 2, pixel-checked on the Poco) */
       unsigned mdi_idx = (unsigned)((const VkBool32 *)&f2.features.multiDrawIndirect - c);
       CHECK(f2.features.multiDrawIndirect, "multiDrawIndirect advertised");
+      CHECK(L->maxDrawIndirectCount >= 0xffff, "maxDrawIndirectCount %u: multiDrawIndirect requires >= 2^16-1", L->maxDrawIndirectCount);
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
          offsetof(VkPhysicalDeviceFeatures, shaderClipDistance),       /* t_vk_feat clip */
@@ -198,7 +245,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageWriteWithoutFormat), /* t_vk_feat storfmt_nf */
          offsetof(VkPhysicalDeviceFeatures, dualSrcBlend),             /* t_vk_draw --only fx_dual_* (passed on the Poco X8, v13) */
-         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_draw msaa_sample_shading; only advertised with MALI_EXPERIMENTAL_MSAA=1 */
+         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_feat samplerate (1 sample); t_vk_draw msaa_sample_shading (4 samples, MALI_EXPERIMENTAL_MSAA=1) */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
@@ -231,11 +278,11 @@ main(int argc, char **argv)
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
-                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d),
-                     tm = (unsigned)((const VkBool32 *)&f13.shaderTerminateInvocation - d), pcc = (unsigned)((const VkBool32 *)&f13.pipelineCreationCacheControl - d),   /* t_vk_feat terminate / cachectl */
+                     dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d), idp = (unsigned)((const VkBool32 *)&f13.shaderIntegerDotProduct - d),   /* t_vk_feat intdot */
+                     tm = (unsigned)((const VkBool32 *)&f13.shaderTerminateInvocation - d), pcc = (unsigned)((const VkBool32 *)&f13.pipelineCreationCacheControl - d),
                      sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == tm || i == pcc || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == tm || i == pcc || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */
@@ -256,6 +303,31 @@ main(int argc, char **argv)
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
+   }
+   /* FormatProperties3 without-format / depth-comparison bits must agree with the advertised features and the storage/sampled bits of the same tiling */
+   {
+      const uint64_t RD = 0x80000000ull, WR = 0x100000000ull, DC = 0x200000000ull;
+      VkBool32 feat_rd = VK_FALSE, feat_wr = VK_FALSE;
+      feat_rd = f2.features.shaderStorageImageReadWithoutFormat; feat_wr = f2.features.shaderStorageImageWriteWithoutFormat;
+      unsigned nwr = 0, ndc = 0;
+      for (unsigned fmt = 1; fmt <= 184; fmt++) {
+         VkFormatProperties3 f3 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+         VkFormatProperties2 f2p = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &f3};
+         GetPhysicalDeviceFormatProperties2(pd, (VkFormat)fmt, &f2p);
+         const uint64_t t[3] = {f3.linearTilingFeatures, f3.optimalTilingFeatures, f3.bufferFeatures};
+         const uint64_t st[3] = {VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT, VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT, VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT};
+         for (int k = 0; k < 3; k++) {
+            CHECK(!(t[k] & RD) || feat_rd, "format %u set %d: READ_WITHOUT_FORMAT but shaderStorageImageReadWithoutFormat is false", fmt, k);
+            CHECK(!(t[k] & WR) || (feat_wr && (t[k] & st[k])), "format %u set %d: WRITE_WITHOUT_FORMAT without feature or without the storage bit", fmt, k);
+            CHECK(!(t[k] & RD) || (t[k] & st[k]), "format %u set %d: READ_WITHOUT_FORMAT without the storage bit", fmt, k);
+            if ((t[k] & st[k]) && feat_wr) { CHECK(t[k] & WR, "format %u set %d: storage bit without WRITE_WITHOUT_FORMAT", fmt, k); nwr++; }
+         }
+         CHECK(!(f3.optimalTilingFeatures & DC) || (f3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT), "format %u: DEPTH_COMPARISON without SAMPLED_IMAGE", fmt);
+         CHECK(!((f3.linearTilingFeatures | f3.bufferFeatures) & DC), "format %u: DEPTH_COMPARISON on linear/buffer", fmt);
+         ndc += (f3.optimalTilingFeatures & DC) != 0;
+      }
+      CHECK(nwr > 0 && ndc > 0, "format sweep saw no storage-capable (%u) or depth-comparison (%u) format", nwr, ndc);
+      CHECK(f2.features.shaderStorageImageWriteWithoutFormat, "writeWithoutFormat advertised");
    }
 
    /* ---- device + probes ---- */
@@ -334,6 +406,26 @@ main(int argc, char **argv)
       CHECK(rr == VK_NOT_READY || rr == VK_SUCCESS, "results after host reset: %d", rr);
       for (int i = 0; i < 4; i++) CHECK(res[i * 2 + 1] == 0, "query %d available after reset", i);
       DestroyQueryPool(dev, qpool, NULL);
+   }
+   /* EARLY_RETURN_ON_FAILURE, ci.flags form and maintenance5 flags2 form: [0] has no shader (FEATURE_NOT_PRESENT), [1] is garbage SPIR-V
+      (INVALID_SHADER_NV). Early return reports the first failure, a plain batch the last one. */
+   {
+      PFN_vkCreateComputePipelines CCP = (PFN_vkCreateComputePipelines)gdpa(dev, "vkCreateComputePipelines");
+      uint32_t junk[5] = {0xdeadbeef, 0, 0, 0, 0};
+      VkShaderModuleCreateInfo smci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof junk, .pCode = junk};
+      VkPipelineCreateFlags2CreateInfoKHR f2 = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR, .flags = VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR};
+      for (int v = 0; v < 3; v++) {
+         VkComputePipelineCreateInfo pi[2] = {
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &smci, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+         };
+         if (v == 1) pi[0].flags = VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+         if (v == 2) pi[0].pNext = &f2;
+         VkPipeline pp[2] = {(VkPipeline)1, (VkPipeline)1};
+         VkResult rr = CCP(dev, VK_NULL_HANDLE, 2, pi, NULL, pp);
+         CHECK(rr == (v ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV), "early-return variant %d: result %d", v, rr);
+         CHECK(pp[0] == VK_NULL_HANDLE && pp[1] == VK_NULL_HANDLE, "early-return variant %d: handles not nulled", v);
+      }
    }
    /* synchronization2: submit2 + barrier2 + fence, and timeline signal via submit2 */
    {

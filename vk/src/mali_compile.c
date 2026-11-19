@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -182,6 +182,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
       blake3_hasher_update(&h, L->dyn_start, sizeof L->dyn_start);
       blake3_hasher_update(&h, &L->push_size, sizeof L->push_size);
+      blake3_hasher_update(&h, &L->robust_access, sizeof L->robust_access);
       for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
          blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
          blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);
@@ -294,6 +295,34 @@ fail(char *err, size_t n, const char *m)
    return -1;
 }
 
+/* spirv_to_nir debug sink: keep the last ERROR message (e.g. "Unimplemented SPIR-V capability: X") so the caller sees why. */
+struct vtn_diag {
+   char msg[200];
+};
+
+static void
+vtn_diag_cb(void *priv, enum nir_spirv_debug_level level, size_t offset, const char *message)
+{
+   struct vtn_diag *d = priv;
+   if (level != NIR_SPIRV_DEBUG_LEVEL_ERROR)
+      return;
+   /* The message is multi-line ("SPIR-V parsing FAILED:", "In file ...", the reason, "N bytes into ..."): keep the reason lines. */
+   size_t n = 0;
+   d->msg[0] = 0;
+   for (const char *p = message; *p;) {
+      while (*p == ' ' || *p == '\n')
+         p++;
+      const char *e = strchr(p, '\n');
+      size_t len = e ? (size_t)(e - p) : strlen(p);
+      if (len && strncmp(p, "SPIR-V parsing", 14) && strncmp(p, "In file", 7) && n + 1 < sizeof d->msg)
+         n += snprintf(d->msg + n, sizeof d->msg - n, "%s%.*s", n ? "; " : "", (int)len, p);
+      p += len;
+   }
+   if (n >= sizeof d->msg)
+      n = sizeof d->msg - 1;
+   (void)offset;
+}
+
 static const struct vk_ycbcr_conversion_state *
 ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_index)
 {
@@ -302,6 +331,32 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
    const struct mali_lbinding *b = &l->set[set].b[binding];
    if (!b->ycbcr_planes || array_index >= b->count) return NULL;
    return (const struct vk_ycbcr_conversion_state *)l->set[set].ycbcr + b->ycbcr_off + array_index;
+}
+
+/* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
+ * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
+static bool
+gcm_enabled(nir_shader *nir)
+{
+   if (!getenv("MALI_OPT_GCM") || nir->info.stage != MESA_SHADER_COMPUTE)
+      return false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex && nir_tex_instr_has_implicit_derivative(nir_instr_as_tex(instr)))
+               return false;
+            if (instr->type == nir_instr_type_intrinsic) {
+               switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+               case nir_intrinsic_ddx: case nir_intrinsic_ddy: case nir_intrinsic_ddx_fine: case nir_intrinsic_ddy_fine:
+               case nir_intrinsic_ddx_coarse: case nir_intrinsic_ddy_coarse:
+                  return false;
+               default: break;
+               }
+            }
+         }
+      }
+   }
+   return true;
 }
 
 static int
@@ -317,8 +372,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                              o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
    const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
 
+   struct vtn_diag diag = {{0}};
    struct spirv_to_nir_options so = {
       .environment = NIR_SPIRV_VULKAN,
+      .debug = {.func = vtn_diag_cb, .private_data = &diag},
+      .skip_os_break_in_debug_build = true,   /* a bad shader must fail the compile, not trap a debug build */
       .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
       .ssbo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_64bit_global_32bit_offset,
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
@@ -340,8 +398,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
    nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
    free(se);
-   if (!nir)
-      return fail(err, errsz, "spirv_to_nir failed");
+   if (!nir) {
+      if (diag.msg[0] && err && errsz)
+         snprintf(err, errsz, "spirv_to_nir failed: %s", diag.msg);
+      else
+         return fail(err, errsz, "spirv_to_nir failed");
+      return -1;
+   }
 
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
@@ -363,7 +426,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
          }
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_entrypoints(nir);
@@ -374,6 +437,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_lower_system_values);
+   /* Vulkan: FragCoord.xy is x + 0.5 (sample position when sample shading); the hardware reports the integer corner. Before IO lowering. */
+   if (stage == MESA_SHADER_FRAGMENT)
+      NIR_PASS(_, nir, nir_lower_wpos_center);
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
    pan_preprocess_nir(nir, arch);
@@ -466,6 +532,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
 
    struct pan_shader_info info = {0};
+   /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
+   if (gcm_enabled(nir)) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
@@ -584,7 +655,7 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
 
    char dir[900], hex[65];
-   int use_cache = cache_dir(o, dir, sizeof dir);
+   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
    if (use_cache) {
       mkey(o, fau_reserved, push_base, hex);
       if (cache_load(dir, hex, out)) {

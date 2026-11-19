@@ -16,6 +16,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "kbase_cs.h"
 #include "kbase_draw.h"
 #include "mali_cmd.h"
+#include "mali_event.h"
 #include "mali_meta.h"
 #include "vk_command_buffer.h"
 
@@ -48,6 +49,7 @@ struct mali_hwctx {
    size_t pool_bytes;
    size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
+   int light_pending;             /* see mali_env.light_pending */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
    struct mali_meta_dev md;
    struct mali_hwctx *below;      /* previously current device (stack of live devices) */
@@ -76,29 +78,47 @@ bind_hw(struct mali_hwctx *h)
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
  * executable shader memory ---- */
 #define META_HDR 64u
-_Static_assert(sizeof(struct mali_bo) <= META_HDR, "mali_bo header");
+struct meta_hdr {
+   struct mali_bo bo;
+};
+_Static_assert(sizeof(struct meta_hdr) <= META_HDR, "meta header");
+
+/* Device-scoped: the BO is allocated and freed through the device the caller names, never through the process-global binding
+ * (g_cur) and never through a pointer stored in the BO (which could dangle once another device is destroyed). */
+void *
+mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va)
+{
+   struct meta_hdr hdr;
+   if (!dev || mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, size + META_HDR, MALI_BO_COH, &hdr.bo) != 0)
+      return NULL;
+   struct mali_bo bo = hdr.bo;
+   memcpy(bo.cpu, &hdr, sizeof hdr);
+   *va = bo.gpu_va + META_HDR;
+   return (char *)bo.cpu + META_HDR;
+}
+
+void
+mali_hw_meta_free(struct mali_device *dev, void *cpu)
+{
+   struct meta_hdr hdr;
+   if (!cpu)
+      return;
+   memcpy(&hdr, (char *)cpu - META_HDR, sizeof hdr);
+   mali_device_pdev(dev)->backend->bo_free(dev->kdev, &hdr.bo);
+}
 
 static void *
 meta_alloc(void *u, size_t size, size_t align, uint64_t *va)
 {
    struct mali_hwctx *h = u;
-   struct mali_bo bo;
-   if (h->dev && mali_device_pdev(h->dev)->backend->bo_alloc(h->dev->kdev, size + META_HDR, MALI_BO_COH, &bo) != 0)
-      return NULL;
-   memcpy(bo.cpu, &bo, sizeof bo);
-   *va = bo.gpu_va + META_HDR;
-   return (char *)bo.cpu + META_HDR;
+   return mali_hw_meta_alloc(h->dev, size, align, va);
 }
 
 static void
 meta_free(void *u, void *cpu, uint64_t va, size_t size)
 {
    struct mali_hwctx *h = u;
-   struct mali_bo bo;
-   if (!cpu)
-      return;
-   memcpy(&bo, (char *)cpu - META_HDR, sizeof bo);
-   mali_device_pdev(h->dev)->backend->bo_free(h->dev->kdev, &bo);
+   mali_hw_meta_free(h->dev, cpu);
 }
 
 static int
@@ -443,6 +463,7 @@ mali_hw_init(struct mali_device *dev)
                               .geo_cpu = h->geo.cpu,
                               .geo_va = h->geo.gpu_va,
                               .sync_va = h->sync.gpu_va,
+                              .light_pending = &h->light_pending,
                               .core_id_range = pdev->gpu.core_id_range,
                               .tls_threads = pdev->gpu.tls_threads};
    kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
@@ -549,7 +570,16 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 
    double p2 = prof_now();
    int fd = -1;
-   int r = be->submit_signal(dev->kdev, &fd);
+   /* The fence is only consumed through submit->signals (VkFence, semaphores, QueueWaitIdle and present all signal), so a
+    * submission without signals skips the 2 KCPU ioctls, the kick and the fd close. Exception: a light ops frame (event.c)
+    * relies on submit_signal's head flush; MALI_FENCE_ALWAYS=1 keeps the old behaviour. */
+   static int always = -1;
+   if (always < 0)
+      always = getenv("MALI_FENCE_ALWAYS") != NULL;
+   bool light = mali_ops_take_light(&dev->hw->light_pending);
+   int r = 0;
+   if (submit->signal_count || light || always)
+      r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);

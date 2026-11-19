@@ -17,7 +17,9 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;   /* as on main; 4x draws stay behind MALI_EXPERIMENTAL_MSAA=1 */
+   /* KNOWN GAP (feat-audit): 1x|4x is advertised unconditionally (dEQP relies on it; the multisample lane is making 4x real), but 4x pipelines
+    * are still rejected unless MALI_EXPERIMENTAL_MSAA=1 (mali_pipeline.c) and resolve/LOAD/depth cases are limited (vk/README.md "Known gaps"). */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -72,7 +74,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .subTexelPrecisionBits = 4,
       .mipmapPrecisionBits = 4,
       .maxDrawIndexedIndexValue = 0xffffffffu,
-      .maxDrawIndirectCount = 1,
+      .maxDrawIndirectCount = 0xffff,   /* multiDrawIndirect: record_indirect/expand_indirect expand any drawCount x stride (t_vk_feat mdilimit); spec minimum with the feature is 2^16-1 */
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
@@ -93,13 +95,16 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .framebufferDepthSampleCounts = samples_1_4,
       .framebufferStencilSampleCounts = samples_1_4,
       .framebufferNoAttachmentsSampleCounts = samples_1_4,
-      .maxColorAttachments = 4,
+      .maxColorAttachments = 4,   /* the Vulkan minimum; KNOWN GAP: only ONE colour attachment renders (mali_cmd.c "need exactly one colour attachment"), see vk/README.md "Known gaps" */
       .sampledImageColorSampleCounts = samples_1_4,
       .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .sampledImageDepthSampleCounts = samples_1_4,
       .sampledImageStencilSampleCounts = samples_1_4,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
+      .maxClipDistances = 8,                 /* shaderClipDistance: VARYING_SLOT_CLIP_DIST0/1 (t_vk_feat clip8) */
+      .maxCullDistances = 0,                 /* shaderCullDistance stays off: no cull lowering */
+      .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
       .pointSizeRange = {1.0f, 1.0f},
@@ -110,14 +115,25 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .optimalBufferCopyRowPitchAlignment = 1,
       .nonCoherentAtomSize = 64,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
-      /* descriptor indexing: only sampled images and samplers have update-after-bind (t_vk_feat didx); everything else reports 0 */
-      .maxUpdateAfterBindDescriptorsInAllPools = 1024, .shaderSampledImageArrayNonUniformIndexingNative = false,
+      /* descriptor indexing limits. Driver reality: binding flags are not interpreted, descriptors live in pool memory the GPU reads at
+       * submit, so an update after bind is a plain write. Only sampled images/samplers advertise the UAB features, but every UAB limit
+       * is reported (>= its non-UAB twin, Vulkan 1.2 required-limits table). Samplers/sampled images: a set must fit the 1M-slot
+       * layout cap (mali_get_descriptor_set_layout_support) and the 1 GiB pool cap: 500000 * 32 B = 16 MB. t_vk_info "uab limits" */
+      .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
-      .maxPerStageDescriptorUpdateAfterBindSamplers = 16, .maxPerStageDescriptorUpdateAfterBindSampledImages = 16,
-      .maxPerStageUpdateAfterBindResources = 32, .maxDescriptorSetUpdateAfterBindSamplers = 96,
-      .maxDescriptorSetUpdateAfterBindSampledImages = 96,
+      .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = 12, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageUpdateAfterBindResources = 500000,
+      .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
+      .maxDescriptorSetUpdateAfterBindUniformBuffers = 72, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
+      .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
+      .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA "unknown"
+#endif
    snprintf(p->deviceName, sizeof(p->deviceName), "%s (mali-own%s)", gpu->name,
             gpu->fake ? ", fake backend" : "");
 
@@ -137,9 +153,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxMemoryAllocationSize = 1u << 30;
 
    /* ---- Vulkan 1.2 ---- driverID has no Mali-open value; PanVK is the nearest sibling (same compiler). */
+   /* Deliberate: zink keys real workarounds on this id (implicit_sync off, renderpass optimisation for tilers, invalid linear modifier,
+    * no msrtss); an unregistered id would lose them. Revisit only if a PanVK quirk turns out wrong for us. */
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
-   snprintf(p->driverInfo, sizeof(p->driverInfo), "open Mali driver over kbase (R4-M1, not conformant)");
+   snprintf(p->driverInfo, sizeof(p->driverInfo), "mali-open %s (mali-own), not conformant", MALI_GIT_SHA);
    /* conformanceVersion stays 0.0.0.0: we do not claim conformance. */
    p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
    p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
@@ -160,6 +178,38 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
    p->maxCombinedImageSamplerDescriptorCount = 1; /* maintenance6; blockTexelViewCompatibleMultipleLayers stays false */
    p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
+   /* ---- shaderIntegerDotProduct properties: honest. No Bifrost/Valhall dot instruction is used (vtn + bifrost_nir.c lower to mul+add),
+    * so every *Accelerated hint is false. The runtime writes the whole struct from vk_properties (t_vk_feat intdot_props fills it with 0xCD first). */
+   p->integerDotProduct16BitMixedSignednessAccelerated = false;
+   p->integerDotProduct16BitSignedAccelerated = false;
+   p->integerDotProduct16BitUnsignedAccelerated = false;
+   p->integerDotProduct32BitMixedSignednessAccelerated = false;
+   p->integerDotProduct32BitSignedAccelerated = false;
+   p->integerDotProduct32BitUnsignedAccelerated = false;
+   p->integerDotProduct4x8BitPackedMixedSignednessAccelerated = false;
+   p->integerDotProduct4x8BitPackedSignedAccelerated = false;
+   p->integerDotProduct4x8BitPackedUnsignedAccelerated = false;
+   p->integerDotProduct64BitMixedSignednessAccelerated = false;
+   p->integerDotProduct64BitSignedAccelerated = false;
+   p->integerDotProduct64BitUnsignedAccelerated = false;
+   p->integerDotProduct8BitMixedSignednessAccelerated = false;
+   p->integerDotProduct8BitSignedAccelerated = false;
+   p->integerDotProduct8BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating16BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating32BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating32BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating64BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating64BitUnsignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitSignedAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = false;
 }
 
 static VkResult
@@ -187,16 +237,23 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_swapchain_mutable_format = true,
       .EXT_image_drm_format_modifier = true, /* LINEAR only */
       .EXT_depth_clip_enable = true,         /* t_dxvk_caps; pixels: t_vk_draw fx_dclip_* */
+      .EXT_extended_dynamic_state3 = true,   /* polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
+      .KHR_shader_expect_assume = true,      /* t_dxvk_caps: spirv_to_nir default caps include ExpectAssumeKHR (OpExpectKHR passthrough, OpAssumeTrueKHR dropped) */
       .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
       .EXT_custom_border_color = true,       /* t_vk_feat cbc: runtime border_color_value -> sampler descriptor words 4..7 (same path as the fixed colours) */
       .KHR_maintenance5 = true,              /* t_vk_feat maint5: BindIndexBuffer2, module-less stages (zink requires it, STEAM-GAPS.md) */
       .EXT_vertex_attribute_divisor = true, .KHR_vertex_attribute_divisor = true,   /* t_vk_feat divisor */
+      .KHR_shader_integer_dot_product = true, /* t_vk_feat intdot */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
+      .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
+      .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
+      .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
+      .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; logicOp/patchControlPoints stay off */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
       /* Promoted-to-core names whose feature bit is already true and probed (t_vk_draw/t_vk_meta/t_vk_feat); ANGLE and DXVK look at the extension name.
@@ -209,6 +266,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
+      .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
@@ -226,7 +284,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
-      .sampleRateShading = mali_experimental_msaa(),   /* MALI_EXPERIMENTAL_MSAA=1 */
+      .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
@@ -246,10 +304,17 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
       .shaderTerminateInvocation = true,   /* t_vk_feat terminate: spirv_to_nir OpTerminateInvocation -> discard */
       .pipelineCreationCacheControl = true, /* FAIL_ON_PIPELINE_COMPILE_REQUIRED: a shader missing from the disk cache returns VK_PIPELINE_COMPILE_REQUIRED (t_vk_feat cachectl) */
+      .extendedDynamicState3PolygonMode = true,   /* mali_cmd.c: dyn->rs.polygon_mode -> gfx.poly_mode */
+      .shaderIntegerDotProduct = true,                                  /* t_vk_feat intdot (vtn lowers OpSDot/UDot/SUDot; bifrost_nir.c lowers the unaccelerated forms) */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
+      .extendedDynamicState = true,
       .maintenance5 = true,        /* t_vk_feat maint5 */
+      .shaderExpectAssume = true,  /* t_dxvk_caps */
       .maintenance6 = true,
+      .minLod = true,              /* t_image view_min_lod */
+      .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
+      .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
       .vertexAttributeInstanceRateDivisor = false, .vertexAttributeInstanceRateZeroDivisor = true,   /* divisor > 1 is NOT advertised: the hardware divides (firstInstance + i), Vulkan wants firstInstance + i / divisor, and dEQP draw.*.instanced.*attrib_divisor_{2,20} (firstInstance 0,1,3,4,20) Fail on v13 (job 20261118-142435-48673771); needs a per-run descriptor rebase. Implementation stays in mali_cs_emit.c. t_vk_feat divisor (zero: divisor 1 with stride 0, as panvk) */
