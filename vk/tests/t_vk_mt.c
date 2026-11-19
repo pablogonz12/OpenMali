@@ -149,6 +149,10 @@ rec_thread(void *arg)
          CK(f.ResetCommandPool(dev, s->pool, 0));
          set_state(s, 0);
       }
+      if (i && (i & 3) == 0) {   /* churn the command buffers: free + allocate grows and shrinks the driver's per-command-buffer tables */
+         f.FreeCommandBuffers(dev, s->pool, 1, &s->cb);
+         CK(f.AllocateCommandBuffers(dev, &ai, &s->cb));
+      }
       VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
       CK(f.BeginCommandBuffer(s->cb, &bi));
       f.CmdFillBuffer(s->cb, s->buf, 0, 4096, (uint32_t)i);

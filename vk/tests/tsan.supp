@@ -1,0 +1,13 @@
+# TSan suppressions for t_vk_mt (run: TSAN_OPTIONS=suppressions=vk/tests/tsan.supp).
+# Both are false positives; no race in mali-open code is suppressed here.
+
+# nir.h should_skip_nir(): debug-build (!NDEBUG) lazy `static const char *list` init
+# from getenv("NIR_SKIP"). Every thread writes the identical pointer; benign, Mesa-owned.
+race:should_skip_nir
+
+# glsl_types.c record/struct type cache. Every access is under glsl_type_cache_mutex
+# (simple_mtx, futex-based), but libmesa_util is not TSan-instrumented so TSan cannot see
+# the lock's happens-before edge. Frames appear as <null> in uninstrumented Mesa.
+race:glsl_record_compare
+race:record_key_compare
+race:linear_strdup

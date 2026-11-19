@@ -58,6 +58,7 @@ for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/
 for g in v11 v13; do run "vk_qerr $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_qerr" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
 for g in v11 v13; do run "dxvk_api $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_api" --direct "$OUT/libvulkan_mali.so"; done
+[ -n "${MALI_MT_STRESS:-}" ] && for g in v11 v13; do run "mt stress $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mt" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"; done  # opt-in until the mali_meta_vk.c race fix lands; TSan/ASan: tests/tsan.supp
 for g in v11 v13; do run "angle_seq $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_angle_seq" --direct "$OUT/libvulkan_mali.so"; done
 run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
 # Steam session (STEAM-GAPS.md): none of gamescope's vkCreateDevice requirements is missing any more.
