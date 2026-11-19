@@ -206,6 +206,18 @@ test_errors(void)
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "junk SPIR-V rejected");
    o.arch = 12;
    CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "arch 12 rejected");
+   /* a valid module with sparse ids (bound far above its length) must compile; an absurd bound must be refused */
+   struct spv v = load("var.frag.spv");
+   if (v.w) {
+      uint32_t bound = v.w[3];
+      v.w[3] = 65536;
+      CHECK(compile(11, MALI_STAGE_FRAGMENT, &v, NULL, "", &c) == 0, "sparse-id module (bound 65536, %zu words) compiles", v.n);
+      if (!compile(11, MALI_STAGE_FRAGMENT, &v, NULL, "", &c)) mali_compiled_free(&c);
+      v.w[3] = 0x40000000u;
+      o = (struct mali_compile_opts){ .arch = 11, .stage = MALI_STAGE_FRAGMENT, .spirv = v.w, .spirv_words = v.n, .cache_dir = "" };
+      CHECK(mali_compile(&o, &c, err, sizeof err) != 0, "absurd id bound refused");
+      v.w[3] = bound; free(v.w);
+   }
 }
 
 /* YCbCr: the conversion of an immutable NV12 sampler is lowered into the shader (nir_vk_lower_ycbcr_tex: two plane samples, model/range

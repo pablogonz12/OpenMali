@@ -35,8 +35,10 @@ rc=$?
 grep -c '^FINDING' "$OUT/findings.txt" | sed 's/^/findings: /'
 # Re-run each finding in-process to capture the sanitizer report.
 for s in $(sed -n 's/^FINDING seed=\([0-9]*\) .*/\1/p' "$OUT/findings.txt" | sort -un | head -${MAX_TRIAGE:-20}); do
-   timeout -k 2 30 "$OUT/vk_fuzz" --icd "$ICD" --spv-dir "$SPV" --mode "$mode" --seed "$s" --iters 1 --no-fork >"$OUT/seed-$s.log" 2>&1
+   timeout -k 2 30 "$OUT/vk_fuzz" --icd "$ICD" --spv-dir "$SPV" --mode "$mode" "${extra[@]}" --seed "$s" --iters 1 --no-fork >"$OUT/seed-$s.log" 2>&1
    echo "seed $s: $(grep -m1 -E 'ERROR: AddressSanitizer|runtime error|Assertion|SUMMARY' "$OUT/seed-$s.log")"
 done
 [ $rc = 124 ] && echo "time box reached"
+# 124 = time box (normal); 126/127 = timeout could not launch the harness (missing binary/timeout): a failed run, not a clean one
+[ $rc = 126 ] || [ $rc = 127 ] && { echo "fuzz: harness failed to launch (status $rc)"; exit "$rc"; }
 exit 0

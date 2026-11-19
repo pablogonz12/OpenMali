@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,11 +93,17 @@ load_corpus(const char *dir)
 {
    DIR *d = opendir(dir);
    if (!d) { fprintf(stderr, "vk_fuzz: cannot open --spv-dir %s\n", dir); exit(2); }
+   /* readdir order is unspecified: sort the names first so a seed picks the same modules on every checkout */
+   static char names[1024][256]; int nn = 0;
    struct dirent *e;
-   while ((e = readdir(d)) && ncorpus < 256) {
+   while ((e = readdir(d)) && nn < 1024) {
       size_t l = strlen(e->d_name);
-      if (l < 5 || strcmp(e->d_name + l - 4, ".spv")) continue;
-      char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+      if (l < 5 || l >= 256 || strcmp(e->d_name + l - 4, ".spv")) continue;
+      memcpy(names[nn++], e->d_name, l + 1);
+   }
+   qsort(names, nn, sizeof names[0], (int (*)(const void *, const void *))strcmp);
+   for (int ni = 0; ni < nn && ncorpus < 256; ni++) {
+      char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, names[ni]);
       FILE *f = fopen(p, "rb"); if (!f) continue;
       fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
       if (n >= 20 && n % 4 == 0) {
@@ -125,7 +132,9 @@ mutate(struct spv *o, size_t *n_out)
       case 4: { size_t a = 5 + rn(n - 5), b = 5 + rn(n - 5); uint32_t t = w[a]; w[a] = w[b]; w[b] = t; break; }  /* swap */
       case 5: if (n + 1 < cap) { size_t a = 5 + rn(n - 5); memmove(w + a + 1, w + a, (n - a) * 4); w[a] = rnd(); n++; } break;
       case 6: if (n > 7) { size_t a = 5 + rn(n - 6); memmove(w + a, w + a + 1, (n - a - 1) * 4); n--; } break;
-      default: { size_t a = 5 + rn(n - 5), l = 1 + rn(4); for (size_t i = 0; i < l && a + i < n; i++) w[a + i] = corpus[rn(ncorpus)].w[5 + rn(corpus[0].n - 5)]; }
+      default: { size_t a = 5 + rn(n - 5), l = 1 + rn(4); struct spv *d = &corpus[rn(ncorpus)];   /* bound the word index by the donor's own length */
+         if (d->n <= 5) break;
+         for (size_t i = 0; i < l && a + i < n; i++) w[a + i] = d->w[5 + rn(d->n - 5)]; }
       }
    }
    *n_out = n;
@@ -368,7 +377,10 @@ main(int argc, char **argv)
       if (nofork) { if (!setup()) return 2; iteration(s, calls); continue; }
       pid_t p = fork();
       if (p == 0) { alarm(tmo); if (!setup()) _exit(2); iteration(s, calls); _exit(0); }
-      int st; waitpid(p, &st, 0);
+      if (p < 0) { fprintf(stderr, "vk_fuzz: fork failed for seed %llu: %s\n", (unsigned long long)s, strerror(errno)); return 2; }   /* harness error, not a finding */
+      int st = 0, wr;
+      while ((wr = waitpid(p, &st, 0)) < 0 && errno == EINTR) ;
+      if (wr < 0) { fprintf(stderr, "vk_fuzz: waitpid failed: %s\n", strerror(errno)); return 2; }
       if (WIFSIGNALED(st) || (WIFEXITED(st) && WEXITSTATUS(st) != 0)) {
          bad++;
          if (WIFSIGNALED(st)) printf("FINDING seed=%llu mode=%s signal=%d(%s)%s\n", (unsigned long long)s, mode, WTERMSIG(st), strsignal(WTERMSIG(st)),

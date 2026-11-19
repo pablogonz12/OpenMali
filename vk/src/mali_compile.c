@@ -313,8 +313,9 @@ spirv_header_ok(const uint32_t *w, size_t nwords)
    if (nwords <= 5 || w[0] != 0x07230203u) return false;
    if (w[1] < 0x10000u || w[1] > 0x10600u) return false;   /* 1.0 .. 1.6 */
    if (w[4] != 0) return false;
-   /* ids are defined by instructions of >= 2 words, so a bound far beyond the module size is bogus (slack for generators that over-reserve) */
-   return w[3] != 0 && w[3] <= 4 * nwords + 1024;
+   /* SPIR-V only requires ids < bound; dense numbering is a recommendation, so valid modules may have a bound far above their length.
+    * Cap it by an allocation-safe constant independent of the module size (the bound sizes vtn's value table). */
+   return w[3] != 0 && w[3] <= (1u << 20);
 }
 
 /* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
