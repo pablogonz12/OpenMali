@@ -68,6 +68,7 @@ main(int argc, char **argv)
    printf("timeline OPAQUE_FD exportable=%d (explicit sync %s)\n", exp, exp ? "ON" : "off");
    CHECK(exp == EXPLICIT_SYNC_READY, "timeline OPAQUE_FD export changed: update EXPLICIT_SYNC_READY with the implementation");
 
+   ((PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance"))(inst, NULL);
    printf(g_fail ? "t_ext_sync_caps: %d FAIL\n" : "t_ext_sync_caps: PASS\n", g_fail);
    return g_fail ? 1 : 0;
 }
