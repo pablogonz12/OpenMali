@@ -535,10 +535,22 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    struct mali_meta_bind bind[2] = { j->bind[0], j->bind[1] };
    int r;
 
+   /* shader_get releases g_lock before it returns, so mali_meta_set_dev can free the cached shader and install another
+    * device in between. Revalidate under g_lock before allocating anything: a shader/VA from an older device must not
+    * be paired with descriptor memory from the one installed now (a foreign VA, and a freed mali_compiled). Retry, and
+    * take the VA from the live cache entry rather than from the copy shader_get returned. */
+   for (unsigned attempt = 0;; attempt++) {
    r = shader_get(j->sh, &c, &cs_va);
    if (r)
       return r;
    pthread_mutex_lock(&g_lock);
+   if (!g_sh[j->sh].ok || c != &g_sh[j->sh].c) {
+      pthread_mutex_unlock(&g_lock);
+      if (attempt < 3)
+         continue;
+      return -ENODEV;   /* the device keeps changing under us: no stable shader to record with */
+   }
+   cs_va = g_sh[j->sh].va;
    if (j->inline_data) {
       uint64_t va;
       void *p = mem_alloc(mem, (j->inline_len + 63) & ~63u, 64, &va);
@@ -565,6 +577,7 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    out->set_bytes[0] = j->nbind * 32;
    memcpy(out->groups, j->groups, sizeof out->groups);
    return 0;
+   }
 }
 
 /* R4: loadOp LOAD. A graphics "preload" draw (full-viewport triangle) re-emits the old contents of the (linear) attachment(s), read as storage
