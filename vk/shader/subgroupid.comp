@@ -1,0 +1,9 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_KHR_shader_subgroup_basic : require
+// Regression shader: gl_SubgroupID / gl_NumSubgroups. The Bifrost lowering of load_subgroup_id emits load_workgroup_size, which
+// nothing lowered afterwards ("Unhandled intrinsic load_workgroup_size", DXVK's mip-generation shaders use SubgroupId).
+layout(local_size_x = 64, local_size_y = 2, local_size_z = 1) in;
+layout(buffer_reference, std430) buffer B { uint v[]; };
+layout(push_constant) uniform P { B b; } p;
+void main() { p.b.v[gl_GlobalInvocationID.x] = gl_SubgroupID * 256u + gl_NumSubgroups; }
