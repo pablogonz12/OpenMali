@@ -362,7 +362,7 @@ test_storage_read(void)
       for (int i = 0; i < 3; i++) {
          struct spv s = load(names[i]);
          if (!s.w) continue;
-         struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n, .layout = &l};
+         struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n, .layout = &l, .cache_dir = ""};
          char err[256] = "";
          ok[i] = !mali_compile(&o, &c[i], err, sizeof err);
          CHECK(ok[i], "v%u %s compiles (Unknown-format OpImageRead): %s", arch, names[i], err);
