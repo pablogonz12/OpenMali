@@ -64,6 +64,12 @@ STEAM_MISSING=0
 ZINK_MISSING=2
 for g in v11 v13; do run "steam_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
+# MALI_ADVERTISE_CULL compatibility shim (not conformance): off by default; on only with the env; cull writes are ignored.
+for g in v11 v13; do
+   run "cull shim off $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_cull_shim" --direct "$OUT/libvulkan_mali.so" --expect off
+   run "cull shim on $g"  0 MALI_ADVERTISE_CULL=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_cull_shim" --direct "$OUT/libvulkan_mali.so" --expect on
+   run "cull shim draw $g" 0 MALI_ADVERTISE_CULL=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull
+done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
