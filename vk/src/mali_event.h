@@ -26,6 +26,8 @@ enum mali_op_kind {
 struct mali_op { enum mali_op_kind kind; uint64_t va, va2; uint32_t val; };
 
 /* CS in a malloc'd array (caller frees). 0, -EINVAL (arch) or -ENOMEM. */
+/* True once after a light ops frame (no own flush) was built; the caller must then run submit_signal for its head flush. */
+int mali_ops_take_light(int *pending);   /* pending = env.light_pending of the submitting device */
 int mali_ops_build(const struct mali_env *env, const struct mali_op *ops, unsigned nops, uint64_t **cs, unsigned *ninstr);
 
 #ifdef __cplusplus

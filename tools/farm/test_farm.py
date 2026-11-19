@@ -1152,6 +1152,27 @@ class T(unittest.TestCase):
         self.assertIn("tri CPU ours 1.91 / bridge 3.20 ms", out[0])
         self.assertIn("cube GPU ours 12.34 / bridge 11.00 ms", out[0])
 
+    def test_bench_regressions_flag_over_10_percent(self):
+        def row(c, fps, cpu, drv="ours", var="triangle-3k"):
+            return {"phone": "p", "commit_full": c * 40, "driver": drv, "variant": var, "offscreen": {"fps": fps, "cpu_ms": cpu}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("a", 50, 1.0, "bridge"), row("b", 48, 1.05, "bridge"),
+                row("a", 100, 2.0, var="cube-720p"), row("b", 95, 2.1, var="cube-720p"), row("c", 90, 2.0, var="solo")]
+        out = BL.regressions(rows)
+        self.assertEqual(len(out), 2)                                                   # ours triangle: fps -15% and cpu +25%
+        self.assertTrue(all("ours triangle-3k" in o for o in out))
+        self.assertTrue(any("fps 100 -> 85" in o for o in out) and any("cpu_ms 2 -> 2.5" in o for o in out))
+        self.assertEqual(BL.regressions(rows[:1] + [row("a", 1, 9.0)]), [])             # same commit re-run is not a regression pair
+
+    def test_bench_regressions_incomplete_rerun_and_exact_boundary(self):
+        def row(c, fps, cpu, off=True):
+            return {"phone": "p", "commit_full": c * 40, "driver": "ours", "variant": "v", "offscreen": {"fps": fps, "cpu_ms": cpu} if off else {}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("b", 0, 0, off=False)]
+        self.assertEqual(len(BL.regressions(rows)), 2)                                  # incomplete rerun keeps the valid A..B pair
+        self.assertEqual(BL.regressions([row("a", 100, 2.0), row("b", 90, 2.2)]), [])   # exactly 10% on both metrics (2.0 -> 2.2 is 10.000000000000009)
+        self.assertEqual(len(BL.regressions([row("a", 100, 2.0), row("b", 89, 2.21)])), 2)
+        part = [row("a", 100, 2.0), {"phone": "p", "commit_full": "b" * 40, "driver": "ours", "variant": "v", "offscreen": {"cpu_ms": 2.5}}]
+        self.assertEqual(len(BL.regressions(part)), 1)                                  # missing fps skips only that metric
+
     def nosweep(self):
         os.environ.pop("MALI_FARM_SWEEP_LIST", None)          # an earlier sweep test leaves it in os.environ: a sweep would loop in these passes
         self.env.pop("MALI_FARM_SWEEP_LIST", None)
@@ -1316,6 +1337,36 @@ class T(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("MINE", r.stdout)
         self.assertNotIn("OTHER-PHONE", r.stdout)
+
+    def test_valrun_serial_env_and_symlinked_runs_dir(self):
+        """qdrv resolves scripts/quick (a symlink to MediaDeck) and writes runs/quick THERE; quick.py reads CMF_SERIAL only: valrun must export it and look in that dir"""
+        home = self.d + "/home"
+        tree = self.d + "/tree"
+        md = self.d + "/MediaDeck"
+        for dpath in (md + "/scripts/quick", md + "/runs/quick", home + "/Projects/mali-gaming/scripts", home + "/.cache/mali-tmp", tree + "/vk/tests", tree + "/vk/out/a64-glibc", tree + "/tools", self.d + "/bin"):
+            os.makedirs(dpath, exist_ok=True)
+        os.symlink(md + "/scripts/quick", home + "/Projects/mali-gaming/scripts/quick")
+        shutil.copy(HERE + "/../../vk/tests/valrun.sh", tree + "/vk/tests/valrun.sh")
+        for n in ("libvulkan_mali.so", "t_vk_draw", "t_vk_compute", "t_vk_meta"):
+            open(tree + "/vk/out/a64-glibc/" + n, "w").write("x")
+        def script(path, body):
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, 0o755)
+        script(self.d + "/bin/adb", "exit 0\n")
+        script(tree + "/tools/dev-serial", "echo SERIAL-CMF\n")
+        script(md + "/scripts/quick/qdrv", "echo \"serial=$CMF_SERIAL\"; echo '{\"line\":\"MINE\"}' >" + md + "/runs/quick/29990101-000001-cmf-drv-valguest.sh.jsonl\n")
+        env = dict(os.environ, HOME=home, PATH=self.d + "/bin:" + os.environ["PATH"], QSAFE_LOCK_OVERRIDE="1", PHONE="cmf")
+        env.pop("CMF_SERIAL", None)
+        env.pop("QUICK_RUNS_DIR", None)
+        r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True, env=env, timeout=60, cwd=tree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("serial=SERIAL-CMF", r.stderr)
+        self.assertIn("MINE", r.stdout)
+        os.symlink(md + "/runs/quick", self.d + "/link-runs")                # a symlinked QUICK_RUNS_DIR override must be followed
+        r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True,
+                           env=dict(env, QUICK_RUNS_DIR=self.d + "/link-runs"), timeout=60, cwd=tree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("MINE", r.stdout)
 
     def test_auto_bench_beats_sweep(self):
         self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)

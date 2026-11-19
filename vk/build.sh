@@ -69,9 +69,20 @@ for s in $KBSRCS; do
    eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
    OBJS="$OBJS $o"
 done
+# Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
+if MALI_SHA=$(git -C "$V" rev-parse --short=10 HEAD 2>/dev/null) && [ -n "$MALI_SHA" ]; then
+   rc=0; git -C "$V" diff --quiet HEAD -- 2>/dev/null || rc=$?
+   case $rc in
+      0) ;;
+      1) MALI_SHA="$MALI_SHA-dirty" ;;
+      *) echo "build.sh: git diff failed (rc=$rc); not marking -dirty" >&2 ;;
+   esac
+else
+   MALI_SHA=unknown
+fi
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
 
@@ -109,7 +120,7 @@ $CXX -o "$OUT/libvulkan_mali.so" -shared -fPIC -Wl,--as-needed -Wl,--no-undefine
 eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
 # shellcheck disable=SC2086
 $CXX -o "$OUT/t_resources" $OBJ/t_resources.o $OBJS \
-   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+   -Wl,--wrap=memset -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
 # 5. Loader manifest + test.
 cat > "$OUT/mali_icd.json" <<J
@@ -123,7 +134,8 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_compute" "$V/tests/t_vk_compute.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_meta" "$V/tests/t_vk_meta.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_vk_leak" "$V/tests/t_vk_leak.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -DMALI_EXPECT_SHA=\"$MALI_SHA\" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_qerr" "$V/tests/t_vk_qerr.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl

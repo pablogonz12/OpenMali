@@ -388,7 +388,8 @@ out:
 }
 
 static void mem_sync_all(struct mali_kdev *k, unsigned op);
-static void mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only);
+enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD };
+static void mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel);
 static int
 kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
@@ -445,11 +446,11 @@ kbase_device_lost(struct mali_kdev *k)
 static void
 mem_sync_all(struct mali_kdev *k, unsigned op)
 {
-   mem_sync_bos(k, op, false);
+   mem_sync_bos(k, op, SYNC_ALL);
 }
 
 static void
-mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
+mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
 {
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
    if (!(kb_bo_extra_flags & 0x800))
@@ -463,7 +464,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot))
+      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (sel == SYNC_HOT && !b->hot) || (sel == SYNC_COLD && b->hot))
          continue;
       struct {
          uint64_t handle, user_addr, size;
@@ -477,7 +478,9 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
 static void
 kbase_host_sync(struct mali_kdev *k)
 {
-   mem_sync_bos(k, 1, false);
+   /* Hot BOs (arena, overflow) are written only by the frame build, which always ends in kbase_submit_cs; that syncs them
+    * after the build. Syncing them here too was a second ioctl per hot BO per queue submit that covered no CPU write. */
+   mem_sync_bos(k, 1, SYNC_COLD);
 }
 
 static int
@@ -490,7 +493,7 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
       r = -EIO;
       goto out;
    }
-   mem_sync_bos(k, 1, true);   /* the other BOs were synced by host_sync at the start of the queue submit */
+   mem_sync_bos(k, 1, SYNC_HOT);   /* the other BOs were synced by host_sync at the start of the queue submit */
    for (unsigned i = 0; i < n && !r; i += CS_PIECE) {
       unsigned m = n - i < CS_PIECE ? n - i : CS_PIECE;
       if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63)))

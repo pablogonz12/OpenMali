@@ -1,0 +1,26 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+// Descriptor-indexing hardware probe (test didxbuf): arrays of UBOs, SSBOs and storage images indexed with a
+// dynamic-uniform index (o.dyn, written by the host) and with a divergent non-uniform index (lane & 3).
+// Read results: o.r[t*6+k]; writes land in ssbo[].d[64+t], ssbo[].d[128+t] and img[].texel(t&7, 8+t/8).
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std140) uniform U { uvec4 v; } ubo[4];
+layout(set = 0, binding = 1, std430) buffer S { uint d[]; } ssbo[4];
+layout(set = 0, binding = 2, r32ui) uniform uimage2D img[4];
+layout(set = 0, binding = 3, std430) buffer O { uint dyn; uint pad[3]; uint r[]; } o;
+void main() {
+  uint t = gl_LocalInvocationIndex;
+  int di = int(o.dyn);
+  int nu = int(t & 3u);
+  ivec2 p = ivec2(t & 7u, t >> 3);
+  uint b = t * 6u;
+  o.r[b + 0u] = ubo[di].v.x;
+  o.r[b + 1u] = ubo[nonuniformEXT(nu)].v.y;
+  o.r[b + 2u] = ssbo[di].d[t];
+  o.r[b + 3u] = ssbo[nonuniformEXT(nu)].d[t];
+  o.r[b + 4u] = imageLoad(img[di], p).x;
+  o.r[b + 5u] = imageLoad(img[nonuniformEXT(nu)], p).x;
+  ssbo[nonuniformEXT(nu)].d[64u + t] = 0x5000u + t * 8u + uint(nu);
+  ssbo[di].d[128u + t] = 0x6000u + t;
+  imageStore(img[nonuniformEXT(nu)], ivec2(t & 7u, 8u + (t >> 3)), uvec4(0xD000u + t));
+}
