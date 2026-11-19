@@ -18,6 +18,8 @@
 #define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
 #include <dlfcn.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -51,7 +53,7 @@ static int g_fail;
    X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline)                 \
    X(CmdBindDescriptorSets) X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdDraw) X(CmdSetViewport) X(CmdSetScissor)      \
    X(CmdPipelineBarrier) X(CmdCopyBufferToImage) X(CmdCopyImageToBuffer) X(QueueSubmit) X(CreateFence) X(DestroyFence)     \
-   X(WaitForFences) X(ResetFences)
+   X(WaitForFences) X(ResetFences) X(InvalidateMappedMemoryRanges)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -204,7 +206,7 @@ barrier_image(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout
 }
 
 static int
-ref_init(struct ref *r)
+ref_init(struct ref *r, uint32_t qfi)
 {
    memset(r, 0, sizeof *r);
    r->col = make_image(VK_FORMAT_R8G8B8A8_UNORM, REF_W, REF_H,
@@ -390,7 +392,7 @@ ref_init(struct ref *r)
 
    VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                   .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                  .queueFamilyIndex = 0};
+                                  .queueFamilyIndex = qfi};
    CHECK(CreateCommandPool(dev, &cpi, NULL, &r->cpool) == VK_SUCCESS, "command pool");
    VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                       .commandPool = r->cpool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -460,6 +462,13 @@ ref_frame(struct ref *r, int upload)
    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                           .imageExtent = {REF_W, REF_H, 1}};
    CmdCopyImageToBuffer(r->cb, r->col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r->rdb, 1, &c);
+   VkBufferMemoryBarrier rb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                               .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                               .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .buffer = r->rdb, .offset = 0, .size = VK_WHOLE_SIZE};
+   CmdPipelineBarrier(r->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &rb, 0, NULL);
    if (EndCommandBuffer(r->cb) != VK_SUCCESS)
       return 0;
 
@@ -467,6 +476,11 @@ ref_frame(struct ref *r, int upload)
    if (QueueSubmit(queue, 1, &si, r->fence) != VK_SUCCESS)
       return 0;
    if (WaitForFences(dev, 1, &r->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+      return 0;
+   /* alloc_mem may fall back to a non-coherent host-visible type; invalidation is a legal no-op on coherent memory. */
+   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = r->rdbm,
+                             .offset = 0, .size = VK_WHOLE_SIZE};
+   if (InvalidateMappedMemoryRanges(dev, 1, &mr) != VK_SUCCESS)
       return 0;
    ResetFences(dev, 1, &r->fence);
    return 1;
@@ -481,11 +495,17 @@ write_ppm(const char *path, const uint8_t *px)
       g_fail = 1;
       return;
    }
-   fprintf(f, "P6\n%u %u\n255\n", REF_W, REF_H);
+   int bad = fprintf(f, "P6\n%u %u\n255\n", REF_W, REF_H) < 0;
    for (unsigned y = 0; y < REF_H; y++)
       for (unsigned x = 0; x < REF_W; x++)
-         fwrite(px + (y * REF_W + x) * 4, 1, 3, f); /* drop alpha: P6 is RGB */
-   fclose(f);
+         if (fwrite(px + (y * REF_W + x) * 4, 1, 3, f) != 3)
+            bad = 1; /* drop alpha: P6 is RGB */
+   if (fclose(f) != 0)
+      bad = 1;
+   if (bad) {
+      fprintf(stderr, "write_ppm: %s: write or close failed\n", path);
+      g_fail = 1;
+   }
 }
 
 int
@@ -501,8 +521,16 @@ main(int argc, char **argv)
          g_out = argv[++i];
       else if (!strcmp(argv[i], "--json") && i + 1 < argc)
          g_json = argv[++i];
-      else if (!strcmp(argv[i], "--loop") && i + 1 < argc)
-         g_loop = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--loop") && i + 1 < argc) {
+         char *end = NULL;
+         errno = 0;
+         long v = strtol(argv[++i], &end, 10);
+         if (errno || !end || *end || v < 1 || v > INT_MAX) {
+            fprintf(stderr, "--loop needs a whole number of frames, at least 1 (got '%s')\n", argv[i]);
+            return 2;
+         }
+         g_loop = (int)v;
+      }
       else if (!strcmp(argv[i], "--nearest"))
          g_nearest = 1;
       else {
@@ -592,7 +620,7 @@ main(int argc, char **argv)
    GetDeviceQueue(dev, qfi, 0, &queue);
 
    struct ref sc;
-   int ok = ref_init(&sc);
+   int ok = ref_init(&sc, qfi);
    double t0 = 0.0, t_render = 0.0;
    for (int i = 0; ok && i < g_loop; i++) {
       t0 = now_us();
@@ -604,34 +632,57 @@ main(int argc, char **argv)
    /* per-64-row-block digests: the AFBC row-block shape of the comparison, usable from a farm JSON without an image */
    char digests[REF_NBLOCK][24];
    uint64_t total = 0;
-   for (unsigned b = 0; b < REF_NBLOCK && ok; b++) {
-      uint64_t h = ref_block_digest(sc.rd, REF_W * 4, b);
-      snprintf(digests[b], sizeof digests[b], "0x%016llx", (unsigned long long)h);
-      total ^= h;
+   if (ok) {
+      total = ref_frame_digest(sc.rd, REF_W * 4);
+      for (unsigned b = 0; b < REF_NBLOCK; b++) {
+         uint64_t h = ref_block_digest(sc.rd, REF_W * 4, b);
+         snprintf(digests[b], sizeof digests[b], "0x%016llx", (unsigned long long)h);
+      }
    }
    if (ok && g_out && !g_fake)
       write_ppm(g_out, sc.rd);
-   if (g_fake) {
+   if (!ok) {
+      printf("{\"scene\":\"ref-v1\",\"device\":\"%s\",\"ok\":false,\"fail\":\"reference render failed\"}\n",
+             pp.deviceName);
+   } else if (g_fake) {
       printf("{\"scene\":\"ref-v1\",\"device\":\"%s\",\"skipped\":\"fake backend executes nothing\",\"ok\":true}\n",
              pp.deviceName);
    } else if (ok) {
       printf("{\"scene\":\"ref-v1\",\"device\":\"%s\",\"size\":[%u,%u],\"frames\":%d,\"frame_us\":%.1f,"
              "\"blocks\":[",
-             pp.deviceName, REF_W, REF_H, g_loop, t_render / (g_loop ? g_loop : 1));
+             pp.deviceName, REF_W, REF_H, g_loop, t_render / g_loop);
       for (unsigned b = 0; b < REF_NBLOCK; b++)
          printf("%s\"%s\"", b ? "," : "", digests[b]);
       printf("],\"digest\":\"0x%016llx\",\"ok\":true}\n", (unsigned long long)total);
    }
-   int rc = (ok && !g_fail) ? 0 : 1;
    if (g_json) {
       FILE *f = fopen(g_json, "w");
-      if (f) {
-         fprintf(f, "{\"scene\":\"ref-v1\",\"device\":\"%s\",\"size\":[%u,%u],\"blocks\":[", pp.deviceName, REF_W, REF_H);
-         for (unsigned b = 0; b < REF_NBLOCK; b++)
-            fprintf(f, "%s\"%s\"", b ? "," : "", digests[b]);
-         fprintf(f, "],\"digest\":\"0x%016llx\"}\n", (unsigned long long)total);
-         fclose(f);
+      if (!f) {
+         fprintf(stderr, "--json %s: cannot open for writing\n", g_json);
+         g_fail = 1;
+      } else {
+         int w = 0;
+         if (!ok)
+            w = fprintf(f, "{\"scene\":\"ref-v1\",\"device\":\"%s\",\"ok\":false,\"fail\":\"reference render failed\"}\n",
+                        pp.deviceName);
+         else if (g_fake)
+            w = fprintf(f, "{\"scene\":\"ref-v1\",\"device\":\"%s\",\"skipped\":\"fake backend executes nothing\","
+                           "\"ok\":true}\n", pp.deviceName);
+         else {
+            w = fprintf(f, "{\"scene\":\"ref-v1\",\"device\":\"%s\",\"size\":[%u,%u],\"blocks\":[", pp.deviceName,
+                        REF_W, REF_H);
+            for (unsigned b = 0; w >= 0 && b < REF_NBLOCK; b++)
+               w = fprintf(f, "%s\"%s\"", b ? "," : "", digests[b]);
+            if (w >= 0)
+               w = fprintf(f, "],\"digest\":\"0x%016llx\"}\n", (unsigned long long)total);
+         }
+         int cerr = fclose(f);
+         if (w < 0 || cerr != 0) {
+            fprintf(stderr, "--json %s: write or close failed\n", g_json);
+            g_fail = 1;
+         }
       }
    }
+   int rc = (ok && !g_fail) ? 0 : 1;
    return rc;
 }

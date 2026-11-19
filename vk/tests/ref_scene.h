@@ -117,10 +117,25 @@ ref_texture(uint8_t *dst)
 }
 
 /* FNV-1a 64 of one 64-row band, RGB only: the JSON summary a phone run is compared on before any image is copied. */
+/* FNV-1a 64 over the whole frame in row order, RGB only. Unlike an XOR of the per-block digests this changes when two
+ * bands swap places, which is the shifted-band failure the block comparison exists to catch. */
+static uint64_t
+ref_frame_digest(const uint8_t *px, unsigned pitch)
+{
+   uint64_t h = 14695981039346656037ull;
+   for (unsigned y = 0; y < REF_H; y++)
+      for (unsigned x = 0; x < REF_W; x++)
+         for (unsigned c = 0; c < 3; c++) {
+            h ^= px[y * pitch + x * 4 + c];
+            h *= 1099511628211ull;
+         }
+   return h;
+}
+
 static uint64_t
 ref_block_digest(const uint8_t *px, unsigned pitch, unsigned block)
 {
-   uint64_t h = 1469598103934665603ull;
+   uint64_t h = 14695981039346656037ull;
    for (unsigned y = block * REF_BLOCK; y < (block + 1) * REF_BLOCK; y++)
       for (unsigned x = 0; x < REF_W; x++)
          for (unsigned c = 0; c < 3; c++) {
