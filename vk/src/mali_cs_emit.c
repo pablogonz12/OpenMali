@@ -497,14 +497,47 @@ fau:;
    return 0;
 }
 
-/* fillModeNonSolid, polygonMode LINE: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges. Indices
- * (u32, vertex numbers as the original draw would fetch them, so vertexOffset/firstVertex stay in the draw) are generated here from the
- * CPU view of the bound index buffer (the same submit-time read the indirect draws use). Strips and fans share edges: each edge once.
- * Limits: cullMode and gl_FrontFacing are not honoured in line mode. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
+/* Triangle assembly for fillModeNonSolid. v = the n vertex numbers of the draw; prim = triangle topology (8 list, 10 strip, 12 fan); `restart`
+ * = the primitive-restart index when restart applies (strip/fan, indexed), else NULL. Every ASSEMBLED triangle yields its 3 edges (mode 1:
+ * a-b, b-c, c-a) or its 3 vertices (mode 2), so edges/vertices shared by neighbouring strip/fan triangles are emitted once per triangle (additive
+ * blend / stencil increment see every polygon). Incomplete primitives (list tail, strip/fan segments under 3 vertices) and restart markers
+ * produce nothing. `out` must hold 6 * n entries. Returns the number of entries written. */
+size_t
+mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const uint32_t *v, uint32_t n, uint32_t *out)
+{
+   size_t ni = 0;
+#define TRI(a, b, c) do { if (mode == 1) { out[ni++] = (a); out[ni++] = (b); out[ni++] = (b); out[ni++] = (c); out[ni++] = (c); out[ni++] = (a); } \
+                         else { out[ni++] = (a); out[ni++] = (b); out[ni++] = (c); } } while (0)
+   if (prim == 8) {
+      for (uint32_t t = 0; t + 2 < n; t += 3)
+         TRI(v[t], v[t + 1], v[t + 2]);
+   } else {
+      uint32_t s = 0;
+      while (s < n) {
+         uint32_t e = s;
+         while (e < n && !(restart && v[e] == *restart))
+            e++;
+         const uint32_t *w = v + s;
+         for (uint32_t t = 0; t + 2 < e - s; t++) {
+            if (prim == 10) TRI(w[t], w[t + 1], w[t + 2]);
+            else TRI(w[0], w[t + 1], w[t + 2]);
+         }
+         s = e + 1;
+      }
+   }
+#undef TRI
+   return ni;
+}
+
+/* fillModeNonSolid, polygonMode LINE / POINT: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges (LINE) or
+ * POINT LIST of its vertices (POINT), per assembled triangle (mali_poly_assemble). Indices (u32, vertex numbers as the original draw would fetch
+ * them, so vertexOffset/firstVertex stay in the draw) are generated here from the CPU view of the bound index buffer (the same submit-time read
+ * the indirect draws use). Limits: cullMode and gl_FrontFacing are not honoured. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
 static int
 poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw *o)
 {
    const unsigned prim = d->gfx.poly_prim;
+   const unsigned mode = d->gfx.poly_mode;
    const uint32_t n = d->count;
    uint32_t restart = d->index_size == 4 ? 0xffffffffu : d->index_size == 2 ? 0xffffu : 0xffu;
    if (d->indexed && (!d->index_cpu || (uint64_t)(d->first_index + n) * d->index_size > d->index_bytes))
@@ -525,36 +558,10 @@ poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw
       free(v);
       return -ENOMEM;
    }
-   size_t ni = 0;
-#define EDGE(a, b) do { out[ni++] = (a); out[ni++] = (b); } while (0)
-   if (prim == 8) {
-      for (uint32_t t = 0; t + 2 < n; t += 3) {
-         EDGE(v[t], v[t + 1]); EDGE(v[t + 1], v[t + 2]); EDGE(v[t + 2], v[t]);
-      }
-   } else {
-      /* strip / fan, split at restart indices */
-      bool rs = d->gfx.prim_restart && d->indexed;
-      uint32_t s = 0;
-      while (s < n) {
-         uint32_t e = s;
-         while (e < n && !(rs && v[e] == restart))
-            e++;
-         uint32_t m = e - s;   /* vertices in this segment */
-         if (m >= 3) {
-            const uint32_t *w = v + s;
-            EDGE(w[0], w[1]);
-            for (uint32_t t = 0; t + 2 < m; t++) {
-               if (prim == 10) { EDGE(w[t + 1], w[t + 2]); EDGE(w[t], w[t + 2]); }
-               else { EDGE(w[t + 1], w[t + 2]); EDGE(w[0], w[t + 2]); }
-            }
-         }
-         s = e + 1;
-      }
-   }
-#undef EDGE
+   size_t ni = mali_poly_assemble(mode, prim, d->gfx.prim_restart && d->indexed ? &restart : NULL, v, n, out);
    free(v);
    *o = *d;
-   o->gfx.prim = 2;
+   o->gfx.prim = mode == 2 && ni ? 1 : 2;   /* nothing assembled in POINT mode: the zero-length line below, a point would cover a pixel */
    o->gfx.prim_restart = false;
    o->indexed = true;
    o->index_size = 4;
@@ -1026,7 +1033,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
          const struct mali_draw *dr = &x;
-         if (dr->gfx.poly_mode == 1) {
+         if (dr->gfx.poly_mode) {
             if (!mod && !(mod = calloc(f->ndraws, sizeof *mod))) { rc = -ENOMEM; goto out; }
             if ((rc = poly_lines(hw, dr, &mod[i])))
                goto out;
@@ -1062,7 +1069,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       memset(&x, 0, sizeof x);
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
-         const struct mali_draw *d = mod && x.gfx.poly_mode == 1 ? &mod[i] : &x;
+         const struct mali_draw *d = mod && x.gfx.poly_mode ? &mod[i] : &x;
          emit_draw_regs(&c, env, f, d, &dd[i], va_tsd, va_tctx);
          if (i == 0) {
             M48(&c, R->heap, env->heap_ctx_va);
