@@ -333,7 +333,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
    s->pool = p;
    s->off = at;
    s->bytes = bytes;
-   s->cpu = p->cpu + at;
+   s->cpu = p->cpu ? p->cpu + at : NULL;
    s->va = p->va + at;
    s->arch = p->arch;
    if (bytes) memset(s->cpu, 0, bytes);
