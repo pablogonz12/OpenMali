@@ -184,6 +184,16 @@ mali_EnumerateInstanceVersion(uint32_t *pApiVersion)
    return VK_SUCCESS;
 }
 
+/* The ICD implements no layers. vkGetInstanceProcAddr(NULL, ...) must still return this command (spec table; DXVK's
+ * LibraryFn loads it, so a direct/Wine caller that skips the Khronos loader would jump to NULL). */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount, VkLayerProperties *pProperties)
+{
+   (void)pProperties;
+   *pPropertyCount = 0;
+   return VK_SUCCESS;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_EnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pPropertyCount,
                                           VkExtensionProperties *pProperties)

@@ -167,8 +167,13 @@ bool kb_bo_gpu_va_live(struct kb_ctx *ctx, uint64_t gpu_va)
 	return kb_ioctl(ctx, KBASE_IOCTL_MEM_QUERY, &q) == 0;
 }
 
+static unsigned cache_flush_calls;
+unsigned kb_test_cache_flush_count(void);   /* test hook (t_bopool.c) */
+unsigned kb_test_cache_flush_count(void) { return __atomic_load_n(&cache_flush_calls, __ATOMIC_RELAXED); }
+
 void kb_bo_cache_flush_inv(const struct kb_bo *bo, size_t off, size_t len)
 {
+	__atomic_fetch_add(&cache_flush_calls, 1, __ATOMIC_RELAXED);
 #if defined(__aarch64__)
 	uint64_t ctr;
 	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));

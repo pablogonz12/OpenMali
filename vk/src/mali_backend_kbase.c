@@ -19,6 +19,10 @@
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
 
+#define POOL_MAX_ENTS 64
+#define POOL_DEFAULT_BYTES (64u << 20)   /* MALI_BO_POOL_MB overrides, 0 disables */
+#define POOL_MAX_BO_BYTES (16u << 20)    /* bigger BOs are really freed: one of them must not flush the whole pool */
+
 struct mali_kdev {
    struct kb_ctx *ctx;
    struct kb_queue queue;
@@ -39,6 +43,15 @@ struct mali_kdev {
    pthread_mutex_t bo_lock;
    struct kb_bo **bos;
    unsigned nbos, capbos;
+
+   /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
+    * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
+   struct pool_ent {
+      struct kb_bo *bo;
+      uint32_t flags;
+   } pool[POOL_MAX_ENTS];
+   unsigned npool;
+   size_t pool_bytes, pool_max;
 };
 
 /* MALI_SUBMIT_DBG bits (hardware diagnosis, default 0). */
@@ -128,6 +141,10 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    pthread_mutex_init(&k->submit_lock, NULL);
    pthread_mutex_init(&k->wait_lock, NULL);
    pthread_mutex_init(&k->bo_lock, NULL);
+   {
+      const char *pe = getenv("MALI_BO_POOL_MB");
+      k->pool_max = pe ? (size_t)strtoul(pe, NULL, 10) << 20 : POOL_DEFAULT_BYTES;
+   }
 
    r = kb_bo_alloc(k->ctx, 4096, KB_BO_CSF_EVENT | KB_BO_GPU_RD | KB_BO_GPU_WR, &k->cqs);
    if (r != 0) {
@@ -147,6 +164,10 @@ kbase_device_destroy(struct mali_kdev *k)
 {
    if (!k)
       return;
+   for (unsigned i = 0; i < k->npool; i++) {   /* no other thread uses the device any more */
+      kb_bo_free(k->pool[i].bo);
+      free(k->pool[i].bo);
+   }
    if (k->cqs_live)
       kb_bo_free(&k->cqs);
    if (k->queue_live)
@@ -185,13 +206,84 @@ track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
    pthread_mutex_unlock(&k->bo_lock);
 }
 
+/* Only VkDeviceMemory: Vulkan does not promise zeroed memory, driver-internal BOs may rely on it. */
+static bool
+pool_eligible(uint32_t flags)
+{
+   return (flags & MALI_BO_HOSTLAZY) && !(flags & (MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOT));
+}
+
+static struct kb_bo *
+pool_take(struct mali_kdev *k, size_t size, uint32_t flags)
+{
+   struct kb_bo *bo = NULL;
+   pthread_mutex_lock(&k->bo_lock);
+   for (unsigned i = k->npool; i-- > 0;)   /* newest first: warmest pages */
+      if (k->pool[i].flags == flags && k->pool[i].bo->size == size) {
+         bo = k->pool[i].bo;
+         memmove(&k->pool[i], &k->pool[i + 1], (k->npool - i - 1) * sizeof k->pool[0]);
+         k->npool--;
+         k->pool_bytes -= size;
+         break;
+      }
+   pthread_mutex_unlock(&k->bo_lock);
+   return bo;
+}
+
+/* can the pool ever retain a BO of this size (pool disabled with MALI_BO_POOL_MB=0, or too big)? */
+static bool
+pool_fits(const struct mali_kdev *k, size_t size)
+{
+   return size <= POOL_MAX_BO_BYTES && size <= k->pool_max;
+}
+
+/* true: the pool kept bo (the caller must not free it). Evicted BOs are freed outside the lock. */
+static bool
+pool_put(struct mali_kdev *k, struct kb_bo *bo, uint32_t flags)
+{
+   struct kb_bo *victim[POOL_MAX_ENTS];
+   unsigned nv = 0;
+   bool kept = false;
+   if (!pool_fits(k, bo->size))
+      return false;
+   pthread_mutex_lock(&k->bo_lock);
+   unsigned drop = 0;
+   size_t bytes = k->pool_bytes;
+   while (drop < k->npool && (bytes + bo->size > k->pool_max || k->npool - drop >= POOL_MAX_ENTS)) {
+      bytes -= k->pool[drop].bo->size;
+      victim[nv++] = k->pool[drop++].bo;
+   }
+   memmove(&k->pool[0], &k->pool[drop], (k->npool - drop) * sizeof k->pool[0]);
+   k->npool -= drop;
+   k->pool[k->npool++] = (struct pool_ent){bo, flags};
+   k->pool_bytes = bytes + bo->size;
+   kept = true;
+   pthread_mutex_unlock(&k->bo_lock);
+   for (unsigned i = 0; i < nv; i++) {
+      kb_bo_free(victim[i]);
+      free(victim[i]);
+   }
+   return kept;
+}
+
 static int
 kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
 {
+   size = (size + 4095) & ~(size_t)4095;
+   if (pool_eligible(flags)) {
+      struct kb_bo *hit = pool_take(k, size, flags);
+      if (hit) {
+         hit->host_lazy = true;   /* the next user has not touched it yet; contents are stale (Vulkan allows it) */
+         hit->hot = false;
+         *out = (struct mali_bo){.gpu_va = hit->gpu_va, .cpu = hit->cpu, .size = size, .flags = flags,
+                                 .dmabuf_fd = hit->dmabuf_fd, .priv = hit};
+         track_bo(k, hit, true);
+         return 0;
+      }
+   }
    struct kb_bo *bo = calloc(1, sizeof(*bo));
    if (!bo)
       return -ENOMEM;
-   size = (size + 4095) & ~(size_t)4095;
 
    /* MALI_INT_NOCOH=1 (experiment): driver-internal BOs (arena, descriptors, CS, heaps: no HOSTLAZY/EXPORT, i.e. not VkDeviceMemory) without COHERENT_LOCAL.
     * Only VkDeviceMemory (SSBO atomics from the app) needs the cross-core coherency; internal data is written by the CPU (WC) and read by the GPU. */
@@ -273,8 +365,14 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
    if (!bo->priv)
       return;
    track_bo(k, bo->priv, false);
-   kb_bo_free(bo->priv);
-   free(bo->priv);
+   /* A pooled CPU-cached BO keeps its mapping and is handed out again without the zero+flush of a fresh one: write back any CPU-dirty lines now, or they could
+    * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
+   if (pool_eligible(bo->flags) && pool_fits(k, bo->size) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)
+      kb_bo_cache_flush_inv(bo->priv, 0, bo->size);
+   if (!(pool_eligible(bo->flags) && pool_put(k, bo->priv, bo->flags))) {
+      kb_bo_free(bo->priv);
+      free(bo->priv);
+   }
    bo->priv = NULL;
 }
 
