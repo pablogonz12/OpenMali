@@ -339,9 +339,9 @@ main(int argc, char **argv)
       VkPhysicalDeviceProperties2 wp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &tbp};
       GetPhysicalDeviceProperties2(pd, &wp2);
       /* the ext limits must agree with the core limit (256) and claim no single-texel relaxation */
-      CHECK(tbp.storageTexelBufferOffsetAlignmentBytes >= wp2.properties.limits.minTexelBufferOffsetAlignment &&
-            tbp.uniformTexelBufferOffsetAlignmentBytes >= wp2.properties.limits.minTexelBufferOffsetAlignment,
-            "texel buffer alignment bytes %llu/%llu below minTexelBufferOffsetAlignment %llu", (unsigned long long)tbp.storageTexelBufferOffsetAlignmentBytes,
+      CHECK(tbp.storageTexelBufferOffsetAlignmentBytes == wp2.properties.limits.minTexelBufferOffsetAlignment &&
+            tbp.uniformTexelBufferOffsetAlignmentBytes == wp2.properties.limits.minTexelBufferOffsetAlignment,
+            "texel buffer alignment bytes %llu/%llu differ from minTexelBufferOffsetAlignment %llu", (unsigned long long)tbp.storageTexelBufferOffsetAlignmentBytes,
             (unsigned long long)tbp.uniformTexelBufferOffsetAlignmentBytes, (unsigned long long)wp2.properties.limits.minTexelBufferOffsetAlignment);
       CHECK(!tbp.storageTexelBufferOffsetSingleTexelAlignment && !tbp.uniformTexelBufferOffsetSingleTexelAlignment, "single-texel alignment claimed but offsets are 256-aligned");
    }
