@@ -51,7 +51,10 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	if (st && ((p->s_gpu_va & 63) || (s_row & 15))) return -EINVAL;
 	uint32_t zs_row = p->zs_row_stride ? p->zs_row_stride : (p->width * kb_zs_bytes_per_pixel(p->zs_format) + 15u) & ~15u;
 	if (zs && ((p->zs_gpu_va & 63) || (zs_row & 15) || p->zs_format > KB_ZS_D16)) return -EINVAL;
-	memset(out, 0, ext ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE);
+	if (p->rt_extra_count > KB_FB_MAX_EXTRA_RT) return -EINVAL;
+	for (unsigned n = 0; n < p->rt_extra_count; n++)
+		if ((p->rt_extra[n].va & 63) || (p->rt_extra[n].row_stride & 15)) return -EINVAL;
+	memset(out, 0, (ext ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE) + p->rt_extra_count * KB_FB_RTD_SIZE);
 	uint32_t *f = (uint32_t *)(void *)out;                 /* FBD: Framebuffer Parameters */
 	uint32_t *x = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE); /* ZS/CRC extension, only if zs */
 	uint32_t *r = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (ext ? KB_FB_ZSEXT_SIZE : 0)); /* RGB Render Target */
@@ -73,7 +76,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 11, 9, 4, p->tile_log2 ? p->tile_log2 : 10);                                    /* Effective Tile Size log2(1024 px) = 32x32, as PanVK (matches hierarchy mask 0xfe, smallest bin 32) */
 	put(f, 11, 14, 1, 1);                                    /* First provoking vertex (PanVK sets it, also in the tiler context) */
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
-	put(f, 11, 19, 4, 0);                                    /* Render Target Count - 1 */
+	put(f, 11, 19, 4, p->rt_extra_count);                    /* Render Target Count - 1 */
 	put(f, 11, 24, 8, p->rt_internal && p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
 	put(f, 12, 29, 1, 1);                                    /* Empty Tile Write Enable (PanVK sets bits 31:28 of word 12) */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
@@ -110,22 +113,36 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 14, 0, 32, (uint32_t)p->tiler_va);
 	put(f, 15, 0, 32, (uint32_t)(p->tiler_va >> 32));
 
-	/* RGB Render Target */
-	put(r, 0, 0, 4, 0);                                      /* Writeback Mode: compat */
-	put(r, 0, 4, 12, 0);                                     /* Internal Buffer Offset >> 4 */
-	put(r, 0, 26, 6, p->rt_internal ? p->rt_internal : 1);                                  /* Internal Format: R8G8B8A8 */
-	put(r, 1, 0, 1, !p->rt_none && !p->rt_no_store);                         /* Write Enable (off for a colour-less frame) */
-	put(r, 1, 3, 5, p->rt_internal ? p->rt_wb : 19);                                    /* Writeback colour format R8G8B8A8 */
-	put(r, 1, 8, 4, p->block_format ? 1 : 2);                /* Block format: 2 linear, 1 tiled u-interleaved */
-	put(r, 1, 12, 2, p->rt_msaa);                            /* MSAA: 0 single, 1 average (resolve), 3 layered */
-	put(r, 1, 16, 12, p->rt_internal ? p->rt_swizzle : (0 | 1 << 3 | 2 << 6 | 3 << 9));         /* Swizzle RGBA identity (R=0 G=1 B=2 A=3) */
-	put(r, 1, 31, 1, !p->no_clean_tile_write);               /* Clean Tile Write Enable (default on) */
-	put(r, 8, 0, 32, (uint32_t)p->rt_gpu_va);                /* RT Buffer base */
-	put(r, 9, 0, 32, (uint32_t)(p->rt_gpu_va >> 32));
-	put(r, 10, 0, 32, p->row_stride);                        /* Row stride */
-	put(r, 11, 0, 32, p->surface_stride ? p->surface_stride : p->row_stride * p->height); /* Surface stride */
-	uint32_t c = kb_fb_clear_word(p->clear_r, p->clear_g, p->clear_b, p->clear_a);
-	for (unsigned i = 0; i < 4; i++)
-		put(r, 12 + i, 0, 32, p->rt_internal ? p->rt_clear[i] : c);                        /* Clear colour: word replicated */
+	/* RGB Render Target 0, then rt_extra_count more 64 B descriptors (Internal Buffer Offset = running sum of tile bytes). */
+	for (unsigned n = 0; n <= p->rt_extra_count; n++) {
+		uint32_t *q = r + 16u * n;
+		uint64_t va = n ? p->rt_extra[n - 1].va : p->rt_gpu_va;
+		uint32_t rs = n ? p->rt_extra[n - 1].row_stride : p->row_stride;
+		uint32_t ss = n ? p->rt_extra[n - 1].surface_stride : p->surface_stride;
+		unsigned in = n ? p->rt_extra[n - 1].internal : p->rt_internal;
+		unsigned wb = n ? p->rt_extra[n - 1].wb : p->rt_wb;
+		unsigned sw = n ? p->rt_extra[n - 1].swizzle : p->rt_swizzle;
+		unsigned ibo = n ? p->rt_extra[n - 1].internal_offset : 0;
+		/* storeOp is per attachment: a discarded target keeps Write Enable and Clean Tile Write off, the next one still stores.
+		 * RT0's own DONT_CARE lives in kb_fb_params.rt_no_store (PR #217): this branch only owns RT 1..3. */
+		unsigned ns = n ? p->rt_extra[n - 1].no_store : 0;
+		const uint32_t *cl = n ? p->rt_extra[n - 1].clear : p->rt_clear;
+		put(q, 0, 0, 4, 0);                                  /* Writeback Mode: compat */
+		put(q, 0, 4, 12, ibo >> 4);                          /* Internal Buffer Offset >> 4 */
+		put(q, 0, 26, 6, in ? in : 1);                       /* Internal Format: R8G8B8A8 */
+		put(q, 1, 0, 1, !p->rt_none && !ns);                 /* Write Enable (off for a colour-less frame or a discarded target) */
+		put(q, 1, 3, 5, in ? wb : 19);                       /* Writeback colour format R8G8B8A8 */
+		put(q, 1, 8, 4, p->block_format ? 1 : 2);            /* Block format: 2 linear, 1 tiled u-interleaved */
+		put(q, 1, 12, 2, p->rt_msaa);                        /* MSAA: 0 single, 1 average (resolve), 3 layered */
+		put(q, 1, 16, 12, in ? sw : (0 | 1 << 3 | 2 << 6 | 3 << 9));   /* Swizzle RGBA identity */
+		put(q, 1, 31, 1, !p->no_clean_tile_write && !ns);    /* Clean Tile Write Enable (default on, off for a discarded target) */
+		put(q, 8, 0, 32, (uint32_t)va);                      /* RT Buffer base */
+		put(q, 9, 0, 32, (uint32_t)(va >> 32));
+		put(q, 10, 0, 32, rs);                               /* Row stride */
+		put(q, 11, 0, 32, ss ? ss : rs * p->height);         /* Surface stride */
+		uint32_t c = kb_fb_clear_word(p->clear_r, p->clear_g, p->clear_b, p->clear_a);
+		for (unsigned i = 0; i < 4; i++)
+			put(q, 12 + i, 0, 32, in ? cl[i] : c);           /* Clear colour */
+	}
 	return 0;
 }

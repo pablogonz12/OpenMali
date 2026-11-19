@@ -100,6 +100,8 @@ struct mali_fixed {
    uint8_t src_c, dst_c, src_a, dst_a;    /* VkBlendFactor */
    uint8_t op_c, op_a;                    /* VkBlendOp (ADD 0, SUBTRACT 1, REVERSE_SUBTRACT 2) */
    float bconst[4];
+   /* colour attachments 1..3 (RT0 uses the fields above) */
+   struct mali_rtblend { bool blend_en; uint8_t wmask, src_c, dst_c, src_a, dst_a, op_c, op_a; } rtb[3];
    /* stencil (Vulkan values; applied only when the frame has a stencil attachment) */
    bool st_test;
    struct mali_st_face st_f, st_b;
@@ -225,6 +227,8 @@ struct mali_frame {
    bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
    struct mali_att colour, zs, st;
+   struct mali_att colour_x[3];           /* colour attachments 1..3 (ncolour = total colour attachments, 0/1 = colour only) */
+   unsigned ncolour;
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */

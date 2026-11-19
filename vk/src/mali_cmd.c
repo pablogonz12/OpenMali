@@ -501,6 +501,28 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+      /* colour attachments 1..3: per-attachment blend state (each gets its own blend descriptor) */
+      for (unsigned i = 1; i < 4 && i < fr->ncolour; i++) {
+         const struct vk_color_blend_attachment_state *ci = &dyn->cb.attachments[i];
+         struct mali_rtblend *r = &x->rtb[i - 1];
+         r->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && ci->blend_enable;
+         r->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? ci->write_mask : 0xf;
+         if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << i)))
+            r->wmask = 0;
+         r->src_c = ci->src_color_blend_factor; r->dst_c = ci->dst_color_blend_factor;
+         r->src_a = ci->src_alpha_blend_factor; r->dst_a = ci->dst_alpha_blend_factor;
+         r->op_c = ci->color_blend_op; r->op_a = ci->alpha_blend_op;
+         if (r->blend_en) {
+            struct mali_fixed t = *x;
+            t.blend_en = true; t.wmask = r->wmask; t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
+            t.op_c = r->op_c; t.op_a = r->op_a;
+            uint32_t eq; unsigned cm;
+            if (mali_blend_equation(&t, &eq, &cm))
+               unsupported(cmd, "blend equation (fixed function)");
+         }
+      }
+      if (fr->ncolour > 1 && (bp->gfx.blend_va && x->blend_en))
+         unsupported(cmd, "blend shader (logic op / dual source) with several colour attachments");
       if (dyn->cb.logic_op_enable)
          unsupported(cmd, "logic op");
       if (x->blend_en && !bp->gfx.blend_va) {
@@ -805,6 +827,47 @@ raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
    return false;
 }
 
+/* preload.frag arg (kind | sRGB flag) and bytes per texel of the colour loadOp LOAD of a render-target format */
+static bool
+colour_preload_arg(int fmt, uint32_t *arg, unsigned *out_bpp)
+{
+   unsigned kind = 0, bpp = 4, srgb = 0;
+   switch (fmt) {
+   case VK_FORMAT_R8G8B8A8_UNORM: break;
+   case VK_FORMAT_R8G8B8A8_SRGB: srgb = 1; break;
+   case VK_FORMAT_B8G8R8A8_UNORM: kind = 1; break;
+   case VK_FORMAT_B8G8R8A8_SRGB: kind = 1; srgb = 1; break;
+   case VK_FORMAT_R8_UNORM: bpp = 1; break;
+   case VK_FORMAT_R8_SRGB: bpp = 1; srgb = 1; break;
+   case VK_FORMAT_R8G8_UNORM: bpp = 2; break;
+   case VK_FORMAT_R8G8_SRGB: bpp = 2; srgb = 1; break;
+   case VK_FORMAT_R16_SFLOAT: kind = 2; bpp = 2; break;
+   case VK_FORMAT_R16G16_SFLOAT: kind = 2; bpp = 4; break;
+   case VK_FORMAT_R16G16B16A16_SFLOAT: kind = 2; bpp = 8; break;
+   case VK_FORMAT_B10G11R11_UFLOAT_PACK32: kind = 3; break;
+   case VK_FORMAT_A2B10G10R10_UNORM_PACK32: kind = 4; break;
+   case VK_FORMAT_A2R10G10B10_UNORM_PACK32: kind = 5; break;
+   case VK_FORMAT_R5G6B5_UNORM_PACK16: kind = 6; bpp = 2; break;
+   case VK_FORMAT_B5G6R5_UNORM_PACK16: kind = 7; bpp = 2; break;
+   case VK_FORMAT_R4G4B4A4_UNORM_PACK16: kind = 8; bpp = 2; break;
+   case VK_FORMAT_B4G4R4A4_UNORM_PACK16: kind = 9; bpp = 2; break;
+   case VK_FORMAT_R5G5B5A1_UNORM_PACK16: kind = 10; bpp = 2; break;
+   case VK_FORMAT_B5G5R5A1_UNORM_PACK16: kind = 11; bpp = 2; break;
+   case VK_FORMAT_A1R5G5B5_UNORM_PACK16: kind = 10 | (1u << 18); bpp = 2; break;   /* A1R5G5B5: kind 10 with the alpha-rotate flag (preload.frag) */
+   default: {
+      unsigned rk, rbpp, rnc;
+      if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {
+         return false;
+      }
+      kind = rk | (rnc << 12) | ((rk == 12 || rk == 17) ? 1u << 16 : (rk == 13 || rk == 18) ? 2u << 16 : 0);   /* bits 16..17: integer-typed colour output (uint / sint) */
+      bpp = rbpp;
+   }
+   }
+   *arg = kind | (srgb ? 0x100u : 0u);
+   *out_bpp = bpp;
+   return true;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
@@ -826,14 +889,21 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    bool no_col = true;
    for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
       if (ri->pColorAttachments[i].imageView) no_col = false;
-   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
-      unsupported(cmd, "need exactly one colour attachment");
+   if (!no_col && (ri->colorAttachmentCount > 4 || !ri->pColorAttachments[0].imageView)) {
+      unsupported(cmd, "more than 4 colour attachments / null first colour attachment");
       return;
    }
+   for (uint32_t i = 1; !no_col && i < ri->colorAttachmentCount; i++)
+      if (!ri->pColorAttachments[i].imageView) {
+         unsupported(cmd, "null colour attachment between used ones");
+         return;
+      }
    const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
    bool load = false;
-   struct mali_preload_src psrc;
+   struct mali_preload_src psrc, psrcx[3];   /* psrcx: colour LOAD of attachments 1..3 (arg bits 24..25 = render target) */
+   bool loadx[3] = { false, false, false };
    memset(&psrc, 0, sizeof psrc);
+   memset(psrcx, 0, sizeof psrcx);
    if (no_col) {
       f->width = (uint32_t)(f->area[0] + f->area[2]);
       f->height = (uint32_t)(f->area[1] + f->area[3]);
@@ -851,41 +921,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    if (load) {
       /* LOAD = a preload draw reading the old contents (linear image) through a storage buffer; any render-target format */
       int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
-      unsigned kind = 0, bpp = 4, srgb = 0;
-      switch (fmt) {
-      case VK_FORMAT_R8G8B8A8_UNORM: break;
-      case VK_FORMAT_R8G8B8A8_SRGB: srgb = 1; break;
-      case VK_FORMAT_B8G8R8A8_UNORM: kind = 1; break;
-      case VK_FORMAT_B8G8R8A8_SRGB: kind = 1; srgb = 1; break;
-      case VK_FORMAT_R8_UNORM: bpp = 1; break;
-      case VK_FORMAT_R8_SRGB: bpp = 1; srgb = 1; break;
-      case VK_FORMAT_R8G8_UNORM: bpp = 2; break;
-      case VK_FORMAT_R8G8_SRGB: bpp = 2; srgb = 1; break;
-      case VK_FORMAT_R16_SFLOAT: kind = 2; bpp = 2; break;
-      case VK_FORMAT_R16G16_SFLOAT: kind = 2; bpp = 4; break;
-      case VK_FORMAT_R16G16B16A16_SFLOAT: kind = 2; bpp = 8; break;
-      case VK_FORMAT_B10G11R11_UFLOAT_PACK32: kind = 3; break;
-      case VK_FORMAT_A2B10G10R10_UNORM_PACK32: kind = 4; break;
-      case VK_FORMAT_A2R10G10B10_UNORM_PACK32: kind = 5; break;
-      case VK_FORMAT_R5G6B5_UNORM_PACK16: kind = 6; bpp = 2; break;
-      case VK_FORMAT_B5G6R5_UNORM_PACK16: kind = 7; bpp = 2; break;
-      case VK_FORMAT_R4G4B4A4_UNORM_PACK16: kind = 8; bpp = 2; break;
-      case VK_FORMAT_B4G4R4A4_UNORM_PACK16: kind = 9; bpp = 2; break;
-      case VK_FORMAT_R5G5B5A1_UNORM_PACK16: kind = 10; bpp = 2; break;
-      case VK_FORMAT_B5G5R5A1_UNORM_PACK16: kind = 11; bpp = 2; break;
-      case VK_FORMAT_A1R5G5B5_UNORM_PACK16: kind = 10 | (1u << 18); bpp = 2; break;   /* A1R5G5B5: kind 10 with the alpha-rotate flag (preload.frag) */
-      default: {
-         unsigned rk, rbpp, rnc;
-         if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {
-            unsupported(cmd, "colour loadOp LOAD of this format");
-            return;
-         }
-         kind = rk | (rnc << 12) | ((rk == 12 || rk == 17) ? 1u << 16 : (rk == 13 || rk == 18) ? 2u << 16 : 0);   /* bits 16..17: integer-typed colour output (uint / sint) */
-         bpp = rbpp;
+      if (!colour_preload_arg(fmt, &psrc.arg, &psrc.bpp)) {
+         unsupported(cmd, "colour loadOp LOAD of this format");
+         return;
       }
-      }
-      psrc.arg = kind | (srgb ? 0x100u : 0u);
-      psrc.bpp = bpp;
    }
    if (!no_col) {
    f->width = t.width;
@@ -926,6 +965,55 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
+   }
+   f->ncolour = ri->colorAttachmentCount;
+   if (f->ncolour > 1) {
+      /* colour attachments 1..3: same size, single sampled, no resolve (LOAD = one preload draw per attachment); the tile colour buffer holds the
+       * sum of the targets' bytes per pixel, capped at the largest single-RT total proven on hardware (16 B) */
+      unsigned bpp = t.rt ? t.rt->alloc : 4u;
+      if (f->samples != 1) {
+         unsupported(cmd, "several colour attachments with MSAA");
+         return;
+      }
+      for (uint32_t i = 1; i < f->ncolour; i++) {
+         const VkRenderingAttachmentInfo *cx = &ri->pColorAttachments[i];
+         struct mali_cmd_target tx;
+         memset(&tx, 0, sizeof tx);
+         if (g_res.image_view(cx->imageView, &tx) || tx.is_zs || tx.samples > 1 || tx.width != t.width || tx.height != t.height) {
+            unsupported(cmd, "colour attachment view (size / samples must match attachment 0)");
+            return;
+         }
+         if (is_load_op(cx->loadOp)) {
+            struct mali_preload_src *px = &psrcx[i - 1];
+            int xfmt = tx.rt ? tx.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
+            if (!colour_preload_arg(xfmt, &px->arg, &px->bpp)) {
+               unsupported(cmd, "colour loadOp LOAD of this format on colour attachment > 0");
+               return;
+            }
+            px->arg |= i << 24;   /* the preload draw writes colour output i */
+            px->va[0] = tx.va;
+            px->row[0] = tx.row_stride;
+            px->bytes[0] = tx.row_stride * tx.height;
+            loadx[i - 1] = true;
+         }
+         if (cx->resolveMode != VK_RESOLVE_MODE_NONE) {
+            unsupported(cmd, "resolve of colour attachment > 0");
+            return;
+         }
+         struct mali_att *x = &f->colour_x[i - 1];
+         x->va = tx.va;
+         x->rt = tx.rt;
+         x->row_stride = tx.row_stride;
+         x->clear = cx->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+         x->store = cx->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+         if (x->clear)
+            memcpy(x->clear_color, cx->clearValue.color.float32, sizeof x->clear_color);
+         bpp += tx.rt ? tx.rt->alloc : 4u;
+      }
+      if (bpp > 16) {
+         unsupported(cmd, "colour attachments exceed the 16 bytes per pixel tile buffer budget");
+         return;
+      }
    }
    }
    struct mali_preload_src zsrc;
@@ -1000,13 +1088,16 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
       f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    }
-   struct { bool on; enum mali_preload_kind kind; const struct mali_preload_src *src; const char *what; } pre[2] = {
+   struct { bool on; enum mali_preload_kind kind; const struct mali_preload_src *src; const char *what; } pre[5] = {
       { load, MALI_PRELOAD_COLOUR, &psrc, "colour loadOp LOAD (preload shader)" },
       { zload || sload, zload && sload ? MALI_PRELOAD_ZS : zload ? MALI_PRELOAD_Z : MALI_PRELOAD_S, &zsrc, "depth/stencil loadOp LOAD (preload shader)" },
+      { loadx[0], MALI_PRELOAD_COLOUR, &psrcx[0], "colour loadOp LOAD on attachment 1 (preload shader)" },
+      { loadx[1], MALI_PRELOAD_COLOUR, &psrcx[1], "colour loadOp LOAD on attachment 2 (preload shader)" },
+      { loadx[2], MALI_PRELOAD_COLOUR, &psrcx[2], "colour loadOp LOAD on attachment 3 (preload shader)" },
    };
    if (sload && !zload)
       zsrc.va[0] = zsrc.va[1], zsrc.bytes[0] = zsrc.bytes[1], zsrc.row[0] = zsrc.row[1];
-   for (int pi = 0; pi < 2; pi++) {
+   for (int pi = 0; pi < 5; pi++) {
       if (!pre[pi].on)
          continue;
       struct mali_draw d;
@@ -1170,10 +1261,12 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
       for (uint32_t i = 0; i < na; i++) {
          if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
             continue;
-         if (att[i].colorAttachment != 0) {
+         const uint32_t ci = att[i].colorAttachment;
+         if (ci >= f->ncolour) {
             unsupported(cmd, "colour attachment index");
             return;
          }
+         const struct mali_rtfmt *crt = ci ? f->colour_x[ci - 1].rt : f->colour.rt;   /* RT>0: the quad writes colour output ci (preload arg bits 24..25) */
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
                unsupported(cmd, "CmdClearAttachments quad: layers");
@@ -1181,7 +1274,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             }
             struct mali_preload_src ps;
             memset(&ps, 0, sizeof ps);
-            ps.arg = 19 | (f->colour.rt && f->colour.rt->int_bits ? (f->colour.rt->is_signed ? 2u : 1u) << 16 : 0);   /* the clear words are the raw shader output: integer-typed for integer formats */
+            ps.arg = 19 | (crt && crt->int_bits ? (crt->is_signed ? 2u : 1u) << 16 : 0) | (ci << 24);   /* the clear words are the raw shader output: integer-typed for integer formats */
             memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
             struct mali_draw d;
             if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
@@ -1203,12 +1296,15 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
    }
    for (uint32_t i = 0; i < na; i++) {
       if (att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
-         if (att[i].colorAttachment != 0) {
+         uint32_t ci = att[i].colorAttachment;
+         if (ci >= f->ncolour) {
             unsupported(cmd, "colour attachment index");
             return;
          }
-         f->colour.clear = true;   /* a loadOp CLEAR patch of the FBD */
-         memcpy(f->colour.clear_color, att[i].clearValue.color.float32, sizeof f->colour.clear_color);
+         /* a loadOp CLEAR patch of the FBD (RT>0: its colour_x descriptor) */
+         struct mali_att *x = ci ? &f->colour_x[ci - 1] : &f->colour;
+         x->clear = true;
+         memcpy(x->clear_color, att[i].clearValue.color.float32, sizeof x->clear_color);
       }
       if (att[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) {
          if (!f->has_zs) {
