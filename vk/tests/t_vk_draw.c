@@ -32,6 +32,7 @@ static const float *g_clear_f;   /* clear the colour attachment to these four fl
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
 static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
+static int g_alphablend;   /* msaa_cost heavy mode: SRC_ALPHA / ONE_MINUS_SRC_ALPHA blending on the scene pipeline */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
 static int g_dynstr;   /* dynamic VERTEX_INPUT_BINDING_STRIDE with a wrong static stride; the draw binds strides through CmdBindVertexBuffers2 */
 static PFN_vkCmdBindVertexBuffers2 CmdBindVertexBuffers2_;
@@ -530,6 +531,11 @@ scene_create(struct scene *s, int depth)
       cba.colorBlendOp = cba.alphaBlendOp = g_fx.op;
       cba.colorWriteMask = g_fx.wmask;
    }
+   if (g_alphablend) {
+      cba.blendEnable = VK_TRUE;
+      cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+   }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
    if (g_fx.on && g_fx.logic) { cbs.logicOpEnable = VK_TRUE; cbs.logicOp = (VkLogicOp)(g_fx.logic - 1); }
@@ -871,7 +877,9 @@ alloc_bytes(void)
 }
 
 /* msaa_cost: wall time per frame (record + submit + GPU + fence) of overlapping full-screen-ish triangles at 1080p, 1x vs 4x MSAA + resolve.
- * Not a pass/fail pixel test (timing only); needs MALI_EXPERIMENTAL_MSAA=1 for the 4x half. MALI_BENCH_DRAWS (default 100), MALI_BENCH_FRAMES (60). */
+ * Not a pass/fail pixel test (timing only); needs MALI_EXPERIMENTAL_MSAA=1 for the 4x half. MALI_BENCH_DRAWS (default 100), MALI_BENCH_FRAMES (60).
+ * MALI_BENCH_HEAVY=1: alpha-blended small triangles at pseudo-random positions (scale MALI_BENCH_SCALE, default 0.15; about 5x overdraw
+ * at 1000 draws), the sprite/particle shape of a Megabonk-like frame, instead of the identical full-size triangles. */
 static int
 test_msaa_cost(void)
 {
@@ -880,7 +888,17 @@ test_msaa_cost(void)
    int draws = getenv("MALI_BENCH_DRAWS") ? atoi(getenv("MALI_BENCH_DRAWS")) : 100;
    int frames = getenv("MALI_BENCH_FRAMES") ? atoi(getenv("MALI_BENCH_FRAMES")) : 60;
    float (*rot)[4] = malloc(draws * sizeof *rot);
-   for (int i = 0; i < draws; i++) memcpy(rot[i], ID, sizeof rot[i]);
+   int heavy = getenv("MALI_BENCH_HEAVY") && atoi(getenv("MALI_BENCH_HEAVY"));
+   float sc = getenv("MALI_BENCH_SCALE") ? (float)atof(getenv("MALI_BENCH_SCALE")) : 0.15f;
+   unsigned rng = 12345;
+   for (int i = 0; i < draws; i++) {
+      memcpy(rot[i], ID, sizeof rot[i]);
+      if (!heavy) continue;
+      rng = rng * 1664525u + 1013904223u; float x = ((rng >> 8) & 0xffff) / 65535.0f * 1.7f - 0.85f;
+      rng = rng * 1664525u + 1013904223u; float y = ((rng >> 8) & 0xffff) / 65535.0f * 1.7f - 0.85f;
+      rot[i][0] = sc; rot[i][1] = 0; rot[i][2] = x; rot[i][3] = y;
+   }
+   g_alphablend = heavy;
    g_w = 1920; g_h = 1080;
    int ok = 1;
    for (int mode = 0; ok && mode <= 1; mode++) {
@@ -902,13 +920,14 @@ test_msaa_cost(void)
       }
       if (ok) {
          for (int i = 1; i < n; i++) { double v = t[i]; int j = i; while (j && t[j - 1] > v) { t[j] = t[j - 1]; j--; } t[j] = v; }
-         printf("{\"test\":\"msaa_cost\",\"samples\":%d,\"w\":%d,\"h\":%d,\"draws\":%d,\"frames\":%d,\"ms_min\":%.3f,\"ms_median\":%.3f,\"ms_p90\":%.3f,\"ok\":true}\n",
-                mode ? 4 : 1, W, H, draws, n, t[0] / 1000, t[n / 2] / 1000, t[n * 9 / 10] / 1000);
+         printf("{\"test\":\"msaa_cost\",\"samples\":%d,\"w\":%d,\"h\":%d,\"heavy\":%d,\"draws\":%d,\"frames\":%d,\"ms_min\":%.3f,\"ms_median\":%.3f,\"ms_p90\":%.3f,\"ok\":true}\n",
+                mode ? 4 : 1, W, H, heavy, draws, n, t[0] / 1000, t[n / 2] / 1000, t[n * 9 / 10] / 1000);
       }
       scene_destroy(&s);
       DestroyFence(dev, f, NULL);
    }
    g_w = 256; g_h = 256;
+   g_alphablend = 0;
    free(rot);
    return ok;
 }
