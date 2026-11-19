@@ -2654,6 +2654,34 @@ test_sgctl(void)
    g_sgctl = 1;
    int ok = test_subgroup_one();
    g_sgctl = 0;
+   /* A size the hardware does not have must be refused at pipeline creation, not silently compiled at 16: that is the
+    * corruption path (masks/shuffles lowered for 32 lanes but executed by 16). */
+   VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("subgroup.comp.spv");
+   CHECK(m, "shader subgroup.comp.spv");
+   for (unsigned bad = 8; bad <= 32; bad <<= 1) {
+      if (bad == p13.maxSubgroupSize) continue;
+      VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+                                                                 .requiredSubgroupSize = bad};
+      VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &rss,
+                   .flags = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                   .module = m, .pName = "main"}};
+      VkPipeline pipe = VK_NULL_HANDLE;
+      VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+      CHECK(r != VK_SUCCESS, "requiredSubgroupSize %u accepted (%d)", bad, r);
+      if (r == VK_SUCCESS) DestroyPipeline(dev, pipe, NULL);
+   }
+   DestroyShaderModule(dev, m, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
    if (ok) printf("{\"test\":\"sgctl\",\"ok\":true}\n");
    return ok;
 }
