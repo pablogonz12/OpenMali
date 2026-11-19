@@ -353,6 +353,36 @@ test_write_copy(unsigned arch)
    mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &mc);
    CHECK(!memcmp(c->cpu, before, 32), "dynamic -> slot copy ignored");
 
+   /* copy over unused bindings: src has b0,b2 (gap at b1), dst has b0,b3 (gap at b1,b2); a 2-element copy must skip both gaps */
+   VkDescriptorSetLayoutBinding gs[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+   };
+   VkDescriptorSetLayoutBinding gd[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+      { .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL },
+   };
+   struct mali_dsl *gsl = mk_layout(arch, 2, gs), *gdl = mk_layout(arch, 2, gd);
+   VkDescriptorPool gp = mk_pool(arch, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8, 0);
+   VkDescriptorSet gss, gds;
+   CHECK(alloc_n(gp, 1, gsl, &gss) == VK_SUCCESS && alloc_n(gp, 1, gdl, &gds) == VK_SUCCESS, "gap sets alloc");
+   struct mali_dset *gsd = mali_dset_from_handle(gss), *gdd = mali_dset_from_handle(gds);
+   VkDescriptorBufferInfo g0 = { (VkBuffer)1, 0x10, 64 }, g2 = { (VkBuffer)1, 0x20, 128 };
+   VkWriteDescriptorSet gw0 = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = gss, .dstBinding = 0, .descriptorCount = 1,
+                                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &g0 };
+   VkWriteDescriptorSet gw2 = gw0;
+   gw2.dstBinding = 2; gw2.pBufferInfo = &g2;
+   VkWriteDescriptorSet gws[2] = { gw0, gw2 };
+   mali_update_descriptor_sets(&g_dev, 2, gws, 0, NULL);
+   VkCopyDescriptorSet gc = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = gss, .srcBinding = 0, .dstSet = gds, .dstBinding = 0, .descriptorCount = 2 };
+   mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &gc);
+   CHECK(!memcmp(gdd->cpu, gsd->cpu, 32) && memcmp(gdd->cpu, &z, 32), "gap copy: first descriptor");
+   CHECK(!memcmp(gdd->cpu + 32, gsd->cpu + 32, 32) && memcmp(gdd->cpu + 32, &z, 32), "gap copy: continues past unused bindings on both sides");
+   mali_destroy_descriptor_pool(&g_dev, gp, NULL);
+   vk_descriptor_set_layout_unref(&g_dev, &gsl->vk);
+   vk_descriptor_set_layout_unref(&g_dev, &gdl->vk);
+
+
    mali_destroy_descriptor_pool(&g_dev, pool, NULL);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }

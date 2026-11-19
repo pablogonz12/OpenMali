@@ -515,11 +515,11 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
    /* spec: a copy that runs past the end of a binding continues into the next consecutive binding, on both sides */
    uint32_t sbi = c->srcBinding, dbi = c->dstBinding, se = c->srcArrayElement, de = c->dstArrayElement;
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
-      while (sbi < src->layout->nbindings && se >= src->layout->b[sbi].count && src->layout->b[sbi].type != MALI_DT_NONE) {
+      while (sbi < src->layout->nbindings && se >= src->layout->b[sbi].count) {
          se -= src->layout->b[sbi].count;
          sbi++;
       }
-      while (dbi < dst->layout->nbindings && de >= dst->layout->b[dbi].count && dst->layout->b[dbi].type != MALI_DT_NONE) {
+      while (dbi < dst->layout->nbindings && de >= dst->layout->b[dbi].count) {
          de -= dst->layout->b[dbi].count;
          dbi++;
       }
