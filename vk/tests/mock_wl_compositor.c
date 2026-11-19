@@ -125,7 +125,15 @@ static const struct wl_surface_interface surf_impl = {
    .destroy = destroy_res, .attach = surf_attach, .damage = surf_damage, .frame = surf_frame, .set_opaque_region = surf_region,
    .set_input_region = surf_region, .commit = surf_commit, .set_buffer_transform = surf_set_buffer_transform,
    .set_buffer_scale = surf_set_buffer_scale, .damage_buffer = surf_damage, .offset = surf_offset};
-static void surf_free(struct wl_resource *r) { free(wl_resource_get_user_data(r)); }
+static void surf_free(struct wl_resource *r)
+{
+   struct surf *s = wl_resource_get_user_data(r);
+   while (!wl_list_empty(&s->frames)) {   /* callbacks never sent (noframe/stall): destroy them without `done` before the list head is freed */
+      struct fcb *f = wl_container_of(s->frames.next, f, link);
+      wl_resource_destroy(f->res);          /* cb_destroy unlinks and frees f */
+   }
+   free(s);
+}
 
 static void region_add(struct wl_client *c, struct wl_resource *r, int32_t x, int32_t y, int32_t w, int32_t h) { (void)c; (void)r; (void)x; (void)y; (void)w; (void)h; }
 static const struct wl_region_interface region_impl = {destroy_res, region_add, region_add};
