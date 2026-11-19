@@ -22,15 +22,20 @@ def _name(line):
 def classify_driver(text):
     """Return (driver, evidence-line). Loaded-driver records (driverName/driverInfo/library_path/.so/vkBridge) outrank configuration hints
     (VK_DRIVER_FILES=, VK_ICD_FILENAMES=); records that disagree with each other, or with a hint, give ('conflict', line) instead of the first hit."""
-    loaded, hints = [], []
+    loaded, hints, unrec = [], [], []
     for line in text.splitlines():
         n = _name(line)
+        is_loaded = re.search(r"driverName|driverInfo|library_path|\.so\b|vkBridge", line, re.I)
         if not n:
+            if is_loaded:
+                unrec.append(line.strip())   # a loaded record we cannot name still outranks every hint
             continue
-        if re.search(r"driverName|driverInfo|library_path|\.so\b|vkBridge", line, re.I):
+        if is_loaded:
             loaded.append((n, line.strip()))
         elif re.search(r"VK_(DRIVER_FILES|ICD_FILENAMES)=.+", line, re.I):
             hints.append((n, line.strip()))
+    if unrec and not loaded:
+        return "unknown", unrec[0][:300]   # only unrecognized loaded records: never fall back to a configuration hint
     recs = loaded or hints
     if not recs:
         return "unknown", None
@@ -66,6 +71,10 @@ def temps(d, problems):
         except (ValueError, AttributeError, OSError) as e:
             out[k] = None
             problems.append(f"damaged {f.name}: {type(e).__name__}")
+    for k, v in list(out.items()):
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
+            out[k] = None
+            problems.append(f"damaged {k}.json: batteryC is not a number")
     t = [v for v in out.values() if v is not None]
     out["max_c"] = max(t) if t else None
     return out
@@ -81,6 +90,9 @@ def load_run(d):
     if pf.exists():
         try:
             p = json.loads(pf.read_text())
+            fo = p.get("fpsOnScreen")
+            if fo is not None and (isinstance(fo, bool) or not isinstance(fo, (int, float))):
+                raise TypeError("fpsOnScreen is not a number")
             rd.update(pacing_stats(p))
             if not p.get("ok", True):
                 rd["problems"].append("pacing not ok")

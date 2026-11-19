@@ -36,4 +36,29 @@ class T(unittest.TestCase):
             self.assertTrue(any("damaged pacing.json" in p for p in r["problems"])); self.assertTrue(any("damaged thermal_pre.json" in p for p in r["problems"]))
             (d / "pacing.json").write_text('{"ok":true,"fpsOnScreen":58,"presentToPresentMs":{}}')
             self.assertTrue(any("no measured intervals" in p for p in m.load_run(d)["problems"]))
+    def test_unrecognized_loaded_record_blocks_hint(self):
+        txt = "driverName = SwiftShader Device (Subzero)\nVK_DRIVER_FILES=/opt/mali_open_icd.json"
+        drv, ev = m.classify_driver(txt)
+        self.assertEqual(drv, "unknown"); self.assertIn("SwiftShader", ev)
+
+    def test_non_numeric_values_are_damaged_not_fatal(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); (d / "driver-identity.txt").write_text("driverName = mali-open")
+            (d / "thermal_pre.json").write_text('{"batteryC":"38"}'); (d / "thermal_post.json").write_text('{"batteryC":39}')
+            (d / "pacing.json").write_text('{"ok":true,"fpsOnScreen":"58","presentToPresentMs":{"17":100}}')
+            r = m.load_run(d)
+            self.assertEqual(r["max_c"], 39)
+            self.assertTrue(any("thermal_pre" in p and "not a number" in p for p in r["problems"]))
+            self.assertTrue(any("damaged pacing.json" in p for p in r["problems"]))
+    def test_run_fails_when_capture_fails(self):
+        import os, subprocess, tempfile
+        with tempfile.TemporaryDirectory() as t:
+            g = Path(t)
+            for sub in ("scripts", "tools", "runs/x-cmp-ours"): (g / sub).mkdir(parents=True)
+            (g / "scripts/bench.sh").write_text("#!/bin/sh\nexit 0\n"); (g / "scripts/bench.sh").chmod(0o755)
+            (g / "tools/fpsdip_snapshot.py").write_text('GUEST_DRIVER_SCRIPT = "true"\n')
+            (g / "tools/droiddeckctl").write_text("import sys; sys.exit(3)\n")
+            r = subprocess.run(["bash", str(Path(__file__).resolve().parents[1] / "megabonk-compare.sh"), "run", "ours"], env={**os.environ, "MALI_GAMING": str(g)}, capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0); self.assertIn("capture failed", r.stderr)
 if __name__ == "__main__": unittest.main()

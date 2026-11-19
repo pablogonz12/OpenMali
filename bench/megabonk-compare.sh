@@ -28,6 +28,9 @@ try:
 except ValueError:
     text = ""
 (out / "driver-identity.txt").write_text(text)  # empty => compare reports NO DRIVER EVIDENCE
+if r.returncode != 0:
+    print(f"driver identity capture failed (droiddeckctl exit {r.returncode}): {r.stderr.strip()[:200]}", file=sys.stderr)
+    sys.exit(1)
 PY
     echo "run dir: $out (now: $0 compare $out)" ;;
   *) sed -n 2,5p "$0" >&2; exit 2 ;;
