@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer D: KCPU queue, CQS wait/set and sync_file fences. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <poll.h>
 #include <string.h>
