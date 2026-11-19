@@ -61,6 +61,8 @@ DEV_FNS(DECL)
 static VkDevice dev;
 static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
+static VkPhysicalDevice g_pd;
+static PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties;
 
 __attribute__((unused)) static double
 now_us(void)
@@ -339,6 +341,117 @@ case_blit(void)
    }
    rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
    report("blit", g_fake ? "results: fake backend" : NULL);
+   return 1;
+}
+
+/* Scaled blits in formats beyond RGBA8/F32 (known answers, hardware only; the fake backend renders nothing):
+ *   f16  R16G16B16A16_SFLOAT 4x4 -> 8x8 LINEAR: R = column, G = row (half floats); dst texel x samples src (x + .5) / 2 - .5, clamped.
+ *   srgb R8G8B8A8_SRGB 4x4 -> 8x8 LINEAR: R alternates 0 / 255 per column; filtering must happen in linear light and re-encode (a non-sRGB-aware
+ *        blit would give 64 at x = 1 where sRGB gives ~137).
+ *   r8   R8_UNORM 4x4 -> 2x2 LINEAR (minify): one-channel gradient.
+ *   d32  D32_SFLOAT 4x4 -> 2x2 NEAREST depth aspect (Vulkan requires NEAREST for depth/stencil sources): dst (x, y) = src (2x + 1, 2y + 1). */
+static uint16_t
+f2h(float f)
+{
+   /* exact for the small integers used here (0..3) */
+   uint32_t u; memcpy(&u, &f, 4);
+   if (!(u << 1)) return 0;
+   int e = (int)((u >> 23) & 255) - 127 + 15;
+   return (uint16_t)((u >> 16 & 0x8000) | (uint32_t)e << 10 | (u >> 13 & 0x3ff));
+}
+
+static float
+h2f(uint16_t h)
+{
+   int e = (h >> 10) & 31, m = h & 1023;
+   float v = e ? ldexpf(1.0f + m / 1024.0f, e - 15) : ldexpf(m / 1024.0f, -14);
+   return h & 0x8000 ? -v : v;
+}
+
+static float
+srgb_enc(float l)
+{
+   return l <= 0.0031308f ? 12.92f * l : 1.055f * powf(l, 1.0f / 2.4f) - 0.055f;
+}
+
+static float
+tapf(float x, int n, const float *v)
+{
+   float s = x < 0 ? 0 : x > n - 1 ? n - 1 : x;
+   int i = (int)floorf(s), j = i + 1 < n ? i + 1 : i;
+   return v[i] + (v[j] - v[i]) * (s - i);
+}
+
+static int
+case_blit_fmt(const char *name)
+{
+   const int is_f16 = !strcmp(name, "blit_f16"), is_srgb = !strcmp(name, "blit_srgb"), is_r8 = !strcmp(name, "blit_r8"), is_d32 = !strcmp(name, "blit_d32");
+   const uint32_t bpp = is_f16 ? 8 : is_r8 ? 1 : 4, dw = is_r8 || is_d32 ? 2 : 8, sw = 4;
+   const VkFormat fmt = is_f16 ? VK_FORMAT_R16G16B16A16_SFLOAT : is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : is_r8 ? VK_FORMAT_R8_UNORM : VK_FORMAT_D32_SFLOAT;
+   const VkImageAspectFlags asp = is_d32 ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+   struct buf src = {0}, dst = {0};
+   struct img i1 = {0}, i2 = {0};
+   TRY(mkbuf(&src, sw * sw * bpp, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&dst, dw * dw * bpp, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   TRY(mkimg(&i1, fmt, sw, sw, u, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&i2, fmt, dw, dw, u, VK_SAMPLE_COUNT_1_BIT));
+   VkImageSubresourceLayers sl = {asp, 0, 0, 1};
+   for (int l = 0; l < g_loop; l++) {
+      for (uint32_t y = 0; y < sw; y++)
+         for (uint32_t x = 0; x < sw; x++) {
+            if (is_f16) {
+               uint16_t *t = (uint16_t *)((uint8_t *)src.p + (y * sw + x) * 8);
+               t[0] = f2h((float)x); t[1] = f2h((float)y); t[2] = 0; t[3] = f2h(1.0f);
+            } else if (is_srgb) {
+               uint8_t *t = (uint8_t *)src.p + (y * sw + x) * 4;
+               t[0] = x & 1 ? 255 : 0; t[1] = 0; t[2] = 0; t[3] = 255;
+            } else if (is_r8) {
+               ((uint8_t *)src.p)[y * sw + x] = (uint8_t)(x * 40 + y * 10);
+            } else {
+               ((float *)src.p)[y * sw + x] = (float)(x + 4 * y) / 16.0f;
+            }
+         }
+      memset(dst.p, 0xEE, dw * dw * bpp);
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, asp);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, asp);
+      VkBufferImageCopy up = {.imageSubresource = sl, .imageExtent = {sw, sw, 1}};
+      CmdCopyBufferToImage(cb, src.b, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      layout_tr(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, asp);
+      VkImageBlit bl = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {sw, sw, 1}}, .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {dw, dw, 1}}};
+      CmdBlitImage(cb, i1.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, is_d32 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+      layout_tr(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, asp);
+      VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {dw, dw, 1}};
+      CmdCopyImageToBuffer(cb, i2.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.b, 1, &dn);
+      CHECK(submit_wait(cb), "submit");
+      if (g_fake)
+         continue;
+      const float ramp[4] = {0, 1, 2, 3}, alt[4] = {0, 1, 0, 1};
+      for (uint32_t y = 0; y < dw; y++)
+         for (uint32_t x = 0; x < dw; x++) {
+            if (is_f16) {
+               uint16_t *t = (uint16_t *)((uint8_t *)dst.p + (y * dw + x) * 8);
+               float ex = tapf((x + 0.5f) / 2 - 0.5f, 4, ramp), ey = tapf((y + 0.5f) / 2 - 0.5f, 4, ramp);
+               CHECK(fabsf(h2f(t[0]) - ex) < 0.02f && fabsf(h2f(t[1]) - ey) < 0.02f && fabsf(h2f(t[3]) - 1.0f) < 0.01f,
+                     "f16 (%u,%u) = %f,%f,a %f want %f,%f,1", x, y, h2f(t[0]), h2f(t[1]), h2f(t[3]), ex, ey);
+            } else if (is_srgb) {
+               uint8_t *t = (uint8_t *)dst.p + (y * dw + x) * 4;
+               float ex = srgb_enc(tapf((x + 0.5f) / 2 - 0.5f, 4, alt)) * 255.0f;
+               CHECK(fabsf(t[0] - ex) <= 3.0f && t[1] == 0 && t[2] == 0 && t[3] == 255, "srgb (%u,%u) = %d,%d,%d,%d want ~%.0f,0,0,255", x, y, t[0], t[1], t[2], t[3], ex);
+            } else if (is_r8) {
+               uint8_t t = ((uint8_t *)dst.p)[y * dw + x];
+               float ex = 40.0f * (2 * x + 0.5f) + 10.0f * (2 * y + 0.5f);   /* mean of the 2x2 footprint */
+               CHECK(fabsf(t - ex) <= 2.0f, "r8 (%u,%u) = %d want ~%.1f", x, y, t, ex);
+            } else {
+               float t = ((float *)dst.p)[y * dw + x], ex = (float)((2 * x + 1) + 4 * (2 * y + 1)) / 16.0f;
+               CHECK(t == ex, "d32 (%u,%u) = %f want %f", x, y, t, ex);
+            }
+         }
+   }
+   rmimg(&i1); rmimg(&i2); rmbuf(&src); rmbuf(&dst);
+   report(name, g_fake ? "results: fake backend" : NULL);
    return 1;
 }
 
@@ -690,6 +803,42 @@ case_dsfmt(const char *name, VkFormat fmt)
          if (hs) CHECK(!memcmp(sdst.p, ssrc.p, w * h), "%s stencil plane differs", name);
       }
    }
+   /* BLIT_DST must be advertised for depth/stencil formats, and a CmdBlitImage region naming both aspects must write BOTH planes */
+   {
+      VkFormatProperties fp;
+      GetPhysicalDeviceFormatProperties(g_pd, fmt, &fp);
+      CHECK((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT),
+            "%s optimal features 0x%x lack BLIT_SRC|BLIT_DST", name, fp.optimalTilingFeatures);
+   }
+   if (hs) {
+      VkCommandBuffer cb = begin_cb();
+      CHECK(cb, "cb");
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      layout_tr(cb, b.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, all);
+      VkClearDepthStencilValue c = {.depth = 0.5f, .stencil = 0x11};
+      VkImageSubresourceRange rg = {all, 0, 1, 0, 1};
+      CmdClearDepthStencilImage(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &rg);
+      VkBufferImageCopy up = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, zsrc.b, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+      VkBufferImageCopy us = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyBufferToImage(cb, ssrc.b, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &us);
+      layout_tr(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      VkImageBlit bl = {.srcSubresource = {all, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {w, h, 1}},
+                        .dstSubresource = {all, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {w, h, 1}}};
+      CmdBlitImage(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_NEAREST);
+      layout_tr(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, all);
+      memset(zdst.p, 0xEE, w * h * zb);
+      memset(sdst.p, 0xEE, w * h);
+      VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, zdst.b, 1, &dn);
+      VkBufferImageCopy ds = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+      CmdCopyImageToBuffer(cb, b.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sdst.b, 1, &ds);
+      CHECK(submit_wait(cb), "submit blit");
+      if (!g_fake) {
+         CHECK(!memcmp(zdst.p, zsrc.p, w * h * zb), "%s blit depth plane differs", name);
+         CHECK(!memcmp(sdst.p, ssrc.p, w * h), "%s blit stencil plane not written by a depth|stencil region", name);
+      }
+   }
    /* clear-only pass: both aspects */
    {
       VkCommandBuffer cb = begin_cb();
@@ -895,6 +1044,8 @@ main(int argc, char **argv)
    uint32_t cnt = 1;
    VkResult r = EPD(inst, &cnt, &pd);
    if ((r != VK_SUCCESS && r != VK_INCOMPLETE) || cnt < 1) { printf("{\"fail\":\"no device\"}\n"); return 1; }
+   g_pd = pd;
+   GetPhysicalDeviceFormatProperties = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
    g_ms4 = !!(pp.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT);
@@ -922,6 +1073,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("copyimg")) ok &= case_img(1);
    if (ok && CASE_ON("blit")) ok &= case_blit();
    if (ok && CASE_ON("blit_e5")) ok &= case_blit_e5();
+   if (ok && CASE_ON("blit_f16")) ok &= case_blit_fmt("blit_f16");
+   if (ok && CASE_ON("blit_srgb")) ok &= case_blit_fmt("blit_srgb");
+   if (ok && CASE_ON("blit_r8")) ok &= case_blit_fmt("blit_r8");
+   if (ok && CASE_ON("blit_d32")) ok &= case_blit_fmt("blit_d32");
    if (ok && CASE_ON("copybc")) ok &= case_copybc();
    if (ok && CASE_ON("etc2blit")) ok &= case_etc2blit();
    if (ok && CASE_ON("blit3d_n1")) ok &= case_blit3d(VK_FILTER_NEAREST, 1, "blit3d_n1");   /* one destination slice: centre of the source range */
