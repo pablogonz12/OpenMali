@@ -104,9 +104,11 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
 }
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
-   if ((uintptr_t)v != 1)
+   if ((uintptr_t)v != 1 && (uintptr_t)v != 2)
       return -1;
    *o = (struct mali_cmd_target){F.rt.gpu_va, W * 4, W, H, 0};
+   if ((uintptr_t)v == 2)
+      o->samples = 4;   /* a 4x MSAA colour target (no resolve: the samples are stored) */
    return 0;
 }
 static int res_image(VkImage i, struct mali_cmd_target *o) { return res_view((VkImageView)i, o); }
@@ -582,6 +584,20 @@ int main(int argc, char **argv)
       before = F.nsubmit;
       r = mali_cmd_submit(v4);
       CHECK(r == VK_SUCCESS && F.nsubmit == before + 1, "fold submit %d", r);
+      /* 4. MSAA: a sub-rectangle vkCmdClearAttachments records a multisampled constant-colour quad (it used to mark the command buffer unsupported) */
+      {
+         struct vk_command_buffer *v5 = new_cmd(pool, &c2);
+         VkRenderingAttachmentInfo ma;
+         VkRenderingInfo mri = rendering_info(&ma, true);
+         ma.imageView = (VkImageView)(uintptr_t)2;
+         mali_CmdBeginRendering(c2, &mri);
+         VkClearRect mrect = {.rect = {{4, 4}, {W / 2, H / 2}}, .layerCount = 1};
+         mali_CmdClearAttachments(c2, 1, &cat, 1, &mrect);
+         mali_CmdEndRendering(c2);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_SUCCESS, "MSAA ClearAttachments sub-rect end=%d", r);
+         (void)v5;
+      }
       printf("{\"test\":\"t_cmd%d\",\"extra\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
