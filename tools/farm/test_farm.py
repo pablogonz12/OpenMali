@@ -828,16 +828,17 @@ class T(unittest.TestCase):
         dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
         orig = m.L.run_watched
         self.addCleanup(setattr, m.L, "run_watched", orig)
-        def rw2(cmd, tmo, alive, env=None, **k):
-            out = cmd[cmd.index("--out") + 1]
-            os.makedirs(out, exist_ok=True)
-            json.dump({"dev-b": "guest session did not start: rc=1: boom"}, open(out + "/pending.json", "w"))
-            return 0, ""
-        m.L.run_watched = rw2
-        res = f.suite_bench(job, dev)
-        self.assertEqual(res["verdict"], "invalid")
-        self.assertIn("guest session did not start: rc=1: boom", res["notes"])
-        self.assertNotIn("UI-BLOCKED", res["notes"])
+        for printed in ("", "bench2: guest session failed, see pending.json"):          # bench2 may print a diagnostic and still exit 0 with no rows
+            def rw2(cmd, tmo, alive, env=None, printed=printed, **k):
+                out = cmd[cmd.index("--out") + 1]
+                os.makedirs(out, exist_ok=True)
+                json.dump({"dev-b": "guest session did not start: rc=1: boom"}, open(out + "/pending.json", "w"))
+                return 0, printed
+            m.L.run_watched = rw2
+            res = f.suite_bench(job, dev)
+            self.assertEqual((res["verdict"], res.get("max_attempts")), ("invalid", 2), printed)
+            self.assertIn("guest session did not start: rc=1: boom", res["notes"])
+            self.assertNotIn("UI-BLOCKED", res["notes"])
 
     def test_sweep_power_rule_pure(self):
         pb = S.power_blocked
