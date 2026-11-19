@@ -21,8 +21,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define W 256
-#define H 256
+static int g_w = 256, g_h = 256;   /* msaa_cost overrides these (1080p); every other case runs at 256x256 */
+#define W g_w
+#define H g_h
 
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
@@ -869,6 +870,49 @@ alloc_bytes(void)
    return v;
 }
 
+/* msaa_cost: wall time per frame (record + submit + GPU + fence) of overlapping full-screen-ish triangles at 1080p, 1x vs 4x MSAA + resolve.
+ * Not a pass/fail pixel test (timing only); needs MALI_EXPERIMENTAL_MSAA=1 for the 4x half. MALI_BENCH_DRAWS (default 100), MALI_BENCH_FRAMES (60). */
+static int
+test_msaa_cost(void)
+{
+   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");
+   int has4 = gate && gate[0] == '1' && (g_fbcounts & VK_SAMPLE_COUNT_4_BIT);
+   int draws = getenv("MALI_BENCH_DRAWS") ? atoi(getenv("MALI_BENCH_DRAWS")) : 100;
+   int frames = getenv("MALI_BENCH_FRAMES") ? atoi(getenv("MALI_BENCH_FRAMES")) : 60;
+   float (*rot)[4] = malloc(draws * sizeof *rot);
+   for (int i = 0; i < draws; i++) memcpy(rot[i], ID, sizeof rot[i]);
+   g_w = 1920; g_h = 1080;
+   int ok = 1;
+   for (int mode = 0; ok && mode <= 1; mode++) {
+      if (mode && !has4) { printf("{\"test\":\"msaa_cost\",\"samples\":4,\"skipped\":\"not advertised\",\"ok\":true}\n"); break; }
+      g_msaa = mode;
+      struct scene s = {.mode = MODE_TRI};
+      VkFence f;
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+      int made = scene_create(&s, 0);
+      g_msaa = 0;
+      if (!made) { ok = 0; break; }
+      ok &= scene_draw(&s, draws, (const float (*)[4])rot, f);   /* warm-up */
+      double t[512]; int n = frames > 512 ? 512 : frames;
+      for (int i = 0; ok && i < n; i++) {
+         double t0 = now_us();
+         ok &= scene_draw(&s, draws, (const float (*)[4])rot, f);
+         t[i] = now_us() - t0;
+      }
+      if (ok) {
+         for (int i = 1; i < n; i++) { double v = t[i]; int j = i; while (j && t[j - 1] > v) { t[j] = t[j - 1]; j--; } t[j] = v; }
+         printf("{\"test\":\"msaa_cost\",\"samples\":%d,\"w\":%d,\"h\":%d,\"draws\":%d,\"frames\":%d,\"ms_min\":%.3f,\"ms_median\":%.3f,\"ms_p90\":%.3f,\"ok\":true}\n",
+                mode ? 4 : 1, W, H, draws, n, t[0] / 1000, t[n / 2] / 1000, t[n * 9 / 10] / 1000);
+      }
+      scene_destroy(&s);
+      DestroyFence(dev, f, NULL);
+   }
+   g_w = 256; g_h = 256;
+   free(rot);
+   return ok;
+}
+
 /* ---- many draws in ONE frame (10k-50k): arena / CS / heap growth must not run out (was DEVICE_LOST above ~7k draws) ---- */
 static int
 test_many(void)
@@ -1392,7 +1436,7 @@ test_mode(const char *name, int mode, double expect, double tol)
             /* blue background where the triangle is not: alpha 255 everywhere */
             uint32_t a = 0;
             for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) a += s.px[y * s.pitch + x * 4 + 3] == 255;
-            CHECK(a == W * H, "clearattachments: %u opaque px", a);
+            CHECK(a == (unsigned)(W * H), "clearattachments: %u opaque px", a);
             const uint8_t *c = s.px + 8 * s.pitch + 8 * 4;
             CHECK(c[2] == 255 && c[0] == 0 && c[1] == 0, "corner %u,%u,%u", c[0], c[1], c[2]);
             const uint8_t *t = s.px + 128 * s.pitch + 128 * 4;   /* triangle interior wins over the clear */
@@ -2174,6 +2218,7 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
+   if (ok && g_only && CASE_ON("msaa_cost")) ok &= test_msaa_cost();   /* explicit only: timing, 1080p */
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
