@@ -335,12 +335,12 @@ test_write_copy(unsigned arch)
    mali_pack_buffer(arch, &e[0], g_buf_va + 0x20, 128);
    mali_pack_buffer(arch, &e[1], g_buf_va + 0x30, g_buf_size - 0x30);
    CHECK(!memcmp(c->cpu, &e[0], 32) && !memcmp(c->cpu + 32, &e[1], 32), "array copy of 2 elements");
-   /* copy with element offsets, count clipped to the destination binding (dst elem 1 has room for 1) */
+   /* copy with element offsets; the second element continues into the next consecutive binding (dst elem 1 has room for 1) */
    memset(c->cpu, 0, 64);
    cp.srcArrayElement = 0; cp.dstArrayElement = 1; cp.descriptorCount = 2;
    mali_update_descriptor_sets(&g_dev, 0, NULL, 1, &cp);
    CHECK(!memcmp(c->cpu, &z, 32) && !memcmp(c->cpu + 32, &e[0], 32), "copy honours dstArrayElement");
-   CHECK(!memcmp(c->cpu + 64, &z, 32), "copy clipped at the end of the destination binding");
+   CHECK(!memcmp(c->cpu + 64, &e[1], 32), "copy continues into the next consecutive binding");
    /* dynamic copy */
    VkCopyDescriptorSet dc = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = hs[0], .srcBinding = 2, .srcArrayElement = 1, .dstSet = hs[1],
                               .dstBinding = 2, .dstArrayElement = 0, .descriptorCount = 2 };
