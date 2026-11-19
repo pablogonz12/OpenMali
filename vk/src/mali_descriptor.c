@@ -336,7 +336,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
    s->cpu = p->cpu + at;
    s->va = p->va + at;
    s->arch = p->arch;
-   memset(s->cpu, 0, bytes);
+   if (bytes) memset(s->cpu, 0, bytes);
    write_immutable(s);
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
