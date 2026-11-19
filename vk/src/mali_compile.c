@@ -32,7 +32,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 22 /* 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 37 /* 37: gl_CullDistance outputs ignored (MALI_ADVERTISE_CULL shim) ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -411,14 +411,25 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (stage == MESA_SHADER_VERTEX) {
       bool has_clip = false;
       nir_foreach_shader_out_variable(var, nir) {
-         if (var->data.location == VARYING_SLOT_CLIP_DIST0)
+         if (var->data.location == VARYING_SLOT_CLIP_DIST0 || var->data.location == VARYING_SLOT_CULL_DIST0)
             has_clip = true;
          for (unsigned i = 0; i < var->num_members; i++)
-            if (var->members[i].location == VARYING_SLOT_CLIP_DIST0)
+            if (var->members[i].location == VARYING_SLOT_CLIP_DIST0 || var->members[i].location == VARYING_SLOT_CULL_DIST0)
                has_clip = true;
       }
       if (has_clip)
-         NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
+         NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance, CullDistance) */
+      bool demoted = false;
+      /* MALI_ADVERTISE_CULL shim (mali_cull_shim.h): gl_CullDistance writes are IGNORED (a primitive-level cull cannot be exact here, and
+       * treating them as clip distances would drop whole primitives that straddle 0). The outputs become plain temporaries. */
+      nir_foreach_shader_out_variable(var, nir)
+         if (var->data.location == VARYING_SLOT_CULL_DIST0 || var->data.location == VARYING_SLOT_CULL_DIST1) {
+            var->data.mode = nir_var_shader_temp;
+            var->data.location = 0;
+            demoted = true;
+         }
+      if (demoted)
+         nir_fixup_deref_modes(nir);   /* the derefs still say shader_out */
    }
    if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
       nir_foreach_shader_out_variable(var, nir)
