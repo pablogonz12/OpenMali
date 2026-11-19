@@ -11,6 +11,7 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -100,6 +101,10 @@ kbase_probe(struct mali_gpu_info *out)
    long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
    out->heap_bytes = pages > 0 && psz > 0 ? (uint64_t)pages * psz / 2 : 1ull << 30;
    snprintf(out->name, sizeof(out->name), "%s MC%u", product_name(p->arch_major), out->core_count);
+
+   struct stat st;
+   if (fstat(kb_fd(ctx), &st) == 0)   /* the descriptor actually probed: the path may have been replaced since */
+      out->node_rdev = st.st_rdev;
 
    kb_close(ctx); /* the probe holds no fd after returning */
    return 0;

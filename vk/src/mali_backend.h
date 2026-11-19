@@ -24,6 +24,7 @@ struct mali_gpu_info {
    bool fake;                /* no hardware behind it */
    uint32_t core_id_range;   /* util_last_bit(shader_present): compute TLS sizing */
    uint32_t tls_threads;     /* threads per core that need TLS (max_threads) */
+   uint64_t node_rdev;       /* st_rdev of the kernel node the backend opens (0: none, e.g. fake); VK_EXT_physical_device_drm */
    char name[64];            /* marketing name, e.g. "Mali-G615 MC2" */
 };
 
