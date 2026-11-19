@@ -14,6 +14,7 @@
 #include <time.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <string.h>
 #include "mali_pipeline_layout_flat.h"
 
@@ -1138,17 +1139,69 @@ struct mali_pool {
    _Alignas(16) uint8_t mem[];
 };
 
+/* Standard 64 KiB pool chunks are recycled through a small process-wide free list instead of calloc/free per frame: a 3000-draw frame
+ * needs ~16 chunks, and returning them to glibc every frame cost a brk trim + fresh zero pages (page faults) on the next one. Blocks
+ * are memset individually in mali_frame_blk, so the chunks need no zeroing. At most MALI_POOL_KEEP chunks are kept (4 MiB). */
+#define MALI_POOL_CHUNK (64u << 10)
+#define MALI_POOL_KEEP 64
+static pthread_mutex_t g_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct mali_pool *g_pool_free;
+static unsigned g_pool_nfree;
+
+static struct mali_pool *
+pool_chunk_get(size_t sz)
+{
+   struct mali_pool *np = NULL;
+   if (sz == MALI_POOL_CHUNK) {
+      pthread_mutex_lock(&g_pool_lock);
+      if ((np = g_pool_free)) {
+         g_pool_free = np->next;
+         g_pool_nfree--;
+      }
+      pthread_mutex_unlock(&g_pool_lock);
+   }
+   if (!np && !(np = malloc(sizeof *np + sz)))
+      return NULL;
+   np->used = 0;
+   np->size = sz;
+   return np;
+}
+
+static void
+pool_chunk_put(struct mali_pool *p)
+{
+   if (p->size == MALI_POOL_CHUNK) {
+      pthread_mutex_lock(&g_pool_lock);
+      if (g_pool_nfree < MALI_POOL_KEEP) {
+         p->next = g_pool_free;
+         g_pool_free = p;
+         g_pool_nfree++;
+         pthread_mutex_unlock(&g_pool_lock);
+         return;
+      }
+      pthread_mutex_unlock(&g_pool_lock);
+   }
+   free(p);
+}
+
+unsigned
+mali_frame_pool_cached(void)   /* test hook: chunks parked in the free list */
+{
+   pthread_mutex_lock(&g_pool_lock);
+   unsigned n = g_pool_nfree;
+   pthread_mutex_unlock(&g_pool_lock);
+   return n;
+}
+
 void *
 mali_frame_blk(struct mali_frame *f, size_t n)
 {
    n = (n + 15) & ~(size_t)15;
    struct mali_pool *p = f->pool;
    if (!p || p->used + n > p->size) {
-      size_t sz = n > (64u << 10) ? n : (64u << 10);
-      struct mali_pool *np = calloc(1, sizeof *np + sz);
+      struct mali_pool *np = pool_chunk_get(n > MALI_POOL_CHUNK ? n : MALI_POOL_CHUNK);
       if (!np)
          return NULL;
-      np->size = sz;
       np->next = p;
       f->pool = p = np;
    }
@@ -1249,7 +1302,7 @@ mali_frame_finish(struct mali_frame *f)
    free(f->draws);
    for (struct mali_pool *p = f->pool, *n; p; p = n) {
       n = p->next;
-      free(p);
+      pool_chunk_put(p);
    }
    f->pool = NULL;
    free(f->ops);
