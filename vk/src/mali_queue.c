@@ -16,6 +16,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "kbase_cs.h"
 #include "kbase_draw.h"
 #include "mali_cmd.h"
+#include "mali_event.h"
 #include "mali_meta.h"
 #include "vk_command_buffer.h"
 
@@ -48,6 +49,7 @@ struct mali_hwctx {
    size_t pool_bytes;
    size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
+   int light_pending;             /* see mali_env.light_pending */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
    struct mali_meta_dev md;
    struct mali_hwctx *below;      /* previously current device (stack of live devices) */
@@ -461,6 +463,7 @@ mali_hw_init(struct mali_device *dev)
                               .geo_cpu = h->geo.cpu,
                               .geo_va = h->geo.gpu_va,
                               .sync_va = h->sync.gpu_va,
+                              .light_pending = &h->light_pending,
                               .core_id_range = pdev->gpu.core_id_range,
                               .tls_threads = pdev->gpu.tls_threads};
    kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
@@ -588,7 +591,16 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
 
    double p2 = prof_now();
    int fd = -1;
-   int r = be->submit_signal(dev->kdev, &fd);
+   /* The fence is only consumed through submit->signals (VkFence, semaphores, QueueWaitIdle and present all signal), so a
+    * submission without signals skips the 2 KCPU ioctls, the kick and the fd close. Exception: a light ops frame (event.c)
+    * relies on submit_signal's head flush; MALI_FENCE_ALWAYS=1 keeps the old behaviour. */
+   static int always = -1;
+   if (always < 0)
+      always = getenv("MALI_FENCE_ALWAYS") != NULL;
+   bool light = mali_ops_take_light(&dev->hw->light_pending);
+   int r = 0;
+   if (submit->signal_count || light || always)
+      r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);

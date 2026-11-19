@@ -190,6 +190,7 @@ static void *map_new_bo(uint64_t flags_unused, size_t len, uint32_t kind, uint32
 struct synccnt { uint64_t va; unsigned n; };
 static struct synccnt syncs[256];
 static int nsync;
+unsigned kb_fake_memsync_count(uint64_t va);   /* test hook (t_memsync.c) */
 unsigned kb_fake_memsync_count(uint64_t va) { for (int i = 0; i < nsync; i++) if (syncs[i].va == va) return syncs[i].n; return 0; }
 
 int ioctl(int fd, unsigned long req, ...)
