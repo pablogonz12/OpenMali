@@ -3,7 +3,7 @@
  * buffer with VK_ERROR_FEATURE_NOT_PRESENT (vkEndCommandBuffer returns it) and are documented in R3-PLAN.md "M8":
  * (indexed draws: implemented in M9 rest, v11 INDEX_BUFFER r54 / SIZE r39 from genxml v11, index type PRIMITIVE_FLAGS[10:8])
  *   - colour loadOp LOAD, more than one colour attachment, depth-only render passes (the FBD needs a colour RT)
- *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
+ *   - vkCmdClearAttachments layers > 1 or a colour attachment index > 0 (sub-rect/after-draw clears are quads, also in 4x MSAA passes); vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
 #include <stdio.h>
@@ -1107,7 +1107,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          partial = true;
    if (partial || f->ndraws) {
       /* after a draw, or a sub-rectangle: a constant-colour quad (preload.frag kind 19: the clear words are the format's raw shader output) per rect.
-       * Single-sampled, layer 0; whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
+       * Layer 0; 4x MSAA frames draw the quad multisampled (gfx.samples); whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
       /* depth/stencil: fixed function, no shader read. The constant-colour quad with colour writes masked; the depth value is the viewport
        * min=max depth (depth test ALWAYS + write, clip off), the stencil value a REPLACE-always reference. */
       for (uint32_t i = 0; i < na; i++) {
@@ -1115,8 +1115,8 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          if (!a)
             continue;
          bool zc = a & VK_IMAGE_ASPECT_DEPTH_BIT, sc = a & VK_IMAGE_ASPECT_STENCIL_BIT;
-         if ((zc && !f->has_zs) || (sc && !f->has_st) || f->samples != 1) {
-            unsupported(cmd, "CmdClearAttachments depth/stencil quad: no single-sampled attachment of that aspect");
+         if ((zc && !f->has_zs) || (sc && !f->has_st)) {
+            unsupported(cmd, "CmdClearAttachments depth/stencil quad: no attachment of that aspect");
             return;
          }
          for (uint32_t r = 0; r < nr; r++) {
@@ -1133,6 +1133,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
                return;
             }
             d.dirty = MALI_D_ALL;
+            d.gfx.samples = f->samples;   /* MSAA: the quad is rasterized multisampled (every covered sample is written) */
             d.fx.set = true;
             d.fx.front_ccw = true;
             d.fx.depth_clip = false;
@@ -1163,8 +1164,8 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          cmd->dirty = MALI_D_ALL;
          return;
       }
-      if (!f->has_colour || f->samples != 1) {
-         unsupported(cmd, "CmdClearAttachments quad: no single-sampled colour attachment");
+      if (!f->has_colour) {
+         unsupported(cmd, "CmdClearAttachments quad: no colour attachment");
          return;
       }
       for (uint32_t i = 0; i < na; i++) {
@@ -1189,6 +1190,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
                return;
             }
             d.dirty = MALI_D_ALL;
+            d.gfx.samples = f->samples;   /* MSAA: the quad is rasterized multisampled (every covered sample is written) */
             d.sc[0] = rects[r].rect.offset.x; d.sc[1] = rects[r].rect.offset.y;
             d.sc[2] = (int32_t)rects[r].rect.extent.width; d.sc[3] = (int32_t)rects[r].rect.extent.height;
             d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
