@@ -19,17 +19,22 @@ LIST=$(mktemp); trap 'rm -f "$LIST"' EXIT
 { for f in "$D"/vk/shader/*.spv "$D"/bench/mdbench/shaders/*.spv "$D"/compiler-spike/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
    EX=${SHADERDB_EXTRA:-}
    IFS=: read -r -a EXA <<< "$EX"
-   for e in ${EXA[@]+"${EXA[@]}"} "$@"; do [ -n "$e" ] || continue; if [ -d "$e" ]; then find "$e" -name '*.spv' -print0; elif [ -f "$e" ]; then printf '%s\0' "$e"; else echo "run.sh: no such corpus path: $e" >&2; exit 2; fi; done
+   for e in ${EXA[@]+"${EXA[@]}"} "$@"; do [ -n "$e" ] || continue; if [ -d "$e" ]; then find -H "$e" -name '*.spv' -print0; elif [ -f "$e" ]; then printf '%s\0' "$e"; else echo "run.sh: no such corpus path: $e" >&2; exit 2; fi; done
    if [ -z "${SHADERDB_NO_DXVK:-}" ]; then
       DX=${SHADERDB_DXVK_DIR:-$(ls -d /usr/share/steam/compatibilitytools.d/*/files/lib/wine/dxvk/x86_64-windows 2>/dev/null | head -1 || true)}
       if [ -n "$DX" ] && [ -d "$DX" ]; then
+         exec 9> "$C/.lock"; flock 9   # one run at a time checks/cleans/extracts/publishes the cache (concurrent runs would rm each other's .tmp)
          if [ ! -f "$C/dxvk/.complete" ]; then   # publish only after a successful extraction; partial runs are retried
             rm -rf "$C/dxvk.tmp" "$C/dxvk"
-            python3 -I "$D/tools/shaderdb/extract_spv.py" "$C/dxvk.tmp" dxvk "$DX"/d3d11.dll "$DX"/d3d9.dll "$DX"/d3d8.dll "$DX"/dxgi.dll "$DX"/d3d10core.dll >&2
+            DLLS=(); for dll in d3d11 d3d9 d3d8 dxgi d3d10core; do [ -f "$DX/$dll.dll" ] && DLLS+=("$DX/$dll.dll"); done   # d3d8.dll only exists from DXVK 2.4
+            python3 -I "$D/tools/shaderdb/extract_spv.py" "$C/dxvk.tmp" dxvk ${DLLS[@]+"${DLLS[@]}"} >&2
             touch "$C/dxvk.tmp/.complete"; mv "$C/dxvk.tmp" "$C/dxvk"
          fi
+         flock -u 9; exec 9>&-
          for f in "$C"/dxvk/*.spv; do [ -f "$f" ] && printf '%s\0' "$f"; done
       fi
    fi; } > "$LIST"   # group runs under set -e (not in a pipeline), so a failing find/extract aborts the run
-mapfile -d '' -t FILES < <(LC_ALL=C sort -zu "$LIST")
-SHADERDB_STRIP="$D/:$C/" MALI_SHADER_CACHE= "$BIN" -a "$ARCHS" ${FILES[@]+"${FILES[@]}"} > "$OUT"
+SORTED=$(mktemp); trap 'rm -f "$LIST" "$SORTED"' EXIT
+LC_ALL=C sort -zu "$LIST" > "$SORTED"
+# the corpus goes in as a NUL-separated list file, not argv (a DXVK-sized corpus exceeds ARG_MAX: E2BIG)
+SHADERDB_STRIP="$D/:$C/" MALI_SHADER_CACHE= "$BIN" -a "$ARCHS" -l "$SORTED" > "$OUT"

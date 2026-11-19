@@ -40,6 +40,8 @@ def main():
     if ok:
         to = [float(o[k]["time_us"]) for k in ok]; tn = [float(n[k]["time_us"]) for k in ok]
         ratios = [y / x for x, y in zip(to, tn) if x > 0]
-        print(f"time_us total {sum(to):.0f} -> {sum(tn):.0f} ({(sum(tn)/sum(to)-1)*100:+.1f}%), median per-shader ratio {statistics.median(ratios):.3f} (noisy)")
+        tot = f"{(sum(tn)/sum(to)-1)*100:+.1f}%" if sum(to) > 0 else "n/a"
+        med = f"{statistics.median(ratios):.3f}" if ratios else "n/a"
+        print(f"time_us total {sum(to):.0f} -> {sum(tn):.0f} ({tot}), median per-shader ratio {med} (noisy)")
 
 main()
