@@ -20,14 +20,16 @@ BASE=${BASE:-$T/out/MediaDeck-1.0.0-p22-gs2.apk}
 OUT=$(realpath -m "${OUT:-$P/dist/apk}"); mkdir -p "$OUT"
 MD=${MD:-$HOME/Documents/scripts/mali-wt2/md-matrix/build}     # splice.py lives here (build/malideck17)
 for f in "$BASE" "$MD/malideck17/splice.py" "$V/out/$var/libvulkan_mali.so"; do [ -e "$f" ] || { echo "missing $f" >&2; exit 1; }; done
-BT=$(echo "$T"/tools/bt/android-*)
+BT=$(ls -d "$T"/tools/bt/android-* 2>/dev/null | sort -V | tail -1)   # exactly one build-tools dir (the newest)
+for x in zipalign apksigner; do [ -x "$BT/$x" ] || { echo "missing executable $BT/$x" >&2; exit 1; }; done
 
 # 1. driver zip named Mali-open-<sha>
-DRIVER_NAME="Mali-open-$sha" "$P/build-zip.sh" -o "$OUT/zip" "$var"
-cp "$OUT"/zip/mali-open-"$var"-*.zip "$OUT/mali-open-$var-$sha.zip"
+ZS=$(mktemp -d "${TMPDIR:-/tmp}/mo-variant-zip.XXXXXX"); S=$(mktemp -d "${TMPDIR:-/tmp}/mo-variant-src.XXXXXX"); W=$(mktemp -d "${TMPDIR:-/tmp}/mo-variant-pkg.XXXXXX")
+trap 'rm -rf "$ZS" "$S" "$W"' EXIT     # scratch dirs are private to this invocation
+DRIVER_NAME="Mali-open-$sha" "$P/build-zip.sh" -o "$ZS" "$var"     # fresh staging dir: exactly the archive built now, older dated zips cannot match
+cp "$ZS"/mali-open-"$var"-*.zip "$OUT/mali-open-$var-$sha.zip"
 
 # 2. hook applied to a scratch copy of the DroidDeck source
-S=${TMPDIR:-/tmp}/mo-variant-src-$sha; rm -rf "$S"; mkdir -p "$S"
 git -C "$DD_SRC" archive HEAD | tar -x -C "$S"
 (cd "$S" && git init -q . && git apply --check -p1 "$P/mali-open-app-hook.patch" && git apply -p1 "$P/mali-open-app-hook.patch")
 grep -q maliOpenSelected "$S/app/src/main/java/com/droiddeck/launcher/core/DeviceSupport.kt"
@@ -38,7 +40,6 @@ if [ $gradle = 1 ]; then
 fi
 
 # 3. splice the new dex/res into the base MediaDeck APK, align, sign (same key as the base: updates in place)
-W=${TMPDIR:-/tmp}/mo-variant-pkg-$sha; rm -rf "$W"; mkdir -p "$W"
 python3 -I "$MD/malideck17/splice.py" "$BASE" "$S/app/build" "$W/a.apk"
 "$BT/zipalign" -f -P 16 4 "$W/a.apk" "$W/b.apk"
 apk=$OUT/MediaDeck-open-$sha.apk; rm -f "$apk" "$apk.idsig"
