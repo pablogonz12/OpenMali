@@ -423,15 +423,18 @@ test_ringwrap(void)
    CHECK(kb_queue_piece_instrs(1) == piece, "a too-small ring clamps to the 4 KiB piece (%u)", kb_queue_piece_instrs(1));
 
    const size_t mask = F.q.ring_size - 1;
-   unsigned pieces = 0, wraps = 0;
-   for (unsigned i = 0; i < N && g_fail == 0; i += piece) {
+   unsigned pieces = 0, wraps = 0, submitted = 0;
+   for (unsigned i = 0; i < N && g_fail == 0;) {
       unsigned m = N - i < piece ? N - i : piece;
-      if (m > 1) m -= (i / piece) % 13;   /* vary the piece so offsets are not ring/4 aligned and copies straddle the end */
+      /* vary only full pieces, so offsets are not ring/4 aligned and copies straddle the end; a partial tail is
+       * submitted whole and must not shrink to zero */
+      if (m == piece) m -= pieces % 13;
       uint64_t off = F.q.insert;
       if (kb_queue_submit(&F.q, ins + i, m, KB_KICK_IOCTL) != 0) {
          CHECK(false, "submit piece %u (%u instrs)", pieces, m);
          break;
       }
+      submitted += m;
       size_t total = ((size_t)m * 8 + 63) & ~(size_t)63;
       for (unsigned k = 0; k < m; k++)
          if (*(const uint64_t *)((const char *)F.q.ring.cpu + ((off + k * 8) & mask)) != ins[i + k]) {
@@ -444,8 +447,10 @@ test_ringwrap(void)
       if (((off + total - 1) & ~(uint64_t)mask) != (off & ~(uint64_t)mask))
          wraps++;
       pieces++;
+      i += m;
    }
    CHECK(pieces >= 20, "stream longer than the ring was submitted in %u pieces", pieces);
+   CHECK(submitted == N, "submitted %u of %u instructions (no gaps in the stream)", submitted, N);
    CHECK(wraps >= 3, "%u pieces straddled the end of the ring", wraps);
    /* total >= ring_size is refused by the queue, so callers must chunk (the old 2 KiB cap silently relied on this) */
    CHECK(kb_queue_submit(&F.q, ins, F.q.ring_size / 8, KB_KICK_IOCTL) == -EINVAL, "oversized block refused");
