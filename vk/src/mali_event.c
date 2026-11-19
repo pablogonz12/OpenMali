@@ -41,12 +41,12 @@ flush(struct b *b, const struct regs *R)
    E(b, kb_cs_wait(1u << KB_CS_SLOT_LS));
 }
 
-/* Set when a light ops frame was built: its words rely on the head flush of the next submit_signal (mali_queue_submit must not skip it). */
-static int g_light_pending;
+/* env->light_pending (per device) is set when a light ops frame was built: its words rely on the head flush of the next submit_signal
+ * of THAT device (mali_queue_submit must not skip it). Per device, so another device's submission cannot consume it. */
 int
-mali_ops_take_light(void)
+mali_ops_take_light(int *pending)
 {
-   return __atomic_exchange_n(&g_light_pending, 0, __ATOMIC_RELAXED);
+   return pending ? __atomic_exchange_n(pending, 0, __ATOMIC_RELAXED) : 0;
 }
 
 int
@@ -96,8 +96,8 @@ mali_ops_build(const struct mali_env *env, const struct mali_op *ops, unsigned n
          light = false;
    if (!light)
       flush(&b, R);
-   else
-      __atomic_store_n(&g_light_pending, 1, __ATOMIC_RELAXED);
+   else if (env->light_pending)
+      __atomic_store_n(env->light_pending, 1, __ATOMIC_RELAXED);
    E(&b, kb_cs_move48(R->addr, env->sync_va));
    E(&b, kb_cs_move48(R->val, 1));
    E(&b, kb_cs_sync_add64(R->addr, R->val, KB_CS_SCOPE_SYSTEM));

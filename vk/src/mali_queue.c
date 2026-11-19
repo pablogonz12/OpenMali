@@ -49,6 +49,7 @@ struct mali_hwctx {
    size_t pool_bytes;
    size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
+   int light_pending;             /* see mali_env.light_pending */
    struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
    struct mali_meta_dev md;
    struct mali_hwctx *below;      /* previously current device (stack of live devices) */
@@ -462,6 +463,7 @@ mali_hw_init(struct mali_device *dev)
                               .geo_cpu = h->geo.cpu,
                               .geo_va = h->geo.gpu_va,
                               .sync_va = h->sync.gpu_va,
+                              .light_pending = &h->light_pending,
                               .core_id_range = pdev->gpu.core_id_range,
                               .tls_threads = pdev->gpu.tls_threads};
    kb_draw_tiler_heap_desc(h->geo.cpu, h->heap.first_chunk_va, h->heap.chunk_size);
@@ -574,7 +576,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
    static int always = -1;
    if (always < 0)
       always = getenv("MALI_FENCE_ALWAYS") != NULL;
-   bool light = mali_ops_take_light();
+   bool light = mali_ops_take_light(&dev->hw->light_pending);
    int r = 0;
    if (submit->signal_count || light || always)
       r = be->submit_signal(dev->kdev, &fd);
