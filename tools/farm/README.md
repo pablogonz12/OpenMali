@@ -1,5 +1,7 @@
 # mali-farm: automatic hardware tests on whichever phone is attached
 
+> Task-oriented user and troubleshooting guide: [GUIDE.md](GUIDE.md).
+
     tools/farm/farm submit <ref> --suite smoke|daily|bench --need v10,v11,v13 [--env "K=V ..."]
     tools/farm/farm status | wait <job> --timeout N | results <job>
     tools/farm/farmd [--once] [--fake]     # the daemon (systemd user unit: mali-farm.service)
@@ -8,9 +10,12 @@ State (queue, runs, artifacts, alerts.log) is in `~/.local/state/mali-farm/`, ne
 `farmd` checks the commit out detached, builds a64-glibc under `timeout 300`, archives the `.so` by sha256 and runs the suite once
 per needed device class on an attached, idle phone while holding the qsafe lock (`/tmp/qsafe-<lock>.lock`), then `qrestore`.
 A class with no attached phone stays pending and is picked up when the phone reappears. A missing phone that has work waiting gets
-`adb reconnect` / `reconnect offline` / `connect <wireless>` (never `kill-server`); after 10 min it is marked down (one line in alerts.log).
+`adb reconnect` / `reconnect offline` / `connect <wireless>` (never `kill-server`); after 10 min it is marked down (one line in alerts.log, plus one line with the recovery steps in `<state>/ALERTS`; `farm status` repeats them under a down phone: over usb `adb tcpip 5555`, then `adb connect <ip>:5555`).
+
+**Runaway-app guard**: on an idle phone (no job, no hold) whose foreground app stays above `runaway_cpu` (default 90 %, `dumpsys cpuinfo` scale) for `runaway_secs` (default 900 s), farmd runs `am force-stop <pkg>` and writes a `RUNAWAY-APP` line to alerts.log. Launcher/system UI are never stopped. On by default only with `foreground_launch = true`; `runaway_guard = true|false` overrides. Env: `MALI_FARM_RUNAWAY_CPU/SECS`.
 One JSON per run: `runs/<job>-<class>.json` (commit, dirty, .so sha256, env, suite, device, GPU, kbase, battery temp, counts, new failures,
 newly passing, verdict pass|fail|error, wall time). `farm wait` exits 0 pass, 1 fail, 2 error, 3 timeout.
+A bench job whose run printed `UI-BLOCKED` (foreground dialog) is INVALID and requeued once (max_attempts 2).
 
 Suites: smoke = vk/tests/valrun.sh (20 loops, honours --env); daily = qdeqp on lists/daily-sample.txt diffed per case against
 `vk/deqp/ours-daily-sample-<baseline>.tsv` (from the commit, else main; --env goes to deqp-vk); bench = stub (error).

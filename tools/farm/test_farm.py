@@ -314,6 +314,115 @@ class T(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
+    def runaway(self, pkg_cpu, secs="0", guard=True, age=0):
+        if guard and "runaway_guard" not in open(self.d + "/devices.toml").read():
+            t = open(self.d + "/devices.toml").read().replace('baseline = "cmf"', 'baseline = "cmf"\nrunaway_guard = true', 1)
+            open(self.d + "/devices.toml", "w").write(t)
+        self.env["MALI_FARM_RUNAWAY_SECS"] = secs
+        self.attach("dev-a")
+        os.makedirs(self.d + "/state/fake-runaway", exist_ok=True)
+        if pkg_cpu:
+            open(self.d + "/state/fake-runaway/dev-a", "w").write(pkg_cpu)
+
+    def stopped(self):
+        p = self.d + "/state/fake-runaway/dev-a.stopped"
+        return open(p).read().split() if os.path.exists(p) else []
+
+    def test_runaway_app_on_an_idle_phone_is_force_stopped_and_logged(self):
+        self.runaway("com.example.MediaDeck 128")
+        self.farmd()
+        self.assertEqual(self.stopped(), ["com.example.MediaDeck"])
+        self.assertFalse(os.path.exists(self.d + "/state/fake-runaway/dev-a"))
+        line = open(self.d + "/state/alerts.log").read()
+        self.assertIn("RUNAWAY-APP dev-a: com.example.MediaDeck at 128% CPU", line)
+        self.assertIn("force-stopped", line)
+
+    def test_runaway_guard_waits_for_the_time_threshold_and_ignores_cool_apps(self):
+        self.runaway("com.example.MediaDeck 128", secs="3600")
+        self.farmd()
+        self.assertEqual(self.stopped(), [])                                   # above the CPU limit, but not for long enough yet
+        self.runaway("com.example.MediaDeck 12")
+        self.farmd()
+        self.assertEqual(self.stopped(), [])                                   # a quiet app is left alone
+        self.assertFalse(os.path.exists(self.d + "/state/alerts.log") and "RUNAWAY" in open(self.d + "/state/alerts.log").read())
+
+    def test_runaway_guard_never_touches_a_phone_with_a_hold_or_a_job(self):
+        self.runaway("com.example.MediaDeck 128")
+        h = H.new_hold("dev-a", 60)
+        self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.assertIsNotNone(self.hold_next_for_test("dev-a"))
+        self.farmd()                                                           # the queued hold/job run on the phone: it is not idle
+        self.assertEqual(self.stopped(), [])
+
+    def git_rev(self, r):
+        return subprocess.run(["git", "-C", HERE, "rev-parse", r], capture_output=True, text=True).stdout.strip()
+
+    def test_submit_in_flight_is_idempotent_and_rerun_forces(self):
+        rc, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        rc, j2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.assertEqual(j1, j2)
+        self.assertIn("already pending", err)
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v13")[1], j1)        # other class: a new job
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--rerun")[1], j1)
+
+    def test_single_case_diagnostic_goes_before_full_cases(self):
+        _, one, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--need", "v11")
+        _, many, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--case", "dEQP-VK.a.c", "--need", "v11")
+        _, forced, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.z", "--need", "v11", "--prio", "30")
+        self.assertEqual((L.job_prio(L.find_job(one)), L.job_prio(L.find_job(many)), L.job_prio(L.find_job(forced))), (L.SINGLE_CASE_PRIO, 20, 30))
+        self.assertLess(L.SINGLE_CASE_PRIO, 10)                                  # also before bench/menu
+
+    def test_batch_passes_as_one_job(self):
+        rc, jid, err = self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")
+        self.assertEqual(rc, 0, err)
+        j = L.find_job(jid)
+        self.assertEqual(j["batch"]["refs"], ["HEAD", "HEAD~1"])
+        self.assertTrue(j["ref"].startswith("batch:"))
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
+        self.assertIn("all branches pass together", self.farm("batch", jid)[1])
+        self.assertEqual(self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")[1], jid)      # same batch: the same merge commit, reused
+
+    def test_batch_failure_bisects_per_branch(self):
+        culprit = self.git_rev("HEAD~1")[:12]
+        rc, jid, err = self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale", "--env", "FAKE_FAIL_COMMIT=" + culprit)
+        self.assertEqual(rc, 0, err)
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "fail")
+        for _ in range(4):                                                       # bisect jobs are created, then run
+            self.farmd()
+        out = self.farm("batch", jid)[1]
+        res = dict((l.split()[0], l.split()[-1]) for l in out.splitlines()[1:] if l.startswith("  H"))
+        self.assertEqual(res, {"HEAD": "pass", "HEAD~1": "fail"}, out)
+
+    def test_batch_needs_two_refs(self):
+        self.assertNotEqual(self.farm("submit", "--batch", "HEAD")[0], 0)
+        self.assertNotEqual(self.farm("submit")[0], 0)
+
+    def test_guardlib_parsing(self):
+        import guardlib as G
+        ci = "  128% 4242/com.example.MediaDeck: 100% user + 28% kernel\n  3.1% 99/system_server: 2% user\n"
+        self.assertEqual(G.cpu_of(ci, "com.example.MediaDeck"), 128.0)
+        self.assertIsNone(G.cpu_of(ci, "com.other"))
+        act = "topResumedActivity=ActivityRecord{1 u0 com.mi.android.globallauncher/.Home t1}"
+        self.assertIsNone(G.candidate(act))                                  # the launcher is never stopped
+        self.assertEqual(G.candidate(act.replace("com.mi.android.globallauncher", "com.x")), "com.x")
+        hot = {}
+        self.assertIsNone(G.verdict(hot, "p", 100, 0, 90, 60))
+        self.assertEqual(G.verdict(hot, "p", 100, 61, 90, 60), 61)
+        self.assertIsNone(G.verdict(hot, "p", 10, 70, 90, 60))              # a dip resets the clock
+        self.assertEqual(hot, {})
+
+    def test_runaway_guard_is_off_unless_the_phone_opts_in(self):
+        self.runaway("com.example.MediaDeck 128", guard=False)
+        self.farmd()
+        self.assertEqual(self.stopped(), [])
+
+    def hold_next_for_test(self, alias):
+        return H.queued(H.list_holds(), alias) or None
+
     def test_pending_resume_and_json(self):
         rc, jid, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11,v13", "--env", "FAKE_REGRESS=2 FAKE_FIX=1")
         self.assertEqual(rc, 0)
@@ -378,18 +487,33 @@ class T(unittest.TestCase):
         self.farmd()
         self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
 
+    def backdate(self, alias, secs):
+        """age a device state by `secs` instead of sleeping (a sleep races the loaded CI/full-suite run)"""
+        p = self.d + "/state/devices-state.json"
+        st = json.load(open(p))
+        st[alias]["since"] -= secs
+        json.dump(st, open(p, "w"))
+
     def test_down_alert(self):
         self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13")
         self.attach()
         self.farmd()                                            # becomes 'missing'
-        import time
-        time.sleep(1.2)
+        self.backdate("dev-b", 5)
         self.farmd()                                            # > DOWN_AFTER -> down + one alert line
         self.farmd()
         lines = open(self.d + "/state/alerts.log").read().strip().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertIn("dev-b", lines[0])
         self.assertNotIn("SERIAL", lines[0])
+        al = open(self.d + "/state/ALERTS").read().strip().splitlines()          # the owner-facing file, one line with the recovery steps
+        self.assertEqual(len(al), 1)
+        self.assertIn("DEVICE-DOWN dev-b", al[0])
+        self.assertIn("adb tcpip 5555", al[0])
+        self.assertIn("adb connect", al[0])
+        out = self.farm("status")[1]
+        self.assertIn("dev-b is unreachable", out)
+        self.assertIn("adb tcpip 5555", out)
+        self.assertNotIn("dev-a is unreachable", out)
 
     def test_compare(self):
         c, nf, npass = L.compare({"a": "Pass", "b": "Pass", "c": "Fail"}, {"a": "Pass", "b": "Crash", "c": "Pass"})
@@ -615,6 +739,16 @@ class T(unittest.TestCase):
         self.assertTrue(BL.publishable(row("ours", 2.5)))
         self.assertEqual(len(BL.merge_rows([], rows)), 3)
 
+    def test_merge_rows_uses_already_published_bridge_as_peer(self):
+        def row(drv, gpu):
+            return {"phone": "poco-x8", "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}
+        # ours-only job: the bridge row of the same commit is already in the file; 1.4 ms is valid (bridge 1.32), not under the 2 ms fallback floor
+        merged = BL.merge_rows([row("bridge", 1.32)], [row("ours", 1.40)])
+        self.assertEqual([r["driver"] for r in merged], ["bridge", "ours"])
+        self.assertEqual(len(BL.merge_rows([row("bridge", 1.32)], [row("ours", 0.4)])), 1)
+        # a new bridge row replaces the old one: the stale 1.32 ms must not vouch for an ours row that is implausible against the new 10 ms
+        self.assertEqual([r["driver"] for r in BL.merge_rows([row("bridge", 1.32)], [row("bridge", 10.0), row("ours", 2.5)])], ["bridge"])    # still rejects the invalid-winner symptom
+
     def test_bench_owner_pending_is_gated_not_invalid(self):
         """bench2 stopping with 'PENDING: focus rule violated' pushed nothing: the .so left on the phone by an earlier job must not make the job
         INVALID (2026-11-18: three INVALIDs in 21 s used up the v13 attempts). A finished chunk with a foreign .so is still INVALID."""
@@ -817,7 +951,7 @@ class T(unittest.TestCase):
     def test_cancel(self):
         self.attach("dev-a")
         _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
         out = self.farm("cancel", j1)[1]
         self.assertIn("v11 cancelled", out)
         self.assertEqual(L.job_verdict(L.find_job(j1)), "cancelled")
@@ -1096,10 +1230,10 @@ class T(unittest.TestCase):
     def test_farm_prio_and_submit_prio(self):
         _, a, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.y")
         _, b, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.z", "--prio", "3")
-        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (20, 3))
+        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (L.SINGLE_CASE_PRIO, 3))
         rc, out, _ = self.farm("prio", a, "1")
         self.assertEqual(rc, 0)
-        self.assertIn("20 -> 1", out)
+        self.assertIn("5 -> 1", out)
         self.assertEqual([j["id"] for j in BL.order_jobs(L.list_jobs())], [a, b])
         self.assertEqual(self.farm("prio", "nosuchjob", "1")[0], 1)
         self.nosweep()
@@ -1334,7 +1468,7 @@ class T(unittest.TestCase):
             self.assertEqual(L.find_job(j2).get("build_cached"), j1)
             # archive from before the fix (no t_* stored): the smoke job must rebuild, not run with 0 tests
             shutil.rmtree(f.tests_dir(sha))
-            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
             os.makedirs(f.tree(j3) + "/vk", exist_ok=True)
             open(f.tree(j3) + "/vk/build.sh", "w").write("")
             f.build(L.find_job(j3))
@@ -1510,8 +1644,11 @@ class T(unittest.TestCase):
         rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
         self.assertNotEqual(rc, 0)
         self.assertIn("selects no class", err)
+        self.attach("dev-a")
         _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
-        self.farmd()
+        for _ in range(3):                                      # earlier jobs of this test run first
+            self.farmd()
+        self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
         self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
 
     def test_find_passed_unit(self):
@@ -2099,6 +2236,82 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(H.end_reason(h, 1, False, now=101), "max time reached")
         self.assertIn("caller lost", H.end_reason(h, H.HB_STALE + 1, False, now=50))
         self.assertEqual(H.end_reason(h, 1, False, now=50, disabled=True), "disabled by owner")
+
+
+class Bench2Rank(unittest.TestCase):
+    """bench2's presented-config winner: by fps (a FIFO run flat at the display cap must not beat mailbox 450 fps on 1% low), and stored best entries
+    that were not swept under the current ranking/candidate list are re-swept"""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("bench2_mod", os.path.join(HERE, "..", "bench2"))
+        cls.b = importlib.util.module_from_spec(importlib.util.spec_from_loader("bench2_mod", ld))
+        ld.exec_module(cls.b)
+
+    def test_cube_winner_is_fastest_not_steadiest(self):
+        pres = {"pres:fifo/4img/fif2": {"fps": 120.4, "low1": 107.0, "cpu_ms": 1.1},
+                "pres:mailbox/2img/fif2": {"fps": 457.0, "low1": 90.0, "cpu_ms": 0.4}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube")), "pres:mailbox/2img/fif2")
+
+    def test_cube_tie_goes_to_better_low1(self):
+        pres = {"a": {"fps": 100.0, "low1": 50.0, "cpu_ms": 1}, "b": {"fps": 100.0, "low1": 80.0, "cpu_ms": 1}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube")), "b")
+
+    def test_triangle_winner_by_fps_then_cpu(self):
+        pres = {"a": {"fps": 600.0, "low1": 1, "cpu_ms": 0.9}, "b": {"fps": 600.0, "low1": 1, "cpu_ms": 0.5}, "c": {"fps": 500.0, "low1": 9, "cpu_ms": 0.1}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "triangle")), "b")
+
+    def test_env_penalty_still_applies(self):
+        pres = {"a": {"fps": 100.0, "low1": 1, "cpu_ms": 1}, "b": {"fps": 103.0, "low1": 1, "cpu_ms": 1}}
+        pen = lambda k: 1.05 if k == "b" else 1.0
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube", pen)), "a")
+
+    def test_readmission_keeps_the_phone_lock(self):
+        """the recursive re-sweep calls admit() again on the same Phone: the first admission's flock must survive (QSAFE_HELD is then set by
+        ourselves, which must not be mistaken for an ancestor's lock and drop ours)"""
+        b = self.b
+        dev = {"alias": "poco-x8", "class": "x8", "lock": "unit-test-lock"}
+        ph = b.Phone(dev, {"quick_root": "/nonexistent"})
+        got = []
+        ph.acquire_wait = lambda secs: (setattr(ph.lock, "fd", object()), got.append(ph.lock), True)[-1]
+        ph.health = lambda: None
+        saved = (b.L.resolve, b.L.disabled_dir, b.G.disabled, os.environ.pop("QSAFE_HELD", None))
+        b.L.resolve, b.L.disabled_dir, b.G.disabled = (lambda *a, **k: "tid"), (lambda: None), (lambda *a: False)
+        try:
+            self.assertIsNone(ph.admit())
+            first = ph.lock
+            self.assertIsNotNone(first)
+            self.assertIsNone(ph.admit())
+            self.assertIs(ph.lock, first)            # not replaced / not dropped
+            self.assertIsNotNone(first.fd)
+            self.assertEqual(len(got), 1)            # and not re-acquired
+        finally:
+            b.L.resolve, b.L.disabled_dir, b.G.disabled = saved[:3]
+            os.environ.pop("QSAFE_HELD", None)
+            if saved[3] is not None:
+                os.environ["QSAFE_HELD"] = saved[3]
+
+    def test_stored_best_must_carry_the_current_sig(self):
+        v, d = "cube-native", "ours"
+        today = __import__("datetime").date(2026, 11, 18)
+        mk = lambda **k: {"poco-x8": {d: {v: {"date": "2026-11-18", **k}}}}
+        self.assertIsNone(self.b.best_stale(mk(sig=self.b.sweep_sig(v, d)), "poco-x8", d, v, today))
+        self.assertTrue(self.b.best_stale(mk(), "poco-x8", d, v, today))                 # no sig: unvouched (this is how a fifo winner survived)
+        self.assertTrue(self.b.best_stale(mk(sig="old-ranking"), "poco-x8", d, v, today))
+
+    def test_rank_version_changes_the_sig(self):
+        s0 = self.b.sweep_sig("cube-native", "ours")
+        self.b.RANK_VER += 1
+        try:
+            self.assertNotEqual(s0, self.b.sweep_sig("cube-native", "ours"))
+        finally:
+            self.b.RANK_VER -= 1
+
+    def test_draw_count_variants_are_in_the_default_set(self):
+        for v in ("triangle-3k", "triangle-5k", "triangle-10k", "triangle-20k"):
+            self.assertIn(v, self.b.WORK)
+            self.assertIn(f"--n {int(v.split('-')[1][:-1]) * 1000} ", self.b.WORK[v][1] + " ")
 
 
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',

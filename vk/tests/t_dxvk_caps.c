@@ -134,6 +134,15 @@ main(int argc, char **argv)
       for (unsigned i = 0; i < nhave; i++) adv |= !strcmp(have_ext[i], "VK_EXT_depth_clip_enable");
       CHECK(adv == (int)dce.depthClipEnable, "VK_EXT_depth_clip_enable advertised=%d but depthClipEnable=%u", adv, dce.depthClipEnable);
    }
+   {
+      VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state");
+      CHECK(adv == (int)eds.extendedDynamicState, "VK_EXT_extended_dynamic_state advertised=%d but extendedDynamicState=%u", adv, eds.extendedDynamicState);
+      CHECK(adv && eds.extendedDynamicState, "VK_EXT_extended_dynamic_state must be advertised with the feature (DXVK requires it): adv=%d feat=%u", adv, eds.extendedDynamicState);
+   }
    VkPhysicalDeviceMaintenance6FeaturesKHR m6 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR, .pNext = &dce};
    {
       VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &m6};
@@ -141,6 +150,33 @@ main(int argc, char **argv)
       int adv = 0;
       for (unsigned i = 0; i < nhave; i++) adv |= !strcmp(have_ext[i], "VK_KHR_maintenance6");
       CHECK(adv == (int)m6.maintenance6, "VK_KHR_maintenance6 advertised=%d but maintenance6=%u", adv, m6.maintenance6);
+   }
+   /* VK_KHR_unified_image_layouts: name and feature bit move together, and the feature is reported through vkGetPhysicalDeviceFeatures2. */
+   VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR uil = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};
+   {
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &uil};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_KHR_unified_image_layouts");
+      CHECK(adv == 1 && uil.unifiedImageLayouts == 1, "VK_KHR_unified_image_layouts advertised=%d unifiedImageLayouts=%u (want 1/1)", adv, uil.unifiedImageLayouts);
+      CHECK(uil.unifiedImageLayoutsVideo == 0, "unifiedImageLayoutsVideo must stay false (no video)");
+   }
+   /* VK_KHR_shader_expect_assume: name and feature bit move together; the device accepts both (the SPIR-V capability is on in spirv_to_nir). */
+   {
+      VkPhysicalDeviceShaderExpectAssumeFeaturesKHR sea = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_EXPECT_ASSUME_FEATURES_KHR};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sea};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_KHR_shader_expect_assume");
+      CHECK(adv == 1 && sea.shaderExpectAssume == 1, "VK_KHR_shader_expect_assume advertised=%d shaderExpectAssume=%u (want 1/1)", adv, sea.shaderExpectAssume);
+      VkPhysicalDeviceFeatures2 f2q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sea};
+      VkDeviceQueueCreateInfo sq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
+      const char *sx = "VK_KHR_shader_expect_assume";
+      VkDeviceCreateInfo sd = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2q, .queueCreateInfoCount = 1, .pQueueCreateInfos = &sq,
+                               .enabledExtensionCount = 1, .ppEnabledExtensionNames = &sx};
+      VkDevice sdev = NULL;
+      CHECK(CreateDevice(pd, &sd, NULL, &sdev) == VK_SUCCESS, "device with shader_expect_assume + feature");
+      if (sdev) ((PFN_vkDestroyDevice)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkDestroyDevice"))(sdev, NULL);
    }
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e11};
    e2.features = f2.features; e11 = f11; e11.pNext = &e12; e12 = f12; e12.pNext = &e13; e13 = f13; e13.pNext = &m6;   /* m6 -> dce, queried above */

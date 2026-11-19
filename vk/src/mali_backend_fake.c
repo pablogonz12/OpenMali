@@ -319,6 +319,18 @@ fake_bo_free(struct mali_kdev *k, struct mali_bo *bo)
    bo->dmabuf_fd = -1;
 }
 
+/* Test hook (tests/t_resources.c): live (allocated, not freed) buffer BOs of this device, so a free through the wrong device is visible. */
+unsigned
+mali_fake_live_bos(struct mali_kdev *k)
+{
+   unsigned n = 0;
+   pthread_mutex_lock(&k->lock);
+   for (unsigned i = 0; i < k->nbos; i++)
+      n += k->bos[i].live && k->bos[i].kind == 0;
+   pthread_mutex_unlock(&k->lock);
+   return n;
+}
+
 static void
 fake_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t len, bool invalidate)
 {
