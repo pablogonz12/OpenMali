@@ -13,13 +13,19 @@
 #define _DEFAULT_SOURCE
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_beta.h>
+/* HAVE_XCB can be forced to 0 by the build (-DHAVE_XCB=0) when the headers exist but -lxcb does not: header presence alone would then
+ * compile all xcb_* calls and the fallback link would fail with unresolved references. */
+#ifndef HAVE_XCB
 #if __has_include(<xcb/xcb.h>)
 #define HAVE_XCB 1
+#else
+#define HAVE_XCB 0
+#endif
+#endif
+#if HAVE_XCB
 #include <xcb/xcb.h>
 #define VK_USE_PLATFORM_XCB_KHR 1
 #include <vulkan/vulkan_xcb.h>
-#else
-#define HAVE_XCB 0
 #endif
 
 #include <stdbool.h>
@@ -243,8 +249,8 @@ make_surface(PFN_vkCreateHeadlessSurfaceEXT *headless, const char **used)
    uint32_t next = 0;
    exts[next++] = VK_KHR_SURFACE_EXTENSION_NAME;
    if (has_headless) exts[next++] = VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME;
-   else if (has_xcb && getenv("DISPLAY")) exts[next++] = "VK_KHR_xcb_surface";
-   const char *pick = has_headless ? "headless" : (has_xcb && getenv("DISPLAY")) ? "xcb" : NULL;
+   else if (HAVE_XCB && has_xcb && getenv("DISPLAY")) exts[next++] = "VK_KHR_xcb_surface";
+   const char *pick = has_headless ? "headless" : (HAVE_XCB && has_xcb && getenv("DISPLAY")) ? "xcb" : NULL;
    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_1};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = next, .ppEnabledExtensionNames = exts};
@@ -377,16 +383,22 @@ probe_swapchain(VkSurfaceKHR surf, const char *used)
       g_fail++;
    } else {
       uint32_t got = 0;
-      vkGetSwapchainImagesKHR(g_dev, sc, &got, NULL);
+      VkResult qr = vkGetSwapchainImagesKHR(g_dev, sc, &got, NULL);
+      if (qr != VK_SUCCESS) {
+         printf("swapchain create (%s, FIFO, OPAQUE, %u requested): image count query FAIL (%d) HARD-BLOCKER\n",
+                use_rgba ? "R8G8B8A8_UNORM" : "B8G8R8A8_UNORM", ci.minImageCount, qr);
+         hard++;
+      }
       printf("swapchain create (%s, FIFO, OPAQUE, %u requested): ok, %u image(s) -> %s\n", use_rgba ? "R8G8B8A8_UNORM" : "B8G8R8A8_UNORM",
              ci.minImageCount, got,
-             got >= ci.minImageCount ? "fine" : "HARD-BLOCKER");
-      if (got < ci.minImageCount) hard++;
+             qr == VK_SUCCESS && got >= ci.minImageCount ? "fine" : "HARD-BLOCKER");
+      if (qr == VK_SUCCESS && got < ci.minImageCount) hard++;
       /* the sRGB half of the pair: Unity renders through a _SRGB view of a UNORM image, i.e. it needs the mutable-format swapchain.
        * Without VK_KHR_swapchain_mutable_format enabled the request is illegal instead of testable, so report it as unavailable. */
       VkImage imgs[8];
       uint32_t n = got < 8 ? got : 8;
-      vkGetSwapchainImagesKHR(g_dev, sc, &n, imgs);
+      VkResult ir = qr == VK_SUCCESS ? vkGetSwapchainImagesKHR(g_dev, sc, &n, imgs) : qr;
+      if (ir != VK_SUCCESS && ir != VK_INCOMPLETE) { printf("row sRGB view: image enumeration FAIL (%d)\n", ir); g_fail++; n = 0; }
       if (!g_mutable)
          printf("row sRGB view over the swapchain image (vulkanEnableSetSRGBWrite): unavailable (device has no VK_KHR_swapchain_mutable_format)\n");
       else if (n > 0) {
@@ -445,11 +457,22 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1};
    float prio = 1.0f;
    qci.pQueuePriorities = &prio;
-   uint32_t nq = 0, ns = 0;
+   uint32_t nq = 0, ns = 0, fam = UINT32_MAX;
+   bool present_ok = false;
    for (uint32_t i = 0; i < qn; i++) {
-      if (qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) nq++;
+      if (qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+         nq++;
+         VkBool32 sup = VK_FALSE;
+         if (surf && vkGetPhysicalDeviceSurfaceSupportKHR(g_pd, i, surf, &sup) == VK_SUCCESS && sup) {
+            if (fam == UINT32_MAX || !present_ok) { fam = i; present_ok = true; }
+         } else if (fam == UINT32_MAX) {
+            fam = i;   /* graphics but not present-capable: the fallback until a better family appears */
+         }
+      }
       if (qp[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) ns++;
    }
+   if (fam == UINT32_MAX) { printf("no graphics queue family\n"); return 2; }
+   qci.queueFamilyIndex = fam;
    /* VK_KHR_swapchain_mutable_format (and its VK_KHR_image_format_list dependency) is what the sRGB-view rows need; advertising it is
     * not enabling it, so query and enable both before issuing a mutable swapchain request. */
    bool has_mutable = false, has_fmtlist = false;
@@ -472,7 +495,12 @@ main(int argc, char **argv)
    VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
                              .enabledExtensionCount = ndev, .ppEnabledExtensionNames = dev_exts};
    if (vkCreateDevice(g_pd, &dci, NULL, &g_dev) != VK_SUCCESS) { printf("device create failed\n"); return 2; }
-   printf("queues: %u family(ies), graphics %u, 1 present-capable graphics family: %s\n", qn, nq, "checked below");
+   if (surf)
+      printf("queues: %u family(ies), graphics %u, family %u present support (vkGetPhysicalDeviceSurfaceSupportKHR): %s\n", qn, nq, fam,
+             present_ok ? "yes" : "NO - HARD-BLOCKER");
+   else
+      printf("queues: %u family(ies), graphics %u, using family %u; no surface: presentation support NOT checked\n", qn, nq, fam);
+   if (surf && !present_ok) g_fail++;
 
    probe_formats();
    probe_swapchain(surf, surf_kind);

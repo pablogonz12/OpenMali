@@ -13,7 +13,7 @@ cc -std=gnu11 -O1 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
    -o "$OUT/t_unity_caps" "$V/tests/t_unity_caps.c" -lvulkan -lxcb 2>"$OUT/t_unity_caps.err" \
    || { if grep -qE "xcb/xcb.h: No such file|cannot find -lxcb|unable to find library -lxcb" "$OUT/t_unity_caps.err"; then
            echo "note: t_unity_caps built without XCB (swapchain surface rows skip)"
-           cc -std=gnu11 -O1 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
+           cc -std=gnu11 -O1 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -DHAVE_XCB=0 \
               -o "$OUT/t_unity_caps" "$V/tests/t_unity_caps.c" -lvulkan
         else cat "$OUT/t_unity_caps.err"; exit 1; fi; }
 VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE='~all~' \
