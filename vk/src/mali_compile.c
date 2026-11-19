@@ -10,6 +10,7 @@
 #include "panfrost/model/pan_model.h"
 #include "util/blake3/blake3.h"
 #include "nir.h"
+#include "panfrost/compiler/bifrost/bi_debug.h"
 #include "nir_builder.h"
 
 #include "panfrost/lib/pan_blend.h"
@@ -41,10 +42,36 @@ static atomic_ullong g_hits, g_misses, g_stores;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
+/* The Mesa libs are built with asserts on (b_ndebug=false), so every NIR_PASS runs nir_validate_shader and the Bifrost backend runs
+ * bi_validate after each pass: ~25% of compile time (shaderdb: 1.41 s -> 1.05 s over 142 shaders x v11/v13, identical output).
+ * Both are read-only checks, so we turn them off at runtime. MALI_NIR_VALIDATE=1 (set by check.sh) keeps them on. */
+static bool g_validate;
+
+static void
+validate_off_nir(void)
+{
+#ifndef NDEBUG
+   nir_process_debug_variable();   /* parse NIR_DEBUG first: it would overwrite our flag later */
+   if (!g_validate)
+      nir_debug |= NIR_DEBUG_NOVALIDATE;
+#endif
+}
+
+/* bifrost_preprocess_nir re-reads BIFROST_MESA_DEBUG into this global on every compile, so set the bit after it (idempotent write of one
+ * constant value: a racing compile thread at worst validates once more). */
+static void
+validate_off_bifrost(void)
+{
+   if (!g_validate)
+      bifrost_debug |= BIFROST_DBG_NOVALIDATE;
+}
+
 static void
 init_once(void)
 {
    glsl_type_singleton_init_or_ref();
+   g_validate = getenv("MALI_NIR_VALIDATE") != NULL;
+   validate_off_nir();
    /* GPU ids: G615 (v11) 0xB8030000, G725/G925 class (v13) 0xD8000000 (see compiler-spike/NOTES.md) */
    /* v10: G610 0xA8670000 (measured on the phone: product_id 0xA867); G710/G510 have no model entry in this Mesa and use it too */
    static const uint64_t ids[3] = {0xA8670000ull, 0xB8030000ull, 0xD8000000ull};
@@ -536,6 +563,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
+   validate_off_bifrost();
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
@@ -742,6 +770,7 @@ mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, c
    struct pan_compile_inputs in = { .arch = arch, .model = model, .is_blend = true };
    in.fau.reserved = 4;
    pan_preprocess_nir(nir, arch);
+   validate_off_bifrost();
    struct pan_shader_info info = {0};
    pan_postprocess_nir(nir, &in, &info);
 
