@@ -335,9 +335,9 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
 /* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
  * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
 static bool
-gcm_enabled(nir_shader *nir)
+gcm_enabled_any(nir_shader *nir)
 {
-   if (!getenv("MALI_OPT_GCM") || nir->info.stage != MESA_SHADER_COMPUTE)
+   if (nir->info.stage != MESA_SHADER_COMPUTE)
       return false;
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -356,6 +356,103 @@ gcm_enabled(nir_shader *nir)
       }
    }
    return true;
+}
+
+static bool
+gcm_enabled(nir_shader *nir)
+{
+   return getenv("MALI_OPT_GCM") && gcm_enabled_any(nir);
+}
+
+/* Experiment knobs (shaderdb): MALI_KNOBS=a,b,c. Not for production. */
+static bool
+knob(const char *k)
+{
+   const char *e = getenv("MALI_KNOBS");
+   if (!e) return false;
+   size_t n = strlen(k);
+   for (const char *p = e; (p = strstr(p, k)); p += n)
+      if ((p == e || p[-1] == ',') && (p[n] == ',' || !p[n])) return true;
+   return false;
+}
+
+static void
+knobs_pre(nir_shader *nir)
+{
+   if (knob("pre_opt")) {
+      bool progress;
+      do {
+         progress = false;
+         NIR_PASS(progress, nir, nir_opt_algebraic);
+         NIR_PASS(progress, nir, nir_opt_constant_folding);
+         NIR_PASS(progress, nir, nir_opt_copy_prop);
+         NIR_PASS(progress, nir, nir_opt_cse);
+         NIR_PASS(progress, nir, nir_opt_dead_cf);
+         NIR_PASS(progress, nir, nir_opt_remove_phis);
+         NIR_PASS(progress, nir, nir_opt_dce);
+      } while (progress);
+   }
+   if (knob("peep8")) {
+      nir_opt_peephole_select_options po = { .limit = 8 };
+      NIR_PASS(_, nir, nir_opt_peephole_select, &po);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("peep16x")) {
+      nir_opt_peephole_select_options po = { .limit = 16, .expensive_alu_ok = true };
+      NIR_PASS(_, nir, nir_opt_peephole_select, &po);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("optif")) {
+      NIR_PASS(_, nir, nir_opt_if, nir_opt_if_optimize_phi_true_false);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("licm")) {
+      NIR_PASS(_, nir, nir_opt_licm, NULL);
+   }
+   if (knob("unroll")) {
+      NIR_PASS(_, nir, nir_opt_loop_unroll);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("gcm_pre")) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("fma")) {
+      NIR_PASS(_, nir, nir_opt_reassociate_for_fma);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+}
+
+static void
+knobs_post(nir_shader *nir)
+{
+   if (knob("post_cse")) {
+      NIR_PASS(_, nir, nir_opt_cse);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("post_gcm_cs") && gcm_enabled_any(nir)) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("post_gcm")) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("post_peep")) {
+      nir_opt_peephole_select_options po = { .limit = 8 };
+      NIR_PASS(_, nir, nir_opt_peephole_select, &po);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+   if (knob("post_alg")) {
+      bool p = true;
+      while (p) {
+         p = false;
+         NIR_PASS(p, nir, nir_opt_algebraic_late);
+         NIR_PASS(p, nir, nir_opt_constant_folding);
+         NIR_PASS(p, nir, nir_opt_cse);
+         NIR_PASS(p, nir, nir_opt_dce);
+      }
+   }
 }
 
 static int
@@ -382,6 +479,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       .shared_addr_format = nir_address_format_32bit_offset,
       .min_ubo_alignment = 16, .min_ssbo_alignment = 16,
       .push_const_addr_format = nir_address_format_32bit_offset,
+      .mediump_16bit_alu = knob("mediump"),
    };
    struct nir_spirv_specialization spec = {0};
    struct nir_spirv_specialization_entry *se = NULL;
@@ -536,7 +634,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
+   knobs_pre(nir);
    pan_postprocess_nir(nir, &in, &info);
+   knobs_post(nir);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
    in.fau.reserved = fau_reserved;
@@ -654,7 +754,7 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
 
    char dir[900], hex[65];
-   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
+   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM") && !getenv("MALI_KNOBS");
    if (use_cache) {
       mkey(o, fau_reserved, push_base, hex);
       if (cache_load(dir, hex, out)) {
