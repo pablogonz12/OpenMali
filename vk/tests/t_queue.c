@@ -566,6 +566,32 @@ test_fault(void)
    return 1;
 }
 
+/* A submission without signals must not run submit_signal (the fake backend counts only those towards MALI_FAULT_INJECT=n):
+ * many signal-less submits survive, and the n-th FENCED one is the lost one. */
+static int
+test_nofence(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   const char *e = getenv("MALI_FAULT_INJECT");
+   int n = e ? atoi(e) : 0;
+   CHECK(n > 1, "MALI_FAULT_INJECT (>1) not set");
+   for (int i = 0; i < 4 * n; i++)
+      CHECK(QueueSubmit(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS, "signal-less submit %d consumed a fence slot", i);
+   for (int i = 0; i < n - 1; i++) {
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "fenced submit %d", i);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "wait %d", i);
+      ResetFences(dev, 1, &f);
+   }
+   VkResult r = QueueSubmit(queue, 1, &si, f);
+   CHECK(r == VK_ERROR_DEVICE_LOST, "n-th fenced submit: expected DEVICE_LOST, got %d", r);
+   DestroyFence(dev, f, NULL);
+   printf("{\"test\":\"nofence\",\"inject\":%d,\"ok\":true}\n", n);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -644,6 +670,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
    if (ok && g_only && !strcmp(g_only, "waitslice")) ok &= test_waitslice();
+   if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
