@@ -18,6 +18,7 @@
 #include "mali_image.h"
 #include "mali_queue.h"
 #include "vk_buffer.h"
+#include "vk_enum_to_str.h"
 #include "vk_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -936,8 +937,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
       unsigned kind = 0, bpp = 4, srgb = 0;
       switch (fmt) {
-      case VK_FORMAT_R8G8B8A8_UNORM: break;
-      case VK_FORMAT_R8G8B8A8_SRGB: srgb = 1; break;
+      case VK_FORMAT_R8G8B8A8_UNORM:
+      case VK_FORMAT_A8B8G8R8_UNORM_PACK32: break;   /* same bytes as R8G8B8A8_UNORM */
+      case VK_FORMAT_R8G8B8A8_SRGB:
+      case VK_FORMAT_A8B8G8R8_SRGB_PACK32: srgb = 1; break;   /* same bytes as R8G8B8A8_SRGB */
       case VK_FORMAT_B8G8R8A8_UNORM: kind = 1; break;
       case VK_FORMAT_B8G8R8A8_SRGB: kind = 1; srgb = 1; break;
       case VK_FORMAT_R8_UNORM: bpp = 1; break;
@@ -960,7 +963,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       default: {
          unsigned rk, rbpp, rnc;
          if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {
-            unsupported(cmd, "colour loadOp LOAD of this format");
+            char why[128];
+            snprintf(why, sizeof why, "colour loadOp LOAD of %s", vk_Format_to_str(fmt));
+            unsupported(cmd, why);
             return;
          }
          kind = rk | (rnc << 12) | ((rk == 12 || rk == 17) ? 1u << 16 : (rk == 13 || rk == 18) ? 2u << 16 : 0);   /* bits 16..17: integer-typed colour output (uint / sint) */
@@ -1024,15 +1029,20 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       if (is_load_op(da->loadOp)) {
-         if ((t.zs_format != 1 && t.zs_format != 3) || t.samples > 1) {
-            unsupported(cmd, "depth loadOp LOAD (D32_SFLOAT / D16_UNORM, single-sampled only)");
+         if ((t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) || t.samples > 1) {
+            char why[160];
+            snprintf(why, sizeof why, "depth loadOp LOAD of %s (%u samples), supported: D32_SFLOAT, D24_UNORM_S8_UINT, "
+                     "D16_UNORM, single-sampled only",
+                     t.zs_format == 1 ? "D32_SFLOAT" : t.zs_format == 2 ? "D24_UNORM_S8_UINT" :
+                     t.zs_format == 3 ? "D16_UNORM" : "an unknown depth format", t.samples);
+            unsupported(cmd, why);
             return;
          }
          zload = true;
          zsrc.va[0] = t.va;
          zsrc.row[0] = t.row_stride;
          zsrc.bytes[0] = t.row_stride * t.height;
-         zsrc.arg = t.zs_format == 3;
+         zsrc.arg = t.zs_format == 3 ? 1 : t.zs_format == 2 ? 2 : 0;   /* preload_zs.frag: 0 D32F, 1 D16, 2 D24 */
       }
       f->has_zs = true;
       if (no_col) {
