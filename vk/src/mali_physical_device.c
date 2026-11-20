@@ -636,7 +636,10 @@ mali_drm_refresh(struct mali_physical_device *pdev)
    struct mali_drm_node node = {0};
    bool any = mali_drm_find_node(&pdev->gpu, &node);
 
-   static const char *const envs[] = { "DD_DRM_STANDIN", "VKBRIDGE_DRM_RENDER", "BL_DRM_STANDIN", NULL };
+   /* Only a stand-in the application actually created may be reported as a node. BL_DRM_STANDIN names the GPU
+    * character device itself (a hint for identifying aliases, not a node), and claiming it as render is exactly
+    * the "DRM identity without a matching node" t_vk_drm rejects. */
+   static const char *const envs[] = { "DD_DRM_STANDIN", NULL };
    for (unsigned i = 0; envs[i]; i++) {
       const char *e = getenv(envs[i]);
       struct stat st;
