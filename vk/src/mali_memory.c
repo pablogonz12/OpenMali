@@ -5,6 +5,8 @@
 #include "mali_queue.h"
 
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include "mali_entrypoints.h"
@@ -26,6 +28,37 @@ errno_to_vk(struct mali_device *dev, int e)
    return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
 }
 
+/* Reserve `size` against the device-wide commit budget before anything is allocated, so an over-budget
+ * allocation fails cleanly with nothing half-committed. mem_used counts every live VkDeviceMemory of this
+ * physical device; kbase pins the full size of each one at allocation time (libkbase/src/bo.c:45). The
+ * compare-exchange loop makes concurrent allocators race correctly. */
+static bool
+mem_reserve(struct mali_physical_device *pdev, uint64_t size)
+{
+   uint64_t cur = p_atomic_read(&pdev->mem_used);
+   for (;;) {
+      if (size > pdev->mem_cap || cur > pdev->mem_cap - size) {
+         static bool logged; /* one line per process: a session log shows the first refusal */
+         if (!logged && getenv("MALI_WSI_DEBUG")) {
+            logged = true;
+            fprintf(stderr, "mali_vk: VRAM budget: requested %llu MiB, used %llu MiB of cap %llu MiB -> "
+                    "VK_ERROR_OUT_OF_DEVICE_MEMORY\n", (unsigned long long)(size >> 20),
+                    (unsigned long long)(cur >> 20), (unsigned long long)(pdev->mem_cap >> 20));
+         }
+         return false;
+      }
+      if (__atomic_compare_exchange_n(&pdev->mem_used, &cur, cur + size, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+         return true;
+   }
+}
+
+static void
+mem_release(struct mali_physical_device *pdev, uint64_t size)
+{
+   __atomic_sub_fetch(&pdev->mem_used, size, __ATOMIC_ACQ_REL);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
                     const VkAllocationCallbacks *pAllocator, VkDeviceMemory *pMemory)
@@ -38,14 +71,20 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    if (pAllocateInfo->allocationSize > pdev->gpu.heap_bytes)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   /* vk_device_memory_create stores exactly this as vk.size, which is what the free path releases. */
+   const uint64_t mem_sz = pAllocateInfo->allocationSize;
+   if (!mem_reserve(pdev, mem_sz))
+      return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    if (p_atomic_inc_return(&dev->mem_count) > MALI_MAX_ALLOCS) {
       p_atomic_dec(&dev->mem_count);
+      mem_release(pdev, mem_sz);
       return vk_error(dev, VK_ERROR_TOO_MANY_OBJECTS);
    }
 
    struct mali_memory *mem = vk_device_memory_create(&dev->vk, pAllocateInfo, pAllocator, sizeof(*mem));
    if (!mem) {
       p_atomic_dec(&dev->mem_count);
+      mem_release(pdev, mem_sz);
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
@@ -78,10 +117,11 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    if (r != 0) {
       vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
       p_atomic_dec(&dev->mem_count);
+      mem_release(pdev, mem_sz);   /* nothing was committed: give the reservation back */
       return errno_to_vk(dev, r);
    }
 
-   p_atomic_add(&pdev->mem_used, mem->vk.size);
+   /* mem_used was reserved before the allocation (mem_reserve); it must not be added again here. */
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
 }
@@ -94,7 +134,7 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
-   p_atomic_add(&mali_device_pdev(dev)->mem_used, -(int64_t)mem->vk.size);
+   mem_release(mali_device_pdev(dev), mem->vk.size);   /* the size reserved in mali_AllocateMemory */
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
    p_atomic_dec(&dev->mem_count);
