@@ -151,6 +151,9 @@ for g in v11 v13; do
    # batch<seq timing assert stays off: MALI_SHADER_CACHE is a path, and a timing check would flake on a loaded host.
    run "vk_compute batch $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only batch
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
+   # A meta op inside a render pass is refused, and the refusal names the command and the reason on stderr.
+   run "vk_meta inpass $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only inpass
+   run "vk_meta tiled_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only tiled_reject
 done
 
 # Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs

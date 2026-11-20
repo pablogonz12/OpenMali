@@ -93,6 +93,11 @@ reset_state(struct mali_cmd_buffer *cmd)
    free(cmd->frames);
    cmd->frames = NULL;
    cmd->nframes = cmd->capframes = 0;
+   for (unsigned i = 0; i < cmd->ndef_frames; i++)
+      mali_frame_finish(&cmd->def_frames[i]);
+   free(cmd->def_frames);
+   cmd->def_frames = NULL;
+   cmd->ndef_frames = cmd->capdef_frames = 0;
    mali_frame_finish(&cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);
    cmd->in_render = false;
@@ -829,6 +834,30 @@ mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
    cmd->frames[cmd->nframes++] = *f;
 }
 
+/* A meta frame recorded while cmd->in_render is set: keep it until the pass' own frame is pushed, then run it after
+ * the pass. Vulkan orders commands inside a render pass in submission order with the rendering, and the CS ring is
+ * in-order, so a compute job after the pass' frame is the definition of "after the pass". A failure only happens on
+ * OOM (sticky error), never because of the pass. */
+void
+mali_cmd_push_frame_deferred(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
+{
+   if (!cmd->in_render) {
+      mali_cmd_push_frame(cmd, f);
+      return;
+   }
+   if (cmd->ndef_frames == cmd->capdef_frames) {
+      unsigned nc = cmd->capdef_frames ? cmd->capdef_frames * 2 : 4;
+      struct mali_frame *nf = realloc(cmd->def_frames, nc * sizeof *nf);
+      if (!nf) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+      cmd->def_frames = nf;
+      cmd->capdef_frames = nc;
+   }
+   cmd->def_frames[cmd->ndef_frames++] = *f;
+}
+
 /* colour loadOp LOAD of the RAW-tile-buffer formats (integer, SNORM, UNORM16, float32): preload.frag kinds 12..18 (kind | components << 12), bytes per texel */
 static bool
 raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
@@ -1105,6 +1134,13 @@ mali_CmdEndRendering(VkCommandBuffer h)
       cmd->ndef = cmd->capdef = 0;
       push_frame(cmd, &o);
    }
+   for (unsigned i = 0; i < cmd->ndef_frames; i++) {   /* meta work recorded in the pass: after the pass, in order */
+      push_frame(cmd, &cmd->def_frames[i]);
+      mali_frame_finish(&cmd->def_frames[i]);
+   }
+   free(cmd->def_frames);
+   cmd->def_frames = NULL;
+   cmd->ndef_frames = cmd->capdef_frames = 0;
 }
 
 /* ---- M13 hooks ---- */

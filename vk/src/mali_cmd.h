@@ -88,6 +88,8 @@ struct mali_cmd_buffer {
    unsigned occ_mode;
    struct mali_op *def_ops;     /* M13: ops recorded inside a render pass, pushed after the pass' frame */
    unsigned ndef, capdef;
+   struct mali_frame *def_frames;   /* meta frames recorded inside a render pass: pushed after the pass' frame, in order */
+   unsigned ndef_frames, capdef_frames;
    /* M15: memory the GPU writes in this command buffer (render targets, copy destinations, clears). Applied as
     * per-BO write marks at submit, so a fence wait only CSYNCs those BOs (vk/MEMORY.md). Full = one write was
     * not recorded: the next device->CPU sync then sweeps every BO. */
@@ -104,6 +106,9 @@ mali_cmd_buffer_from_vk(struct vk_command_buffer *cmd)
 
 /* M12/M13 hooks (mali_cmd.c): append a finished frame / an ops frame; ops recorded inside a render pass are deferred until it ends. */
 void mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f);
+/* Same, but a frame recorded while a render pass is open is queued and pushed when the pass ends: transfer work
+ * recorded inside a pass executes after it, in submission order, which is what Vulkan requires. */
+void mali_cmd_push_frame_deferred(struct mali_cmd_buffer *cmd, const struct mali_frame *f);
 void mali_cmd_push_ops(struct mali_cmd_buffer *cmd, const struct mali_op *ops, unsigned n);
 void mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned mode);
 /* M15: record that the GPU writes `mem` through this command buffer. Idempotent; overflow falls back to a full
