@@ -386,7 +386,9 @@ kbase_bo_import(struct mali_kdev *k, int dmabuf_fd, size_t size, uint32_t flags,
                            .flags = flags | MALI_BO_EXPORT, .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
    /* Tracked like a native BO so kbase_fence_wait's device->CPU sweep reaches it: an import carries
     * COHERENT_LOCAL too (bo.c: kb_bo_extra_flags), so after a GPU write its CPU mapping needs the CSYNC before
-    * the CPU reads it. mem_sync_bos skips imports for the CPU->device direction. */
+    * the CPU reads it. Marked as foreign so mem_sync_bos does not push our CPU copy at the GPU before a submit
+    * (that direction stays for BOs this driver allocated; an exported one is still ours to push). */
+   bo->imported = true;
    track_bo(k, bo, true);
    return 0;
 }
@@ -628,7 +630,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          continue;
       /* dma-buf imports are in k->bos[] for the device->CPU sweep only: we must not push our CPU copy of somebody
        * else's buffer at the GPU before a submit (that direction stays native-BO only). */
-      if (!dev2cpu && b->dmabuf_fd >= 0)
+      if (!dev2cpu && b->imported)
          continue;
       uint64_t wrote = 0;
       if (dev2cpu) {
