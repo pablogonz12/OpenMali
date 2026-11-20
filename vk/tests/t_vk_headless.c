@@ -2,13 +2,15 @@
 /* VK_EXT_headless_surface + VK_EXT_swapchain_colorspace on the ICD (ANGLE's VerifyExtensionsPresent needs the first; a build without the
  * headless platform in wsi_common must fail here): both are in the instance extension list, vkCreateHeadlessSurfaceEXT resolves and
  * creates a surface, the surface reports formats (sRGB-nonlinear present), a swapchain is created on it with the device's swapchain
- * extension, and one image is acquired and presented on the fake backend.
+ * extension, and three frames are acquired and presented on the fake backend, each one transitioning the image
+ * it actually got (oldLayout per image, not per frame).
  *   t_vk_headless --direct <icd.so>      Exit 0 = pass. */
 #define _DEFAULT_SOURCE
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,21 +107,27 @@ main(int argc, char **argv)
 
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    VkFence f; REQ(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   /* Tracked per image, not per frame: a swapchain hands out its images in any order, so a second image
+    * acquired after the first was presented has never been transitioned and is still UNDEFINED. */
+   bool imgs_presented[16] = {false};
    for (int frame = 0; frame < 3; frame++) {
       uint32_t idx = ~0u;
       r = AcquireNextImageKHR(dev, chain, UINT64_MAX, VK_NULL_HANDLE, f, &idx);
       CHECK(r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR, "acquire frame %d (%d)", frame, r);
-      CHECK(idx < ni, "image index %u", idx);
+      /* idx is only written on success: using it after a failed acquire would index imgs[] out of bounds. */
+      if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) break;
+      CHECK(idx < ni_have, "image index %u of %u", idx, ni_have);
+      if (idx >= ni_have) break;
       CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 5000000000ull) == VK_SUCCESS, "acquire fence signals");
       /* reset not loaded: use a fresh fence each frame */
       DestroyFence(dev, f, NULL); CreateFence(dev, &fi, NULL, &f);
-      /* The acquired image is UNDEFINED on its first use and PRESENT_SRC after an earlier present; QueuePresentKHR
-       * requires a presentation layout, so transition it and finish that before presenting. */
+      /* This image is UNDEFINED on its first use and PRESENT_SRC once it has been presented; QueuePresentKHR
+       * requires a presentation layout, so transition it (from the layout it is really in) before presenting. */
       VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
       REQ(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin transition %d", frame);
       VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                 .oldLayout = frame ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .oldLayout = imgs_presented[idx] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
                                  .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                  .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -131,6 +139,7 @@ main(int argc, char **argv)
       VkSubmitInfo tsi = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
       REQ(QueueSubmit(q, 1, &tsi, VK_NULL_HANDLE) == VK_SUCCESS, "submit transition %d", frame);
       REQ(QueueWaitIdle(q) == VK_SUCCESS, "wait transition %d", frame);
+      imgs_presented[idx] = true;   /* imgs[idx] is in PRESENT_SRC from here on, whatever frame presented it */
       VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .swapchainCount = 1, .pSwapchains = &chain, .pImageIndices = &idx};
       r = QueuePresentKHR(q, &pi);
       CHECK(r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR, "present frame %d (%d)", frame, r);
