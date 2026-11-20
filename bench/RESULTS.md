@@ -389,6 +389,13 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (5k/10k/20k draw scal
 
 Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/right through the library (`scripts/quick/menubench` in the MediaDeck repo, run by the farm `menu` suite). Render fps from the web helper's present events over 30 s, medians over the reps that passed the self-checks; `default` = as shipped, `uncapped` = frame limits off. It runs on the Mali bridge, not on mali-open: numbers change with the MediaDeck build, not with our commits. An **invalid** row (self-check failed) never replaces a valid one.
 
+### MediaDeck vc 27 (0.7.1) (2026-11-20)
+
+| phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
+|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 120 | 0/5 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-20 |
+| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/4 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-20 |
+
 ### MediaDeck vc 26 (0.7.1) (2026-11-19)
 
 | phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
