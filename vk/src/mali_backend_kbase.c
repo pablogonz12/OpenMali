@@ -55,6 +55,10 @@ struct mali_kdev {
    } pool[POOL_MAX_ENTS];
    unsigned npool;
    size_t pool_bytes, pool_max;
+   /* VRAM budget hook (mali_memory.c): a pooled BO is still committed in kbase, so it stays charged until it is
+    * really freed or handed out again. Called without bo_lock held. */
+   void (*pool_release)(void *ctx, size_t size);
+   void *pool_release_ctx;
 };
 
 /* MALI_SUBMIT_DBG bits (hardware diagnosis, default 0). */
@@ -172,9 +176,13 @@ kbase_device_destroy(struct mali_kdev *k)
    if (!k)
       return;
    for (unsigned i = 0; i < k->npool; i++) {   /* no other thread uses the device any more */
+      size_t sz = k->pool[i].bo->size;
       kb_bo_free(k->pool[i].bo);
       free(k->pool[i].bo);
+      if (k->pool_release)   /* the pool dies with the device: give the budget back before the pdev goes away */
+         k->pool_release(k->pool_release_ctx, sz);
    }
+   k->npool = 0;
    if (k->cqs_live)
       kb_bo_free(&k->cqs);
    if (k->queue_live)
@@ -234,6 +242,9 @@ pool_take(struct mali_kdev *k, size_t size, uint32_t flags)
          break;
       }
    pthread_mutex_unlock(&k->bo_lock);
+   /* the BO leaves the pool: its charge moves to the VkDeviceMemory that is being allocated now */
+   if (bo && k->pool_release)
+      k->pool_release(k->pool_release_ctx, size);
    return bo;
 }
 
@@ -267,10 +278,51 @@ pool_put(struct mali_kdev *k, struct kb_bo *bo, uint32_t flags)
    kept = true;
    pthread_mutex_unlock(&k->bo_lock);
    for (unsigned i = 0; i < nv; i++) {
+      size_t sz = victim[i]->size;
       kb_bo_free(victim[i]);
       free(victim[i]);
+      if (k->pool_release)   /* evicted: really freed, so no longer committed */
+         k->pool_release(k->pool_release_ctx, sz);
    }
    return kept;
+}
+
+/* Really free pooled BOs until `want` bytes are back in the budget (or the pool is empty). Called when a
+ * reservation is refused: the pool is holding committed memory the caller could use. Returns the bytes freed. */
+static size_t
+kbase_pool_purge(struct mali_kdev *k, size_t want)
+{
+   size_t freed = 0;
+   while (freed < want) {
+      struct kb_bo *bo = NULL;
+      size_t sz = 0;
+      pthread_mutex_lock(&k->bo_lock);
+      if (k->npool) {
+         bo = k->pool[0].bo;   /* oldest first: the least likely to be reused */
+         sz = bo->size;
+         memmove(&k->pool[0], &k->pool[1], (k->npool - 1) * sizeof k->pool[0]);
+         k->npool--;
+         k->pool_bytes -= sz;
+      }
+      pthread_mutex_unlock(&k->bo_lock);
+      if (!bo)
+         break;
+      kb_bo_free(bo);
+      free(bo);
+      if (k->pool_release)
+         k->pool_release(k->pool_release_ctx, sz);
+      freed += sz;
+   }
+   return freed;
+}
+
+static void
+kbase_pool_watch(struct mali_kdev *k, void (*release)(void *, size_t), void *ctx)
+{
+   pthread_mutex_lock(&k->bo_lock);
+   k->pool_release = release;
+   k->pool_release_ctx = ctx;
+   pthread_mutex_unlock(&k->bo_lock);
 }
 
 static int
@@ -392,7 +444,10 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
     * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
    if (pool_eligible(bo->flags) && pool_fits(k, bo->size) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)
       kb_bo_cache_flush_inv(bo->priv, 0, bo->size);
-   if (!(pool_eligible(bo->flags) && pool_put(k, bo->priv, bo->flags))) {
+   if (pool_eligible(bo->flags) && pool_put(k, bo->priv, bo->flags)) {
+      bo->pooled = true;   /* the pool keeps it: its pages are still committed, so the charge stays */
+   } else {
+      bo->pooled = false;
       kb_bo_free(bo->priv);
       free(bo->priv);
    }
@@ -742,6 +797,8 @@ const struct mali_backend_ops mali_backend_kbase = {
    .bo_alloc = kbase_bo_alloc,
    .bo_import = kbase_bo_import,
    .bo_free = kbase_bo_free,
+   .bo_pool_watch = kbase_pool_watch,
+   .bo_pool_purge = kbase_pool_purge,
    .bo_cache = kbase_bo_cache,
    .bo_export = kbase_bo_export,
    .submit_signal = kbase_submit_signal,

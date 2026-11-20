@@ -78,6 +78,9 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    }
 
    dev->vk.command_dispatch_table = &dev->cmd_dispatch;   /* after vk_device_init (it zeroes the struct) */
+   /* A backend pool keeps freed BOs committed: its releases go back to this physical device's VRAM budget. */
+   if (pdev->backend->bo_pool_watch)
+      pdev->backend->bo_pool_watch(dev->kdev, mali_memory_pool_release, pdev);
    dev->vk.command_buffer_ops = &mali_cmd_ops;
    dev->vk.get_timestamp = mali_get_timestamp;                       /* VK_KHR_calibrated_timestamps: runtime does the rest */
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
