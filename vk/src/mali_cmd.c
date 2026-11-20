@@ -577,6 +577,13 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
       return;
    if (!vcount || !icount)
       return;
+   /* VK_EXT_transform_feedback: the lowered stores index with instance_id * num_vertices + vertex_id, and
+    * num_vertices is not supplied to the shader yet (mali_compile.c replaces it with 0), so instanced XFB would
+    * write every instance's vertices to the same slots. Refuse rather than write overlapping data silently. */
+   if (cmd->tf.active && icount > 1) {
+      unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
    if (!sl || !snapshot_draw(cmd, sl, vcount, icount, first, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
