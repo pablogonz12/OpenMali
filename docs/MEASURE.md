@@ -72,6 +72,14 @@ default lines and do not compete for best.
 `best` = **median of at least 3 reps** with the same device, stack, version, profile, panel and
 run day. No best exists for a group with 1 or 2 reps, however good the single number looks.
 
+## CPU and GPU load: measure from the host, not from `top` in the guest
+
+`cpu_idle_pct` / `gpu_busy_pct` are optional and usually `null` (`n/a` in the tables). Do not fill
+them from `top`/`/proc/stat` inside the DroidDeck guest: `/proc/stat` is not namespaced and the
+clock is per-container, so it prints `%Cpu(s): 100.0 id` while a Steam process reports `800 %`.
+Use the host (`adb shell dumpsys cpuinfo`) and quote the lines in `note`; a driver is a library
+inside the app, so it cannot be given a `ps` share — attribute load to the app and its threads.
+
 ## Rejection rules (importer-enforced, never clamped)
 
 | condition | reason in `docs/rejected.jsonl` |
