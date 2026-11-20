@@ -4,6 +4,7 @@
 #include "mali_msaa.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -327,19 +328,36 @@ image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layou
    return 0;
 }
 
+/* trace counters: completeness check (DestroyDevice prints totals) */
+unsigned mali_trace_images_created;
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc, VkImage *out)
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
-   if (getenv("MALI_WSI_TRACE"))
-      fprintf(stderr, "mali_trace: CreateImage %ux%u fmt=%u tiling=%u usage=0x%x flags=0x%x\n",
-              ci->extent.width, ci->extent.height, (unsigned)ci->format, (unsigned)ci->tiling,
-              (unsigned)ci->usage, (unsigned)ci->flags);
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
    struct mali_image *img = vk_image_create(&dev->vk, ci, alloc, sizeof *img);
    if (!img) return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+   mali_trace_images_created++;
+   if (getenv("MALI_WSI_TRACE")) {
+      /* WSI_IMAGE_CREATE_INFO_MESA (1000001002, vk_internal_exts.h) is chained to
+       * VkImageCreateInfo for *every* image wsi_common creates, so its presence is
+       * the definitive "this is a swapchain image" marker, independent of flags. */
+      const struct wsi_image_create_info *wi =
+         vk_find_struct_const(ci->pNext, WSI_IMAGE_CREATE_INFO_MESA);
+      char chain[160] = "";
+      for (const VkBaseInStructure *s = ci->pNext; s; s = s->pNext) {
+         size_t l = strlen(chain);
+         if (l + 16 < sizeof chain)
+            snprintf(chain + l, sizeof chain - l, " %d", (int)s->sType);
+      }
+      fprintf(stderr, "mali_trace: CreateImage #%u img=%p %ux%u fmt=%u tiling=%u usage=0x%x flags=0x%x wsi=%d scanout=%d blit_src=%d pnext=[%s]\n",
+              mali_trace_images_created, (void *)mali_image_to_handle(img), ci->extent.width, ci->extent.height,
+              (unsigned)ci->format, (unsigned)ci->tiling, (unsigned)ci->usage, (unsigned)ci->flags,
+              wi ? 1 : 0, wi ? (int)wi->scanout : -1, wi ? (int)wi->blit_src : -1, chain);
+   }
    if (image_layout(dev_arch(dev), ci, &lay, &bc, &img->sh_lay, &is_bc) != 0) {
       vk_image_destroy(&dev->vk, alloc, &img->vk);
       return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
@@ -404,8 +422,8 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
    if (getenv("MALI_WSI_TRACE")) for (uint32_t i = 0; i < n; i++) {
       struct mali_image *im = mali_image_from_handle(b[i].image);
       const VkBindImageMemorySwapchainInfoKHR *sw = vk_find_struct_const(b[i].pNext, BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR);
-      fprintf(stderr, "mali_trace: BindImage %ux%u fmt=%u mem=%p swapchain=%d off=%llu\n",
-              im->vk.extent.width, im->vk.extent.height, (unsigned)im->vk.format,
+      fprintf(stderr, "mali_trace: BindImage img=%p %ux%u fmt=%u mem=%p swapchain=%d off=%llu\n",
+              (void *)b[i].image, im->vk.extent.width, im->vk.extent.height, (unsigned)im->vk.format,
               (void *)b[i].memory, sw ? 1 : 0, (unsigned long long)b[i].memoryOffset);
    }
    for (uint32_t i = 0; i < n; i++) {

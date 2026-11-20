@@ -141,6 +141,11 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    if (!dev)
       return;
 
+   if (getenv("MALI_WSI_TRACE")) {
+      extern unsigned mali_trace_images_created, mali_trace_allocs, mali_trace_frees;
+      fprintf(stderr, "mali_trace: DeviceTotals images=%u allocs=%u frees=%u (hook completeness: every entry above went through these two entry points)\n",
+              mali_trace_images_created, mali_trace_allocs, mali_trace_frees);
+   }
    /* vk_device_init stored the effective allocator (pAllocator or the instance's). */
    const VkAllocationCallbacks alloc = dev->vk.alloc;
 

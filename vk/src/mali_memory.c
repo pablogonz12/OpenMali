@@ -6,12 +6,17 @@
 #include "mali_queue.h"
 
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "mali_entrypoints.h"
 #include "util/u_atomic.h"
 #include "vk_alloc.h"
 #include "vk_util.h"
+
+/* trace counters: completeness check (DestroyDevice prints these next to the line count) */
+unsigned mali_trace_allocs, mali_trace_frees;
 
 #define MALI_MEM_TYPE_COUNT 2
 #define MALI_MAX_ALLOCS 4096
@@ -60,11 +65,17 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
          vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
       const VkMemoryDedicatedAllocateInfo *ded =
          vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
-      fprintf(stderr, "mali_trace: AllocateMemory size=%llu type=%u kind=%s fd=%d host_ptr=%p dedicated_img=%d dedicated_buf=%d\n",
-              (unsigned long long)pAllocateInfo->allocationSize, pAllocateInfo->memoryTypeIndex,
+      char chain[128] = "";
+      for (const VkBaseInStructure *s = pAllocateInfo->pNext; s; s = s->pNext) {
+         size_t l = strlen(chain);
+         if (l + 16 < sizeof chain)
+            snprintf(chain + l, sizeof chain - l, " %d", (int)s->sType);
+      }
+      fprintf(stderr, "mali_trace: AllocateMemory #%u size=%llu type=%u kind=%s fd=%d host_ptr=%p dedicated_img=%p dedicated_buf=%p pnext=[%s]\n",
+              ++mali_trace_allocs, (unsigned long long)pAllocateInfo->allocationSize, pAllocateInfo->memoryTypeIndex,
               imp && imp->handleType ? "fd-import" : "fresh-alloc",
               imp && imp->handleType ? imp->fd : -1, hp ? hp->pHostPointer : NULL,
-              ded ? (int)(uintptr_t)ded->image : 0, ded ? (int)(uintptr_t)ded->buffer : 0);
+              ded ? (void *)ded->image : NULL, ded ? (void *)ded->buffer : NULL, chain);
    }
 
    mem->bo.dmabuf_fd = -1;
@@ -124,7 +135,11 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
-   p_atomic_add(&mali_device_pdev(dev)->mem_used, -(int64_t)mem->vk.size);
+
+   mali_trace_frees++;
+   if (getenv("MALI_WSI_TRACE"))
+      fprintf(stderr, "mali_trace: FreeMemory #%u h=%p size=%llu\n", mali_trace_frees, (void *)_mem,
+              (unsigned long long)mem->vk.size);   p_atomic_add(&mali_device_pdev(dev)->mem_used, -(int64_t)mem->vk.size);
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
    p_atomic_dec(&dev->mem_count);
