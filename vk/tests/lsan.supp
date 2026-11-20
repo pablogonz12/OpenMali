@@ -4,6 +4,9 @@
 leak:/usr/bin/bash
 leak:/usr/bin/sed
 leak:/usr/bin/gcc
+leak:/usr/bin/x86_64-linux-gnu-gcc
 leak:/usr/bin/as
+leak:/usr/bin/x86_64-linux-gnu-as
 leak:/usr/bin/ld
+leak:/usr/bin/x86_64-linux-gnu-ld
 leak:/usr/lib/gcc/
