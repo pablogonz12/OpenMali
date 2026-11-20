@@ -13,7 +13,7 @@ command -v gamescope >/dev/null && command -v Xwayland >/dev/null || { echo "ski
 [ -x "$OUT/t_wsi_maint" ] || { echo "skipped: no t_wsi_maint in $OUT"; exit 0; }
 cat >"$W/inner.sh" <<EOF
 #!/bin/sh
-export ENABLE_GAMESCOPE_WSI=0 MALI_BACKEND=fake MALI_FAKE_GPU=$GPU VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json
+export ENABLE_GAMESCOPE_WSI=0 MALI_BACKEND=fake MALI_FAKE_GPU=$GPU VK_DRIVER_FILES="$OUT/mali_icd.json" VK_ICD_FILENAMES="$OUT/mali_icd.json"
 timeout 60 "$OUT/t_wsi_maint" --direct "$OUT/libvulkan_mali.so" >"$W/maint.log" 2>&1; echo \$? >"$W/maint.rc"
 EOF
 chmod +x "$W/inner.sh"

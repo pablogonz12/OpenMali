@@ -275,22 +275,59 @@ main(int argc, char **argv)
    VkPresentModeKHR *pms = calloc(npm + 1, sizeof *pms);
    CK(GetPhysicalDeviceSurfacePresentModesKHR(pd, surf, &npm, pms));
    REQ(npm >= 1, "no surface present modes");
-   VkPresentModeKHR mode_a = VK_PRESENT_MODE_FIFO_KHR, mode_b = VK_PRESENT_MODE_FIFO_KHR;
-   for (uint32_t i = 0; i < npm; i++) {
-      if (pms[i] == VK_PRESENT_MODE_MAILBOX_KHR) mode_b = VK_PRESENT_MODE_MAILBOX_KHR;
-      else if (pms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR && mode_b == VK_PRESENT_MODE_FIFO_KHR)
-         mode_b = VK_PRESENT_MODE_IMMEDIATE_KHR;
-   }
+   int have_fifo = 0;
+   for (uint32_t i = 0; i < npm; i++) have_fifo |= pms[i] == VK_PRESENT_MODE_FIFO_KHR;
    free(pms);
+   REQ(have_fifo, "surface does not list VK_PRESENT_MODE_FIFO_KHR");
+   VkPresentModeKHR mode_a = VK_PRESENT_MODE_FIFO_KHR, mode_b = VK_PRESENT_MODE_FIFO_KHR;
 
    /* Companion VK_EXT_surface_maintenance1: per-present-mode capabilities must accept the struct and keep mode_a. */
-   if (has_sm1 && has_gsc2 && GetPhysicalDeviceSurfaceCapabilities2KHR) {
-      VkSurfacePresentModeEXT spm = {.sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT, .presentMode = mode_a};
-      VkSurfaceCapabilities2KHR caps2 = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR, .pNext = &spm};
-      CK(GetPhysicalDeviceSurfaceCapabilities2KHR(pd, &(VkPhysicalDeviceSurfaceInfo2KHR){
-             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR, .surface = surf, .pNext = &spm}, &caps2));
-      printf("surface maintenance1: capabilities2 for FIFO ok (minImageCount %u)\n", caps2.surfaceCapabilities.minImageCount);
+   if (!has_sm1 || !has_gsc2 || !GetPhysicalDeviceSurfaceCapabilities2KHR) {
+      printf("skipped: no VK_EXT_surface_maintenance1 + VK_KHR_get_surface_capabilities2 for the per-mode queries\n");
+      return 77;
    }
+   VkSurfacePresentModeEXT spm = {.sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT, .presentMode = mode_a};
+   VkPhysicalDeviceSurfaceInfo2KHR sinfo = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+                                            .surface = surf, .pNext = &spm};
+   VkSurfaceCapabilities2KHR caps2 = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+   CK(GetPhysicalDeviceSurfaceCapabilities2KHR(pd, &sinfo, &caps2));
+   printf("surface maintenance1: capabilities2 for FIFO ok (minImageCount %u)\n", caps2.surfaceCapabilities.minImageCount);
+
+   /* pPresentModes must be a subset of the modes the surface reports as compatible with presentMode (mode_a). */
+   VkPresentModeKHR compat[8];
+   VkSurfacePresentModeCompatibilityEXT pmc = {.sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_EXT,
+                                               .presentModeCount = 8, .pPresentModes = compat};
+   VkSurfaceCapabilities2KHR compat_caps = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR, .pNext = &pmc};
+   CK(GetPhysicalDeviceSurfaceCapabilities2KHR(pd, &sinfo, &compat_caps));
+   REQ(pmc.presentModeCount >= 1 && pmc.presentModeCount <= 8, "compatibility query returned %u modes",
+       pmc.presentModeCount);
+   int fifo_self = 0;
+   for (uint32_t i = 0; i < pmc.presentModeCount; i++) {
+      fifo_self |= compat[i] == mode_a;
+      if (compat[i] == VK_PRESENT_MODE_MAILBOX_KHR) mode_b = VK_PRESENT_MODE_MAILBOX_KHR;
+      else if (compat[i] == VK_PRESENT_MODE_IMMEDIATE_KHR && mode_b == VK_PRESENT_MODE_FIFO_KHR)
+         mode_b = VK_PRESENT_MODE_IMMEDIATE_KHR;
+   }
+   if (!fifo_self || mode_b == mode_a) {
+      printf("skipped: FIFO reports no alternate compatible present mode, cannot test a per-present switch\n");
+      return 77;
+   }
+   printf("surface maintenance1: FIFO compatible with %u mode(s), switching to %d\n", pmc.presentModeCount, (int)mode_b);
+
+   /* Ask only for scaling/gravity the surface reports for mode_a; 0 means "driver default" and is always valid. */
+   VkSurfacePresentScalingCapabilitiesEXT psc = {.sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_EXT};
+   VkSurfaceCapabilities2KHR scaling_caps = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR, .pNext = &psc};
+   CK(GetPhysicalDeviceSurfaceCapabilities2KHR(pd, &sinfo, &scaling_caps));
+   VkPresentScalingFlagsEXT scale_bits = 0;
+   if (psc.supportedPresentScaling & VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT)
+      scale_bits = VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT;
+   VkPresentGravityFlagsEXT grav_x = 0, grav_y = 0;
+   if (scale_bits && (psc.supportedPresentGravityX & VK_PRESENT_GRAVITY_MIN_BIT_EXT))
+      grav_x = VK_PRESENT_GRAVITY_MIN_BIT_EXT;
+   if (grav_x && (psc.supportedPresentGravityY & VK_PRESENT_GRAVITY_MIN_BIT_EXT))
+      grav_y = VK_PRESENT_GRAVITY_MIN_BIT_EXT;
+   if (!scale_bits)
+      printf("surface maintenance1: no ONE_TO_ONE scaling for FIFO, requesting scaling/gravity 0\n");
 
    const char *dexts[] = {"VK_KHR_swapchain", "VK_EXT_swapchain_maintenance1", "VK_EXT_image_drm_format_modifier"};
    float prio = 1.0f;
@@ -306,6 +343,8 @@ main(int argc, char **argv)
    DPFN(QueuePresentKHR); DPFN(DestroySwapchainKHR); DPFN(CreateSemaphore); DPFN(DestroySemaphore);
    DPFN(CreateFence); DPFN(WaitForFences); DPFN(ResetFences); DPFN(QueueWaitIdle); DPFN(DeviceWaitIdle);
    DPFN(DestroyFence); DPFN(DestroyDevice);
+   DPFN(QueueSubmit); DPFN(CreateCommandPool); DPFN(AllocateCommandBuffers); DPFN(ResetCommandBuffer);
+   DPFN(BeginCommandBuffer); DPFN(EndCommandBuffer); DPFN(CmdPipelineBarrier); DPFN(DestroyCommandPool);
    DPFN(ReleaseSwapchainImagesEXT);
    DPFN(CreateImage); DPFN(DestroyImage); DPFN(GetImageMemoryRequirements2); DPFN(GetImageSubresourceLayout);
    DPFN(AllocateMemory); DPFN(BindImageMemory2); DPFN(FreeMemory); DPFN(GetImageDrmFormatModifierPropertiesEXT);
@@ -321,11 +360,11 @@ main(int argc, char **argv)
    VkPresentModeKHR create_modes[2] = {mode_a, mode_b};
    VkSwapchainPresentModesCreateInfoEXT pmi_create = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT,
-      .presentModeCount = mode_b == mode_a ? 1 : 2, .pPresentModes = create_modes};
+      .presentModeCount = 2, .pPresentModes = create_modes};
    VkSwapchainPresentScalingCreateInfoEXT scaling = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT,
-      .scalingBehavior = VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT,
-      .presentGravityX = VK_PRESENT_GRAVITY_MIN_BIT_EXT, .presentGravityY = VK_PRESENT_GRAVITY_MIN_BIT_EXT};
+      .scalingBehavior = scale_bits,
+      .presentGravityX = grav_x, .presentGravityY = grav_y};
    pmi_create.pNext = &scaling;
    VkExtent2D ext = caps.currentExtent;
    if (ext.width == 0xFFFFFFFFu) ext = (VkExtent2D){W, H};
@@ -349,15 +388,51 @@ main(int argc, char **argv)
    CK(GetSwapchainImagesKHR(dev, sc, &ni, imgs));
 
    VkSemaphoreCreateInfo semci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-   VkSemaphore acq;
+   VkSemaphore acq, render_done;
    CK(CreateSemaphore(dev, &semci, NULL, &acq));
-   VkFence present_fence;
-   CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &present_fence));
+   CK(CreateSemaphore(dev, &semci, NULL, &render_done));
+   VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence present_fence, acq_fence;
+   CK(CreateFence(dev, &fci, NULL, &present_fence));
+   CK(CreateFence(dev, &fci, NULL, &acq_fence));
+   VkCommandPool cp;
+   CK(CreateCommandPool(dev, &(VkCommandPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                                        .queueFamilyIndex = fam}, NULL, &cp));
+   VkCommandBuffer cb[FRAMES];
+   CK(AllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){
+          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp,
+          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = FRAMES}, cb));
 
-   /* Per-present mode switch + present fence: the fence must signal, i.e. the maintenance1 present path ran. */
+   /* Per-present mode switch + present fence: the fence must signal, i.e. the maintenance1 present path ran.
+    * Each frame submits a barrier to PRESENT_SRC that waits on `acq` (consuming the acquire signal before the
+    * semaphore is reused) and signals `render_done`, which the present waits on. */
    for (int f = 0; f < FRAMES; f++) {
       uint32_t idx;
       CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
+      REQ(idx < ni, "acquired image index %u outside the %u images the test got", idx, ni);
+      CK(ResetCommandBuffer(cb[f], 0));
+      CK(BeginCommandBuffer(cb[f], &(VkCommandBufferBeginInfo){
+             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
+      CmdPipelineBarrier(cb[f], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                         0, NULL, 0, NULL, 1,
+                         &(VkImageMemoryBarrier){
+                            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                            .srcAccessMask = 0, .dstAccessMask = 0,
+                            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = imgs[idx],
+                            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .baseMipLevel = 0,
+                                                 .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}});
+      CK(EndCommandBuffer(cb[f]));
+      VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+      CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                           .waitSemaphoreCount = 1, .pWaitSemaphores = &acq,
+                                           .pWaitDstStageMask = &wait_stage,
+                                           .commandBufferCount = 1, .pCommandBuffers = &cb[f],
+                                           .signalSemaphoreCount = 1, .pSignalSemaphores = &render_done},
+                     VK_NULL_HANDLE));
       VkSwapchainPresentModeInfoKHR pmi = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR,
                                            .swapchainCount = 1, .pPresentModes = &mode_b};
       VkSwapchainPresentFenceInfoEXT pfi = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
@@ -365,6 +440,7 @@ main(int argc, char **argv)
       pmi.pNext = &pfi;
       VkResult pres = VK_SUCCESS;
       VkResult pr = QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &pmi,
+                                                           .waitSemaphoreCount = 1, .pWaitSemaphores = &render_done,
                                                            .swapchainCount = 1, .pSwapchains = &sc, .pImageIndices = &idx,
                                                            .pResults = &pres});
       REQ(pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR, "present frame %d with PresentModeInfo = %d", f, (int)pr);
@@ -375,9 +451,12 @@ main(int argc, char **argv)
       printf("frame %d: image %u presented with mode %d, fence signalled\n", f, idx, (int)mode_b);
    }
 
-   /* vkReleaseSwapchainImagesEXT: acquire, then hand the image back without presenting. */
+   /* vkReleaseSwapchainImagesEXT: acquire, then hand the image back without presenting. Acquire with a fence so
+    * no semaphore signal is left pending (releasing the image does not consume an acquisition semaphore). */
    uint32_t ridx;
-   CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &ridx));
+   CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, VK_NULL_HANDLE, acq_fence, &ridx));
+   CK(WaitForFences(dev, 1, &acq_fence, VK_TRUE, 2000ull * 1000 * 1000));
+   CK(ResetFences(dev, 1, &acq_fence));
    CK(ReleaseSwapchainImagesEXT(dev, &(VkReleaseSwapchainImagesInfoKHR){
           .sType = VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_KHR, .swapchain = sc,
           .imageIndexCount = 1, .pImageIndices = &ridx}));
@@ -385,7 +464,10 @@ main(int argc, char **argv)
 
    CK(QueueWaitIdle(q));
    DeviceWaitIdle(dev);
+   DestroyCommandPool(dev, cp, NULL);
    DestroyFence(dev, present_fence, NULL);
+   DestroyFence(dev, acq_fence, NULL);
+   DestroySemaphore(dev, render_done, NULL);
    DestroySemaphore(dev, acq, NULL);
    DestroySwapchainKHR(dev, sc, NULL);
    DestroyDevice(dev, NULL);
