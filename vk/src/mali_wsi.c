@@ -221,6 +221,22 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u\n", (unsigned long long)n,
               info->swapchainCount, info->waitSemaphoreCount);
    VkResult r = wsi_QueuePresentKHR(queue, info);
+   /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at
+    * the next present or inside vkWaitForPresentKHR. An app that presents its last frame and destroys the
+    * swapchain never gets that pump, so the frame callback/presentation feedback of that commit is still
+    * outstanding and wsi_wl_swapchain_chain_free() asserts (!chain->present_ids.dispatch_in_progress)
+    * (wsi_common_wayland.c:3782, and the same in the retire path at :2779). Drain it here, bounded: a slow
+    * compositor costs at most the cap and never blocks the frame. Only when the swapchain asked for present-id
+    * waiting: without that, wsi does not queue an id at all and there is nothing to drain. */
+   const VkPresentIdKHR *ids = vk_find_struct_const(info->pNext, PRESENT_ID_KHR);
+   if (r == VK_SUCCESS && ids) {
+      for (uint32_t i = 0; i < info->swapchainCount && i < ids->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, chain, info->pSwapchains[i]);
+         if (chain && chain->present_wait_enabled && chain->wait_for_present2 && ids->pPresentIds &&
+             ids->pPresentIds[i])
+            chain->wait_for_present2(chain, ids->pPresentIds[i], 20ull * 1000 * 1000);   /* ns, bounded */
+      }
+   }
    /* SUBOPTIMAL/OUT_OF_DATE are normal swapchain states, not errors: one line per frame would be noise. */
    bool quiet = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR;
    if (mali_wsi_debug() || !quiet)

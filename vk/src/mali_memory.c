@@ -148,6 +148,9 @@ mali_MapMemory(VkDevice _device, VkDeviceMemory _mem, VkDeviceSize offset, VkDev
    if (mem->mapped || offset >= mem->vk.size)
       return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
    mem->mapped = true;
+   /* GPU-written, CPU-read memory (the software present reads the rendered image straight out of its mapping):
+    * clearing host_lazy here means every later fence wait MEM_SYNCs this BO device->CPU (COHERENT_LOCAL is only
+    * inner-shareable, so the CPU cache must be told), which is what makes the PutImage readback see the frame. */
    if (mali_device_pdev(dev)->backend->bo_host_touch)
       mali_device_pdev(dev)->backend->bo_host_touch(dev->kdev, &mem->bo);
    *ppData = (char *)mem->bo.cpu + offset;

@@ -143,6 +143,11 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k_int_nocoh_default = gpu->arch_major == 11;
    if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
+   if (getenv("MALI_WSI_DEBUG") || getenv("MALI_SUBMIT_DBG"))
+      fprintf(stderr, "mali_vk: kbase bo flags 0x%llx (%s): COHERENT_LOCAL applies to native and imported BOs; "
+              "internal BOs %s\n", (unsigned long long)kb_bo_extra_flags,
+              kb_bo_extra_flags & 0x800 ? "COHERENT_LOCAL" : "none",
+              k_int_nocoh_default ? "opt out (MALI_INT_NOCOH)" : "keep it");
    const char *fi = getenv("MALI_FAULT_INJECT");
    k->fault_at = fi ? strtoul(fi, NULL, 10) : 0;
    pthread_mutex_init(&k->submit_lock, NULL);
@@ -379,6 +384,12 @@ kbase_bo_import(struct mali_kdev *k, int dmabuf_fd, size_t size, uint32_t flags,
    }
    *out = (struct mali_bo){.gpu_va = bo->gpu_va, .cpu = bo->cpu, .size = size,
                            .flags = flags | MALI_BO_EXPORT, .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
+   /* Tracked like a native BO so kbase_fence_wait's device->CPU sweep reaches it: an import carries
+    * COHERENT_LOCAL too (bo.c: kb_bo_extra_flags), so after a GPU write its CPU mapping needs the CSYNC before
+    * the CPU reads it. Marked as foreign so mem_sync_bos does not push our CPU copy at the GPU before a submit
+    * (that direction stays for BOs this driver allocated; an exported one is still ours to push). */
+   bo->imported = true;
+   track_bo(k, bo, true);
    return 0;
 }
 
@@ -509,7 +520,7 @@ out:
 }
 
 static void mem_sync_all(struct mali_kdev *k, unsigned op);
-enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD };
+enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD, SYNC_POLL };
 static void mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel);
 static int
 kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
@@ -535,7 +546,10 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
          k->lost = true;
          return -EIO;
       }
-      mem_sync_all(k, 2);
+      /* A timeout-0 poll is a query, not a wait: sync the native BOs the GPU wrote (as before) but leave foreign
+       * imports alone. We cannot tell whether an import is a dependency of this fence, and a poll happens far
+       * more often than a wait; a blocking wait (below) still covers every import. */
+      mem_sync_bos(k, 2, SYNC_POLL);
       return 0;
    }
    struct timespec t0;
@@ -617,8 +631,17 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       struct kb_bo *b = k->bos[i];
       if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (sel == SYNC_HOT && !b->hot) || (sel == SYNC_COLD && b->hot))
          continue;
+      /* dma-buf imports are in k->bos[] for the device->CPU sweep only: we must not push our CPU copy of somebody
+       * else's buffer at the GPU before a submit (that direction stays native-BO only). */
+      if (!dev2cpu && b->imported)
+         continue;
+      if (sel == SYNC_POLL && b->imported)
+         continue;   /* see the poll path in kbase_fence_wait */
       uint64_t wrote = 0;
-      if (dev2cpu) {
+      /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
+       * check would either skip them or claim them synced before their submission completes: sync a foreign
+       * import on every device->CPU wait until write generations exist for it. */
+      if (dev2cpu && !b->imported) {
          wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
          if (!sweep_all && wrote == b->synced_writes)
             continue;
@@ -627,8 +650,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
-      kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
-      if (dev2cpu)
+      int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
    }
    pthread_mutex_unlock(&k->bo_lock);
