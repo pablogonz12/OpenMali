@@ -942,7 +942,8 @@ case_view3d2d(void)
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
    CmdEndRenderPass(cb);
    layout_tr(cb, vol.i, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-   VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 4}, .imageExtent = {W, H, 4}};
+   /* layerCount must be 1 for a 3D image; the four slices travel in imageExtent.depth. */
+   VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {W, H, 4}};
    CmdCopyImageToBuffer(cb, vol.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rd.b, 1, &dn);
    VkResult r = EndCommandBuffer(cb);
    CHECK(r == VK_SUCCESS, "a 2D view of a 3D slice must be accepted (%d)", r);

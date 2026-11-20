@@ -50,8 +50,9 @@ Headroom is reported as
 
     headroom = render_fps / panel_hz
 
-so `1.0` means exactly panel-rate with nothing to spare, `3.0` means the chip could feed a
-360 Hz panel at that workload, and `< 1.0` is the only case where the panel is not the limit.
+so `1.0` means exactly panel-rate with nothing to spare, and `3.0` means three times the supplied
+`panel_hz` (for a 120 Hz panel, 360 fps of headroom) — the value is always relative to that rate, never to a
+fixed one — and `< 1.0` is the only case where the panel is not the limit.
 The suite emits `headroom` only when it was given `--panel-hz` (or `MALI_PANEL_HZ`); without a
 panel rate the field is `null`, never guessed.
 

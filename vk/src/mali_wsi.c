@@ -21,6 +21,8 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
                                                   const VkAllocationCallbacks *pAllocator);
 
 #include "vk_alloc.h"
+#include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
+#include "vk_semaphore.h"  /* struct vk_semaphore -> &sem->sync */
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -35,6 +37,7 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -306,6 +309,8 @@ mali_x11_shm_destroy(VkSwapchainKHR sc)
       return;
 #if defined(VK_USE_PLATFORM_XCB_KHR)
    xcb_shm_detach((xcb_connection_t *)st->conn, st->seg);
+   if (st->gc)
+      xcb_free_gc((xcb_connection_t *)st->conn, st->gc);   /* created per swapchain in mali_x11_shm_create */
    xcb_flush((xcb_connection_t *)st->conn);
 #endif
    if (st->addr && st->addr != MALI_SHM_FAILED)
@@ -383,6 +388,7 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
                               .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
                               .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
                               .size = size};
+   assert(stride % 4 == 0);   /* XShmPutImage takes the segment pitch in 4-byte pixels */
    fprintf(stderr, "mali_vk: x11 present: shm=1 putimage=0 (%ux%u, %u images, %zu B segment, stride %u)\n",
            w, h, chain->image_count, size, stride);
 }
@@ -429,9 +435,34 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
    const size_t off = (size_t)st->stride * st->height * image_index;
    if (off + (size_t)st->stride * st->height > st->size)
       return false;
+   /* The copy must not read the image before the submission that wrote it has retired. There is no CPU-visible
+    * semaphore to wait here (binary semaphores are not observable through vk_sync_wait in this driver: see
+    * LESSONS / driver-xcb.md), so wait the queue's own submit fence, bounded (1 s: a lost render must not hang the
+    * present). That wait ends in kbase's device->CPU MEM_SYNC (kbase_fence_wait -> mem_sync_bos), and
+    * present_image_cpu_sync() below covers the mapping itself. */
+   int ffd = mali_queue_last_fence_dup(dev);
+   if (ffd >= 0) {
+      const struct mali_backend_ops *be = dev ? mali_device_pdev(dev)->backend : NULL;
+      struct timespec t0, t1;
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      int wr = be && be->fence_wait ? be->fence_wait(dev->kdev, ffd, 1000) : 0;
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      close(ffd);
+      const long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+      if (wr != 0) {
+         /* The frame's submit never completed (device lost or a fault): copying its buffer would present a
+          * partial frame as success. Fall back to wsi's own path, which reports the error. */
+         fprintf(stderr, "mali_vk: wsi present: image %u submit fence wait %d, not copying\n", image_index, wr);
+         return false;
+      }
+      else if (ms >= 20)
+         fprintf(stderr, "mali_vk: wsi present: image %u waited %ld ms for the submit fence\n", image_index, ms);
+   }
    present_image_cpu_sync(dev, mali_image_from_handle(img->image), image_index);
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
-   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
+   /* total_width is the *segment* pitch (the server reads rows of that width); src width/height are the image. */
+   const uint16_t total_w = (uint16_t)(st->stride / 4);
+   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, total_w, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
    xcb_flush((xcb_connection_t *)st->conn);
    return true;
@@ -591,7 +622,35 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
       bool all_shm = info->swapchainCount > 0;
-      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+      for (uint32_t i = 0; i < info->swapchainCount; i++)
+         if (!mali_x11_shm_find(info->pSwapchains[i])) {
+            all_shm = false;      /* not all of them are in our segment: let wsi present normally */
+            break;
+         }
+      /* The shortcut copies the image itself and returns before wsi's present, so the app's present semaphores
+       * would never be waited on: do it here, with the same CPU-wait semantics the queue submit uses
+       * (mali_queue.c:618), and only for the shortcut (the dma-buf path hands the semaphores to wsi). */
+      if (all_shm && info->waitSemaphoreCount) {
+         VK_FROM_HANDLE(vk_queue, q, queue);
+         struct mali_device *qdev = container_of(q->base.device, struct mali_device, vk);
+         const VkTimelineSemaphoreSubmitInfo *tl =
+            vk_find_struct_const(info->pNext, TIMELINE_SEMAPHORE_SUBMIT_INFO);
+         for (uint32_t i = 0; i < info->waitSemaphoreCount; i++) {
+            VK_FROM_HANDLE(vk_semaphore, sem, info->pWaitSemaphores[i]);
+            if (!sem)
+               continue;
+            const uint64_t val = (tl && tl->pWaitSemaphoreValues) ? tl->pWaitSemaphoreValues[i] : 0;
+            VkResult wr = vk_sync_wait(&qdev->vk, vk_semaphore_get_active_sync(sem), val,
+                                       VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+            if (wr != VK_SUCCESS)
+               return wr;
+            /* wsi_QueuePresentKHR would have consumed a binary semaphore; this shortcut returns before it, so reset
+             * it here or the next submit that waits on it would see a still-signalled semaphore. */
+            if (sem->type == VK_SEMAPHORE_TYPE_BINARY)
+               vk_semaphore_reset_temporary(&qdev->vk, sem);
+         }
+      }
+      for (uint32_t i = 0; all_shm && i < info->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
          const uint32_t idx = info->pImageIndices[i];
          if (sc)
@@ -610,6 +669,9 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
             sc->release_images(sc, 1, &idx);
       }
       if (all_shm) {
+         if (info->pResults)
+            for (uint32_t i = 0; i < info->swapchainCount; i++)
+               info->pResults[i] = VK_SUCCESS;   /* the caller asked for per-swapchain results */
          if (mali_wsi_debug()) {
             static int shm_logged;
             if (!shm_logged) {
@@ -679,15 +741,23 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
     * loudly instead of silently dropping presents (the hang in wsi_common_x11.c:2202). The fake backend stays
     * software from init and its tests use MALI_WSI=dmabuf to see the dma-buf path fail on purpose. */
    const char *forced = getenv("MALI_WSI");
-   bool forced_dmabuf = forced && !strcmp(forced, "dmabuf");
+   const bool forced_dmabuf = forced && !strcmp(forced, "dmabuf");
+   const bool forced_shm = forced && (!strcmp(forced, "shm") || !strcmp(forced, "xput") || !strcmp(forced, "sw"));
    bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
                       surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
-   if (!wsi_dev->sw && !forced_dmabuf && x11_surface) {
+   /* wsi_common_x11's dma-buf path needs DRI3 (x11_image_init -> xcb_dri3_pixmap_from_buffer) and Present
+    * (x11_present_image -> xcb_present_pixmap); mali_wsi_x11_probe answers both (mali_wsi.c:169-176). Prefer it
+    * whenever the server has them: it hands the compositor the frame's own fence, while the shared-memory path
+    * has to wait for the GPU from the CPU on every present and was losing 20 % of frames to stale copies.
+    * MALI_WSI=shm/xput/sw forces the fallback, MALI_WSI=dmabuf is now the default where the server allows it. */
+   const bool server_dmabuf = probe.dri3 && probe.present;
+   if (!wsi_dev->sw && !forced_dmabuf && x11_surface && (forced_shm || !server_dmabuf)) {
       wsi_dev->sw = true;
       wsi_dev->supports_modifiers = false;
       mali_wsi_disable_dmabuf_sync(wsi_dev);
-      fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (MALI_WSI=dmabuf for dma-buf)\n",
-              mali_wsi_platform_name(surface->platform));
+      fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (%s) (MALI_WSI=dmabuf for dma-buf)\n",
+              mali_wsi_platform_name(surface->platform),
+              forced_shm ? "forced" : !probe.present ? "server has no Present" : "server has no DRI3");
    }
 
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)

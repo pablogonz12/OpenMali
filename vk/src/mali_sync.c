@@ -155,7 +155,7 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
       }
 
       /* Slices of 100 ms so that a reset/move/destroy on another thread and a device loss are noticed. */
-      uint64_t ms = left / 1000000ull;
+      uint64_t ms = (left + 999999ull) / 1000000ull;   /* any positive remainder waits at least 1 ms: 0 would turn the wait into a poll */
       int slice = ms > 100 ? 100 : (int)ms;
       int r = be->fence_wait(dev->kdev, fd, slice);
       close(fd);
