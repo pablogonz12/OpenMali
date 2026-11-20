@@ -174,6 +174,11 @@ main(int argc, char **argv)
       CHECK((L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb colour samples follow the MSAA gate");
       CHECK((L->framebufferDepthSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb depth samples follow the MSAA gate");
       CHECK(r == VK_SUCCESS && (ifp.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x image format samples follow the MSAA gate");
+      /* the default (env unset) must really be 4x for the depth format too, or the flip silently regresses */
+      VkImageFormatProperties dip;
+      VkResult dr = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &dip);
+      CHECK(dr == VK_SUCCESS && (dip.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x depth image format samples follow the MSAA gate");
    }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 
