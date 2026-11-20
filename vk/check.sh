@@ -76,8 +76,13 @@ ln -s /dev/null "$DRMB/renderD42"; ln -s /dev/null "$DRMB/card1"
 ln -s /dev/zero "$DRMX/renderD43"
 DRMT="$OUT/t_vk_drm --direct $OUT/libvulkan_mali.so"
 run "drm absent v11"        0 -u BL_DRM_STANDIN $LOADER_ENV MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
-run "drm render v11"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
-run "drm render v13"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v13 $DRMT --node "$DRMR/renderD42"
+run "drm render v11"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_AUTO_STANDIN=0 MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
+run "drm render v13"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_AUTO_STANDIN=0 MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v13 $DRMT --node "$DRMR/renderD42"
+# Auto stand-in: the same node without MALI_DRM_AUTO_STANDIN=0 is reported as primary and render (stock app path).
+run "drm auto standin v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
+# The stock app's own values (SessionService.kt:1044-1053): /dev/mali0 does not exist under that name here, so the
+# driver has to resolve it to the /dev/dri alias of the GPU node we opened - render *and* primary.
+run "drm stock standin v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null DD_OPEN_DRIVER=1 DD_DRM_STANDIN=/dev/mali0 MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42" --primary "$DRMR/renderD42"
 run "drm render+primary"   0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMB" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMB/renderD42" --primary "$DRMB/card1"
 run "drm mismatch absent"  0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMX" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
 # With a node identity zink's list loses that item: only logicOp remains (0 hard).
