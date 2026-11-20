@@ -11,6 +11,7 @@
 #include "util/blake3/blake3.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir_xfb_info.h"
 
 #include "panfrost/lib/pan_blend.h"
 #include "vk_blend.h"
@@ -75,6 +76,30 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
    }
    b->cursor = nir_before_instr(&i->instr);
    nir_def *v = nir_load_push_constant(b, i->def.num_components, i->def.bit_size, nir_imm_int(b, off));
+   nir_def_replace(&i->def, v);
+   return true;
+}
+
+/* xfb variant: the driver-owned parameter block (struct mali_xfb_params) sits in the FAU table at xfb_params_off. */
+static bool
+lower_xfb_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   unsigned off = *(const unsigned *)d;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *v;
+   switch (i->intrinsic) {
+   case nir_intrinsic_load_xfb_address:
+      v = nir_load_push_constant(b, 1, 64, nir_imm_int(b, off + 8 * nir_intrinsic_base(i)));
+      break;
+   case nir_intrinsic_load_num_vertices:
+      v = nir_load_push_constant(b, 1, 32, nir_imm_int(b, off + 32));
+      break;
+   case nir_intrinsic_load_raw_vertex_offset:
+      v = nir_imm_int(b, 0);
+      break;
+   default:
+      return false;
+   }
    nir_def_replace(&i->def, v);
    return true;
 }
@@ -146,7 +171,7 @@ type_size(const struct glsl_type *t, bool bindless)
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading, xfb, xfb_params_off;
    /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
    uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
    char mesa[24];
@@ -165,6 +190,8 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
    k.sample_shading = o->sample_shading != 0;
+   k.xfb = o->xfb != 0;
+   k.xfb_params_off = o->xfb ? o->xfb_params_off : 0;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    k.max_sets = MALI_MAX_SETS;
@@ -437,6 +464,18 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
          }
+   if (o->xfb && stage == MESA_SHADER_VERTEX) {
+      /* Xfb decorations live on the output variables until nir_lower_io: collect them now, as vk_nir.c does. A block such as
+       * gl_PerVertex carries XfbBuffer/XfbStride on its type and Offset on its members, and nir_shader_gather_xfb_info only
+       * looks at whole variables, so split blocks into one variable per member first (the member decorations are copied). */
+      NIR_PASS(_, nir, nir_split_var_copies);
+      NIR_PASS(_, nir, nir_split_per_member_structs);
+      nir_shader_gather_xfb_info(nir);
+      if (!nir->xfb_info) {
+         ralloc_free(nir);
+         return fail(err, errsz, "xfb: the vertex shader has no Xfb outputs");
+      }
+   }
    NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
@@ -500,6 +539,19 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                nir_lower_io_use_interpolated_input_intrinsics);
       NIR_PASS(_, nir, nir_opt_constant_folding);
       pan_nir_lower_mediump_io(nir);
+      if (o->xfb && stage == MESA_SHADER_VERTEX) {
+         /* Same recipe as Mesa's gallium panfrost (pan_shader.c): Xfb info onto the store_output intrinsics, then stores to
+          * xfb_address(buffer) + (instance * num_vertices + raw_vertex_id) * stride + offset. */
+         static const nir_lower_xfb_to_stores_options xo = { .address_format = nir_address_format_64bit_global };
+         NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
+         NIR_PASS(_, nir, nir_lower_xfb_to_stores, &xo);
+         NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_xfb_sysvals, nir_metadata_control_flow, (void *)&o->xfb_params_off);
+         /* The stores above set writes_memory and the inputs they read set inputs_read: both are only filled by gather_info,
+          * which PanVK runs before pan_compile (panvk_vX_shader.c) and this path never did. */
+         nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+         in.no_idvs = true;
+         if (getenv("MALI_XFB_DUMP")) nir_print_shader(nir, stderr);
+      }
 
       if (stage == MESA_SHADER_VERTEX) {
          pan_varying_collect_formats(&vl, nir, arch);
