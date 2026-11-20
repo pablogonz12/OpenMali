@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "mali_meta.h"
 #include "mali_query_core.h"
 #include "mali_descriptor.h"
 #include "vk_buffer.h"
@@ -25,6 +26,7 @@
 #include "kbase_uapi.h"
 #include "kbase_draw.h"
 #include "kbase_fb.h"
+#include "kbase_samples.h"
 #if ARCH == 13
 #include "../../libkbase/tests/shaders_v13.h"
 #else
@@ -59,14 +61,26 @@ static const struct scene k_scenes[2] = {
 struct fx {
    struct kb_ctx *ctx;
    struct kb_arena ar;
-   struct kb_bo geo, shd, sync, rt, vb;
+   struct kb_bo geo, shd, sync, rt, vb, prel;   /* prel: --loadstore compiled preload shaders */
    struct kb_tiler_heap heap;
    struct kb_queue q;
    unsigned nsubmit;
 };
 static struct fx F;
 
-static void *hw_alloc(void *u, size_t n, size_t al, uint64_t *va) { return kb_arena_alloc(&((struct fx *)u)->ar, n, al, va); }
+/* provoking-vertex test hook: the frame build allocates the sample table, then the tiler context (KB_TILER_CTX_SIZE), ..., the FBD (KB_FB_DESC_SIZE_ZS) */
+static uint32_t *g_tctx;
+static uint8_t *g_fbd;
+static int g_after_smp;
+static void *hw_alloc(void *u, size_t n, size_t al, uint64_t *va)
+{
+   void *p = kb_arena_alloc(&((struct fx *)u)->ar, n, al, va);
+   if (n == sizeof kb_sample_positions) { g_after_smp = 1; return p; }
+   if (g_after_smp && n == KB_TILER_CTX_SIZE) g_tctx = p;
+   if (n == KB_FB_DESC_SIZE_ZS) g_fbd = p;
+   g_after_smp = 0;
+   return p;
+}
 static void hw_job_begin(void *u) { kb_arena_begin(&((struct fx *)u)->ar); }
 static int hw_submit(void *u, const uint64_t *cs, unsigned n)
 {
@@ -104,10 +118,21 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
 }
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
-   if ((uintptr_t)v != 1)
-      return -1;
-   *o = (struct mali_cmd_target){F.rt.gpu_va, W * 4, W, H, 0};
-   return 0;
+   /* --loadstore attachment handles: 1 = RGBA8 colour, 2 = D32F depth, 3 = D32F + S8 (depth and stencil, separate plane VAs),
+    * 4 = D24X8 (LOAD is unsupported but NONE is not). Handle 2 is also the D32 depth-only view of --extra logicOp-retained. */
+   if ((uintptr_t)v == 1) {
+      *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
+      return 0;
+   }
+   if ((uintptr_t)v == 2 || (uintptr_t)v == 3 || (uintptr_t)v == 4) {
+      bool st = (uintptr_t)v == 3;
+      *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL,
+                                    .zs_format = (uintptr_t)v == 4 ? 2 : 1,   /* 4: D24X8, where LOAD is unsupported but NONE is not */
+                                    .is_zs = true, .has_s = st, .s_va = st ? F.rt.gpu_va + 192 * 1024 : 0,
+                                    .s_row_stride = st ? W : 0, .samples = 1};
+      return 0;
+   }
+   return -1;
 }
 static int res_image(VkImage i, struct mali_cmd_target *o) { return res_view((VkImageView)i, o); }
 static int res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *va) { return -1; }
@@ -251,6 +276,7 @@ static int setup_kb(void)
    e |= kb_bo_alloc(F.ctx, 4096, KB_BO_CSF_EVENT | KB_BO_GPU_RD | KB_BO_GPU_WR, &F.sync);
    e |= kb_bo_alloc(F.ctx, W * H * 4, KB_BO_GPU_RD | KB_BO_GPU_WR, &F.rt);
    e |= kb_bo_alloc(F.ctx, 4096, KB_BO_GPU_RD | KB_BO_GPU_WR, &F.vb);
+   e |= kb_bo_alloc(F.ctx, 64 * 1024, KB_BO_GPU_RD | KB_BO_GPU_EX, &F.prel);   /* --loadstore: mali_meta preload binaries */
    if (e) { printf("{\"error\":\"bo alloc\"}\n"); return -1; }
    memset(F.sync.cpu, 0, 4096);
    memset(F.geo.cpu, 0, 4096 + 65536);
@@ -328,6 +354,44 @@ test_clear_words(void)
    check_clear_words(VK_FORMAT_A8B8G8R8_UINT_PACK32, f, 0x00000007, 0x00000007, 0x00000007, 0x00000007, "A8B8G8R8_UINT");
 }
 
+/* fillModeNonSolid triangle assembly (mali_poly_assemble): per assembled triangle, no incomplete primitives, restart markers removed. */
+static void
+test_poly_assemble(void)
+{
+   uint32_t out[6 * 16];
+   const uint32_t v4[4] = { 0, 1, 2, 3 };
+   /* strip of 4 vertices = 2 triangles: 6 edge instances (shared edge 1-2 twice), 6 points */
+   size_t n = mali_poly_assemble(1, 10, NULL, v4, 4, out);
+   CHECK(n == 12, "poly strip4 lines: %zu entries want 12", n);
+   unsigned shared = 0;
+   for (size_t i = 0; i + 1 < n; i += 2)
+      shared += (out[i] == 1 && out[i + 1] == 2) || (out[i] == 2 && out[i + 1] == 1);
+   CHECK(shared == 2, "poly strip4 lines: shared edge x%u want 2", shared);
+   CHECK(mali_poly_assemble(2, 10, NULL, v4, 4, out) == 6, "poly strip4 points");
+   /* fan of 4 vertices */
+   CHECK(mali_poly_assemble(1, 12, NULL, v4, 4, out) == 12, "poly fan4 lines");
+   /* a single triangle keeps 3 edges / 3 points */
+   CHECK(mali_poly_assemble(1, 8, NULL, v4, 3, out) == 6, "poly tri lines");
+   CHECK(mali_poly_assemble(2, 8, NULL, v4, 3, out) == 3, "poly tri points");
+   /* incomplete triangles produce nothing: list of 2, list of 4 (1 triangle), strip of 2 */
+   CHECK(mali_poly_assemble(2, 8, NULL, v4, 2, out) == 0, "poly list2 points");
+   CHECK(mali_poly_assemble(1, 8, NULL, v4, 2, out) == 0, "poly list2 lines");
+   CHECK(mali_poly_assemble(2, 8, NULL, v4, 4, out) == 3, "poly list4 points");
+   CHECK(mali_poly_assemble(2, 10, NULL, v4, 2, out) == 0, "poly strip2 points");
+   /* restart: 0 1 2 R 3 4 5 -> two triangles, the marker is never a vertex */
+   const uint32_t R = 0xffffu, vr[7] = { 0, 1, 2, R, 3, 4, 5 };
+   n = mali_poly_assemble(2, 10, &R, vr, 7, out);
+   bool bad = false;
+   for (size_t i = 0; i < n; i++)
+      bad |= out[i] == R;
+   CHECK(n == 6 && !bad, "poly strip restart points: %zu entries, marker %d", n, bad);
+   /* restart with short segments: 0 1 R 2 3 4 -> only the second segment (1 triangle) */
+   const uint32_t vs[6] = { 0, 1, R, 2, 3, 4 };
+   CHECK(mali_poly_assemble(2, 10, &R, vs, 6, out) == 3, "poly strip restart short segment");
+   /* list topology ignores restart (restart pointer NULL for lists) */
+   CHECK(mali_poly_assemble(2, 8, NULL, vr, 6, out) == 6, "poly list points");
+}
+
 /* storeOp DONT_CARE/NONE: the FBD render target's Write Enable (word 1 bit 0) is off, so the tile is not written back; STORE and an MSAA
  * resolve (which writes through the same RT) keep it on. */
 static unsigned
@@ -365,22 +429,255 @@ test_store_op(void)
    CHECK(fbd_rt_write_enable(false, true) == 1, "MSAA resolve needs the RT write");
 }
 
+/* Ring wrap + chunking (host, fake kbase backend). A 4 KiB ring, a 3000-instruction stream and pieces from
+ * kb_queue_piece_instrs: every piece must be readable at its masked ring address as it crosses the end of the ring,
+ * a stream longer than the ring must still be accepted in pieces, and one oversized block must be refused. */
+static int
+test_ringwrap(void)
+{
+   enum { N = 3000 };
+   uint64_t *ins = malloc(N * sizeof *ins);
+   if (!ins)
+      return 1;
+   for (unsigned i = 0; i < N; i++)
+      ins[i] = 0x1000000000ull + i;
+   CHECK(F.q.ring_size == 4096, "ring size %u", F.q.ring_size);
+   unsigned piece = kb_queue_piece_instrs(F.q.ring_size);
+   CHECK(piece >= 1 && ((size_t)piece * 8 + 63) / 64 * 64 + 64 <= F.q.ring_size,
+         "piece %u instrs (%zu B) leaves room in the %u-byte ring", piece, (size_t)piece * 8, F.q.ring_size);
+   CHECK(kb_queue_piece_instrs(1u << 20) == (1u << 20) / 4 / 8, "piece scales with the ring (%u)", kb_queue_piece_instrs(1u << 20));
+   CHECK(kb_queue_piece_instrs(1) == piece, "a too-small ring clamps to the 4 KiB piece (%u)", kb_queue_piece_instrs(1));
+
+   const size_t mask = F.q.ring_size - 1;
+   unsigned pieces = 0, wraps = 0, submitted = 0;
+   for (unsigned i = 0; i < N && g_fail == 0;) {
+      unsigned m = N - i < piece ? N - i : piece;
+      /* vary only full pieces, so offsets are not ring/4 aligned and copies straddle the end; a partial tail is
+       * submitted whole and must not shrink to zero */
+      if (m == piece) m -= pieces % 13;
+      uint64_t off = F.q.insert;
+      if (kb_queue_submit(&F.q, ins + i, m, KB_KICK_IOCTL) != 0) {
+         CHECK(false, "submit piece %u (%u instrs)", pieces, m);
+         break;
+      }
+      submitted += m;
+      size_t total = ((size_t)m * 8 + 63) & ~(size_t)63;
+      for (unsigned k = 0; k < m; k++)
+         if (*(const uint64_t *)((const char *)F.q.ring.cpu + ((off + k * 8) & mask)) != ins[i + k]) {
+            CHECK(false, "piece %u word %u at ring offset %llu: got %llx want %llx (wrap)", pieces, k,
+                  (unsigned long long)((off + k * 8) & mask),
+                  (unsigned long long)*(const uint64_t *)((const char *)F.q.ring.cpu + ((off + k * 8) & mask)),
+                  (unsigned long long)ins[i + k]);
+            break;
+         }
+      if (((off + total - 1) & ~(uint64_t)mask) != (off & ~(uint64_t)mask))
+         wraps++;
+      pieces++;
+      i += m;
+   }
+   CHECK(pieces >= 20, "stream longer than the ring was submitted in %u pieces", pieces);
+   CHECK(submitted == N, "submitted %u of %u instructions (no gaps in the stream)", submitted, N);
+   CHECK(wraps >= 3, "%u pieces straddled the end of the ring", wraps);
+   /* total >= ring_size is refused by the queue, so callers must chunk (the old 2 KiB cap silently relied on this) */
+   CHECK(kb_queue_submit(&F.q, ins, F.q.ring_size / 8, KB_KICK_IOCTL) == -EINVAL, "oversized block refused");
+   printf("{\"test\":\"ringwrap\",\"piece\":%u,\"pieces\":%u,\"wraps\":%u,\"pass\":%s}\n", piece, pieces, wraps,
+          g_fail ? "false" : "true");
+   free(ins);
+   return g_fail ? 1 : 0;
+}
+
+/* VK_EXT_provoking_vertex: the mode reaches both hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx word 2 bit 18) */
+static void
+test_provoking(VkCommandPool pool, VkBuffer vbh)
+{
+   DFN(EndCommandBuffer);
+   for (int last = 0; last < 2; last++) {
+      VkCommandBuffer c;
+      struct vk_command_buffer *vc = new_cmd(pool, &c);
+      /* snapshot_draw reads the runtime state a bound pipeline (VkPipelineRasterizationProvokingVertexStateCreateInfoEXT) would have set */
+      vc->dynamic_graphics_state.rs.provoking_vertex = last ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT : VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT;
+      record_scene(c, &k_scenes[0], vbh);
+      CHECK(EndCommandBuffer(c) == VK_SUCCESS, "provoking end");
+      g_tctx = NULL; g_fbd = NULL;
+      CHECK(mali_cmd_submit(vc) == VK_SUCCESS, "provoking submit");
+      CHECK(g_tctx && g_fbd, "provoking: tiler ctx / FBD allocations not seen");
+      if (!g_tctx || !g_fbd) return;
+      uint32_t f11;
+      memcpy(&f11, g_fbd + 44, 4);
+      CHECK(((f11 >> 14) & 1) == (last ? 0u : 1u), "provoking %s: FBD word 11 = %08x bit 14 wrong", last ? "LAST" : "FIRST", f11);
+      CHECK(((g_tctx[2] >> 18) & 1) == (last ? 0u : 1u), "provoking %s: tiler ctx word 2 = %08x bit 18 wrong", last ? "LAST" : "FIRST", g_tctx[2]);
+   }
+}
+
+
+/* ---- --loadstore: VK_KHR_load_store_op_none and per-attachment load ops (colour, depth, stencil) ---- */
+struct ls_case {
+   const char *name;
+   bool col, dep, st;      /* attachments present */
+   VkAttachmentLoadOp lcol, ldep, lst;
+   unsigned pre;           /* expected preload draws before the application draw */
+   int dv;                 /* 0: depth view 2 (D32F), 4: D24X8 */
+};
+
+static unsigned g_prel_used;
+
+static int
+ls_upload(void *u, const uint8_t *bin, uint32_t n, uint64_t *va)
+{
+   struct fx *f = u;
+   if (g_prel_used + n > (64u << 10))
+      return -1;
+   memcpy((uint8_t *)f->prel.cpu + g_prel_used, bin, n);
+   *va = f->prel.gpu_va + g_prel_used;
+   g_prel_used += (n + 15) & ~15u;
+   return 0;
+}
+
+static void ls_meta_free(void *u, void *cpu, uint64_t va, size_t size) { (void)u; (void)cpu; (void)va; (void)size; }   /* arena memory */
+
+/* Preload draws are the driver's meta draws: every rec before the application draw, whose fragment shader is not the bound test pipeline
+ * (mali_meta_preload returns its own compiled FS; the app pipeline resolver returns g_fs). */
+static unsigned
+ls_preloads(const struct mali_frame *f)
+{
+   unsigned n = 0;
+   while (n < f->ndraws && f->draws[n].pipe && f->draws[n].pipe->gfx.fs != &g_fs)
+      n++;
+   return n;
+}
+
+/* Records one pass with one triangle and checks the load-op outcome at record time (the frame draw list is the command stream's draws). */
+static struct mali_frame *
+ls_pass(VkCommandPool pool, const struct ls_case *c)
+{
+   DFN(CmdBindPipeline);
+   DFN(CmdSetViewport);
+   DFN(CmdSetScissor);
+   DFN(CmdDraw);
+   DFN(EndCommandBuffer);
+   VkCommandBuffer cb;
+   struct vk_command_buffer *vc = new_cmd(pool, &cb);
+   VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)(uintptr_t)1,
+                                   .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = c->lcol,
+                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                   .imageView = (VkImageView)(uintptr_t)(c->dv ? c->dv : c->st ? 3 : 2),
+                                   .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .loadOp = c->ldep,
+                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   VkRenderingAttachmentInfo sa = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)(uintptr_t)3,
+                                   .imageLayout = VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL, .loadOp = c->lst,
+                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                         .renderArea = {{0, 0}, {W, H}},
+                         .layerCount = 1,
+                         .colorAttachmentCount = c->col ? 1 : 0,
+                         .pColorAttachments = c->col ? &ca : NULL,
+                         .pDepthAttachment = c->dep ? &da : NULL,
+                         .pStencilAttachment = c->st ? &sa : NULL};
+   mali_CmdBeginRendering(cb, &ri);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D scr = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &scr);
+   CmdDraw(cb, 3, 1, 0, 0);
+   mali_CmdEndRendering(cb);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "%s: EndCommandBuffer %d", c->name, r);
+   struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vc);
+   CHECK(m->nframes == 1 && m->frames[0].ndraws == c->pre + 1, "%s: %u frames, %u draws (want %u)", c->name, m->nframes,
+         m->nframes ? m->frames[0].ndraws : 0u, c->pre + 1);
+   if (m->nframes != 1)
+      return NULL;
+   struct mali_frame *f = &m->frames[0];
+   CHECK(ls_preloads(f) == c->pre, "%s: %u preload draws in the stream (want %u)", c->name, ls_preloads(f), c->pre);
+   CHECK(f->has_colour == c->col && f->has_zs == c->dep && f->has_st == c->st, "%s: attached colour %u zs %u st %u", c->name,
+         f->has_colour, f->has_zs, f->has_st);
+   /* LOAD preserves: each preload draw reads the old plane (its push carries the attachment's row bytes: colour/depth W*4, S8 W) */
+   for (unsigned i = 0; i < c->pre; i++) {
+      const uint32_t *pc = (const uint32_t *)f->draws[i].push->push[1];
+      CHECK(pc[0] == W * 4 || pc[0] == W, "%s: preload %u reads row bytes %u (want %u colour/depth or %u stencil)", c->name, i, pc[0], W * 4, W);
+   }
+   /* the frame still completes: build and submit through the fake backend */
+   unsigned before = F.nsubmit;
+   r = mali_cmd_submit(vc);
+   CHECK(r == VK_SUCCESS && F.nsubmit == before + 1, "%s: submit %d frames +%u", c->name, r, F.nsubmit - before);
+   return f;
+}
+
+/* One UI-composite frame: four full-screen layers, each its own pass, one draw each (the 4-layer shape of the perf model). Builds every
+ * frame's command stream and reports its size, so the preload draws' cost is visible in the fake-backend stream. */
+static void
+ls_ui_frame(VkCommandPool pool, VkAttachmentLoadOp op, const char *tag)
+{
+   DFN(CmdBindPipeline);
+   DFN(CmdSetViewport);
+   DFN(CmdSetScissor);
+   DFN(CmdDraw);
+   DFN(EndCommandBuffer);
+   VkCommandBuffer cb;
+   struct vk_command_buffer *vc = new_cmd(pool, &cb);
+   for (int p = 0; p < 4; p++) {
+      VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)(uintptr_t)1,
+                                      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = op,
+                                      .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {W, H}}, .layerCount = 1,
+                            .colorAttachmentCount = 1, .pColorAttachments = &ca};
+      mali_CmdBeginRendering(cb, &ri);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+      VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+      VkRect2D scr = {{0, 0}, {W, H}};
+      CmdSetViewport(cb, 0, 1, &vp);
+      CmdSetScissor(cb, 0, 1, &scr);
+      CmdDraw(cb, 3, 1, 0, 0);
+      mali_CmdEndRendering(cb);
+   }
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "ui_like_%s: EndCommandBuffer %d", tag, r);
+   struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vc);
+   CHECK(m->nframes == 4, "ui_like_%s: %u frames", tag, m->nframes);
+   struct mali_hw hw = make_hw();
+   if (hw.job_begin)
+      hw.job_begin(hw.user);
+   unsigned draws = 0, words = 0;
+   for (unsigned i = 0; i < m->nframes; i++) {
+      uint64_t *cs = NULL;
+      unsigned n = 0;
+      int rc = mali_frame_build(&hw, &m->frames[i], &cs, &n);
+      CHECK(rc == 0, "ui_like_%s frame %u: build %d", tag, i, rc);
+      draws += m->frames[i].ndraws;
+      words += n;
+      free(cs);
+   }
+   printf("{\"test\":\"t_cmd%d\",\"case\":\"ui_like_%s\",\"passes\":%u,\"draws\":%u,\"cs_words\":%u,\"cs_bytes\":%u}\n", ARCH, tag,
+          m->nframes, draws, words, words * 8u);
+   r = mali_cmd_submit(vc);
+   CHECK(r == VK_SUCCESS, "ui_like_%s: submit %d", tag, r);
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
-   bool extra = false, m13 = false;
+   bool extra = false, m13 = false, loadstore = false, ringwrap = false;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--scene") && i + 1 < argc) scene = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--extra")) extra = true;
       else if (!strcmp(argv[i], "--m13")) m13 = true;
+      else if (!strcmp(argv[i], "--loadstore")) loadstore = true;
+      else if (!strcmp(argv[i], "--ringwrap")) ringwrap = true;
    }
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
    test_clear_words();
+   test_poly_assemble();
    test_store_op();
    fill_compiled();
    if (setup_kb())
       return 1;
+   if (ringwrap) {
+      test_ringwrap();
+      return g_fail ? 1 : 0;
+   }
 
    /* ---- ICD bring-up (instance -> device), as t_icd ---- */
    extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance, const char *);
@@ -420,7 +717,7 @@ int main(int argc, char **argv)
    VkCommandBuffer cb;
    VkResult r = VK_SUCCESS;
    CHECK(scene >= 1 && scene <= 2, "bad scene");
-   if (!m13) {   /* --m13 dumps only its own frames: the decoder's REQ_RESOURCE rule is per dump, not per frame */
+   if (!m13 && !loadstore) {   /* --m13/--loadstore dump only their own frames: the decoder's REQ_RESOURCE rule is per dump, not per frame */
       struct vk_command_buffer *vcmd = new_cmd(pool, &cb);
       record_scene(cb, &k_scenes[scene - 1], vbh);
       r = EndCommandBuffer(cb);
@@ -429,6 +726,11 @@ int main(int argc, char **argv)
       CHECK(r == VK_SUCCESS, "mali_cmd_submit %d", r);
       CHECK(F.nsubmit == 1, "frames submitted %u", F.nsubmit);
       printf("{\"test\":\"t_cmd%d\",\"scene\":%d,\"frames\":%u,\"pass\":%s}\n", ARCH, scene, F.nsubmit, g_fail ? "false" : "true");
+   }
+   if (extra) {
+      uint32_t n0 = F.nsubmit;
+      test_provoking(pool, vbh);
+      (void)n0;
    }
 
    if (m13) {
@@ -464,16 +766,23 @@ int main(int argc, char **argv)
       r = EndCommandBuffer(c2);
       CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "loadOp LOAD end=%d", r);
 
-      /* VK_KHR_load_store_op_none: LOAD_OP_NONE takes the LOAD path (same verdict), STORE_OP_NONE alone is accepted */
+      /* VK_KHR_load_store_op_none: LOAD_OP_NONE discards the old contents, so it must not take the LOAD path (no preload draw) and is
+       * accepted where DONT_CARE is; the full per-attachment matrix is --loadstore */
       new_cmd(pool, &c2);
       {
          VkRenderingAttachmentInfo ca;
          VkRenderingInfo ri = rendering_info(&ca, false);
          ca.loadOp = VK_ATTACHMENT_LOAD_OP_NONE_KHR;
          mali_CmdBeginRendering(c2, &ri);
+         mali_CmdEndRendering(c2);
       }
       r = EndCommandBuffer(c2);
-      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "loadOp NONE must follow LOAD, end=%d", r);
+      CHECK(r == VK_SUCCESS, "loadOp NONE must not preload, end=%d", r);
+      {
+         struct mali_cmd_buffer *vnn = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(c2));
+         CHECK(vnn->nframes == 1 && vnn->frames[0].ndraws == 0, "loadOp NONE recorded %u frames / %u preload draws", vnn->nframes,
+               vnn->nframes ? vnn->frames[0].ndraws : 0u);
+      }
       struct vk_command_buffer *vn = new_cmd(pool, &c2);
       {
          VkRenderingAttachmentInfo ca;
@@ -543,7 +852,58 @@ int main(int argc, char **argv)
       before = F.nsubmit;
       r = mali_cmd_submit(v4);
       CHECK(r == VK_SUCCESS && F.nsubmit == before + 1, "fold submit %d", r);
+
+      /* logicOpEnable is command-buffer state, not a draw property: a depth-only pass can retain it from an
+       * earlier colour pipeline. It cannot change any output there, so the draw must stay valid. */
+      {
+         struct vk_command_buffer *vz = new_cmd(pool, &c2);
+         vz->dynamic_graphics_state.cb.logic_op_enable = true;
+         VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                         .imageView = (VkImageView)(uintptr_t)2,
+                                         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+         da.clearValue.depthStencil.depth = 1.0f;
+         VkRenderingInfo zr = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {W, H}}, .layerCount = 1,
+                               .colorAttachmentCount = 0, .pDepthAttachment = &da};
+         mali_CmdBeginRendering(c2, &zr);
+         CmdBindPipeline(c2, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+         VkDeviceSize zoff = 0;
+         CmdBindVertexBuffers(c2, 0, 1, &vbh, &zoff);
+         CmdDraw(c2, 3, 1, 0, 0);
+         mali_CmdEndRendering(c2);
+         r = EndCommandBuffer(c2);
+         CHECK(r == VK_SUCCESS, "depth-only retained logicOp end=%d", r);
+      }
       printf("{\"test\":\"t_cmd%d\",\"extra\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
+   }
+   if (loadstore) {
+      struct mali_meta_dev seam = {.user = &F, .arch = ARCH, .alloc = hw_alloc, .free = ls_meta_free, .upload_shader = ls_upload};
+      mali_meta_set_dev(&seam);
+      static const struct ls_case cases[] = {
+         {.name = "colour_none", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0},
+         {.name = "colour_dont_care", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .pre = 0},
+         {.name = "colour_load", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_LOAD, .pre = 1},
+         {.name = "colour_clear", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_CLEAR, .pre = 0},
+         {.name = "mixed_colour_load_depth_none", .col = true, .dep = true, .lcol = VK_ATTACHMENT_LOAD_OP_LOAD,
+          .ldep = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 1},
+         {.name = "mixed_colour_none_depth_load", .col = true, .dep = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR,
+          .ldep = VK_ATTACHMENT_LOAD_OP_LOAD, .pre = 1},
+         {.name = "mixed_colour_none_depth_load_stencil_none", .col = true, .dep = true, .st = true,
+          .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .ldep = VK_ATTACHMENT_LOAD_OP_LOAD, .lst = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 1},
+         {.name = "mixed_colour_none_depth_none_stencil_load", .col = true, .dep = true, .st = true,
+          .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .ldep = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .lst = VK_ATTACHMENT_LOAD_OP_LOAD, .pre = 1},
+         {.name = "mixed_colour_none_depth_stencil_load", .col = true, .dep = true, .st = true,
+          .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .ldep = VK_ATTACHMENT_LOAD_OP_LOAD, .lst = VK_ATTACHMENT_LOAD_OP_LOAD, .pre = 1},
+         {.name = "depth_none", .dep = true, .ldep = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0},
+         {.name = "depth_d24_none", .col = true, .dep = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR,
+          .ldep = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0, .dv = 4},
+      };
+      for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++)
+         ls_pass(pool, &cases[i]);
+      ls_ui_frame(pool, VK_ATTACHMENT_LOAD_OP_NONE_KHR, "none");
+      ls_ui_frame(pool, VK_ATTACHMENT_LOAD_OP_LOAD, "load");
+      mali_meta_set_dev(NULL);
+      printf("{\"test\":\"t_cmd%d\",\"loadstore\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
    kb_queue_destroy(&F.q);

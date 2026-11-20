@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int g_fail, g_dump;
 #define CHECK(c, ...)                                                                              \
@@ -92,7 +93,7 @@ main(int argc, char **argv)
    CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "CreateInstance 1.3");
    if (!inst) return 1;
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceProperties2); I(GetPhysicalDeviceFeatures2);
-   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2);
+   I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2); I(GetPhysicalDeviceImageFormatProperties);
    I(CreateDevice); I(DestroyInstance);
 
    uint32_t n = 1;
@@ -153,7 +154,7 @@ main(int argc, char **argv)
    CHECK(L->minTexelGatherOffset == -8 && L->maxTexelGatherOffset == 7 && L->minTexelOffset == -8 && L->maxTexelOffset == 7, "texel (gather) offset limits (t_vk_feat gatherlim)");
    CHECK(L->maxPushConstantsSize >= 128 && L->maxPushConstantsSize <= 256, "push constants");
    CHECK(L->maxUniformBufferRange >= 16384 && L->maxUniformBufferRange <= 1048576, "ubo range");
-   CHECK(L->maxBoundDescriptorSets >= 4 && L->maxBoundDescriptorSets <= 7, "bound sets");
+   CHECK(L->maxBoundDescriptorSets == 8, "bound sets %u (8 SRT tables: t_vk_draw sets8 binds all)", L->maxBoundDescriptorSets);
    CHECK(L->maxComputeWorkGroupInvocations >= 128 && L->maxComputeWorkGroupInvocations <= 1024, "wg invocations");
    CHECK(L->maxComputeSharedMemorySize >= 16384 && L->maxComputeSharedMemorySize <= 32768, "shared mem");
    CHECK(L->maxSamplerAnisotropy <= 16.0f && L->maxViewports >= 1 && L->maxViewports <= 16, "aniso/viewports");
@@ -164,6 +165,16 @@ main(int argc, char **argv)
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
+   {  /* 4x is advertised iff pipeline creation accepts it: opt-in via MALI_EXPERIMENTAL_MSAA=1 (LOAD/resolve incomplete) */
+      const char *g = getenv("MALI_EXPERIMENTAL_MSAA");
+      VkSampleCountFlags want = (g && g[0] == '1') ? VK_SAMPLE_COUNT_4_BIT : 0;
+      VkImageFormatProperties ifp;
+      VkResult r = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &ifp);
+      CHECK((L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb colour samples follow the MSAA gate");
+      CHECK((L->framebufferDepthSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb depth samples follow the MSAA gate");
+      CHECK(r == VK_SUCCESS && (ifp.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x image format samples follow the MSAA gate");
+   }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 
    /* ---- features ---- */
@@ -215,6 +226,9 @@ main(int argc, char **argv)
    eq("maintenance4", f13.maintenance4, fm4.maintenance4);
    eq("privateData", f13.privateData, fpd.privateData);
    CHECK(f2.features.textureCompressionBC == g2.features.textureCompressionBC && f2.features.textureCompressionBC, "BC");
+   /* Mandatory in Vulkan 1.0 and required by Mesa's vk_physical_device_check_device_features (vk_device.c:211):
+    * without it zink cannot create a device at all ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). */
+   CHECK(f2.features.robustBufferAccess, "robustBufferAccess (Vulkan 1.0 mandatory)");
 
    /* Allow-list: any VkBool32 in the core structs that is true and not listed fails. */
    {
@@ -227,6 +241,7 @@ main(int argc, char **argv)
       CHECK(L->maxDrawIndirectCount >= 0xffff, "maxDrawIndirectCount %u: multiDrawIndirect requires >= 2^16-1", L->maxDrawIndirectCount);
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
+         offsetof(VkPhysicalDeviceFeatures, robustBufferAccess),       /* Vulkan 1.0 mandatory (zink: vk_device.c:211); the device below is created with it enabled */
          offsetof(VkPhysicalDeviceFeatures, shaderClipDistance),       /* t_vk_feat clip */
          offsetof(VkPhysicalDeviceFeatures, shaderImageGatherExtended), /* t_vk_feat gather */
          offsetof(VkPhysicalDeviceFeatures, fragmentStoresAndAtomics), /* t_vk_feat fsstore */
@@ -244,8 +259,9 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageWriteWithoutFormat), /* t_vk_feat storfmt_nf */
+         offsetof(VkPhysicalDeviceFeatures, logicOp),                  /* t_vk_draw --only fx_logic_* */
          offsetof(VkPhysicalDeviceFeatures, dualSrcBlend),             /* t_vk_draw --only fx_dual_* (passed on the Poco X8, v13) */
-         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_draw msaa_sample_shading; only advertised with MALI_EXPERIMENTAL_MSAA=1 */
+         offsetof(VkPhysicalDeviceFeatures, sampleRateShading),        /* t_vk_feat samplerate (1 sample); t_vk_draw msaa_sample_shading (4 samples, MALI_EXPERIMENTAL_MSAA=1) */
       };
       /* depthClamp / independentBlend: backed by t_vk_draw --only fx (fx_depth_clamp, fx_blend_*; pixel-checked on the Poco) */
       unsigned dc_idx = (unsigned)((const VkBool32 *)&f2.features.depthClamp - c), ib_idx = (unsigned)((const VkBool32 *)&f2.features.independentBlend - c);
@@ -299,6 +315,18 @@ main(int argc, char **argv)
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_R8G8B8A8_UNORM, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "RGBA8 sampled");
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "RGBA8 color");
+      /* HL2's swapchain/zink render targets: the packed A8B8G8R8 aliases must be renderable and sampled like RGBA8. */
+      static const VkFormat argb8[] = {VK_FORMAT_A8B8G8R8_UNORM_PACK32, VK_FORMAT_A8B8G8R8_SRGB_PACK32};
+      for (unsigned i = 0; i < 2; i++) {
+         VkFormatProperties2 afp = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+         GetPhysicalDeviceFormatProperties2(pd, argb8[i], &afp);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT,
+               "A8B8G8R8 variant %d: colour attachment", (int)argb8[i]);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
+               "A8B8G8R8 variant %d: sampled", (int)argb8[i]);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
+               "A8B8G8R8 variant %d: transfer src", (int)argb8[i]);
+      }
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
@@ -356,7 +384,52 @@ main(int argc, char **argv)
       VkPhysicalDeviceFeatures bad = {.geometryShader = VK_TRUE};
       VkDeviceCreateInfo d2 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .pEnabledFeatures = &bad};
       VkDevice d = NULL;
-      CHECK(CreateDevice(pd, &d2, NULL, &d) == VK_ERROR_FEATURE_NOT_PRESENT, "geometryShader must be rejected");
+      /* The driver names the field on stderr (the runtime's own message only reaches a debug messenger, which the
+       * apps that hit this - zink, wined3d - do not install): capture it around the call. */
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap, "stderr capture: dup/tmpfile failed");   /* no dup2 before the file exists */
+      CHECK(dup2(fileno(cap), 2) >= 0, "stderr capture: dup2 failed");
+      VkResult rr = CreateDevice(pd, &d2, NULL, &d);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) {
+         size_t n = fread(msg, 1, sizeof(msg) - 1, cap);
+         msg[n] = 0;
+         fclose(cap);
+      }
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "geometryShader must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature VkPhysicalDeviceFeatures::geometryShader") != NULL,
+            "message names the feature: %s", msg);
+   }
+   /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. */
+   {
+      VkPhysicalDeviceRobustness2FeaturesEXT r2 = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustBufferAccess2 = VK_TRUE};
+      VkDeviceCreateInfo d3 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
+                               .pQueueCreateInfos = &qci, .pNext = &r2};
+      VkDevice d = NULL;
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture (chain)");
+      VkResult rr = CreateDevice(pd, &d3, NULL, &d);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) {
+         size_t n = fread(msg, 1, sizeof(msg) - 1, cap);
+         msg[n] = 0;
+         fclose(cap);
+      }
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustBufferAccess2 must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature robustBufferAccess2") != NULL, "message names the chain feature: %s", msg);
    }
 
 #define D(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)

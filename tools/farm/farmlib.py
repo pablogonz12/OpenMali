@@ -297,6 +297,7 @@ def job_verdict(job):
 # scheduling priority, lower runs first: merge gates (smoke/daily of a branch head) < bench/menu < exploratory `cases` runs < idle sweep (always last)
 SUITE_PRIO = {"smoke": 0, "daily": 0, "bench": 10, "menu": 10, "cases": 20, "sweep": 30}
 GATE_SUITES = ("smoke", "daily")
+SUPERSEDE_SUITES = ("smoke", "daily", "cases", "bench", "menu")   # never sweep
 
 
 def job_prio(job):
@@ -306,19 +307,38 @@ def job_prio(job):
     return SUITE_PRIO.get(job.get("suite"), 0)
 
 
+def stable_ref(ref):
+    """a plain branch/tag name: not empty, not HEAD, not a batch, not a revision expression (HEAD~1, main^, @{u}, a commit hash) that moves or is not a ref"""
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", ref or "")) and ref != "HEAD" and not ref.startswith("HEAD") \
+        and not re.fullmatch(r"[0-9a-f]{7,40}", ref) and not ref.endswith("_HEAD")   # FETCH_HEAD, ORIG_HEAD, MERGE_HEAD...: operation refs that move
+
+
 def supersede_old_gates(new, jobs, is_ancestor):
     """a new gate job (smoke/daily) obsoletes the pending parts of older gate jobs of the same line of commits: same repo, suite, env and
     --only, an older commit that is an ancestor of the new one (is_ancestor(old, new)), and only the classes the new job covers. Running and
-    finished parts stay. Marks the parts cancelled in the stored jobs and returns [(job id, old commit, [classes])]"""
+    finished parts stay. Jobs of OTHER suites (cases/bench/menu/daily vs smoke...) of the same repo and the same named ref (not HEAD, not a
+    batch) at an older ancestor commit are superseded too: that head is dead, its pending diagnostics are moot (a tip that changed is
+    never what the lane wants measured). Marks the parts cancelled in the stored jobs and returns [(job id, old commit, [classes])]"""
     out = []
     if new.get("suite") not in GATE_SUITES or new.get("auto") or new.get("keep_old"):
         return out
     for j in jobs:
-        if (j["id"] == new["id"] or j.get("suite") != new["suite"] or j.get("repo") != new.get("repo") or j.get("auto")
-                or (j.get("env") or {}) != (new.get("env") or {}) or (j.get("only") or "") != (new.get("only") or "")
+        same = (j.get("suite") == new["suite"] and (j.get("env") or {}) == (new.get("env") or {})
+                and (j.get("only") or "") == (new.get("only") or ""))
+        ref = new.get("ref") or ""
+        sibling = (not same and j.get("suite") != new["suite"] and j.get("suite") in SUPERSEDE_SUITES and stable_ref(ref) and j.get("ref") == ref)
+        if (j["id"] == new["id"] or not (same or sibling) or j.get("repo") != new.get("repo") or j.get("auto")
                 or j["commit"] == new["commit"] or j.get("seq", 0) > new.get("seq", 0) or not is_ancestor(j["commit"], new["commit"])):
             continue
         cs = [c for c, p in j["parts"].items() if p["state"] == "pending" and c in new["parts"]]
+        if not cs:
+            continue
+        try:                                              # re-read right before the write: a part farmd moved to running since the snapshot must not be reset
+            fresh = read_json(job_path(j["id"]))
+            cs = [c for c in cs if fresh["parts"].get(c, {}).get("state") == "pending"]
+            j = fresh
+        except (OSError, ValueError, KeyError):
+            continue                                      # cannot confirm the current state: skip this job rather than write a stale snapshot over it
         if not cs:
             continue
         for c in cs:

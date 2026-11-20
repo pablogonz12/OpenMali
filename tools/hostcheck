@@ -1,0 +1,104 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# hostcheck: the first gate before any phone run. Builds the x86-64 ICD, runs the offline gate, the
+# soft-rendered frame tests (when built) and, on request, the headless X11/WSI test, then prints a
+# one-line-per-stage summary. See docs/host-harness.md for what each stage can and cannot prove.
+#
+#   tools/hostcheck                 build + offline gate + soft frames
+#   tools/hostcheck --no-build      skip the build
+#   tools/hostcheck --x11           additionally the gamescope X11/WSI test (slower, needs gamescope)
+#   tools/hostcheck --deqp          additionally the host dEQP-VK gate (slow, opt-in)
+#   tools/hostcheck --inventory     print what this host has and exit
+#   tools/hostcheck --bless         re-record the soft frame golden (review the diff before committing)
+#
+# Exit: 0 all stages passed (or skipped), 1 a stage failed.
+set -u
+D=$(cd "$(dirname "$0")/.." && pwd)
+V=$D/vk
+OUT=$V/out/native
+build=1 x11=0 deqp=0 inv=0 bless=0
+for a in "$@"; do
+   case $a in
+      --no-build) build=0 ;;
+      --x11) x11=1 ;;
+      --deqp) deqp=1 ;;
+      --inventory) inv=1 ;;
+      --bless) bless=1 ;;
+      -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+      *) echo "hostcheck: unknown argument $a (try --help)"; exit 2 ;;
+   esac
+done
+
+# --- inventory ---------------------------------------------------------------------------------
+have() { command -v "$1" >/dev/null 2>&1; }
+inventory() {
+   echo "host tool                   state"
+   for t in glslangValidator glslc spirv-val vulkaninfo gamescope Xwayland Xvfb vkmark qemu-aarch64 qemu-aarch64-static glxinfo; do
+      printf '  %-25s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo MISSING)"
+   done
+   printf '  %-25s %s\n' "DISPLAY" "${DISPLAY:-<unset>}"
+   printf '  %-25s %s\n' "WAYLAND_DISPLAY" "${WAYLAND_DISPLAY:-<unset>}"
+   d=$D/third_party/build-vk-x86-host/external/vulkancts/modules/vulkan/deqp-vk
+   printf '  %-25s %s\n' "host deqp-vk" "$([ -x "$d" ] && echo "$d" || echo 'not built (vk/deqp/README.md)')"
+   printf '  %-25s %s\n' "x11 Mesa build" "$([ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && echo 'third_party/build-vk-x86-x11' || echo 'missing (no VK_KHR_xcb_surface)')"
+   printf '  %-25s %s\n' "native ICD" "$([ -f "$OUT/libvulkan_mali.so" ] && echo "$OUT/libvulkan_mali.so" || echo 'not built')"
+   printf '  %-25s %s\n' "soft frames" "$([ -x "$OUT/t_soft_frame" ] && echo 'built (tests/soft-frame.sh)' || echo 'not built')"
+   printf '  %-25s %s\n' "DXVK / d3d11" "$(compgen -G '/usr/lib/*/wine/dxvk/x64/d3d11.dll' >/dev/null && echo present || echo 'not installed (DXVK tests cannot run here)')"
+}
+if [ $inv = 1 ]; then inventory; exit 0; fi
+
+fail=0 stage_no=0
+declare -a names states
+stage() {   # stage <name> <cmd...>
+   local name=$1; shift
+   stage_no=$((stage_no + 1))
+   local log; log=$(mktemp)
+   if "$@" >"$log" 2>&1; then
+      names[$stage_no]=$name; states[$stage_no]=ok
+      echo "ok    $name"
+   else
+      names[$stage_no]=$name; states[$stage_no]=FAIL
+      echo "FAIL  $name"
+      tail -25 "$log" | sed 's/^/        /'
+      fail=1
+   fi
+   rm -f "$log"
+}
+
+echo "hostcheck: $D"
+if [ $build = 1 ]; then
+   stage "build x86-64 ICD" "$V/build.sh"
+   [ $fail = 0 ] || { echo; echo "SUMMARY: build failed, nothing else ran"; exit 1; }
+fi
+stage "offline gate (vk/check.sh --no-build)" "$V/check.sh" --no-build
+
+# Soft-rendered frames: the CPU rasteriser over real recorded frames, with image diffs. Not built yet
+# in a tree without the rasteriser: report it as a skip, never as a pass.
+soft=skipped
+if [ -x "$V/tests/soft-frame.sh" ] && [ -x "$OUT/t_soft_frame" ]; then
+   soft=run
+   if [ $bless = 1 ]; then stage "soft frames (re-blessed)" "$V/tests/soft-frame.sh" --bless
+   else stage "soft frames (image diffs)" "$V/tests/soft-frame.sh"; fi
+else
+   echo "skip  soft frames (not built: no tests/soft-frame.sh or out/native/t_soft_frame)"
+fi
+
+if [ $x11 = 1 ]; then
+   stage "x11 WSI host (gamescope headless)" "$V/tests/xwsi-host.sh" "$OUT" v10
+fi
+if [ $deqp = 1 ]; then
+   if [ -x "$D/third_party/build-vk-x86-host/external/vulkancts/modules/vulkan/deqp-vk" ]; then
+      stage "host dEQP-VK gate" "$V/deqp/host-run.sh"
+   else
+      echo "skip  host dEQP (deqp-vk not built, see vk/deqp/README.md)"
+   fi
+fi
+
+echo
+if [ $fail = 1 ]; then
+   printf 'SUMMARY: FAILED (%s)\n' "$(for i in $(seq 1 $stage_no); do [ "${states[$i]}" = FAIL ] && printf '%s ' "${names[$i]}"; done)"
+   echo "Do not take a phone run until this is green: the host catches semantics bugs for free."
+   exit 1
+fi
+echo "SUMMARY: PASS ($(for i in $(seq 1 $stage_no); do printf '%s, ' "${names[$i]}"; done | sed 's/, $//'); soft frames $soft)"
+exit 0

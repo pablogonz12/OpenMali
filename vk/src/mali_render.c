@@ -224,6 +224,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    if (p.rt_none)
       p.row_stride = 0;
    p.tiler_va = tiler_ctx_va;
+   p.provoking_last = f->provoking_last;
    p.sample_locations_va = sample_locations_va;
    bool msaa = f->samples == 4;
    if (msaa) {

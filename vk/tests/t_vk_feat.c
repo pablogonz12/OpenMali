@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -43,6 +43,7 @@ static int test_zinit(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
@@ -258,7 +259,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw, .pNext = g_rs_next};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                              .sampleShadingEnable = g_sample_shading, .minSampleShading = g_sample_shading ? 1.0f : 0.0f};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
@@ -1978,6 +1980,130 @@ test_inlineub(void)
    return 1;
 }
 
+/* Push constants at the advertised limit: DXVK 3.1.x refuses the device below 256 B (dxvk_limits.h). A 256-byte block is pushed
+ * whole; the VS and the FS read the last word (offset 252, the FS turns it into the colour) and the CS copies it to a storage
+ * buffer. The shaders also carry FAU immediates, so a reservation that does not cover the push block corrupts one of the two
+ * (t_compile checks the invariant directly; here the API path and the reported limit are checked against what works). */
+static int
+test_push256(void)
+{
+   uint32_t lim = g_props.limits.maxPushConstantsSize;
+   CHECK(lim >= 256, "maxPushConstantsSize %u < 256 (DXVK 3.1.x needs 256)", lim);
+   uint8_t pc[256];
+   for (unsigned i = 0; i < sizeof pc; i += 4) {
+      float f = i == 252 ? 1.0f : 0.0f;   /* offset 252: the value the shaders read */
+      memcpy(pc + i, &f, 4);
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf ob;
+   if (!hbuf_create(&ob, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(ob.p, 0xEE, 64);
+
+   /* graphics: one layout, both stages, the full advertised block */
+   VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .offset = 0, .size = lim};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "pipeline layout %u B", lim);
+   /* the limit is the real one: a pipeline over it must be refused (layout creation itself is not validated: the flatten that
+    * bounds it runs when a pipeline is created) */
+   pcr.size = lim + 4;
+   VkPipelineLayout over = VK_NULL_HANDLE;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &over) == VK_SUCCESS, "layout of %u B", lim + 4);
+   pcr.size = lim;
+
+   VkShaderModule vm = load_spv("push252.vert.spv"), fm = load_spv("push252.frag.spv");
+   CHECK(vm && fm, "shaders push252.vert/frag");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = lay, .renderPass = t.rp};
+   VkPipeline pipe;
+   gp.layout = over;
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r != VK_SUCCESS, "graphics pipeline with %u B push constants (over the advertised %u) accepted", lim + 4, lim);
+   DestroyPipelineLayout(dev, over, NULL);
+   gp.layout = lay;
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r == VK_SUCCESS, "graphics pipeline with %u B push constants = %d", lim, r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf graphics");
+   begin_pass(cb, &t, pipe);
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, lim, pc);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0, "centre %u,%u,%u want 255,0,0 (push constant at offset 252)", p[0], p[1], p[2]);
+   }
+
+   /* compute: same block, the word at 252 lands in the storage buffer */
+   VkDescriptorSetLayoutBinding lb = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo bi = {ob.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet wds = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 1, &wds, 0, NULL);
+   VkPushConstantRange cpcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = lim};
+   VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &cpcr};
+   VkPipelineLayout clay;
+   CHECK(CreatePipelineLayout(dev, &cpli, NULL, &clay) == VK_SUCCESS, "compute layout %u B", lim);
+   VkShaderModule cm = load_spv("push252.comp.spv");
+   CHECK(cm, "shader push252.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = clay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = cm, .pName = "main"}};
+   VkPipeline cpipe;
+   r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &cpipe);
+   CHECK(r == VK_SUCCESS, "compute pipeline with %u B push constants = %d", lim, r);
+   VkCommandBuffer ccb = cb_begin(&t);   /* no render pass: a bare dispatch */
+   CHECK(ccb, "cmdbuf compute");
+   CmdBindPipeline(ccb, VK_PIPELINE_BIND_POINT_COMPUTE, cpipe);
+   CmdBindDescriptorSets(ccb, VK_PIPELINE_BIND_POINT_COMPUTE, clay, 0, 1, &ds, 0, NULL);
+   CmdPushConstants(ccb, clay, VK_SHADER_STAGE_COMPUTE_BIT, 0, lim, pc);
+   CmdDispatch(ccb, 1, 1, 1);
+   if (!cb_submit(&t, ccb)) return 0;
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)ob.p;
+      CHECK(o[0] == 0x3f800000u, "CS read the word at offset 252: %08x want 3f800000", o[0]);
+      printf("{\"test\":\"push256\",\"ok\":true}\n");
+   } else printf("{\"test\":\"push256\",\"skipped\":\"pixels: fake backend (limit %u B, layouts, pipelines, draws and dispatch ran)\",\"ok\":true}\n", lim);
+   DestroyPipeline(dev, cpipe, NULL);
+   DestroyPipelineLayout(dev, clay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyShaderModule(dev, cm, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyShaderModule(dev, vm, NULL);
+   DestroyShaderModule(dev, fm, NULL);
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static int
 test_ubostd(void)
 {
@@ -2067,7 +2193,78 @@ test_demote(void)
    return 1;
 }
 
+/* sampleRateShading with 1-sample rasterisation (always supported): sample shading is a no-op, gl_SampleID is 0 and gl_SamplePosition the
+ * pixel centre. Shader uses the `sample` qualifier, gl_SampleID and gl_SamplePosition (SPIR-V SampleRateShading). Red = ok. */
+static int
+test_samplerate(void)
+{
+   if (!g_feat.sampleRateShading) { printf("{\"test\":\"samplerate\",\"skipped\":\"sampleRateShading not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_sample_shading = VK_TRUE;
+   int ok = make_pipe(&t, "sampid.vert.spv", "sampid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_sample_shading = VK_FALSE;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(near(p, 255, 0, 0, 255, 2), "sample shading at 1 sample: %u,%u,%u,%u (want 255,0,0,255)", p[0], p[1], p[2], p[3]);
+      printf("{\"test\":\"samplerate\",\"ok\":true}\n");
+   } else printf("{\"test\":\"samplerate\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+/* VK_EXT_provoking_vertex on hardware: flat colour (v0 red, v1 green, v2 blue) over a covering triangle; FIRST must read red, LAST blue */
+static VkBool32 g_pv_last;
+static int
+test_provoking(void)
+{
+   if (!g_pv_last) { printf("{\"test\":\"provoking\",\"skipped\":\"provokingVertexLast not advertised\",\"ok\":true}\n"); return 1; }
+   static const struct { VkProvokingVertexModeEXT m; const char *n; uint8_t r, g, b; } modes[2] = {
+      {VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT, "first", 255, 0, 0}, {VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT, "last", 0, 0, 255}};
+   for (int i = 0; i < 2; i++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pv = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
+                                                                     .provokingVertexMode = modes[i].m};
+      g_rs_next = &pv;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      int okp = make_pipe(&t, "provoking.vert.spv", "provoking.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_rs_next = NULL;
+      if (!okp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      CmdDraw(cb, 3, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         int bad = 0, n = 0;
+         for (int y = 4; y < H - 4; y += 7)
+            for (int x = 4; x < W - 4; x += 7) { const uint8_t *p = pix(&t, x, y); n++; bad += !near(p, modes[i].r, modes[i].g, modes[i].b, 255, 2); }
+         const uint8_t *p = pix(&t, 100, 100);
+         CHECK(bad == 0, "provoking %s: %d of %d pixels wrong (centre %u,%u,%u,%u, want %u,%u,%u,255)", modes[i].n, bad, n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+         printf("{\"test\":\"provoking\",\"mode\":\"%s\",\"centre\":[%u,%u,%u,%u],\"want\":[%u,%u,%u,255],\"ok\":true}\n", modes[i].n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+      } else printf("{\"test\":\"provoking\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   return 1;
+}
+
 static int
 test_clip(void)
 {
@@ -2497,6 +2694,34 @@ test_sgctl(void)
    g_sgctl = 1;
    int ok = test_subgroup_one();
    g_sgctl = 0;
+   /* A size the hardware does not have must be refused at pipeline creation, not silently compiled at 16: that is the
+    * corruption path (masks/shuffles lowered for 32 lanes but executed by 16). */
+   VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("subgroup.comp.spv");
+   CHECK(m, "shader subgroup.comp.spv");
+   for (unsigned bad = 8; bad <= 32; bad <<= 1) {
+      if (bad == p13.maxSubgroupSize) continue;
+      VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+                                                                 .requiredSubgroupSize = bad};
+      VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &rss,
+                   .flags = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                   .module = m, .pName = "main"}};
+      VkPipeline pipe = VK_NULL_HANDLE;
+      VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+      CHECK(r != VK_SUCCESS, "requiredSubgroupSize %u accepted (%d)", bad, r);
+      if (r == VK_SUCCESS) DestroyPipeline(dev, pipe, NULL);
+   }
+   DestroyShaderModule(dev, m, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
    if (ok) printf("{\"test\":\"sgctl\",\"ok\":true}\n");
    return ok;
 }
@@ -2834,7 +3059,13 @@ main(int argc, char **argv)
                                                             .vertexAttributeInstanceRateZeroDivisor = fdv.vertexAttributeInstanceRateZeroDivisor};
    VkPhysicalDeviceLineRasterizationFeaturesEXT elr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &edv, .rectangularLines = flr.rectangularLines};
    e2.pNext = &elr;
-   const char *dexts[6]; uint32_t ndx = 0;
+   VkPhysicalDeviceProvokingVertexFeaturesEXT epv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT, .pNext = e2.pNext, .provokingVertexLast = VK_TRUE};
+   { VkPhysicalDeviceProvokingVertexFeaturesEXT fpv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
+     GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
+   if (g_pv_last) e2.pNext = &epv;
+   const char *dexts[7]; uint32_t ndx = 0;
+   if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
@@ -2880,6 +3111,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
+   if (ok && CASE_ON("push256")) ok &= test_push256();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("int16")) ok &= test_int16();
@@ -2890,6 +3122,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
+   if (ok && CASE_ON("provoking")) ok &= test_provoking();
+   if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
