@@ -29,6 +29,8 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 #include <xcb/xcb.h>
 #include <xcb/shm.h>
+#endif
+#if defined(__linux__)
 #include <sys/ipc.h>
 #endif
 #if defined(__linux__)
@@ -275,7 +277,7 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
 struct mali_x11_shm {
    VkSwapchainKHR swapchain;
    bool active;
-   void *conn;          /* xcb_connection_t *: kept opaque so this file also compiles without XCB */
+   void *conn;          /* xcb_connection_t *: opaque so this file also compiles without XCB (t_cmd) */
    uint32_t window;
    uint32_t gc;
    uint8_t depth;
@@ -398,7 +400,7 @@ mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
 {
 #if !defined(VK_USE_PLATFORM_XCB_KHR)
    (void)chain; (void)image_index;
-   return false;   /* built without XCB: the PutImage fallback in wsi_common_x11 handles the present */
+   return false;   /* built without XCB: wsi_common_x11's PutImage present handles it */
 #else
    struct mali_x11_shm *st = mali_x11_shm_find((VkSwapchainKHR)(uintptr_t)chain);
    if (!st || !st->active)
