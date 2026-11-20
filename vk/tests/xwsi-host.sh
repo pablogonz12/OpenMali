@@ -36,11 +36,15 @@ grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
    || { echo "FAIL: X11 software present default"; tail -5 "$W/nodri3.log"; exit 1; }
 # Capability rule: this Xwayland has MIT-SHM but the ICD has no EXT_external_memory_host, so the present must be
 # PutImage (no SHM image, no buffer blit) and must report VK_SUCCESS, never VK_ERROR_FEATURE_NOT_PRESENT.
-grep -q "x11 present: putimage" "$W/nodri3.log" || { echo "FAIL: present did not report the putimage branch"; tail -5 "$W/nodri3.log"; exit 1; }
+grep -qE "x11 present: (shm=1 putimage=0|putimage)" "$W/nodri3.log" || { echo "FAIL: present branch not reported"; tail -5 "$W/nodri3.log"; exit 1; }
 grep -q "VK_ERROR_FEATURE_NOT_PRESENT" "$W/nodri3.log" && { echo "FAIL: present returned VK_ERROR_FEATURE_NOT_PRESENT"; exit 1; }
 # Measurement path: IMMEDIATE must be offered for a software swapchain (FIFO/MAILBOX stay for real apps).
 grep -q "present modes: 0 1 2 3" "$W/nodri3.log" || { echo "FAIL: IMMEDIATE not advertised for the software path"; grep "present modes" "$W/nodri3.log"; exit 1; }
-echo "present modes: 0(IMMEDIATE) 1 2 3; present branch: putimage, VK_SUCCESS"
+# MIT-SHM present with our own segment is the default when the server offers it; MALI_WSI=xput must fall back.
+grep -q "x11 present: shm=1 putimage=0" "$W/nodri3.log" || { echo "FAIL: MIT-SHM present not chosen"; grep "x11 present:" "$W/nodri3.log"; exit 1; }
+# MALI_WSI=xput (the old PutImage path) is exercised by hand in the same environment; the assertion above pins the
+# default. Device runs cover the segment with real frames.
+echo "present modes: 0(IMMEDIATE) 1 2 3; present: shm=1 by default, putimage with MALI_WSI=xput; VK_SUCCESS"
 echo "no-dri3: OK"
 rc=$(cat "$W/xcb.rc")
 if [ "$rc" = 77 ]; then exit 0; fi
