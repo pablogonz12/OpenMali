@@ -963,6 +963,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          }
          f->colour.resolve_va = rt.va;
          f->colour.resolve_row_stride = rt.row_stride;
+         /* M15: the resolve write lands in the resolve target's BO, not in the attachment's (the colour target's BO is
+          * already marked above). Missing it makes the CPU read the pre-resolve contents. */
+         if (g_res.image_view_mem)
+            mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->resolveImageView));
       }
       if (load) {
          unsupported(cmd, "MSAA colour loadOp LOAD");
