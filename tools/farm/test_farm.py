@@ -307,11 +307,30 @@ class T(unittest.TestCase):
             f.write("\n".join(names))
 
     def farm(self, *a):
-        r = subprocess.run([sys.executable, HERE + "/farm", *a], capture_output=True, text=True, env=self.env)
+        r = subprocess.run([sys.executable, getattr(self, "root", HERE) + "/farm", *a], capture_output=True, text=True, env=self.env)
         return r.returncode, r.stdout.strip(), r.stderr
 
+    def fixture_repo(self, n=1, origin_at=None):
+        """a clean throwaway git checkout holding a copy of the farm tools, n commits deep; origin/main -> commit origin_at (default HEAD).
+        self.root then points at it, so submit/farmd never depend on the developer's checkout, its refs or its tracked edits"""
+        import shutil
+        root = os.path.join(self.d, "fx")
+        shutil.copytree(HERE, root, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+        g = lambda *c: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false", *c], capture_output=True, text=True, check=True).stdout.strip()
+        g("init", "-q", "-b", "main")
+        for dev in ("cmf", "x8", "poco"):                       # minimal passing daily baselines, so a daily job can reach `pass` in fake mode
+            os.makedirs(os.path.join(root, "vk/deqp"), exist_ok=True)
+            with open(os.path.join(root, "vk/deqp/ours-daily-sample-%s.tsv" % dev), "w") as f:
+                f.write("".join("dEQP-VK.api.smoke.t%d\tPass\t\n" % i for i in range(20)))
+        g("add", "-A")
+        for i in range(n):
+            g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        g("update-ref", "refs/remotes/origin/main", origin_at or "HEAD")
+        self.root = root
+        return g
+
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
+        r = subprocess.run([sys.executable, getattr(self, "root", HERE) + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -1781,10 +1800,11 @@ class T(unittest.TestCase):
         self.assertEqual(gate.next_state("ok", dict(ok, temp_c=50.0), th)[0], "cooling")
 
     def test_submit_idempotent_and_rerun(self):
-        if subprocess.run(["git", "-C", HERE, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=False).stdout.strip():
-            self.skipTest("tracked edits: a dirty HEAD is never reused")
+        self.fixture_repo()                                     # clean checkout: a dirty developer tree would never be reused
         self.attach("dev-a")
-        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(jid, err)
         self.farmd()
         self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
         rc, again, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
@@ -1793,17 +1813,22 @@ class T(unittest.TestCase):
         for extra in (["--env", "FOO=1"], ["--rerun"]):                                  # other inputs / forced: a new job
             rc, other, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", *extra)
             self.assertEqual(rc, 0, err)
-            self.assertTrue(other)
+            self.assertTrue(other, err)
             self.assertNotEqual(other, jid)
         rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
         self.assertNotEqual(rc, 0)
         self.assertIn("selects no class", err)
         self.attach("dev-a")
-        _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
+        rc, d1, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
         for _ in range(3):                                      # earlier jobs of this test run first
             self.farmd()
+        self.assertEqual((rc, bool(d1)), (0, True), err)
         self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
-        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
+        self.assertEqual(L.job_verdict(L.find_job(d1)), "pass")     # a real passed daily job, so reuse would be possible
+        rc, d2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(d2, err)
+        self.assertNotEqual(d2, d1)
 
     def test_find_passed_unit(self):
         j = {"id": "a", "commit": "c1", "suite": "daily", "env": "", "dirty": False, "parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "done", "verdict": "fail"}}}
@@ -1816,20 +1841,21 @@ class T(unittest.TestCase):
         self.assertIsNone(L.find_passed([dict(j, dirty=True)], "c1", "daily", ["v11"], ""))
 
     def test_submit_stale_base_and_merge_with_main(self):
-        r = subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
-        if r.returncode or subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main~8"], capture_output=True, check=False).returncode:
-            self.skipTest("no origin/main with 8 ancestors in this checkout")
-        n = int(subprocess.run(["git", "-C", HERE, "rev-list", "--count", "HEAD"], capture_output=True, text=True).stdout)
-        if n > 12:
-            rc, _, err = self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11")
-            self.assertNotEqual(rc, 0)
-            self.assertIn("behind origin/main", err)
-            self.assertEqual(self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
-        rc, jid, err = self.farm("submit", "origin/main~1", "--suite", "smoke", "--need", "v11", "--merge-with-main")
+        g = self.fixture_repo(12)                               # known ancestry: c0..c11, origin/main at the tip
+        g("update-ref", "refs/remotes/origin/main", g("rev-parse", "HEAD"))
+        for i in range(12, 22):
+            g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        g("update-ref", "refs/remotes/origin/main", "HEAD")
+        g("checkout", "-q", "-b", "old", "HEAD~9")              # REF 9 commits behind origin/main (limit L.STALE_COMMITS)
+        rc, _, err = self.farm("submit", "old", "--suite", "smoke", "--need", "v11")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("behind origin/main", err)
+        self.assertEqual(self.farm("submit", "old", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
+        rc, jid, err = self.farm("submit", "old", "--suite", "smoke", "--need", "v11", "--merge-with-main")
         self.assertEqual(rc, 0, err)
         j = L.find_job(jid)
         self.assertTrue(j["ref"].endswith("+main"))
-        parents = subprocess.run(["git", "-C", HERE, "rev-list", "--parents", "-n1", j["commit"]], capture_output=True, text=True).stdout.split()
+        parents = g("rev-list", "--parents", "-n1", j["commit"]).split()
         self.assertEqual(len(parents), 3)                                               # a merge commit of REF and origin/main
 
 

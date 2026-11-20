@@ -37,7 +37,9 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
    /* M14: surfaces come from wsi_common (Wayland, XCB, Xlib: whatever Mesa was configured with) */
    .KHR_surface = true,
    .KHR_get_surface_capabilities2 = true,
+   .EXT_headless_surface = true,       /* wsi_common_headless: tests (t_vk_dxvk_wsi) present without a compositor */
    .EXT_surface_maintenance1 = true,   /* companion of swapchain_maintenance1 (wsi_common) */
+   .EXT_swapchain_colorspace = true,   /* ANGLE/gamescope ask for it; wsi_common lists SRGB_NONLINEAR (+ PASS_THROUGH on Wayland), t_steam_caps swcs */
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface = true,
 #endif
@@ -47,6 +49,8 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
 #ifdef VK_USE_PLATFORM_XLIB_KHR
    .KHR_xlib_surface = true,
 #endif
+   .EXT_headless_surface = true,       /* wsi_common_headless.c is compiled on every non-Windows build (ANGLE's VerifyExtensionsPresent needs it) */
+   .EXT_swapchain_colorspace = true,   /* wsi_common only offers colour spaces the surface really supports (sRGB-nonlinear everywhere) */
    .EXT_debug_utils = true,
 };
 

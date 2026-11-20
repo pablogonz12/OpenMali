@@ -19,6 +19,13 @@
 #include <sys/sysmacros.h>
 
 static int g_fail;
+
+/* MALI_DRM_AUTO_STANDIN=0 disables the auto stand-in (the driver then needs DD_DRM_STANDIN or a card node). */
+static int auto_standin(void)
+{
+   const char *off = getenv("MALI_DRM_AUTO_STANDIN");
+   return !(off && !strcmp(off, "0"));
+}
 #define CHECK(c, ...)                                                                              \
    do {                                                                                            \
       if (!(c)) {                                                                                  \
@@ -118,6 +125,14 @@ main(int argc, char **argv)
       CHECK(drm.hasPrimary, "hasPrimary");
       CHECK(drm.primaryMajor == (int64_t)major(pwant) && drm.primaryMinor == (int64_t)minor(pwant),
             "primary %lld:%lld != stat %u:%u", (long long)drm.primaryMajor, (long long)drm.primaryMinor, major(pwant), minor(pwant));
+   } else if (auto_standin()) {
+      /* New rule: a renderD* whose rdev is the GPU char device we opened is our own alias, so the driver reports it
+       * as primary too (the stock app does not export DD_DRM_STANDIN). */
+      printf("auto stand-in: primary reported for our own node\n");
+      CHECK(drm.hasPrimary, "auto stand-in: hasPrimary");
+      CHECK(drm.primaryMajor == (int64_t)major(want) && drm.primaryMinor == (int64_t)minor(want),
+            "auto stand-in: primary %lld:%lld != stat %u:%u", (long long)drm.primaryMajor,
+            (long long)drm.primaryMinor, major(want), minor(want));
    } else {
       CHECK(!drm.hasPrimary, "hasPrimary without a card node");
    }

@@ -6,6 +6,7 @@
 #include "mali_compile.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,8 @@
 #include "util/list.h"
 #include "vk_alloc.h"
 #include "vk_util.h"
+#include "vk_common_entrypoints.h"
+#include <time.h>
 
 /* M1 policy: every limit is the Vulkan 1.0 required minimum (spec table "Required Limits").
  * The milestone that implements a feature raises its limits to what the hardware does. */
@@ -308,6 +311,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
+   dispatch_table.GetPhysicalDeviceSurfacePresentModesKHR = mali_wsi_get_present_modes;   /* + IMMEDIATE on the software path */
 
    struct mali_drm_node drm;
    bool has_drm = mali_drm_find_node(gpu, &drm);
@@ -362,11 +366,22 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
    struct vk_device_extension_table enabled = extensions;
-   if (has_drm)
+   /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
+    * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that
+    * mali_drm_find_node() cannot match at init (no /dev/dri alias yet). Without the extension gamescope stops at
+    * "physical device has no primary node". The node is resolved per query in mali_drm_refresh(). */
+   if (has_drm || getenv("DD_DRM_STANDIN") || getenv("DD_OPEN_DRIVER"))
       enabled.EXT_physical_device_drm = true;
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
    const struct vk_features features = {
+      /* Vulkan 1.0 makes robustBufferAccess mandatory and Mesa's vk_physical_device_check_device_features
+       * (vk_device.c:211) rejects a device without it: zink could not create a device
+       * ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). What it guarantees here: with the feature
+       * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
+       * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
+       * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
+      .robustBufferAccess = true,
       .timelineSemaphore = true,
       .textureCompressionBC = true,
       .hostQueryReset = true,
@@ -457,14 +472,31 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       uint64_t cap = gpu->heap_bytes / 2;
       if (ram && ram / 4 < cap)
          cap = ram / 4;
+      /* The override is a positive whole number of MiB. Anything else ("auto", "12abc", "", "0", "-1") is a typo:
+       * strtoull would turn it into 0 (a zero cap refuses every allocation) or wrap, so it is ignored instead and
+       * the default above stays. */
       const char *env = getenv("MALI_VRAM_CAP_MB");
-      if (env && env[0])
-         cap = strtoull(env, NULL, 10) << 20;
+      bool overridden = false;
+      if (env && env[0]) {
+         char *end = NULL;
+         errno = 0;
+         const char *p = env;
+         while (*p == ' ' || *p == '\t')
+            p++;
+         unsigned long long mb = strtoull(env, &end, 10);
+         if (*p != '-' && end != env && *end == '\0' && errno == 0 && mb > 0 && mb <= (UINT64_MAX >> 20)) {
+            cap = mb << 20;
+            overridden = true;
+         } else if (getenv("MALI_WSI_DEBUG")) {
+            fprintf(stderr, "mali_vk: VRAM budget: ignoring MALI_VRAM_CAP_MB=%s (not a positive whole number of "
+                    "MiB), keeping %llu MiB\n", env, (unsigned long long)(cap >> 20));
+         }
+      }
       pdev->mem_cap = cap;
       if (getenv("MALI_WSI_DEBUG"))
          fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
                  (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
-                 env && env[0] ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 overridden ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
                  pdev->gpu.name);
    }
 
@@ -598,4 +630,161 @@ mali_GetPhysicalDeviceExternalBufferProperties(
          .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
       };
    pExternalBufferProperties->externalMemoryProperties = p;
+}
+
+/* VK_EXT_physical_device_drm is evaluated when a client asks, not once when the physical device is created: the
+ * guest binds /dev/dri nodes (or the app's stand-in) after the first vkEnumeratePhysicalDevices, and gamescope
+ * enumerates early, so a cached answer says "no primary node" for a node that exists a moment later. Re-probe with
+ * stat() (cheap) behind a one second cache, and report each half independently. An explicit node from the app wins:
+ * DD_DRM_STANDIN / VKBRIDGE_DRM_RENDER / BL_DRM_STANDIN is reported as the render node, and as primary when no card
+ * matched (gamescope refuses a device without a primary when it drives DRM, and a misc alias is all the guest has). */
+/* True when /dev/dri has a node with this rdev: the identity we report must name a node a client can open. */
+static bool
+drm_rdev_has_alias(dev_t rdev)
+{
+   /* The same directory policy as the rest of the node lookup: MALI_DRM_DIR overrides /dev/dri (tests point it at a
+    * temp dir of real chardev nodes), and by-path is only an alias table of that same directory. */
+   const char *base = getenv("MALI_DRM_DIR");
+   if (!base || !*base)
+      base = "/dev/dri";
+   char bypath[PATH_MAX];
+   snprintf(bypath, sizeof bypath, "%s/by-path", base);
+   const char *dirs[] = { base, bypath };
+   for (unsigned d = 0; d < 2; d++) {
+      DIR *dp = opendir(dirs[d]);
+      if (!dp)
+         continue;
+      struct dirent *de;
+      while ((de = readdir(dp))) {
+         if (de->d_name[0] == '.')
+            continue;
+         char path[PATH_MAX];
+         struct stat st;
+         if (snprintf(path, sizeof path, "%s/%s", dirs[d], de->d_name) >= (int)sizeof path)
+            continue;
+         if (stat(path, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == rdev) {
+            closedir(dp);
+            return true;
+         }
+      }
+      closedir(dp);
+   }
+   return false;
+}
+
+static void
+mali_drm_refresh(struct mali_physical_device *pdev)
+{
+   static struct timespec last;
+   struct timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   if (last.tv_sec && now.tv_sec - last.tv_sec < 1 && now.tv_nsec >= last.tv_nsec)
+      return;
+   last = now;
+
+   struct vk_properties *p = &pdev->vk.properties;
+   const bool was_primary = p->drmHasPrimary, was_render = p->drmHasRender;
+   struct mali_drm_node node = {0};
+   bool any = mali_drm_find_node(&pdev->gpu, &node);
+
+   /* Only a stand-in the application actually created may be reported as a node. BL_DRM_STANDIN names the GPU
+    * character device itself (a hint for identifying aliases, not a node), and claiming it as render is exactly
+    * the "DRM identity without a matching node" t_vk_drm rejects. */
+   /* No primary and no explicit stand-in: a /dev/dri/renderD* whose rdev is the very node we opened (/dev/mali0
+    * bound into the guest as a DRM alias, major 10) is the app's stand-in in all but name, so report it as render
+    * and as primary. The stock app does not export DD_DRM_STANDIN, and gamescope refuses a device without a primary.
+    * MALI_DRM_AUTO_STANDIN=0 opts out. The rdev equality is the honesty check: any other node is not ours. */
+   if (!node.primary && (!getenv("DD_DRM_STANDIN") || getenv("DD_OPEN_DRIVER"))) {
+      const char *off = getenv("MALI_DRM_AUTO_STANDIN");
+      const dev_t gpu_rdev = mali_gpu_node_rdev(&pdev->gpu);
+      if (!(off && !strcmp(off, "0")) && gpu_rdev) {
+         const char *dir = getenv("MALI_DRM_DIR");
+         if (!dir || !*dir)
+            dir = "/dev/dri";
+         DIR *d = opendir(dir);
+         if (d) {
+            struct dirent *e;
+            while ((e = readdir(d))) {
+               if (strncmp(e->d_name, "renderD", 7))
+                  continue;
+               char path[PATH_MAX];
+               snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+               struct stat st;
+               if (stat(path, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == gpu_rdev) {
+                  node.render = st.st_rdev;
+                  node.primary = st.st_rdev;
+                  any = true;
+                  static bool auto_logged;
+                  if (!auto_logged) {
+                     auto_logged = true;
+                     fprintf(stderr, "mali_vk: wsi drm: %s is our own node (10/226 alias of the GPU char device); "
+                             "reporting it as primary and render (MALI_DRM_AUTO_STANDIN=0 to disable)\n", path);
+                  }
+                  break;
+               }
+            }
+            closedir(d);
+         }
+      }
+   }
+   static const char *const envs[] = { "DD_DRM_STANDIN", NULL };
+   for (unsigned i = 0; envs[i]; i++) {
+      const char *e = getenv(envs[i]);
+      struct stat st;
+      dev_t standin_rdev = 0;
+      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode))
+         standin_rdev = st.st_rdev;
+      else if (e && *e) {
+         /* The app names /dev/mali0, which is not a DRM node name: take the node we actually opened instead and
+          * find the /dev/dri alias with that rdev (the guest binds it into /dev/dri as renderD<minor>). */
+         standin_rdev = (dev_t)pdev->gpu.node_rdev;
+      }
+      /* The stand-in must be a node the app can actually see as /dev/dri: take our own rdev only when it has an
+       * alias there, otherwise the identity would name a node no client can open. */
+      if (standin_rdev && !drm_rdev_has_alias(standin_rdev))
+         standin_rdev = 0;
+      if (standin_rdev && (!node.render || !node.primary)) {
+         /* Resolve through /dev/dri by rdev if the path itself is not a /dev/dri node. */
+         if (!node.render)
+            node.render = standin_rdev;
+         /* Only the app's own stand-in (DD_DRM_STANDIN) may stand in for the primary as well: the bridge's
+          * BL_DRM_STANDIN/VKBRIDGE_DRM_RENDER alias is a render node, and claiming it as a card would be a lie
+          * (t_vk_drm: "hasPrimary without a card node"). */
+         if (!node.primary)
+            node.primary = standin_rdev;
+         any = true;
+         break;
+      }
+   }
+
+   p->drmHasPrimary = any && node.primary != 0;
+   p->drmPrimaryMajor = p->drmHasPrimary ? (int64_t)major(node.primary) : 0;
+   p->drmPrimaryMinor = p->drmHasPrimary ? (int64_t)minor(node.primary) : 0;
+   p->drmHasRender = any && node.render != 0;
+   p->drmRenderMajor = p->drmHasRender ? (int64_t)major(node.render) : 0;
+   p->drmRenderMinor = p->drmHasRender ? (int64_t)minor(node.render) : 0;
+
+   if (p->drmHasPrimary != was_primary || p->drmHasRender != was_render)
+      fprintf(stderr, "mali_vk: wsi drm: primary=%s(%lld:%lld) render=%s(%lld:%lld) (re-probed)\n",
+              p->drmHasPrimary ? "node" : "none", (long long)p->drmPrimaryMajor, (long long)p->drmPrimaryMinor,
+              p->drmHasRender ? "node" : "none", (long long)p->drmRenderMajor, (long long)p->drmRenderMinor);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2 *pProperties)
+{
+   VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
+   vk_common_GetPhysicalDeviceProperties2(physicalDevice, pProperties);
+   mali_drm_refresh(pdev);
+   for (VkBaseOutStructure *ext = pProperties->pNext; ext; ext = ext->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT) {
+         VkPhysicalDeviceDrmPropertiesEXT *drm = (VkPhysicalDeviceDrmPropertiesEXT *)ext;
+         drm->hasPrimary = pdev->vk.properties.drmHasPrimary;
+         drm->hasRender = pdev->vk.properties.drmHasRender;
+         drm->primaryMajor = pdev->vk.properties.drmPrimaryMajor;
+         drm->primaryMinor = pdev->vk.properties.drmPrimaryMinor;
+         drm->renderMajor = pdev->vk.properties.drmRenderMajor;
+         drm->renderMinor = pdev->vk.properties.drmRenderMinor;
+      }
+   }
 }

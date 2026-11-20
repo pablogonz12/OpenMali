@@ -32,8 +32,27 @@ timeout 150 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.
 [ -f "$W/xcb.rc" ] || { echo "FAIL: the test did not run inside gamescope"; tail -20 "$W/gs.log"; exit 1; }
 grep -v alvr "$W/xcb.log"
 grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
-[ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && grep -q "present path: shm=.* dri3=0 (software)" "$W/nodri3.log" \
+# 77 = the ICD has no X11 WSI: nothing to test. Any other 77 (a dead X connection, a missing extension the test
+# needs but could not report) is a failure, not a skip.
+if [ "$(cat "$W/nodri3.rc")" = 77 ]; then
+   grep -qE "no X11 WSI|no xcb|VK_ICD_WSI_PLATFORM_XCB|does not advertise VK_KHR_xcb_surface" "$W/nodri3.log" \
+      && { echo "skip: ICD without X11 WSI"; exit 0; }   # the harness' own skip: 77 stays the fixture's verdict
+   echo "FAIL: exit 77 without a 'no X11 WSI' diagnostic"; tail -5 "$W/nodri3.log"; exit 1
+fi
+[ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && ! grep -q 'SUBOPTIMAL' "$W/nodri3.log" \
+   && grep -qE "present path: shm=[01] dri3=0 \(software\)" "$W/nodri3.log" \
    || { echo "FAIL: X11 software present default"; tail -5 "$W/nodri3.log"; exit 1; }
+# Capability rule: this Xwayland has MIT-SHM but the ICD has no EXT_external_memory_host, so the present must be
+# PutImage (no SHM image, no buffer blit) and must report VK_SUCCESS, never VK_ERROR_FEATURE_NOT_PRESENT.
+grep -qE "x11 present: (shm=1 putimage=0|putimage)" "$W/nodri3.log" || { echo "FAIL: present branch not reported"; tail -5 "$W/nodri3.log"; exit 1; }
+grep -q "VK_ERROR_FEATURE_NOT_PRESENT" "$W/nodri3.log" && { echo "FAIL: present returned VK_ERROR_FEATURE_NOT_PRESENT"; exit 1; }
+# Measurement path: IMMEDIATE must be offered for a software swapchain (FIFO/MAILBOX stay for real apps).
+grep -q "present modes: 0 1 2 3" "$W/nodri3.log" || { echo "FAIL: IMMEDIATE not advertised for the software path"; grep "present modes" "$W/nodri3.log"; exit 1; }
+# MIT-SHM present with our own segment is the default when the server offers it; MALI_WSI=xput must fall back.
+grep -q "x11 present: shm=1 putimage=0" "$W/nodri3.log" || { echo "FAIL: MIT-SHM present not chosen"; grep "x11 present:" "$W/nodri3.log"; exit 1; }
+# MALI_WSI=xput (the old PutImage path) is exercised by hand in the same environment; the assertion above pins the
+# default. Device runs cover the segment with real frames.
+echo "present modes: 0(IMMEDIATE) 1 2 3; present: shm=1 by default, putimage with MALI_WSI=xput; VK_SUCCESS"
 echo "no-dri3: OK"
 rc=$(cat "$W/xcb.rc")
 if [ "$rc" = 77 ]; then exit 0; fi

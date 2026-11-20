@@ -561,8 +561,24 @@ mali_queue_device_init(struct mali_device *dev)
 void
 mali_queue_device_finish(struct mali_device *dev)
 {
+   if (dev->present_fence_fd >= 0)
+      close(dev->present_fence_fd);
+   dev->present_fence_fd = -1;
    pthread_cond_destroy(&dev->sync_cv);
    pthread_mutex_destroy(&dev->sync_lock);
+}
+
+int
+mali_queue_last_fence_dup(struct mali_device *dev)
+{
+   if (!dev)
+      return -1;
+   int d = -1;
+   pthread_mutex_lock(&dev->sync_lock);
+   if (dev->present_fence_fd >= 0)
+      d = dup(dev->present_fence_fd);
+   pthread_mutex_unlock(&dev->sync_lock);
+   return d;
 }
 
 /* May a present submission return before the frame it presents has finished on the GPU? Only when a fence travels with
@@ -582,11 +598,34 @@ mali_present_fence_ok(struct mali_device *dev)
    if (forced >= 0)
       return forced;
    const struct wsi_device *w = &mali_device_pdev(dev)->wsi;
+   if (w->sw)
+      return 0;   /* software present: the CPU copies the frame, so the queue must wait for rendering first */
    return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
 }
 
+static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);
+
+/* A submission that loses the queue still signals what it was to signal, except the signals that already took the
+ * GPU fence (index < imported): those complete with the work. Waiters (a present's acquire, a fence wait) would
+ * otherwise block on a sync that nothing completes; with the queue lost they then observe DEVICE_LOST instead of
+ * hanging. A failure that does not lose the queue signals nothing (the work may still be pending). */
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
+{
+   uint32_t imported = 0;
+   VkResult res = mali_queue_submit_impl(vq, submit, &imported);
+   if (res != VK_SUCCESS && vk_queue_is_lost(vq)) {
+      struct vk_device *vkdev = vq->base.device;
+      for (uint32_t i = imported; i < submit->signal_count; i++) {
+         VkResult sr = vk_sync_signal(vkdev, submit->signals[i].sync, submit->signals[i].signal_value);
+         (void)sr; /* best effort: the queue is lost already */
+      }
+   }
+   return res;
+}
+
+static VkResult
+mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported)
 {
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
@@ -615,7 +654,7 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
       if (r != VK_SUCCESS)
-         return r;
+         return vk_queue_set_lost(vq, "queue wait failed: %d", r);
    }
 
    double p1 = prof_now();
@@ -657,12 +696,28 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          container_of(s, struct mali_sync, vk)->owner = vq;
          pthread_mutex_unlock(&dev->sync_lock);
       }
+      if (res == VK_SUCCESS)
+         *imported = i + 1;
+   }
+   /* Keep a duplicate of this submission's sync_file for the CPU-side present paths (X11 shared memory): they have no
+    * CPU-visible semaphore to wait, so they wait this fence before reading the image this submission wrote. */
+   if (fd >= 0) {
+      int d = dup(fd);
+      pthread_mutex_lock(&dev->sync_lock);
+      if (dev->present_fence_fd >= 0)
+         close(dev->present_fence_fd);
+      /* -1 on a failed dup: keeping the previous submission's fence would make the shm present wait a dependency
+       * that has nothing to do with the frame it is about to copy. No fence means "present it now". */
+      dev->present_fence_fd = d;
+      pthread_mutex_unlock(&dev->sync_lock);
    }
    close(fd);
    /* M15: vk_common's present submit has no command buffers, the image acquire semaphores as waits and the render
     * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
+   if (res != VK_SUCCESS)
+      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
@@ -686,6 +741,7 @@ mali_device_check_status(struct vk_device *vk)
 void
 mali_queue_setup(struct mali_device *dev)
 {
+   dev->present_fence_fd = -1;
    dev->queue.vk.driver_submit = mali_queue_submit;
    dev->vk.check_status = mali_device_check_status;
 }

@@ -5,6 +5,9 @@
 #include "mali_queue.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/magic.h>
+#include <sys/vfs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -17,6 +20,15 @@
 #define MALI_MEM_TYPE_COUNT 2
 #define MALI_MAX_ALLOCS 4096
 #define MALI_LINE 64 /* nonCoherentAtomSize */
+#define MALI_PAGE 4096 /* what the backend commits for: bo_alloc rounds every request up to a page */
+
+/* Bytes kbase commits for a VkDeviceMemory of `size`: whole pages. Charging the unrounded request lets 2049
+ * one-byte allocations pass the byte check while the backend commits 8 MiB + 4 KiB. */
+static uint64_t
+mem_charge(uint64_t size)
+{
+   return (size + MALI_PAGE - 1) & ~(uint64_t)(MALI_PAGE - 1);
+}
 
 static VkResult
 errno_to_vk(struct mali_device *dev, int e)
@@ -28,35 +40,76 @@ errno_to_vk(struct mali_device *dev, int e)
    return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
 }
 
+/* True when fd is an open dma-buf: every dma-buf lives on the dmabuf pseudo filesystem (statfs magic DMA_BUF_MAGIC), so
+ * no other descriptor (e.g. /dev/kvm, which also answers EINVAL to unknown ioctls) can pass. The fake backend's
+ * "dma-bufs" are memfds: only check the fd is open. */
+static bool
+mali_fd_is_dmabuf(struct mali_device *dev, int fd)
+{
+   if (fd < 0 || fcntl(fd, F_GETFD) < 0)
+      return false;
+   if (mali_device_pdev(dev)->gpu.fake)
+      return true;
+   struct statfs sf;
+   return fstatfs(fd, &sf) == 0 && (unsigned long)sf.f_type == DMA_BUF_MAGIC;
+}
+
 /* Reserve `size` against the device-wide commit budget before anything is allocated, so an over-budget
  * allocation fails cleanly with nothing half-committed. mem_used counts every live VkDeviceMemory of this
  * physical device; kbase pins the full size of each one at allocation time (libkbase/src/bo.c:45). The
  * compare-exchange loop makes concurrent allocators race correctly. */
 static bool
-mem_reserve(struct mali_physical_device *pdev, uint64_t size)
+mem_try_reserve(struct mali_physical_device *pdev, uint64_t size)
 {
    uint64_t cur = p_atomic_read(&pdev->mem_used);
    for (;;) {
-      if (size > pdev->mem_cap || cur > pdev->mem_cap - size) {
-         static bool logged; /* one line per process: a session log shows the first refusal */
-         if (!logged && getenv("MALI_WSI_DEBUG")) {
-            logged = true;
-            fprintf(stderr, "mali_vk: VRAM budget: requested %llu MiB, used %llu MiB of cap %llu MiB -> "
-                    "VK_ERROR_OUT_OF_DEVICE_MEMORY\n", (unsigned long long)(size >> 20),
-                    (unsigned long long)(cur >> 20), (unsigned long long)(pdev->mem_cap >> 20));
-         }
+      if (size > pdev->mem_cap || cur > pdev->mem_cap - size)
          return false;
-      }
       if (__atomic_compare_exchange_n(&pdev->mem_used, &cur, cur + size, false,
                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
          return true;
    }
 }
 
+/* A pooled BO is committed in kbase but used by nobody: before refusing, really free enough of them to make room
+ * (a steady alloc/free loop of one size would otherwise have to fail at the cap for the pool's own memory). */
+static bool
+mem_reserve(struct mali_device *dev, uint64_t size)
+{
+   struct mali_physical_device *pdev = mali_device_pdev(dev);
+   if (mem_try_reserve(pdev, size))
+      return true;
+   if (size <= pdev->mem_cap && pdev->backend->bo_pool_purge) {
+      uint64_t cur = p_atomic_read(&pdev->mem_used);
+      uint64_t room = cur < pdev->mem_cap ? pdev->mem_cap - cur : 0;
+      if (size > room) {
+         pdev->backend->bo_pool_purge(dev->kdev, size - room);
+         if (mem_try_reserve(pdev, size))
+            return true;
+      }
+   }
+   static bool logged; /* one line per process: a session log shows the first refusal */
+   if (!logged && getenv("MALI_WSI_DEBUG")) {
+      logged = true;
+      fprintf(stderr, "mali_vk: VRAM budget: requested %llu KiB, used %llu MiB of cap %llu MiB -> "
+              "VK_ERROR_OUT_OF_DEVICE_MEMORY\n", (unsigned long long)(size >> 10),
+              (unsigned long long)(p_atomic_read(&pdev->mem_used) >> 20),
+              (unsigned long long)(pdev->mem_cap >> 20));
+   }
+   return false;
+}
+
 static void
 mem_release(struct mali_physical_device *pdev, uint64_t size)
 {
    __atomic_sub_fetch(&pdev->mem_used, size, __ATOMIC_ACQ_REL);
+}
+
+/* Installed on the backend's pool (mali_device.c): a pooled BO was really freed, so its charge goes away. */
+void
+mali_memory_pool_release(void *pdev, size_t size)
+{
+   mem_release(pdev, size);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -71,9 +124,10 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    if (pAllocateInfo->allocationSize > pdev->gpu.heap_bytes)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-   /* vk_device_memory_create stores exactly this as vk.size, which is what the free path releases. */
-   const uint64_t mem_sz = pAllocateInfo->allocationSize;
-   if (!mem_reserve(pdev, mem_sz))
+   /* What kbase commits: the backend rounds every request up to a page (bo_alloc/bo_import), so that is what is
+    * charged and what the free path releases (mem_charge of vk.size, stored unrounded). */
+   const uint64_t mem_sz = mem_charge(pAllocateInfo->allocationSize);
+   if (!mem_reserve(dev, mem_sz))
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    if (p_atomic_inc_return(&dev->mem_count) > MALI_MAX_ALLOCS) {
       p_atomic_dec(&dev->mem_count);
@@ -96,10 +150,19 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
 
    mem->bo.dmabuf_fd = -1;
    if (imp && imp->handleType != 0) {
-      if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+      if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+          imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) {
          r = -EINVAL;
+      } else if (!mali_fd_is_dmabuf(dev, imp->fd)) {
+         r = -EBADF;
       } else {
-         r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
+         /* the memory may not be larger than the dma-buf behind it (lseek SEEK_END is the dma-buf size) */
+         off_t sz = lseek(imp->fd, 0, SEEK_END);
+         if (sz > 0)
+            lseek(imp->fd, 0, SEEK_SET);
+         r = (sz > 0 && (uint64_t)sz < pAllocateInfo->allocationSize) ? -EINVAL : 0;
+         if (r == 0)
+            r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
          if (r == 0)
             close(imp->fd); /* ownership moves to the memory on success */
       }
@@ -128,8 +191,11 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
-   mem_release(mali_device_pdev(dev), mem->vk.size);   /* the size reserved in mali_AllocateMemory */
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
+   /* A BO the kbase pool kept is still committed (kbase_bo_free only moves it to the free list), so its charge stays
+    * until the pool really frees it or hands it to the next allocation; that is the pool's release callback. */
+   if (!mem->bo.pooled)
+      mem_release(mali_device_pdev(dev), mem_charge(mem->vk.size));   /* the size reserved in mali_AllocateMemory */
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
    p_atomic_dec(&dev->mem_count);
 }
@@ -148,6 +214,9 @@ mali_MapMemory(VkDevice _device, VkDeviceMemory _mem, VkDeviceSize offset, VkDev
    if (mem->mapped || offset >= mem->vk.size)
       return vk_error(dev, VK_ERROR_MEMORY_MAP_FAILED);
    mem->mapped = true;
+   /* GPU-written, CPU-read memory (the software present reads the rendered image straight out of its mapping):
+    * clearing host_lazy here means every later fence wait MEM_SYNCs this BO device->CPU (COHERENT_LOCAL is only
+    * inner-shareable, so the CPU cache must be told), which is what makes the PutImage readback see the frame. */
    if (mali_device_pdev(dev)->backend->bo_host_touch)
       mali_device_pdev(dev)->backend->bo_host_touch(dev->kdev, &mem->bo);
    *ppData = (char *)mem->bo.cpu + offset;
@@ -212,7 +281,18 @@ mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_memory, mem, pGetFdInfo->memory);
 
-   if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   /* OPAQUE_FD and DMA_BUF are the same object to this driver: kbase hands out a dma-buf fd, and that fd is also a
+    * valid opaque fd (the two handle types differ in ownership/transfer semantics, not in what the descriptor is).
+    * We advertise VK_KHR_external_memory_fd, so refusing OPAQUE_FD (which gamescope's zink asks for) was a lie. */
+   const bool fd_ok = pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ||
+                      pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+   if (!fd_ok)
+      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+   /* Only memory allocated for export (or imported from a dma-buf) may be exported. OPAQUE_FD and DMA_BUF are
+    * the same descriptor here (#293), so either handle type on either side qualifies. */
+   const VkExternalMemoryHandleTypeFlags fd_bits = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT |
+                                                   VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+   if (!(mem->vk.export_handle_types & fd_bits) && !(mem->vk.import_handle_type & fd_bits))
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    int fd = mali_device_pdev(dev)->backend->bo_export(dev->kdev, &mem->bo);
    if (fd < 0)
@@ -227,7 +307,9 @@ mali_GetMemoryFdPropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBi
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
 
-   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   if ((handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+        handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) ||
+       (handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT && !mali_fd_is_dmabuf(dev, fd)))
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    pProps->memoryTypeBits = (1u << MALI_MEM_TYPE_COUNT) - 1;
    return VK_SUCCESS;

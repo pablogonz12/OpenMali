@@ -22,8 +22,10 @@ if [ "${1:-}" = "--check" ]; then
    [ -f "$OUT" ] || { echo "no artefact at $OUT (run tools/build-artefact.sh)" >&2; exit 1; }
 else
    cd "$R/vk"
-   ./cross/build-cross.sh glibc-wsi >/tmp/build-artefact.log 2>&1 || { tail -20 /tmp/build-artefact.log; exit 1; }
-   grep -E 'warning:|error:' /tmp/build-artefact.log | grep -v 'tools/shaderdb' || true
+   log=$(mktemp "${TMPDIR:-/tmp}/build-artefact.XXXXXX")
+   trap 'rm -f "$log"' EXIT
+   ./cross/build-cross.sh glibc-wsi >"$log" 2>&1 || { tail -20 "$log"; exit 1; }
+   grep -E 'warning:|error:' "$log" | grep -v 'tools/shaderdb' || true
 fi
 
 sum=$(sha256sum "$OUT" | cut -d' ' -f1)

@@ -18,6 +18,7 @@
 #include "mali_image.h"
 #include "mali_queue.h"
 #include "vk_buffer.h"
+#include "vk_enum_to_str.h"
 #include "vk_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -93,6 +94,11 @@ reset_state(struct mali_cmd_buffer *cmd)
    free(cmd->frames);
    cmd->frames = NULL;
    cmd->nframes = cmd->capframes = 0;
+   for (unsigned i = 0; i < cmd->ndef_frames; i++)
+      mali_frame_finish(&cmd->def_frames[i]);
+   free(cmd->def_frames);
+   cmd->def_frames = NULL;
+   cmd->ndef_frames = cmd->capdef_frames = 0;
    mali_frame_finish(&cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);
    cmd->in_render = false;
@@ -829,6 +835,30 @@ mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
    cmd->frames[cmd->nframes++] = *f;
 }
 
+/* A meta frame recorded while cmd->in_render is set: keep it until the pass' own frame is pushed, then run it after
+ * the pass. Vulkan orders commands inside a render pass in submission order with the rendering, and the CS ring is
+ * in-order, so a compute job after the pass' frame is the definition of "after the pass". A failure only happens on
+ * OOM (sticky error), never because of the pass. */
+void
+mali_cmd_push_frame_deferred(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
+{
+   if (!cmd->in_render) {
+      mali_cmd_push_frame(cmd, f);
+      return;
+   }
+   if (cmd->ndef_frames == cmd->capdef_frames) {
+      unsigned nc = cmd->capdef_frames ? cmd->capdef_frames * 2 : 4;
+      struct mali_frame *nf = realloc(cmd->def_frames, nc * sizeof *nf);
+      if (!nf) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+      cmd->def_frames = nf;
+      cmd->capdef_frames = nc;
+   }
+   cmd->def_frames[cmd->ndef_frames++] = *f;
+}
+
 /* colour loadOp LOAD of the RAW-tile-buffer formats (integer, SNORM, UNORM16, float32): preload.frag kinds 12..18 (kind | components << 12), bytes per texel */
 static bool
 raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
@@ -907,8 +937,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
       unsigned kind = 0, bpp = 4, srgb = 0;
       switch (fmt) {
-      case VK_FORMAT_R8G8B8A8_UNORM: break;
-      case VK_FORMAT_R8G8B8A8_SRGB: srgb = 1; break;
+      case VK_FORMAT_R8G8B8A8_UNORM:
+      case VK_FORMAT_A8B8G8R8_UNORM_PACK32: break;   /* same bytes as R8G8B8A8_UNORM */
+      case VK_FORMAT_R8G8B8A8_SRGB:
+      case VK_FORMAT_A8B8G8R8_SRGB_PACK32: srgb = 1; break;   /* same bytes as R8G8B8A8_SRGB */
       case VK_FORMAT_B8G8R8A8_UNORM: kind = 1; break;
       case VK_FORMAT_B8G8R8A8_SRGB: kind = 1; srgb = 1; break;
       case VK_FORMAT_R8_UNORM: bpp = 1; break;
@@ -931,7 +963,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       default: {
          unsigned rk, rbpp, rnc;
          if (!raw_preload_kind(fmt, &rk, &rbpp, &rnc)) {
-            unsupported(cmd, "colour loadOp LOAD of this format");
+            char why[128];
+            snprintf(why, sizeof why, "colour loadOp LOAD of %s", vk_Format_to_str(fmt));
+            unsupported(cmd, why);
             return;
          }
          kind = rk | (rnc << 12) | ((rk == 12 || rk == 17) ? 1u << 16 : (rk == 13 || rk == 18) ? 2u << 16 : 0);   /* bits 16..17: integer-typed colour output (uint / sint) */
@@ -995,15 +1029,20 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       if (is_load_op(da->loadOp)) {
-         if ((t.zs_format != 1 && t.zs_format != 3) || t.samples > 1) {
-            unsupported(cmd, "depth loadOp LOAD (D32_SFLOAT / D16_UNORM, single-sampled only)");
+         if ((t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) || t.samples > 1) {
+            char why[160];
+            snprintf(why, sizeof why, "depth loadOp LOAD of %s (%u samples), supported: D32_SFLOAT, D24_UNORM_S8_UINT, "
+                     "D16_UNORM, single-sampled only",
+                     t.zs_format == 1 ? "D32_SFLOAT" : t.zs_format == 2 ? "D24_UNORM_S8_UINT" :
+                     t.zs_format == 3 ? "D16_UNORM" : "an unknown depth format", t.samples);
+            unsupported(cmd, why);
             return;
          }
          zload = true;
          zsrc.va[0] = t.va;
          zsrc.row[0] = t.row_stride;
          zsrc.bytes[0] = t.row_stride * t.height;
-         zsrc.arg = t.zs_format == 3;
+         zsrc.arg = t.zs_format == 3 ? 1 : t.zs_format == 2 ? 2 : 0;   /* preload_zs.frag: 0 D32F, 1 D16, 2 D24 */
       }
       f->has_zs = true;
       if (no_col) {
@@ -1105,6 +1144,13 @@ mali_CmdEndRendering(VkCommandBuffer h)
       cmd->ndef = cmd->capdef = 0;
       push_frame(cmd, &o);
    }
+   for (unsigned i = 0; i < cmd->ndef_frames; i++) {   /* meta work recorded in the pass: after the pass, in order */
+      push_frame(cmd, &cmd->def_frames[i]);
+      mali_frame_finish(&cmd->def_frames[i]);
+   }
+   free(cmd->def_frames);
+   cmd->def_frames = NULL;
+   cmd->ndef_frames = cmd->capdef_frames = 0;
 }
 
 /* ---- M13 hooks ---- */

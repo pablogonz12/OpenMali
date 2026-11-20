@@ -17,6 +17,15 @@ extern unsigned kb_fake_memsync_count(uint64_t va);
 extern unsigned kb_test_cache_flush_count(void);
 
 static int fails;
+static size_t recharged;   /* bytes the pool told the budget it really freed */
+
+static void
+release_cb(void *ctx, size_t size)
+{
+   (void)ctx;
+   recharged += size;
+}
+
 #define EXPECT(c, ...) do { if (!(c)) { fails++; printf("FAIL  "); printf(__VA_ARGS__); printf("\n"); } else { printf("ok    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 int main(void)
@@ -138,6 +147,45 @@ int main(void)
       d[pooled] = kb_fake_mem_free_count() - f0;
    }
    EXPECT(d[1] - d[0] == 5, "device_destroy frees the 5 pooled BOs (%u vs %u frees)", d[1], d[0]);
+
+   /* VRAM budget: a pooled BO is still committed, so the pool must keep it charged (mali_memory.c charges the
+    * rounded size and only releases when the BO is really freed). The hook counts the bytes really released. */
+   if (b->device_create(&gi, &k)) { printf("FAIL  device_create (budget)\n"); return 1; }
+   if (!b->bo_pool_watch || !b->bo_pool_purge) { printf("FAIL  backend has no pool accounting hooks\n"); return 1; }
+   b->bo_pool_watch(k, release_cb, NULL);
+   recharged = 0;
+   if (b->bo_alloc(k, 1u << 20, MALI_BO_HOSTLAZY, &x)) return 1;
+   b->bo_free(k, &x);
+   EXPECT(x.pooled && recharged == 0, "freed HOSTLAZY 1 MiB BO: kept by the pool, still charged (%s, %zu B released)",
+          x.pooled ? "pooled" : "freed for real", recharged);
+   if (b->bo_alloc(k, 1u << 20, MALI_BO_HOSTLAZY, &y)) return 1;
+   EXPECT(recharged == 1u << 20, "pool hit: the charge moves to the new BO, released once (%zu B)", recharged);
+   b->bo_free(k, &y);
+   EXPECT(y.pooled && recharged == 1u << 20, "the reused BO is pooled again: no second charge, no release (%zu B)", recharged);
+   /* mixed flags: an uncached and a cached retention are two different kbase allocations, both committed */
+   if (b->bo_alloc(k, 2u << 20, MALI_BO_HOSTLAZY, &x)) return 1;
+   b->bo_free(k, &x);
+   if (b->bo_alloc(k, 2u << 20, MALI_BO_HOSTLAZY | MALI_BO_CACHED, &y)) return 1;
+   b->bo_free(k, &y);
+   EXPECT(x.pooled && y.pooled && recharged == 1u << 20,
+          "pooled uncached + pooled cached 2 MiB: both stay charged (released %zu B, want %u)", recharged, 1u << 20);
+   recharged = 0;
+   if (b->bo_alloc(k, 2u << 20, MALI_BO_HOSTLAZY | MALI_BO_CACHED, &x)) return 1;
+   EXPECT(recharged == 2u << 20, "cached pool hit releases only the cached BO (%zu B)", recharged);
+   b->bo_free(k, &x);
+
+   /* purge: the budget gets the pool's memory back when a reservation does not fit */
+   recharged = 0;
+   size_t freed = b->bo_pool_purge(k, (size_t)-1);
+   EXPECT(freed >= 4u << 20 && recharged == freed, "full purge: %zu B really freed, all released", freed);
+   a0 = kb_fake_mem_alloc_count();
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &x)) return 1;
+   EXPECT(kb_fake_mem_alloc_count() == a0 + 1, "after the purge a 64 KiB alloc is a real MEM_ALLOC, not a stale pool hit");
+   b->bo_free(k, &x);
+   b->bo_pool_watch(k, NULL, NULL);
+   recharged = 0;
+   b->device_destroy(k);
+   EXPECT(recharged == 0, "with the hook detached nothing is released any more");
 
    /* MALI_BO_POOL_MB=0 disables the pool: a freed HOSTLAZY BO is really freed and the next alloc is a MEM_ALLOC. */
    setenv("MALI_BO_POOL_MB", "0", 1);

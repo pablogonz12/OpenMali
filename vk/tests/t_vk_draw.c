@@ -2177,6 +2177,10 @@ main(int argc, char **argv)
       if (ok && CASE_ON("rt_clear_a2b10g10r10ui")) ok &= test_int_clear("rt_clear_a2b10g10r10ui", VK_FORMAT_A2B10G10R10_UINT_PACK32, 4, 0xc32190c8u);
    }
    if (ok && CASE_ON("load_depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_load("load_depth16", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   /* Source-engine/wined3d content: D24S8 depth LOAD (zs_format 2, 24-bit UNORM preload) and packed colour formats.
+    * Explicit only: the golden dump sequence stays as it was. */
+   if (ok && g_only && CASE_ON("load_depth24s8")) { g_depfmt = VK_FORMAT_D24_UNORM_S8_UINT; ok &= test_load("load_depth24s8", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   if (ok && g_only && CASE_ON("load_colour_argb8")) { g_colfmt = VK_FORMAT_A8B8G8R8_UNORM_PACK32; g_colbpp = 4; ok &= test_load("load_colour_argb8", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
    if (ok && CASE_ON("load_stencil")) ok &= test_load("load_stencil", 1);
    if (ok && CASE_ON("st_op_invert")) ok &= test_load("st_op_invert", 3);
    if (ok && CASE_ON("st_op_decwrap")) ok &= test_load("st_op_decwrap", 4);

@@ -57,6 +57,7 @@ struct mali_device {
    pthread_cond_t sync_cv;    /* a sync got a fence or was signalled */
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
+   int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
@@ -72,6 +73,8 @@ VK_DEFINE_HANDLE_CASTS(mali_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
 VkResult mali_enumerate_physical_devices(struct vk_instance *vk_instance);
 /* MALI_TRACE=<file> post-mortem trace line (no-op unless set); see mali_instance.c */
 void mali_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* mali_memory.c: a backend pool really freed `size` bytes of BOs it had kept (see mali_backend_ops.bo_pool_watch). */
+void mali_memory_pool_release(void *pdev, size_t size);
 /* M5/M7 seams (mali_resources.c): installs the descriptor/image resolvers and the BO-backed GPU pools. Idempotent. */
 void mali_resources_init(void);
 /* M14 */
@@ -82,6 +85,8 @@ extern const uint64_t mali_wsi_modifier; /* DRM_FORMAT_MOD_LINEAR, the only one 
 VkResult mali_wsi_create_swapchain(VkDevice, const VkSwapchainCreateInfoKHR*, const VkAllocationCallbacks*, VkSwapchainKHR*);
 VkResult mali_wsi_acquire_next_image(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t*);
 VkResult mali_wsi_queue_present(VkQueue, const VkPresentInfoKHR*);
+VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkPresentModeKHR*);
+void mali_wsi_destroy_swapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
 
 #endif
