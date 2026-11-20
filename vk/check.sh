@@ -67,6 +67,7 @@ STEAM_MISSING=0
 # zink (STEAM-GAPS.md): logicOp is on main; EXT_physical_device_drm is advertised only together with a DRM alias of the
 # GPU node (t_vk_drm below), which the fake backend has none of, so it stays in this count.
 ZINK_MISSING=1
+for g in v11 v13; do run "vk_headless $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_headless" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "steam_caps $g" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 # VK_EXT_physical_device_drm: the extension exists only with a node that stat() proves is the GPU char device (/dev/mali0;
 # the guest's /dev/dri/renderD<N> alias, BL_DRM_STANDIN). Symlinks stand in for the guest's nodes; /dev/null is 1:3.
