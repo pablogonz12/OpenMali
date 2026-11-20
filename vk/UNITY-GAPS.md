@@ -52,7 +52,7 @@ fallback or an unused code path; **fine** = measured, nothing to do.
 | `KHR_create_renderpass2`, `bind_memory2`, `get_memory_requirements2`, `dedicated_allocation`, `descriptorUpdateTemplate` | fine |
 | Memory: host-visible-only types, suballocator, `memory_budget` | fine (warning-level only) |
 | `geometryShader`, `tessellationShader`, `shaderCullDistance`, `vertexPipelineStoresAndAtomics`, `shaderFloat64`, `logicOp` | **degrades** (per-pipeline failures only if a variant uses them; Unity drops the bits, so it also drops those variants) |
-| `sampleRateShading` 4x MSAA | degrades (1x; 4x behind `MALI_EXPERIMENTAL_MSAA=1`) |
+| `sampleRateShading` 4x MSAA | degrades (1x unless the app asks for 4x, which is on by default; `MALI_EXPERIMENTAL_MSAA=0` opts out) |
 | Sparse binding/residency, storage-image multisample, EXT_4444, conservative rasterisation, fragment shading rate, HDR metadata, load-op-none, memory priority, viewport-index-layer, external memory host, driver properties | degrades (silent code-path loss) |
 | MRT (4 colour attachments, one attachment renders) | **degrades** (render targets 1..3 wrong/black), not startup |
 

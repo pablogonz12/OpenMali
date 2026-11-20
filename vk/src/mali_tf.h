@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
-/* VK_EXT_transform_feedback, gated on MALI_EXPERIMENTAL_TF=1 (default off), like MALI_EXPERIMENTAL_MSAA in
- * mali_msaa.h: limits, features, properties, the extension entry and the XFB lowering all follow this one switch,
+/* VK_EXT_transform_feedback, gated on MALI_EXPERIMENTAL_TF=1 (default off; unlike MSAA's opt-out in
+ * mali_msaa.h): limits, features, properties, the extension entry and the XFB lowering all follow this one switch,
  * so nothing is advertised that the driver would then reject. With the gate on, a vertex shader that declares XFB
  * is lowered to global stores (mali_compile.c: nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores); no
  * streamout job is needed, since the stores use the ordinary memory path, and each draw writes the four buffer

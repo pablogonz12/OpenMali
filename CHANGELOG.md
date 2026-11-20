@@ -32,8 +32,8 @@ The 971 NotSupported cases count against the 2 % gate.
 - Added with a `t_vk_feat`/`t_vk_draw` test each: multiDrawIndirect, depthBiasClamp, drawIndirectFirstInstance, fullDrawIndexUint32, samplerAnisotropy, samplerMirrorClampToEdge, imageCubeArray, wideLines, shaderStorageImageExtendedFormats, bufferDeviceAddress, descriptor indexing (sampled-image subset), robustness2 nullDescriptor, scalarBlockLayout, uniformBufferStandardLayout, zero-initialize workgroup memory, occlusionQueryPrecise, shaderDemoteToHelperInvocation, subgroup ops (compute), subgroupSizeControl, shaderInt8/16/64, shaderClipDistance, shaderDrawParameters, shaderImageGatherExtended, fragmentStoresAndAtomics, vulkanMemoryModel, fillModeNonSolid, inlineUniformBlock.
 - Specialization constants (`ec0de2e`), samplerYcbcrConversion for NV12 (`6d3f92e`), shaderStorageImageWriteWithoutFormat (`d5e606b`), VK_EXT_custom_border_color (`8e9410e`), VK_KHR_maintenance1/5, create_renderpass2, imageless_framebuffer (zink requirements).
 - PR #10: rectangular line rasterization, vertex attribute divisor (0/1 advertised; >1 not, hardware divides differently), compute dynamic buffers.
-- Also on main now: dualSrcBlend (blend shader), multiViewport (state only), depth clamp; MSAA exists behind `MALI_EXPERIMENTAL_MSAA=1`.
-- Not done: default-on MSAA, sampleRateShading (env-gated), geometry/tessellation, logicOp, Bresenham/smooth lines.
+- Also on main now: dualSrcBlend (blend shader), multiViewport (state only), depth clamp; 4x MSAA is on by default (`MALI_EXPERIMENTAL_MSAA=0` opts out; `=1` is a no-op).
+- Not done: sampleRateShading (env-gated), geometry/tessellation, logicOp, Bresenham/smooth lines.
 
 ### Graphics and render path
 - Fixed-function state mapping: cull/front face, depth bias/clamp/clip, blend with masks and constants, dynamic state (`8e9410e` era, R4-A).
