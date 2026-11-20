@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
+#include "mali_feature_names.h"   /* vkCreateDevice diagnostic: field names of the generated feature table */
 
 #include <errno.h>
 
@@ -24,6 +25,56 @@ mali_get_timestamp(struct vk_device *vk, uint64_t *timestamp)
    struct mali_device *dev = container_of(vk, struct mali_device, vk);
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
    return be->gpu_timestamp && be->gpu_timestamp(dev->kdev, timestamp) == 0 ? VK_SUCCESS : VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+/* The runtime's own check (third_party/mesa/src/vulkan/util/vk_physical_device_features_gen.py:234) returns the
+ * right VkResult but its message only reaches a VK_EXT_debug_utils messenger, which the apps that hit this (zink,
+ * wined3d) do not install: the failure was a black box ("ZINK: vkCreateDevice failed
+ * (VK_ERROR_FEATURE_NOT_PRESENT)"). Name the first unsupported field on stderr, one line, then let
+ * vk_device_init return the error. */
+static const char *
+mali_first_unsupported_feature(const struct vk_features *req, const struct vk_features *supported,
+                               const struct mali_feature_name *table, size_t count)
+{
+   for (size_t i = 0; i < count; i++)
+      if (*(const bool *)((const char *)req + table[i].off) &&
+          !*(const bool *)((const char *)supported + table[i].off))
+         return table[i].name;
+   return NULL;
+}
+
+static VkResult
+mali_check_device_features(const struct mali_physical_device *pdev, const VkDeviceCreateInfo *pCreateInfo)
+{
+   const struct vk_features *supported = &pdev->vk.supported_features;
+   struct vk_features req = {0};
+   const char *missing;
+
+   if (pCreateInfo->pEnabledFeatures) {
+      vk_set_physical_device_features_1_0(&req, pCreateInfo->pEnabledFeatures);
+      missing = mali_first_unsupported_feature(&req, supported, mali_1_0_feature_names,
+                                               ARRAY_SIZE(mali_1_0_feature_names));
+      if (missing) {
+         fprintf(stderr, "mali_vk: vkCreateDevice: unsupported feature VkPhysicalDeviceFeatures::%s\n", missing);
+         return VK_ERROR_FEATURE_NOT_PRESENT;
+      }
+   }
+
+   /* Every VkPhysicalDevice*Features struct in the chain (Features2 itself included) flattened the way the
+    * runtime does it, so the name we print is the field name the application actually set. */
+   struct vk_features chain = {0};
+   VkPhysicalDeviceFeatures2 features2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = (void *)pCreateInfo->pNext,
+   };
+   vk_set_physical_device_features(&chain, &features2);
+   missing = mali_first_unsupported_feature(&chain, supported, mali_ext_feature_names,
+                                            ARRAY_SIZE(mali_ext_feature_names));
+   if (missing) {
+      fprintf(stderr, "mali_vk: vkCreateDevice: unsupported feature %s (requested through the "
+              "VkPhysicalDeviceFeatures2 chain)\n", missing);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -63,6 +114,11 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    dispatch_table.QueuePresentKHR = mali_wsi_queue_present;           /* mali_wsi.c: stage trace around present */
    dispatch_table.DestroySwapchainKHR = mali_wsi_destroy_swapchain;   /* mali_wsi.c: release the MIT-SHM segment */
 
+   result = mali_check_device_features(pdev, pCreateInfo);
+   if (result != VK_SUCCESS) {
+      vk_free2(&pdev->vk.instance->alloc, pAllocator, dev);
+      return vk_error(pdev, result);
+   }
    result = vk_device_init(&dev->vk, &pdev->vk, &dispatch_table, pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
       vk_free2(&pdev->vk.instance->alloc, pAllocator, dev);

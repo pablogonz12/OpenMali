@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int g_fail, g_dump;
 #define CHECK(c, ...)                                                                              \
@@ -371,7 +372,51 @@ main(int argc, char **argv)
       VkPhysicalDeviceFeatures bad = {.geometryShader = VK_TRUE};
       VkDeviceCreateInfo d2 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .pEnabledFeatures = &bad};
       VkDevice d = NULL;
-      CHECK(CreateDevice(pd, &d2, NULL, &d) == VK_ERROR_FEATURE_NOT_PRESENT, "geometryShader must be rejected");
+      /* The driver names the field on stderr (the runtime's own message only reaches a debug messenger, which the
+       * apps that hit this - zink, wined3d - do not install): capture it around the call. */
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
+      VkResult rr = CreateDevice(pd, &d2, NULL, &d);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) {
+         size_t n = fread(msg, 1, sizeof(msg) - 1, cap);
+         msg[n] = 0;
+         fclose(cap);
+      }
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "geometryShader must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature VkPhysicalDeviceFeatures::geometryShader") != NULL,
+            "message names the feature: %s", msg);
+   }
+   /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. */
+   {
+      VkPhysicalDeviceRobustness2FeaturesEXT r2 = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustBufferAccess2 = VK_TRUE};
+      VkDeviceCreateInfo d3 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
+                               .pQueueCreateInfos = &qci, .pNext = &r2};
+      VkDevice d = NULL;
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture (chain)");
+      VkResult rr = CreateDevice(pd, &d3, NULL, &d);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) {
+         size_t n = fread(msg, 1, sizeof(msg) - 1, cap);
+         msg[n] = 0;
+         fclose(cap);
+      }
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustBufferAccess2 must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature robustBufferAccess2") != NULL, "message names the chain feature: %s", msg);
    }
 
 #define D(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)
