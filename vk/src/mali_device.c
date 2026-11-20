@@ -81,6 +81,10 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    }
 
    dev->vk.command_dispatch_table = &dev->cmd_dispatch;   /* after vk_device_init (it zeroes the struct) */
+   /* Queue commands (vkQueuePresentKHR) are resolved from the command dispatch table, not the device one, so the
+    * present hook has to be installed here as well; without this the hook never ran and its trace stayed empty. */
+   dev->cmd_dispatch.QueuePresentKHR = mali_wsi_queue_present;
+   dev->cmd_dispatch.AcquireNextImageKHR = mali_wsi_acquire_next_image;
    dev->vk.command_buffer_ops = &mali_cmd_ops;
    dev->vk.get_timestamp = mali_get_timestamp;                       /* VK_KHR_calibrated_timestamps: runtime does the rest */
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;

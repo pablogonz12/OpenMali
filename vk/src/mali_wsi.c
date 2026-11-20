@@ -216,8 +216,30 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u\n", (unsigned long long)n,
               info->swapchainCount, info->waitSemaphoreCount);
    VkResult r = wsi_QueuePresentKHR(queue, info);
-   if (mali_wsi_debug() || r != VK_SUCCESS)
+
+   /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at
+    * the next present or inside vkWaitForPresentKHR. An app that presents its last frame and destroys the
+    * swapchain never gets that pump, so the frame callback/presentation feedback of that commit is still
+    * outstanding and wsi_wl_swapchain_chain_free() asserts (!chain->present_ids.dispatch_in_progress)
+    * (wsi_common_wayland.c:3782, and the same in the retire path at :2779). Drain it here, bounded: a slow
+    * compositor costs at most the cap and never blocks the frame. */
+   const VkPresentIdKHR *ids = vk_find_struct_const(info->pNext, PRESENT_ID_KHR);
+   if (r == VK_SUCCESS && ids) {
+      for (uint32_t i = 0; i < info->swapchainCount && i < ids->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, chain, info->pSwapchains[i]);
+         if (chain && chain->wait_for_present2 && ids->pPresentIds[i])
+            chain->wait_for_present2(chain, ids->pPresentIds[i], 20ull * 1000 * 1000);   /* ns, bounded */
+      }
+   }
+   if (mali_wsi_debug() || r != VK_SUCCESS) {
+      static int branch_logged;
       fprintf(stderr, "mali_vk: wsi present #%llu -> %s (%d)\n", (unsigned long long)n, vk_Result_to_str(r), (int)r);
+      if (!branch_logged) {
+         branch_logged = 1;
+         fprintf(stderr, "mali_vk: x11 present: putimage (wants_linear: no buffer blit, no shm image; "
+                 "EXT_external_memory_host not implemented)\n");
+      }
+   }
    return r;
 }
 
@@ -293,6 +315,15 @@ mali_wsi_init(struct mali_physical_device *pdev)
    /* No DRM node behind kbase: wsi sees no render/primary device and assumes the compositor is on our GPU.
     * Modifiers (linear only) exist only on the dma-buf path; the software path copies into CPU-visible buffers. */
    pdev->wsi.supports_modifiers = !sw;
+   /* Capability rule for the software present path: wsi_cpu_image_needs_buffer_blit() (wsi_common.c:3599) returns
+    * true unless wsi->wants_linear, and a buffer blit makes wsi record vkCmdBlitImage/vkCmdCopyImage between a
+    * CPU buffer image and the presentable one. We do not implement those transfer commands, so vkEndCommandBuffer
+    * failed with VK_ERROR_FEATURE_NOT_PRESENT inside the present and vkQueuePresentKHR returned -8 *after* the
+    * frame had been copied (mali_cmd.c:1330/1370/1386). wants_linear makes wsi allocate the linear CPU-visible
+    * image itself: no blit, the present is a plain PutImage of that memory, and the pixels the app rendered are the
+    * pixels that get displayed. It also removes the SHM/blit branch that needs EXT_external_memory_host, which we
+    * do not implement: SHM is only used where the extension exists, otherwise PutImage, and both report VK_SUCCESS. */
+   pdev->wsi.wants_linear = true;
    pdev->wsi_real_destroy_query_pool = pdev->wsi.DestroyQueryPool;
    pdev->wsi.DestroyQueryPool = mali_wsi_destroy_query_pool;
    pdev->vk.wsi_device = &pdev->wsi;
