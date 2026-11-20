@@ -187,8 +187,11 @@ static void
 test_bad_override(const char *value)
 {
    setenv("MALI_VRAM_CAP_MB", value, 1);
-   if (open_device())
+   if (open_device()) {
+      /* A setup failure is a test failure: returning silently here reported success (g_fail stayed 0). */
+      g_fail = 1;
       return;
+   }
    VkDeviceMemory m = VK_NULL_HANDLE;
    CHECK(alloc(mt_uncached, 64 * MIB, &m) == VK_SUCCESS,
          "MALI_VRAM_CAP_MB=%s: the default cap must stay (a zero cap refuses even 64 MiB)", value);
