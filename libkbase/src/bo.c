@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer B: GPU memory (kbase native allocations, dma-buf imports, dma-heap helper). */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -32,6 +34,9 @@ int kb_bo_alloc(struct kb_ctx *ctx, size_t size, uint32_t flags, struct kb_bo *o
 	if (flags & KB_BO_CPU_CACHED) f |= BASE_MEM_CACHED_CPU;
 	if (flags & KB_BO_CSF_EVENT) f |= BASE_MEM_CSF_EVENT;
 	if (flags & KB_BO_GPU_UNCACHED) f |= BASE_MEM_UNCACHED_GPU;
+	/* COHERENT_LOCAL (0x800) is what keeps a job's accesses in one shareability domain: without it kbase raises
+	 * GPU_SHAREABILITY_FAULT (status low byte 0x88, e.g. 0x01800488) as soon as the GPU mixes a shareable buffer
+	 * with a non-shareable one, which is what the imported swapchain images used to be. */
 	if (kb_bo_extra_flags && !(flags & (KB_BO_GPU_EX | KB_BO_CSF_EVENT | KB_BO_NOCOH)))
 		f |= kb_bo_extra_flags;
 	if (!(flags & KB_BO_GPU_EX))
@@ -93,6 +98,12 @@ int kb_bo_import_dmabuf(struct kb_ctx *ctx, int dmabuf_fd, size_t size, uint32_t
 	uint64_t f = BASE_MEM_PROT_CPU_RD | BASE_MEM_PROT_CPU_WR | BASE_MEM_IMPORT_SHARED;
 	if (flags & KB_BO_GPU_RD) f |= BASE_MEM_PROT_GPU_RD;
 	if (flags & KB_BO_GPU_WR) f |= BASE_MEM_PROT_GPU_WR;
+	/* Imports are GPU memory too: they must carry the same shareability attribute as every native BO
+	 * (kb_bo_extra_flags, COHERENT_LOCAL), otherwise the GPU accesses an inner-shareable command stream and a
+	 * non-shareable dma-buf in the same job and kbase raises GPU_SHAREABILITY_FAULT (status 0x..488). Swapchain
+	 * images and every VkDeviceMemory imported from a dma-buf go through here. */
+	if (kb_bo_extra_flags && !(flags & KB_BO_NOCOH))
+		f |= kb_bo_extra_flags;
 	union kbase_ioctl_mem_import req;
 	memset(&req, 0, sizeof req);
 	req.in.flags = f;
@@ -165,8 +176,13 @@ bool kb_bo_gpu_va_live(struct kb_ctx *ctx, uint64_t gpu_va)
 	return kb_ioctl(ctx, KBASE_IOCTL_MEM_QUERY, &q) == 0;
 }
 
+static unsigned cache_flush_calls;
+unsigned kb_test_cache_flush_count(void);   /* test hook (t_bopool.c) */
+unsigned kb_test_cache_flush_count(void) { return __atomic_load_n(&cache_flush_calls, __ATOMIC_RELAXED); }
+
 void kb_bo_cache_flush_inv(const struct kb_bo *bo, size_t off, size_t len)
 {
+	__atomic_fetch_add(&cache_flush_calls, 1, __ATOMIC_RELAXED);
 #if defined(__aarch64__)
 	uint64_t ctr;
 	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));

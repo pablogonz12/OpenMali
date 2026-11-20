@@ -6,13 +6,22 @@
 #endif
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
+#endif
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA "unknown"
 #endif
 
 #include "mali_entrypoints.h"
@@ -28,7 +37,9 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
    /* M14: surfaces come from wsi_common (Wayland, XCB, Xlib: whatever Mesa was configured with) */
    .KHR_surface = true,
    .KHR_get_surface_capabilities2 = true,
+   .EXT_headless_surface = true,       /* wsi_common_headless: tests (t_vk_dxvk_wsi) present without a compositor */
    .EXT_surface_maintenance1 = true,   /* companion of swapchain_maintenance1 (wsi_common) */
+   .EXT_swapchain_colorspace = true,   /* ANGLE/gamescope ask for it; wsi_common lists SRGB_NONLINEAR (+ PASS_THROUGH on Wayland), t_steam_caps swcs */
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface = true,
 #endif
@@ -38,6 +49,8 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
 #ifdef VK_USE_PLATFORM_XLIB_KHR
    .KHR_xlib_surface = true,
 #endif
+   .EXT_headless_surface = true,       /* wsi_common_headless.c is compiled on every non-Windows build (ANGLE's VerifyExtensionsPresent needs it) */
+   .EXT_swapchain_colorspace = true,   /* wsi_common only offers colour spaces the surface really supports (sRGB-nonlinear everywhere) */
    .EXT_debug_utils = true,
 };
 
@@ -184,6 +197,16 @@ mali_EnumerateInstanceVersion(uint32_t *pApiVersion)
    return VK_SUCCESS;
 }
 
+/* The ICD implements no layers. vkGetInstanceProcAddr(NULL, ...) must still return this command (spec table; DXVK's
+ * LibraryFn loads it, so a direct/Wine caller that skips the Khronos loader would jump to NULL). */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount, VkLayerProperties *pProperties)
+{
+   (void)pProperties;
+   *pPropertyCount = 0;
+   return VK_SUCCESS;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_EnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pPropertyCount,
                                           VkExtensionProperties *pProperties)
@@ -193,6 +216,47 @@ mali_EnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pPro
 
    return vk_enumerate_instance_extension_properties(&mali_instance_extensions, pPropertyCount,
                                                      pProperties);
+}
+
+/* Opt-in proof of life: MALI_STATUS_FILE=<path> gets one appended line, MALI_BANNER=1 also logs it to logcat.
+ * Never fails instance creation. */
+static void
+mali_banner(void)
+{
+   const char *path = getenv("MALI_STATUS_FILE");
+   const char *lc = getenv("MALI_BANNER");
+   char exe[64] = "?", line[160];
+   int fd, n;
+
+   if ((!path || !*path) && !(lc && *lc == '1'))
+      return;
+   fd = open("/proc/self/comm", O_RDONLY | O_CLOEXEC);
+   if (fd >= 0) {
+      ssize_t r = read(fd, exe, sizeof(exe) - 1);
+      exe[r > 0 ? r : 0] = 0;
+      exe[strcspn(exe, "\n")] = 0;
+      close(fd);
+   }
+   n = snprintf(line, sizeof(line) - 1, "mali-open %s pid %d exe %s", MALI_GIT_SHA, (int)getpid(), exe);
+   if (n <= 0)
+      return;
+   if (path && *path) {
+      /* O_NONBLOCK: a FIFO without a reader must not block vkCreateInstance; only regular files are written */
+      fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NONBLOCK, 0644);
+      if (fd >= 0) {
+         struct stat st;
+         if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+            line[n++] = '\n';
+            if (write(fd, line, n) < 0) {}
+            line[--n] = 0;
+         }
+         close(fd);
+      }
+   }
+#ifdef __ANDROID__
+   if (lc && *lc == '1')
+      __android_log_write(ANDROID_LOG_INFO, "mali-open", line);
+#endif
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -231,6 +295,7 @@ mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    instance->vk.physical_devices.destroy = mali_destroy_physical_device;
 
    *pInstance = mali_instance_to_handle(instance);
+   mali_banner();
    mali_trace("vkCreateInstance -> ok (api %u.%u)", VK_API_VERSION_MAJOR(instance->vk.app_info.api_version),
               VK_API_VERSION_MINOR(instance->vk.app_info.api_version));
    return VK_SUCCESS;

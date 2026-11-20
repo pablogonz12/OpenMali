@@ -295,6 +295,7 @@ class ShellRoute(unittest.TestCase):
 class T(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)                          # sweep_env() leaks it into os.environ: later tests would idle-sweep a stale list until farmd times out
         open(os.path.join(self.d, "devices.toml"), "w").write(TOML)
         self.env = dict(os.environ, MALI_FARM_STATE=self.d + "/state", MALI_FARM_DEVICES=self.d + "/devices.toml",
                         MALI_FARM_DOWN_AFTER="1")
@@ -306,11 +307,30 @@ class T(unittest.TestCase):
             f.write("\n".join(names))
 
     def farm(self, *a):
-        r = subprocess.run([sys.executable, HERE + "/farm", *a], capture_output=True, text=True, env=self.env)
+        r = subprocess.run([sys.executable, getattr(self, "root", HERE) + "/farm", *a], capture_output=True, text=True, env=self.env)
         return r.returncode, r.stdout.strip(), r.stderr
 
+    def fixture_repo(self, n=1, origin_at=None):
+        """a clean throwaway git checkout holding a copy of the farm tools, n commits deep; origin/main -> commit origin_at (default HEAD).
+        self.root then points at it, so submit/farmd never depend on the developer's checkout, its refs or its tracked edits"""
+        import shutil
+        root = os.path.join(self.d, "fx")
+        shutil.copytree(HERE, root, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+        g = lambda *c: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false", *c], capture_output=True, text=True, check=True).stdout.strip()
+        g("init", "-q", "-b", "main")
+        for dev in ("cmf", "x8", "poco"):                       # minimal passing daily baselines, so a daily job can reach `pass` in fake mode
+            os.makedirs(os.path.join(root, "vk/deqp"), exist_ok=True)
+            with open(os.path.join(root, "vk/deqp/ours-daily-sample-%s.tsv" % dev), "w") as f:
+                f.write("".join("dEQP-VK.api.smoke.t%d\tPass\t\n" % i for i in range(20)))
+        g("add", "-A")
+        for i in range(n):
+            g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        g("update-ref", "refs/remotes/origin/main", origin_at or "HEAD")
+        self.root = root
+        return g
+
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, getattr(self, "root", HERE) + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -353,6 +373,53 @@ class T(unittest.TestCase):
         self.assertIsNotNone(self.hold_next_for_test("dev-a"))
         self.farmd()                                                           # the queued hold/job run on the phone: it is not idle
         self.assertEqual(self.stopped(), [])
+
+    def git_rev(self, r):
+        return subprocess.run(["git", "-C", HERE, "rev-parse", r], capture_output=True, text=True).stdout.strip()
+
+    def test_submit_in_flight_is_idempotent_and_rerun_forces(self):
+        rc, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        rc, j2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.assertEqual(j1, j2)
+        self.assertIn("already pending", err)
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v13")[1], j1)        # other class: a new job
+        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--rerun")[1], j1)
+
+    def test_single_case_diagnostic_goes_before_full_cases(self):
+        _, one, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--need", "v11")
+        _, many, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.b", "--case", "dEQP-VK.a.c", "--need", "v11")
+        _, forced, _ = self.farm("submit", "HEAD", "--suite", "cases", "--case", "dEQP-VK.a.z", "--need", "v11", "--prio", "30")
+        self.assertEqual((L.job_prio(L.find_job(one)), L.job_prio(L.find_job(many)), L.job_prio(L.find_job(forced))), (L.SINGLE_CASE_PRIO, 20, 30))
+        self.assertLess(L.SINGLE_CASE_PRIO, 10)                                  # also before bench/menu
+
+    def test_batch_passes_as_one_job(self):
+        rc, jid, err = self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")
+        self.assertEqual(rc, 0, err)
+        j = L.find_job(jid)
+        self.assertEqual(j["batch"]["refs"], ["HEAD", "HEAD~1"])
+        self.assertTrue(j["ref"].startswith("batch:"))
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
+        self.assertIn("all branches pass together", self.farm("batch", jid)[1])
+        self.assertEqual(self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale")[1], jid)      # same batch: the same merge commit, reused
+
+    def test_batch_failure_bisects_per_branch(self):
+        culprit = self.git_rev("HEAD~1")[:12]
+        rc, jid, err = self.farm("submit", "--batch", "HEAD,HEAD~1", "--need", "v11", "--allow-stale", "--env", "FAKE_FAIL_COMMIT=" + culprit)
+        self.assertEqual(rc, 0, err)
+        self.attach("dev-a")
+        self.farmd()
+        self.assertEqual(L.job_verdict(L.find_job(jid)), "fail")
+        for _ in range(4):                                                       # bisect jobs are created, then run
+            self.farmd()
+        out = self.farm("batch", jid)[1]
+        res = dict((l.split()[0], l.split()[-1]) for l in out.splitlines()[1:] if l.startswith("  H"))
+        self.assertEqual(res, {"HEAD": "pass", "HEAD~1": "fail"}, out)
+
+    def test_batch_needs_two_refs(self):
+        self.assertNotEqual(self.farm("submit", "--batch", "HEAD")[0], 0)
+        self.assertNotEqual(self.farm("submit")[0], 0)
 
     def test_guardlib_parsing(self):
         import guardlib as G
@@ -675,12 +742,42 @@ class T(unittest.TestCase):
         f = m.Farm(True, True, 1)
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), [])
         self.assertEqual(f.phone_env(f.devs["dev-a"])["QSAFE_HELD"], "cmf")
+        e = f.phone_env(f.devs["dev-a"])                          # quick.py resolves the lock name through <LOCK>_SERIAL
+        self.assertEqual(e["CMF_SERIAL"], e["ANDROID_SERIAL"])
+        self.assertTrue(e["CMF_SERIAL"])
         p = self.d + "/devices.toml"
         txt = open(p).read()
         open(p, "w").write(txt.replace('baseline = "poco"\n', 'baseline = "poco"\nwireless = ["198.51.100.5:5555"]\n') + "\n")
         os.utime(p, (f.cfg_mtime + 5, f.cfg_mtime + 5))
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
+
+    def test_missing_so_is_an_error_not_an_invalid_driver(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod3", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod3", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        r = f.so_gone_result(job, None, 1, "FAIL session not READY")
+        self.assertEqual(r["verdict"], "error")
+        self.assertIn("session not READY", r["notes"])
+        self.assertEqual(f.so_gone_result(job, "b" * 64, 1, "")["verdict"], "invalid")       # a foreign .so is still invalid
+        self.assertEqual(f.so_gone_result(job, None, 76, "")["verdict"], "invalid")          # changed mid-run: unchanged
+
+    def test_transient_adb_read_failure_is_invalid_not_error(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        for rc in (0, 1):
+            self.assertEqual(f.so_gone_result(job, m.ADB_READ_FAILED, rc, "")["verdict"], "invalid")
+        f.fake = False
+        for rc_o, want in (((1, "error: device offline"), m.ADB_READ_FAILED), ((255, ""), m.ADB_READ_FAILED), ((0, "NOFILE\n"), None), ((0, "b" * 64 + "  x\n"), "b" * 64)):
+            f.adb = lambda *a, _r=rc_o, **k: _r
+            self.assertEqual(f.verify_so(job, {"alias": "x"}, "/p")[1], want)
 
     def test_bench_cube_ours_plausibility_follows_the_bridge(self):
         def row(drv, gpu, ph="poco-x8"):
@@ -691,6 +788,16 @@ class T(unittest.TestCase):
         self.assertFalse(BL.publishable(row("ours", 1.9)))              # no bridge row to compare with: the old 2 ms floor
         self.assertTrue(BL.publishable(row("ours", 2.5)))
         self.assertEqual(len(BL.merge_rows([], rows)), 3)
+
+    def test_merge_rows_uses_already_published_bridge_as_peer(self):
+        def row(drv, gpu):
+            return {"phone": "poco-x8", "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}
+        # ours-only job: the bridge row of the same commit is already in the file; 1.4 ms is valid (bridge 1.32), not under the 2 ms fallback floor
+        merged = BL.merge_rows([row("bridge", 1.32)], [row("ours", 1.40)])
+        self.assertEqual([r["driver"] for r in merged], ["bridge", "ours"])
+        self.assertEqual(len(BL.merge_rows([row("bridge", 1.32)], [row("ours", 0.4)])), 1)
+        # a new bridge row replaces the old one: the stale 1.32 ms must not vouch for an ours row that is implausible against the new 10 ms
+        self.assertEqual([r["driver"] for r in BL.merge_rows([row("bridge", 1.32)], [row("bridge", 10.0), row("ours", 2.5)])], ["bridge"])    # still rejects the invalid-winner symptom
 
     def test_bench_owner_pending_is_gated_not_invalid(self):
         """bench2 stopping with 'PENDING: focus rule violated' pushed nothing: the .so left on the phone by an earlier job must not make the job
@@ -750,6 +857,38 @@ class T(unittest.TestCase):
             res = f.suite_bench(job, dev)
             self.assertEqual((res["verdict"], res["max_attempts"]), ("invalid", 2), out)
             self.assertIn("UI-BLOCKED", res["notes"])
+
+    def test_bench_empty_log_reports_pending_json_error(self):
+        """rc=0, 0 rows, empty log but pending.json has bench2's error (guest session did not start): the alert shows it, not UI-BLOCKED?"""
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        f.fake = False
+        f.bench_prepare = lambda job: "/nonexistent/mdbench"
+        f.tree = lambda jid: self.d + "/tree"
+        f.best_file = lambda job: self.d + "/best.json"
+        f.keep_log = lambda *a: None
+        f.shell_route = lambda dev: False
+        f.alive = lambda dev: True
+        f.phone_env = lambda dev, ex=None: {}
+        f.verify_so = lambda job, dev, path, key="so_sha256": (True, "x")
+        job = {"id": "j2", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
+        dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
+        orig = m.L.run_watched
+        self.addCleanup(setattr, m.L, "run_watched", orig)
+        for printed in ("", "bench2: guest session failed, see pending.json"):          # bench2 may print a diagnostic and still exit 0 with no rows
+            def rw2(cmd, tmo, alive, env=None, printed=printed, **k):
+                out = cmd[cmd.index("--out") + 1]
+                os.makedirs(out, exist_ok=True)
+                json.dump({"dev-b": "guest session did not start: rc=1: boom"}, open(out + "/pending.json", "w"))
+                return 0, printed
+            m.L.run_watched = rw2
+            res = f.suite_bench(job, dev)
+            self.assertEqual((res["verdict"], res.get("max_attempts")), ("invalid", 2), printed)
+            self.assertIn("guest session did not start: rc=1: boom", res["notes"])
+            self.assertNotIn("UI-BLOCKED", res["notes"])
 
     def test_sweep_power_rule_pure(self):
         pb = S.power_blocked
@@ -894,7 +1033,7 @@ class T(unittest.TestCase):
     def test_cancel(self):
         self.attach("dev-a")
         _, j1, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
         out = self.farm("cancel", j1)[1]
         self.assertIn("v11 cancelled", out)
         self.assertEqual(L.job_verdict(L.find_job(j1)), "cancelled")
@@ -1095,6 +1234,27 @@ class T(unittest.TestCase):
         self.assertIn("tri CPU ours 1.91 / bridge 3.20 ms", out[0])
         self.assertIn("cube GPU ours 12.34 / bridge 11.00 ms", out[0])
 
+    def test_bench_regressions_flag_over_10_percent(self):
+        def row(c, fps, cpu, drv="ours", var="triangle-3k"):
+            return {"phone": "p", "commit_full": c * 40, "driver": drv, "variant": var, "offscreen": {"fps": fps, "cpu_ms": cpu}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("a", 50, 1.0, "bridge"), row("b", 48, 1.05, "bridge"),
+                row("a", 100, 2.0, var="cube-720p"), row("b", 95, 2.1, var="cube-720p"), row("c", 90, 2.0, var="solo")]
+        out = BL.regressions(rows)
+        self.assertEqual(len(out), 2)                                                   # ours triangle: fps -15% and cpu +25%
+        self.assertTrue(all("ours triangle-3k" in o for o in out))
+        self.assertTrue(any("fps 100 -> 85" in o for o in out) and any("cpu_ms 2 -> 2.5" in o for o in out))
+        self.assertEqual(BL.regressions(rows[:1] + [row("a", 1, 9.0)]), [])             # same commit re-run is not a regression pair
+
+    def test_bench_regressions_incomplete_rerun_and_exact_boundary(self):
+        def row(c, fps, cpu, off=True):
+            return {"phone": "p", "commit_full": c * 40, "driver": "ours", "variant": "v", "offscreen": {"fps": fps, "cpu_ms": cpu} if off else {}}
+        rows = [row("a", 100, 2.0), row("b", 85, 2.5), row("b", 0, 0, off=False)]
+        self.assertEqual(len(BL.regressions(rows)), 2)                                  # incomplete rerun keeps the valid A..B pair
+        self.assertEqual(BL.regressions([row("a", 100, 2.0), row("b", 90, 2.2)]), [])   # exactly 10% on both metrics (2.0 -> 2.2 is 10.000000000000009)
+        self.assertEqual(len(BL.regressions([row("a", 100, 2.0), row("b", 89, 2.21)])), 2)
+        part = [row("a", 100, 2.0), {"phone": "p", "commit_full": "b" * 40, "driver": "ours", "variant": "v", "offscreen": {"cpu_ms": 2.5}}]
+        self.assertEqual(len(BL.regressions(part)), 1)                                  # missing fps skips only that metric
+
     def nosweep(self):
         os.environ.pop("MALI_FARM_SWEEP_LIST", None)          # an earlier sweep test leaves it in os.environ: a sweep would loop in these passes
         self.env.pop("MALI_FARM_SWEEP_LIST", None)
@@ -1173,10 +1333,10 @@ class T(unittest.TestCase):
     def test_farm_prio_and_submit_prio(self):
         _, a, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.y")
         _, b, _ = self.farm("submit", "HEAD", "--suite", "cases", "--need", "v11", "--case", "dEQP-VK.api.x.z", "--prio", "3")
-        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (20, 3))
+        self.assertEqual((L.find_job(a)["prio"], L.find_job(b)["prio"]), (L.SINGLE_CASE_PRIO, 3))
         rc, out, _ = self.farm("prio", a, "1")
         self.assertEqual(rc, 0)
-        self.assertIn("20 -> 1", out)
+        self.assertIn("5 -> 1", out)
         self.assertEqual([j["id"] for j in BL.order_jobs(L.list_jobs())], [a, b])
         self.assertEqual(self.farm("prio", "nosuchjob", "1")[0], 1)
         self.nosweep()
@@ -1191,15 +1351,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -1210,11 +1370,51 @@ class T(unittest.TestCase):
                                                          mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
         L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
         new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
-        got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
+        got = self._sup(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
         self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
         self.assertEqual(old["parts"]["v13"]["state"], "pending")
-        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
-        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+        self.assertEqual(self._sup(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
+        self.assertEqual(self._sup(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+
+    def test_supersede_all_suites_same_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        new = mk("new", commit="z", seq=5)
+        cases, bench, daily, other_ref, head, sweep, auto = (mk("c", suite="cases"), mk("b", suite="bench"), mk("d", suite="daily"),
+            mk("o", suite="cases", ref="lane/y"), mk("h", suite="cases", ref="HEAD"), mk("s", suite="sweep"), mk("a", suite="bench", auto=True))
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        got = self._sup(new, [cases, bench, daily, other_ref, head, sweep, auto], lambda o, n: True)
+        self.assertEqual(sorted(g[0] for g in got), ["b", "c", "d"])
+        self.assertEqual(other_ref["parts"]["v13"]["state"], "pending")
+        self.assertEqual(self._sup(dict(new, ref="HEAD"), [mk("c2", suite="cases", ref="HEAD")], lambda o, n: True), [])
+
+    def test_supersede_sibling_needs_other_suite_and_stable_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        new = mk("new", commit="z", seq=5)
+        run = lambda n, js: self._sup(n, js, lambda o, m: True)
+        self.assertEqual(run(new, [mk("o1", only="draw"), mk("o2", env={"X": "1"})]), [])               # same suite, other only/env: kept
+        for r in ("HEAD~1", "main^", "@{u}", "abc1234", "HEAD^2", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD"):
+            self.assertEqual(run(mk("n2", commit="z", seq=5, ref=r), [mk("c", suite="cases", ref=r)]), [], r)
+        self.assertEqual([g[0] for g in run(new, [mk("c3", suite="cases")])], ["c3"])
+
+    def test_supersede_skips_job_it_cannot_refresh(self):
+        """the re-read before the write fails (job file gone or corrupt): skip the job, never write the stale snapshot back"""
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1)
+        mk = lambda i: dict(base, id=i, commit="a", parts={"v11": {"state": "pending"}})
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        gone, bad = mk("gone"), mk("bad")
+        open(L.job_path("bad"), "w").write("{not json")
+        new = dict(mk("new"), commit="z", seq=5)
+        self.assertEqual(L.supersede_old_gates(new, [gone, bad], lambda o, n: True), [])
+        self.assertFalse(L.os.path.exists(L.job_path("gone")))                                          # nothing written back
+        self.assertEqual(open(L.job_path("bad")).read(), "{not json")
+
+    def _sup(self, new, jobs, anc):
+        for j in jobs:                                                                                  # supersede re-reads each job from disk
+            L.write_json(L.job_path(j["id"]), j)
+        return L.supersede_old_gates(new, jobs, anc)
 
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
@@ -1259,6 +1459,36 @@ class T(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("MINE", r.stdout)
         self.assertNotIn("OTHER-PHONE", r.stdout)
+
+    def test_valrun_serial_env_and_symlinked_runs_dir(self):
+        """qdrv resolves scripts/quick (a symlink to MediaDeck) and writes runs/quick THERE; quick.py reads CMF_SERIAL only: valrun must export it and look in that dir"""
+        home = self.d + "/home"
+        tree = self.d + "/tree"
+        md = self.d + "/MediaDeck"
+        for dpath in (md + "/scripts/quick", md + "/runs/quick", home + "/Projects/mali-gaming/scripts", home + "/.cache/mali-tmp", tree + "/vk/tests", tree + "/vk/out/a64-glibc", tree + "/tools", self.d + "/bin"):
+            os.makedirs(dpath, exist_ok=True)
+        os.symlink(md + "/scripts/quick", home + "/Projects/mali-gaming/scripts/quick")
+        shutil.copy(HERE + "/../../vk/tests/valrun.sh", tree + "/vk/tests/valrun.sh")
+        for n in ("libvulkan_mali.so", "t_vk_draw", "t_vk_compute", "t_vk_meta"):
+            open(tree + "/vk/out/a64-glibc/" + n, "w").write("x")
+        def script(path, body):
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, 0o755)
+        script(self.d + "/bin/adb", "exit 0\n")
+        script(tree + "/tools/dev-serial", "echo SERIAL-CMF\n")
+        script(md + "/scripts/quick/qdrv", "echo \"serial=$CMF_SERIAL\"; echo '{\"line\":\"MINE\"}' >" + md + "/runs/quick/29990101-000001-cmf-drv-valguest.sh.jsonl\n")
+        env = dict(os.environ, HOME=home, PATH=self.d + "/bin:" + os.environ["PATH"], QSAFE_LOCK_OVERRIDE="1", PHONE="cmf")
+        env.pop("CMF_SERIAL", None)
+        env.pop("QUICK_RUNS_DIR", None)
+        r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True, env=env, timeout=60, cwd=tree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("serial=SERIAL-CMF", r.stderr)
+        self.assertIn("MINE", r.stdout)
+        os.symlink(md + "/runs/quick", self.d + "/link-runs")                # a symlinked QUICK_RUNS_DIR override must be followed
+        r = subprocess.run(["bash", tree + "/vk/tests/valrun.sh", "A=1", "20", ""], capture_output=True, text=True,
+                           env=dict(env, QUICK_RUNS_DIR=self.d + "/link-runs"), timeout=60, cwd=tree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("MINE", r.stdout)
 
     def test_auto_bench_beats_sweep(self):
         self.sweep_env(["dEQP-VK.api.a.one", "dEQP-VK.api.a.two", "dEQP-VK.api.a.three"], 2)
@@ -1411,7 +1641,7 @@ class T(unittest.TestCase):
             self.assertEqual(L.find_job(j2).get("build_cached"), j1)
             # archive from before the fix (no t_* stored): the smoke job must rebuild, not run with 0 tests
             shutil.rmtree(f.tests_dir(sha))
-            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+            _, j3, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun")
             os.makedirs(f.tree(j3) + "/vk", exist_ok=True)
             open(f.tree(j3) + "/vk/build.sh", "w").write("")
             f.build(L.find_job(j3))
@@ -1570,10 +1800,11 @@ class T(unittest.TestCase):
         self.assertEqual(gate.next_state("ok", dict(ok, temp_c=50.0), th)[0], "cooling")
 
     def test_submit_idempotent_and_rerun(self):
-        if subprocess.run(["git", "-C", HERE, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=False).stdout.strip():
-            self.skipTest("tracked edits: a dirty HEAD is never reused")
+        self.fixture_repo()                                     # clean checkout: a dirty developer tree would never be reused
         self.attach("dev-a")
-        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(jid, err)
         self.farmd()
         self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
         rc, again, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
@@ -1582,14 +1813,22 @@ class T(unittest.TestCase):
         for extra in (["--env", "FOO=1"], ["--rerun"]):                                  # other inputs / forced: a new job
             rc, other, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", *extra)
             self.assertEqual(rc, 0, err)
-            self.assertTrue(other)
+            self.assertTrue(other, err)
             self.assertNotEqual(other, jid)
         rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
         self.assertNotEqual(rc, 0)
         self.assertIn("selects no class", err)
-        _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
-        self.farmd()
-        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
+        self.attach("dev-a")
+        rc, d1, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
+        for _ in range(3):                                      # earlier jobs of this test run first
+            self.farmd()
+        self.assertEqual((rc, bool(d1)), (0, True), err)
+        self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
+        self.assertEqual(L.job_verdict(L.find_job(d1)), "pass")     # a real passed daily job, so reuse would be possible
+        rc, d2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(d2, err)
+        self.assertNotEqual(d2, d1)
 
     def test_find_passed_unit(self):
         j = {"id": "a", "commit": "c1", "suite": "daily", "env": "", "dirty": False, "parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "done", "verdict": "fail"}}}
@@ -1602,20 +1841,21 @@ class T(unittest.TestCase):
         self.assertIsNone(L.find_passed([dict(j, dirty=True)], "c1", "daily", ["v11"], ""))
 
     def test_submit_stale_base_and_merge_with_main(self):
-        r = subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
-        if r.returncode or subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main~8"], capture_output=True, check=False).returncode:
-            self.skipTest("no origin/main with 8 ancestors in this checkout")
-        n = int(subprocess.run(["git", "-C", HERE, "rev-list", "--count", "HEAD"], capture_output=True, text=True).stdout)
-        if n > 12:
-            rc, _, err = self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11")
-            self.assertNotEqual(rc, 0)
-            self.assertIn("behind origin/main", err)
-            self.assertEqual(self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
-        rc, jid, err = self.farm("submit", "origin/main~1", "--suite", "smoke", "--need", "v11", "--merge-with-main")
+        g = self.fixture_repo(12)                               # known ancestry: c0..c11, origin/main at the tip
+        g("update-ref", "refs/remotes/origin/main", g("rev-parse", "HEAD"))
+        for i in range(12, 22):
+            g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        g("update-ref", "refs/remotes/origin/main", "HEAD")
+        g("checkout", "-q", "-b", "old", "HEAD~9")              # REF 9 commits behind origin/main (limit L.STALE_COMMITS)
+        rc, _, err = self.farm("submit", "old", "--suite", "smoke", "--need", "v11")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("behind origin/main", err)
+        self.assertEqual(self.farm("submit", "old", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
+        rc, jid, err = self.farm("submit", "old", "--suite", "smoke", "--need", "v11", "--merge-with-main")
         self.assertEqual(rc, 0, err)
         j = L.find_job(jid)
         self.assertTrue(j["ref"].endswith("+main"))
-        parents = subprocess.run(["git", "-C", HERE, "rev-list", "--parents", "-n1", j["commit"]], capture_output=True, text=True).stdout.split()
+        parents = g("rev-list", "--parents", "-n1", j["commit"]).split()
         self.assertEqual(len(parents), 3)                                               # a merge commit of REF and origin/main
 
 
@@ -2178,8 +2418,151 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(H.end_reason(h, 1, False, now=50, disabled=True), "disabled by owner")
 
 
+class Bench2Rank(unittest.TestCase):
+    """bench2's presented-config winner: by fps (a FIFO run flat at the display cap must not beat mailbox 450 fps on 1% low), and stored best entries
+    that were not swept under the current ranking/candidate list are re-swept"""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("bench2_mod", os.path.join(HERE, "..", "bench2"))
+        cls.b = importlib.util.module_from_spec(importlib.util.spec_from_loader("bench2_mod", ld))
+        ld.exec_module(cls.b)
+
+    def test_cube_winner_is_fastest_not_steadiest(self):
+        pres = {"pres:fifo/4img/fif2": {"fps": 120.4, "low1": 107.0, "cpu_ms": 1.1},
+                "pres:mailbox/2img/fif2": {"fps": 457.0, "low1": 90.0, "cpu_ms": 0.4}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube")), "pres:mailbox/2img/fif2")
+
+    def test_cube_tie_goes_to_better_low1(self):
+        pres = {"a": {"fps": 100.0, "low1": 50.0, "cpu_ms": 1}, "b": {"fps": 100.0, "low1": 80.0, "cpu_ms": 1}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube")), "b")
+
+    def test_triangle_winner_by_fps_then_cpu(self):
+        pres = {"a": {"fps": 600.0, "low1": 1, "cpu_ms": 0.9}, "b": {"fps": 600.0, "low1": 1, "cpu_ms": 0.5}, "c": {"fps": 500.0, "low1": 9, "cpu_ms": 0.1}}
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "triangle")), "b")
+
+    def test_env_penalty_still_applies(self):
+        pres = {"a": {"fps": 100.0, "low1": 1, "cpu_ms": 1}, "b": {"fps": 103.0, "low1": 1, "cpu_ms": 1}}
+        pen = lambda k: 1.05 if k == "b" else 1.0
+        self.assertEqual(min(pres, key=self.b.pres_rank(pres, "cube", pen)), "a")
+
+    def test_readmission_keeps_the_phone_lock(self):
+        """the recursive re-sweep calls admit() again on the same Phone: the first admission's flock must survive (QSAFE_HELD is then set by
+        ourselves, which must not be mistaken for an ancestor's lock and drop ours)"""
+        b = self.b
+        dev = {"alias": "poco-x8", "class": "x8", "lock": "unit-test-lock"}
+        ph = b.Phone(dev, {"quick_root": "/nonexistent"})
+        got = []
+        ph.acquire_wait = lambda secs: (setattr(ph.lock, "fd", object()), got.append(ph.lock), True)[-1]
+        ph.health = lambda: None
+        saved = (b.L.resolve, b.L.disabled_dir, b.G.disabled, os.environ.pop("QSAFE_HELD", None))
+        b.L.resolve, b.L.disabled_dir, b.G.disabled = (lambda *a, **k: "tid"), (lambda: None), (lambda *a: False)
+        try:
+            self.assertIsNone(ph.admit())
+            first = ph.lock
+            self.assertIsNotNone(first)
+            self.assertIsNone(ph.admit())
+            self.assertIs(ph.lock, first)            # not replaced / not dropped
+            self.assertIsNotNone(first.fd)
+            self.assertEqual(len(got), 1)            # and not re-acquired
+        finally:
+            b.L.resolve, b.L.disabled_dir, b.G.disabled = saved[:3]
+            os.environ.pop("QSAFE_HELD", None)
+            if saved[3] is not None:
+                os.environ["QSAFE_HELD"] = saved[3]
+
+    def test_stored_best_must_carry_the_current_sig(self):
+        v, d = "cube-native", "ours"
+        today = __import__("datetime").date(2026, 11, 18)
+        mk = lambda **k: {"poco-x8": {d: {v: {"date": "2026-11-18", **k}}}}
+        self.assertIsNone(self.b.best_stale(mk(sig=self.b.sweep_sig(v, d)), "poco-x8", d, v, today))
+        self.assertTrue(self.b.best_stale(mk(), "poco-x8", d, v, today))                 # no sig: unvouched (this is how a fifo winner survived)
+        self.assertTrue(self.b.best_stale(mk(sig="old-ranking"), "poco-x8", d, v, today))
+
+    def test_rank_version_changes_the_sig(self):
+        s0 = self.b.sweep_sig("cube-native", "ours")
+        self.b.RANK_VER += 1
+        try:
+            self.assertNotEqual(s0, self.b.sweep_sig("cube-native", "ours"))
+        finally:
+            self.b.RANK_VER -= 1
+
+    def test_draw_count_variants_are_in_the_default_set(self):
+        for v in ("triangle-3k", "triangle-5k", "triangle-10k", "triangle-20k"):
+            self.assertIn(v, self.b.WORK)
+            self.assertIn(f"--n {int(v.split('-')[1][:-1]) * 1000} ", self.b.WORK[v][1] + " ")
+
+
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
                       '{"test":"t_vk_meta","rc":0,"fail_lines":0,"pass_lines":1}', '{"test":"summary","ok":true}'])
+
+
+class ReadyTests(unittest.TestCase):
+    """farm ready: decision logic with fixtures (no gh, no git)"""
+    HEAD, MERGE, OLD = "h" * 40, "m" * 40, "o" * 40
+    ANC = {(HEAD, MERGE), (OLD, HEAD)}                       # pairs (ancestor, descendant)
+    anc = staticmethod(lambda a, b: (a, b) in ReadyTests.ANC)
+
+    def job(self, commit, verdict, state="done", jid="20261119-000000-abcd1234"):
+        return {"id": jid, "suite": "smoke", "commit": commit, "parts": {"v13": {"state": state, "verdict": verdict}}}
+
+    def pr(self, **kw):
+        d = {"number": 7, "headRefOid": self.HEAD, "mergeable": "MERGEABLE", "isDraft": False,
+             "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]}
+        d.update(kw)
+        return d
+
+    def row(self, jobs, threads=0, links=(), **kw):
+        import ready as R
+        return R.make_row(self.pr(**kw), jobs, self.anc, L.job_verdict, threads, list(links))
+
+    def test_ready_exact_and_merge_commit(self):
+        self.assertEqual(self.row([self.job(self.HEAD, "pass")])["verdict"], "READY")
+        self.assertEqual(self.row([self.job(self.MERGE, "pass")])["verdict"], "READY")      # --merge-with-main job: head is its parent
+
+    def test_stale_none_fail_pending(self):
+        self.assertEqual(self.row([self.job(self.OLD, "pass")])["verdict"], "smoke is for an older head")
+        self.assertEqual(self.row([])["verdict"], "no smoke for head")
+        self.assertEqual(self.row([self.job(self.HEAD, "fail")])["verdict"], "smoke FAIL")
+        self.assertEqual(self.row([self.job(self.HEAD, None, state="running")])["verdict"], "smoke pending")
+
+    def test_newest_covering_job_wins(self):
+        jobs = [self.job(self.HEAD, "fail", jid="20261119-000001-a"), self.job(self.HEAD, "pass", jid="20261119-000002-b")]
+        self.assertEqual(self.row(jobs)["smoke"], "pass")
+        self.assertEqual(self.row(list(reversed(jobs)))["smoke"], "FAIL")
+
+    def test_other_columns_block(self):
+        ok = [self.job(self.HEAD, "pass")]
+        self.assertIn("checks FAIL", self.row(ok, statusCheckRollup=[{"status": "COMPLETED", "conclusion": "FAILURE"}])["verdict"])
+        self.assertIn("checks pending", self.row(ok, statusCheckRollup=[{"status": "IN_PROGRESS", "conclusion": ""}])["verdict"])
+        self.assertIn("2 unresolved", self.row(ok, threads=2)["verdict"])
+        self.assertIn("symlink", self.row(ok, links=["third_party"])["verdict"])
+        self.assertIn("CONFLICTING", self.row(ok, mergeable="CONFLICTING")["verdict"])
+        self.assertEqual(self.row(ok, isDraft=True)["verdict"], "draft")
+
+    def test_partial_only_unknown_and_cancelled(self):
+        import ready as R
+        only = dict(self.job(self.HEAD, "pass"), only=["t_vk_draw"])
+        self.assertEqual(self.row([only])["verdict"], "no smoke for head")                  # --only job is not the full gate
+        canc = self.job(self.HEAD, "pass")
+        canc["parts"]["v11"] = {"state": "cancelled"}
+        self.assertEqual(self.row([canc])["verdict"], "smoke job has cancelled part(s)")
+        unk = lambda a, b: None                                                              # git could not tell (pruned commit)
+        r = R.make_row(self.pr(), [self.job(self.MERGE, "pass")], unk, L.job_verdict, 0, [])
+        self.assertEqual(r["verdict"], "smoke ancestry unknown (commit not resolvable)")
+        self.assertEqual(R.make_row(self.pr(), [self.job(self.HEAD, "pass")], unk, L.job_verdict, 0, [])["verdict"], "READY")   # exact head needs no git
+
+    def test_symlink_by_tree_mode(self):
+        import ready as R
+        trees = {"vk/tests": {"a.c": "100644", "lnk": "120000"}, "": {"x": "120000"}}
+        self.assertEqual(R.symlink_paths(trees, ["vk/tests/a.c", "vk/tests/lnk", "x"]), ["vk/tests/lnk", "x"])
+
+    def test_bad_files_and_render(self):
+        import ready as R
+        self.assertEqual(R.bad_files(["vk/deqp/out/x", "vk/src/a.c", "third_party"]), ["vk/deqp/out/x", "third_party"])
+        out = R.render([self.row([self.job(self.HEAD, "pass")]), self.row([], links=[])])
+        self.assertIn("1 READY of 2", out)
 
 
 if __name__ == "__main__":

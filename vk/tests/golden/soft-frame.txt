@@ -1,0 +1,105 @@
+case rgba8-gradient 256x256
+  row0: 101080 301080 501080 701080 901080 b01080 d01080 f01080
+  row1: 103080 303080 503080 703080 903080 b03080 d03080 f03080
+  row2: 105080 305080 505080 705080 905080 b05080 d05080 f05080
+  row3: 107080 307080 507080 707080 907080 b07080 d07080 f07080
+  row4: 109080 309080 509080 709080 909080 b09080 d09080 f09080
+  row5: 10b080 30b080 50b080 70b080 90b080 b0b080 d0b080 f0b080
+  row6: 10d080 30d080 50d080 70d080 90d080 b0d080 d0d080 f0d080
+  row7: 10f080 30f080 50f080 70f080 90f080 b0f080 d0f080 f0f080
+  stats draws=1 tris=2 frags=65536 unsupported=0
+case rgba8-depth 256x256
+  row0: 2fa28c 1acb4e 1acb4e 1acb4e 1acb4e 1acb4e 1acb4e 2fa28c
+  row1: 3a8bae 03fa08 00ff00 00ff00 00ff00 00ff00 03fa08 3a8bae
+  row2: 4080bf 1dc557 00ff00 00ff00 00ff00 00ff00 1dc557 4080bf
+  row3: 4080bf 3a8bae 03fa08 00ff00 00ff00 03fa08 3a8bae 4080bf
+  row4: 4080bf 4080bf 1dc557 00ff00 00ff00 1dc557 4080bf 4080bf
+  row5: 4080bf 4080bf 3a8bae 03fa08 03fa08 3a8bae 4080bf 4080bf
+  row6: 4080bf 4080bf 4080bf 1dc557 1dc557 4080bf 4080bf 4080bf
+  row7: 4080bf 4080bf 4080bf 3a8bae 3a8bae 4080bf 4080bf 4080bf
+  stats draws=3 tris=3 frags=52900 unsupported=0
+case rgba8-cull 256x256
+  row0: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row1: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row2: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row3: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row4: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row5: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row6: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  row7: 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf 4080bf
+  stats draws=1 tris=1 frags=0 unsupported=0
+case rgba8-blend 256x256
+  row0: 7380ae b1809a b1809a b1809a b1809a b1809a b1809a 7380ae
+  row1: 5180b9 f78083 ff8080 ff8080 ff8080 ff8080 f78083 5180b9
+  row2: 4080bf a8809d ff8080 ff8080 ff8080 ff8080 a8809d 4080bf
+  row3: 4080bf 5180b9 f78083 ff8080 ff8080 f78083 5180b9 4080bf
+  row4: 4080bf 4080bf a8809d ff8080 ff8080 a8809d 4080bf 4080bf
+  row5: 4080bf 4080bf 5180b9 f78083 f78083 5180b9 4080bf 4080bf
+  row6: 4080bf 4080bf 4080bf a8809d a8809d 4080bf 4080bf 4080bf
+  row7: 4080bf 4080bf 4080bf 5180b9 5180b9 4080bf 4080bf 4080bf
+  stats draws=2 tris=2 frags=52900 unsupported=0
+case rgba8-mask 256x256
+  row0: 40a28c 40cb4e 40cb4e 40cb4e 40cb4e 40cb4e 40cb4e 40a28c
+  row1: 408bae 40fa08 40ff00 40ff00 40ff00 40ff00 40fa08 408bae
+  row2: 4080bf 40c557 40ff00 40ff00 40ff00 40ff00 40c557 4080bf
+  row3: 4080bf 408bae 40fa08 40ff00 40ff00 40fa08 408bae 4080bf
+  row4: 4080bf 4080bf 40c557 40ff00 40ff00 40c557 4080bf 4080bf
+  row5: 4080bf 4080bf 408bae 40fa08 40fa08 408bae 4080bf 4080bf
+  row6: 4080bf 4080bf 4080bf 40c557 40c557 4080bf 4080bf 4080bf
+  row7: 4080bf 4080bf 4080bf 408bae 408bae 4080bf 4080bf 4080bf
+  stats draws=1 tris=1 frags=26450 unsupported=0
+case formats-rgba16f 64x64
+  row0: ce180c ce180c
+  row1: 9a3319 9a3319
+  stats draws=1 tris=1 frags=1682 unsupported=0
+case formats-d16 64x64
+  row0: 31b60c 31b60c
+  row1: 666719 666719
+  stats draws=3 tris=3 frags=3364 unsupported=0
+case render-area 256x256
+  row0: ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000
+  row1: ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000
+  row2: 00ff00 00ff00 00ff00 00ff00 00ff00 00ff00 00ff00 00ff00
+  row3: 00ff00 00ff00 00ff00 00ff00 00ff00 00ff00 00ff00 00ff00
+  row4: ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000
+  row5: ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000
+  row6: ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000
+  row7: ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000
+  stats draws=0 tris=0 frags=0 unsupported=0
+case mrt-rt0 128x128
+  row0: ff0000 ff0000 333333 333333
+  row1: ff0000 ff0000 333333 333333
+  row2: ff0000 ff0000 333333 333333
+  row3: ff0000 ff0000 333333 333333
+  stats draws=1 tris=2 frags=8192 unsupported=0
+case mrt-rt1 128x128
+  row0: ff00ff ff00ff ff00ff ff00ff
+  row1: ff00ff ff00ff ff00ff ff00ff
+  row2: 00ffff 00ffff 000080 000080
+  row3: 00ffff 00ffff 000080 000080
+  stats draws=1 tris=2 frags=8192 unsupported=0
+case mrt4-rt1-bgra8 64x64
+  row0: 000000 000000
+  row1: 000000 00bf80
+  stats draws=1 tris=2 frags=1056 unsupported=0
+case mrt4-rt2-rgba16f 64x64
+  row0: 000000 000000
+  row1: 000000 8040ff
+  stats draws=1 tris=2 frags=1056 unsupported=0
+case mrt4-rt3-load-rgba32f 64x64
+  row0: 4080bf 4080bf
+  row1: 4080bf 808080
+  stats draws=1 tris=2 frags=1056 unsupported=0
+case load-partial 128x128
+  row0: 0000ff 008080 008080 0000ff
+  row1: 0000ff 008080 008080 0000ff
+  row2: 0000ff 008080 ff0000 ff0000
+  row3: 0000ff 008080 ff0000 ff0000
+  stats draws=1 tris=2 frags=4160 unsupported=0
+case halves 128x128
+  row0: 202080 602080 9f2080 df2080
+  row1: 206080 606080 9f6080 df6080
+  row2: 209f80 609f80 9f9f80 df9f80
+  row3: 20df80 60df80 9fdf80 dfdf80
+  stats draws=1 tris=2 frags=8256 unsupported=0
+PASS

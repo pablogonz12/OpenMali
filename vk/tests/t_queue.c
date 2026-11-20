@@ -3,7 +3,7 @@
  * timeline semaphores, sync_file export/import, many empty submits, device loss. Loader-free: dlopens
  * the ICD like t_icd --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle]
+ *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|teardown]
  *   fault mode needs MALI_FAULT_INJECT=n in the environment (n-th submission fails).
  */
 #define _DEFAULT_SOURCE
@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 static int g_fail;
 static const char *g_only;
@@ -142,21 +143,23 @@ test_many_allocs(void)
    return 1;
 }
 
+/* One run per handle type: DMA_BUF and OPAQUE_FD must both export a fresh, valid descriptor that can be imported
+ * back into a second allocation and sees the same bytes (gamescope's zink asks for OPAQUE_FD). */
 static int
-test_dmabuf(int type)
+test_dmabuf_one(int type, VkExternalMemoryHandleTypeFlagBits ht, const char *name)
 {
-   VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-                                    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .handleTypes = ht};
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex,
                               .allocationSize = 1 << 20, .memoryTypeIndex = type};
    VkDeviceMemory a, b;
-   CHECK(AllocateMemory(dev, &ai, NULL, &a) == VK_SUCCESS, "alloc exportable");
-   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = a,
-                              .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   CHECK(AllocateMemory(dev, &ai, NULL, &a) == VK_SUCCESS, "alloc exportable (%s)", name);
+   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = a, .handleType = ht};
    int fd = -1;
-   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "get fd");
+   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "get fd (%s)", name);
+   struct stat st;
+   CHECK(fstat(fd, &st) == 0, "exported fd is not a valid descriptor (%s)", name);
    VkImportMemoryFdInfoKHR im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
-                                 .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
+                                 .handleType = ht, .fd = fd};
    VkMemoryAllocateInfo bi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im,
                               .allocationSize = 1 << 20, .memoryTypeIndex = type};
    CHECK(AllocateMemory(dev, &bi, NULL, &b) == VK_SUCCESS, "import");
@@ -180,8 +183,17 @@ test_dmabuf(int type)
       CHECK(pa[i] == ~(0xC0DE0000u + i), "reverse differ at %d", i);
    FreeMemory(dev, b, NULL);
    FreeMemory(dev, a, NULL);
-   printf("{\"test\":\"dmabuf\",\"type\":%d,\"ok\":true}\n", type);
+   /* On success the import took ownership of fd (the driver closes it with the BO): closing it here would
+    * close a descriptor the driver still owns. It is only closed on the failure paths above. */
+   printf("{\"test\":\"dmabuf\",\"type\":%d,\"handle\":\"%s\",\"ok\":true}\n", type, name);
    return 1;
+}
+
+static int
+test_dmabuf(int type)
+{
+   return test_dmabuf_one(type, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, "dma_buf") &
+          test_dmabuf_one(type, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, "opaque_fd");
 }
 
 /* ------------------------------------------------------------------ sync */
@@ -226,6 +238,65 @@ test_idle(void)
    CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "queue idle");
    CHECK(DeviceWaitIdle(dev) == VK_SUCCESS, "device idle");
    printf("{\"test\":\"idle\",\"n\":%d,\"ok\":true}\n", g_burst);
+   return 1;
+}
+
+/* Device teardown with a delayed fence still pending (MALI_FAKE_SLOW_US=100000): the fake backend's timer must be stopped and joined in
+ * DestroyDevice. main() then dlclose()s the ICD and waits past the delay: a stray backend thread would wake in unmapped code (SEGV). */
+static int
+test_teardown(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   for (int i = 0; i < 4; i++)
+      CHECK(QueueSubmit(queue, 1, &si, i == 3 ? f : VK_NULL_HANDLE) == VK_SUCCESS, "submit %d", i);
+   DestroyFence(dev, f, NULL); /* not waited: the signal is still in flight */
+   printf("{\"test\":\"teardown\",\"ok\":true}\n");
+   return 1;
+}
+
+/* Poll latency (MALI_FAKE_SLOW_US=300000): a thread sits in a blocking wait on a pending fence (the fake backend, like kbase,
+ * serialises waiters in 20 ms slices); vkGetFenceStatus and a timeout-0 vkWaitForFences on that pending fence must answer
+ * NOT_READY/TIMEOUT at once instead of queueing behind the slice, and the later signal must still be seen. */
+static void *
+poll0_waiter(void *a)
+{
+   WaitForFences(dev, 1, (VkFence *)a, VK_TRUE, 5000000000ull);
+   return NULL;
+}
+
+static int
+test_poll0(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   pthread_t th;
+   pthread_create(&th, NULL, poll0_waiter, &f);
+   usleep(5000); /* the waiter is inside its first slice */
+   double worst = 0;
+   int pending = 0;
+   for (int i = 0; i < 8; i++) {
+      double t = now_us();
+      VkResult a = GetFenceStatus(dev, f), b = WaitForFences(dev, 1, &f, VK_TRUE, 0);
+      t = now_us() - t;
+      if (a == VK_NOT_READY && b == VK_TIMEOUT)
+         pending++;
+      if (t > worst)
+         worst = t;
+      usleep(2000);
+   }
+   CHECK(pending >= 4, "fence was pending in only %d of 8 polls", pending);
+   CHECK(worst < 8000, "timeout-0 poll took %.0f us behind a blocking waiter (limit 8000)", worst);
+   pthread_join(th, NULL);
+   CHECK(GetFenceStatus(dev, f) == VK_SUCCESS, "signalled fence seen by a poll");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 0) == VK_SUCCESS, "signalled fence, timeout 0");
+   DestroyFence(dev, f, NULL);
+   printf("{\"test\":\"poll0\",\"pending\":%d,\"worst_us\":%.0f,\"ok\":true}\n", pending, worst);
    return 1;
 }
 
@@ -542,6 +613,32 @@ test_fault(void)
    return 1;
 }
 
+/* A submission without signals must not run submit_signal (the fake backend counts only those towards MALI_FAULT_INJECT=n):
+ * many signal-less submits survive, and the n-th FENCED one is the lost one. */
+static int
+test_nofence(void)
+{
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   const char *e = getenv("MALI_FAULT_INJECT");
+   int n = e ? atoi(e) : 0;
+   CHECK(n > 1, "MALI_FAULT_INJECT (>1) not set");
+   for (int i = 0; i < 4 * n; i++)
+      CHECK(QueueSubmit(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS, "signal-less submit %d consumed a fence slot", i);
+   for (int i = 0; i < n - 1; i++) {
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "fenced submit %d", i);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "wait %d", i);
+      ResetFences(dev, 1, &f);
+   }
+   VkResult r = QueueSubmit(queue, 1, &si, f);
+   CHECK(r == VK_ERROR_DEVICE_LOST, "n-th fenced submit: expected DEVICE_LOST, got %d", r);
+   DestroyFence(dev, f, NULL);
+   printf("{\"test\":\"nofence\",\"inject\":%d,\"ok\":true}\n", n);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -615,16 +712,32 @@ main(int argc, char **argv)
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
    if (ok && CASE_ON("syncfile")) ok &= test_syncfile();
+   if (ok && g_only && !strcmp(g_only, "poll0")) ok &= test_poll0();
    if (ok && g_only && !strcmp(g_only, "gpufence")) ok &= test_gpufence();
    if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
+   if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
 
-   DeviceWaitIdle(dev);
+   int td = g_only && !strcmp(g_only, "teardown");
+   if (ok && td) ok &= test_teardown();
+   if (!td) DeviceWaitIdle(dev);
+   struct timespec t0, t1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
    DestroyDevice(dev, NULL);
+   clock_gettime(CLOCK_MONOTONIC, &t1);
    DestroyInstance(inst, NULL);
    dlclose(lib);
+   const char *sl = getenv("MALI_FAKE_SLOW_US");
+   unsigned slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
+   if (td) usleep(slow_us + 100000); /* longer than the delay: any thread left behind runs now */
+   double dms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+   if (td && dms > slow_us / 2000.0) { /* destroy must cut the pending delay short, not sit it out */
+      printf("{\"fail\":\"DestroyDevice took %.0f ms with a %u us fence delay\"}\n", dms, slow_us);
+      g_fail = 1;
+   }
    int fds1 = count_fds();
+   if (td && fds1 != fds0) { printf("{\"fail\":\"teardown fds %d -> %d\"}\n", fds0, fds1); g_fail = 1; }
    printf("{\"fds\":[%d,%d],\"pass\":%s}\n", fds0, fds1, (ok && !g_fail) ? "true" : "false");
    return (ok && !g_fail) ? 0 : 1;
 }

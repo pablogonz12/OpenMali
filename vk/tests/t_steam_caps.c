@@ -65,7 +65,7 @@ static const struct ext dev_exts[] = {
    {"VK_EXT_extended_dynamic_state3", "ANGLE(optional)", 0},
    {"VK_EXT_shader_stencil_export", "ANGLE(optional)", 0},
    {"VK_EXT_index_type_uint8", "ANGLE(optional)", 0},
-   {"VK_KHR_incremental_present", "ANGLE(optional)", 0},
+   {"VK_KHR_incremental_present", "ANGLE(optional)", 1},
 };
 
 static const struct ext inst_exts[] = {
@@ -125,6 +125,17 @@ main(int argc, char **argv)
    VkInstance inst = NULL;
    CHECK(CreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "gamescope instance (1.3, no extensions)");
    if (!inst) return 1;
+   /* ANGLE enables VK_EXT_swapchain_colorspace when it is listed: the instance must accept it (behavioural; fails when the name is unlisted). */
+   {
+      const char *csx[2] = {"VK_KHR_surface", "VK_EXT_swapchain_colorspace"};   /* the colourspace extension requires VK_KHR_surface */
+      VkInstanceCreateInfo ci2 = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
+                                  .enabledExtensionCount = 2, .ppEnabledExtensionNames = csx};
+      PFN_vkDestroyInstance DI = (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
+      VkInstance i2 = NULL;
+      CHECK(has(iep, nie, csx[0]) && has(iep, nie, csx[1]), "instance lists VK_KHR_surface and VK_EXT_swapchain_colorspace");
+      CHECK(CreateInstance(&ci2, NULL, &i2) == VK_SUCCESS, "instance accepts VK_KHR_surface + VK_EXT_swapchain_colorspace");
+      if (i2 && DI) DI(i2, NULL);
+   }
 #define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceFeatures2); I(CreateDevice); I(GetPhysicalDeviceProperties2);
    I(EnumerateDeviceExtensionProperties); I(GetPhysicalDeviceQueueFamilyProperties); I(GetDeviceProcAddr);
@@ -201,7 +212,7 @@ main(int argc, char **argv)
          {"timelineSemaphore", f12.timelineSemaphore, 1, "-"},
          {"VK_KHR_external_memory_fd", has(eps, ne, "VK_KHR_external_memory_fd"), 1, "-"},
          {"VK_KHR_maintenance1 extension flag", has(eps, ne, "VK_KHR_maintenance1"), 0, "S"},
-         {"logicOp", f2.features.logicOp, 0, "M"},
+         {"logicOp", f2.features.logicOp, 0, "done"},
          {"VK_EXT_custom_border_color", has(eps, ne, "VK_EXT_custom_border_color"), 0, "M"},
          {"VK_EXT_line_rasterization", has(eps, ne, "VK_EXT_line_rasterization"), 0, "M"},
          {"VK_EXT_physical_device_drm", has(eps, ne, "VK_EXT_physical_device_drm"), 0, "S"},

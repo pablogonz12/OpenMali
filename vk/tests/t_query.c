@@ -47,6 +47,24 @@ int main(int argc, char **argv)
       }
       free(cs);
    }
+   /* Two devices: a light ops frame built for device A must leave the head-flush request with A. Device B's submission taking its own
+    * flag must not consume it (a process-global flag lost A's flush), and B's frame must not set A's. */
+   {
+      int pa = 0, pb = 0;
+      struct mali_env ea = { .arch = 13, .sync_va = 0x7f0000009000ull, .light_pending = &pa };
+      struct mali_env eb = { .arch = 13, .sync_va = 0x7f000000a000ull, .light_pending = &pb };
+      struct mali_op lo[] = { { MALI_OP_AVAIL, 0x7f0000200000ull, 0, 1 } };
+      struct mali_op fo[] = { { MALI_OP_FLUSH, 0, 0, 0 } };
+      uint64_t *c1; unsigned k1;
+      CHECK(mali_ops_build(&ea, lo, 1, &c1, &k1) == 0, "light build A");
+      free(c1);
+      CHECK(mali_ops_take_light(&pb) == 0, "device B's submission consumed device A's pending head flush");
+      CHECK(mali_ops_build(&eb, fo, 1, &c1, &k1) == 0, "heavy build B");
+      free(c1);
+      CHECK(pa == 1 && pb == 0, "heavy frame of B touched the flags (a=%d b=%d)", pa, pb);
+      CHECK(mali_ops_take_light(&pa) == 1, "device A lost its pending head flush");
+      CHECK(mali_ops_take_light(&pa) == 0, "flag not cleared by take");
+   }
    struct mali_env bad = { .arch = 9 };
    uint64_t *cs; unsigned n;
    CHECK(mali_ops_build(&bad, NULL, 0, &cs, &n) != 0, "arch 9 rejected");
