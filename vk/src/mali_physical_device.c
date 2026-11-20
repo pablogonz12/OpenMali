@@ -366,6 +366,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    const struct vk_features features = {
       .timelineSemaphore = true,
       .textureCompressionBC = true,
+      .textureCompressionETC2 = true,   /* native sampling (mali_image.c etc2); t_vk_info lists every ETC2/EAC format, dEQP texture.compressed.etc2* on hardware */
       .hostQueryReset = true,
       .synchronization2 = true,
       .dynamicRendering = true,
