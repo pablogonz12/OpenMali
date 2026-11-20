@@ -635,6 +635,33 @@ mali_GetPhysicalDeviceExternalBufferProperties(
  * stat() (cheap) behind a one second cache, and report each half independently. An explicit node from the app wins:
  * DD_DRM_STANDIN / VKBRIDGE_DRM_RENDER / BL_DRM_STANDIN is reported as the render node, and as primary when no card
  * matched (gamescope refuses a device without a primary when it drives DRM, and a misc alias is all the guest has). */
+/* True when /dev/dri has a node with this rdev: the identity we report must name a node a client can open. */
+static bool
+drm_rdev_has_alias(dev_t rdev)
+{
+   const char *dirs[] = { "/dev/dri", "/dev/dri/by-path" };
+   for (unsigned d = 0; d < 2; d++) {
+      DIR *dp = opendir(dirs[d]);
+      if (!dp)
+         continue;
+      struct dirent *de;
+      while ((de = readdir(dp))) {
+         if (de->d_name[0] == '.')
+            continue;
+         char path[PATH_MAX];
+         struct stat st;
+         if (snprintf(path, sizeof path, "%s/%s", dirs[d], de->d_name) >= (int)sizeof path)
+            continue;
+         if (stat(path, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == rdev) {
+            closedir(dp);
+            return true;
+         }
+      }
+      closedir(dp);
+   }
+   return false;
+}
+
 static void
 mali_drm_refresh(struct mali_physical_device *pdev)
 {
@@ -702,6 +729,10 @@ mali_drm_refresh(struct mali_physical_device *pdev)
           * find the /dev/dri alias with that rdev (the guest binds it into /dev/dri as renderD<minor>). */
          standin_rdev = (dev_t)pdev->gpu.node_rdev;
       }
+      /* The stand-in must be a node the app can actually see as /dev/dri: take our own rdev only when it has an
+       * alias there, otherwise the identity would name a node no client can open. */
+      if (standin_rdev && !drm_rdev_has_alias(standin_rdev))
+         standin_rdev = 0;
       if (standin_rdev && (!node.render || !node.primary)) {
          /* Resolve through /dev/dri by rdev if the path itself is not a /dev/dri node. */
          if (!node.render)
