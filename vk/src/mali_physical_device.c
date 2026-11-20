@@ -27,12 +27,24 @@
  * The milestone that implements a feature raises its limits to what the hardware does.
  * Exception, the UBO counts: 12/72 (the 1.0 minimum) are one short of what st needs to see
  * ARB_uniform_buffer_object, and the hardware is bounded by the 24-bit SRT descriptor index, not
- * by 12. They are 128 because that is this driver's own maxPerStageResources. */
+ * by 12. They are 128 because that is this driver's own maxPerStageResources - but only with
+ * MALI_EXPERIMENTAL_TF=1 (mali_tf.h). Without transform feedback Mesa keeps the context at
+ * GL 2.1 / GLSL 1.20 (version.c: EXT_transform_feedback is required for ver_3_0) and still
+ * advertises ARB_uniform_buffer_object from can_ubo alone (st_extensions.c:464), so the
+ * extension's own shaders are uncompilable: host probe, zink on this ICD, gate off ->
+ * "GL_VERSION=2.1 ... GL_ARB_uniform_buffer_object=yes" and `#version 140` fails with
+ * "GLSL 1.40 is not supported". Steam's CEF then never creates its UI window (webhelper
+ * restarts every 10 s). Gate off therefore keeps the 1.0 minimums, i.e. the same GL
+ * capability set a pre-UBO build had. */
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
    /* 4x is advertised only with MALI_EXPERIMENTAL_MSAA=1: without it 4x pipelines are rejected (mali_pipeline.c), so advertising it would lie. */
    const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);
+   /* UBO counts: 128 only with the transform-feedback gate (see the header comment above); 12/72 are the
+    * Vulkan 1.0 required minimums, which st reads as "no ARB_uniform_buffer_object" (st_extensions.c:342). */
+   const uint32_t ubo_count = mali_experimental_tf() ? 128 : 12;
+   const uint32_t ubo_set_count = mali_experimental_tf() ? 128 : 72;
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -58,23 +70,25 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .bufferImageGranularity = 1,
       .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
       .maxPerStageDescriptorSamplers = 16,
-      .maxPerStageDescriptorUniformBuffers = 128,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table and the
+      .maxPerStageDescriptorUniformBuffers = ubo_count,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table and the
                                                      * SRT descriptor index is 24 bits (third_party/mesa compiler/pan_compiler.h:610-636;
                                                      * PanVK, "Hardware limit is 2^24 each of buffer, texture, and sampler descriptors",
                                                      * panvk_descriptor_set_layout.h:54-57). The cap that binds first is this driver's own
                                                      * maxPerStageResources = 128 below: a stage cannot reference more descriptors than
                                                      * that, so 128 is the honest per-stage UBO ceiling (kbase's GPU props carry no
                                                      * descriptor-count cap, libkbase/include/kbase.h:36-58). 12 was the Vulkan 1.0
-                                                     * textbook minimum and made zink report 11 const buffers: st needs 12 for UBOs. */
+                                                     * textbook minimum and made zink report 11 const buffers: st needs 12 for UBOs - so that is
+                                                     * what stays when the TF gate is off (see the header comment). */
       .maxPerStageDescriptorStorageBuffers = 4,
       .maxPerStageDescriptorSampledImages = 16,
       .maxPerStageDescriptorStorageImages = 4,
       .maxPerStageDescriptorInputAttachments = 4,
       .maxPerStageResources = 128,
       .maxDescriptorSetSamplers = 96,
-      .maxDescriptorSetUniformBuffers = 128,   /* == maxPerStageDescriptorUniformBuffers (the spec relation): one set may hold every
-                                                * per-stage UBO. 128 * 32 B = 4 KiB of table, far under the per-set slot cap of 2^20
-                                                * (mali_descriptor.c:219) and maxPerSetDescriptors 1024. */
+      .maxDescriptorSetUniformBuffers = ubo_set_count,   /* with the gate on it equals maxPerStageDescriptorUniformBuffers: one set may
+                                                * hold every per-stage UBO. 128 * 32 B = 4 KiB of table, far under the per-set slot cap
+                                                * of 2^20 (mali_descriptor.c:219) and maxPerSetDescriptors 1024. With the gate off
+                                                * both are the 1.0 minimums (72 >= 12), which is the spec relation that matters. */
       .maxDescriptorSetUniformBuffersDynamic = 8,
       .maxDescriptorSetStorageBuffers = 24,
       .maxDescriptorSetStorageBuffersDynamic = 4,
@@ -146,11 +160,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
       .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
-      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = 128, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
       .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
       .maxPerStageUpdateAfterBindResources = 500000,
       .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
-      .maxDescriptorSetUpdateAfterBindUniformBuffers = 128, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
+      .maxDescriptorSetUpdateAfterBindUniformBuffers = ubo_set_count, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
       .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
       .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };

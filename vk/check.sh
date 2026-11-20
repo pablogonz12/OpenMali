@@ -103,6 +103,9 @@ for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_B
 # VK_EXT_transform_feedback is gated on MALI_EXPERIMENTAL_TF=1 (default off, mali_tf.h): the extension, features,
 # properties and the XFB lowering all follow the switch, and tf_write is the device case that proves the stores land.
 for g in v11 v13; do run "vk_info $g tf gate" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# UBO counts follow the same gate (mali_physical_device.c): 128 only with it, the 1.0 minimums 12/72 without. The plain
+# `vk_info $g` run above is the unset case; this is the explicit 0 (a session that sets it to 0 must not read as on).
+for g in v11 v13; do run "vk_info $g tf off" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
 for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
