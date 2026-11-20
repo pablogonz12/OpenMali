@@ -183,6 +183,7 @@ make_target(Target *t)
    VkSubpassDependency dep = {.srcSubpass = VK_SUBPASS_EXTERNAL,
                               .dstSubpass = 0,
                               .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
    VkRenderPassCreateInfo rpci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -453,6 +454,7 @@ main(int argc, char **argv)
       die("vkAllocateCommandBuffers", r);
    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    VkFence fence[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+   unsigned char submitted[2] = {0, 0};  /* slots that actually received a submission in this phase */
    for (int i = 0; i < 2; i++) {
       r = CreateFence(dev, &fci, NULL, &fence[i]);
       if (r != VK_SUCCESS)
@@ -489,10 +491,17 @@ main(int argc, char **argv)
       CmdEndRenderPass(cb);
       EndCommandBuffer(cb);
       si.pCommandBuffers = &cb;
-      QueueSubmit(queue, 1, &si, fence[s]);
+      r = QueueSubmit(queue, 1, &si, fence[s]);
+      if (r != VK_SUCCESS)
+         die("vkQueueSubmit (warmup)", r);
+      submitted[s] = 1;
    }
-   for (int i = 0; i < 2; i++) {
-      WaitForFences(dev, 1, &fence[i], VK_TRUE, UINT64_MAX);
+   for (int i = 0; i < 2; i++) {              /* only slots that really got a submission */
+      if (!submitted[i])
+         continue;
+      r = WaitForFences(dev, 1, &fence[i], VK_TRUE, UINT64_MAX);
+      if (r != VK_SUCCESS)
+         die("vkWaitForFences (warmup drain)", r);
       ResetFences(dev, 1, &fence[i]);
    }
 
@@ -526,12 +535,18 @@ main(int argc, char **argv)
       if (r != VK_SUCCESS)
          die("vkQueueSubmit", r);
       sub_us += now_us() - b;
+      submitted[s] = 1;
       frames++;
       if ((now_us() - wall0) / 1e6 >= seconds)
          break;
    }
-   for (int i = 0; i < 2; i++)
-      WaitForFences(dev, 1, &fence[i], VK_TRUE, UINT64_MAX);
+   for (int i = 0; i < 2; i++) {
+      if (!submitted[i])
+         continue;
+      r = WaitForFences(dev, 1, &fence[i], VK_TRUE, UINT64_MAX);
+      if (r != VK_SUCCESS)                     /* device lost after the last submit: the FPS would be a fiction */
+         die("vkWaitForFences (final drain)", r);
+   }
    double wall = (now_us() - wall0) / 1e6;
 
    const char *icd = getenv("VK_DRIVER_FILES");
