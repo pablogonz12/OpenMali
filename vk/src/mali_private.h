@@ -77,6 +77,8 @@ void mali_resources_init(void);
 VkResult mali_wsi_init(struct mali_physical_device *pdev);
 void mali_wsi_finish(struct mali_physical_device *pdev);
 extern const uint64_t mali_wsi_modifier; /* DRM_FORMAT_MOD_LINEAR, the only one advertised */
+/* mali_wsi.c: vkCreateSwapchainKHR with the X11 diagnostics and the no-DRI3 software fallback (mali_device.c). */
+VkResult mali_wsi_create_swapchain(VkDevice, const VkSwapchainCreateInfoKHR*, const VkAllocationCallbacks*, VkSwapchainKHR*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
 
 #endif
