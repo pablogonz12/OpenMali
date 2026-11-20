@@ -468,7 +468,16 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
 static void
 kbase_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t len, bool invalidate)
 {
-   if (!(bo->flags & MALI_BO_CACHED) || off >= bo->size)
+   /* A dma-buf backed BO (every swapchain image) has no cache lines of ours to touch, but it does carry the
+    * writer's fence: DMA_BUF_IOCTL_SYNC START|READ waits for the GPU's writes, and that is what a CPU read of
+    * the presented image needs (the X11 software present copies it out). Without it the copy can read a frame
+    * the GPU has not finished writing, which is a black window, not a torn one. */
+   if (!(bo->flags & MALI_BO_CACHED)) {
+      if (bo->priv && (bo->flags & MALI_BO_EXPORT) && bo->dmabuf_fd >= 0)
+         kb_bo_dmabuf_sync(bo->priv, false /* START */, false /* READ: wait for the GPU writer */);
+      return;
+   }
+   if (off >= bo->size)
       return;
    if (len > bo->size - off)
       len = bo->size - off;
