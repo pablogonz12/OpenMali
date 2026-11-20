@@ -32,9 +32,6 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #endif
 #if defined(__linux__)
 #include <sys/ipc.h>
-#endif
-#if defined(__linux__)
-#include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/mman.h>
 #include <unistd.h>
