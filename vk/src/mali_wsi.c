@@ -309,6 +309,8 @@ mali_x11_shm_destroy(VkSwapchainKHR sc)
       return;
 #if defined(VK_USE_PLATFORM_XCB_KHR)
    xcb_shm_detach((xcb_connection_t *)st->conn, st->seg);
+   if (st->gc)
+      xcb_free_gc((xcb_connection_t *)st->conn, st->gc);   /* created per swapchain in mali_x11_shm_create */
    xcb_flush((xcb_connection_t *)st->conn);
 #endif
    if (st->addr && st->addr != MALI_SHM_FAILED)
