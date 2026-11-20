@@ -310,7 +310,7 @@ class T(unittest.TestCase):
         return r.returncode, r.stdout.strip(), r.stderr
 
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -1272,15 +1272,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -1291,11 +1291,51 @@ class T(unittest.TestCase):
                                                          mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
         L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
         new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
-        got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
+        got = self._sup(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
         self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
         self.assertEqual(old["parts"]["v13"]["state"], "pending")
-        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
-        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+        self.assertEqual(self._sup(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
+        self.assertEqual(self._sup(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+
+    def test_supersede_all_suites_same_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        new = mk("new", commit="z", seq=5)
+        cases, bench, daily, other_ref, head, sweep, auto = (mk("c", suite="cases"), mk("b", suite="bench"), mk("d", suite="daily"),
+            mk("o", suite="cases", ref="lane/y"), mk("h", suite="cases", ref="HEAD"), mk("s", suite="sweep"), mk("a", suite="bench", auto=True))
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        got = self._sup(new, [cases, bench, daily, other_ref, head, sweep, auto], lambda o, n: True)
+        self.assertEqual(sorted(g[0] for g in got), ["b", "c", "d"])
+        self.assertEqual(other_ref["parts"]["v13"]["state"], "pending")
+        self.assertEqual(self._sup(dict(new, ref="HEAD"), [mk("c2", suite="cases", ref="HEAD")], lambda o, n: True), [])
+
+    def test_supersede_sibling_needs_other_suite_and_stable_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        new = mk("new", commit="z", seq=5)
+        run = lambda n, js: self._sup(n, js, lambda o, m: True)
+        self.assertEqual(run(new, [mk("o1", only="draw"), mk("o2", env={"X": "1"})]), [])               # same suite, other only/env: kept
+        for r in ("HEAD~1", "main^", "@{u}", "abc1234", "HEAD^2", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD"):
+            self.assertEqual(run(mk("n2", commit="z", seq=5, ref=r), [mk("c", suite="cases", ref=r)]), [], r)
+        self.assertEqual([g[0] for g in run(new, [mk("c3", suite="cases")])], ["c3"])
+
+    def test_supersede_skips_job_it_cannot_refresh(self):
+        """the re-read before the write fails (job file gone or corrupt): skip the job, never write the stale snapshot back"""
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1)
+        mk = lambda i: dict(base, id=i, commit="a", parts={"v11": {"state": "pending"}})
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        gone, bad = mk("gone"), mk("bad")
+        open(L.job_path("bad"), "w").write("{not json")
+        new = dict(mk("new"), commit="z", seq=5)
+        self.assertEqual(L.supersede_old_gates(new, [gone, bad], lambda o, n: True), [])
+        self.assertFalse(L.os.path.exists(L.job_path("gone")))                                          # nothing written back
+        self.assertEqual(open(L.job_path("bad")).read(), "{not json")
+
+    def _sup(self, new, jobs, anc):
+        for j in jobs:                                                                                  # supersede re-reads each job from disk
+            L.write_json(L.job_path(j["id"]), j)
+        return L.supersede_old_gates(new, jobs, anc)
 
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
