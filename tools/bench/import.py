@@ -41,6 +41,10 @@ MENU = ROOT / "bench/menu.jsonl"
 # Driver-mode WSI smoke lanes (vkcube under wayland / xcb), one line per rep. These are the only
 # source of `stack: mali-open` displayed-fps points: no APK, no menubench, just the driver.
 DRIVER = ROOT / "bench/driver.jsonl"
+# Offscreen producer rates (t_bench_gpu / t_bench_cpu). They are `metric: render_fps`, a
+# different kind from displayed_fps: never plotted as a displayed rate, never compared to a
+# panel, and stored in their own file so the two kinds cannot be confused at the source.
+OFFSCREEN = ROOT / "bench/offscreen.jsonl"
 # The archived seed and the owner's hand-typed rows are kept as evidence only: a line in
 # FINDINGS.md or an owner note is not a measurement and cannot carry panel_hz or reps.
 SEED = ROOT / "docs/bench-archive/2026-11-20-invalid/bench-seed.jsonl"
@@ -283,6 +287,54 @@ def from_driver(sink):
         })
 
 
+def from_offscreen(sink):
+    """bench/offscreen.jsonl: offscreen producer rates. stored as render_fps, never displayed.
+
+    There is no panel in front of an offscreen draw, so `panel_hz` stays null and no ceiling
+    applies: 680 fps on a 120 Hz phone is not instrument error, it is a different metric.
+    """
+    for r in read_jsonl(OFFSCREEN):
+        dev = DEVICE.get(r.get("device"))
+        wl = str(r.get("workload") or "")
+        src = str(r.get("source") or "")
+        if dev is None:
+            sink.reject("unknown_device", f"device={r.get('device')}", r, source=src)
+            continue
+        if str(r.get("profile")) == "uncapped":
+            sink.reject("uncapped_profile", "not comparable with default", r, source=src,
+                        observed_fps=r.get("fps"), workload=wl)
+            continue
+        fps = r.get("fps")
+        if not isinstance(fps, (int, float)):
+            sink.reject("no_displayed_fps", "offscreen fps absent", r, source=src, workload=wl)
+            continue
+        sink.rows.append({
+            "ts": day(r.get("ts"), None),
+            "device": dev,
+            "stack": "bridge" if str(r.get("stack")) == "bridge" else "mali-open",
+            "version": str(r.get("version") or mali_version(r.get("driver_sha"))),
+            "driver_sha": (None if str(r.get("stack")) == "bridge"
+                           else mali_version(r.get("driver_sha"))),
+            "workload": wl,
+            "metric": "render_fps",
+            "profile": str(r.get("profile") or "unknown"),
+            "fps": round(float(fps), 2),
+            "panel_hz": None,          # offscreen: there is no panel to cap this
+            "reps": 1,
+            "brightness_mean": None,   # nothing on screen, so nothing to verify
+            "status": str(r.get("status") or "visible"),
+            "source": src,
+            "render_fps": round(float(fps), 2),
+            "presented_fps": None,
+            "off_cadence_pct": None,
+            "run": str(r.get("run") or ""),
+            "temp_c": num_or_none(r.get("temp_c")),
+            "cpu_idle_pct": None,
+            "gpu_busy_pct": None,
+            "note": str(r.get("note") or ""),
+        })
+
+
 def from_seed(sink):
     """FINDINGS.md / owner notes: a claim with no displayed-fps source, panel_hz or reps."""
     for r in read_jsonl(SEED):
@@ -315,6 +367,7 @@ def build():
     from_bench2(sink)
     from_menu(sink)
     from_driver(sink)
+    from_offscreen(sink)
     from_seed(sink)
     rows = assign_reps(sink.rows)
     rows.sort(key=lambda r: (r["ts"], r["device"], r["stack"], r["workload"], r["version"],
@@ -352,7 +405,10 @@ def main():
     OUT.write_text(text)
     REJ.write_text(rtext)
     counts = Counter(r["reason"] for r in rejected)
-    print(f"bench: wrote {OUT.relative_to(ROOT)} ({len(rows)} displayed-fps rows) and "
+    n_disp = sum(1 for r in rows if r["metric"] == "displayed_fps")
+    n_rend = len(rows) - n_disp
+    print(f"bench: wrote {OUT.relative_to(ROOT)} ({n_disp} displayed-fps, {n_rend} render_fps "
+          f"rows) and "
           f"{REJ.relative_to(ROOT)} ({len(rejected)} rejected)")
     for reason, n in counts.most_common():
         print(f"bench:   rejected {n:4d} {reason}")

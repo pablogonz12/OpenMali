@@ -310,6 +310,11 @@ NOTE = {
 
 
 def build(rows):
+    # Only displayed_fps is a chart metric. Offscreen producer rates (`metric: render_fps`)
+    # share the store but never this page: plotting 680 fps under a 120 Hz ceiling line would
+    # read as instrument error for a number that has no panel in front of it.
+    offscreen = [r for r in rows if r.get("metric") != "displayed_fps"]
+    rows = [r for r in rows if r.get("metric") == "displayed_fps"]
     g = gapmod.build(rows)
     by_wl = {}
     for r in rows:
@@ -388,6 +393,12 @@ def build(rows):
         lines.append(f"{i}. **{cell['workload']} / {cell['device']} / {cell['stack']} / "
                      f"{cell['version']}** — {cell['why']}."
                      + (f" `{rb['test']}` with {rb['apk_or_driver']}." if rb else ""))
+    if offscreen:
+        lines += ["## Offscreen producer rates (not on these charts)", "",
+                  f"{len(offscreen)} row(s) with `metric: render_fps` live in `docs/bench.jsonl` "
+                  "(`bench/offscreen.jsonl`): `t_bench_gpu` / `t_bench_cpu`. They are a different "
+                  "metric, measured without a panel, so they are never plotted against a refresh "
+                  "ceiling and never compared with a displayed rate.", ""]
     lines += ["", "Full matrix and per-cell runbooks: `docs/bench-gaps.json`.", "",
               f"_Generated from {len(rows)} rows; every plotted point carries `reps` and "
               f"`panel_hz`. Rejected source rows are listed with reasons in "

@@ -395,6 +395,10 @@ vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vk
 6. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
 7. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
 8. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+## Offscreen producer rates (not on these charts)
+
+14 row(s) with `metric: render_fps` live in `docs/bench.jsonl` (`bench/offscreen.jsonl`): `t_bench_gpu` / `t_bench_cpu`. They are a different metric, measured without a panel, so they are never plotted against a refresh ceiling and never compared with a displayed rate.
+
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
