@@ -202,6 +202,51 @@ int main(void)
    b->wait_counter(k, &cnt, 1, 100);
    EXPECT(kb_fake_memsync_count(exp.gpu_va) > before, "mapped export: device->CPU invalidate after a counter wait, once the GPU wrote it");
 
+   /* ---- a bo_wrote(NULL) mark is a FULL sweep *owed* to the next device->CPU pass. Every queue submit runs
+    * mem_sync_bos(op 1) first; that pass must not consume the flag (it used to, mali_backend_kbase.c:612-613), or
+    * the app's own fence wait sweeps only BOs whose per-BO counter advanced and a BO covered only by the
+    * full-sweep mark is skipped. Field sequence: pending mark -> wsi throttle wait -> submit -> app wait. ---- */
+   {
+      enum { NF = 2 };
+      struct mali_bo fb[NF];
+      unsigned after_submit[NF];
+      for (int i = 0; i < NF; i++) {
+         if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &fb[i])) { printf("FAIL  bo_alloc full-sweep\n"); return 1; }
+         b->bo_host_touch(k, &fb[i]);   /* app-mapped, non-hot: every op-1 pass touches it, the marks do not */
+         memset(fb[i].cpu, 0x22, 64);
+      }
+      b->bo_wrote(k, NULL);            /* the front end could not pin the write: owe one full sweep */
+      int tfd = -1;
+      if (b->submit_signal(k, &tfd) == 0 && tfd > 0) {  /* the per-image throttle wait wsi_common does before a present */
+         unsigned t0[NF];
+         for (int i = 0; i < NF; i++) t0[i] = kb_fake_memsync_count(fb[i].gpu_va);
+         mali_fence_wait_no_csync++;
+         EXPECT(b->fence_wait(k, tfd, 100) == 0, "full-sweep pending: throttle wait signalled");
+         mali_fence_wait_no_csync--;
+         close(tfd);
+         bool held = true;
+         for (int i = 0; i < NF; i++) held &= kb_fake_memsync_count(fb[i].gpu_va) == t0[i];
+         EXPECT(held, "full-sweep pending: the throttled wsi wait consumes no MEM_SYNC");
+      }
+      b->host_sync(k);                 /* CPU->device pass first, then the submit: neither may clear the flag */
+      b->submit_cs(k, cs, 0);
+      for (int i = 0; i < NF; i++) after_submit[i] = kb_fake_memsync_count(fb[i].gpu_va);
+      static volatile uint64_t c5 = 1;
+      b->wait_counter(k, &c5, 1, 100); /* the app's own vkWaitForFences: it owes the full sweep */
+      bool swept = true;
+      for (int i = 0; i < NF; i++) {
+         unsigned d = kb_fake_memsync_count(fb[i].gpu_va) - after_submit[i];
+         swept &= d == 1;
+         EXPECT(d == 1, "bo_wrote(NULL) full sweep survives the submit: BO %d CSYNCed at the app wait (%u)", i, d);
+      }
+      EXPECT(swept, "pending full sweep reaches the app wait instead of being swallowed by op 1");
+      /* and it is consumed by that device->CPU pass, so the next wait does not sweep again */
+      unsigned a0 = kb_fake_memsync_count(fb[0].gpu_va) + kb_fake_memsync_count(fb[1].gpu_va);
+      b->wait_counter(k, &c5, 1, 100);
+      EXPECT(kb_fake_memsync_count(fb[0].gpu_va) + kb_fake_memsync_count(fb[1].gpu_va) == a0,
+             "the full sweep is consumed by the device->CPU pass that ran it (no permanent sweep)");
+   }
+
    /* ---- present path: wsi_common waits on its own per-image throttle fence before every present (wsi_common.c:2469)
     * and that wait precedes no CPU read of driver memory, so the device->CPU sweep must be skipped there. The app's
     * own vkWaitForFences must keep it. M15: mem_sync_bos skips a BO whose gpu_writes mark did not change, so each

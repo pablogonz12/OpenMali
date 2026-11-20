@@ -609,8 +609,11 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    const bool dev2cpu = op == 2;
    const char *e = getenv("MALI_SYNC_ALL"), *t = getenv("MALI_SYNC_TRACK");   /* read per call: the tests flip them */
    pthread_mutex_lock(&k->bo_lock);
-   bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
-   k->sync_all_pending = false;
+   /* The pending full-sweep flag is consumed only by a device->CPU pass, never by the CPU->device pass that every
+    * submit runs first: that one throttles/skips nothing and would otherwise swallow a mark a later app wait needs.
+    * Exchange before the loop, so a bo_wrote(NULL) that lands mid-sweep survives for the next wait. */
+   const bool pending_all = dev2cpu && __atomic_exchange_n(&k->sync_all_pending, false, __ATOMIC_RELAXED);
+   bool sweep_all = pending_all || (dev2cpu && ((e && e[0] == '1') || (t && t[0] == '0')));
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
       unsigned n = 0;
