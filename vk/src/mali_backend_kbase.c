@@ -520,7 +520,7 @@ out:
 }
 
 static void mem_sync_all(struct mali_kdev *k, unsigned op);
-enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD };
+enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD, SYNC_POLL };
 static void mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel);
 static int
 kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
@@ -546,7 +546,10 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
          k->lost = true;
          return -EIO;
       }
-      mem_sync_all(k, 2);
+      /* A timeout-0 poll is a query, not a wait: sync the native BOs the GPU wrote (as before) but leave foreign
+       * imports alone. We cannot tell whether an import is a dependency of this fence, and a poll happens far
+       * more often than a wait; a blocking wait (below) still covers every import. */
+      mem_sync_bos(k, 2, SYNC_POLL);
       return 0;
    }
    struct timespec t0;
@@ -632,6 +635,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
        * else's buffer at the GPU before a submit (that direction stays native-BO only). */
       if (!dev2cpu && b->imported)
          continue;
+      if (sel == SYNC_POLL && b->imported)
+         continue;   /* see the poll path in kbase_fence_wait */
       uint64_t wrote = 0;
       /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
        * check would either skip them or claim them synced before their submission completes: sync a foreign
