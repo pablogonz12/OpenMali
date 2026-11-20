@@ -143,6 +143,11 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k_int_nocoh_default = gpu->arch_major == 11;
    if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
+   if (getenv("MALI_WSI_DEBUG") || getenv("MALI_SUBMIT_DBG"))
+      fprintf(stderr, "mali_vk: kbase bo flags 0x%llx (%s): COHERENT_LOCAL applies to native and imported BOs; "
+              "internal BOs %s\n", (unsigned long long)kb_bo_extra_flags,
+              kb_bo_extra_flags & 0x800 ? "COHERENT_LOCAL" : "none",
+              k_int_nocoh_default ? "opt out (MALI_INT_NOCOH)" : "keep it");
    const char *fi = getenv("MALI_FAULT_INJECT");
    k->fault_at = fi ? strtoul(fi, NULL, 10) : 0;
    pthread_mutex_init(&k->submit_lock, NULL);
