@@ -305,6 +305,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
+   dispatch_table.GetPhysicalDeviceSurfacePresentModesKHR = mali_wsi_get_present_modes;   /* + IMMEDIATE on the software path */
 
    struct mali_drm_node drm;
    bool has_drm = mali_drm_find_node(gpu, &drm);
