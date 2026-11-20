@@ -662,6 +662,13 @@ class Farm:
         app session cannot be READY (locked screen: the session stays SUSPENDED)"""
         return dev.get("smoke_fallback") == "shell" and not self.shell_route(dev)
 
+    def daily_shell(self, dev):
+        """daily / sweep / cases run on the adb-shell route (shellroute.py, glibc deqp-vk staged in /data/local/tmp/g): always on a route=shell phone,
+        and on a smoke_fallback="shell" phone while its app session cannot be READY (locked screen). -> bool"""
+        if self.shell_route(dev):
+            return True
+        return self.smoke_fallback(dev) and bool(self.session_blocked(dev))
+
     def needs_bionic(self, job):
         return job["suite"] == "smoke" and any((self.shell_route(dv) or self.smoke_fallback(dv)) and dv["class"] in job["parts"] for dv in self.devs.values())
 
@@ -863,7 +870,7 @@ class Farm:
                 rc, _ = L.run_watched(["sleep", "30"], 60, lambda: self.alive(dev), poll=0.2)
                 if rc == 125:
                     return {"lost": True}
-        elif self.shell_route(dev):
+        elif self.daily_shell(dev):
             tree = self.tree(job["id"])
             listf = os.path.join(tree, "vk", "deqp", "lists", "daily-sample.txt")
             if not os.path.exists(listf):
@@ -871,7 +878,7 @@ class Farm:
             run_id = job["id"] + "-" + dev["alias"]
             out_tsv = os.path.join(L.state_dir(), "work", f"{run_id}.daily.tsv")        # resumes across a pause / farmd restart
             rc, out = self.run_shellroute(job, dev, "daily", run_id, ["--list", listf, "--out", out_tsv, "--chunk", "100"],
-                                          int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400")))
+                                          int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400")), nodim=not self.shell_route(dev))
             so_phone = f"/data/local/tmp/g/icd.{run_id}.so"
             if rc not in (75, 124, 125, 73, 76, 81):
                 ok_s, got = self.verify_so(job, dev, so_phone)
@@ -1041,7 +1048,7 @@ class Farm:
             return 0, "", {c: (self.fake_status(job, c), "") for c in cases}, True, None
         tree = self.tree(job["id"])
         self.harness(tree)
-        shell = self.shell_route(dev)
+        shell = self.daily_shell(dev)
         os.makedirs(os.path.join(wd, "runs"), exist_ok=True)
         if not shell:
             for nm, tgt in (("scripts", os.path.join(self.quick_root, "scripts")), ("tools", os.path.join(self.quick_root, "tools")), ("driver", tree)):
@@ -1051,7 +1058,7 @@ class Farm:
         open(lf, "w").write("\n".join(cases) + "\n")
         if shell:
             tsv = os.path.join(wd, f"{tag}.tsv")
-            rc, out = self.run_shellroute(job, dev, "daily", rid, ["--list", lf, "--out", tsv, "--chunk", str(min(chunk, 100))], tmo)
+            rc, out = self.run_shellroute(job, dev, "daily", rid, ["--list", lf, "--out", tsv, "--chunk", str(min(chunk, 100))], tmo, nodim=not self.shell_route(dev))
             so_phone = f"/data/local/tmp/g/icd.{rid}.so"
         else:
             rc, out = L.run_watched([sys.executable, "-I", os.path.join(tree, "vk", "deqp", "qdeqp.py"), dev["lock"], lf, "--chunk", str(chunk)], tmo,
@@ -1078,6 +1085,8 @@ class Farm:
                 p = l.rstrip("\n").split("\t")
                 if len(p) >= 2:
                     got[p[0]] = (p[1], p[2] if len(p) > 2 else "")
+        if rc == 81:
+            got = {}                                             # unstable run (crash bursts): its prefix must not be recorded; a legitimate pause keeps its partial rows
         return rc, out, got, sok, sgot
 
     def suite_cases(self, job, dev):
@@ -1651,7 +1660,7 @@ class Farm:
             return f"owner is using the phone ({why})"
         if not self.fake:
             why = self.session_blocked(dev)
-            if why:
+            if why and not self.smoke_fallback(dev):                          # smoke_fallback phones sweep through the shell route instead
                 return f"guest session cannot be READY ({why})"
         return ""
 

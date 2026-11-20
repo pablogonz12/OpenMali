@@ -2141,11 +2141,33 @@ class SmokeRoute(unittest.TestCase):
         self.assertIn("so_sha256=" + "g" * 64, self.kept.splitlines()[0])
         self.assertNotIn(("shell", True), self.calls)
 
+    def test_daily_shell_decision(self):
+        """daily/sweep use the shell route on a locked smoke_fallback phone, the guest route when awake, never without the fallback"""
+        self.assertTrue(self.farm().daily_shell(self.dev))                                   # locked + smoke_fallback
+        self.assertFalse(self.farm(dumpsys="mWakefulness=Awake").daily_shell(self.dev))      # session can be READY
+        self.assertFalse(self.farm(fallback=False).daily_shell(self.dev))                    # no fallback configured
+        f = self.farm(fallback=False)
+        self.dev["route"] = "shell"
+        self.assertTrue(f.daily_shell(self.dev))                                             # route=shell phones always
+
     def test_shell_route_failing_test_is_a_fail(self):
         f = self.farm()
         bad = SMOKE_OUT.replace('"test":"t_vk_draw","rc":0', '"test":"t_vk_draw","rc":1').replace('"ok":true', '"ok":false')
         f.run_shellroute = lambda job, dev, mode, rid, extra, tmo, nodim=False: (0, bad)
         self.assertEqual(f.suite_smoke(dict(self.JOB), self.dev)["verdict"], "fail")
+
+    def test_exec_list_discards_rows_of_an_unstable_shell_run(self):
+        f = self.farm()
+        self.dev["route"] = "shell"
+        f.unstaged = lambda out: False
+        for rc, want in ((81, {}), (75, {"a": ("Pass", ""), "b": ("Fail", "")})):
+            def rs(job, dev, mode, rid, extra, tmo, nodim=False, rc=rc):
+                open(extra[extra.index("--out") + 1], "w").write("a\tPass\nb\tFail\n")
+                return rc, ""
+            f.run_shellroute = rs
+            with tempfile.TemporaryDirectory() as wd:
+                r = f.exec_list(dict(self.JOB), self.dev, ["a", "b"], "r1", wd, 60, "sw0")
+            self.assertEqual(r[2], want, rc)
 
     def test_job_built_before_the_fallback_gets_its_bionic_build_on_demand(self):
         f = self.farm()
