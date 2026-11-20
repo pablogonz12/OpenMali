@@ -981,7 +981,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->has_colour = true;
    psrc.va[0] = t.va;
    psrc.row[0] = t.row_stride;
-   psrc.bytes[0] = t.row_stride * t.height;
+   /* The preload reads its source as a storage buffer (pack_buffer(set, va, bytes), mali_meta.c:664) and the pipeline
+    * has robustBufferAccess, so any read past `bytes` is clamped to zero. A 4x image is `samples` consecutive sample
+    * planes (surface_stride each): the range must cover all of them, or planes 1..3 read as transparent black and the
+    * resolve averages 1 of 4 samples (alpha 63 for every covered pixel). That was the LOAD histogram: alpha flattened
+    * to a1_63 and 64 edge pixels at 0. */
+   psrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
    f->colour.va = t.va;
    f->samples = t.samples > 1 ? t.samples : 1;
    f->colour.surface_stride = t.surface_stride;
