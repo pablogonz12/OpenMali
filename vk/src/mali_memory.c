@@ -61,6 +61,12 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
          r = -EINVAL;
       } else {
          r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
+         /* dma-buf import is LINEAR-only (the only modifier we advertise); a producer's non-linear buffer shows up
+          * here as a failure, and MALI_WSI_DEBUG=1 says which fd/size failed. */
+         if (getenv("MALI_WSI_DEBUG"))
+            fprintf(stderr, "mali_vk: wsi dmabuf import: fd=%d size=%llu cached=%d -> %d%s\n", imp->fd,
+                    (unsigned long long)pAllocateInfo->allocationSize, (int)cached, r,
+                    r ? " (only DRM_FORMAT_MOD_LINEAR is supported)" : "");
          if (r == 0)
             close(imp->fd); /* ownership moves to the memory on success */
       }

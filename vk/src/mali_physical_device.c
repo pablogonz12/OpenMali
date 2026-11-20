@@ -6,11 +6,83 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 #include "mali_entrypoints.h"
 #include "util/list.h"
 #include "vk_alloc.h"
 #include "vk_util.h"
+#include "vk_common_entrypoints.h"
+
+/* VK_EXT_physical_device_drm. kbase is not a DRM device (the GPU is /dev/mali0), so the numbers cannot be read
+ * from our own fd; they are read at runtime from the DRM nodes the guest actually has:
+ *   primary: $MALI_DRM_PRIMARY, $DD_DRM_PRIMARY, else /dev/dri/card0..card9
+ *   render:  $MALI_DRM_RENDER, $VKBRIDGE_DRM_RENDER, $DD_DRM_STANDIN (the node LinuxRuntime.gpuStandIn sets up),
+ *            else /dev/dri/renderD128..renderD143
+ * No node (or no char device) -> that half is reported false rather than invented, so a client can fall back to
+ * shm instead of failing to open a device that is not there. MALI_WSI_DEBUG=1 prints what was found. */
+static bool
+mali_drm_stat_node(const char *path, int64_t *maj, int64_t *min)
+{
+   struct stat st;
+   if (!path || !*path || stat(path, &st) != 0 || !S_ISCHR(st.st_mode))
+      return false;
+   *maj = (int64_t)major(st.st_rdev);
+   *min = (int64_t)minor(st.st_rdev);
+   return true;
+}
+
+static bool
+mali_drm_probe_node(const char *const *envs, const char *const *nodes, unsigned n_nodes,
+                    int64_t *maj, int64_t *min, char *path, size_t path_size)
+{
+   for (unsigned i = 0; envs[i]; i++) {
+      const char *e = getenv(envs[i]);
+      if (mali_drm_stat_node(e, maj, min)) {
+         snprintf(path, path_size, "%s", e);
+         return true;
+      }
+   }
+   for (unsigned i = 0; i < n_nodes; i++) {
+      if (mali_drm_stat_node(nodes[i], maj, min)) {
+         snprintf(path, path_size, "%s", nodes[i]);
+         return true;
+      }
+   }
+   path[0] = 0;
+   return false;
+}
+
+static void
+mali_drm_properties(struct vk_properties *p)
+{
+   static const char *const primary_env[] = { "MALI_DRM_PRIMARY", "DD_DRM_PRIMARY", NULL };
+   static const char *const primary_nodes[] = {
+      "/dev/dri/card0", "/dev/dri/card1", "/dev/dri/card2", "/dev/dri/card3", "/dev/dri/card4",
+   };
+   static const char *const render_env[] = { "MALI_DRM_RENDER", "VKBRIDGE_DRM_RENDER", "DD_DRM_STANDIN", NULL };
+   static const char *const render_nodes[] = {
+      "/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/dri/renderD130", "/dev/dri/renderD131",
+   };
+   char primary[64], render[64];
+
+   p->drmHasPrimary = mali_drm_probe_node(primary_env, primary_nodes,
+                                          sizeof(primary_nodes) / sizeof(primary_nodes[0]),
+                                          &p->drmPrimaryMajor, &p->drmPrimaryMinor,
+                                          primary, sizeof(primary));
+   p->drmHasRender = mali_drm_probe_node(render_env, render_nodes,
+                                         sizeof(render_nodes) / sizeof(render_nodes[0]),
+                                         &p->drmRenderMajor, &p->drmRenderMinor,
+                                         render, sizeof(render));
+   if (!p->drmHasPrimary) { p->drmPrimaryMajor = 0; p->drmPrimaryMinor = 0; }
+   if (!p->drmHasRender) { p->drmRenderMajor = 0; p->drmRenderMinor = 0; }
+
+   if (getenv("MALI_WSI_DEBUG"))
+      fprintf(stderr, "mali_vk: wsi drm: primary=%s(%lld:%lld) render=%s(%lld:%lld); image modifiers: DRM_FORMAT_MOD_LINEAR only\n",
+              p->drmHasPrimary ? primary : "none", (long long)p->drmPrimaryMajor, (long long)p->drmPrimaryMinor,
+              p->drmHasRender ? render : "none", (long long)p->drmRenderMajor, (long long)p->drmRenderMinor);
+}
 
 /* M1 policy: every limit is the Vulkan 1.0 required minimum (spec table "Required Limits").
  * The milestone that implements a feature raises its limits to what the hardware does. */
@@ -230,6 +302,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_external_memory = true,
       .KHR_external_memory_fd = true,
       .EXT_external_memory_dma_buf = true,
+      .EXT_physical_device_drm = true,      /* VK_EXT_physical_device_drm: mali_drm_properties() reads /dev/dri at runtime */
       .KHR_external_semaphore = true,
       .KHR_external_semaphore_fd = true,
       .KHR_external_fence = true,
@@ -330,6 +403,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    struct vk_properties properties;
    mali_get_properties(gpu, &properties);
+   mali_drm_properties(&properties);   /* VK_EXT_physical_device_drm */
 
    VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &extensions, &features,
                                              &properties, &dispatch_table);
@@ -467,4 +541,24 @@ mali_GetPhysicalDeviceExternalBufferProperties(
          .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
       };
    pExternalBufferProperties->externalMemoryProperties = p;
+}
+
+/* VK_EXT_physical_device_drm: the values are probed once in mali_drm_properties(); a client that chains
+ * VkPhysicalDeviceDrmPropertiesEXT must see them (gamescope opens the render node from here). */
+VKAPI_ATTR void VKAPI_CALL
+mali_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2 *pProperties)
+{
+   VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
+   vk_common_GetPhysicalDeviceProperties2(physicalDevice, pProperties);
+   for (VkBaseOutStructure *ext = pProperties->pNext; ext; ext = ext->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT) {
+         VkPhysicalDeviceDrmPropertiesEXT *drm = (VkPhysicalDeviceDrmPropertiesEXT *)ext;
+         drm->hasPrimary = pdev->vk.properties.drmHasPrimary;
+         drm->hasRender = pdev->vk.properties.drmHasRender;
+         drm->primaryMajor = pdev->vk.properties.drmPrimaryMajor;
+         drm->primaryMinor = pdev->vk.properties.drmPrimaryMinor;
+         drm->renderMajor = pdev->vk.properties.drmRenderMajor;
+         drm->renderMinor = pdev->vk.properties.drmRenderMinor;
+      }
+   }
 }
