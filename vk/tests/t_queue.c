@@ -65,7 +65,7 @@ now_us(void)
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
    X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
-   X(BindBufferMemory) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
+   X(BindBufferMemory) X(GetMemoryFdPropertiesKHR) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -583,6 +583,221 @@ test_syncfile(void)
    return 1;
 }
 
+/* ---- WSI audit regressions ------------------------------------------------------------------------ */
+static PFN_vkBindImageMemory2KHR BindImageMemory2KHR_;   /* only loaded for --only wsiimg (needs VK_KHR_bind_memory2) */
+
+/* memory fd validation: bad/non-exportable inputs are refused with the spec's error */
+static int
+test_wsifd(void)
+{
+   VkMemoryFdPropertiesKHR props = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+   CHECK(GetMemoryFdPropertiesKHR(dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, -1, &props) ==
+            VK_ERROR_INVALID_EXTERNAL_HANDLE, "properties of fd -1");
+   int fds[2];
+   CHECK(pipe(fds) == 0, "pipe");
+   close(fds[1]);
+   close(fds[0]);
+   CHECK(GetMemoryFdPropertiesKHR(dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fds[0], &props) ==
+            VK_ERROR_INVALID_EXTERNAL_HANDLE, "properties of a closed fd");
+
+   /* memory allocated WITHOUT export must not give out a dma-buf */
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = 65536, .memoryTypeIndex = 0};
+   VkDeviceMemory m;
+   CHECK(AllocateMemory(dev, &ai, NULL, &m) == VK_SUCCESS, "alloc plain");
+   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = m,
+                              .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   int fd = -1;
+   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_ERROR_INVALID_EXTERNAL_HANDLE, "export of non-exportable memory");
+   FreeMemory(dev, m, NULL);
+
+   /* import larger than the dma-buf behind it */
+   VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   ai.pNext = &ex;
+   CHECK(AllocateMemory(dev, &ai, NULL, &m) == VK_SUCCESS, "alloc exportable");
+   gi.memory = m;
+   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "export");
+   CHECK(GetMemoryFdPropertiesKHR(dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &props) == VK_SUCCESS,
+         "properties of a real dma-buf");
+   VkImportMemoryFdInfoKHR im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+                                 .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
+   VkMemoryAllocateInfo bi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im,
+                              .allocationSize = 4 * 65536, .memoryTypeIndex = 0};
+   VkDeviceMemory big;
+   CHECK(AllocateMemory(dev, &bi, NULL, &big) == VK_ERROR_INVALID_EXTERNAL_HANDLE, "oversized import");
+   close(fd);   /* a refused import leaves the fd with the caller */
+   FreeMemory(dev, m, NULL);
+   printf("{\"test\":\"wsifd\",\"ok\":true}\n");
+   return 1;
+}
+
+struct exp_arg {
+   VkSemaphore sem;
+   int fd;
+   VkResult r;
+   double done_us;
+};
+
+static void *
+export_thread(void *p)
+{
+   struct exp_arg *a = p;
+   VkSemaphoreGetFdInfoKHR gs = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, .semaphore = a->sem,
+                                 .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+   a->fd = -2;
+   a->r = GetSemaphoreFdKHR(dev, &gs, &a->fd);
+   a->done_us = now_us();
+   return NULL;
+}
+
+/* a sync_file exported while the signalling submission is still queued (it waits for a timeline value) must
+ * not come back "already signalled": the export has to wait for the submission and carry its fence */
+static int
+test_syncexport(void)
+{
+   VkSemaphoreTypeCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                   .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+   VkSemaphoreCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ti};
+   VkExportSemaphoreCreateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+   VkSemaphoreCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ex};
+   VkSemaphore t, b;
+   CHECK(CreateSemaphore(dev, &tci, NULL, &t) == VK_SUCCESS, "timeline");
+   CHECK(CreateSemaphore(dev, &bci, NULL, &b) == VK_SUCCESS, "binary");
+   uint64_t wv = 1, sv = 0;
+   VkTimelineSemaphoreSubmitInfo tsi = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = &wv,
+                                        .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &sv};
+   VkPipelineStageFlags st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   VkSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tsi, .waitSemaphoreCount = 1,
+                     .pWaitSemaphores = &t, .pWaitDstStageMask = &st, .signalSemaphoreCount = 1,
+                     .pSignalSemaphores = &b};
+   CHECK(QueueSubmit(queue, 1, &s, VK_NULL_HANDLE) == VK_SUCCESS, "submit waiting on the timeline");
+   struct exp_arg a = {.sem = b};
+   pthread_t th;
+   pthread_create(&th, NULL, export_thread, &a);
+   struct timespec nap = {0, 300 * 1000 * 1000};
+   nanosleep(&nap, NULL);
+   double t_signal = now_us();
+   VkSemaphoreSignalInfoKHR si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = t, .value = 1};
+   CHECK(SignalSemaphoreKHR(dev, &si) == VK_SUCCESS, "signal timeline");
+   pthread_join(th, NULL);
+   CHECK(a.r == VK_SUCCESS, "export = %d", a.r);
+   CHECK(a.done_us >= t_signal, "export returned %.0f us BEFORE the signalling submission could run (pending reported as signalled)",
+         t_signal - a.done_us);
+   if (a.fd >= 0)
+      close(a.fd);
+   CHECK(QueueWaitIdle(queue) == VK_SUCCESS, "idle");
+   DestroySemaphore(dev, b, NULL);
+   DestroySemaphore(dev, t, NULL);
+   printf("{\"test\":\"syncexport\",\"ok\":true}\n");
+   return 1;
+}
+
+/* DRM format modifier validation at CreateImage and unsupported swapchain-aliased binds being reported */
+static int
+test_wsiimg(void)
+{
+   const uint64_t linear = 0, other = 0x0100000000000001ull;
+   VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                           .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1,
+                           .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+                           .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImageDrmFormatModifierListCreateInfoEXT ml = {.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
+                                                   .drmFormatModifierCount = 1, .pDrmFormatModifiers = &linear};
+   VkImage img = VK_NULL_HANDLE, bad = VK_NULL_HANDLE;
+   ci.pNext = &ml;
+   CHECK(CreateImage(dev, &ci, NULL, &img) == VK_SUCCESS, "list {LINEAR}");
+   ml.pDrmFormatModifiers = &other;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_FORMAT_NOT_SUPPORTED, "list without LINEAR must be refused");
+   ci.pNext = NULL;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_FORMAT_NOT_SUPPORTED, "modifier tiling without any modifier info");
+
+   VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT};
+   VkSubresourceLayout lay;
+   GetImageSubresourceLayout(dev, img, &sr, &lay);
+   CHECK(lay.rowPitch >= 64 * 4, "row pitch %llu", (unsigned long long)lay.rowPitch);
+   VkSubresourceLayout pl = {.offset = 0, .rowPitch = lay.rowPitch};
+   VkImageDrmFormatModifierExplicitCreateInfoEXT me = {.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
+                                                       .drmFormatModifier = linear, .drmFormatModifierPlaneCount = 1,
+                                                       .pPlaneLayouts = &pl};
+   ci.pNext = &me;
+   VkImage ex = VK_NULL_HANDLE;
+   CHECK(CreateImage(dev, &ci, NULL, &ex) == VK_SUCCESS, "explicit layout with the image's own pitch");
+   pl.rowPitch = 0;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT, "explicit zero row pitch");
+   pl.rowPitch = lay.rowPitch + 64;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT, "foreign row pitch");
+   pl.rowPitch = lay.rowPitch;
+   pl.offset = 64;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT, "plane offset != 0");
+   pl.offset = 0;
+   me.drmFormatModifier = other;
+   CHECK(CreateImage(dev, &ci, NULL, &bad) == VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT, "explicit foreign modifier");
+
+   /* BindImageMemory2: a real bind works; a swapchain-aliased one (no memory) is reported, not silently dropped */
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = 0};
+   VkDeviceMemory mem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "alloc image memory");
+   VkBindImageMemoryInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .image = img, .memory = mem};
+   CHECK(BindImageMemory2KHR_(dev, 1, &bi) == VK_SUCCESS, "bind");
+   VkResult status = VK_SUCCESS;
+   VkBindMemoryStatus bs = {.sType = VK_STRUCTURE_TYPE_BIND_MEMORY_STATUS, .pResult = &status};
+   VkBindImageMemorySwapchainInfoKHR sw = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR, .pNext = &bs};
+   VkBindImageMemoryInfo al = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .pNext = &sw, .image = ex,
+                               .memory = VK_NULL_HANDLE};
+   CHECK(BindImageMemory2KHR_(dev, 1, &al) == VK_ERROR_UNKNOWN, "swapchain-aliased bind reported success with the image unbound");
+   CHECK(status == VK_ERROR_UNKNOWN, "VkBindMemoryStatus not set for the unbound image");
+   FreeMemory(dev, mem, NULL);
+   DestroyImage(dev, ex, NULL);
+   DestroyImage(dev, img, NULL);
+   printf("{\"test\":\"wsiimg\",\"ok\":true}\n");
+   return 1;
+}
+
+/* a failed submission must still signal what it was to signal (here: a timeline value), so that waiters see
+ * DEVICE_LOST rather than sitting out their timeout */
+static int
+test_failsignal(void)
+{
+   VkSemaphoreTypeCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                   .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+   VkSemaphoreCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ti};
+   VkSemaphore t;
+   CHECK(CreateSemaphore(dev, &tci, NULL, &t) == VK_SUCCESS, "timeline");
+   const char *e = getenv("MALI_FAULT_INJECT");
+   int n = e ? atoi(e) : 0;
+   CHECK(n > 0, "MALI_FAULT_INJECT not set");
+   uint64_t last = 0;
+   VkResult failed = VK_SUCCESS;
+   for (int i = 0; i < n + 20; i++) {
+      uint64_t sv = i + 1;
+      VkTimelineSemaphoreSubmitInfo tsi = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                           .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &sv};
+      VkSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tsi, .signalSemaphoreCount = 1,
+                        .pSignalSemaphores = &t};
+      failed = QueueSubmit(queue, 1, &s, VK_NULL_HANDLE);
+      if (failed != VK_SUCCESS)
+         break;
+      last = sv;
+   }
+   CHECK(failed == VK_ERROR_DEVICE_LOST, "fault injection must fail a submission with DEVICE_LOST, got %d after %llu submissions",
+         failed, (unsigned long long)last);
+   last++; /* the value the failed submission was to signal */
+   VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &t,
+                             .pValues = &last};
+   double t0 = now_us();
+   VkResult r = WaitSemaphoresKHR(dev, &wi, 8000000000ull);
+   CHECK(r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST, "wait on the last (failed) signal = %d after %.0f ms (TIMEOUT = never signalled)",
+         r, (now_us() - t0) / 1e3);
+   DestroySemaphore(dev, t, NULL);
+   printf("{\"test\":\"failsignal\",\"inject\":%d,\"wait\":%d,\"ok\":true}\n", n, r);
+   return 1;
+}
+
 static int
 test_fault(void)
 {
@@ -662,7 +877,7 @@ main(int argc, char **argv)
    if (!gipa || !negotiate || negotiate(&iv)) { printf("{\"fail\":\"icd entry\"}\n"); return 1; }
 
    PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
-   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_0};
+   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = (g_only && !strcmp(g_only, "wsiimg")) ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
    const char *iext[] = {"VK_KHR_get_physical_device_properties2", "VK_KHR_external_memory_capabilities",
                          "VK_KHR_external_semaphore_capabilities", "VK_KHR_external_fence_capabilities"};
@@ -689,13 +904,21 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    const char *dext[] = {"VK_KHR_timeline_semaphore", "VK_KHR_external_memory", "VK_KHR_external_memory_fd",
                          "VK_EXT_external_memory_dma_buf", "VK_KHR_external_semaphore",
-                         "VK_KHR_external_semaphore_fd", "VK_KHR_external_fence", "VK_KHR_external_fence_fd"};
+                         "VK_KHR_external_semaphore_fd", "VK_KHR_external_fence", "VK_KHR_external_fence_fd",
+                          /* only enabled for --only wsiimg */
+                          "VK_EXT_image_drm_format_modifier", "VK_KHR_sampler_ycbcr_conversion", "VK_KHR_maintenance1"};
+   int wsiimg = g_only && !strcmp(g_only, "wsiimg");
    VkPhysicalDeviceTimelineSemaphoreFeatures tf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES, .timelineSemaphore = VK_TRUE};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &tf, .queueCreateInfoCount = 1,
-                            .pQueueCreateInfos = &qi, .enabledExtensionCount = 8, .ppEnabledExtensionNames = dext};
+                            .pQueueCreateInfos = &qi, .enabledExtensionCount = wsiimg ? 11 : 8, .ppEnabledExtensionNames = dext};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
+   if (wsiimg) {
+      BindImageMemory2KHR_ = (PFN_vkBindImageMemory2KHR)GDPA(dev, "vkBindImageMemory2");
+      if (!BindImageMemory2KHR_) BindImageMemory2KHR_ = (PFN_vkBindImageMemory2KHR)GDPA(dev, "vkBindImageMemory2KHR");
+      if (!BindImageMemory2KHR_) { printf("{\"fail\":\"missing vkBindImageMemory2\"}\n"); return 1; }
+   }
    GetDeviceQueue(dev, 0, 0, &queue);
    /* vkGetDeviceQueue returns a loader-dispatchable handle; in direct mode the ICD's own. */
 
@@ -717,6 +940,10 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "order")) ok &= test_order(getenv("MALI_PRESENT_FENCE") && atoi(getenv("MALI_PRESENT_FENCE")));
    if (ok && CASE_ON("submits")) ok &= test_submits(submits);
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
+   if (ok && g_only && !strcmp(g_only, "wsifd")) ok &= test_wsifd();
+   if (ok && g_only && !strcmp(g_only, "syncexport")) ok &= test_syncexport();
+   if (ok && g_only && !strcmp(g_only, "wsiimg")) ok &= test_wsiimg();
+   if (ok && g_only && !strcmp(g_only, "failsignal")) ok &= test_failsignal();
    if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
 
    int td = g_only && !strcmp(g_only, "teardown");
