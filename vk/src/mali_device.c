@@ -86,6 +86,9 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
     * present hook has to be installed here as well; without this the hook never ran and its trace stayed empty. */
    dev->cmd_dispatch.QueuePresentKHR = mali_wsi_queue_present;
    dev->cmd_dispatch.AcquireNextImageKHR = mali_wsi_acquire_next_image;
+   /* A backend pool keeps freed BOs committed: its releases go back to this physical device's VRAM budget. */
+   if (pdev->backend->bo_pool_watch)
+      pdev->backend->bo_pool_watch(dev->kdev, mali_memory_pool_release, pdev);
    dev->vk.command_buffer_ops = &mali_cmd_ops;
    dev->vk.get_timestamp = mali_get_timestamp;                       /* VK_KHR_calibrated_timestamps: runtime does the rest */
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;

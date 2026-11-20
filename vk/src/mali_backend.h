@@ -51,9 +51,10 @@ struct mali_heap {
 struct mali_bo {
    uint64_t gpu_va;
    void *cpu;      /* always CPU mapped */
-   size_t size;
+   size_t size;    /* as committed: the backend rounds the requested size up to a page */
    uint32_t flags; /* MALI_BO_* */
    int dmabuf_fd;  /* -1 unless dma-buf backed (owned by the BO) */
+   bool pooled;    /* set by bo_free: the backend kept the BO (its pool), so its pages are still committed */
    void *priv;
 };
 
@@ -73,6 +74,13 @@ struct mali_backend_ops {
    int (*bo_import)(struct mali_kdev *kdev, int dmabuf_fd, size_t size, uint32_t flags,
                     struct mali_bo *out);
    void (*bo_free)(struct mali_kdev *kdev, struct mali_bo *bo);
+   /* BOs the backend keeps alive after bo_free (kbase pools freed HOSTLAZY BOs) stay committed in kbase, so their
+    * bytes stay charged to the device VRAM budget: bo_pool_watch installs release(ctx, size), called when the pool
+    * really frees such a BO. bo_pool_purge really frees at least `want` bytes of them now and returns how much it
+    * freed, so a refused reservation can get the budget back instead of failing on memory the pool could drop.
+    * Both NULL when the backend never retains BOs (the fake). */
+   void (*bo_pool_watch)(struct mali_kdev *kdev, void (*release)(void *, size_t), void *ctx);
+   size_t (*bo_pool_purge)(struct mali_kdev *kdev, size_t want);
    /* Cache maintenance for MALI_BO_CACHED: invalidate = false makes CPU writes visible to the GPU,
     * true makes GPU writes visible to the CPU. */
    void (*bo_cache)(struct mali_kdev *kdev, const struct mali_bo *bo, size_t off, size_t len,

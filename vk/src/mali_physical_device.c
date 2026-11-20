@@ -5,6 +5,7 @@
 #include "mali_msaa.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -457,14 +458,28 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       uint64_t cap = gpu->heap_bytes / 2;
       if (ram && ram / 4 < cap)
          cap = ram / 4;
+      /* The override is a positive whole number of MiB. Anything else ("auto", "12abc", "", "0", "-1") is a typo:
+       * strtoull would turn it into 0 (a zero cap refuses every allocation) or wrap, so it is ignored instead and
+       * the default above stays. */
       const char *env = getenv("MALI_VRAM_CAP_MB");
-      if (env && env[0])
-         cap = strtoull(env, NULL, 10) << 20;
+      bool overridden = false;
+      if (env && env[0]) {
+         char *end = NULL;
+         errno = 0;
+         unsigned long long mb = strtoull(env, &end, 10);
+         if (end != env && *end == '\0' && errno == 0 && mb > 0 && mb <= (UINT64_MAX >> 20)) {
+            cap = mb << 20;
+            overridden = true;
+         } else if (getenv("MALI_WSI_DEBUG")) {
+            fprintf(stderr, "mali_vk: VRAM budget: ignoring MALI_VRAM_CAP_MB=%s (not a positive whole number of "
+                    "MiB), keeping %llu MiB\n", env, (unsigned long long)(cap >> 20));
+         }
+      }
       pdev->mem_cap = cap;
       if (getenv("MALI_WSI_DEBUG"))
          fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
                  (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
-                 env && env[0] ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 overridden ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
                  pdev->gpu.name);
    }
 
