@@ -6,6 +6,7 @@
  * into the image's dma-buf (DMA_BUF_IOCTL_IMPORT_SYNC_FILE). No explicit-sync protocol (gamescope has none).
  * Everything else lives in the runtime, wsi_common and the entrypoints in mali_image.c / mali_memory.c. */
 #include "mali_private.h"
+#include "mali_image.h"
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
@@ -438,15 +439,129 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
    return r;
 }
 
+/* The swapchain image of a VkPresentInfoKHR entry as our object (NULL for a swapchain we do not know, or an
+ * image wsi did not create through us). Shared by the dump and the debug line so both name the same BO. */
+static struct mali_image *
+present_image(struct wsi_swapchain *chain, uint32_t image_index, struct wsi_image **wsi_out)
+{
+   struct wsi_image *wi = chain ? chain->get_wsi_image(chain, image_index) : NULL;
+   if (wsi_out)
+      *wsi_out = wi;
+   return wi && wi->image != VK_NULL_HANDLE ? mali_image_from_handle(wi->image) : NULL;
+}
+
+/* MALI_WSI_DUMP=<prefix>: write every MALI_WSI_DUMP_EVERY-th presented frame (default 30) as a PPM (P6) at
+ * <prefix>-NNNNN.ppm and one line per dump into <prefix>.txt (frame, image, extent, stride, VkFormat, BO va).
+ * Debug only, default off. Cost: one CPU read of the presented BO plus a cache invalidate, i.e. a full
+ * w*h*bpp pass on the presenting thread every N frames (and it drops the BO's HOSTLAZY flag, so the next
+ * fence wait MEM_SYNCs it once). Only 8-bit RGBA/BGRA rows are reordered to RGB; anything else is written
+ * with the raw first three bytes of the texel and the format named in the sidecar. */
+static void
+mali_wsi_dump_frame(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+{
+   const char *prefix = getenv("MALI_WSI_DUMP");
+   if (!prefix || !prefix[0])
+      return;
+   unsigned every = 30;
+   const char *e = getenv("MALI_WSI_DUMP_EVERY");
+   if (e && e[0])
+      every = (unsigned)strtoul(e, NULL, 10);
+   if (!every)
+      every = 1;
+   static uint64_t seq;
+   const uint64_t n = p_atomic_inc_return(&seq);
+   if (n % every)
+      return;
+
+   struct wsi_image *wi = NULL;
+   struct mali_image *mi = present_image(chain, image_index, &wi);
+   if (!mi || !mi->mem || !mi->mem->bo.cpu) {
+      fprintf(stderr, "mali_vk: wsi dump #%llu: image %u has no CPU mapping (unbound or not ours)\n",
+              (unsigned long long)n, image_index);
+      return;
+   }
+   const struct mali_backend_ops *be = dev ? mali_device_pdev(dev)->backend : NULL;
+   if (be && be->bo_host_touch)
+      be->bo_host_touch(dev->kdev, &mi->mem->bo);   /* device wrote it: the next sync must cover it */
+   if (be && be->bo_cache)
+      be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+
+   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&mi->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+   if (!pl || !pl->slice[0].row_stride || !mi->lay.d.extent.width || !mi->lay.d.extent.height) {
+      fprintf(stderr, "mali_vk: wsi dump #%llu: image %u has no colour plane layout\n", (unsigned long long)n, image_index);
+      return;
+   }
+   const unsigned w = mi->lay.d.extent.width, h = mi->lay.d.extent.height;
+   const unsigned stride = pl->slice[0].row_stride, bpp = pl->bs ? pl->bs : 4;
+   const int fmt = (int)mi->vk.format;
+   const char *fname = vk_Format_to_str(mi->vk.format);
+   const uint8_t *base = (const uint8_t *)mi->mem->bo.cpu + mi->mem_off + pl->offset;
+   const bool bgra = mi->vk.format == VK_FORMAT_B8G8R8A8_UNORM || mi->vk.format == VK_FORMAT_B8G8R8A8_SRGB;
+   const bool rgba = mi->vk.format == VK_FORMAT_R8G8B8A8_UNORM || mi->vk.format == VK_FORMAT_R8G8B8A8_SRGB ||
+                     mi->vk.format == VK_FORMAT_A8B8G8R8_UNORM_PACK32 || mi->vk.format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+
+   char path[1024];
+   snprintf(path, sizeof path, "%s-%05llu.ppm", prefix, (unsigned long long)n);
+   FILE *f = fopen(path, "wb");
+   if (!f) {
+      fprintf(stderr, "mali_vk: wsi dump #%llu: open %s: %s\n", (unsigned long long)n, path, strerror(errno));
+      return;
+   }
+   fprintf(f, "P6\n%u %u\n255\n", w, h);
+   uint8_t *row = malloc((size_t)w * 3);
+   if (!row) { fclose(f); return; }
+   for (unsigned y = 0; y < h; y++) {
+      const uint8_t *src = base + (size_t)y * stride;
+      for (unsigned x = 0; x < w; x++) {
+         const uint8_t *p = src + (size_t)x * bpp;
+         if (bgra)      { row[x * 3 + 0] = p[2]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[0]; }
+         else if (rgba) { row[x * 3 + 0] = p[0]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[2]; }
+         else           { row[x * 3 + 0] = p[0]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[2]; }   /* raw, see the sidecar */
+      }
+      fwrite(row, 1, (size_t)w * 3, f);
+   }
+   free(row);
+   fclose(f);
+
+   snprintf(path, sizeof path, "%s.txt", prefix);
+   FILE *t = fopen(path, "a");
+   if (t) {
+      fprintf(t, "frame %llu: image %u %ux%u stride %u bpp %u samples %u format %s (%d)%s%s%s bo 0x%llx\n",
+              (unsigned long long)n, image_index, w, h, stride, bpp, mi->lay.d.samples, fname, fmt,
+              bgra ? " bgra->rgb" : rgba ? " rgba->rgb" : " raw", pl->bw == 1 && pl->bh == 1 ? "" : " (block format)",
+              wi && wi->cpu_map ? " cpu_map" : "", (unsigned long long)mi->va);
+      fclose(t);
+   }
+   fprintf(stderr, "mali_vk: wsi dump #%llu: image %u %ux%u stride %u %s -> %s-%05llu.ppm\n", (unsigned long long)n,
+           image_index, w, h, stride, fname, prefix, (unsigned long long)n);
+}
+
+/* MALI_WSI_DEBUG=1: the image, BO and present path of the frame being put (shm = our segment, dma-buf = wsi). */
+static void
+mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index, const char *path,
+                       VkResult res)
+{
+   if (!mali_wsi_debug())
+      return;
+   struct wsi_image *wi = NULL;
+   struct mali_image *mi = present_image(chain, image_index, &wi);
+   fprintf(stderr, "mali_vk: wsi present image %u path %s result %s: %s %ux%u va=0x%llx stride %u\n",
+           image_index, path ? path : "?", vk_Result_to_str(res),
+           mi ? vk_Format_to_str(mi->vk.format) : "no image", mi ? mi->lay.d.extent.width : 0,
+           mi ? mi->lay.d.extent.height : 0, mi ? (unsigned long long)mi->va : 0ull,
+           mi && mi->lay.plane[0].slice[0].row_stride ? mi->lay.plane[0].slice[0].row_stride : 0u);
+   (void)dev; (void)wi;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
+   VK_FROM_HANDLE(vk_queue, vq, queue);
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
    if (mali_wsi_debug()) {
-      VK_FROM_HANDLE(vk_queue, vq, queue);
-      const struct mali_physical_device *qpdev =
-         mali_device_pdev(container_of(vq->base.device, struct mali_device, vk));
+      const struct mali_physical_device *qpdev = mali_device_pdev(dev);
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u dma_buf_sync=%d sw=%d\n",
               (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
               __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
@@ -458,7 +573,12 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       for (uint32_t i = 0; i < info->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
          const uint32_t idx = info->pImageIndices[i];
-         if (!sc || !mali_x11_shm_find(info->pSwapchains[i]) || !mali_x11_shm_present(sc, idx)) {
+         if (sc)
+            mali_wsi_dump_frame(dev, sc, idx);   /* MALI_WSI_DUMP: the BO as it is handed to the compositor */
+         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) && mali_x11_shm_present(sc, idx);
+         if (mali_wsi_debug() && sc)
+            mali_wsi_debug_present(dev, sc, idx, shm ? "shm" : "dma-buf", VK_SUCCESS);
+         if (!shm) {
             all_shm = false;
             break;
          }
