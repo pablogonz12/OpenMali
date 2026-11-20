@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <dirent.h>
 
 #include "mali_entrypoints.h"
 #include "util/list.h"
@@ -15,13 +16,20 @@
 #include "vk_util.h"
 #include "vk_common_entrypoints.h"
 
-/* VK_EXT_physical_device_drm. kbase is not a DRM device (the GPU is /dev/mali0), so the numbers cannot be read
- * from our own fd; they are read at runtime from the DRM nodes the guest actually has:
- *   primary: $MALI_DRM_PRIMARY, $DD_DRM_PRIMARY, else /dev/dri/card0..card9
- *   render:  $MALI_DRM_RENDER, $VKBRIDGE_DRM_RENDER, $DD_DRM_STANDIN (the node LinuxRuntime.gpuStandIn sets up),
- *            else /dev/dri/renderD128..renderD143
- * No node (or no char device) -> that half is reported false rather than invented, so a client can fall back to
- * shm instead of failing to open a device that is not there. MALI_WSI_DEBUG=1 prints what was found. */
+/* VK_EXT_physical_device_drm. kbase is not a DRM device (the GPU is /dev/mali0), so the numbers cannot come
+ * from our own fd. gamescope takes them literally: it makes a dev_t from renderMajor:renderMinor, hands it to
+ * libdrm's drmGetDeviceFromDevId(), then opens drmDev->nodes[DRM_NODE_RENDER] read-write. libdrm resolves a dev_t
+ * through sysfs (drmNodeIsDRM -> /sys/dev/char/<maj>:<min>/..., then it stats the /dev/dri nodes), so a node that
+ * only exists as a bind mount has no DRM backing and cannot be reported: that is exactly the "drmGetDeviceFromDevId()
+ * failed" we got by reporting a plain card node as render.
+ *
+ * Therefore: report a node only when the kernel backs it as DRM, and derive the render node from sysfs
+ * (/sys/dev/char/<card>/device/drm/renderD*) instead of guessing a card. Overrides, each a path or maj:min:
+ *   primary: $MALI_DRM_PRIMARY, $DD_DRM_PRIMARY
+ *   render:  $MALI_DRM_RENDER, $VKBRIDGE_DRM_RENDER, $DD_DRM_STANDIN, $BL_DRM_STANDIN (the app's open-driver node)
+ * When no render node is backed by the kernel the honest answer is hasRender=false (gamescope then says
+ * "physical device has no render node" and its DRM/Wayland/headless backends refuse to run). MALI_WSI_DEBUG=1
+ * prints what was found and what it means. */
 static bool
 mali_drm_stat_node(const char *path, int64_t *maj, int64_t *min)
 {
@@ -33,22 +41,96 @@ mali_drm_stat_node(const char *path, int64_t *maj, int64_t *min)
    return true;
 }
 
+/* "226:128" as well as "/dev/dri/renderD128". */
 static bool
-mali_drm_probe_node(const char *const *envs, const char *const *nodes, unsigned n_nodes,
-                    int64_t *maj, int64_t *min, char *path, size_t path_size)
+mali_drm_parse_node(const char *spec, int64_t *maj, int64_t *min, char *path, size_t path_size)
+{
+   long long m, n;
+   if (spec && sscanf(spec, "%lld:%lld", &m, &n) == 2) {
+      *maj = m;
+      *min = n;
+      snprintf(path, path_size, "%lld:%lld", m, n);
+      return true;
+   }
+   if (mali_drm_stat_node(spec, maj, min)) {
+      snprintf(path, path_size, "%s", spec);
+      return true;
+   }
+   return false;
+}
+
+/* The kernel's own view: /sys/dev/char/<maj>:<min> exists (a real char device). */
+static bool
+mali_drm_is_kernel_node(int64_t maj, int64_t min)
+{
+   char path[96];
+   struct stat st;
+   snprintf(path, sizeof(path), "/sys/dev/char/%lld:%lld", (long long)maj, (long long)min);
+   return stat(path, &st) == 0;
+}
+
+/* /sys/dev/char/<maj>:<min>/device/drm/<node>/dev holds "<maj>:<min>" of that DRM minor. */
+static bool
+mali_drm_sysfs_minor(const char *dir, const char *node, int64_t *maj, int64_t *min, char *path, size_t path_size)
+{
+   char p[256];
+   snprintf(p, sizeof(p), "%s/%s/dev", dir, node);
+   FILE *f = fopen(p, "r");
+   if (!f)
+      return false;
+   long long m, n;
+   bool ok = fscanf(f, "%lld:%lld", &m, &n) == 2;
+   fclose(f);
+   if (!ok)
+      return false;
+   *maj = m;
+   *min = n;
+   snprintf(path, path_size, "/dev/dri/%s", node);
+   return true;
+}
+
+/* A render node backed by the kernel, preferably the one of card <maj>:<min>, else any in /sys/class/drm. */
+static bool
+mali_drm_find_render(int64_t card_maj, int64_t card_min, int64_t *maj, int64_t *min, char *path, size_t path_size)
+{
+   char dir[128];
+   if (card_maj >= 0) {
+      snprintf(dir, sizeof(dir), "/sys/dev/char/%lld:%lld/device/drm", (long long)card_maj, (long long)card_min);
+      DIR *d = opendir(dir);
+      if (d) {
+         struct dirent *e;
+         while ((e = readdir(d))) {
+            if (strncmp(e->d_name, "renderD", 7) == 0 &&
+                mali_drm_sysfs_minor(dir, e->d_name, maj, min, path, path_size)) {
+               closedir(d);
+               return true;
+            }
+         }
+         closedir(d);
+      }
+   }
+   DIR *d = opendir("/sys/class/drm");
+   if (d) {
+      struct dirent *e;
+      while ((e = readdir(d))) {
+         if (strncmp(e->d_name, "renderD", 7) == 0 &&
+             mali_drm_sysfs_minor("/sys/class/drm", e->d_name, maj, min, path, path_size)) {
+            closedir(d);
+            return true;
+         }
+      }
+      closedir(d);
+   }
+   return false;
+}
+
+static bool
+mali_drm_probe_env(const char *const *envs, int64_t *maj, int64_t *min, char *path, size_t path_size)
 {
    for (unsigned i = 0; envs[i]; i++) {
       const char *e = getenv(envs[i]);
-      if (mali_drm_stat_node(e, maj, min)) {
-         snprintf(path, path_size, "%s", e);
+      if (mali_drm_parse_node(e, maj, min, path, path_size))
          return true;
-      }
-   }
-   for (unsigned i = 0; i < n_nodes; i++) {
-      if (mali_drm_stat_node(nodes[i], maj, min)) {
-         snprintf(path, path_size, "%s", nodes[i]);
-         return true;
-      }
    }
    path[0] = 0;
    return false;
@@ -58,30 +140,57 @@ static void
 mali_drm_properties(struct vk_properties *p)
 {
    static const char *const primary_env[] = { "MALI_DRM_PRIMARY", "DD_DRM_PRIMARY", NULL };
+   static const char *const render_env[] = {
+      "MALI_DRM_RENDER", "VKBRIDGE_DRM_RENDER", "DD_DRM_STANDIN", "BL_DRM_STANDIN", NULL,
+   };
    static const char *const primary_nodes[] = {
       "/dev/dri/card0", "/dev/dri/card1", "/dev/dri/card2", "/dev/dri/card3", "/dev/dri/card4",
    };
-   static const char *const render_env[] = { "MALI_DRM_RENDER", "VKBRIDGE_DRM_RENDER", "DD_DRM_STANDIN", NULL };
-   static const char *const render_nodes[] = {
-      "/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/dri/renderD130", "/dev/dri/renderD131",
-   };
-   char primary[64], render[64];
+   char primary[64] = "", render[64] = "";
+   int64_t pmaj = -1, pmin = -1, rmaj = -1, rmin = -1;
 
-   p->drmHasPrimary = mali_drm_probe_node(primary_env, primary_nodes,
-                                          sizeof(primary_nodes) / sizeof(primary_nodes[0]),
-                                          &p->drmPrimaryMajor, &p->drmPrimaryMinor,
-                                          primary, sizeof(primary));
-   p->drmHasRender = mali_drm_probe_node(render_env, render_nodes,
-                                         sizeof(render_nodes) / sizeof(render_nodes[0]),
-                                         &p->drmRenderMajor, &p->drmRenderMinor,
-                                         render, sizeof(render));
-   if (!p->drmHasPrimary) { p->drmPrimaryMajor = 0; p->drmPrimaryMinor = 0; }
-   if (!p->drmHasRender) { p->drmRenderMajor = 0; p->drmRenderMinor = 0; }
+   if (mali_drm_probe_env(primary_env, &pmaj, &pmin, primary, sizeof(primary))) {
+      /* keep it */
+   } else {
+      for (unsigned i = 0; i < sizeof(primary_nodes) / sizeof(primary_nodes[0]); i++) {
+         if (mali_drm_stat_node(primary_nodes[i], &pmaj, &pmin)) {
+            snprintf(primary, sizeof(primary), "%s", primary_nodes[i]);
+            break;
+         }
+      }
+   }
 
-   if (getenv("MALI_WSI_DEBUG"))
-      fprintf(stderr, "mali_vk: wsi drm: primary=%s(%lld:%lld) render=%s(%lld:%lld); image modifiers: DRM_FORMAT_MOD_LINEAR only\n",
+   /* The primary is used by gamescope's DRM backend as a dev_t, so it must be a kernel DRM node as well. */
+   p->drmHasPrimary = pmaj >= 0 && mali_drm_is_kernel_node(pmaj, pmin);
+   p->drmPrimaryMajor = p->drmHasPrimary ? pmaj : 0;
+   p->drmPrimaryMinor = p->drmHasPrimary ? pmin : 0;
+
+   if (mali_drm_probe_env(render_env, &rmaj, &rmin, render, sizeof(render)) &&
+       mali_drm_is_kernel_node(rmaj, rmin)) {
+      /* the app named a real node: use it as given */
+   } else if (mali_drm_find_render(p->drmHasPrimary ? pmaj : -1, p->drmHasPrimary ? pmin : -1,
+                                   &rmaj, &rmin, render, sizeof(render))) {
+      /* render node derived from the card's sysfs entry */
+   } else {
+      rmaj = rmin = -1;
+      render[0] = 0;
+   }
+   p->drmHasRender = rmaj >= 0 && mali_drm_is_kernel_node(rmaj, rmin);
+   p->drmRenderMajor = p->drmHasRender ? rmaj : 0;
+   p->drmRenderMinor = p->drmHasRender ? rmin : 0;
+
+   if (getenv("MALI_WSI_DEBUG")) {
+      fprintf(stderr, "mali_vk: wsi drm: primary=%s(%lld:%lld) render=%s(%lld:%lld) -> hasPrimary=%d "
+              "hasRender=%d; image modifiers: DRM_FORMAT_MOD_LINEAR only\n",
               p->drmHasPrimary ? primary : "none", (long long)p->drmPrimaryMajor, (long long)p->drmPrimaryMinor,
-              p->drmHasRender ? render : "none", (long long)p->drmRenderMajor, (long long)p->drmRenderMinor);
+              p->drmHasRender ? render : "none", (long long)p->drmRenderMajor, (long long)p->drmRenderMinor,
+              (int)p->drmHasPrimary, (int)p->drmHasRender);
+      if (!p->drmHasRender)
+         fprintf(stderr, "mali_vk: wsi drm: no kernel DRM render node in this guest (a /dev/dri bind mount is not "
+                 "one: libdrm's drmGetDeviceFromDevId resolves through sysfs). gamescope refuses to start its "
+                 "renderer without it; give it one with MALI_DRM_RENDER=<path|maj:min> or run gamescope with a "
+                 "swapchain backend (--backend sdl)\n");
+   }
 }
 
 /* M1 policy: every limit is the Vulkan 1.0 required minimum (spec table "Required Limits").
