@@ -55,15 +55,82 @@ mali_wsi_destroy_query_pool(VkDevice _dev, VkQueryPool pool, const VkAllocationC
  *     so it also works on the fake backend (whose BO fds are not dma-bufs). The device-wide switch also moves the Wayland
  *     platform to wl_shm: do not use it in a process whose Wayland swapchains must stay zero-copy (the gamescope layer's).
  * MALI_WSI=dmabuf forces the first path on the fake backend (it then fails at swapchain creation; for tests). */
+/* Probe of the X server behind $DISPLAY, made before wsi_common sees a surface: DRI3 decides whether the
+ * dma-buf path can work at all, MIT-SHM/Present say what the software path will use. MALI_WSI_FORCE_NO_DRI3=1
+ * pretends DRI3 is absent (host test of the fallback on a server that has it). */
+struct mali_x11_server {
+   bool ok, dri3, present, mit_shm;
+};
+
+static bool
+mali_wsi_force_no_dri3(void)
+{
+   const char *force = getenv("MALI_WSI_FORCE_NO_DRI3");   /* test hook: behave like a server without DRI3 */
+   return force && *force && strcmp(force, "0");
+}
+
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+static bool
+mali_wsi_xcb_extension(xcb_connection_t *conn, const char *name)
+{
+   xcb_query_extension_reply_t *r =
+      xcb_query_extension_reply(conn, xcb_query_extension(conn, strlen(name), name), NULL);
+   bool present = r && r->present;
+   free(r);
+   return present;
+}
+
+static void
+mali_x11_probe_server(struct mali_x11_server *srv)
+{
+   memset(srv, 0, sizeof(*srv));
+   const char *dpy = getenv("DISPLAY");
+   if (!dpy || !*dpy)
+      return;
+   int screen = 0;
+   xcb_connection_t *conn = xcb_connect(dpy, &screen);
+   if (xcb_connection_has_error(conn)) {
+      xcb_disconnect(conn);
+      return;
+   }
+   srv->ok = true;
+   srv->dri3 = mali_wsi_xcb_extension(conn, "DRI3");
+   srv->present = mali_wsi_xcb_extension(conn, "Present");
+   srv->mit_shm = mali_wsi_xcb_extension(conn, "MIT-SHM");
+   xcb_disconnect(conn);
+   if (mali_wsi_force_no_dri3())
+      srv->dri3 = false;
+}
+#else
+static void
+mali_x11_probe_server(struct mali_x11_server *srv)
+{
+   memset(srv, 0, sizeof(*srv));
+}
+#endif
+
 static bool
 mali_wsi_use_sw(const struct mali_physical_device *pdev)
 {
    const char *e = getenv("MALI_WSI");
    if (e && !strcmp(e, "sw"))
       return true;
-   if (e && !strcmp(e, "dmabuf"))
+   if (e && !strcmp(e, "dmabuf") && !mali_wsi_force_no_dri3())
       return false;
-   return pdev->gpu.fake;
+   if (pdev->gpu.fake)
+      return true;
+   /* Hardware, no MALI_WSI: choose before wsi_common creates its per-connection state, so the software path
+    * (shm/PutImage) is in place from the first surface. A server without DRI3 cannot import a single dma-buf
+    * image (x11_image_init -> xcb_dri3_pixmap_from_buffer -> VK_ERROR_INITIALIZATION_FAILED), which is the
+    * "zink: could not create swapchain" a GLX client gets on Xwayland with no DRM node. */
+   struct mali_x11_server srv;
+   mali_x11_probe_server(&srv);
+   if (srv.ok && !srv.dri3) {
+      fprintf(stderr, "mali_vk: wsi: X server without DRI3: X11 swapchains use the software (shm/PutImage) path "
+              "for the whole device\n");
+      return true;
+   }
+   return false;
 }
 
 /* X11 swapchain diagnostics and the no-DRI3 fallback (STEAM-GAPS.md "X11 WSI").
@@ -105,17 +172,6 @@ struct mali_wsi_x11_probe {
    int win_w, win_h;
 };
 
-#if defined(VK_USE_PLATFORM_XCB_KHR)
-static bool
-mali_wsi_xcb_extension(xcb_connection_t *conn, const char *name)
-{
-   xcb_query_extension_reply_t *r =
-      xcb_query_extension_reply(conn, xcb_query_extension(conn, strlen(name), name), NULL);
-   bool present = r && r->present;
-   free(r);
-   return present;
-}
-#endif
 
 /* Reads the client's own X connection (the one the surface was made on): DRI3/Present/MIT-SHM and the window size
  * the server reports. XLIB surfaces are not probed here (that would need libX11 in the ICD); their log line says
@@ -131,7 +187,7 @@ mali_wsi_x11_probe(VkIcdSurfaceBase *surface, struct mali_wsi_x11_probe *p)
    if (!s->connection)
       return;
    p->have_conn = true;
-   p->dri3 = mali_wsi_xcb_extension(s->connection, "DRI3");
+   p->dri3 = mali_wsi_xcb_extension(s->connection, "DRI3") && !mali_wsi_force_no_dri3();
    p->present = mali_wsi_xcb_extension(s->connection, "Present");
    p->mit_shm = mali_wsi_xcb_extension(s->connection, "MIT-SHM");
    xcb_get_geometry_reply_t *g =
@@ -212,6 +268,12 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
               mali_wsi_platform_name(surface->platform),
               probe.present ? "" : " (and no Present)");
    }
+
+   if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
+      fprintf(stderr, "mali_vk: x11 present path: shm=%d dri3=%d (window %dx%d%s)\n",
+              (int)(probe.mit_shm && wsi_dev->has_import_memory_host), (int)probe.dri3,
+              probe.win_w, probe.win_h,
+              probe.mit_shm && !wsi_dev->has_import_memory_host ? ", server shm unused without EXT_external_memory_host: PutImage" : "");
 
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
 

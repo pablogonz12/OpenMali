@@ -17,6 +17,11 @@ cat >"$W/inner.sh" <<EOF
 # the fake backend cannot export, and it is not what is under test.
 export ENABLE_GAMESCOPE_WSI=0 MALI_BACKEND=fake MALI_FAKE_GPU=$GPU VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json
 timeout 60 "$OUT/t_vk_xcb" --expect-name Mali >"$W/xcb.log" 2>&1; echo \$? >"$W/xcb.rc"
+# No-DRI3 fallback (STEAM-GAPS.md "X11 WSI"): pretend the server has no DRI3 while the device is in dma-buf mode
+# (MALI_WSI=dmabuf, as on hardware). The software (shm/PutImage) path must take over and the swapchain must work.
+export MALI_WSI=dmabuf MALI_WSI_FORCE_NO_DRI3=1 MALI_WSI_DEBUG=1
+timeout 60 "$OUT/t_vk_xcb" --expect-name Mali >"$W/nodri3.log" 2>&1; echo \$? >"$W/nodri3.rc"
+unset MALI_WSI MALI_WSI_FORCE_NO_DRI3
 if command -v glxinfo >/dev/null; then
    MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_KOPPER_DRI2=1 timeout 60 glxinfo -B >"$W/glx.log" 2>&1; echo \$? >"$W/glx.rc"
 else echo skipped >"$W/glx.rc"; fi
@@ -25,6 +30,10 @@ chmod +x "$W/inner.sh"
 timeout 150 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.log" 2>&1
 [ -f "$W/xcb.rc" ] || { echo "FAIL: the test did not run inside gamescope"; tail -20 "$W/gs.log"; exit 1; }
 grep -v alvr "$W/xcb.log"
+grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
+[ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && grep -q "dri3=0" "$W/nodri3.log" \
+   || { echo "FAIL: no-DRI3 (software present) swapchain"; tail -5 "$W/nodri3.log"; exit 1; }
+echo "no-dri3: OK"
 rc=$(cat "$W/xcb.rc")
 if [ "$rc" = 77 ]; then exit 0; fi
 [ "$rc" = 0 ] && grep -q '^PASS' "$W/xcb.log" || { echo "FAIL: t_vk_xcb rc=$rc"; exit 1; }
