@@ -475,6 +475,14 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
                                    ? vk_buffer_address(vk_buffer_from_handle(cmd->tf.buf[k]), cmd->tf.off[k]) : 0;
             memcpy(bu->push[0] + xfb_pc + k * 8, &va, sizeof va);
          }
+      /* MALI_TF_DBG=1 (off by default): the device-side half of a transform-feedback diagnosis, next to the
+       * compile-side line in mali_compile.c - what the draw believes the four buffer bases are. */
+      if (getenv("MALI_TF_DBG") && xfb && cmd->tf.active) {
+         uint64_t q[4];
+         memcpy(q, bu->push[0] + xfb_pc, sizeof q);
+         fprintf(stderr, "mali_tf: draw xfb_pc %u bases %llx %llx %llx %llx\n", xfb_pc,
+                 (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2], (unsigned long long)q[3]);
+      }
       d->push = bu;
    }
    if (m & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC)) {

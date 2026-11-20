@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 29 /* 28: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 31 /* 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -540,6 +540,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size,
                nir_lower_io_use_interpolated_input_intrinsics);
       NIR_PASS(_, nir, nir_opt_constant_folding);
+      if (stage == MESA_SHADER_VERTEX && !o->xfb && nir->info.has_transform_feedback_varyings) {
+         /* The layout was built without the 32 B address area, so the stores would read bases that were never
+          * written. Refuse with a name instead of compiling the XFB semantics away silently (the #296 trap). */
+         free(out->bin); free(out->imm);
+         ralloc_free(nir);
+         return fail(err, errsz, "transform feedback varyings without a reserved push-constant area");
+      }
       if (stage == MESA_SHADER_VERTEX && o->xfb && nir->info.has_transform_feedback_varyings) {
          /* The lowered stores index their buffer with instance_id * num_vertices + raw_vertex_id
           * (nir_lower_xfb_to_stores.c:44-46) and read the base with load_xfb_address. Panfrost answers those from
@@ -584,6 +591,20 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          /* add_push_base() already ran, so it did not see these loads: the block the emitter copies must reach the
           * last address word, or the XFB bases never leave the draw record. */
          pc.max_end = MAX2(pc.max_end, o->xfb_pc + 32);
+         if (getenv("MALI_TF_DBG")) {
+            unsigned nst = 0, nld = 0, nraw = 0;
+            nir_foreach_block(blk2, nir_shader_get_entrypoint(nir))
+               nir_foreach_instr(ins2, blk2) {
+                  if (ins2->type != nir_instr_type_intrinsic)
+                     continue;
+                  nir_intrinsic_instr *i2 = nir_instr_as_intrinsic(ins2);
+                  if (i2->intrinsic == nir_intrinsic_store_global) nst++;
+                  else if (i2->intrinsic == nir_intrinsic_load_push_constant) nld++;
+                  else if (i2->intrinsic == nir_intrinsic_load_xfb_address) nraw++;
+               }
+            fprintf(stderr, "mali_tf: compiled xfb %d xfb_pc %u push_base %u push_bytes %u stores %u push_loads %u raw_xfb %u\n",
+                    (int)nir->info.has_transform_feedback_varyings, o->xfb_pc, push_base, pc.max_end, nst, nld, nraw);
+         }
       }
       pan_nir_lower_mediump_io(nir);
 
@@ -742,12 +763,16 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 int
 mali_spirv_has_xfb(const uint32_t *w, uint32_t nwords)
 {
-   /* OpDecorate (71) <id> DecorationXfbBuffer (45) <stream> */
-   for (uint32_t i = 0; i + 2 < nwords;) {
+   /* OpExecutionMode (16) <id> Xfb (11): the mode the SPIR-V spec requires on any module with XFB decorations,
+    * and the exact word spirv_to_nir.c:6110 turns into info.has_transform_feedback_varyings, so this scan and the
+    * lowering always agree. The instruction stream starts after the five header words (magic, version, generator,
+    * bound, schema); scanning from word 0 reads the magic as a 1827-word instruction and finds nothing (which is
+    * what silently disabled the whole path in 29). */
+   for (uint32_t i = 5; i + 2 < nwords;) {
       const uint32_t wc = w[i] >> 16;
       if (!wc)
          break;
-      if ((w[i] & 0xffff) == 71 && w[i + 2] == 45)
+      if ((w[i] & 0xffff) == 16 && w[i + 2] == 11)
          return 1;
       i += wc;
    }
