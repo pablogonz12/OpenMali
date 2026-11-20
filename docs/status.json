@@ -1,9 +1,143 @@
 {
- "commit": "c59ee50",
- "date": "2026-11-19T23:55:13+01:00",
- "dirty": true,
+ "commit": "2d3da49",
+ "date": "2026-11-20T12:20:03+01:00",
+ "dirty": false,
  "generator": "tools/status/status.py",
- "history_entries": 2,
+ "guest_libs": {
+  "broken": 6,
+  "items": [
+   [
+    "libs",
+    "libvulkan.so (Khronos loader, guest 1.4.341)",
+    "works",
+    "R3-PLAN.md#1.4.341, vk/check.sh#VK_DRIVER_FILES \u2014 guest system loader + vulkaninfo built for aarch64, run on both phones; the offline gate uses the same loader with VK_DRIVER_FILES",
+    ""
+   ],
+   [
+    "libs",
+    "ICD manifest (mali_icd.json / icd.json)",
+    "works",
+    "vk/build.sh#library_path, vk/package/README.md#absolute `library_path` \u2014 absolute library_path; found via VK_DRIVER_FILES/VK_ICD_FILENAMES, in the guest via the app (BL_VK_DRIVER + the imported icd.json)",
+    ""
+   ],
+   [
+    "libs",
+    "ICD manifest/.so replacement under a live process (atomic swap)",
+    "untested",
+    "tools/steam-present/README.md#Download/steam-present, vk/build.sh#library_path",
+    "nothing in the tree renames a new manifest or .so into place atomically; every run copies before the session starts. Overwriting a mapped ICD is untested and would fault clients that already dlopen'd it"
+   ],
+   [
+    "libs",
+    "Bionic libc + libc++ (static) runtime",
+    "works",
+    "R3-PLAN.md#libc++ static, R3-PLAN.md#qdirect `t_icd` \u2014 bionic .so NEEDED: libm libz liblog libdl libc; direct dlopen reports G615/G925 on both phones",
+    ""
+   ],
+   [
+    "libs",
+    "glibc aarch64 + libstdc++ runtime",
+    "works",
+    "R3-PLAN.md#libstdc++, R3-PLAN.md#1.4.341 \u2014 glibc .so NEEDED: libdrm libz libzstd libstdc++ libm libc; guest vulkaninfo through the system loader on both phones",
+    ""
+   ],
+   [
+    "libs",
+    "guest rootfs glibc >= 2.38 (minGlibc)",
+    "untested",
+    "vk/package/README.md#minGlibc",
+    "the a64-glibc package is stamped with the highest GLIBC_ symbol it needs (2.38). The guest image's own glibc version is not recorded anywhere in this tree, so running it on an older rootfs is untested"
+   ],
+   [
+    "libs",
+    "libdrm / DRM node (/dev/mali0 is a kbase misc chardev)",
+    "broken",
+    "vk/STEAM-GAPS.md#drmGetDevice2, vk/DEVICE-poco-x4.md#no renderD128",
+    "drmGetDevice2 rejects the misc char node, so EGL/GBM and zink's kopper have no render node to open: gamescope logs 'Failed to get DRM FD from renderer' and GL falls back to drisw/software. An alias renderD<N> with mali0's rdev (renderD113/renderD288) fixes only the st_rdev match, not drmGetDevice2"
+   ],
+   [
+    "libs",
+    "libwayland-client (dma-buf present path)",
+    "works",
+    "bench/RESULTS.md#wayland (120 Hz cap), vk/tests/t_vk_present.c \u2014 presented rows run in the guest through Wayland/gamescope with the ICD loaded via --icd; the guest rootfs must provide libwayland-client.so.0 (vk/package/README.md)",
+    ""
+   ],
+   [
+    "libs",
+    "wl_shm path (MALI_WSI=sw)",
+    "works",
+    "vk/STEAM-GAPS.md#t_vk_xcb \u2014 phone run, MALI_WSI=sw --pixels PASS: 4 images 1638x720, 3 frames, window pixel BGR 204,102,51. In sw mode wsi_common_wayland binds wl_shm and never reads drm_info",
+    ""
+   ],
+   [
+    "libs",
+    "dma-buf format modifiers (tiled / NV12 imports)",
+    "broken",
+    "vk/STEAM-GAPS.md#EXT_image_drm_format_modifier",
+    "only LINEAR is advertised, so tiled (AFBC) and NV12 client buffers cannot be imported: gamescope asks for NV12 modifiers, gets zero and copies or drops the buffer, which is the extra compositor cost per frame"
+   ],
+   [
+    "libs",
+    "gamescope (compositor consumer)",
+    "works",
+    "vk/STEAM-GAPS.md#Round 2 result \u2014 scope: host headless gamescope 3.17.0 creates a device on our ICD and all ten composite shaders compile; the guest selects the device. Not a completed guest frame (see CEF row)",
+    ""
+   ],
+   [
+    "libs",
+    "Steam X11 client through the gamescope WSI layer (VK_KHR_xcb_surface)",
+    "works",
+    "vk/STEAM-GAPS.md#t_vk_xcb, vk/STEAM-GAPS.md#x11 wsi host \u2014 xcb swapchain create/acquire/clear/present x3, host and phone; phone --pixels PASS",
+    ""
+   ],
+   [
+    "libs",
+    "X11 present without the gamescope layer (needs DRI3)",
+    "broken",
+    "vk/STEAM-GAPS.md#dri3 extension not supported",
+    "with no DRI3 there is no pixmap-from-dma-buf, so an unwrapped X11 client cannot present from our linear export: CEF logs 'dri3 extension not supported', gets no GPU memory buffer and its one-copy raster fails. One later probe saw DRI3 on Xwayland :0/:1, so it is session-dependent"
+   ],
+   [
+    "libs",
+    "CEF / ANGLE (Steam UI consumer)",
+    "broken",
+    "vk/STEAM-GAPS.md#exit_code=8704, vk/STEAM-GAPS.md#pc=0x0",
+    "the GPU process exits on a lost context (8704 = 34<<8) after our vkCreateDevice succeeds, then the helper calls through NULL in libGLX_mesa: CEF never composites, so the Steam UI has no frame and the session stays in STARTING_STEAM"
+   ],
+   [
+    "libs",
+    "Steam runtime (steamrtarm64) + Steam UI",
+    "broken",
+    "vk/STEAM-GAPS.md#steamrtarm64, vk/STEAM-GAPS.md#STARTING_STEAM",
+    "the client maps our ICD and one shimmed run reached READY, but no session has produced a Steam UI frame: the CEF GPU process is the blocker above, so the runtime loads the driver and the UI does not run on it"
+   ],
+   [
+    "libs",
+    "Mesa GLX / zink (libGLX_mesa + libgallium_dri)",
+    "broken",
+    "vk/STEAM-GAPS.md#glx: failed to create drisw screen, vk/STEAM-GAPS.md#pc=0x0",
+    "zink gets no GL screen (silent in release Mesa) and the web helper dies in libGLX_mesa; GLES stays at 2.0 because transform feedback and vertex divisor are missing"
+   ],
+   [
+    "libs",
+    "libvulkan.so.1 shim (shell-user dEQP route)",
+    "works",
+    "vk/deqp/shell-deqp.py#libvulkan.so.1, vk/DEVICE-poco-x4.md#302 Pass \u2014 20-line shim forwards vkGetInstanceProcAddr to the ICD, no guest install; daily sample 302 pass on poco-x4",
+    ""
+   ],
+   [
+    "libs",
+    "Mesa shared WSI (libvulkan_wsi.a, build-time)",
+    "works",
+    "vk/build.sh#libvulkan_wsi.a, vk/STEAM-GAPS.md#wsi_common \u2014 linked statically; wayland/xcb/xlib platforms come from Mesa's wsi_common, and the 'x11 wsi host' gate case exercises the xcb swapchain",
+    ""
+   ]
+  ],
+  "total": 18,
+  "untested": 2,
+  "works": 10
+ },
+ "history_entries": 3,
  "items": [
   [
    "entrypoints",

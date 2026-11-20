@@ -411,11 +411,14 @@ def panel_tests(log_path):
 # The second half of this file merges tools/progress.py (docs/progress.toml: GPU ladder, pipeline pieces,
 # roadmap milestones) into the same page, so there is one tracker and one set of numbers.
 TRACK = "docs/progress.toml"
+LIBS = "docs/libs.toml"
 FORMATS_FILE = "tools/status/formats-vk13.txt"
 README = "README.md"
 
 STATUS_ORDER = ("done", "partial", "missing")
 SYM = {"done": "done", "partial": "partial", "missing": "not done"}
+LIB_STATUS = ("works", "broken", "untested")
+LIB_SYM = {"works": "**works**", "broken": "**broken**", "untested": "untested"}
 
 
 def fmt_pct1(have, total):
@@ -551,6 +554,32 @@ def ext_left(name, why_partial):
     if why_partial:
         return f"advertised but partial: {why_partial}"
     return consequence.get(name, "not advertised: an app that enables it gets VK_ERROR_EXTENSION_NOT_PRESENT")
+
+
+def panel_libs():
+    """Guest libraries the driver is loaded alongside: works / broken / untested, each with evidence.
+
+    Hand-maintained (docs/libs.toml) because these statuses come from dated guest experiments, not from
+    parsing the tree, and because docs/progress.toml is also read by tools/progress.py (a different axis).
+    Rows are (panel, library, status, evidence, consequence-if-not-working) and are NOT work items: they
+    stay out of the strict denominator, like the gate health line.
+    """
+    cfg = tomllib.loads(read(LIBS))
+    rows = []
+    for lib in cfg["lib"]:
+        name, st = lib["name"], lib["status"]
+        if st not in LIB_STATUS:
+            die(f"lib {name}: status must be one of {', '.join(LIB_STATUS)}")
+        ev = verify_ev(lib["ev"], "done" if st == "works" else "partial", f"lib {name}")
+        why = lib.get("why", "")
+        if st != "works" and not why:
+            die(f"lib {name}: '{st}' needs a one-line why (the consequence / what is unknown)")
+        evs = ", ".join(ev)
+        if lib.get("note"):
+            evs = f"{evs} — {lib['note']}"
+        rows.append(("libs", name, st, evs, why))
+    return {"rows": rows,
+            "source": f"`{LIBS}` (hand-maintained: dated guest experiments, evidence verified by this script)"}
 
 
 def detail_rows(panels):
@@ -752,6 +781,8 @@ def render(panels, sha, date, dirty, hist, series, rows):
     A("Every row below is one item with its evidence and, when it is not done, one line on what is left.")
     A("`docs/progress.toml` is still the hand-maintained tracker list (GPU ladder, pipeline pieces,")
     A("milestones); everything else is measured from the tree, the built ICD and the committed tests.")
+    A("`docs/libs.toml` is the hand-maintained guest-library list (a separate file, because")
+    A("`tools/progress.py` also parses `docs/progress.toml`).")
     A("")
     A("## Summary")
     A("")
@@ -779,6 +810,29 @@ def render(panels, sha, date, dirty, hist, series, rows):
     A(f"source-derived series below was recomputed from git at the last {len(series)} commits that touched")
     A("`vk/`, with the same parsers and the same denominators. No entry is invented or interpolated.")
     A("")
+    A("## Guest compatibility — libraries the driver is loaded alongside")
+    A("")
+    libs = panels.get("libs")
+    if libs and libs["rows"]:
+        lr = libs["rows"]
+        lw = sum(1 for r in lr if r[2] == "works")
+        lb = sum(1 for r in lr if r[2] == "broken")
+        lu = sum(1 for r in lr if r[2] == "untested")
+        A(f"**{lw} works / {lb} broken / {lu} untested of {len(lr)} libraries.** These are not work")
+        A("items, so they do not move the strict percentage (same treatment as gate health): this is the")
+        A("guest surface the driver has to survive. `untested` is the default — a row is only `works`")
+        A("when a test, a dated guest experiment or a committed log line shows it, and every row cites")
+        A("that evidence. Source: " + libs["source"] + ". The list's last change is in")
+        A("`git log docs/libs.toml` (not printed here: the commit that regenerates this page also edits it).")
+        A("")
+        tbl = [(f"`{r[1]}`", LIB_SYM[r[2]], r[3].replace("`", "") or "—", r[4] or "—") for r in lr]
+        for line in md_table(tbl, [("Library", "---"), ("Status", "---"), ("Evidence", "---"),
+                                   ("If broken: consequence", "---")]):
+            A(line)
+        A("")
+    else:
+        A("No `docs/libs.toml` entries: the panel has no data.")
+        A("")
     A("## What is not done, and why it matters")
     A("")
     by = {}
@@ -950,6 +1004,8 @@ def render(panels, sha, date, dirty, hist, series, rows):
     A("  features is reported not done.")
     A(f"- Features: {ft.get('source', '')}.")
     A(f"- GPU ladder / pipeline / milestones: `{TRACK}` and `ROADMAP.md`, evidence verified here.")
+    A(f"- Guest libraries: `{LIBS}` `[[lib]]`, hand-edited from dated guest experiments; every evidence")
+    A("  path/token is verified here, so a row cannot cite a file that does not exist.")
     A("- dEQP: committed TSV files under `vk/deqp/`; nothing is re-run by this script.")
     A("")
     A("## Denominator rules")
@@ -959,6 +1015,7 @@ def render(panels, sha, date, dirty, hist, series, rows):
     A(f"- Formats {FMT_CORE13_LAST}: the last Vulkan 1.3 core `VkFormat`. The driver's own scan is 1..{FMT_DRIVER_LAST}, shown too.")
     A(f"- Features {ft['total']}: 55 core 1.0 + 15 core 1.3 feature bits (`{FEATURES.relative_to(ROOT)}`), not 1.1/1.2/extension bits.")
     A("- Gate cases are not items: they are health checks, so 122/122 does not raise the progress numbers.")
+    A("- Guest libraries are not items either: works/broken/untested counts the guest surface, not the driver's checklist.")
     A("- Partial counts as 0.5 only in the second percentage; the first counts done only.")
     A("")
     return "\n".join(L)
@@ -995,6 +1052,13 @@ def readme_block(panels, rows):
                                ("Total", "---:"), ("Strict %", "---:"), ("Partial=0.5 %", "---:")]):
         L.append(line)
     L.append("")
+    if panels.get("libs") and panels["libs"]["rows"]:
+        lr = panels["libs"]["rows"]
+        lw = sum(1 for r in lr if r[2] == "works")
+        lb = sum(1 for r in lr if r[2] == "broken")
+        lu = sum(1 for r in lr if r[2] == "untested")
+        L.append(f"Guest libraries the driver is loaded alongside (`docs/libs.toml`): "
+                 f"**{lw} works / {lb} broken / {lu} untested** of {len(lr)}.")
     L.append("Full per-item tables, evidence, what-is-left and history: [`docs/STATUS.md`](docs/STATUS.md).")
     L.append("`make status` regenerates both; `make status-check` fails when they are stale.")
     L.append("")
@@ -1060,7 +1124,16 @@ def history_entry(panels, rows, sha, date, dirty):
         "formats": {"have": panels["formats"].get("have"), "total": panels["formats"].get("total")},
         "features": {"have": panels["features"]["have"], "total": panels["features"]["total"]},
         "tests": {"pass": panels["tests"].get("have"), "total": panels["tests"].get("total")},
+        "guest_libs": lib_counts(panels),
     }
+
+
+def lib_counts(panels):
+    lr = (panels.get("libs") or {}).get("rows") or []
+    return {"works": sum(1 for r in lr if r[2] == "works"),
+            "broken": sum(1 for r in lr if r[2] == "broken"),
+            "untested": sum(1 for r in lr if r[2] == "untested"),
+            "total": len(lr)}
 
 
 def main():
@@ -1072,8 +1145,8 @@ def main():
     args = ap.parse_args()
 
     if args.verify_evidence:
-        rows = tracker_rows()
-        print(f"{len(rows)} tracker items, evidence verified")
+        rows = tracker_rows() + panel_libs()["rows"]
+        print(f"{len(rows)} tracker/lib items, evidence verified")
         return 0
 
     sha = git("log", "-1", "--format=%h", "--", "vk") or "unknown"
@@ -1086,6 +1159,7 @@ def main():
         "formats": panel_formats(),
         "features": panel_features(),
         "tests": panel_tests(args.check_log),
+        "libs": panel_libs(),
     }
     panels["deqp"] = panel_deqp(tomllib.loads(read(TRACK)))
     rows = detail_rows(panels) + tracker_rows()
@@ -1100,6 +1174,7 @@ def main():
     md = render(panels, sha, date, dirty, hist, series, rows) + "\n"
     data = {"commit": sha, "date": date, "dirty": dirty,
             "summary": panel_summary("all", rows), "items": [list(r) for r in rows],
+            "guest_libs": dict(lib_counts(panels), items=[list(r) for r in panels["libs"]["rows"]]),
             "history_entries": len(hist), "generator": "tools/status/status.py"}
     js = json.dumps(data, indent=1, sort_keys=True) + "\n"
     rd = splice_readme(readme_block(panels, rows))
@@ -1124,8 +1199,10 @@ def main():
     if changed:
         HIST.write_text("".join(json.dumps(h, sort_keys=True) + "\n" for h in hist))
     d, p, m = tally(rows)
+    libs = lib_counts(panels)
     print(f"wrote docs/STATUS.md ({len(rows)} items, {d} done / {p} partial / {m} missing = "
-          f"{fmt_pct1(d, d + p + m)} strict, {fmt_pct1(d + 0.5 * p, d + p + m)} with partial=0.5), "
+          f"{fmt_pct1(d, d + p + m)} strict, {fmt_pct1(d + 0.5 * p, d + p + m)} with partial=0.5; "
+          f"guest libs {libs['works']} works / {libs['broken']} broken / {libs['untested']} untested), "
           "docs/status.json, README status block, docs/status-history.jsonl")
 
 
