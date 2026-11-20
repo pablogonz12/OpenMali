@@ -225,6 +225,8 @@ unsigned kb_fake_mem_alloc_count(void) { return n_mem_alloc; }   /* test hooks (
 unsigned kb_fake_mem_free_count(void) { return n_mem_free; }
 unsigned kb_fake_memsync_count(uint64_t va);   /* test hook (t_memsync.c) */
 unsigned kb_fake_memsync_count(uint64_t va) { for (int i = 0; i < nsync; i++) if (syncs[i].va == va) return syncs[i].n; return 0; }
+/* test hook (t_memsync.c): the BASE_MEM_* flags the allocation was made with, e.g. COHERENT_LOCAL */
+uint64_t kb_fake_alloc_flags(uint64_t va) { struct region *r = find_region(va); return r ? r->flags : 0; }
 
 int ioctl(int fd, unsigned long req, ...)
 {
