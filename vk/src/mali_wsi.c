@@ -16,6 +16,8 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkS
 VKAPI_ATTR VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                        VkSemaphore semaphore, VkFence fence, uint32_t *pImageIndex);
 VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo);
+VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                  const VkAllocationCallbacks *pAllocator);
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -26,7 +28,17 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresen
 
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 #include <xcb/xcb.h>
+#include <xcb/shm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
+
+struct mali_x11_shm;
+static void mali_x11_shm_destroy(VkSwapchainKHR sc);
+static struct mali_x11_shm *mali_x11_shm_find(VkSwapchainKHR sc);
+static bool mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index);
 
 #define MALI_DRM_FORMAT_MOD_LINEAR 0ull
 const uint64_t mali_wsi_modifier = MALI_DRM_FORMAT_MOD_LINEAR;
@@ -203,6 +215,13 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
  * measurement when IMMEDIATE is really offered: with FIFO/MAILBOX the producer rate equals the displayed rate by
  * construction, which is what hid the GPU headroom (1600x720 and 2400x1080 both 118 fps). IMMEDIATE is additive,
  * FIFO/MAILBOX stay first and unchanged for real apps. */
+VKAPI_ATTR void VKAPI_CALL
+mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *alloc)
+{
+   mali_x11_shm_destroy(swapchain);
+   wsi_DestroySwapchainKHR(device, swapchain, alloc);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
                            uint32_t *count, VkPresentModeKHR *modes)
@@ -236,6 +255,152 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    memcpy(modes, all, out * sizeof(*modes));
    *count = out;
    return out < n ? VK_INCOMPLETE : VK_SUCCESS;
+}
+
+/* Software present over MIT-SHM, our own segment: the frame leaves the driver as a memcpy into shared pages plus
+ * XShmPutImage on the socket, instead of a ~w*h*4 byte PutImage request per frame (which capped the CMF at ~113 fps
+ * whatever the resolution). We do not need EXT_external_memory_host for this: the segment is ours
+ * (shmget/shmat), attached to the server with XShmAttach-equivalent xcb_shm_attach.
+ *
+ * One segment holds one buffer per swapchain image (offset = image_index * stride * height): a present writes the
+ * new frame into its own buffer, so a server still reading the previous image cannot show a torn mix of two frames,
+ * and nothing has to be copied twice. The whole segment is attached once per swapchain and released with
+ * shmdt + shmctl(IPC_RMID) on destroy; a leaked segment is pinned memory that survives the process.
+ * MALI_WSI=xput forces the old PutImage path (A/B). */
+struct mali_x11_shm {
+   VkSwapchainKHR swapchain;
+   bool active;
+   xcb_connection_t *conn;
+   xcb_window_t window;
+   xcb_gcontext_t gc;
+   uint8_t depth;
+   uint32_t width, height, stride, n_images;
+   xcb_shm_seg_t seg;
+   int shmid;
+   void *addr;
+   size_t size;
+};
+static struct mali_x11_shm mali_x11_shm_slots[8];
+
+static struct mali_x11_shm *
+mali_x11_shm_find(VkSwapchainKHR sc)
+{
+   for (unsigned i = 0; i < sizeof(mali_x11_shm_slots) / sizeof(mali_x11_shm_slots[0]); i++)
+      if (mali_x11_shm_slots[i].active && mali_x11_shm_slots[i].swapchain == sc)
+         return &mali_x11_shm_slots[i];
+   return NULL;
+}
+
+static void
+mali_x11_shm_destroy(VkSwapchainKHR sc)
+{
+   struct mali_x11_shm *st = mali_x11_shm_find(sc);
+   if (!st)
+      return;
+   xcb_shm_detach(st->conn, st->seg);
+   xcb_flush(st->conn);
+   if (st->addr && st->addr != MAP_FAILED)
+      shmdt(st->addr);
+   if (st->shmid >= 0)
+      shmctl(st->shmid, IPC_RMID, NULL);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: x11 shm: released %zu B segment (shmid %d)\n", st->size, st->shmid);
+   memset(st, 0, sizeof(*st));
+   st->shmid = -1;
+}
+
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+static void
+mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swapchain *chain,
+                    const VkSwapchainCreateInfoKHR *ci)
+{
+   if (surface->platform != VK_ICD_WSI_PLATFORM_XCB)
+      return;
+   VkIcdSurfaceXcb *s = (VkIcdSurfaceXcb *)surface;
+   const char *e = getenv("MALI_WSI");
+   if (!s->connection || (e && !strcmp(e, "xput"))) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (%s)\n", e ? "MALI_WSI=xput" : "no connection");
+      return;
+   }
+   const struct xcb_query_extension_reply_t *shm = xcb_get_extension_data(s->connection, &xcb_shm_id);
+   if (!shm || !shm->present) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (server has no MIT-SHM)\n");
+      return;
+   }
+   struct mali_x11_shm *st = NULL;
+   for (unsigned i = 0; i < sizeof(mali_x11_shm_slots) / sizeof(mali_x11_shm_slots[0]); i++)
+      if (!mali_x11_shm_slots[i].active) { st = &mali_x11_shm_slots[i]; break; }
+   if (!st)
+      return;
+
+   struct wsi_image *img0 = chain->get_wsi_image(chain, 0);
+   const uint32_t stride = img0->row_pitches[0];
+   const uint32_t w = ci->imageExtent.width, h = ci->imageExtent.height;
+
+   xcb_get_geometry_reply_t *geom =
+      xcb_get_geometry_reply(s->connection, xcb_get_geometry(s->connection, s->window), NULL);
+   if (!geom) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (no window geometry)\n");
+      return;
+   }
+   const uint8_t depth = geom->depth;
+   free(geom);
+
+   const size_t size = (size_t)stride * h * chain->image_count;
+   int shmid = shmget(IPC_PRIVATE, size, IPC_CREAT | 0600);
+   if (shmid < 0) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (shmget: %s)\n", strerror(errno));
+      return;
+   }
+   void *addr = shmat(shmid, NULL, 0);
+   if (addr == MAP_FAILED) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (shmat: %s)\n", strerror(errno));
+      shmctl(shmid, IPC_RMID, NULL);
+      return;
+   }
+   const xcb_shm_seg_t seg = xcb_generate_id(s->connection);
+   xcb_void_cookie_t ck = xcb_shm_attach_checked(s->connection, seg, shmid, 0);
+   if (xcb_request_check(s->connection, ck)) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (xcb_shm_attach rejected)\n");
+      shmdt(addr);
+      shmctl(shmid, IPC_RMID, NULL);
+      return;
+   }
+   const xcb_gcontext_t gc = xcb_generate_id(s->connection);
+   xcb_create_gc(s->connection, gc, s->window, XCB_GC_GRAPHICS_EXPOSURES, (uint32_t []){0});
+   xcb_flush(s->connection);
+
+   *st = (struct mali_x11_shm){.swapchain = sc, .active = true, .conn = s->connection, .window = s->window,
+                              .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
+                              .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
+                              .size = size};
+   fprintf(stderr, "mali_vk: x11 present: shm=1 putimage=0 (%ux%u, %u images, %zu B segment, stride %u)\n",
+           w, h, chain->image_count, size, stride);
+}
+#else
+static void mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swapchain *chain,
+                                const VkSwapchainCreateInfoKHR *ci) { (void)sc; (void)surface; (void)chain; (void)ci; }
+#endif
+
+/* Present one image through the shared segment. Returns false when the image cannot be copied (no CPU map), in
+ * which case the caller falls back to wsi's PutImage present. */
+static bool
+mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
+{
+   struct mali_x11_shm *st = mali_x11_shm_find((VkSwapchainKHR)(uintptr_t)chain);
+   if (!st || !st->active)
+      return false;
+   struct wsi_image *img = chain->get_wsi_image(chain, image_index);
+   if (!img || !img->cpu_map)
+      return false;
+   const size_t off = (size_t)st->stride * st->height * image_index;
+   if (off + (size_t)st->stride * st->height > st->size)
+      return false;
+   memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
+   xcb_shm_put_image(st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
+                     0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
+   xcb_flush(st->conn);
+   return true;
 }
 
 /* MALI_WSI_DEBUG=1: one line per acquire/present so a stall shows as an "enter" without its matching result
@@ -273,6 +438,33 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
               (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
               __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
               (int)qpdev->wsi.sw);
+   }
+   /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
+   {
+      bool all_shm = info->swapchainCount > 0;
+      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
+         const uint32_t idx = info->pImageIndices[i];
+         if (!sc || !mali_x11_shm_find(info->pSwapchains[i]) || !mali_x11_shm_present(sc, idx)) {
+            all_shm = false;
+            break;
+         }
+         struct wsi_image *img = sc->get_wsi_image(sc, idx);
+         img->acquired = false;
+         img->present_serial = ++sc->present_serial;
+         if (sc->release_images)
+            sc->release_images(sc, 1, &idx);
+      }
+      if (all_shm) {
+         if (mali_wsi_debug()) {
+            static int shm_logged;
+            if (!shm_logged) {
+               shm_logged = 1;
+               fprintf(stderr, "mali_vk: wsi present: shared-memory segment (no image bytes on the socket)\n");
+            }
+         }
+         return VK_SUCCESS;
+      }
    }
    if (mali_wsi_debug()) {
       for (uint32_t i = 0; i < info->swapchainCount; i++) {
@@ -359,6 +551,10 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
               wsi_dev->sw ? " (software)" : " (dma-buf)");
 
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
+   if (r == VK_SUCCESS && wsi_dev->sw) {
+      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
+      mali_x11_shm_create(*out, surface, chain, ci);
+   }
 
    if (mali_wsi_debug() || r != VK_SUCCESS) {
       fprintf(stderr, "mali_vk: wsi create_swapchain: platform=%s format=%u colorSpace=%u usage=0x%x mode=%u "
