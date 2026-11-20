@@ -1324,11 +1324,13 @@ load_roundtrip(const char *name)
    float AB[1][4] = {{1, 0, -.5f, 0}};
    uint32_t c1 = 0, c2 = 0;
    if (ok) ok = scene_draw(&s, 1, AB, f);          /* pass 1: clear + A, stored and resolved */
-   if (ok) { c1 = count_cov(&s); alpha_hist("after_pass1", &s); }
+   if (ok) c1 = count_cov(&s);
+   if (!g_fake) alpha_hist("after_pass1", &s);
    s.second = 1;
    if (ok) ok = scene_draw(&s, 0, AB, f);          /* pass 2: LOAD, no draws, store + resolve */
    s.second = 0;
-   if (ok) { c2 = count_cov(&s); alpha_hist("after_load_no_draw", &s); }
+   if (ok) c2 = count_cov(&s);
+   if (!g_fake) alpha_hist("after_load_no_draw", &s);
    /* stage 3: LOAD then DRAW a triangle that covers nothing new (the same A again): if the draw drops the samples
     * the preload restored, coverage falls here; if it keeps them, coverage is unchanged and the loss in the real
     * test comes from B's own samples at the seam. */
@@ -1336,7 +1338,8 @@ load_roundtrip(const char *name)
    if (ok) ok = scene_draw(&s, 1, AB, f);
    s.second = 0;
    uint32_t c3 = 0;
-   if (ok) { c3 = count_cov(&s); alpha_hist("after_load_and_same_draw", &s); }
+   if (ok) c3 = count_cov(&s);
+   if (!g_fake) alpha_hist("after_load_and_same_draw", &s);
    if (ok) {
       if (g_fake) {
          printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
@@ -1364,8 +1367,9 @@ test_msaa_load(const char *name)
    }
    g_msaa = 1;
    g_msaa_store = 1;
-   int ok = test_load(name, 2);
-   if (ok) ok = load_roundtrip("msaa_load_roundtrip");
+   const int ok_main = test_load(name, 2);
+   const int ok_rt = load_roundtrip("msaa_load_roundtrip");   /* diagnostics: runs even when the main assertion failed */
+   int ok = ok_main && ok_rt;
    g_msaa = 0;
    g_msaa_store = 0;
    return ok;
@@ -2285,6 +2289,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
+   if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
 
    DeviceWaitIdle(dev);
