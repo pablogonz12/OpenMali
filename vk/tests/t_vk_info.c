@@ -165,9 +165,9 @@ main(int argc, char **argv)
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
-   {  /* 4x is advertised iff pipeline creation accepts it (MALI_EXPERIMENTAL_MSAA=1) */
+   {  /* 4x is advertised iff pipeline creation accepts it: on by default, MALI_EXPERIMENTAL_MSAA=0 opts out */
       const char *g = getenv("MALI_EXPERIMENTAL_MSAA");
-      VkSampleCountFlags want = (g && g[0] == '1') ? VK_SAMPLE_COUNT_4_BIT : 0;
+      VkSampleCountFlags want = (g && g[0] == '0') ? 0 : VK_SAMPLE_COUNT_4_BIT;
       VkImageFormatProperties ifp;
       VkResult r = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &ifp);
