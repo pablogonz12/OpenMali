@@ -644,8 +644,32 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       unsupported(cmd, "indirect count buffer");
       return;
    }
-   if (!p) {
-      unsupported(cmd, "indirect buffer (no CPU mapping)");
+   struct vk_buffer *vb = vk_buffer_from_handle(b);
+   /* No CPU mapping (or MALI_IND_GPU=1): the CS loads the arguments from the GPU address at run time, one draw per command (fixed n). The
+    * count-buffer variants need the CPU view (the CS has no branch helper), they stay on the expanded path. */
+   bool gpu = !cb && vb && !(off & 3) && (!p || getenv("MALI_IND_GPU"));
+   if (!p && !gpu) {
+      unsupported(cmd, cb ? "indirect buffer with a GPU-side count (no CPU mapping)" : "indirect buffer (no CPU mapping)");
+      return;
+   }
+   if (gpu) {
+      for (uint32_t k = 0; k < n; k++) {
+         if (!snapshot_draw(cmd, &d, 1, 1, 0, 0)) {
+            vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+            return;
+         }
+         d.indexed = indexed;
+         if (indexed) {
+            d.index_va = cmd->ib_va;
+            d.index_cpu = cmd->ib_cpu;
+            d.index_bytes = cmd->ib_bytes;
+            d.index_size = cmd->ib_size;
+         }
+         d.draw_id = k;
+         d.ind_va = vk_buffer_address(vb, off + (VkDeviceSize)stride * k);
+         if (mali_frame_add_rec(&cmd->cur, &d))
+            vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
       return;
    }
    if (!snapshot_draw(cmd, &d, 0, 0, 0, 0)) {
