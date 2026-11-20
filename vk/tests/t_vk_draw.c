@@ -1285,6 +1285,22 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
 /* MSAA colour loadOp LOAD + storeOp STORE with a resolve: the two-pass colour test (pass 1 clear+A store,
  * pass 2 LOAD+B store) run at 4x. The 4x attachment is stored (not the hardware Average) and the resolve
  * runs as its own pass, so this covers the per-sample preload and the STORE+resolve combination together. */
+/* Alpha histogram in quarter steps (0, 1-63, 64-127, 128-191, 192-254, 255): an edge pixel the LOAD lost shows up
+ * as a shift from the partial buckets to 0, which tells "the draw after LOAD dropped uncovered samples" from
+ * "the preload never restored them". */
+static void
+alpha_hist(const char *tag, struct scene *s)
+{
+   unsigned b[6] = {0};
+   for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {
+         unsigned a = s->px[y * s->pitch + x * 4 + 3];
+         b[a == 0 ? 0 : a == 255 ? 5 : 1 + (a - 1) / 64] += 1;
+      }
+   printf("{\"hist\":\"%s\",\"a0\":%u,\"a1_63\":%u,\"a64_127\":%u,\"a128_191\":%u,\"a192_254\":%u,\"a255\":%u}\n",
+          tag, b[0], b[1], b[2], b[3], b[4], b[5]);
+}
+
 /* Does loadOp LOAD restore every sample? pass 1 clears and draws A (store, resolve), pass 2 LOADs with no
  * draw at all and stores/resolves again: coverage must be identical to pass 1. This isolates the preload
  * from the second draw, so a shortfall is the per-sample restore and not geometry or depth. */
@@ -1308,17 +1324,27 @@ load_roundtrip(const char *name)
    float AB[1][4] = {{1, 0, -.5f, 0}};
    uint32_t c1 = 0, c2 = 0;
    if (ok) ok = scene_draw(&s, 1, AB, f);          /* pass 1: clear + A, stored and resolved */
-   if (ok) c1 = count_cov(&s);
+   if (ok) { c1 = count_cov(&s); alpha_hist("after_pass1", &s); }
    s.second = 1;
    if (ok) ok = scene_draw(&s, 0, AB, f);          /* pass 2: LOAD, no draws, store + resolve */
    s.second = 0;
-   if (ok) c2 = count_cov(&s);
+   if (ok) { c2 = count_cov(&s); alpha_hist("after_load_no_draw", &s); }
+   /* stage 3: LOAD then DRAW a triangle that covers nothing new (the same A again): if the draw drops the samples
+    * the preload restored, coverage falls here; if it keeps them, coverage is unchanged and the loss in the real
+    * test comes from B's own samples at the seam. */
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 1, AB, f);
+   s.second = 0;
+   uint32_t c3 = 0;
+   if (ok) { c3 = count_cov(&s); alpha_hist("after_load_and_same_draw", &s); }
    if (ok) {
       if (g_fake) {
          printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
       } else {
          CHECK(c1 == c2, "%s: coverage after LOAD %u != after pass 1 %u (%d pixels lost by the per-sample preload)", name, c2, c1, (int)(c1 - c2));
-         printf("{\"test\":\"%s\",\"cov_pass1\":%u,\"cov_after_load\":%u,\"ok\":%s}\n", name, c1, c2, c1 == c2 ? "true" : "false");
+         CHECK(c1 == c3, "%s: coverage after LOAD + the same draw %u != pass 1 %u (%d pixels lost by drawing over loaded samples)", name, c3, c1, (int)(c1 - c3));
+         printf("{\"test\":\"%s\",\"cov_pass1\":%u,\"cov_after_load\":%u,\"cov_after_load_draw\":%u,\"ok\":%s}\n",
+                name, c1, c2, c3, c1 == c2 && c1 == c3 ? "true" : "false");
       }
    }
    scene_destroy(&s);
