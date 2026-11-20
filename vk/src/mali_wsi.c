@@ -20,6 +20,8 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
                                                   const VkAllocationCallbacks *pAllocator);
 
 #include "vk_alloc.h"
+#include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
+#include "vk_semaphore.h"  /* struct vk_semaphore -> &sem->sync */
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -382,6 +384,7 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
                               .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
                               .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
                               .size = size};
+   assert(stride % 4 == 0);   /* XShmPutImage takes the segment pitch in 4-byte pixels */
    fprintf(stderr, "mali_vk: x11 present: shm=1 putimage=0 (%ux%u, %u images, %zu B segment, stride %u)\n",
            w, h, chain->image_count, size, stride);
 }
@@ -409,7 +412,9 @@ mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
    if (off + (size_t)st->stride * st->height > st->size)
       return false;
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
-   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
+   /* total_width is the *segment* pitch (the server reads rows of that width); src width/height are the image. */
+   const uint16_t total_w = (uint16_t)(st->stride / 4);
+   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, total_w, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
    xcb_flush((xcb_connection_t *)st->conn);
    return true;
@@ -455,10 +460,34 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
       bool all_shm = info->swapchainCount > 0;
-      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+      for (uint32_t i = 0; i < info->swapchainCount; i++)
+         if (!mali_x11_shm_find(info->pSwapchains[i])) {
+            all_shm = false;      /* not all of them are in our segment: let wsi present normally */
+            break;
+         }
+      /* The shortcut copies the image itself and returns before wsi's present, so the app's present semaphores
+       * would never be waited on: do it here, with the same CPU-wait semantics the queue submit uses
+       * (mali_queue.c:618), and only for the shortcut (the dma-buf path hands the semaphores to wsi). */
+      if (all_shm && info->waitSemaphoreCount) {
+         VK_FROM_HANDLE(vk_queue, q, queue);
+         struct mali_device *qdev = container_of(q->base.device, struct mali_device, vk);
+         const VkTimelineSemaphoreSubmitInfo *tl =
+            vk_find_struct_const(info->pNext, TIMELINE_SEMAPHORE_SUBMIT_INFO);
+         for (uint32_t i = 0; i < info->waitSemaphoreCount; i++) {
+            VK_FROM_HANDLE(vk_semaphore, sem, info->pWaitSemaphores[i]);
+            if (!sem)
+               continue;
+            const uint64_t val = (tl && tl->pWaitSemaphoreValues) ? tl->pWaitSemaphoreValues[i] : 0;
+            VkResult wr = vk_sync_wait(&qdev->vk, vk_semaphore_get_active_sync(sem), val,
+                                       VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+            if (wr != VK_SUCCESS)
+               return wr;
+         }
+      }
+      for (uint32_t i = 0; all_shm && i < info->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
          const uint32_t idx = info->pImageIndices[i];
-         if (!sc || !mali_x11_shm_find(info->pSwapchains[i]) || !mali_x11_shm_present(sc, idx)) {
+         if (!sc || !mali_x11_shm_present(sc, idx)) {
             all_shm = false;
             break;
          }
