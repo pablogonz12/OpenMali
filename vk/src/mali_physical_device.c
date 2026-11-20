@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <unistd.h>
 
 #include "mali_entrypoints.h"
 #include "util/list.h"
@@ -443,6 +444,27 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    pdev->gpu = *gpu;
    mali_sync_init_physical(pdev);
 
+   /* Device-wide commit budget. kbase commits and pins every byte of a native BO at allocation time
+    * (libkbase/src/bo.c:45, commit_pages = va_pages), so it is not reclaimable under pressure: without a
+    * total, a session can pin half of RAM (the heap we advertise) and take the phone into an OOM panic.
+    * Default: half the advertised heap, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. */
+   {
+      long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+      uint64_t ram = pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
+      uint64_t cap = gpu->heap_bytes / 2;
+      if (ram && ram / 4 < cap)
+         cap = ram / 4;
+      const char *env = getenv("MALI_VRAM_CAP_MB");
+      if (env && env[0])
+         cap = strtoull(env, NULL, 10) << 20;
+      pdev->mem_cap = cap;
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
+                 (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
+                 env && env[0] ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 pdev->gpu.name);
+   }
+
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
     * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
    pdev->memory = (VkPhysicalDeviceMemoryProperties){
@@ -510,6 +532,9 @@ mali_destroy_physical_device(struct vk_physical_device *vk_pdev)
    struct vk_instance *instance = vk_pdev->instance;
 
    mali_wsi_finish(pdev);
+   /* Every VkDeviceMemory of this physical device is gone with its devices; a non-zero counter here would mean
+    * one was leaked, so it must not be inherited by anything that reuses the slot. */
+   pdev->mem_used = 0;
    vk_physical_device_finish(&pdev->vk);
    vk_free(&instance->alloc, pdev);
 }
