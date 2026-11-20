@@ -448,11 +448,27 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       bb->ndyn = cmd->ndyn;
       d->bind = bb;
    }
+   /* VK_EXT_transform_feedback: the pipeline reserves 32 B after the app's push constants for the four XFB buffer
+    * addresses; they change per draw (the buffers can be rebound between draws), so patch them into this draw's
+    * push block. */
+   const bool xfb = cmd->have_gfx && cmd->gfx.xfb;
+   const unsigned xfb_pc = xfb ? cmd->gfx.xfb_pc : 0;
+   if (xfb && cmd->tf.active) {
+      m |= MALI_D_PUSH;
+      if (xfb_pc + 32 > MALI_PUSH_MAX)
+         return false;
+   }
    if (m & MALI_D_PUSH) {
       struct mali_bpush *bu = mali_frame_blk(fr, sizeof *bu);
       if (!bu)
          return false;
       memcpy(bu->push, cmd->push, sizeof bu->push);
+      if (xfb && cmd->tf.active)
+         for (unsigned k = 0; k < 4; k++) {
+            const uint64_t va = k < cmd->tf.nbufs && cmd->tf.buf[k]
+                                   ? vk_buffer_address(vk_buffer_from_handle(cmd->tf.buf[k]), cmd->tf.off[k]) : 0;
+            memcpy(bu->push[0] + xfb_pc + k * 8, &va, sizeof va);
+         }
       d->push = bu;
    }
    if (m & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC)) {
