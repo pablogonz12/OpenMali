@@ -28,6 +28,16 @@ ORACLE=src/panfrost/vulkan/libvulkan_panfrost.so
 [ -f "$B/build.ninja" ] || { echo "no Mesa build tree at $B (see README.md)"; exit 1; }
 mkdir -p "$GEN" "$OBJ"
 
+# Reproducibility: the same commit and the same tree must yield byte-identical objects, or the sha256 in
+# the brief is not worth quoting. SOURCE_DATE_EPOCH pins whatever date/time a generator might embed (from
+# the commit, not from the wall clock), and the BuildID is derived from the commit instead of the default
+# content hash of the link, so it names the build rather than the file it happens to have produced.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+   SOURCE_DATE_EPOCH=$(git -C "$D" log -1 --format=%ct 2>/dev/null || echo 0)
+   export SOURCE_DATE_EPOCH
+fi
+MALI_BUILD_ID=$(printf 'mali-open:%s' "$(git -C "$D" rev-parse HEAD 2>/dev/null || echo unknown)" | sha1sum | cut -d' ' -f1)
+
 # 1. Entry point tables. mali_* = arch-independent, mali_v10_*/mali_v11_*/mali_v13_* = per-arch device entry
 #    points (weak: whatever is not implemented resolves to NULL and falls back to vk_common_*).
 "$PY" "$MESA/src/vulkan/util/vk_entrypoints_gen.py" --xml "$MESA/src/vulkan/registry/vk.xml" \
@@ -120,7 +130,7 @@ $CXX -o "$OUT/libvulkan_mali.so" -shared -fPIC -Wl,--as-needed -Wl,--no-undefine
    -Wl,-soname,libvulkan_mali.so $OBJS \
    -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS \
    -Wl,--version-script "$MESA/src/vulkan/vulkan.sym" -Wl,-Bsymbolic -Wl,--gc-sections \
-   -Wl,--build-id=sha1 $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+   -Wl,--build-id=0x$MALI_BUILD_ID $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
 # 4b. t_resources: M5/M7 end-to-end, linked statically with the driver objects (white-box, reads descriptor memory).
 eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
