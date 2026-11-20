@@ -7,6 +7,8 @@
 #     --deqp-host  also run deqp/host-run.sh (host dEQP-VK vs the ASan fake-backend ICD, ~2 min); skipped with a message if the host deqp-vk
 #               build (third_party/build-vk-x86-host) is absent
 #   MALI_SAN=1 ./check.sh   same cases with ASan+UBSan driver objects (out/native-san; the standalone build-t_*.sh tests are skipped)
+#   MALI_CHECK_JOBS=N       run N independent cases at once (default 8, capped at the core count; 1 = old serial behaviour)
+#   MALI_CHECK_TIME=1       print each case's wall time (also recorded in out/native/check-timing.tsv)
 set -uo pipefail
 V=$(cd "$(dirname "$0")" && pwd)
 SAN=${MALI_SAN:-0}
@@ -32,6 +34,65 @@ if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit
 
 fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
+
+# --- Case runner: serial by default; independent cases are collected in a pool by par_begin/par_end -------------------------
+# MalI_CHECK_JOBS (default 8, capped at the core count) sets how many cases run at once. Every case is its own process with its
+# own exit status and its own output file, so a failing case cannot be hidden by a neighbour; the results are printed in the
+# order the script lists them, whatever order they finished in. What stays in the serial part of the script, and why:
+#   * the t_queue block: it asserts ordering/blocking under MALI_FAKE_SLOW_US (a loaded host would change the timing),
+#   * the shader-cache teeth test (it damages entries another case must then not read),
+#   * gamescope/X11 (xwsi-host.sh), zink (zink-host.sh): one display/gamescope instance,
+#   * the artefact-level checks (nm/readelf, soft frames, vulkaninfo, progress, private-lint) which read the tree/binary,
+#   * the shader-cache cold/warm block is one section (its warm run depends on its own cold run).
+# Cases may share $OUT/shader-cache: mali_compile.c stores with O_EXCL + rename, so a parallel reader sees a whole entry or
+# none (a miss costs a recompile, never a wrong shader), and the cold/warm case proves cold and warm give identical streams.
+JOBS=${MALI_CHECK_JOBS:-8}
+CORES=$(nproc 2>/dev/null || echo 4)
+[ "$JOBS" -gt "$CORES" ] 2>/dev/null && JOBS=$CORES
+[ "$JOBS" -ge 1 ] 2>/dev/null || JOBS=1
+PAR=0; NQ=0; QK=(); QN=(); QW=(); QC=(); TMPQ=
+now_ms() { date +%s%3N; }
+TIMING=$OUT/check-timing.tsv; : >"$TIMING"   # per-case wall time (name, got/want, ms); MALI_CHECK_TIME=1 also prints it
+enq() { local i=$NQ; NQ=$((i+1)); QK[$i]=$1; QN[$i]=$2; QW[$i]=$3; QC[$i]=$4; }
+par_begin() { PAR=1; NQ=0; TMPQ=$(mktemp -d "${TMPDIR:-/tmp}/check.XXXXXX"); }
+par_end() { # run the collected cases (JOBS at a time) and print every result in the order it was queued
+   PAR=0
+   local i n=$NQ
+   if [ "$n" = 0 ]; then rm -rf "$TMPQ"; return 0; fi
+   if [ "$JOBS" -le 1 ]; then
+      for ((i=0;i<n;i++)); do
+         local t0 t1 out rc; t0=$(now_ms)
+         out=$(eval "${QC[i]}" 2>&1); rc=$?; t1=$(now_ms)
+         qreport "$i" "$rc" "$out" $((t1-t0))
+      done
+   else
+      for ((i=0;i<n;i++)); do
+         ( s=$(now_ms); eval "${QC[i]}" >"$TMPQ/$i.out" 2>&1; rc=$?; e=$(now_ms)
+           printf '%s\n' "$rc" >"$TMPQ/$i.rc"; printf '%s\n' $((e-s)) >"$TMPQ/$i.ms" ) &
+         while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n; done
+      done
+      wait
+      for ((i=0;i<n;i++)); do qreport "$i" "$(cat "$TMPQ/$i.rc")" "$(cat "$TMPQ/$i.out")" "$(cat "$TMPQ/$i.ms")"; done
+   fi
+   rm -rf "$TMPQ"; NQ=0
+}
+qreport() { # index, exit status, output text, ms
+   if [ "${QK[$1]}" = sec ]; then
+      printf '%s\t%s\t%s\n' "${QN[$1]}" "$2" "$4" >>"$TIMING"
+      [ -n "$3" ] && echo "$3"
+      [ "$2" -eq 0 ] || fail=1
+   else
+      report "${QN[$1]}" "${QW[$1]}" "$2" "$3" "$4"
+   fi
+}
+report() { # name, want, rc, output, ms
+   printf '%s\t%s\t%s\n' "$1" "$3/$2" "$5" >>"$TIMING" 2>/dev/null || true
+   [ -n "${MALI_CHECK_TIME:-}" ] && printf '        %5d ms  %s\n' "$5" "$1"
+   if [ "$3" -eq "$2" ]; then echo "ok    $1"
+   elif [ "$3" -eq 124 ] || [ "$3" -eq 137 ]; then echo "FAIL  $1 TIMEOUT (120 s, exit $3)"; fail=1
+   else echo "FAIL  $1 (exit $3, want $2)"; fail=1; fi
+   if [ "$verbose" = 1 ] || [ "$3" -ne "$2" ]; then echo "$4" | sed 's/^/        /'; fi
+}
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
 # Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
 DXVK_MISSING=3            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
@@ -40,13 +101,25 @@ LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.js
 
 run() { # name, expected exit status, command...
    local name=$1 want=$2 out rc; shift 2
+   if [ "$PAR" = 1 ]; then enq case "$name" "$want" "timeout -k 5 120 env $(printf '%q ' "$@")"; return 0; fi
+   local t0 t1; t0=$(now_ms)
    out=$(timeout -k 5 120 env "$@" 2>&1); rc=$?
-   if [ $rc -eq "$want" ]; then echo "ok    $name"
-   elif [ $rc -eq 124 ] || [ $rc -eq 137 ]; then echo "FAIL  $name TIMEOUT (120 s, exit $rc)"; fail=1
-   else echo "FAIL  $name (exit $rc, want $want)"; fail=1; fi
-   if [ $verbose = 1 ] || [ $rc -ne "$want" ]; then echo "$out" | sed 's/^/        /'; fi
+   t1=$(now_ms)
+   report "$name" "$want" "$rc" "$out" $((t1-t0))
 }
 
+sec() { # name, command-line (a block that prints its own ok/FAIL lines and must exit 0)
+   local name=$1 cmd=$2
+   if [ "$PAR" = 1 ]; then enq sec "$name" 0 "$cmd"; return 0; fi
+   local t0 t1 out rc; t0=$(now_ms)
+   out=$(eval "$cmd" 2>&1); rc=$?
+   t1=$(now_ms)
+   printf '%s\t%s\t%s\n' "$name" "$rc" $((t1-t0)) >>"$TIMING"
+   [ -n "$out" ] && echo "$out"
+   [ $rc -eq 0 ] || fail=1
+}
+
+par_begin   # 1. loader/ICD/driver-info cases: each is its own process, none writes a file another reads
 run "loader v11"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_icd" --expect-name "Mali-G615"
 run "loader v13"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --expect-name "Mali-G925"
 run "direct v11"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-name "Mali-G615"
@@ -70,6 +143,8 @@ ZINK_MISSING=1
 for g in v11 v13; do run "steam_caps $g" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 # VK_EXT_physical_device_drm: the extension exists only with a node that stat() proves is the GPU char device (/dev/mali0;
 # the guest's /dev/dri/renderD<N> alias, BL_DRM_STANDIN). Symlinks stand in for the guest's nodes; /dev/null is 1:3.
+# The stand-in directories are built and removed around this block, so the cases below run while the pool is open but the
+# directories only disappear after par_end (which waits for them).
 DRMR=$OUT/drm-render; DRMB=$OUT/drm-both; DRMX=$OUT/drm-bad
 rm -rf "$DRMR" "$DRMB" "$DRMX"; mkdir -p "$DRMR" "$DRMB" "$DRMX"
 ln -s /dev/null "$DRMR/renderD42"; ln -s /dev/zero "$DRMR/renderD43"; ln -s /dev/zero "$DRMR/card0"
@@ -88,7 +163,9 @@ run "drm render+primary"   0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="
 run "drm mismatch absent"  0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMX" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
 # With a node identity zink's list loses that item: only logicOp remains (0 hard).
 run "steam_caps v11 drm node" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing 0
+par_end
 rm -rf "$DRMR" "$DRMB" "$DRMX"
+par_begin   # 2. MSAA gate + transform-feedback gate cases (all read-only fake-backend runs)
 # 4x MSAA is on by default; MALI_EXPERIMENTAL_MSAA=0 is the opt-out, and both states are checked.
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
@@ -100,11 +177,14 @@ for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BA
 for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
 # gate off (default): the extension must not be advertised, so the case must skip and say why (a silent skip would hide a gate that leaks)
+par_end
 out=$(env -u MALI_EXPERIMENTAL_TF MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write 2>&1)
 if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"'; then echo "ok    vk_feat tf_write gate off v11"
 else echo "FAIL  vk_feat tf_write gate off v11"; echo "$out" | sed 's/^/        /'; fail=1; fi
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
+# Serial on purpose: these cases assert *ordering and blocking* on a real clock (a 400 ms fence, a 300 ms wait, present order
+# with a 100 ms frame). Running them next to 7 other cases would change what they measure, so the pool is closed here.
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
 run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
@@ -116,6 +196,7 @@ run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
 
+par_begin   # 3. frame profiler, resources, draws, reference scene, features, compute (one process each, no shared files)
 # M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
 # silent output: the unset path is the normal driver path, and the test fails if anything is printed or written.
 for g in v11 v13; do
@@ -166,25 +247,31 @@ done
 # Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs
 # (MALI_FAKE_DUMP); the dump is rendered address-normalised and diffed against tests/golden/<test>-<gpu>.txt. BO flag rules run in the
 # fake backend's bo_alloc (a violation fails the test itself).
+# The dumps go to per-test files ($GDIR/<test>-<gpu>.jsonl), so the six golden runs and the four cold/warm pairs are independent
+# sections; everything that consumes a dump (selftest.py, compile-guard.sh, the rule self-tests) stays after par_end.
 GOLD=$V/tests/golden; GDIR=$OUT/golden; mkdir -p "$GOLD" "$GDIR"
-golden() { # test, gpu, extra args...
+golden() { # test, gpu, extra args...  (returns non-zero on failure; the section below turns that into fail=1)
    local t=$1 g=$2 name out rc; shift 2
    name=$t-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
    out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" timeout -k 5 120 env MALI_EXPERIMENTAL_MSAA=${GOLD_MSAA:-0} MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_$t" --direct "$OUT/libvulkan_mali.so" "$@" 2>&1); rc=$?
-   if [ $rc -ne 0 ]; then echo "FAIL  golden $name (test exit $rc)"; echo "$out" | tail -15 | sed 's/^/        /'; fail=1; return; fi
+   if [ $rc -ne 0 ]; then echo "FAIL  golden $name (test exit $rc)"; echo "$out" | tail -15 | sed 's/^/        /'; fail=1; return 1; fi
    out=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); rc=$?
-   if [ $rc -ne 0 ]; then echo "FAIL  rules $name"; echo "$out" | head -20 | sed 's/^/        /'; fail=1; return; fi
+   if [ $rc -ne 0 ]; then echo "FAIL  rules $name"; echo "$out" | head -20 | sed 's/^/        /'; fail=1; return 1; fi
    [ $verbose = 1 ] && echo "$out" | sed 's/^/        /'
-   if [ $bless = 1 ]; then cp "$GDIR/$name.txt" "$GOLD/$name.txt"; echo "bless $name ($(wc -l <"$GOLD/$name.txt") lines)"; return; fi
-   if [ ! -f "$GOLD/$name.txt" ]; then echo "FAIL  golden $name: no tests/golden/$name.txt (run ./check.sh --bless)"; fail=1
+   if [ $bless = 1 ]; then cp "$GDIR/$name.txt" "$GOLD/$name.txt"; echo "bless $name ($(wc -l <"$GOLD/$name.txt") lines)"; return 0; fi
+   if [ ! -f "$GOLD/$name.txt" ]; then echo "FAIL  golden $name: no tests/golden/$name.txt (run ./check.sh --bless)"; fail=1; return 1
    elif cmp -s "$GOLD/$name.txt" "$GDIR/$name.txt"; then echo "ok    golden $name ($(grep -c '^kick' "$GOLD/$name.txt") kicks)"
-   else echo "FAIL  golden $name differs (./check.sh --bless if intended):"; diff -u "$GOLD/$name.txt" "$GDIR/$name.txt" | head -30 | sed 's/^/        /'; fail=1; fi
+   else echo "FAIL  golden $name differs (./check.sh --bless if intended):"; diff -u "$GOLD/$name.txt" "$GDIR/$name.txt" | head -30 | sed 's/^/        /'; fail=1; return 1; fi
 }
-for g in v11 v13; do
-   golden vk_draw $g --spv-dir "$V/shader"
-   golden vk_feat $g --spv-dir "$V/shader"
-   GOLD_MSAA=1 golden vk_meta $g
-done
+golden_block() {
+   local g rc=0
+   for g in v11 v13; do
+      golden vk_draw $g --spv-dir "$V/shader" || rc=1
+      golden vk_feat $g --spv-dir "$V/shader" || rc=1
+      GOLD_MSAA=1 golden vk_meta $g || rc=1
+   done
+   return $rc
+}
 # Shader cache, cold vs warm: the same test on an empty private cache and again on the cache that run left must give byte-identical decoded
 # streams (a cached shader that yields different GPU state than a fresh compile would hide behind every host run that has a warm cache; see
 # tests/compile-guard.sh for the cause that was found). The warm run must really hit the cache (no new entry) and a damaged entry must be seen.
@@ -193,21 +280,38 @@ cwdump() { # test, gpu, cache dir, out name
    MALI_SHADER_CACHE=$3 MALI_FAKE_DUMP="$GDIR/$4.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$2 "$OUT/t_$1" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" >/dev/null 2>&1 || return 1
    GOLDEN_ARCH=${2#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$4.jsonl" "$GDIR/$4.txt" >/dev/null 2>&1
 }
-for t in vk_draw vk_feat; do for g in v11 v13; do
-   CW=$OUT/cw-cache-$t-$g; rm -rf "$CW"; mkdir -p "$CW"
-   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; fail=1; continue; fi
+# One (test, GPU) pair per section: private cache dir, private dump names, so the four pairs run in the pool together. A pair is
+# one unit because its warm run must read the cache its own cold run wrote.
+cache_pair() { # test, gpu
+   local t=$1 g=$2 CW=$OUT/cw-cache-$1-$2 n0 sum0
+   rm -rf "$CW"; mkdir -p "$CW"
+   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; return 1; fi
    n0=$(ls "$CW" | wc -l); sum0=$(cat "$CW"/*.bin 2>/dev/null | sha256sum)
-   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; fail=1; continue; fi
+   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; return 1; fi
    if [ "$n0" -gt 0 ] && [ "$n0" = "$(ls "$CW" | wc -l)" ] && [ "$sum0" = "$(cat "$CW"/*.bin | sha256sum)" ] && cmp -s "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt"; then
       echo "ok    shader cache cold == warm $t $g ($n0 entries)"
-   else echo "FAIL  shader cache cold != warm $t $g (entries $n0 -> $(ls "$CW" | wc -l)):"; diff -u "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt" | head -20 | sed 's/^/        /'; fail=1; fi
-done; done
-# teeth: an entry whose immediates differ (what a stale entry of an older lowering looks like) must change the warm dump
-CW=$OUT/cw-cache-vk_draw-v11
-for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done
-if cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (damaged entries change the dump)"
-else echo "FAIL  cache cold/warm self-test: damaged cache entries did not change the vk_draw dump"; fail=1; fi
-rm -rf "$OUT"/cw-cache-* "$GDIR"/cw-*
+   else echo "FAIL  shader cache cold != warm $t $g (entries $n0 -> $(ls "$CW" | wc -l)):"; diff -u "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt" | head -20 | sed 's/^/        /'; return 1; fi
+}
+# teeth: an entry whose immediates differ (what a stale entry of an older lowering looks like) must change the warm dump.
+# Serial, and after the pairs: it damages the cache the vk_draw v11 warm run left and re-reads it.
+cache_teeth() {
+   local CW=$OUT/cw-cache-vk_draw-v11 rc=0 f
+   for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done
+   if cwdump vk_draw v11 "$CW" cw-bad-vk_draw-v11 && ! cmp -s "$GDIR/cw-cold-vk_draw-v11.txt" "$GDIR/cw-bad-vk_draw-v11.txt"; then echo "ok    cache cold/warm self-test fires (damaged entries change the dump)"
+   else echo "FAIL  cache cold/warm self-test: damaged cache entries did not change the vk_draw dump"; rc=1; fi
+   rm -rf "$OUT"/cw-cache-* "$GDIR"/cw-*
+   return $rc
+}
+par_end   # close the draw/feature pool: the sections below reuse those binaries but write their own dumps
+par_begin
+for g in v11 v13; do
+   sec "golden vk_draw $g" "golden vk_draw $g --spv-dir \"$V/shader\""
+   sec "golden vk_feat $g" "golden vk_feat $g --spv-dir \"$V/shader\""
+   sec "golden vk_meta $g" "GOLD_MSAA=1 golden vk_meta $g"
+done
+for t in vk_draw vk_feat; do for g in v11 v13; do sec "cache cold/warm $t $g" "cache_pair $t $g"; done; done
+par_end
+sec "cache cold/warm self-test" cache_teeth
 # The cache key knows only MALI_COMPILE_VERSION: lowering sources and the recorded version must move together.
 if [ $bless = 1 ]; then "$V/tests/compile-guard.sh" --bless
 elif out=$("$V/tests/compile-guard.sh" 2>&1); then echo "ok    $out"; else echo "FAIL  compile guard:"; echo "$out" | sed 's/^/        /'; fail=1; fi
@@ -225,14 +329,30 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in bc bopool cmd compile desc image memsync meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   # Each standalone test builds its own objects into $OUT: they used to share vk/out/native/{kb_draw,mali_compile,...}.o, so two
+   # of them running at the same time linked a half-written object (t_bc: undefined reference to mali_compile). OUT_DIR gives
+   # each one a private directory (the scripts default to out/native when it is unset, so they still work run by hand).
+   # The build-t_*.sh scripts recompile the driver sources on every run; a ccache shim in front of the two compiler names they use
+   # makes that free after the first run (content-addressed, so it never hides a source change). Links pass straight through.
+   CCBIN=$OUT/ccache-bin; mkdir -p "$CCBIN"
+   if command -v ccache >/dev/null && [ "${MALI_NO_CCACHE:-0}" != 1 ]; then
+      for c in cc gcc c++ g++; do
+         printf '#!/bin/sh\nexec ccache /usr/bin/%s "$@"\n' "$c" >"$CCBIN/$c"; chmod +x "$CCBIN/$c"
+      done
+      export CCACHE_DIR=${CCACHE_DIR:-$V/out/.ccache} CCACHE_BASEDIR=$(cd "$V/.." && pwd)
+      TCC="PATH=$CCBIN:$PATH"
+   else TCC=""; fi
+   par_begin
+   for t in bc bopool cmd compile desc image memsync meta qpool query txf_cc; do run "t_$t" 0 $TCC OUT_DIR="$OUT/standalone/t_$t" "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
    for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done
+   par_end
 fi
 
 # v10 (Mali-G610, Poco X4 GT): every fake-backend case above, once more on MALI_FAKE_GPU=v10.
 G=v10; F="MALI_BACKEND=fake MALI_FAKE_GPU=v10"; DL="--direct $OUT/libvulkan_mali.so"
+par_begin
 run "loader v10"      0 $LOADER_ENV $F "$OUT/t_icd" --expect-name "Mali-G610"
 run "direct v10"      0 $F "$OUT/t_icd" $DL --expect-name "Mali-G610"
 run "vk_info v10"     0 $F "$OUT/t_vk_info" $DL
@@ -240,19 +360,24 @@ run "dxvk_caps v10"   0 $F "$OUT/t_dxvk_caps" $DL --expect-missing "$DXVK_MISSIN
 run "steam_caps v10"   0 $F "$OUT/t_steam_caps" $DL --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"
 run "vk_trace v10"    0 $F "$OUT/t_vk_trace" $DL
 run "angle_seq v10"   0 $F "$OUT/t_angle_seq" $DL
-run "queue all v10"   0 $F $TQ
+par_end
+run "queue all v10"   0 $F $TQ     # serial, like the v11 queue block: ordering/blocking on a real clock
+par_begin
 run "resources v10"   0 $F "$OUT/t_resources"
 run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200
 run "vk_draw many v10"  0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only many_draws
 run "vk_draw sets8 v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only sets8
 run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
 run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
-run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
+par_end
+run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10   # serial: one EGL/GL device on the host
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
-for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
+for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done   # serial: one gamescope instance
+par_begin
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
 run "vk_meta v10"     0 $F "$OUT/t_vk_meta" $DL --loop 20
+par_end
 cc -std=gnu11 -I"$V/../libkbase/include" -I"$V/../libkbase/src" -o "$OUT/t_v10_cs" "$V/tests/t_v10_cs.c" "$V/../libkbase/src/draw.c" && run "v10 cs/zsd packers" 0 "$OUT/t_v10_cs" || { echo "FAIL  t_v10_cs build"; fail=1; }
 
 # Exported symbols: the three loader entry points and nothing else.

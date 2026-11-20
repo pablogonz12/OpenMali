@@ -38,7 +38,8 @@ echo "file     $f"
 case "$f" in *aarch64*) ;; *) echo "NOT aarch64: do not deploy this" >&2; exit 1 ;; esac
 if [ "$dirty" != 0 ]; then
    echo "WARNING: $dirty tracked file(s) under vk/ or libkbase/ modified: this .so is not the branch head, do not deploy it" >&2
-   exit 1
+   # A lane builds dirty on purpose (tools/hostcheck sets this); a deploy must not. Everything else stays strict.
+   [ "${MALI_ARTEFACT_ALLOW_DIRTY:-0}" = 1 ] || exit 1
 fi
 prov=$OUT.provenance
 # Provenance: the hash of the .so this commit actually built. `--check` must not approve an artefact that was

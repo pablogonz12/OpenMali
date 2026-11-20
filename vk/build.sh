@@ -9,6 +9,7 @@
 #
 # One-time Mesa setup (2.5 min on 4 cores): see README.md.
 set -euo pipefail
+T0=$(date +%s%3N)   # MALI_BUILD_TIME=1 prints phase timings
 D=$(cd "$(dirname "$0")/.." && pwd)
 V=$D/vk
 MESA=${MESA_SRC:-$D/third_party/mesa}
@@ -53,6 +54,32 @@ if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit
 # MALI_COV=1: gcov instrumented driver objects (MALI_TARGET=native-cov; see tools/coverage.sh). -O0 so line counts map to source.
 if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
 
+# 2b. Compile cache + parallel pool. The objects here are rebuilt on every invocation (build.sh has no .o dependency graph:
+# a stale t_* once passed on an outdated driver, see the mali-open skill), so the cost is paid on every run. Content-addressed
+# caching makes an unchanged object free (only the two files carrying -DMALI_GIT_SHA miss after a commit) and the pool removes
+# the serial walk over ~30 objects. MALI_NO_CCACHE=1 / MALI_JOBS=1 restore the old single-threaded, uncached path.
+JOBS=${MALI_JOBS:-$(nproc)}
+[ "$JOBS" -ge 1 ] 2>/dev/null || JOBS=1
+CCW=
+if [ "${MALI_NO_CCACHE:-0}" != 1 ] && [ "${MALI_COV:-0}" != 1 ] && [ "${MALI_SAN:-0}" != 1 ] && command -v ccache >/dev/null; then
+   CCW="ccache "
+   export CCACHE_DIR=${CCACHE_DIR:-$V/out/.ccache}
+   export CCACHE_BASEDIR=$D
+fi
+JOBF=$OBJ/jobs.txt; : >"$JOBF"
+job() { printf '%s ' "$1" | tr '\n' ' ' >>"$JOBF" && printf '\n' >>"$JOBF"; }   # one line per compile/link (library lists are multi-line)
+runjobs() { # bounded pool over $JOBF (xargs runs every line as a shell script); aborts on the first failure
+   local n; n=$(wc -l <"$JOBF")
+   if [ -n "${MALI_SHOW_JOBS:-}" ]; then echo "--- $n job(s) ---" >&2; cut -c1-120 "$JOBF" >&2; fi
+   if [ "$JOBS" -gt 1 ] && [ "$n" -gt 1 ]; then
+      xargs -d '\n' -n 1 -P "$JOBS" bash -c <"$JOBF" || { echo "FAILED: compile/link (see the error above)"; exit 1; }
+   else
+      while IFS= read -r c || [ -n "$c" ]; do bash -c "$c" || { echo "FAILED: compile/link (see the error above)"; exit 1; }; done <"$JOBF"
+   fi
+   : >"$JOBF"
+}
+tmark() { [ -n "${MALI_BUILD_TIME:-}" ] && echo "build.sh: $1 $(( $(date +%s%3N) - T0 )) ms" >&2; return 0; }
+
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c $V/src/mali_fprof.c
@@ -67,9 +94,10 @@ KB=$D/libkbase
 KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
         $KB/src/draw.c $KB/src/draw_v13.c $KB/src/fb.c"
 OBJS=""
+tmark "entrypoints+flags"
 for s in $KBSRCS; do
    o=$OBJ/kb_$(basename "$s" .c).o
-   eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
+   job "$CCW$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
    OBJS="$OBJS $o"
 done
 # Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
@@ -85,9 +113,11 @@ else
 fi
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   job "$CCW$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
+runjobs   # all objects (libkbase + driver), in parallel
+tmark "objects"
 
 # 4. Link. Runtime libs need --whole-archive (weak entry point overloads), as Mesa does it.
 WHOLE="src/vulkan/runtime/libvulkan_lite_runtime.a src/vulkan/runtime/libvulkan_runtime.a
@@ -119,54 +149,55 @@ $CXX -o "$OUT/libvulkan_mali.so" -shared -fPIC -Wl,--as-needed -Wl,--no-undefine
    -Wl,--version-script "$MESA/src/vulkan/vulkan.sym" -Wl,-Bsymbolic -Wl,--gc-sections \
    -Wl,--build-id=sha1 $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
-# 4b. t_resources: M5/M7 end-to-end, linked statically with the driver objects (white-box, reads descriptor memory).
-eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
-# shellcheck disable=SC2086
-$CXX -o "$OUT/t_resources" $OBJ/t_resources.o $OBJS \
-   -Wl,--wrap=memset -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
-
-# 4c. shaderdb: offline compile statistics over a SPIR-V corpus (tools/shaderdb/run.sh).
-eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -o $OBJ/shaderdb.o -c $D/tools/shaderdb/shaderdb.c"
-# shellcheck disable=SC2086
-$CXX -o "$OUT/shaderdb" $OBJ/shaderdb.o $OBJS \
-   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
-
+# 4b. White-box test objects (statically linked with the driver objects: they read descriptor memory / images directly).
+job "$CCW$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_resources.o -c $V/tests/t_resources.c"
+job "$CCW$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -o $OBJ/shaderdb.o -c $D/tools/shaderdb/shaderdb.c"
 # 4c. t_soft_frame: the desktop software rasteriser end to end (MALI_SOFT=1), linked statically like t_resources so it can
 #     register CPU programs per pipeline and read the images through the driver's own layout query.
-eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_soft_frame.o -c $V/tests/t_soft_frame.c"
+job "$CCW$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_soft_frame.o -c $V/tests/t_soft_frame.c"
+runjobs
+tmark "white-box objects"
+
+# 4d. Link the three white-box tests (parallel with the loader clients below: nothing here reads another's output).
 # shellcheck disable=SC2086
-$CXX -o "$OUT/t_soft_frame" $OBJ/t_soft_frame.o $OBJS \
-   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+job "$CXX -o $OUT/t_resources $OBJ/t_resources.o $OBJS -Wl,--wrap=memset -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group"
+# shaderdb: offline compile statistics over a SPIR-V corpus (tools/shaderdb/run.sh).
+# shellcheck disable=SC2086
+job "$CXX -o $OUT/shaderdb $OBJ/shaderdb.o $OBJS -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group"
+# shellcheck disable=SC2086
+job "$CXX -o $OUT/t_soft_frame $OBJ/t_soft_frame.o $OBJS -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group"
+tmark "driver .so"
 
 # 5. Loader manifest + test.
 cat > "$OUT/mali_icd.json" <<J
 {"file_format_version":"1.0.1","ICD":{"library_path":"$OUT/libvulkan_mali.so","api_version":"1.3.0"}}
 J
-${CC%% *} -std=c11 -O2 -Wall -Wextra -Werror -I"$MESA/include" -o "$OUT/t_icd" "$V/tests/t_icd.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -I"$MESA/include" -o "$OUT/t_queue" "$V/tests/t_queue.c" -ldl -pthread
-
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_frameprof" "$V/tests/t_frameprof.c" -ldl -lm -pthread
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_draw" "$V/tests/t_vk_draw.c" -ldl -lm -pthread
+job "$CCW${CC%% *} -std=c11 -O2 -Wall -Wextra -Werror -I"$MESA/include" -o "$OUT/t_icd" "$V/tests/t_icd.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -I"$MESA/include" -o "$OUT/t_queue" "$V/tests/t_queue.c" -ldl -pthread"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_frameprof" "$V/tests/t_frameprof.c" -ldl -lm -pthread"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_draw" "$V/tests/t_vk_draw.c" -ldl -lm -pthread"
 # Reference scene (docs/desktop-gpu.md): one client, run against our ICD on the phone and against the desktop GPU for the
 # reference image. Plain Vulkan, no driver internals, so it also builds for the aarch64 targets.
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_ref" "$V/tests/t_vk_ref.c" -ldl -lm
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_feat" "$V/tests/t_vk_feat.c" -ldl -lm -pthread
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_compute" "$V/tests/t_vk_compute.c" -ldl -lm -pthread
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_meta" "$V/tests/t_vk_meta.c" -ldl -lm -pthread
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_ref" "$V/tests/t_vk_ref.c" -ldl -lm"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_feat" "$V/tests/t_vk_feat.c" -ldl -lm -pthread"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_compute" "$V/tests/t_vk_compute.c" -ldl -lm -pthread"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_meta" "$V/tests/t_vk_meta.c" -ldl -lm -pthread"
 # Uncapped benchmark pair (loader clients, offscreen targets: no presentation path to cap them).
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_bench_gpu" "$V/tests/t_bench_gpu.c" -ldl -lm
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_bench_cpu" "$V/tests/t_bench_cpu.c" -ldl -lm
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_vk_leak" "$V/tests/t_vk_leak.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -DMALI_EXPECT_SHA=\"$MALI_SHA\" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_vram" "$V/tests/t_vk_vram.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_qerr" "$V/tests/t_vk_qerr.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_api" "$V/tests/t_dxvk_api.c" -I"$V/tests" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_drm" "$V/tests/t_vk_drm.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_trace" "$V/tests/t_vk_trace.c" -ldl
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_angle_seq" "$V/tests/t_angle_seq.c" -ldl
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_bench_gpu" "$V/tests/t_bench_gpu.c" -ldl -lm"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_bench_cpu" "$V/tests/t_bench_cpu.c" -ldl -lm"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_vk_leak" "$V/tests/t_vk_leak.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -DMALI_EXPECT_SHA=\\\"$MALI_SHA\\\" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_vram" "$V/tests/t_vk_vram.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_qerr" "$V/tests/t_vk_qerr.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_api" "$V/tests/t_dxvk_api.c" -I"$V/tests" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_drm" "$V/tests/t_vk_drm.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_trace" "$V/tests/t_vk_trace.c" -ldl"
+job "$CCW${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_angle_seq" "$V/tests/t_angle_seq.c" -ldl"
+runjobs   # loader clients + the three white-box links
+tmark "tests"
 # X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)
 rm -f "$OUT/t_vk_xcb"
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb 2>"$OBJ/t_vk_xcb.err" \

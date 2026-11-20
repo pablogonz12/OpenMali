@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # M13: builds and runs t_query (ops-frame CS words) and the static decode_stream rules on its ring dump. No GPU. Usage: build-t_query.sh
 set -euo pipefail
-D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk; OUT=$V/out/native; mkdir -p "$OUT"
+D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk; OUT=${OUT_DIR:-$V/out/native}; mkdir -p "$OUT"
 cc -Wall -Werror -Wno-unused-function -I"$V/src" -I"$D/libkbase/include" -o "$OUT/t_query" "$V/tests/t_query.c" "$V/src/mali_event.c"
 timeout -k 5 120 "$OUT/t_query" "$OUT/t_query.jsonl"
 DS="python3 -I $D/libkbase/tools/decode_stream.py"

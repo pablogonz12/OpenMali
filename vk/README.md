@@ -34,6 +34,13 @@ library (`check.sh` verifies that).
     ./build.sh     # out/native/{libvulkan_mali.so, mali_icd.json, t_icd}
     ./check.sh     # loader + direct dlopen on fake v11/v13, export list, vulkaninfo
 
+Both are incremental-friendly: `build.sh` compiles its ~30 objects through `ccache` (content-addressed, cache in
+`out/.ccache`) in a parallel pool, and `check.sh` runs the independent cases `MALI_CHECK_JOBS` at a time (default 8).
+The whole gate in one command, printing commit, ICD sha256, artefact sha256 and the verdict: `tools/hostcheck`
+(from the repo root; `--no-build`, `--no-artefact` to trim it). What stays serial in `check.sh`, and why, is listed in
+the comment above its case runner (queue timing asserts, the shader-cache teeth test, gamescope/X11 and zink, the
+artefact-level checks).
+
 ## Cross builds and phones (M2)
 
     ./cross/build-cross.sh all        # out/a64-glibc (guest) and out/a64-bionic (adb shell direct); 0 Mesa patches
@@ -50,6 +57,10 @@ the kbase backend is used (opens `/dev/mali0`; zero devices on machines without 
 | `MALI_BACKEND=fake` | No hardware; GPU identity from `MALI_FAKE_GPU=v11` (G615 MC2) or `v13` (G925 MC11). Without it: real kbase backend. |
 | `MESA_SRC`, `MESA_BUILD` | Mesa source and build dir for `build.sh` (cross builds use another build dir, see M2). |
 | `MALI_TARGET` | Output subdir name under `out/` (default `native`). |
+| `MALI_JOBS` | Parallel compile/link jobs in `build.sh` (default: all cores; `1` = old serial path). |
+| `MALI_NO_CCACHE=1` | Bypass ccache in `build.sh` and in the `build-t_*.sh` tests (default: use it). |
+| `MALI_CHECK_JOBS` | Cases `check.sh` runs at once (default 8, capped at the core count; `1` = fully serial). |
+| `MALI_CHECK_TIME=1` | `check.sh` prints each case's wall time; always recorded in `out/native/check-timing.tsv`. |
 
 ## Layout
 

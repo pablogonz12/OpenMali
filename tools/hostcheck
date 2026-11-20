@@ -4,8 +4,9 @@
 # soft-rendered frame tests (when built) and, on request, the headless X11/WSI test, then prints a
 # one-line-per-stage summary. See docs/host-harness.md for what each stage can and cannot prove.
 #
-#   tools/hostcheck                 build + offline gate + soft frames
+#   tools/hostcheck                 build + offline gate + soft frames + aarch64 artefact (sha/commit printed)
 #   tools/hostcheck --no-build      skip the build
+#   tools/hostcheck --no-artefact   skip the aarch64 deploy artefact (a lane normally wants it: three seconds)
 #   tools/hostcheck --x11           additionally the gamescope X11/WSI test (slower, needs gamescope)
 #   tools/hostcheck --deqp          additionally the host dEQP-VK gate (slow, opt-in)
 #   tools/hostcheck --inventory     print what this host has and exit
@@ -16,15 +17,16 @@ set -u
 D=$(cd "$(dirname "$0")/.." && pwd)
 V=$D/vk
 OUT=$V/out/native
-build=1 x11=0 deqp=0 inv=0 bless=0
+build=1 x11=0 deqp=0 inv=0 bless=0 artefact=1
 for a in "$@"; do
    case $a in
       --no-build) build=0 ;;
+      --no-artefact) artefact=0 ;;
       --x11) x11=1 ;;
       --deqp) deqp=1 ;;
       --inventory) inv=1 ;;
       --bless) bless=1 ;;
-      -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+      -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
       *) echo "hostcheck: unknown argument $a (try --help)"; exit 2 ;;
    esac
 done
@@ -65,7 +67,12 @@ stage() {   # stage <name> <cmd...>
    rm -f "$log"
 }
 
+commit=$(git -C "$D" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
+branch=$(git -C "$D" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
+if git -C "$D" diff --quiet HEAD -- vk libkbase 2>/dev/null; then tree=clean; else tree=dirty; fi
+
 echo "hostcheck: $D"
+echo "commit    $branch@$commit ($tree)"
 if [ $build = 1 ]; then
    stage "build x86-64 ICD" "$V/build.sh"
    [ $fail = 0 ] || { echo; echo "SUMMARY: build failed, nothing else ran"; exit 1; }
@@ -93,12 +100,26 @@ if [ $deqp = 1 ]; then
       echo "skip  host dEQP (deqp-vk not built, see vk/deqp/README.md)"
    fi
 fi
+# The deployable artefact: the aarch64 glibc-wsi ICD this branch would ship. build-artefact.sh prints path, sha256, commit and
+# refuses a dirty driver tree; a lane works dirty on purpose, so the dirty check is a warning here, not a gate (its own exit
+# stays strict when it is run directly for a deploy).
+if [ $artefact = 1 ]; then
+   stage "artefact aarch64 glibc-wsi" env MALI_ARTEFACT_ALLOW_DIRTY=1 "$D/tools/build-artefact.sh"
+   art=$(MALI_ARTEFACT_ALLOW_DIRTY=1 "$D/tools/build-artefact.sh" --check 2>/dev/null | awk '$1=="artefact"{print $2} $1=="sha256"{print $2}' | tr '\n' ' ')
+else
+   art=
+   echo "skip  artefact (--no-artefact)"
+fi
 
+echo
+icd=$OUT/libvulkan_mali.so
+[ -f "$icd" ] && echo "icd       $icd sha256 $(sha256sum "$icd" | cut -d' ' -f1)"
+[ -n "$art" ] && set -- $art && echo "artefact  $1 sha256 $2"
 echo
 if [ $fail = 1 ]; then
    printf 'SUMMARY: FAILED (%s)\n' "$(for i in $(seq 1 $stage_no); do [ "${states[$i]}" = FAIL ] && printf '%s ' "${names[$i]}"; done)"
    echo "Do not take a phone run until this is green: the host catches semantics bugs for free."
    exit 1
 fi
-echo "SUMMARY: PASS ($(for i in $(seq 1 $stage_no); do printf '%s, ' "${names[$i]}"; done | sed 's/, $//'); soft frames $soft)"
+echo "SUMMARY: PASS ($(for i in $(seq 1 $stage_no); do printf '%s, ' "${names[$i]}"; done | sed 's/, $//'); soft frames $soft) $branch@$commit"
 exit 0
