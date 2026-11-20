@@ -10,14 +10,14 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 
 ## Coverage
 
-12 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 258 missing of 273 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
+13 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 257 missing of 273 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
 
 | workload | device | stack | rows | valid points | no-valid-point rows | last valid version |
 |---|---|---|---|---|---|---|
 | steam-menu | x8 | bridge | 11 | 9 | 2 | vc19 |
 | steam-menu | x8 | mali-open | 6 | 6 | 0 | 1a9583e |
 | steam-menu | cmf | bridge | 13 | 10 | 3 | v25 |
-| steam-menu | cmf | mali-open | 3 | 3 | 0 | ef9f1e39 |
+| steam-menu | cmf | mali-open | 6 | 6 | 0 | 1a9583e |
 | steam-menu | x4 | bridge | 1 | 0 | 1 | — |
 | vkcube-wayland | x8 | mali-open | 6 | 3 | 3 | 1a9583e |
 | vkcube-wayland | cmf | bridge | 3 | 3 | 0 | arm-v1.r44p1 |
@@ -39,9 +39,9 @@ triangles. No valid displayed-fps point exists yet. The 850.6 that used to be pl
 
 Steam Big Picture menu, two lanes: bridge rows come from menubench `screen.fps` (SurfaceFlinger present timestamps), mali-open rows are driver-mode `pacing` reps of the same shelf. `render.avg_fps` stays in its own column. The driver-mode shelf is ~3-8 fps against ~74-105 on the bridge — that gap is the result, not a missing point.
 
-28 plotted point(s) from ≥3-rep default-profile runs; 34 stored row(s) total.
+31 plotted point(s) from ≥3-rep default-profile runs; 37 stored row(s) total.
 
-series (one line per build; a driver sha is never joined with another): bridge/CMF `p22/p24/v25` — 13 row(s), reps=4, latest 67.9 @11-19 00:27; bridge/X4 `p24` — 1 row(s), reps=1, latest 122.4 @11-18 01:53; bridge/X8 `p22/v25/vc19` — 10 row(s), reps=3, latest 108.2 @11-20 13:23; mali-open/CMF `ef9f1e39` — 3 row(s), reps=3, latest 1.6 @11-20 18:02, off-cad 61.2 %; mali-open/X8 `1a9583e` — 3 row(s), reps=3, latest 0.2 @11-20 18:52, off-cad 20.0 %; mali-open/X8 `461537b7` — 3 row(s), reps=3, latest 5.0 @11-20 17:32, off-cad 75.5 %
+series (one line per build; a driver sha is never joined with another): bridge/CMF `p22/p24/v25` — 13 row(s), reps=4, latest 67.9 @11-19 00:27; bridge/X4 `p24` — 1 row(s), reps=1, latest 122.4 @11-18 01:53; bridge/X8 `p22/v25/vc19` — 10 row(s), reps=3, latest 108.2 @11-20 13:23; mali-open/CMF `1a9583e` — 3 row(s), reps=3, latest 7.2 @11-21 12:43, off-cad 62.5 %; mali-open/CMF `ef9f1e39` — 3 row(s), reps=3, latest 1.6 @11-20 18:02, off-cad 61.2 %; mali-open/X8 `1a9583e` — 3 row(s), reps=3, latest 0.2 @11-20 18:52, off-cad 20.0 %; mali-open/X8 `461537b7` — 3 row(s), reps=3, latest 5.0 @11-20 17:32, off-cad 75.5 %
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="steam-menu displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="330" fill="#ffffff"/>
@@ -65,88 +65,95 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 <line x1="56" y1="53.2" x2="884" y2="53.2" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.8"/>
 <text x="880" y="48.2" font-size="9.5" fill="#b91c1c" text-anchor="end">X4 panel 144 Hz ceiling</text>
 <line x1="56.0" y1="262" x2="56.0" y2="267" stroke="#9ca3af"/>
-<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-17 22:57</text>
+<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-17</text>
 <line x1="263.0" y1="262" x2="263.0" y2="267" stroke="#9ca3af"/>
-<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-18 15:55</text>
+<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-18</text>
 <line x1="470.0" y1="262" x2="470.0" y2="267" stroke="#9ca3af"/>
-<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-19 08:54</text>
+<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-19</text>
 <line x1="677.0" y1="262" x2="677.0" y2="267" stroke="#9ca3af"/>
-<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 01:53</text>
+<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20</text>
 <line x1="884.0" y1="262" x2="884.0" y2="267" stroke="#9ca3af"/>
-<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 18:52</text>
-<polyline points="56.0,109.0 57.4,178.9 57.9,175.6 59.1,175.9 207.0,107.3 207.8,109.0 208.7,109.3 816.4,144.0 816.9,146.9 817.3,105.1" fill="none" stroke="#1d4ed8" stroke-width="1.8"/>
+<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-21</text>
+<polyline points="56.0,109.0 57.1,178.9 57.5,175.6 58.5,175.9 175.6,107.3 176.2,109.0 177.0,109.3 658.1,144.0 658.5,146.9 658.8,105.1" fill="none" stroke="#1d4ed8" stroke-width="1.8"/>
 <circle cx="56.0" cy="109.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <text x="56.0" y="102.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.5×1</text>
-<circle cx="57.4" cy="178.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="57.4" y="171.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">57.3×3</text>
-<circle cx="57.9" cy="175.6" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="57.9" y="168.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">59.6×3</text>
-<circle cx="58.3" cy="262.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
-<text x="58.3" y="255.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">black screen</text>
-<circle cx="59.1" cy="175.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="59.1" y="168.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">59.4×3</text>
-<circle cx="207.0" cy="107.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="207.0" y="100.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">106.7×3</text>
-<circle cx="207.8" cy="109.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="207.8" y="102.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.5×3</text>
-<circle cx="208.7" cy="109.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="208.7" y="102.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.3×3</text>
-<circle cx="816.4" cy="144.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="816.4" y="137.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">81.4×3</text>
-<circle cx="816.9" cy="146.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="816.9" y="139.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.4×3</text>
-<circle cx="817.3" cy="105.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="817.3" y="98.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">108.2×3</text>
-<polyline points="82.7,163.4 83.1,158.3 83.6,150.9 104.5,158.6 144.2,150.6 145.1,132.2 146.0,157.3 365.1,166.7 366.0,173.0 367.0,163.5" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
-<rect x="70.9" y="249.2" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="74.3" y="245.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">6.5 (cefv0)</text>
-<rect x="71.5" y="143.8" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="74.9" y="140.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.2 (cefv1)</text>
-<rect x="73.3" y="153.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="76.7" y="150.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.4 (cefv1)</text>
-<rect x="79.3" y="160.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="82.7" y="156.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">68.0×3</text>
-<rect x="79.7" y="154.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="83.1" y="151.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">71.5×3</text>
-<rect x="80.2" y="147.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="83.6" y="143.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">76.6×3</text>
-<rect x="101.1" y="155.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="104.5" y="151.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">71.3×4</text>
-<rect x="140.8" y="147.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="144.2" y="143.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">76.8×4</text>
-<rect x="141.7" y="128.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="145.1" y="125.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">89.5×4</text>
-<rect x="142.6" y="153.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="146.0" y="150.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.2×4</text>
-<rect x="361.7" y="163.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="365.1" y="159.7" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">65.7×3</text>
-<rect x="362.6" y="169.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="366.0" y="166.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">61.4×3</text>
-<rect x="363.6" y="160.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="367.0" y="156.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">67.9×3</text>
-<polygon points="91.8,79.9 96.2,87.9 87.4,87.9" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="91.8" y="77.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">122.4×1</text>
-<polyline points="883.6,248.4 883.8,255.9 884.0,261.7" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
-<circle cx="883.6" cy="248.4" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="883.6" y="241.4" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">9.4×3</text>
-<circle cx="883.8" cy="255.9" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="883.8" y="248.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">4.2×3</text>
-<circle cx="884.0" cy="261.7" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="884.0" y="254.7" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">0.2×3</text>
-<polyline points="867.3,250.8 867.5,257.2 867.7,254.8" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
-<circle cx="867.3" cy="250.8" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="867.3" y="243.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.7×3</text>
-<circle cx="867.5" cy="257.2" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="867.5" y="250.2" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">3.3×3</text>
-<circle cx="867.7" cy="254.8" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="867.7" y="247.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">5.0×3</text>
-<polyline points="873.4,251.1 873.6,250.5 873.8,259.7" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
-<rect x="870.0" y="247.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="873.4" y="244.1" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.5×3</text>
-<rect x="870.2" y="247.1" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="873.6" y="243.5" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.9×3</text>
-<rect x="870.4" y="256.3" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="873.8" y="252.7" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">1.6×3</text>
+<circle cx="57.1" cy="178.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="57.1" y="171.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">57.3×3</text>
+<circle cx="57.5" cy="175.6" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="57.5" y="168.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">59.6×3</text>
+<circle cx="57.8" cy="262.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<text x="57.8" y="255.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">black screen</text>
+<circle cx="58.5" cy="175.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="58.5" y="168.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">59.4×3</text>
+<circle cx="175.6" cy="107.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="175.6" y="100.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">106.7×3</text>
+<circle cx="176.2" cy="109.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="176.2" y="102.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.5×3</text>
+<circle cx="177.0" cy="109.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="177.0" y="102.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.3×3</text>
+<circle cx="658.1" cy="144.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="658.1" y="137.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">81.4×3</text>
+<circle cx="658.5" cy="146.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="658.5" y="139.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.4×3</text>
+<circle cx="658.8" cy="105.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="658.8" y="98.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">108.2×3</text>
+<polyline points="77.1,163.4 77.5,158.3 77.8,150.9 94.4,158.6 125.9,150.6 126.6,132.2 127.3,157.3 300.7,166.7 301.5,173.0 302.2,163.5" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="67.1" y="249.2" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="70.5" y="245.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">6.5 (cefv0)</text>
+<rect x="67.6" y="143.8" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="71.0" y="140.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.2 (cefv1)</text>
+<rect x="69.0" y="153.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="72.4" y="150.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.4 (cefv1)</text>
+<rect x="73.7" y="160.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="77.1" y="156.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">68.0×3</text>
+<rect x="74.1" y="154.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="77.5" y="151.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">71.5×3</text>
+<rect x="74.4" y="147.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="77.8" y="143.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">76.6×3</text>
+<rect x="91.0" y="155.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="94.4" y="151.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">71.3×4</text>
+<rect x="122.5" y="147.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="125.9" y="143.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">76.8×4</text>
+<rect x="123.2" y="128.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="126.6" y="125.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">89.5×4</text>
+<rect x="123.9" y="153.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="127.3" y="150.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.2×4</text>
+<rect x="297.3" y="163.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="300.7" y="159.7" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">65.7×3</text>
+<rect x="298.1" y="169.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="301.5" y="166.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">61.4×3</text>
+<rect x="298.8" y="160.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="302.2" y="156.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">67.9×3</text>
+<polygon points="84.3,79.9 88.7,87.9 79.9,87.9" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="84.3" y="77.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">122.4×1</text>
+<polyline points="711.3,248.4 711.5,255.9 711.7,261.7" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
+<circle cx="711.3" cy="248.4" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="711.3" y="241.4" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">9.4×3</text>
+<circle cx="711.5" cy="255.9" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="711.5" y="248.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">4.2×3</text>
+<circle cx="711.7" cy="261.7" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="711.7" y="254.7" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">0.2×3</text>
+<polyline points="698.5,250.8 698.6,257.2 698.8,254.8" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
+<circle cx="698.5" cy="250.8" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="698.5" y="243.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.7×3</text>
+<circle cx="698.6" cy="257.2" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="698.6" y="250.2" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">3.3×3</text>
+<circle cx="698.8" cy="254.8" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="698.8" y="247.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">5.0×3</text>
+<polyline points="882.1,252.0 883.0,251.6 884.0,251.6" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="878.7" y="248.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="882.1" y="245.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">6.9×3</text>
+<rect x="879.6" y="248.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="883.0" y="244.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.2×3</text>
+<rect x="880.6" y="248.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="884.0" y="244.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.2×3</text>
+<polyline points="703.3,251.1 703.5,250.5 703.6,259.7" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="699.9" y="247.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="703.3" y="244.1" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.5×3</text>
+<rect x="700.1" y="247.1" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="703.5" y="243.5" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">7.9×3</text>
+<rect x="700.2" y="256.3" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="703.6" y="252.7" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">1.6×3</text>
 </svg>
 
 | day | run | device | stack | version | profile | panel Hz | median fps | reps |
@@ -154,6 +161,7 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 | 2026-11-18 | — | cmf | bridge | p24 | default | 120 | **71.5** | 3 (68.0, 71.5, 76.6) |
 | 2026-11-18 | — | cmf | bridge | v25 | default | 120 | **74.5** | 4 (71.3, 76.8, 89.5, 72.2) |
 | 2026-11-19 | — | cmf | bridge | v25 | default | 120 | **65.7** | 3 (65.7, 61.4, 67.9) |
+| 2026-11-21 | m3 | cmf | mali-open | 1a9583e | default | 120 | **7.2** | 3 (6.9, 7.2, 7.2) |
 | 2026-11-20 | m1 | cmf | mali-open | ef9f1e39 | default | 120 | **7.5** | 3 (7.5, 7.9, 1.6) |
 | 2026-11-17 | — | x8 | bridge | p22 | default | 60 | **59.4** | 3 (57.3, 59.6, 59.4) |
 | 2026-11-18 | — | x8 | bridge | v25 | default | 120 | **105.5** | 3 (106.7, 105.5, 105.3) |
@@ -197,6 +205,9 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 | 2026-11-20 18:50 | x8 | mali-open | 1a9583e | default | 9.4 | 120 | 3 | - | 76.6 | 35.8 | n/a | n/a | visible | - | X8 menu rep 1 of 3 on 1a9583e: shown fps 9.4, off-cadence 76.6 %, battery 35.8 C. Unchanged from 461537b7 (5.0 median) as expected: CEF composes the shelf in software (app-side), so the present fix does not move the menu. Real displayed fps, not a render rate; rep 3 at 0.2 fps is the shelf going static after the key loop. |
 | 2026-11-20 18:51 | x8 | mali-open | 1a9583e | default | 4.2 | 120 | 3 | - | 78.0 | 35.8 | n/a | n/a | visible | - | X8 menu rep 2 of 3 on 1a9583e: shown fps 4.2, off-cadence 78.0 %, battery 35.8 C. Unchanged from 461537b7 (5.0 median) as expected: CEF composes the shelf in software (app-side), so the present fix does not move the menu. Real displayed fps, not a render rate; rep 3 at 0.2 fps is the shelf going static after the key loop. |
 | 2026-11-20 18:52 | x8 | mali-open | 1a9583e | default | 0.2 | 120 | 3 | - | 20.0 | 35.8 | n/a | n/a | visible | - | X8 menu rep 3 of 3 on 1a9583e: shown fps 0.2, off-cadence 20.0 %, battery 35.8 C. Unchanged from 461537b7 (5.0 median) as expected: CEF composes the shelf in software (app-side), so the present fix does not move the menu. Real displayed fps, not a render rate; rep 3 at 0.2 fps is the shelf going static after the key loop. |
+| 2026-11-21 12:31 | cmf | mali-open | 1a9583e | default | 6.9 | 120 | 3 | - | 61.5 | 33.0 | n/a | n/a | visible | - | CMF menu rep 1 of 3 on 1a9583e: 6.9 fps, 208 frames / 30 s, off-cadence 61.5 %, battery 33 C. The Steam UI is CPU-composited here: both steamwebhelper processes carry --disable-gpu-compositing (DD_STEAM_SOFT_COMPOSITING), so this is the shelf&#x27;s software-rendered rate, not a driver figure. Real displayed fps, not a render rate. |
+| 2026-11-21 12:37 | cmf | mali-open | 1a9583e | default | 7.2 | 120 | 3 | - | 59.9 | 33.0 | n/a | n/a | visible | - | CMF menu rep 2 of 3 on 1a9583e: 7.2 fps, 217 frames / 30 s, off-cadence 59.9 %, battery 33 C. The Steam UI is CPU-composited here: both steamwebhelper processes carry --disable-gpu-compositing (DD_STEAM_SOFT_COMPOSITING), so this is the shelf&#x27;s software-rendered rate, not a driver figure. Real displayed fps, not a render rate. |
+| 2026-11-21 12:43 | cmf | mali-open | 1a9583e | default | 7.2 | 120 | 3 | - | 62.5 | 34.0 | n/a | n/a | visible | - | CMF menu rep 3 of 3 on 1a9583e: 7.2 fps, 216 frames / 30 s, off-cadence 62.5 %, battery 34 C. The Steam UI is CPU-composited here: both steamwebhelper processes carry --disable-gpu-compositing (DD_STEAM_SOFT_COMPOSITING), so this is the shelf&#x27;s software-rendered rate, not a driver figure. Real displayed fps, not a render rate. |
 
 <details><summary>sources for these rows</summary>
 
@@ -234,6 +245,9 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 - `2026-11-20` x8/mali-open/1a9583e/steam-menu fps=9.4 reps=3 — driver mode 2026-11-20 18:4x (X8), build 1a9583e (ICD 4c07ef3f), start steam, scenario 'shelf, Recent Games row, input pad right once per second', 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/x8-handover.md §'2026-11-20 18:4x'
 - `2026-11-20` x8/mali-open/1a9583e/steam-menu fps=4.2 reps=3 — driver mode 2026-11-20 18:4x (X8), build 1a9583e (ICD 4c07ef3f), start steam, scenario 'shelf, Recent Games row, input pad right once per second', 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/x8-handover.md §'2026-11-20 18:4x'
 - `2026-11-20` x8/mali-open/1a9583e/steam-menu fps=0.2 reps=3 — driver mode 2026-11-20 18:4x (X8), build 1a9583e (ICD 4c07ef3f), start steam, scenario 'shelf, Recent Games row, input pad right once per second', 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/x8-handover.md §'2026-11-20 18:4x'
+- `2026-11-21` cmf/mali-open/1a9583e/steam-menu fps=6.9 reps=3 — driver mode 2026-11-21 12:30-12:50 (CMF 001003469003711, round 40), build 1a9583e (ICD 4c07ef3f), start steam shelf, scenario 'shelf, Recent Games row, input pad right once per second', repositioned to the row start before each rep, 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/cmf-lane2.md §Round 40
+- `2026-11-21` cmf/mali-open/1a9583e/steam-menu fps=7.2 reps=3 — driver mode 2026-11-21 12:30-12:50 (CMF 001003469003711, round 40), build 1a9583e (ICD 4c07ef3f), start steam shelf, scenario 'shelf, Recent Games row, input pad right once per second', repositioned to the row start before each rep, 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/cmf-lane2.md §Round 40
+- `2026-11-21` cmf/mali-open/1a9583e/steam-menu fps=7.2 reps=3 — driver mode 2026-11-21 12:30-12:50 (CMF 001003469003711, round 40), build 1a9583e (ICD 4c07ef3f), start steam shelf, scenario 'shelf, Recent Games row, input pad right once per second', repositioned to the row start before each rep, 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/cmf-lane2.md §Round 40
 
 </details>
 
@@ -388,10 +402,10 @@ vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vk
 ## Next cells to fill
 
 1. **steam-menu / x4 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x4 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-2. **steam-menu / cmf / mali-open / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next mali-open commit.
-3. **vkcube-wayland / x8 / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x8` with next mali-open commit.
-4. **vkcube-wayland / cmf / bridge / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next MediaDeck build (vc 28, unavailable on this host).
-5. **steam-menu / x8 / mali-open / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next mali-open commit.
+2. **vkcube-wayland / x8 / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x8` with next mali-open commit.
+3. **vkcube-wayland / cmf / bridge / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next MediaDeck build (vc 28, unavailable on this host).
+4. **steam-menu / x8 / mali-open / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next mali-open commit.
+5. **steam-menu / cmf / mali-open / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next mali-open commit.
 6. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
 7. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
 8. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
@@ -402,4 +416,4 @@ vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vk
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
-_Generated from 52 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._
+_Generated from 55 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._

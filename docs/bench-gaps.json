@@ -45,9 +45,9 @@
   ]
  },
  "counts": {
-  "measured": 12,
+  "measured": 13,
   "failed": 3,
-  "missing": 258,
+  "missing": 257,
   "cells": 273,
   "unattributed_rows": 0
  },
@@ -63,8 +63,8 @@
    "best_eligible": []
   },
   "steam-menu": {
-   "rows": 34,
-   "valid_points": 28,
+   "rows": 37,
+   "valid_points": 31,
    "best_eligible": [
     [
      "cmf",
@@ -76,6 +76,12 @@
      "cmf",
      "bridge",
      "v25",
+     "default"
+    ],
+    [
+     "cmf",
+     "mali-open",
+     "1a9583e",
      "default"
     ],
     [
@@ -181,23 +187,6 @@
    }
   },
   {
-   "device": "cmf",
-   "stack": "mali-open",
-   "version": "next",
-   "workload": "steam-menu",
-   "state": "missing",
-   "value": 100,
-   "why": "moves a line's endpoint (series has data)",
-   "series_valid": 3,
-   "runbook": {
-    "device": "CMF Phone 1 (v11, G615)",
-    "apk_or_driver": "next mali-open commit",
-    "driver": "mali-open ICD",
-    "test": "MediaDeck scripts/quick/menubench cmf --profile default",
-    "build_available": false
-   }
-  },
-  {
    "device": "x8",
    "stack": "mali-open",
    "version": "next",
@@ -245,6 +234,23 @@
     "apk_or_driver": "next mali-open commit",
     "driver": "mali-open ICD",
     "test": "MediaDeck scripts/quick/menubench poco-x8 --profile default",
+    "build_available": false
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "next",
+   "workload": "steam-menu",
+   "state": "missing",
+   "value": 100,
+   "why": "moves a line's endpoint (series has data)",
+   "series_valid": 6,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "next mali-open commit",
+    "driver": "mali-open ICD",
+    "test": "MediaDeck scripts/quick/menubench cmf --profile default",
     "build_available": false
    }
   },
@@ -2549,7 +2555,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at 549fae7c",
@@ -2668,7 +2674,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at 65feef75",
@@ -2782,7 +2788,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at 461537b7",
@@ -2901,7 +2907,7 @@
    "state": "measured",
    "value": 0,
    "why": "measured",
-   "series_valid": 3,
+   "series_valid": 6,
    "points": 3,
    "valid_points": 3
   },
@@ -3012,17 +3018,12 @@
    "stack": "mali-open",
    "version": "1a9583e",
    "workload": "steam-menu",
-   "state": "missing",
-   "value": 10,
-   "why": "another version of an existing series",
-   "series_valid": 3,
-   "runbook": {
-    "device": "CMF Phone 1 (v11, G615)",
-    "apk_or_driver": "mali-open ICD at 1a9583e",
-    "driver": "mali-open ICD",
-    "test": "MediaDeck scripts/quick/menubench cmf --profile default",
-    "build_available": true
-   }
+   "state": "measured",
+   "value": 0,
+   "why": "measured",
+   "series_valid": 6,
+   "points": 3,
+   "valid_points": 3
   },
   {
    "device": "cmf",
@@ -3134,7 +3135,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at efc5aa7f",
@@ -3248,7 +3249,7 @@
    "state": "missing",
    "value": 100,
    "why": "moves a line's endpoint (series has data)",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "next mali-open commit",
@@ -4900,10 +4901,10 @@
    "device": "cmf",
    "stack": "mali-open",
    "workload": "steam-menu",
-   "points": 3,
-   "valid": 3,
+   "points": 6,
+   "valid": 6,
    "hollow": 0,
-   "last": "ef9f1e39"
+   "last": "1a9583e"
   },
   {
    "device": "x4",
