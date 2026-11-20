@@ -3,7 +3,7 @@
 # M5: builds and runs t_image (format table, image layout, descriptor bytes vs libkbase). Usage: build-t_image.sh [-v]
 set -euo pipefail
 D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk
-B=${MESA_BUILD:-$D/third_party/build-vk}; OUT=$V/out/native; mkdir -p "$OUT"
+B=${MESA_BUILD:-$D/third_party/build-vk}; OUT=${OUT_DIR:-$V/out/native}; mkdir -p "$OUT"
 export PATH=$D/third_party/venv/bin:$PATH
 cd "$B"
 CMDS=$(ninja -t commands src/panfrost/vulkan/libvulkan_panfrost.so)

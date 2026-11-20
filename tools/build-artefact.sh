@@ -132,7 +132,13 @@ printf 'sha256  %s\ncommit  %s\nbranch  %s\nworktree  %s\ndirty   %s\ndirty.vk  
    "$sum" "$commit" "$branch" "$WT" "$dirty" "$dirty_vk" "$dirty_kb" "$built" >"$PROV.tmp" && mv "$PROV.tmp" "$PROV"
 echo "provenance $PROV"
 if [ "$dirty" != 0 ]; then
-   echo "FAIL: $dirty tracked file(s) under vk/ or libkbase/ modified: this .so is not the branch head, do not deploy it"
-   exit 1
+   # A lane builds dirty on purpose (tools/hostcheck sets MALI_ARTEFACT_ALLOW_DIRTY=1); a deploy must not.
+   # Without that opt-in everything stays strict: a dirty .so is refused, exactly as before.
+   if [ "${MALI_ARTEFACT_ALLOW_DIRTY:-0}" = 1 ]; then
+      echo "WARNING: $dirty tracked file(s) under vk/ or libkbase/ modified: this .so is not the branch head, do not deploy it" >&2
+   else
+      echo "FAIL: $dirty tracked file(s) under vk/ or libkbase/ modified: this .so is not the branch head, do not deploy it"
+      exit 1
+   fi
 fi
 echo "OK: deploy $OUT at $sum from $branch@${commit:0:7} (built $built${offfleet})"

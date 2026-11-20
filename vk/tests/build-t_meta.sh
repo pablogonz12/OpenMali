@@ -3,7 +3,7 @@
 # M12: builds and runs t_meta (meta planner + reference, shader compile). Usage: build-t_meta.sh [-v]
 set -euo pipefail
 D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk
-B=${MESA_BUILD:-$D/third_party/build-vk}; OUT=$V/out/native; mkdir -p "$OUT"
+B=${MESA_BUILD:-$D/third_party/build-vk}; OUT=${OUT_DIR:-$V/out/native}; mkdir -p "$OUT"
 export PATH=$D/third_party/venv/bin:$PATH
 cd "$B"
 # Flags: the compile/link lines of a panfrost compiler consumer in the Mesa tree (same trick as compiler-spike/build.sh).
