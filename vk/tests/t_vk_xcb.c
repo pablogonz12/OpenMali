@@ -1,10 +1,15 @@
 /* SPDX-License-Identifier: MIT */
-/* X11 WSI test (STEAM-GAPS.md "X11 WSI"): xcb window -> VK_KHR_xcb_surface -> swapchain -> acquire -> clear -> present, 3 frames.
- *   t_vk_xcb [--direct <icd.so>] [--pixels] [--draw [--spv-dir d]] [--expect-name <substr>]
- *   --draw  render a full-screen quad into the *swapchain image* with vkCmdBeginRendering + vkCmdDraw (the path HL2 takes:
- *           dynamic rendering, loadOp CLEAR black, storeOp STORE) instead of vkCmdClearColorImage. With --pixels the window
- *           must read back the quad's red: this separates "cannot draw into a swapchain image" from "the client's content is
- *           wrong". The SPIR-V (quad.vert.spv, solid.frag.spv) comes from --spv-dir (default "shader").
+/* X11 WSI test (STEAM-GAPS.md "X11 WSI"): xcb window -> VK_KHR_xcb_surface -> swapchain -> acquire -> present, 3 frames.
+ *   t_vk_xcb [--direct <icd.so>] [--pixels] [--draw|--textured|--depth|--blend [--spv-dir d]] [--expect-name <substr>]
+ *   Each draw mode renders a full-screen quad into the *swapchain image* with vkCmdBeginRendering + vkCmdDraw (the path
+ *   HL2 takes: dynamic rendering, loadOp CLEAR, storeOp STORE) instead of vkCmdClearColorImage, and with --pixels the
+ *   window must read back that mode's colour. Together they bisect a client that draws nothing, one path at a time:
+ *   --draw      solid fragment colour, no texture, no depth, no blend      -> red   (BGR 0,0,255)
+ *   --textured  sample a 2x2 magenta texture in the fragment shader        -> magenta (BGR 255,0,255)
+ *   --depth     D32 attachment cleared to 1.0, depth test+write, quad z=0.5 -> red   (BGR 0,0,255)
+ *   --blend     red 50% alpha over a blue clear (srcAlpha/1-srcAlpha)      -> purple (BGR 128,0,128)
+ *   SPIR-V comes from --spv-dir (default "shader"): quad.vert.spv + solid.frag.spv, wsitex.frag.spv (--textured),
+ *   wsiblend.frag.spv (--blend).
  * Needs an X server ($DISPLAY). Exit 0 = pass, 77 = skipped (no X, or the ICD does not advertise VK_KHR_xcb_surface: Mesa configured
  * without -Dplatforms=x11), 1 = fail.
  *   --pixels  read the window back with xcb_get_image and require the clear colour (hardware only: the fake backend executes
@@ -43,6 +48,18 @@
 
 static PFN_vkGetInstanceProcAddr gipa;
 
+/* A memory type index for (typeBits, required property bits), -1 if the device has none. */
+static int
+mem_type(VkPhysicalDevice pd, uint32_t type_bits, VkMemoryPropertyFlags want, PFN_vkGetPhysicalDeviceMemoryProperties gpmp)
+{
+   VkPhysicalDeviceMemoryProperties mp;
+   gpmp(pd, &mp);
+   for (uint32_t i = 0; i < mp.memoryTypeCount && i < 32; i++)
+      if ((type_bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want)
+         return (int)i;
+   return -1;
+}
+
 /* A SPIR-V file from --spv-dir (the tests' shader directory; the driver itself never reads files). */
 static void *
 read_spv(const char *dir, const char *name, size_t *sz)
@@ -64,14 +81,18 @@ int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
-   int pixels = 0, draw = 0;
+   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
       else if (!strcmp(argv[i], "--draw")) draw = 1;
+      else if (!strcmp(argv[i], "--textured")) textured = 1;
+      else if (!strcmp(argv[i], "--depth")) depth = 1;
+      else if (!strcmp(argv[i], "--blend")) blend = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
-      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw] [--spv-dir d] [--expect-name s]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
+                            "[--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -120,6 +141,7 @@ main(int argc, char **argv)
    IPFN(inst, EnumeratePhysicalDevices);
    IPFN(inst, GetPhysicalDeviceProperties);
    IPFN(inst, GetPhysicalDeviceQueueFamilyProperties);
+   IPFN(inst, GetPhysicalDeviceMemoryProperties);
    IPFN(inst, CreateXcbSurfaceKHR);
    IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
    IPFN(inst, GetPhysicalDeviceSurfaceCapabilitiesKHR);
@@ -189,7 +211,7 @@ main(int argc, char **argv)
    float prio = 1.0f;
    /* --draw: the dynamic-rendering path (core 1.3 here, same as the zink/HL2 command streams). */
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                           .dynamicRendering = draw ? VK_TRUE : VK_FALSE};
+                                           .dynamicRendering = (draw || textured || depth || blend) ? VK_TRUE : VK_FALSE};
    VkDevice dev;
    CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13,
                                              .queueCreateInfoCount = 1,
@@ -207,7 +229,12 @@ main(int argc, char **argv)
    DPFN(CreateShaderModule); DPFN(DestroyShaderModule); DPFN(CreatePipelineLayout); DPFN(DestroyPipelineLayout);
    DPFN(CreateGraphicsPipelines); DPFN(DestroyPipeline); DPFN(CreateImageView); DPFN(DestroyImageView);
    DPFN(CmdBeginRendering); DPFN(CmdEndRendering); DPFN(CmdBindPipeline); DPFN(CmdSetViewport); DPFN(CmdSetScissor);
-   DPFN(CmdPushConstants); DPFN(CmdDraw);
+   DPFN(CmdPushConstants); DPFN(CmdDraw); DPFN(CmdBindDescriptorSets);
+   DPFN(CreateImage); DPFN(DestroyImage); DPFN(BindImageMemory); DPFN(GetImageMemoryRequirements);
+   DPFN(GetImageSubresourceLayout); DPFN(AllocateMemory); DPFN(FreeMemory); DPFN(MapMemory); DPFN(UnmapMemory);
+   DPFN(CreateSampler); DPFN(DestroySampler);
+   DPFN(CreateDescriptorSetLayout); DPFN(DestroyDescriptorSetLayout); DPFN(CreateDescriptorPool);
+   DPFN(DestroyDescriptorPool); DPFN(AllocateDescriptorSets); DPFN(UpdateDescriptorSets);
    VkQueue q;
    GetDeviceQueue(dev, fam, 0, &q);
 
@@ -234,17 +261,101 @@ main(int argc, char **argv)
    CK(GetSwapchainImagesKHR(dev, sc, &ni, imgs));
    printf("swapchain: %u images %ux%u\n", ni, ext.width, ext.height);
 
-   /* --draw: one 2D colour view per swapchain image and a no-descriptor pipeline (quad.vert from gl_VertexIndex + solid.frag) */
+   /* Draw modes: one 2D colour view per swapchain image + quad.vert (full-screen quad from gl_VertexIndex, push constant
+    * s = (1,1,0,0) so uv = q) with a per-mode fragment shader. --textured adds a 2x2 magenta texture + sampler,
+    * --depth a D32 attachment, --blend a srcAlpha/1-srcAlpha blend over a blue clear. */
+   const int draw_like = draw || textured || depth || blend;
    VkImageView views[16] = {0};
    VkPipeline pipe = VK_NULL_HANDLE;
    VkPipelineLayout play = VK_NULL_HANDLE;
-   if (draw) {
+   VkDescriptorSet dset = VK_NULL_HANDLE;
+   VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+   VkDescriptorPool dpool = VK_NULL_HANDLE;
+   VkImage tex = VK_NULL_HANDLE, dimg = VK_NULL_HANDLE;
+   VkImageView texview = VK_NULL_HANDLE, dview = VK_NULL_HANDLE;
+   VkSampler samp = VK_NULL_HANDLE;
+   VkDeviceMemory texmem = VK_NULL_HANDLE, dmem = VK_NULL_HANDLE;
+   if (draw_like) {
       for (uint32_t i = 0; i < ni; i++)
          CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = imgs[i],
                                                           .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt.format,
                                                           .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &views[i]));
+      if (textured) {
+         /* 2x2 R8G8B8A8 magenta, LINEAR tiling in host-visible memory: the sampler must return exactly (1,0,1). */
+         CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                                  .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {2, 2, 1}, .mipLevels = 1,
+                                                  .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                                  .tiling = VK_IMAGE_TILING_LINEAR, .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED}, NULL, &tex));
+         VkMemoryRequirements mr;
+         GetImageMemoryRequirements(dev, tex, &mr);
+         const int mt = mem_type(pd, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, GetPhysicalDeviceMemoryProperties);
+         REQ(mt >= 0, "no host-visible memory type for the texture");
+         CK(AllocateMemory(dev, &(VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                                        .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)mt},
+                          NULL, &texmem));
+         VkSubresourceLayout sl = {0};
+         GetImageSubresourceLayout(dev, tex, &(VkImageSubresource){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0}, &sl);
+         void *tp = NULL;
+         CK(MapMemory(dev, texmem, 0, VK_WHOLE_SIZE, 0, &tp));
+         for (unsigned y = 0; y < 2; y++)
+            for (unsigned x = 0; x < 2; x++)
+               memcpy((uint8_t *)tp + sl.offset + y * sl.rowPitch + x * 4, (const uint8_t [4]){255, 0, 255, 255}, 4);
+         UnmapMemory(dev, texmem);
+         CK(BindImageMemory(dev, tex, texmem, 0));
+         CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = tex,
+                                                          .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &texview));
+         CK(CreateSampler(dev, &(VkSamplerCreateInfo){.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                                                      .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                                                      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                      .maxLod = 0.0f}, NULL, &samp));
+         CK(CreateDescriptorSetLayout(dev, &(VkDescriptorSetLayoutCreateInfo){
+               .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1,
+               .pBindings = &(VkDescriptorSetLayoutBinding){.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                            .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}},
+             NULL, &dsl));
+         CK(CreateDescriptorPool(dev, &(VkDescriptorPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                                                    .maxSets = 1, .poolSizeCount = 1,
+                                                                    .pPoolSizes = &(VkDescriptorPoolSize){
+                                                                       .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                                       .descriptorCount = 1}}, NULL, &dpool));
+         CK(AllocateDescriptorSets(dev, &(VkDescriptorSetAllocateInfo){.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                                      .descriptorPool = dpool, .descriptorSetCount = 1,
+                                                                      .pSetLayouts = &dsl}, &dset));
+         UpdateDescriptorSets(dev, 1, &(VkWriteDescriptorSet){
+                                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dset, .dstBinding = 0,
+                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                 .pImageInfo = &(VkDescriptorImageInfo){
+                                    .sampler = samp, .imageView = texview,
+                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}, 0, NULL);
+      }
+      if (depth) {
+         CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                                  .format = VK_FORMAT_D32_SFLOAT, .extent = {ext.width, ext.height, 1},
+                                                  .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                                  .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                                  .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED}, NULL, &dimg));
+         VkMemoryRequirements mr;
+         GetImageMemoryRequirements(dev, dimg, &mr);
+         const int mt = mem_type(pd, mr.memoryTypeBits, 0, GetPhysicalDeviceMemoryProperties);
+         REQ(mt >= 0, "no memory type for the depth attachment");
+         CK(AllocateMemory(dev, &(VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                                        .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)mt},
+                          NULL, &dmem));
+         CK(BindImageMemory(dev, dimg, dmem, 0));
+         CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = dimg,
+                                                          .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
+                                                          .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}}, NULL, &dview));
+      }
+      const char *fname = textured ? "wsitex.frag.spv" : blend ? "wsiblend.frag.spv" : "solid.frag.spv";
       size_t vsz = 0, fsz = 0;
-      void *vcode = read_spv(spv_dir, "quad.vert.spv", &vsz), *fcode = read_spv(spv_dir, "solid.frag.spv", &fsz);
+      void *vcode = read_spv(spv_dir, "quad.vert.spv", &vsz), *fcode = read_spv(spv_dir, fname, &fsz);
       REQ(vcode && fcode, "SPIR-V not found (--spv-dir)");
       VkShaderModule vm, fm;
       CK(CreateShaderModule(dev, &(VkShaderModuleCreateInfo){.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -253,6 +364,7 @@ main(int argc, char **argv)
                                                              .codeSize = fsz, .pCode = fcode}, NULL, &fm));
       free(vcode); free(fcode);
       CK(CreatePipelineLayout(dev, &(VkPipelineLayoutCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                                 .setLayoutCount = textured ? 1 : 0, .pSetLayouts = &dsl,
                                                                  .pushConstantRangeCount = 1,
                                                                  .pPushConstantRanges = &(VkPushConstantRange){
                                                                     .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .size = 16}},
@@ -263,8 +375,22 @@ main(int argc, char **argv)
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
           .module = fm, .pName = "main"},
       };
-      VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};   /* opaque red, no blending */
+      VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+      if (blend) {   /* classic alpha blend: the fragment shader emits red at alpha 0.5 */
+         cba.blendEnable = VK_TRUE;
+         cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+         cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+         cba.colorBlendOp = VK_BLEND_OP_ADD;
+         cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+         cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+         cba.alphaBlendOp = VK_BLEND_OP_ADD;
+      }
+      VkPipelineDepthStencilStateCreateInfo dss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                                                   .depthTestEnable = depth ? VK_TRUE : VK_FALSE,
+                                                   .depthWriteEnable = depth ? VK_TRUE : VK_FALSE,
+                                                   .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL};
       VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+      VkFormat dfmt = VK_FORMAT_D32_SFLOAT;
       VkGraphicsPipelineCreateInfo gpci = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
          .stageCount = 2, .pStages = st,
          .pVertexInputState = &(VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO},
@@ -278,18 +404,22 @@ main(int argc, char **argv)
                                                                           .lineWidth = 1.0f},
          .pMultisampleState = &(VkPipelineMultisampleStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                                       .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT},
+         .pDepthStencilState = &dss,
          .pColorBlendState = &(VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                                     .attachmentCount = 1, .pAttachments = &cba},
          .pDynamicState = &(VkPipelineDynamicStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                               .dynamicStateCount = 2, .pDynamicStates = dyn},
          .layout = play,
          .pNext = &(VkPipelineRenderingCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                                                   .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt.format},
+                                                   .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt.format,
+                                                   .depthAttachmentFormat = depth ? dfmt : VK_FORMAT_UNDEFINED},
          .renderPass = VK_NULL_HANDLE};
       CK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe));
       DestroyShaderModule(dev, vm, NULL);
       DestroyShaderModule(dev, fm, NULL);
-      printf("draw mode: full-screen quad into the swapchain image (dynamic rendering, loadOp CLEAR black, STORE)\n");
+      printf("mode: %s (full-screen quad into the swapchain image, dynamic rendering, loadOp CLEAR, STORE)\n",
+             textured ? "textured 2x2 magenta" : depth ? "depth-tested, D32 clear 1.0" :
+             blend ? "alpha blend over a blue clear" : "solid red");
    }
 
    VkCommandPool pool;
@@ -316,23 +446,32 @@ main(int argc, char **argv)
       CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
       VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      if (draw) {
+      if (draw_like) {
          VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                    .image = imgs[idx], .subresourceRange = rng};
          CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-         VkClearValue black = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};
+         /* blend: a blue field the half-alpha red quad is blended onto; every other mode: black, so a lost draw
+          * reads back as 0,0,0 rather than as the clear. */
+         VkClearValue clearv = {.color = {.float32 = {0.0f, 0.0f, blend ? 1.0f : 0.0f, 1.0f}}};
          VkRenderingAttachmentInfo ra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = views[idx],
                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                        .clearValue = black};
+                                        .clearValue = clearv};
+         VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dview,
+                                        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                        .clearValue = {.depthStencil = {1.0f, 0}}};
          VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                                .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
-                               .colorAttachmentCount = 1, .pColorAttachments = &ra};
+                               .colorAttachmentCount = 1, .pColorAttachments = &ra,
+                               .pDepthAttachment = depth ? &da : NULL};
          CmdBeginRendering(cb, &ri);
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         if (textured)
+            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, play, 0, 1, &dset, 0, NULL);
          VkViewport vp = {0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f};
          VkRect2D sr = {{0, 0}, {ext.width, ext.height}};
          CmdSetViewport(cb, 0, 1, &vp);
@@ -360,7 +499,7 @@ main(int argc, char **argv)
       CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
       }
       CK(EndCommandBuffer(cb));
-      VkPipelineStageFlags ws = draw ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
+      VkPipelineStageFlags ws = draw_like ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
       CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
                                            .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
                                            .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
@@ -388,9 +527,16 @@ main(int argc, char **argv)
             c, xcb_get_image(c, XCB_IMAGE_FORMAT_Z_PIXMAP, win, ext.width / 2, ext.height / 2, 1, 1, ~0u), NULL);
          if (im && xcb_get_image_data_length(im) >= 3) {
             memcpy(px, xcb_get_image_data(im), 3);
-            /* X pixel = B,G,R: the quad is opaque red (255,0,0), the clear path is 0.2,0.4,0.8 (B 204, G 102, R 51). */
-            ok = draw ? (px[0] <= 2 && px[1] <= 2 && px[2] >= 253)
-                      : (abs(px[0] - 204) <= 2 && abs(px[1] - 102) <= 2 && abs(px[2] - 51) <= 2);
+            /* X pixel = B,G,R. --textured: magenta (255,0,255); --blend: 50% red over 50% blue (128,0,128);
+             * --depth / --draw: opaque red (0,0,255); the clear path: 0.2,0.4,0.8 (204,102,51). */
+            if (textured)
+               ok = px[0] >= 253 && px[1] <= 2 && px[2] >= 253;
+            else if (blend)
+               ok = abs(px[0] - 128) <= 8 && px[1] <= 8 && abs(px[2] - 128) <= 8;
+            else if (draw_like)
+               ok = px[0] <= 2 && px[1] <= 2 && px[2] >= 253;
+            else
+               ok = abs(px[0] - 204) <= 2 && abs(px[1] - 102) <= 2 && abs(px[2] - 51) <= 2;
          }
          free(im);
          if (!ok) {
@@ -399,16 +545,31 @@ main(int argc, char **argv)
          }
       }
       printf("window pixel BGR = %u,%u,%u (want %s): %s\n", px[0], px[1], px[2],
-             draw ? "0,0,255 (the drawn quad)" : "204,102,51 (the clear)", ok ? "ok" : "MISMATCH");
+             textured ? "255,0,255 (textured quad)" : blend ? "128,0,128 (blended quad)" :
+             depth ? "0,0,255 (depth-tested quad)" : draw ? "0,0,255 (the drawn quad)" : "204,102,51 (the clear)",
+             ok ? "ok" : "MISMATCH");
       if (!ok) rc = 1;
    }
 
    DeviceWaitIdle(dev);
-   if (draw) {
+   if (draw_like) {
       DestroyPipeline(dev, pipe, NULL);
       DestroyPipelineLayout(dev, play, NULL);
       for (uint32_t i = 0; i < ni; i++)
          DestroyImageView(dev, views[i], NULL);
+      if (textured) {
+         DestroyDescriptorPool(dev, dpool, NULL);
+         DestroyDescriptorSetLayout(dev, dsl, NULL);
+         DestroySampler(dev, samp, NULL);
+         DestroyImageView(dev, texview, NULL);
+         DestroyImage(dev, tex, NULL);
+         FreeMemory(dev, texmem, NULL);
+      }
+      if (depth) {
+         DestroyImageView(dev, dview, NULL);
+         DestroyImage(dev, dimg, NULL);
+         FreeMemory(dev, dmem, NULL);
+      }
    }
    DestroyFence(dev, fence, NULL);
    DestroySemaphore(dev, acq, NULL);
