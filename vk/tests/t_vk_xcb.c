@@ -1,6 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 /* X11 WSI test (STEAM-GAPS.md "X11 WSI"): xcb window -> VK_KHR_xcb_surface -> swapchain -> acquire -> clear -> present, 3 frames.
- *   t_vk_xcb [--direct <icd.so>] [--pixels] [--expect-name <substr>]
+ *   t_vk_xcb [--direct <icd.so>] [--pixels] [--draw [--spv-dir d]] [--expect-name <substr>]
+ *   --draw  render a full-screen quad into the *swapchain image* with vkCmdBeginRendering + vkCmdDraw (the path HL2 takes:
+ *           dynamic rendering, loadOp CLEAR black, storeOp STORE) instead of vkCmdClearColorImage. With --pixels the window
+ *           must read back the quad's red: this separates "cannot draw into a swapchain image" from "the client's content is
+ *           wrong". The SPIR-V (quad.vert.spv, solid.frag.spv) comes from --spv-dir (default "shader").
  * Needs an X server ($DISPLAY). Exit 0 = pass, 77 = skipped (no X, or the ICD does not advertise VK_KHR_xcb_surface: Mesa configured
  * without -Dplatforms=x11), 1 = fail.
  *   --pixels  read the window back with xcb_get_image and require the clear colour (hardware only: the fake backend executes
@@ -9,6 +13,7 @@
 #define _GNU_SOURCE
 #define VK_USE_PLATFORM_XCB_KHR
 #include <dlfcn.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,18 +43,35 @@
 
 static PFN_vkGetInstanceProcAddr gipa;
 
+/* A SPIR-V file from --spv-dir (the tests' shader directory; the driver itself never reads files). */
+static void *
+read_spv(const char *dir, const char *name, size_t *sz)
+{
+   char path[512];
+   snprintf(path, sizeof path, "%s/%s", dir, name);
+   FILE *f = fopen(path, "rb");
+   if (!f) { fprintf(stderr, "FAIL open %s: %s\n", path, strerror(errno)); return NULL; }
+   if (fseek(f, 0, SEEK_END) || (*sz = (size_t)ftell(f)) == 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return NULL; }
+   void *p = malloc(*sz);
+   if (!p || fread(p, 1, *sz, f) != *sz) { fclose(f); free(p); return NULL; }
+   fclose(f);
+   return p;
+}
+
 #define IPFN(i, n) PFN_vk##n n = (PFN_vk##n)gipa(i, "vk" #n)
 
 int
 main(int argc, char **argv)
 {
-   const char *direct = NULL, *expect = NULL;
-   int pixels = 0;
+   const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
+   int pixels = 0, draw = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
+      else if (!strcmp(argv[i], "--draw")) draw = 1;
+      else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
-      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--expect-name s]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -91,7 +113,7 @@ main(int argc, char **argv)
       &(VkInstanceCreateInfo){.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                               .pApplicationInfo = &(VkApplicationInfo){.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                                                                        .pApplicationName = "t_vk_xcb",
-                                                                       .apiVersion = VK_API_VERSION_1_1},
+                                                                       .apiVersion = VK_API_VERSION_1_3},
                               .enabledExtensionCount = 2,
                               .ppEnabledExtensionNames = iexts},
       NULL, &inst));
@@ -165,8 +187,11 @@ main(int argc, char **argv)
 
    const char *dexts[] = {"VK_KHR_swapchain"};
    float prio = 1.0f;
+   /* --draw: the dynamic-rendering path (core 1.3 here, same as the zink/HL2 command streams). */
+   VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                           .dynamicRendering = draw ? VK_TRUE : VK_FALSE};
    VkDevice dev;
-   CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+   CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13,
                                              .queueCreateInfoCount = 1,
                                              .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
                                                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -179,6 +204,10 @@ main(int argc, char **argv)
    DPFN(CreateSemaphore); DPFN(CreateFence); DPFN(WaitForFences); DPFN(ResetFences); DPFN(QueueSubmit);
    DPFN(QueueWaitIdle); DPFN(DeviceWaitIdle); DPFN(DestroyDevice); DPFN(ResetCommandBuffer);
    DPFN(DestroySemaphore); DPFN(DestroyFence); DPFN(DestroyCommandPool);
+   DPFN(CreateShaderModule); DPFN(DestroyShaderModule); DPFN(CreatePipelineLayout); DPFN(DestroyPipelineLayout);
+   DPFN(CreateGraphicsPipelines); DPFN(DestroyPipeline); DPFN(CreateImageView); DPFN(DestroyImageView);
+   DPFN(CmdBeginRendering); DPFN(CmdEndRendering); DPFN(CmdBindPipeline); DPFN(CmdSetViewport); DPFN(CmdSetScissor);
+   DPFN(CmdPushConstants); DPFN(CmdDraw);
    VkQueue q;
    GetDeviceQueue(dev, fam, 0, &q);
 
@@ -205,6 +234,64 @@ main(int argc, char **argv)
    CK(GetSwapchainImagesKHR(dev, sc, &ni, imgs));
    printf("swapchain: %u images %ux%u\n", ni, ext.width, ext.height);
 
+   /* --draw: one 2D colour view per swapchain image and a no-descriptor pipeline (quad.vert from gl_VertexIndex + solid.frag) */
+   VkImageView views[16] = {0};
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkPipelineLayout play = VK_NULL_HANDLE;
+   if (draw) {
+      for (uint32_t i = 0; i < ni; i++)
+         CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = imgs[i],
+                                                          .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt.format,
+                                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &views[i]));
+      size_t vsz = 0, fsz = 0;
+      void *vcode = read_spv(spv_dir, "quad.vert.spv", &vsz), *fcode = read_spv(spv_dir, "solid.frag.spv", &fsz);
+      REQ(vcode && fcode, "SPIR-V not found (--spv-dir)");
+      VkShaderModule vm, fm;
+      CK(CreateShaderModule(dev, &(VkShaderModuleCreateInfo){.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                                             .codeSize = vsz, .pCode = vcode}, NULL, &vm));
+      CK(CreateShaderModule(dev, &(VkShaderModuleCreateInfo){.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                                             .codeSize = fsz, .pCode = fcode}, NULL, &fm));
+      free(vcode); free(fcode);
+      CK(CreatePipelineLayout(dev, &(VkPipelineLayoutCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                                 .pushConstantRangeCount = 1,
+                                                                 .pPushConstantRanges = &(VkPushConstantRange){
+                                                                    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .size = 16}},
+                             NULL, &play));
+      VkPipelineShaderStageCreateInfo st[2] = {
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+          .module = vm, .pName = "main"},
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .module = fm, .pName = "main"},
+      };
+      VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};   /* opaque red, no blending */
+      VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+      VkGraphicsPipelineCreateInfo gpci = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+         .stageCount = 2, .pStages = st,
+         .pVertexInputState = &(VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO},
+         .pInputAssemblyState = &(VkPipelineInputAssemblyStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                                         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST},
+         .pViewportState = &(VkPipelineViewportStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                               .viewportCount = 1, .scissorCount = 1},
+         .pRasterizationState = &(VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                                          .polygonMode = VK_POLYGON_MODE_FILL,
+                                                                          .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                                                                          .lineWidth = 1.0f},
+         .pMultisampleState = &(VkPipelineMultisampleStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                                                      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT},
+         .pColorBlendState = &(VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                                    .attachmentCount = 1, .pAttachments = &cba},
+         .pDynamicState = &(VkPipelineDynamicStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                              .dynamicStateCount = 2, .pDynamicStates = dyn},
+         .layout = play,
+         .pNext = &(VkPipelineRenderingCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                                   .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt.format},
+         .renderPass = VK_NULL_HANDLE};
+      CK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe));
+      DestroyShaderModule(dev, vm, NULL);
+      DestroyShaderModule(dev, fm, NULL);
+      printf("draw mode: full-screen quad into the swapchain image (dynamic rendering, loadOp CLEAR black, STORE)\n");
+   }
+
    VkCommandPool pool;
    CK(CreateCommandPool(dev, &(VkCommandPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                                         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -229,6 +316,36 @@ main(int argc, char **argv)
       CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
       VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      if (draw) {
+         VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                   .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                   .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .image = imgs[idx], .subresourceRange = rng};
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+         VkClearValue black = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};
+         VkRenderingAttachmentInfo ra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = views[idx],
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .clearValue = black};
+         VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                               .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
+                               .colorAttachmentCount = 1, .pColorAttachments = &ra};
+         CmdBeginRendering(cb, &ri);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f};
+         VkRect2D sr = {{0, 0}, {ext.width, ext.height}};
+         CmdSetViewport(cb, 0, 1, &vp);
+         CmdSetScissor(cb, 0, 1, &sr);
+         CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
+         CmdDraw(cb, 6, 1, 0, 0);
+         CmdEndRendering(cb);
+         b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+         b.dstAccessMask = 0;
+         b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+         b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      } else {
       VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                 .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -241,8 +358,9 @@ main(int argc, char **argv)
       b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
       b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
       CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      }
       CK(EndCommandBuffer(cb));
-      VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      VkPipelineStageFlags ws = draw ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
       CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
                                            .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
                                            .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
@@ -270,7 +388,9 @@ main(int argc, char **argv)
             c, xcb_get_image(c, XCB_IMAGE_FORMAT_Z_PIXMAP, win, ext.width / 2, ext.height / 2, 1, 1, ~0u), NULL);
          if (im && xcb_get_image_data_length(im) >= 3) {
             memcpy(px, xcb_get_image_data(im), 3);
-            ok = abs(px[0] - 204) <= 2 && abs(px[1] - 102) <= 2 && abs(px[2] - 51) <= 2;   /* X pixel = B,G,R */
+            /* X pixel = B,G,R: the quad is opaque red (255,0,0), the clear path is 0.2,0.4,0.8 (B 204, G 102, R 51). */
+            ok = draw ? (px[0] <= 2 && px[1] <= 2 && px[2] >= 253)
+                      : (abs(px[0] - 204) <= 2 && abs(px[1] - 102) <= 2 && abs(px[2] - 51) <= 2);
          }
          free(im);
          if (!ok) {
@@ -278,11 +398,18 @@ main(int argc, char **argv)
             nanosleep(&ts, NULL);
          }
       }
-      printf("window pixel BGR = %u,%u,%u (want 204,102,51): %s\n", px[0], px[1], px[2], ok ? "ok" : "MISMATCH");
+      printf("window pixel BGR = %u,%u,%u (want %s): %s\n", px[0], px[1], px[2],
+             draw ? "0,0,255 (the drawn quad)" : "204,102,51 (the clear)", ok ? "ok" : "MISMATCH");
       if (!ok) rc = 1;
    }
 
    DeviceWaitIdle(dev);
+   if (draw) {
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, play, NULL);
+      for (uint32_t i = 0; i < ni; i++)
+         DestroyImageView(dev, views[i], NULL);
+   }
    DestroyFence(dev, fence, NULL);
    DestroySemaphore(dev, acq, NULL);
    DestroySemaphore(dev, done, NULL);
