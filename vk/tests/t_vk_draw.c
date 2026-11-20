@@ -1141,8 +1141,17 @@ test_load(const char *name, int kind)
          for (int i = 0; i < 6; i++) same &= pgot[i] == pref[i];
          ok = ok && same;
          if (!ok) {
-            /* which failure: pass 2 drew nothing (cov == pass 1), preload did not run (B overwrote A where it must be rejected: cov > ref), or B was rejected too much (cov < ref) */
-            const char *why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
+            /* Which failure. kind 2 is colour only (no depth attachment), so a coverage shortfall there is the
+             * LOAD preload losing edge samples, never "depth came back wrong": name the number and the plane
+             * question instead of sending the reader to the depth path. */
+            const char *why;
+            if (kind == 2)
+               why = cgot == cov1 ? "pass 2 wrote nothing (LOAD restored nothing)"
+                   : cgot > cref ? "LOAD over-restored: coverage above the one-pass reference"
+                   : cgot < cref ? "LOAD lost edge coverage at 4x (antialiased pixels whose samples were not restored) - compare load_roundtrip"
+                                  : "coverage equal, pixel values differ";
+            else
+               why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
             char pxs[400]; int n = 0;
             for (int i = 0; i < 6; i++)
                n += snprintf(pxs + n, sizeof pxs - n, " (%d,%d)%08x/%08x/%08x", PX[i][0], PX[i][1], p1[i], pref[i], pgot[i]);
@@ -1276,6 +1285,49 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
 /* MSAA colour loadOp LOAD + storeOp STORE with a resolve: the two-pass colour test (pass 1 clear+A store,
  * pass 2 LOAD+B store) run at 4x. The 4x attachment is stored (not the hardware Average) and the resolve
  * runs as its own pass, so this covers the per-sample preload and the STORE+resolve combination together. */
+/* Does loadOp LOAD restore every sample? pass 1 clears and draws A (store, resolve), pass 2 LOADs with no
+ * draw at all and stores/resolves again: coverage must be identical to pass 1. This isolates the preload
+ * from the second draw, so a shortfall is the per-sample restore and not geometry or depth. */
+static int
+load_roundtrip(const char *name)
+{
+   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");
+   if ((gate && gate[0] == '0') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised\",\"ok\":true}\n", name);
+      return 1;
+   }
+   g_msaa = 1;
+   g_msaa_store = 1;
+   g_load = 1;
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   int ok = scene_create(&s, 0);
+   g_load = 0;
+   float AB[1][4] = {{1, 0, -.5f, 0}};
+   uint32_t c1 = 0, c2 = 0;
+   if (ok) ok = scene_draw(&s, 1, AB, f);          /* pass 1: clear + A, stored and resolved */
+   if (ok) c1 = count_cov(&s);
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 0, AB, f);          /* pass 2: LOAD, no draws, store + resolve */
+   s.second = 0;
+   if (ok) c2 = count_cov(&s);
+   if (ok) {
+      if (g_fake) {
+         printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      } else {
+         CHECK(c1 == c2, "%s: coverage after LOAD %u != after pass 1 %u (%d pixels lost by the per-sample preload)", name, c2, c1, (int)(c1 - c2));
+         printf("{\"test\":\"%s\",\"cov_pass1\":%u,\"cov_after_load\":%u,\"ok\":%s}\n", name, c1, c2, c1 == c2 ? "true" : "false");
+      }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   g_msaa = 0;
+   g_msaa_store = 0;
+   return ok;
+}
+
 static int
 test_msaa_load(const char *name)
 {
@@ -1287,6 +1339,7 @@ test_msaa_load(const char *name)
    g_msaa = 1;
    g_msaa_store = 1;
    int ok = test_load(name, 2);
+   if (ok) ok = load_roundtrip("msaa_load_roundtrip");
    g_msaa = 0;
    g_msaa_store = 0;
    return ok;
