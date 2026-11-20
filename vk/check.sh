@@ -106,6 +106,10 @@ for g in v11 v13; do run "vk_info $g tf gate" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACK
 for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
 for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
+# VK_EXT_vertex_attribute_divisor: divisor 1 and divisor 0 instance rates plus a vertex-rate control in one draw. On the fake
+# backend only the pipeline/record half runs (the pixels are checked on hardware); the point here is that the case is reachable
+# and that the three rates are accepted together.
+for g in v11 v13; do run "vk_feat inst_divisor $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only inst_divisor; done
 # gate off (default): the extension must not be advertised, so the case must skip and say why (a silent skip would hide a gate that leaks)
 out=$(env -u MALI_EXPERIMENTAL_TF MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write 2>&1)
 if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"'; then echo "ok    vk_feat tf_write gate off v11"

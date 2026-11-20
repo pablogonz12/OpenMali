@@ -217,7 +217,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->lineSubPixelPrecisionBits = 4;   /* == subPixelPrecisionBits; t_vk_feat linerast */
    p->maxCustomBorderColorSamplers = 4000;   /* == maxSamplerAllocationCount: a custom colour costs nothing beyond the descriptor */
    p->maxVertexAttribDivisor = 0xfffffff;   /* NPOT divisor encoding is exact to 2^28 (t_resources attr_instance) */
-   p->supportsNonZeroFirstInstance = false;   /* KHR property: stays false until t_vk_feat divisor (firstInstance cases) passes on hardware */
+   p->supportsNonZeroFirstInstance = false;   /* KHR property, still off: floor((firstInstance + i) / divisor) is what the hardware does and
+                                               * what CTS expects (vktDrawInstancedTests prepareVertexData, Vulkan's instance index starts at
+                                               * firstInstance), but the only device run of those cases (job 20261118-142435-48673771) failed and
+                                               * has not been explained or repeated, so firstInstance != 0 stays a documented limitation. */
    p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
    p->maxCombinedImageSamplerDescriptorCount = 1; /* maintenance6; blockTexelViewCompatibleMultipleLayers stays false */
    p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
@@ -473,7 +476,15 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .extendedDynamicState2 = true,   /* t_dxvk_caps; dynamic LogicOp stays false (static logicOp runs through the blend shader) and PatchControlPoints stays false (no tessellation) */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
-      .vertexAttributeInstanceRateDivisor = false, .vertexAttributeInstanceRateZeroDivisor = true,   /* divisor > 1 is NOT advertised: the hardware divides (firstInstance + i), Vulkan wants firstInstance + i / divisor, and dEQP draw.*.instanced.*attrib_divisor_{2,20} (firstInstance 0,1,3,4,20) Fail on v13 (job 20261118-142435-48673771); needs a per-run descriptor rebase. Implementation stays in mali_cs_emit.c. t_vk_feat divisor (zero: divisor 1 with stride 0, as panvk) */
+      /* divisor > 1 is in the command stream: the Attribute descriptor's Frequency bit (genxml v11 "Attribute" 1:6) plus Attribute type
+       * "1D POT/NPOT Divisor" and the Divisor R/E/D words, packed by kb_draw_attr_instance (libkbase/src/draw.c:101-121) bit for bit as
+       * Mesa's pan_compute_npot_divisor (third_party/mesa/src/panfrost/lib/pan_encoder.h:95-111) and driven by the pipeline's
+       * VkVertexInputBindingDivisorDescriptionEXT (mali_pipeline.c:353-355 -> mali_cs_emit.c:389). The instance index fed to it is the draw's
+       * INSTANCE_OFFSET + i (mali_cs_emit.c:701/734), i.e. element = floor((firstInstance + i) / divisor), which is exactly Vulkan's rule and
+       * what CTS builds its reference from (vktDrawInstancedTests.cpp:926-927). The old comment here misread the spec (it compared against
+       * "firstInstance + i / divisor"), so the only open question is firstInstance != 0 (supportsNonZeroFirstInstance, above).
+       * Divisibility: t_vk_feat divisor (encoder, POT 2/4/8, NPOT 3/5/7, zero divisor) and inst_divisor (two instances, divisor 1 and 0 in one draw). */
+      .vertexAttributeInstanceRateDivisor = true, .vertexAttributeInstanceRateZeroDivisor = true,
       /* multiViewport: no geometry shader and no shaderOutputViewportIndex, so every primitive uses viewport/scissor 0; 1..15 are accepted state
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,
