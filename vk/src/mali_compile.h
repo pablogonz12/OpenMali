@@ -103,7 +103,11 @@ struct mali_blend_opts {
 };
 int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
-/* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
+/* mali_compile: 0 on success (out filled, release with mali_compiled_free); negative on error, message in err.
+ * MALI_COMPILE_UNSUPPORTED means the shader is valid but this driver has no path for it yet (callers map it to
+ * VK_ERROR_FEATURE_NOT_PRESENT rather than VK_ERROR_INVALID_SHADER_NV). */
+#define MALI_COMPILE_UNSUPPORTED (-2)
+
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 void mali_compiled_free(struct mali_compiled *c);
 

@@ -9,6 +9,7 @@
 #include "panfrost/compiler/pan_nir.h"
 #include "panfrost/model/pan_model.h"
 #include "util/blake3/blake3.h"
+#include "nir_xfb_info.h"
 #include "nir.h"
 #include "nir_builder.h"
 
@@ -33,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 26 /* 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 27 /* 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -447,6 +448,27 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       return -1;
    }
 
+   /* VK_EXT_transform_feedback (WIP): the SPIR-V only sets has_transform_feedback_varyings; the buffers, strides
+    * and per-output offsets come from the xfb_* decorations, which nir_shader_gather_xfb_info() collects. Stage 1
+    * stops here: nir_io_add_intrinsic_xfb_info() + nir_lower_xfb_to_stores() (what panfrost's XFB shader runs,
+    * src/gallium/drivers/panfrost/pan_shader.c:124-136) need store_output intrinsics with io_xfb set, i.e. IO already
+    * lowered, and this driver's varying-layout path deliberately keeps varying variables (panfrost's backend builds
+    * the layout from them). Running them here dereferences a NULL xfb_info. So report what the shader declared and
+    * refuse: the next stage has to compile this variant with IO lowered and run it in a streamout job, which
+    * libkbase does not have either (kbase_cs.h:111-154 is RUN_IDVS/FINISH_TILING only). */
+   if (stage == MESA_SHADER_VERTEX && nir->info.has_transform_feedback_varyings) {
+      nir_shader_gather_xfb_info(nir);
+      const nir_xfb_info *xfb = nir->xfb_info;
+      unsigned buffers = 0;
+      uint32_t stride = 0;
+      for (unsigned i = 0; xfb && i < NIR_MAX_XFB_BUFFERS; i++)
+         if (xfb->buffers[i].stride) { buffers++; stride = xfb->buffers[i].stride; }
+      ralloc_free(nir);
+      if (err && errsz)
+         snprintf(err, errsz, "transform feedback: the shader declares %u buffer(s), stride %u B, but this driver "
+                  "has no streamout path yet (needs IO-lowered XFB stores and a vertex-only job)", buffers, stride);
+      return MALI_COMPILE_UNSUPPORTED;
+   }
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
    if (stage == MESA_SHADER_COMPUTE) {

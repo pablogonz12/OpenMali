@@ -177,9 +177,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv_words = vwords;
    o.entry = vss->pName;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   if (mali_compile(&o, &p->vs, err, sizeof err)) {
+   int vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   if (vcr) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
-      res = VK_ERROR_INVALID_SHADER_NV;
+      res = vcr == MALI_COMPILE_UNSUPPORTED ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */

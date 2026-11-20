@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define W 256
 #define H 256
@@ -45,6 +46,7 @@ static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
+static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must be refused, with a message naming TF */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
@@ -270,7 +272,27 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                       .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
-   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+   VkResult r;
+   if (g_expect_xfb_fail) {
+      /* Capture stderr: the refusal must name the reason, not just return an error code. */
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture (tf)");
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
+      if (g_modless) { free(vcode); free(fcode); }
+      else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
+      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "a transform-feedback pipeline must be refused (%d)", r);
+      CHECK(strstr(msg, "transform feedback") != NULL, "the refusal must name transform feedback: %s", msg);
+      return 1;
+   }
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
    if (g_modless) { free(vcode); free(fcode); }
    else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
@@ -952,6 +974,24 @@ test_linerast(void)
       printf("{\"test\":\"linerast\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
    return 1;
+}
+
+/* VK_EXT_transform_feedback is plumbing-only (mali_tf.h): the XFB decorations are lowered to global stores by the
+ * compiler, and the pipeline is then refused because no streamout job exists to execute it. The test proves both the
+ * code and that the message names the reason. */
+static int
+test_tf_reject(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_expect_xfb_fail = 1;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_expect_xfb_fail = 0;
+   CHECK(pipe == VK_NULL_HANDLE, "no pipeline may exist for a transform-feedback shader");
+   if (ok) printf("{\"test\":\"tf_reject\",\"ok\":true}\n");
+   return ok;
 }
 
 static int
@@ -3100,6 +3140,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("linerast")) ok &= test_linerast();
+   if (ok && g_only && CASE_ON("tf_reject")) ok &= test_tf_reject();   /* explicit only: keeps the golden BO/address sequence */
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();

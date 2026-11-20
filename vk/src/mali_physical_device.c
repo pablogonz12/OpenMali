@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
+#include "mali_tf.h"
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
@@ -186,6 +187,21 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxBufferSize = 1u << 30;
    p->provokingVertexModePerPipeline = false;   /* the bit lives in the per-render-pass FBD and tiler context */
    p->transformFeedbackPreservesTriangleFanProvokingVertex = false;
+   /* VK_EXT_transform_feedback (WIP, MALI_EXPERIMENTAL_TF=1): the limits the streamout job will be built against.
+    * One stream (no geometry shaders), four buffers, 16 MiB each, 64-byte per-vertex records. Provisional until the
+    * job exists (mali_tf.h); nothing here can be used by an application while the extension is not advertised. */
+   if (mali_experimental_tf()) {
+      p->maxTransformFeedbackStreams = 1;
+      p->maxTransformFeedbackBuffers = 4;
+      p->maxTransformFeedbackBufferSize = 1ull << 24;
+      p->maxTransformFeedbackStreamDataSize = 64;
+      p->maxTransformFeedbackBufferDataSize = 64;
+      p->maxTransformFeedbackBufferDataStride = 2048;
+      p->transformFeedbackQueries = false;             /* VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT not implemented */
+      p->transformFeedbackStreamsLinesTriangles = false;
+      p->transformFeedbackRasterizationStreamSelect = false;   /* geometryStreams stays false */
+      p->transformFeedbackDraw = false;
+   }
    p->lineSubPixelPrecisionBits = 4;   /* == subPixelPrecisionBits; t_vk_feat linerast */
    p->maxCustomBorderColorSamplers = 4000;   /* == maxSamplerAllocationCount: a custom colour costs nothing beyond the descriptor */
    p->maxVertexAttribDivisor = 0xfffffff;   /* NPOT divisor encoding is exact to 2^28 (t_resources attr_instance) */
@@ -366,6 +382,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
    struct vk_device_extension_table enabled = extensions;
+   /* VK_EXT_transform_feedback (WIP): the extension is advertised only with the opt-in gate; the streamout job that
+    * would make it honest does not exist yet (mali_tf.h). geometryStreams stays false (no geometry stage). */
+   enabled.EXT_transform_feedback = mali_experimental_tf();
    /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
     * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that
     * mali_drm_find_node() cannot match at init (no /dev/dri alias yet). Without the extension gamescope stops at
@@ -382,6 +401,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
        * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
       .robustBufferAccess = true,
+      .transformFeedback = mali_experimental_tf(),   /* WIP: plumbing only, mali_tf.h */
       .timelineSemaphore = true,
       .textureCompressionBC = true,
       .hostQueryReset = true,
