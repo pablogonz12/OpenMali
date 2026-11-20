@@ -98,6 +98,19 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
  *
  * MALI_WSI_DEBUG=1 prints one line per X11 swapchain creation with the request, what the surface offers, what the
  * connection can do and the VkResult; a failed creation always prints a line. */
+/* A software swapchain image is a CPU buffer with no dma-buf fd, so the dma-buf implicit-sync path cannot work on
+ * it: wsi_common creates a dma-buf semaphore when wsi_drm_check_dma_buf_sync_file_import_export()
+ * (wsi_common_drm.c:97) answers "works", and then every present calls
+ * wsi_dma_buf_import_sync_file(image->dma_buf_fd == -1, ...), which fails with EBADF and is mapped to
+ * VK_ERROR_FEATURE_NOT_PRESENT (wsi_common_drm.c:214) before the frame is put. Declare the capability we have
+ * (none) in wsi's cache, which stores result - 1. This has to be applied when the *swapchain* is created, not only
+ * when the device was built in software mode: on hardware the software path is chosen per surface. */
+static void
+mali_wsi_disable_dmabuf_sync(struct wsi_device *wsi)
+{
+   wsi->cached_sync_file_import_export_result = (uint32_t)(VK_ERROR_FEATURE_NOT_PRESENT - 1);
+}
+
 static bool
 mali_wsi_debug(void)
 {
@@ -212,9 +225,15 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
-   if (mali_wsi_debug())
-      fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u\n", (unsigned long long)n,
-              info->swapchainCount, info->waitSemaphoreCount);
+   if (mali_wsi_debug()) {
+      VK_FROM_HANDLE(vk_queue, vq, queue);
+      const struct mali_physical_device *qpdev =
+         mali_device_pdev(container_of(vq->base.device, struct mali_device, vk));
+      fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u dma_buf_sync=%d sw=%d\n",
+              (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
+              __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
+              (int)qpdev->wsi.sw);
+   }
    VkResult r = wsi_QueuePresentKHR(queue, info);
 
    /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at
@@ -271,10 +290,16 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    if (!wsi_dev->sw && !forced_dmabuf && x11_surface) {
       wsi_dev->sw = true;
       wsi_dev->supports_modifiers = false;
+      mali_wsi_disable_dmabuf_sync(wsi_dev);
       fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (MALI_WSI=dmabuf for dma-buf)\n",
               mali_wsi_platform_name(surface->platform));
    }
 
+   if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
+      fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
+              wsi_dev->GetSemaphoreFdKHR ? "set" : "NULL", wsi_dev->GetMemoryFdKHR ? "set" : "NULL",
+              __atomic_load_n(&wsi_dev->cached_sync_file_import_export_result, __ATOMIC_RELAXED),
+              __atomic_load_n(&wsi_dev->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX);
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: x11 present path: shm=%d dri3=%d%s\n",
               (int)(probe.mit_shm && wsi_dev->has_import_memory_host), (int)probe.dri3,
@@ -324,18 +349,8 @@ mali_wsi_init(struct mali_physical_device *pdev)
     * pixels that get displayed. It also removes the SHM/blit branch that needs EXT_external_memory_host, which we
     * do not implement: SHM is only used where the extension exists, otherwise PutImage, and both report VK_SUCCESS. */
    pdev->wsi.wants_linear = true;
-   if (sw) {
-      /* Software images are CPU buffers with no dma-buf fd. wsi still asks for implicit sync on them: it creates a
-       * dma-buf semaphore when wsi_drm_check_dma_buf_sync_file_import_export() (wsi_common_drm.c:97) succeeds, then
-       * at every present wsi_signal_dma_buf_from_semaphore() -> wsi_dma_buf_import_sync_file(image->dma_buf_fd = -1)
-       * gets EBADF, which wsi_common_drm.c maps to VK_ERROR_FEATURE_NOT_PRESENT (the -8 vkcube --wsi xcb returned
-       * before the frame was ever put). Declare the capability we really have: no dma-buf sync-file import/export
-       * for CPU images, so wsi skips the semaphore and presents with PutImage. The cache stores result - 1. */
-      pdev->wsi.cached_sync_file_import_export_result = (uint32_t)(VK_ERROR_FEATURE_NOT_PRESENT - 1);
-      if (getenv("MALI_WSI_DEBUG"))
-         fprintf(stderr, "mali_vk: wsi: software path: no dma-buf sync-file import/export (CPU images), "
-                 "present is PutImage\n");
-   }
+   if (sw)
+      mali_wsi_disable_dmabuf_sync(&pdev->wsi);
    pdev->wsi_real_destroy_query_pool = pdev->wsi.DestroyQueryPool;
    pdev->wsi.DestroyQueryPool = mali_wsi_destroy_query_pool;
    pdev->vk.wsi_device = &pdev->wsi;
