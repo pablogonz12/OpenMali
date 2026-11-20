@@ -2,7 +2,7 @@
 /* M12/M13 test: meta copies/blits/clears/resolve, events, timestamps through the ICD. Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|event|ts]
+ *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|inpass|event|ts]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -54,7 +54,9 @@ static const char *g_only;
    X(CreateEvent) X(DestroyEvent) X(GetEventStatus) X(SetEvent) X(ResetEvent)                      \
    X(CmdSetEvent) X(CmdResetEvent) X(CmdWaitEvents)                                                \
    X(CreateQueryPool) X(DestroyQueryPool) X(GetQueryPoolResults) X(CmdResetQueryPool)              \
-   X(CmdWriteTimestamp) X(CmdCopyQueryPoolResults)
+   X(CmdWriteTimestamp) X(CmdCopyQueryPoolResults)                                                  \
+   X(CreateImageView) X(DestroyImageView) X(CreateRenderPass) X(DestroyRenderPass)                 \
+   X(CreateFramebuffer) X(DestroyFramebuffer) X(CmdBeginRenderPass) X(CmdEndRenderPass)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -719,6 +721,71 @@ case_dsfmt(const char *name, VkFormat fmt)
 }
 
 /* 4x MSAA clear then resolve */
+/* A meta op recorded inside a render pass is refused by mali_meta_vk.c's emit() (cmd->in_render): the failure must be
+ * a sticky VK_ERROR_FEATURE_NOT_PRESENT at vkEndCommandBuffer AND name the command and the reason on stderr. The
+ * VkResult alone is what HL2/wined3d report as a black screen. */
+static int
+case_inpass(void)
+{
+   struct img at = {0};
+   TRY(mkimg(&at, VK_FORMAT_R8G8B8A8_UNORM, W, H,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SAMPLE_COUNT_1_BIT));
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = at.i,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view = VK_NULL_HANDLE;
+   CHECK(CreateImageView(dev, &vci, NULL, &view) == VK_SUCCESS, "attachment view");
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                              .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                  .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpci, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp,
+                                  .attachmentCount = 1, .pAttachments = &view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fci, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   struct buf b = {0};
+   TRY(mkbuf(&b, 1024, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   char msg[512] = "";
+   fflush(stderr);
+   int saved = dup(2);
+   FILE *cap = tmpfile();
+   CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
+   CmdFillBuffer(cb, b.b, 0, 256, 0x12345678u);
+   VkResult r = EndCommandBuffer(cb);
+   fflush(stderr);
+   dup2(saved, 2);
+   close(saved);
+   rewind(cap);
+   if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
+   CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "in-pass meta op must fail the command buffer (%d)", r);
+   CHECK(strstr(msg, "CmdFillBuffer") != NULL, "the message must name the command: %s", msg);
+   CHECK(strstr(msg, "inside a render pass") != NULL, "the message must name the reason: %s", msg);
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyImageView(dev, view, NULL);
+   rmimg(&at);
+   DestroyBuffer(dev, b.b, NULL);
+   FreeMemory(dev, b.m, NULL);
+   report("inpass", NULL);
+   return 1;
+}
+
 static int
 case_resolve(void)
 {
@@ -936,6 +1003,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("d16")) ok &= case_dsfmt("d16", VK_FORMAT_D16_UNORM);
    if (ok && CASE_ON("d32s8")) ok &= case_dsfmt("d32s8", VK_FORMAT_D32_SFLOAT_S8_UINT);
    if (ok && CASE_ON("resolve")) ok &= case_resolve();
+   if (ok && g_only && CASE_ON("inpass")) ok &= case_inpass();   /* explicit only: keeps the golden BO sequence */
    if (ok && CASE_ON("event")) ok &= case_event();
    if (ok && CASE_ON("ts")) ok &= case_ts();
 

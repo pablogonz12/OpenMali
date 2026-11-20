@@ -105,16 +105,23 @@ fail(struct mali_cmd_buffer *cmd, VkResult r)
 }
 
 /* Plans -> frames. Consumes (frees) the list. */
+/* One line, never silently: the failing command's name and the reason. The VkResult alone (FEATURE_NOT_PRESENT at
+ * vkEndCommandBuffer, from mali_cmd.c's sticky error) is what apps report as a black screen (HL2 + wined3d), and it
+ * does not say whether the cause is a tiled image, an in-pass record, a plan limit or an out-of-memory. */
 static void
-emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
+emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err, const char *op)
 {
    if (plan_err) {
+      fprintf(stderr, "mali_vk: %s: plan error %d -> VK_ERROR_FEATURE_NOT_PRESENT\n", op, plan_err);
       if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: plan error %d\n", plan_err);
       fail(cmd, plan_err == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_ERROR_FEATURE_NOT_PRESENT);
       mali_meta_list_free(l);
       return;
    }
    if (!mali_cmd_push_frame || cmd->in_render) {
+      fprintf(stderr, "mali_vk: %s: %s -> VK_ERROR_FEATURE_NOT_PRESENT\n", op,
+              cmd->in_render ? "recorded inside a render pass (this driver runs meta ops outside a pass only)"
+                             : "no meta frame push hook");
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_meta_vk: meta op %s\n", cmd->in_render ? "inside render pass" : "no push_frame");
       fail(cmd, VK_ERROR_FEATURE_NOT_PRESENT);
       mali_meta_list_free(l);
@@ -128,6 +135,8 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
       f.compute = true;
       int r = mem ? mali_meta_materialize(&l->j[i], mem, &f.disp) : -ENOMEM;
       if (r) {
+         fprintf(stderr, "mali_vk: %s: materialize failed (%d) -> %s\n", op, r,
+                 r == -ENOMEM ? "VK_ERROR_OUT_OF_DEVICE_MEMORY" : "VK_ERROR_FEATURE_NOT_PRESENT");
          fail(cmd, r == -ENOMEM ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_ERROR_FEATURE_NOT_PRESENT);
          break;
       }
@@ -140,7 +149,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
 void
 mali_meta_vk_emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err)
 {
-   emit(cmd, l, plan_err);
+   emit(cmd, l, plan_err, "query");
 }
 
 /* ---- surfaces ---- */
@@ -232,7 +241,7 @@ mali_CmdCopyBuffer2(VkCommandBuffer h, const VkCopyBufferInfo2 *ci)
       buf_surf(&d, dst, g->dstOffset);
       r = mali_meta_plan_buffer_copy(&l, &d, &s, g->size);
    }
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdCopyBuffer2");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -274,7 +283,7 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
          }
       }
    }
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdCopyImage2");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -304,7 +313,7 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
       if (!r && img->bc)
          r = bc_decode(&l, img, g->imageSubresource, g->imageOffset, g->imageExtent);
    }
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdCopyBufferToImage2");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -333,7 +342,7 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
       if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: i2b src va %llx size %llu off %llu row %u slice %u | dst va %llx size %llu row %u | ex %u ey %u bs %u\n", (unsigned long long)s.va, (unsigned long long)s.size, (unsigned long long)s.off, s.row, s.slice, (unsigned long long)d.va, (unsigned long long)d.size, d.row, ex, ey, p->bs);
       r = mali_meta_plan_copy(&l, &d, &s, p->bs, ex, ey, zcount(img, g->imageSubresource, g->imageExtent));
    }
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdCopyImageToBuffer2");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -347,7 +356,7 @@ mali_CmdFillBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkDeviceSize
       size = (buf->size - off) & ~3ull;
    buf_surf(&d, buf, off);
    int r = size ? mali_meta_plan_fill(&l, &d, size, data) : 0;
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdFillBuffer");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -359,7 +368,7 @@ mali_CmdUpdateBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkDeviceSi
    struct mali_meta_surf d;
    buf_surf(&d, buf, off);
    int r = size ? mali_meta_plan_update(&l, &d, size, data) : 0;
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdUpdateBuffer");
 }
 
 /* ---- blit / resolve ---- */
@@ -575,7 +584,7 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdBlitImage2");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -588,7 +597,7 @@ mali_CmdResolveImage2(VkCommandBuffer h, const VkResolveImageInfo2 *ci)
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, NULL, VK_FILTER_NEAREST, true, &ci->pRegions[i]);
-   emit(cmd, &l, r);
+   emit(cmd, &l, r, "CmdResolveImage2");
 }
 
 /* ---- clears (named mali_meta_*: mali_cmd.c owns mali_CmdClear*Image for the render-target fast path; wiring falls back to these) ---- */
@@ -629,13 +638,13 @@ mali_meta_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout lo,
    const struct mali_plane_layout *p = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_COLOR_BIT);
    uint32_t cst[4] = { 0 };
    if (!p) {
-      emit(cmd, &l, -EINVAL);
+      emit(cmd, &l, -EINVAL, "CmdClearColorImage");
       return;
    }
    util_format_pack_rgba(p->pipe, cst, c, 1);
    for (uint32_t i = 0; i < n && !err; i++)
       err = clear_range(&l, img, VK_IMAGE_ASPECT_COLOR_BIT, &r[i], cst);
-   emit(cmd, &l, err);
+   emit(cmd, &l, err, "CmdClearColorImage");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -665,5 +674,5 @@ mali_meta_CmdClearDepthStencilImage(VkCommandBuffer h, VkImage image, VkImageLay
          err = clear_range(&l, img, asp, &r[i], cst);
       }
    }
-   emit(cmd, &l, err);
+   emit(cmd, &l, err, "CmdClearDepthStencilImage");
 }
