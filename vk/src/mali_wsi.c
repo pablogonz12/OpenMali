@@ -29,6 +29,8 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 #include <xcb/xcb.h>
 #include <xcb/shm.h>
+#endif
+#if defined(__linux__)
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/mman.h>
@@ -270,12 +272,12 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
 struct mali_x11_shm {
    VkSwapchainKHR swapchain;
    bool active;
-   xcb_connection_t *conn;
-   xcb_window_t window;
-   xcb_gcontext_t gc;
+   void *conn;          /* xcb_connection_t *: opaque so this file also compiles without XCB (t_cmd) */
+   uint32_t window;
+   uint32_t gc;
    uint8_t depth;
    uint32_t width, height, stride, n_images;
-   xcb_shm_seg_t seg;
+   uint32_t seg;
    int shmid;
    void *addr;
    size_t size;
@@ -291,15 +293,19 @@ mali_x11_shm_find(VkSwapchainKHR sc)
    return NULL;
 }
 
+#define MALI_SHM_FAILED ((void *)-1)
+
 static void
 mali_x11_shm_destroy(VkSwapchainKHR sc)
 {
    struct mali_x11_shm *st = mali_x11_shm_find(sc);
    if (!st)
       return;
-   xcb_shm_detach(st->conn, st->seg);
-   xcb_flush(st->conn);
-   if (st->addr && st->addr != MAP_FAILED)
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   xcb_shm_detach((xcb_connection_t *)st->conn, st->seg);
+   xcb_flush((xcb_connection_t *)st->conn);
+#endif
+   if (st->addr && st->addr != MALI_SHM_FAILED)
       shmdt(st->addr);
    if (st->shmid >= 0)
       shmctl(st->shmid, IPC_RMID, NULL);
@@ -353,7 +359,7 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
       return;
    }
    void *addr = shmat(shmid, NULL, 0);
-   if (addr == MAP_FAILED) {
+   if (addr == MALI_SHM_FAILED) {
       fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (shmat: %s)\n", strerror(errno));
       shmctl(shmid, IPC_RMID, NULL);
       return;
@@ -387,6 +393,10 @@ static void mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, st
 static bool
 mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
 {
+#if !defined(VK_USE_PLATFORM_XCB_KHR)
+   (void)chain; (void)image_index;
+   return false;   /* built without XCB: wsi_common_x11's PutImage present handles it */
+#else
    struct mali_x11_shm *st = mali_x11_shm_find((VkSwapchainKHR)(uintptr_t)chain);
    if (!st || !st->active)
       return false;
@@ -397,10 +407,11 @@ mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
    if (off + (size_t)st->stride * st->height > st->size)
       return false;
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
-   xcb_shm_put_image(st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
+   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
-   xcb_flush(st->conn);
+   xcb_flush((xcb_connection_t *)st->conn);
    return true;
+#endif
 }
 
 /* MALI_WSI_DEBUG=1: one line per acquire/present so a stall shows as an "enter" without its matching result
