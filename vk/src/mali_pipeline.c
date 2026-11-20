@@ -164,6 +164,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
+    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
+    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
+    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
 
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
@@ -517,6 +521,10 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
+    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
+    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
+    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
    /* Compute defaults to 8 reserved FAU words (32 B of push constants); a larger push block is copied in from word 0, so reserve it or

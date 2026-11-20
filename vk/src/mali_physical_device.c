@@ -375,6 +375,13 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
    const struct vk_features features = {
+      /* Vulkan 1.0 makes robustBufferAccess mandatory and Mesa's vk_physical_device_check_device_features
+       * (vk_device.c:211) rejects a device without it: zink could not create a device
+       * ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). What it guarantees here: with the feature
+       * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
+       * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
+       * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
+      .robustBufferAccess = true,
       .timelineSemaphore = true,
       .textureCompressionBC = true,
       .hostQueryReset = true,
