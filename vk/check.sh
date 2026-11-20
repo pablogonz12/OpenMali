@@ -42,13 +42,13 @@ allowed() { case "|$1|" in *"|$2|"*) return 0;; *) return 1;; esac; }
 run() { # name, expected exit status ("0" or "0|77"), command...; RUN_TIMEOUT (s) overrides the 120 s default for one test
    local name=$1 want=$2 out rc to=${RUN_TIMEOUT:-120}; shift 2
    out=$(timeout -k 5 "$to" env "$@" 2>&1); rc=$?
-   if allowed "$want" "$rc" && [ $rc -ne 0 ]; then  # an allowed non-zero status (77 = the test skipped itself) is not a pass
-      echo "skip  $name (exit $rc; $want allowed)"
-      echo "$out" | tail -3 | sed 's/^/        /'
-   elif [ $rc -eq "$want" ] || allowed "$want" "$rc"; then echo "ok    $name"
+   if allowed "$want" "$rc"; then
+      # an allowed non-zero status (77 = the test skipped itself) is not a pass, and is shown even without -v
+      if [ $rc -ne 0 ]; then echo "skip  $name (exit $rc; $want allowed)"; echo "$out" | tail -3 | sed 's/^/        /'
+      else echo "ok    $name"; fi
    elif [ $rc -eq 124 ] || [ $rc -eq 137 ]; then echo "FAIL  $name TIMEOUT ($to s, exit $rc)"; fail=1
    else echo "FAIL  $name (exit $rc, want $want)"; fail=1; fi
-   if [ $verbose = 1 ] || [ $rc -ne "$want" ]; then echo "$out" | sed 's/^/        /'; fi
+   if [ $verbose = 1 ] || ! allowed "$want" "$rc"; then echo "$out" | sed 's/^/        /'; fi
 }
 
 run "loader v11"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_icd" --expect-name "Mali-G615"
