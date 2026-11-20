@@ -156,6 +156,11 @@ The Mesa sources, Mesa build trees and the CTS are not committed: `third_party/M
 The guest's Vulkan loader picks the ICD (`VK_ICD_FILENAMES`/`VK_DRIVER_FILES`, or whatever json the session already selects).
 `MALI_WSI_DEBUG=1` prints what the driver chose; without it most failures are silent.
 
+**Check the sha before you deploy.** Lanes deploy exactly one artefact, `vk/out/a64-glibc-wsi/libvulkan_mali.so`, built by
+`tools/build-artefact.sh` (`--check` reprints an existing one); it prints `path + sha256 + commit` and refuses a dirty tree. Deploy
+only when that sha256 is the one the lane's branch head produced — a stale `vk/out/` survived a branch switch once and every "new"
+WSI run silently loaded the old driver, with no memory budget in it.
+
 **Discover the ICD, do not assume a path.** The stock library and its sha differ per rootfs (one guest keeps its own under
 `/usr/local/lib/mali-open/`, another has only `/usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so` and points the json at it), so find it
 (`find /usr -name 'libvulkan_*.so'`, `vulkaninfo --summary`) and back up the exact file you replace. A deploy is only proven by
