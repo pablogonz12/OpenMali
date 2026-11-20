@@ -16,7 +16,7 @@ B=${MESA_BUILD:-$D/third_party/build-vk}
 # Native targets prefer the Mesa tree configured with -Dplatforms=wayland,x11 (README: "X11 WSI") when it exists, so the host ICD has
 # VK_KHR_xcb_surface; without it the X11 tests skip. Cross targets and an explicit MESA_BUILD are never overridden.
 case ${MALI_TARGET:-native} in
-   native|native-san|native-cov) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
+   native|native-san|native-tsan|native-cov) [ -z "${MESA_BUILD:-}" ] && [ -f "$D/third_party/build-vk-x86-x11/build.ninja" ] && B=$D/third_party/build-vk-x86-x11 ;;
 esac
 OUT=$V/out/${MALI_TARGET:-native}
 GEN=$OUT/gen
@@ -49,6 +49,9 @@ CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 CC=$(sed -E 's#^([^ ]*/)?ccache +##' <<<"$CC"); CXX=$(sed -E 's#^([^ ]*/)?ccache +##' <<<"$CXX")
 # MALI_SAN=1: ASAN+UBSAN driver objects (use with LD_PRELOAD=$(gcc -print-file-name=libasan.so) and MALI_TARGET=native-san)
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
+# MALI_TSAN=1: ThreadSanitizer driver objects (MALI_TARGET=native-tsan; run tests with LD_PRELOAD=$(gcc -print-file-name=libtsan.so); suppressions: vk/tests/tsan.supp).
+# The reference compile line carries -Werror, which gcc's TSan instrumentation trips on third-party code, so it is relaxed for this variant only.
+if [ "${MALI_TSAN:-0}" = 1 ]; then CC="$CC -fsanitize=thread -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=thread"; WERR=-Wno-error; else WERR=-Werror; fi
 
 # MALI_COV=1: gcov instrumented driver objects (MALI_TARGET=native-cov; see tools/coverage.sh). -O0 so line counts map to source.
 if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
@@ -85,7 +88,7 @@ else
 fi
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include $WERR -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
    OBJS="$OBJS $o"
 done
 
@@ -153,6 +156,7 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_feat" "$V/tests/t_vk_feat.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_compute" "$V/tests/t_vk_compute.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_meta" "$V/tests/t_vk_meta.c" -ldl -lm -pthread
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mt" "$V/tests/t_vk_mt.c" -ldl -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_vk_leak" "$V/tests/t_vk_leak.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -DMALI_EXPECT_SHA=\"$MALI_SHA\" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl
