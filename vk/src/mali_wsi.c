@@ -23,6 +23,7 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #include "vk_alloc.h"
 #include "vk_log.h"
 #include "vk_util.h"
+#include "vk_semaphore.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -566,6 +567,28 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
               (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
               __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
               (int)qpdev->wsi.sw);
+   }
+   /* The shared-memory present reads the image on the CPU, so it must not run before the wait semaphores (the
+    * render that filled the image) have signalled: otherwise the copy can read a frame the GPU has not written
+    * yet, and it also misses the device->CPU MEM_SYNC the fence wait performs (kbase_fence_wait ->
+    * mem_sync_bos, mali_backend_kbase.c:580-620). wsi's dma-buf present carries the frame's fence to the
+    * compositor instead, so this wait is only taken when a present swapchain uses our segment; there the copy is
+    * already a synchronous CPU pass, so ordering it behind the render costs nothing that was not already paid.
+    * Vulkan also makes the present consume these semaphores; before this, nothing did. */
+   bool all_shm_chains = info->swapchainCount > 0;
+   for (uint32_t i = 0; i < info->swapchainCount; i++)
+      all_shm_chains &= mali_x11_shm_find(info->pSwapchains[i]) != NULL;
+   if (all_shm_chains) {
+      for (uint32_t i = 0; i < info->waitSemaphoreCount; i++) {
+         VK_FROM_HANDLE(vk_semaphore, sem, info->pWaitSemaphores[i]);
+         VkResult wr = sem ? vk_sync_wait(&dev->vk, vk_semaphore_get_active_sync(sem), 0, VK_SYNC_WAIT_COMPLETE,
+                                          10ull * 1000 * 1000 * 1000)   /* a lost render must not hang the present forever */
+                           : VK_SUCCESS;
+         if (wr != VK_SUCCESS) {
+            fprintf(stderr, "mali_vk: wsi present: wait semaphore %u: %s\n", i, vk_Result_to_str(wr));
+            return wr;
+         }
+      }
    }
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
