@@ -49,12 +49,17 @@ DEVICE = {"poco-x8": "x8", "x8": "x8", "cmf": "cmf", "poco-x4": "x4", "x4": "x4"
 STACK = {"bridge": "bridge", "ours": "mali-open", "mali-open": "mali-open"}
 WORKLOAD = {"triangle": "triangles", "cube": "cards", "menu": "steam-menu",
             "menubench": "steam-menu"}
-# WSI smoke lanes: a swapchain + present that a human can see, not a game fps.
-DRIVER_WORKLOADS = ("vkcube-wayland", "vkcube-xcb")
+# Driver-mode lanes: vkcube WSI smoke, plus the Steam menu as our driver renders it.
+DRIVER_WORKLOADS = ("vkcube-wayland", "vkcube-xcb", "steam-menu")
 PANEL = {"x8": 120, "cmf": 120, "x4": 144}  # fallback only when the log omits panel_hz
 FIELDS = ("ts", "device", "stack", "version", "driver_sha", "workload", "metric", "profile",
           "fps", "panel_hz", "reps", "brightness_mean", "status", "source",
-          "render_fps", "presented_fps", "off_cadence_pct", "run", "note")
+          "render_fps", "presented_fps", "off_cadence_pct", "run",
+          "temp_c", "cpu_idle_pct", "gpu_busy_pct", "note")
+
+
+def num_or_none(v):
+    return round(float(v), 1) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
 def read_jsonl(path):
@@ -269,6 +274,11 @@ def from_driver(sink):
             "off_cadence_pct": (round(float(r["off_cadence_pct"]), 2)
                                 if isinstance(r.get("off_cadence_pct"), (int, float)) else None),
             "run": str(r.get("run") or ""),
+            # System load, when the lane measured it. null = not measured (printed "n/a"),
+            # never 0, which would read as "measured and idle".
+            "temp_c": num_or_none(r.get("temp_c")),
+            "cpu_idle_pct": num_or_none(r.get("cpu_idle_pct")),
+            "gpu_busy_pct": num_or_none(r.get("gpu_busy_pct")),
             "note": str(r.get("note") or ""),
         })
 

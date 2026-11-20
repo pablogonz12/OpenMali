@@ -231,16 +231,24 @@ def series_caption(rows):
 
 def table(rows):
     out = ["| when | device | stack | version | profile | displayed fps | panel Hz | reps | "
-           "brightness | off-cad % | status | render_fps (not plotted) | note |",
-           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+           "brightness | off-cad % | temp °C | cpu idle % | gpu busy % | status | "
+           "render_fps (not plotted) | note |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         fps = f"{r['fps']:.1f}" if visible(r) else "0"
         bright = "-" if r.get("brightness_mean") is None else f"{r['brightness_mean']:.2f}"
         rf = "-" if r.get("render_fps") is None else f"{r['render_fps']:.1f}"
         oc = "-" if r.get("off_cadence_pct") is None else f"{r['off_cadence_pct']:.1f}"
+
+        def na(v, fmt="{:.1f}"):
+            # A system figure that was never measured prints n/a, never 0.
+            return "n/a" if v is None else fmt.format(v)
+
         out.append(f"| {escape(str(r['ts'])[:16].replace('T', ' '))} | {r['device']} | "
                    f"{r['stack']} | {escape(str(r['version']))} | {r.get('profile')} | {fps} | "
-                   f"{r.get('panel_hz')} | {r.get('reps')} | {bright} | {oc} | {r.get('status')} | "
+                   f"{r.get('panel_hz')} | {r.get('reps')} | {bright} | {oc} | "
+                   f"{na(r.get('temp_c'))} | {na(r.get('cpu_idle_pct'), '{:.0f}')} | "
+                   f"{na(r.get('gpu_busy_pct'), '{:.0f}')} | {r.get('status')} | "
                    f"{rf} | {escape(str(r.get('note') or ''))} |")
     return "\n".join(out)
 
@@ -283,8 +291,11 @@ NOTE = {
              "`presented.fps`, a producer-side rate, and are rejected by `tools/bench/import.py`.",
     "triangles": "triangles. No valid displayed-fps point exists yet. The 850.6 that used to be "
                  "plotted was `presented.fps` for triangle-3k, an offscreen producer rate.",
-    "steam-menu": "Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger "
-                  "present timestamps) are plotted; `render.avg_fps` stays in its own column.",
+    "steam-menu": "Steam Big Picture menu, two lanes: bridge rows come from menubench "
+                  "`screen.fps` (SurfaceFlinger present timestamps), mali-open rows are driver-mode "
+                  "`pacing` reps of the same shelf. `render.avg_fps` stays in its own column. The "
+                  "driver-mode shelf is ~3-8 fps against ~74-105 on the bridge — that gap is the "
+                  "result, not a missing point.",
     "megabonk": "Megabonk. Every historical figure is a hand-typed claim in FINDINGS.md with no "
                 "panel_hz or reps, so none is plotted; it needs a MEASURE.md run.",
     "glclear": "glClear readback. A swap that succeeds while the screenshot stays black is a "
