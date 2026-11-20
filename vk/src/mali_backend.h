@@ -24,6 +24,7 @@ struct mali_gpu_info {
    bool fake;                /* no hardware behind it */
    uint32_t core_id_range;   /* util_last_bit(shader_present): compute TLS sizing */
    uint32_t tls_threads;     /* threads per core that need TLS (max_threads) */
+   uint64_t node_rdev;       /* st_rdev of the kernel node the backend opens (0: none, e.g. fake); VK_EXT_physical_device_drm */
    char name[64];            /* marketing name, e.g. "Mali-G615 MC2" */
 };
 
@@ -50,11 +51,15 @@ struct mali_heap {
 struct mali_bo {
    uint64_t gpu_va;
    void *cpu;      /* always CPU mapped */
-   size_t size;
+   size_t size;    /* as committed: the backend rounds the requested size up to a page */
    uint32_t flags; /* MALI_BO_* */
    int dmabuf_fd;  /* -1 unless dma-buf backed (owned by the BO) */
+   bool pooled;    /* set by bo_free: the backend kept the BO (its pool), so its pages are still committed */
    void *priv;
 };
+
+/* Fake backend only (tests): live buffer BOs of one device. */
+unsigned mali_fake_live_bos(struct mali_kdev *k);
 
 struct mali_backend_ops {
    const char *name;
@@ -69,12 +74,21 @@ struct mali_backend_ops {
    int (*bo_import)(struct mali_kdev *kdev, int dmabuf_fd, size_t size, uint32_t flags,
                     struct mali_bo *out);
    void (*bo_free)(struct mali_kdev *kdev, struct mali_bo *bo);
+   /* BOs the backend keeps alive after bo_free (kbase pools freed HOSTLAZY BOs) stay committed in kbase, so their
+    * bytes stay charged to the device VRAM budget: bo_pool_watch installs release(ctx, size), called when the pool
+    * really frees such a BO. bo_pool_purge really frees at least `want` bytes of them now and returns how much it
+    * freed, so a refused reservation can get the budget back instead of failing on memory the pool could drop.
+    * Both NULL when the backend never retains BOs (the fake). */
+   void (*bo_pool_watch)(struct mali_kdev *kdev, void (*release)(void *, size_t), void *ctx);
+   size_t (*bo_pool_purge)(struct mali_kdev *kdev, size_t want);
    /* Cache maintenance for MALI_BO_CACHED: invalidate = false makes CPU writes visible to the GPU,
     * true makes GPU writes visible to the CPU. */
    void (*bo_cache)(struct mali_kdev *kdev, const struct mali_bo *bo, size_t off, size_t len,
                     bool invalidate);
    /* dup of the dma-buf fd, or -errno. */
    int (*bo_export)(struct mali_kdev *kdev, const struct mali_bo *bo);
+   /* Desktop software rasteriser: CPU mapping of a live BO range [va, va+size), NULL when it is not mapped. */
+   void *(*va_cpu)(struct mali_kdev *kdev, uint64_t va, size_t size);
 
    /* One submission whose command stream is only FLUSH_CACHE2(+wait) and a signal of a fresh fence.
     * *fence_fd gets a sync_file that signals when it retires. Serialised by the backend. */
@@ -90,6 +104,10 @@ struct mali_backend_ops {
     * pieces (64-byte multiples), each waiting for ring space (the CS is a linear stream; registers persist across pieces).
     * arch 13: MEM_SYNC of the BOs allocated through bo_alloc first when COHERENT_LOCAL BOs are enabled. 0 or -errno. */
    void (*host_sync)(struct mali_kdev *kdev);   /* CPU -> device MEM_SYNC of every BO (call once per queue submit) */
+   /* M15: the GPU will write this BO (copy destination, render target, clear, storage descriptor). Marks are
+    * monotonic per BO, so a mark made for a frame that is still in flight is never lost. NULL = the front end
+    * cannot enumerate the writes: the next device->CPU sync must sweep every BO (conservative fallback). */
+   void (*bo_wrote)(struct mali_kdev *kdev, struct mali_bo *bo);
    void (*bo_host_touch)(struct mali_kdev *kdev, struct mali_bo *bo);
    int (*submit_cs)(struct mali_kdev *kdev, const uint64_t *cs, unsigned ninstr);
    /* Wait until *counter_cpu >= target (a CQS word the CS increments). 0, -ETIMEDOUT, -EIO (GPU fault). */

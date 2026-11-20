@@ -23,6 +23,11 @@ Notes learned (uAPI 1.21):
 - A fatal group error is terminal: terminate the group and create a new one.
 - Fatal notifications arrive on read() without CSF_EVENT_THREAD.
 - Tiler heaps need MEM_JIT_INIT on the context first (else ENOMEM); kb_open does MEM_EXEC_INIT + MEM_JIT_INIT like PanVK. See PANVK-SEQUENCE.md.
+- GET_CPU_GPU_TIMEINFO (nr 50, `kb_timeinfo`/`kb_gpu_timestamp`) returns CLOCK_MONOTONIC_RAW (`sec`/`nsec`) and the GPU
+  timestamp counter of the same instant. Both are global to the GPU, not per context. `cycle_counter` is only filled when
+  a cycle-count request flag asks for it, and this uapi header has no such flag, so it stays 0. The timestamp counter is a
+  free-running clock in GPU cycles (rate = `kb_timestamp_hz`); it measures elapsed time, not GPU busy time, and the ioctl
+  carries no per-job start/end stamps. `vk/src/mali_fprof.c` uses it as a sampling clock only.
 
 ## kbase_fb + t_clear (milestone R1 stretch, verified on CMF Phone 1)
     include/kbase_fb.h src/fb.c   v11 FBD (128 B) + RGB render-target descriptor (64 B) packers, annotated
