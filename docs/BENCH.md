@@ -10,7 +10,7 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 
 ## Coverage
 
-6 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 159 missing of 168 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
+7 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 179 missing of 189 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
 
 | workload | device | stack | rows | valid points | no-valid-point rows | last valid version |
 |---|---|---|---|---|---|---|
@@ -18,6 +18,7 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 | steam-menu | cmf | bridge | 13 | 10 | 3 | v25 |
 | steam-menu | x4 | bridge | 1 | 0 | 1 | — |
 | vkcube-wayland | x8 | mali-open | 3 | 0 | 3 | — |
+| vkcube-wayland | cmf | bridge | 3 | 3 | 0 | arm-v1.r44p1 |
 | vkcube-wayland | cmf | mali-open | 6 | 6 | 0 | 65feef75 |
 
 ## cube/cards (bench2 --bench cube)
@@ -208,9 +209,9 @@ glClear readback. A swap that succeeds while the screenshot stays black is a bla
 
 vkcube over Wayland: the first driver-mode lane that reaches a real present (`present #20 -> VK_SUCCESS`). A WSI smoke workload — it says the wayland swapchain/present path works and how fast the cube is paced, never a game's fps. Only compare within this lane.
 
-6 plotted point(s) from ≥3-rep default-profile runs; 9 stored row(s) total.
+9 plotted point(s) from ≥3-rep default-profile runs; 12 stored row(s) total.
 
-series (one line per build; a driver sha is never joined with another): mali-open/CMF `65feef75` — 6 row(s), reps=3, latest 118.1 @11-20 15:22, off-cad 0.8 %, runs `r1` median 117.5 (3 reps), `r2` median 118.2 (3 reps) — current best `r2`; mali-open/X8 `549fae7c` — 2 row(s), reps=2, latest 72.9 @11-20 15:00
+series (one line per build; a driver sha is never joined with another): bridge/CMF `arm-v1.r44p1` — 3 row(s), reps=3, latest 117.1 @11-20 15:42, off-cad 1.1 %; mali-open/CMF `65feef75` — 6 row(s), reps=3, latest 118.1 @11-20 15:22, off-cad 0.8 %, runs `r1` median 117.5 (3 reps), `r2` median 118.2 (3 reps) — current best `r2`; mali-open/X8 `549fae7c` — 2 row(s), reps=2, latest 72.9 @11-20 15:00
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="vkcube-wayland displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="330" fill="#ffffff"/>
@@ -230,39 +231,47 @@ series (one line per build; a driver sha is never joined with another): mali-ope
 <line x1="56" y1="88.0" x2="884" y2="88.0" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.8"/>
 <text x="880" y="83.0" font-size="9.5" fill="#b91c1c" text-anchor="end">CMF/X8 panel 120 Hz ceiling</text>
 <line x1="56.0" y1="262" x2="56.0" y2="267" stroke="#9ca3af"/>
-<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:43</text>
+<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:33</text>
 <line x1="263.0" y1="262" x2="263.0" y2="267" stroke="#9ca3af"/>
 <text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:56</text>
 <line x1="470.0" y1="262" x2="470.0" y2="267" stroke="#9ca3af"/>
-<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:09</text>
+<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:19</text>
 <line x1="677.0" y1="262" x2="677.0" y2="267" stroke="#9ca3af"/>
-<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:22</text>
+<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:42</text>
 <line x1="884.0" y1="262" x2="884.0" y2="267" stroke="#9ca3af"/>
-<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:35</text>
-<polyline points="294.8,235.0 326.7,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
+<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 16:05</text>
+<polyline points="659.0,91.9 668.0,91.3 677.0,92.2" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="655.6" y="88.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="659.0" y="84.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
+<rect x="664.6" y="87.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="668.0" y="84.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.7×3</text>
+<rect x="673.6" y="88.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="677.0" y="85.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.1×3</text>
+<polyline points="281.0,235.0 299.0,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
 <circle cx="263.0" cy="262.0" r="4.2" fill="#ffffff" stroke="#b91c1c" stroke-width="1.6"/>
 <text x="263.0" y="255.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">unverified</text>
-<circle cx="294.8" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="294.8" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
-<circle cx="326.7" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="326.7" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
-<polyline points="326.7,91.9 342.6,91.6 358.5,91.6 645.2,90.6 661.1,90.6 677.0,90.8" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
-<rect x="323.3" y="88.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="326.7" y="84.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
-<rect x="339.2" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="342.6" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
-<rect x="355.1" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="358.5" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
-<rect x="641.8" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="645.2" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
-<rect x="657.7" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="661.1" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
-<rect x="673.6" y="87.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="677.0" y="83.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.1×3</text>
+<circle cx="281.0" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="281.0" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
+<circle cx="299.0" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="299.0" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
+<polyline points="299.0,91.9 308.0,91.6 317.0,91.6 479.0,90.6 488.0,90.6 497.0,90.8" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="295.6" y="88.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="299.0" y="84.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
+<rect x="304.6" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="308.0" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
+<rect x="313.6" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="317.0" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
+<rect x="475.6" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="479.0" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
+<rect x="484.6" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="488.0" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
+<rect x="493.6" y="87.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="497.0" y="83.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.1×3</text>
 </svg>
 
 | day | run | device | stack | version | profile | panel Hz | median fps | reps |
 |---|---|---|---|---|---|---|---|---|
+| 2026-11-20 | b1 | cmf | bridge | arm-v1.r44p1 | default | 120 | **117.3** | 3 (117.3, 117.7, 117.1) |
 | 2026-11-20 | r1 | cmf | mali-open | 65feef75 | default | 120 | **117.5** | 3 (117.3, 117.5, 117.5) |
 | 2026-11-20 | r2 | cmf | mali-open | 65feef75 | default | 120 | **118.2** | 3 (118.2, 118.2, 118.1) |
 
@@ -277,6 +286,9 @@ series (one line per build; a driver sha is never joined with another): mali-ope
 | 2026-11-20 15:20 | cmf | mali-open | 65feef75 | default | 118.2 | 120 | 3 | - | 0.8 | visible | - | rep 1 of 3 (round 2, persistent recipe; supersedes the earlier 15:0x run of this sha). 118.2/118.2/118.1 on a 120 Hz panel, offCadence 0.8 % (clean pacing, not just a mean), driverName mali-own 65feef75, present #20 -&gt; VK_SUCCESS rc 0, uptime 2173 s no panic. brightness_mean not captured in this lane (fps from the compositor, no screenshot). |
 | 2026-11-20 15:21 | cmf | mali-open | 65feef75 | default | 118.2 | 120 | 3 | - | 0.8 | visible | - | rep 2 of 3 (round 2, persistent recipe; supersedes the earlier 15:0x run of this sha). 118.2/118.2/118.1 on a 120 Hz panel, offCadence 0.8 % (clean pacing, not just a mean), driverName mali-own 65feef75, present #20 -&gt; VK_SUCCESS rc 0, uptime 2173 s no panic. brightness_mean not captured in this lane (fps from the compositor, no screenshot). |
 | 2026-11-20 15:22 | cmf | mali-open | 65feef75 | default | 118.1 | 120 | 3 | - | 0.8 | visible | - | rep 3 of 3 (round 2, persistent recipe; supersedes the earlier 15:0x run of this sha). 118.2/118.2/118.1 on a 120 Hz panel, offCadence 0.8 % (clean pacing, not just a mean), driverName mali-own 65feef75, present #20 -&gt; VK_SUCCESS rc 0, uptime 2173 s no panic. brightness_mean not captured in this lane (fps from the compositor, no screenshot). |
+| 2026-11-20 15:40 | cmf | bridge | arm-v1.r44p1 | default | 117.3 | 120 | 3 | - | 1.2 | visible | - | bridge rep 1 of 3 (mean 117.37, offCadence 1.2/0.9/1.1 %); app com.droiddeck.launcher vc19, vkBridge true, Arm proprietary v1.r44p1-01eac0. Reference for the mali-open pair on this device/workload. brightness_mean not captured (fps from the compositor). |
+| 2026-11-20 15:41 | cmf | bridge | arm-v1.r44p1 | default | 117.7 | 120 | 3 | - | 0.9 | visible | - | bridge rep 2 of 3 (mean 117.37, offCadence 1.2/0.9/1.1 %); app com.droiddeck.launcher vc19, vkBridge true, Arm proprietary v1.r44p1-01eac0. Reference for the mali-open pair on this device/workload. brightness_mean not captured (fps from the compositor). |
+| 2026-11-20 15:42 | cmf | bridge | arm-v1.r44p1 | default | 117.1 | 120 | 3 | - | 1.1 | visible | - | bridge rep 3 of 3 (mean 117.37, offCadence 1.2/0.9/1.1 %); app com.droiddeck.launcher vc19, vkBridge true, Arm proprietary v1.r44p1-01eac0. Reference for the mali-open pair on this device/workload. brightness_mean not captured (fps from the compositor). |
 
 <details><summary>sources for these rows</summary>
 
@@ -289,6 +301,9 @@ series (one line per build; a driver sha is never joined with another): mali-ope
 - `2026-11-20` cmf/mali-open/65feef75/vkcube-wayland fps=118.2 reps=3 — driver-mode round 2, 2026-11-20 15:00-15:35 (CMF 001003469003711), vkcube --c 20 --wsi wayland, persistent linuxDriver pref -> bundle ICD, diagnostics env empty, compositor fpsOnScreen (droiddeckctl pacing --seconds 5), lane note /tmp/opencode/cmf-lane2.md §Round 2
 - `2026-11-20` cmf/mali-open/65feef75/vkcube-wayland fps=118.2 reps=3 — driver-mode round 2, 2026-11-20 15:00-15:35 (CMF 001003469003711), vkcube --c 20 --wsi wayland, persistent linuxDriver pref -> bundle ICD, diagnostics env empty, compositor fpsOnScreen (droiddeckctl pacing --seconds 5), lane note /tmp/opencode/cmf-lane2.md §Round 2
 - `2026-11-20` cmf/mali-open/65feef75/vkcube-wayland fps=118.1 reps=3 — driver-mode round 2, 2026-11-20 15:00-15:35 (CMF 001003469003711), vkcube --c 20 --wsi wayland, persistent linuxDriver pref -> bundle ICD, diagnostics env empty, compositor fpsOnScreen (droiddeckctl pacing --seconds 5), lane note /tmp/opencode/cmf-lane2.md §Round 2
+- `2026-11-20` cmf/bridge/arm-v1.r44p1/vkcube-wayland fps=117.3 reps=3 — bridge reference run 2026-11-20 15:3x (CMF 001003469003711), vkcube --c 100000 in the guest Wayland session, 3 x droiddeckctl pacing --seconds 30, driverName Mali-G615 MC2 v1.r44p1-01eac0 (Arm proprietary, droidbridge_icd.json), lane note /tmp/opencode/cmf-lane2.md §2-6
+- `2026-11-20` cmf/bridge/arm-v1.r44p1/vkcube-wayland fps=117.7 reps=3 — bridge reference run 2026-11-20 15:3x (CMF 001003469003711), vkcube --c 100000 in the guest Wayland session, 3 x droiddeckctl pacing --seconds 30, driverName Mali-G615 MC2 v1.r44p1-01eac0 (Arm proprietary, droidbridge_icd.json), lane note /tmp/opencode/cmf-lane2.md §2-6
+- `2026-11-20` cmf/bridge/arm-v1.r44p1/vkcube-wayland fps=117.1 reps=3 — bridge reference run 2026-11-20 15:3x (CMF 001003469003711), vkcube --c 100000 in the guest Wayland session, 3 x droiddeckctl pacing --seconds 30, driverName Mali-G615 MC2 v1.r44p1-01eac0 (Arm proprietary, droidbridge_icd.json), lane note /tmp/opencode/cmf-lane2.md §2-6
 
 </details>
 
@@ -302,13 +317,13 @@ vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vk
 
 1. **steam-menu / x4 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x4 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
 2. **vkcube-wayland / x8 / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x8` with next mali-open commit.
-3. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
-4. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-5. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-6. **cards / x8 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
-7. **cards / x8 / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver ours` with next mali-open commit.
-8. **cards / cmf / bridge / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
+3. **vkcube-wayland / cmf / bridge / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next MediaDeck build (vc 28, unavailable on this host).
+4. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
+5. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+6. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+7. **cards / x8 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
+8. **cards / x8 / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver ours` with next mali-open commit.
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
-_Generated from 34 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._
+_Generated from 37 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._

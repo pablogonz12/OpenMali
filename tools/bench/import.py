@@ -249,8 +249,12 @@ def from_driver(sink):
             "ts": day(r.get("ts"), None),
             "device": dev,
             "stack": "mali-open" if str(r.get("stack")) != "bridge" else "bridge",
-            "version": str(r.get("version") or mali_version(r.get("driver_sha"))),
-            "driver_sha": mali_version(r.get("driver_sha")),
+            "version": str(r.get("version") or (
+                "unknown" if str(r.get("stack")) == "bridge" else
+                mali_version(r.get("driver_sha")))),
+            # A bridge row runs the Arm proprietary driver; there is no mali-open sha to record.
+            "driver_sha": (None if str(r.get("stack")) == "bridge"
+                           else mali_version(r.get("driver_sha"))),
             "workload": wl,
             "metric": "displayed_fps",
             "profile": str(r.get("profile") or "unknown"),
