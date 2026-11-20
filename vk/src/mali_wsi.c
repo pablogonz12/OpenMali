@@ -449,8 +449,12 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
       clock_gettime(CLOCK_MONOTONIC, &t1);
       close(ffd);
       const long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
-      if (wr != 0)
-         fprintf(stderr, "mali_vk: wsi present: image %u submit fence wait %d, copying anyway\n", image_index, wr);
+      if (wr != 0) {
+         /* The frame's submit never completed (device lost or a fault): copying its buffer would present a
+          * partial frame as success. Fall back to wsi's own path, which reports the error. */
+         fprintf(stderr, "mali_vk: wsi present: image %u submit fence wait %d, not copying\n", image_index, wr);
+         return false;
+      }
       else if (ms >= 20)
          fprintf(stderr, "mali_vk: wsi present: image %u waited %ld ms for the submit fence\n", image_index, ms);
    }
