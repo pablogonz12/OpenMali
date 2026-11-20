@@ -31,15 +31,12 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #include <xcb/shm.h>
 #endif
 #if defined(__linux__)
-#include <poll.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
 
-struct mali_wsi_reuse_slot;
-static void mali_wsi_reuse_release(VkSwapchainKHR sc);
 struct mali_x11_shm;
 static void mali_x11_shm_destroy(VkSwapchainKHR sc);
 static struct mali_x11_shm *mali_x11_shm_find(VkSwapchainKHR sc);
@@ -223,7 +220,6 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
 VKAPI_ATTR void VKAPI_CALL
 mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *alloc)
 {
-   mali_wsi_reuse_release(swapchain);
    mali_x11_shm_destroy(swapchain);
    wsi_DestroySwapchainKHR(device, swapchain, alloc);
 }
@@ -263,68 +259,6 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    memcpy(modes, all, out * sizeof(*modes));
    *count = out;
    return out < n ? VK_INCOMPLETE : VK_SUCCESS;
-}
-
-/* Frame pacing: the submission fence produced by vkQueueSubmit is remembered per swapchain image, and waited for
- * when the *image* comes back around (vkAcquireNextImageKHR), never inside vkQueuePresentKHR. With N swapchain
- * images that allows N-1 frames to be in flight; waiting at present serialised the frame the application had just
- * submitted, whatever the pixels cost.
- *
- * Mesa's own present path does not wait either: wsi_wl_swapchain_queue_present() commits and flushes
- * (third_party/mesa/src/vulkan/wsi/wsi_common_wayland.c:3370-3371), and wsi_common.c's WaitForFences (:2890) only
- * runs for a software swapchain (wsi->sw), which the Wayland/dma-buf path is not. So the only per-frame wait that
- * belongs to this driver is the one we place ourselves.
- *
- * MALI_WSI_SYNC=0 turns the whole thing off (no recording, no wait) so a device lane can A/B the share in one build:
- * it is a measurement knob, not the fix. */
-struct mali_wsi_reuse_slot {
-   VkSwapchainKHR sc;
-   int fd[64];
-};
-static struct mali_wsi_reuse_slot mali_wsi_reuse_slots[8];
-
-bool
-mali_wsi_sync_enabled(void)
-{
-   static int on = -1;
-   if (on < 0) {
-      const char *e = getenv("MALI_WSI_SYNC");
-      on = !(e && e[0] == '0');
-   }
-   return on;
-}
-
-static struct mali_wsi_reuse_slot *
-mali_wsi_reuse_slot(VkSwapchainKHR sc, uint32_t n_images, bool create)
-{
-   for (unsigned i = 0; i < ARRAY_SIZE(mali_wsi_reuse_slots); i++)
-      if (mali_wsi_reuse_slots[i].sc == sc)
-         return &mali_wsi_reuse_slots[i];
-   if (!create)
-      return NULL;
-   for (unsigned i = 0; i < ARRAY_SIZE(mali_wsi_reuse_slots); i++) {
-      if (mali_wsi_reuse_slots[i].sc)
-         continue;
-      struct mali_wsi_reuse_slot *s = &mali_wsi_reuse_slots[i];
-      s->sc = sc;
-      for (unsigned j = 0; j < ARRAY_SIZE(s->fd); j++)
-         s->fd[j] = -1;
-      (void)n_images;
-      return s;
-   }
-   return NULL;
-}
-
-static void
-mali_wsi_reuse_release(VkSwapchainKHR sc)
-{
-   struct mali_wsi_reuse_slot *s = mali_wsi_reuse_slot(sc, 0, false);
-   if (!s)
-      return;
-   for (unsigned i = 0; i < ARRAY_SIZE(s->fd); i++)
-      if (s->fd[i] >= 0)
-         close(s->fd[i]);
-   memset(s, 0, sizeof *s);
 }
 
 /* Software present over MIT-SHM, our own segment: the frame leaves the driver as a memcpy into shared pages plus
@@ -498,25 +432,6 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
               (unsigned long long)timeout, semaphore != VK_NULL_HANDLE, fence != VK_NULL_HANDLE,
               (int)pdev->wsi.sw);
    VkResult r = wsi_AcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, image_index);
-   /* The image we are about to hand out was presented 1..N frames ago: wait for *that* submission's fence here, not
-    * in vkQueuePresentKHR for the frame just submitted. N-1 frames stay in flight. */
-   if ((r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) && !pdev->wsi.sw && mali_wsi_sync_enabled()) {
-      struct mali_wsi_reuse_slot *s = mali_wsi_reuse_slot(swapchain, 0, false);
-      if (s && *image_index < ARRAY_SIZE(s->fd) && s->fd[*image_index] >= 0) {
-         int fd = s->fd[*image_index];
-         s->fd[*image_index] = -1;
-         struct pollfd pf = {.fd = fd, .events = POLLIN};
-         if (poll(&pf, 1, 200) == 0) {
-            static int logged;
-            if (!logged) {
-               logged = 1;
-               fprintf(stderr, "mali_vk: wsi sync: image %u was still in use after 200 ms (fence wait abandoned)\n",
-                       *image_index);
-            }
-         }
-         close(fd);
-      }
-   }
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: wsi acquire #%llu -> %s image=%u\n", (unsigned long long)n,
               vk_Result_to_str(r), r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR ? *image_index : 0);
@@ -528,14 +443,14 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
-   VK_FROM_HANDLE(vk_queue, vq, queue);
-   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
-   struct mali_physical_device *pdev = mali_device_pdev(dev);
    if (mali_wsi_debug()) {
+      VK_FROM_HANDLE(vk_queue, vq, queue);
+      const struct mali_physical_device *qpdev =
+         mali_device_pdev(container_of(vq->base.device, struct mali_device, vk));
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u dma_buf_sync=%d sw=%d\n",
               (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
-              __atomic_load_n(&pdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
-              (int)pdev->wsi.sw);
+              __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
+              (int)qpdev->wsi.sw);
    }
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
@@ -575,25 +490,6 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
                        "(drop-oldest if the X server is still busy with it)\n");
             }
          }
-      }
-   }
-   /* Remember this frame's submission fence for the image it presents. The wait happens in
-    * mali_wsi_acquire_next_image() when that image comes back around, so present never waits for the frame it just
-    * submitted (only the previous use of the same image, N frames back). */
-   if (!pdev->wsi.sw && mali_wsi_sync_enabled() && info->swapchainCount == 1) {
-      int fd = -1;
-      pthread_mutex_lock(&dev->sync_lock);
-      fd = dev->last_submit_fd;
-      dev->last_submit_fd = -1;
-      pthread_mutex_unlock(&dev->sync_lock);
-      VK_FROM_HANDLE(wsi_swapchain, sc0, info->pSwapchains[0]);
-      struct mali_wsi_reuse_slot *slot = sc0 ? mali_wsi_reuse_slot(info->pSwapchains[0], sc0->image_count, true) : NULL;
-      if (fd >= 0 && slot && info->pImageIndices[0] < ARRAY_SIZE(slot->fd)) {
-         if (slot->fd[info->pImageIndices[0]] >= 0)
-            close(slot->fd[info->pImageIndices[0]]);
-         slot->fd[info->pImageIndices[0]] = fd;
-      } else if (fd >= 0) {
-         close(fd);
       }
    }
    VkResult r = wsi_QueuePresentKHR(queue, info);
