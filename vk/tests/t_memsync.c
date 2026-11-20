@@ -9,15 +9,19 @@
  *  - an arch 11 driver-internal BO (NOCOH) is never synced; with MALI_INT_NOCOH=0 it is
  *  - M15: per-BO write tracking. A fence wait CSYNCs only BOs marked with bo_wrote; the fake kernel models a
  *    non-coherent GPU (kb_fake_gpu_write writes a shadow that only MEM_SYNC type 2 makes visible), so an
- *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first. */
+ *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first.
+ *  - M15: a device-local BO (MALI_BO_DEVICE_LOCAL, vk/MEMORY.md) is never MEM_SYNCed in either direction,
+ *    and bo_host_touch must not put it back into the per-submit sweep (the app can never map it) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "mali_backend.h"
+#include "kbase_uapi.h"   /* BASE_MEM_* flags, read back through kb_fake_alloc_flags */
 
 extern const struct mali_backend_ops mali_backend_kbase;
 extern unsigned kb_fake_memsync_count(uint64_t va);
+extern uint64_t kb_fake_alloc_flags(uint64_t va);   /* BASE_MEM_* flags of the fake allocation */
 /* fake kernel: write into the BO's shadow (the fake "GPU cache"). The CPU mapping stays stale until a MEM_SYNC
  * type 2 (device->CPU) copies it back, so a skipped sync is observable as stale data. */
 extern int kb_fake_gpu_write(uint64_t va, size_t off, const void *src, size_t len);
@@ -72,6 +76,37 @@ int main(void)
    EXPECT(kb_fake_memsync_count(hl.gpu_va) - h0 >= N, "mapped VkDeviceMemory: synced at each of %d submits (%u)", N, kb_fake_memsync_count(hl.gpu_va) - h0);
    EXPECT(kb_fake_memsync_count(expc.gpu_va) - c0 >= 2 * N, "CACHED export: never lazy, synced at each submit (%u)", kb_fake_memsync_count(expc.gpu_va) - c0);
    EXPECT(kb_fake_memsync_count(imp.gpu_va) - i0 == 0, "imported dma-buf: untracked, no per-submit MEM_SYNC (known gap, pre-existing)");
+   /* M15: device-local (GPU-cacheable, never app-mapped) is outside both sweeps, also after a host touch */
+   static volatile uint64_t cnt2 = 1;
+   struct mali_bo dvl;
+   const char *inc = getenv("MALI_INT_NOCOH");   /* second run of build-t_memsync.sh: the arch-11 NOCOH shortcut is off */
+   const bool nocoh_off = inc && inc[0] == '0';
+   if (nocoh_off)
+      EXPECT(kb_fake_memsync_count(internal.gpu_va) - n0 == 2 * (unsigned)N,
+             "MALI_INT_NOCOH=0: the internal BO has no NOCOH and is synced at each of %d submits (%u)", N,
+             kb_fake_memsync_count(internal.gpu_va) - n0);
+   else
+      EXPECT(kb_fake_memsync_count(internal.gpu_va) == n0, "arch 11 internal BO: no MEM_SYNC (NOCOH)");
+   /* On arch 11 the NOCOH shortcut above also keeps this BO out of every sweep, which would hide whether the
+    * device-local policy does anything. build-t_memsync.sh therefore runs this binary a second time with
+    * MALI_INT_NOCOH=0 (what a v13 device sees): there only the device-local guards can keep the BO out of a
+    * sweep and out of COHERENT_LOCAL. */
+   if ((r = b->bo_alloc(k, 65536, MALI_BO_DEVICE_LOCAL, &dvl))) { printf("FAIL  bo_alloc device-local\n"); return 1; }
+   /* GPU-cacheable means no COHERENT_LOCAL: with it the allocator would OR in BASE_MEM_COHERENT_LOCAL and the GPU
+    * would have to snoop the CPU (and the BO would be MEM_SYNCed per submit, which is what v0 tracks below). */
+   EXPECT(!(kb_fake_alloc_flags(dvl.gpu_va) & BASE_MEM_COHERENT_LOCAL),
+          "device-local BO is allocated without COHERENT_LOCAL (BASE_MEM flags 0x%llx)", (unsigned long long)kb_fake_alloc_flags(dvl.gpu_va));
+   unsigned v0 = kb_fake_memsync_count(dvl.gpu_va);
+   for (int i = 0; i < N; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO: no CPU->device MEM_SYNC in %d submits (%u)", N, kb_fake_memsync_count(dvl.gpu_va) - v0);
+   b->bo_host_touch(k, &dvl);   /* a stray touch must not re-enable the sweep */
+   for (int i = 0; i < N; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO after bo_host_touch: still no MEM_SYNC (%u)", kb_fake_memsync_count(dvl.gpu_va) - v0);
+   /* the front end allocates only MALI_BO_DEVICE_LOCAL (mali_memory.c): the backend has to make it
+    * unsyncable itself, so this case catches kbase_bo_alloc dropping the DEVICE_LOCAL promotion */
+   b->bo_wrote(k, &dvl);   /* marked: a wait that ignored the device-local exclusion would CSYNC it */
+   b->wait_counter(k, &cnt2, 1, 100);
+   EXPECT(kb_fake_memsync_count(dvl.gpu_va) == v0, "device-local BO: no device->CPU MEM_SYNC after a counter wait (%u)", kb_fake_memsync_count(dvl.gpu_va) - v0);
 
 
    /* ---- M15: per-BO write tracking for the fence wait (MALI_SYNC_TRACK, MALI_SYNC_ALL) ---- */
