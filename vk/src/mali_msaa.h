@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: MIT */
-/* 4x MSAA is on by default: Mesa's GL ladder needs MaxSamples >= 4 for OpenGL 3.0 (src/mesa/main/version.c:269-291), and 4x here is a real
- * implementation (hardware "Average" resolve, vk/src/mali_cmd.c:960-1051; pipeline acceptance vk/src/mali_pipeline.c:194), verified by
- * t_vk_draw msaa_resolve4 / msaa_sample_shading and t_vk_info's sample-count checks. MALI_EXPERIMENTAL_MSAA=0 opts out (limits, image format
- * properties and pipeline creation follow this one switch, so nothing is advertised that pipeline creation would reject). Sample shading is
- * 1-sample-effect, which is unchanged by the gate. */
+/* 4x MSAA is OPT-IN again (MALI_EXPERIMENTAL_MSAA=1): the sample counts, the resolve and the draw path exist, but loadOp LOAD and
+ * storeOp STORE together with a resolve are refused (vk/src/mali_cmd.c:995-1006), so a title that picks 4x from the advertised
+ * limits gets a black frame: zink took 4x whenever it was offered (HL2 on CMF: "MSAA colour storeOp STORE together with a
+ * resolve", 2x "MSAA colour loadOp LOAD"). Advertising a sample count whose LOAD/resolve combination we refuse is a compatibility
+ * trap, so the default is 1x; the feature stays behind the env until MSAA LOAD + STORE/resolve land (driver-msaa.md). The limits,
+ * VkImageFormatProperties and pipeline creation all read this one switch. */
 #ifndef MALI_MSAA_H
 #define MALI_MSAA_H
 
@@ -14,7 +15,7 @@ static inline bool
 mali_experimental_msaa(void)
 {
    const char *e = getenv("MALI_EXPERIMENTAL_MSAA");
-   return !(e && e[0] == '0');   /* default on; =0 keeps the 1x-only limits and pipeline rules */
+   return e && e[0] == '1';   /* opt-in: =1 advertises 4x; unset/0 keeps the 1x-only limits and pipeline rules */
 }
 
 #endif
