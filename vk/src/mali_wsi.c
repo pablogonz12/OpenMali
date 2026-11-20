@@ -246,7 +246,7 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    if (r == VK_SUCCESS && ids) {
       for (uint32_t i = 0; i < info->swapchainCount && i < ids->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, chain, info->pSwapchains[i]);
-         if (chain && chain->wait_for_present2 && ids->pPresentIds[i])
+         if (chain && chain->present_wait_enabled && chain->wait_for_present2 && ids->pPresentIds[i])
             chain->wait_for_present2(chain, ids->pPresentIds[i], 20ull * 1000 * 1000);   /* ns, bounded */
       }
    }

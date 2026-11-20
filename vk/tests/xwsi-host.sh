@@ -32,7 +32,9 @@ timeout 150 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.
 [ -f "$W/xcb.rc" ] || { echo "FAIL: the test did not run inside gamescope"; tail -20 "$W/gs.log"; exit 1; }
 grep -v alvr "$W/xcb.log"
 grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
-[ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && grep -q "present path: shm=0 dri3=0 (software)" "$W/nodri3.log" \
+# 77 = the ICD has no X11 WSI: the whole file has nothing to test.
+[ "$(cat "$W/nodri3.rc")" = 77 ] && exit 0
+[ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && ! grep -q 'SUBOPTIMAL' "$W/nodri3.log" && grep -q "present path: shm=0 dri3=0 (software)" "$W/nodri3.log" \
    || { echo "FAIL: X11 software present default"; tail -5 "$W/nodri3.log"; exit 1; }
 # Capability rule: this Xwayland has MIT-SHM but the ICD has no EXT_external_memory_host, so the present must be
 # PutImage (no SHM image, no buffer blit) and must report VK_SUCCESS, never VK_ERROR_FEATURE_NOT_PRESENT.
