@@ -213,6 +213,16 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
+def update_job(jid, fn):
+    """cross-process read-modify-write of one job file (farmd threads AND the `farm` CLI): an flock on jobs/.lock (not *.json, list_jobs ignores it)"""
+    with open(os.path.join(os.path.dirname(job_path(jid)), ".lock"), "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        j = read_json(job_path(jid))
+        fn(j)
+        write_json(job_path(jid), j)
+        return j
+
+
 def read_json(path):
     with open(path) as f:
         return json.load(f)
@@ -321,10 +331,16 @@ def supersede_old_gates(new, jobs, is_ancestor):
         cs = [c for c, p in j["parts"].items() if p["state"] == "pending" and c in new["parts"]]
         if not cs:
             continue
-        for c in cs:
-            j["parts"][c]["state"] = "cancelled"
-        write_json(job_path(j["id"]), j)
-        out.append((j["id"], j["commit"], cs))
+        done = []
+
+        def cancel(x, cs=cs, done=done):                  # re-check under the lock: a worker may have started the part since our snapshot
+            for c in cs:
+                if x["parts"][c]["state"] == "pending":
+                    x["parts"][c]["state"] = "cancelled"
+                    done.append(c)
+        update_job(j["id"], cancel)
+        if done:
+            out.append((j["id"], j["commit"], done))
     return out
 
 
@@ -348,9 +364,13 @@ def queue_view(jobs, order):
 def new_job(ref, commit, dirty, suite, need, env, repo_name, cases=None, repeat=1, only="", auto=False, pin="", prio=None, keep_old=False):
     base = time.strftime("%Y%m%d-%H%M%S") + "-" + commit[:8]
     jid, n = base, 1
-    while os.path.exists(job_path(jid)):
-        n += 1
-        jid = f"{base}-{n}"
+    while True:                                           # O_EXCL: two submits in the same second never share an id
+        try:
+            os.close(os.open(job_path(jid), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            n += 1
+            jid = f"{base}-{n}"
     job = {"id": jid, "ref": ref, "commit": commit, "dirty": dirty, "suite": suite, "env": env, "repo": repo_name,
            "created": now(), "seq": time.time_ns(), "so_sha256": None, "build": None,
            "prio": int(prio) if prio is not None else SUITE_PRIO.get(suite, 0),

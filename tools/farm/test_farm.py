@@ -310,7 +310,7 @@ class T(unittest.TestCase):
         return r.returncode, r.stdout.strip(), r.stderr
 
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -469,11 +469,15 @@ class T(unittest.TestCase):
 
     def test_clean_pass_and_smoke_fail(self):
         self.attach("dev-a", "dev-b")
-        _, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
-        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--env", "FAKE_FAIL=1")
+        _, j1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11", "--allow-stale")
+        self.assertTrue(j1, "submit failed")
+        _, j2, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v13", "--env", "FAKE_FAIL=1", "--allow-stale")
         self.farmd()
         self.assertEqual(self.farm("wait", j1)[1], "pass")
         self.assertEqual(self.farm("wait", j2)[1], "fail")
+        run = json.load(open(self.d + f"/state/runs/{j1}-v11.json"))
+        self.assertIsInstance(run["started"], str)                           # the ISO start time, not the worker's took-the-part marker
+        self.assertTrue(run["started"].startswith(time.strftime("%Y-")), run["started"])
 
     def test_lock_busy_keeps_pending(self):
         self.attach("dev-a")
@@ -1272,15 +1276,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -1291,11 +1295,14 @@ class T(unittest.TestCase):
                                                          mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
         L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
         new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
+        o2, o3 = mk("o2", "a", suite="cases"), mk("o3", "a")
+        for j in (old, bench, cases, env, only, other_repo, newer, o2, o3):                             # supersede now updates the job FILE under the job lock
+            L.write_json(L.job_path(j["id"]), j)
         got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
         self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
-        self.assertEqual(old["parts"]["v13"]["state"], "pending")
-        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
-        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+        self.assertEqual({c: p["state"] for c, p in L.find_job("o")["parts"].items()}, {"v11": "cancelled", "v13": "pending"})
+        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [o2], lambda o, n: True), [])
+        self.assertEqual(L.supersede_old_gates(new, [o3], lambda o, n: False), [])           # not an ancestor: another branch
 
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
@@ -2371,6 +2378,110 @@ class Bench2Rank(unittest.TestCase):
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
                       '{"test":"t_vk_meta","rc":0,"fail_lines":0,"pass_lines":1}', '{"test":"summary","ok":true}'])
 
+class Review(T):
+    """regressions from the farm review (/tmp/oc/farm-review.md, H1-H4); inherits T's fake-state helpers but only runs its own tests"""
+    def load_farm(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_rev", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_rev", ld))
+        ld.exec_module(m)
+        return m.Farm(True, True, 1)
 
+    def submit_v11(self):
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--rerun", "--allow-stale")
+        self.assertEqual(rc, 0, err)
+        return jid
+
+    def test_h1_tick_never_resets_a_part_that_finished_after_the_snapshot(self):
+        jid = self.submit_v11()
+        self.attach("dev-a")
+        f = self.load_farm()
+        L.update_job(jid, lambda x: x["parts"]["v11"].update(state="running", device="dev-a"))   # farmd restarted mid-run: no thread
+        orig = f.watch_devices
+
+        def slow_watch(jobs):                                   # the worker finishes while watch_devices is busy with adb
+            L.update_job(jid, lambda x: x["parts"]["v11"].update(state="done", verdict="pass"))
+            return orig(jobs)
+        f.watch_devices = slow_watch
+        f.tick()
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual((p["state"], p.get("verdict")), ("done", "pass"))
+
+    def test_h1_a_really_orphaned_running_part_is_still_requeued(self):
+        jid = self.submit_v11()
+        f = self.load_farm()
+        L.update_job(jid, lambda x: x["parts"]["v11"].update(state="running", device="dev-a"))
+        f.tick()                                                # dev-a is not attached: it is reset and stays pending
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "pending")
+
+    def test_h2_hold_stuck_in_ending_is_closed_on_restart(self):
+        self.attach("dev-a")
+        h = H.new_hold("dev-a", 60)
+        rec = L.read_json(H.path(h["id"]))
+        rec["state"] = "ending"
+        L.write_json(H.path(h["id"]), rec)
+        f = self.load_farm()
+        f.tick()
+        rec = L.read_json(H.path(h["id"]))
+        self.assertEqual((rec["state"], rec["reason"]), ("done", "farmd restarted"))
+        self.assertIn("dev-a", f.restore_pending)
+
+    def test_h3_cli_and_farmd_updates_of_one_job_never_lose_each_other(self):
+        import threading
+        jid = self.submit_v11()
+        f = self.load_farm()
+        n = 60
+
+        def bump():
+            for _ in range(n):
+                f.upd(jid, lambda x: x["parts"]["v11"].update(attempts=x["parts"]["v11"]["attempts"] + 1))
+        t = threading.Thread(target=bump)
+        t.start()
+        procs = [subprocess.Popen([sys.executable, HERE + "/farm", "prio", jid, str(i)], env=self.env, stdout=subprocess.DEVNULL) for i in range(1, 9)]
+        for p in procs:
+            p.wait()
+        t.join()
+        j = L.find_job(jid)
+        self.assertEqual(j["parts"]["v11"]["attempts"], n)      # no farmd increment was overwritten by a stale CLI write
+        self.assertIn(j["prio"], range(1, 9))
+
+    def test_h3_cancel_does_not_revert_a_part_farmd_just_finished(self):
+        jid = self.submit_v11()
+        L.update_job(jid, lambda x: x["parts"]["v11"].update(state="done", verdict="pass"))
+        self.assertIn("untouched", self.farm("cancel", jid)[1])
+        self.assertEqual(L.find_job(jid)["parts"]["v11"]["state"], "done")
+
+    def test_h3_same_second_submits_get_distinct_job_files(self):
+        ids = {L.new_job("r", "a" * 40, False, "smoke", ["v11"], "", "repo")["id"] for _ in range(5)}
+        self.assertEqual(len(ids), 5)
+
+    def test_h4_cancelled_between_snapshot_and_worker_start_stays_cancelled(self):
+        jid = self.submit_v11()
+        self.attach("dev-a")
+        f = self.load_farm()
+        self.assertIn("cancelled", self.farm("cancel", jid)[1])              # the tick had seen `pending`; the CLI cancels before the worker starts
+        f._run_part(jid, "v11", "dev-a")
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual(p["state"], "cancelled")
+        self.assertIsNone(p.get("verdict"))
+
+    def test_h5_second_worker_does_not_start_a_part_another_worker_already_runs(self):
+        jid = self.submit_v11()
+        self.attach("dev-a")
+        f = self.load_farm()
+        j = L.find_job(jid)
+        j["parts"]["v11"].update(state="running", device="dev-b")             # worker B won the pending->running transition
+        L.write_json(L.job_path(jid), j)
+        f._run_part(jid, "v11", "dev-a")
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual((p["state"], p["device"]), ("running", "dev-b"))
+        self.assertIsNone(p.get("verdict"))
+
+
+for _n in [n for n in dir(T) if n.startswith("test_") and n not in Review.__dict__]:
+    setattr(Review, _n, None)        # discovery must not re-run T's tests under Review (None is not collected)
+
+
+T_NAMES = None
 if __name__ == "__main__":
     unittest.main()

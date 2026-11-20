@@ -354,10 +354,7 @@ class Farm:
     # ---------- job updates
     def upd(self, jid, fn):
         with self.jl:
-            j = L.read_json(L.job_path(jid))
-            fn(j)
-            L.write_json(L.job_path(jid), j)
-            return j
+            return L.update_job(jid, fn)
 
     # ---------- build
     def tree(self, jid):
@@ -1475,7 +1472,15 @@ class Farm:
                 self.hold_cleanup(dev)
                 self.restore_pending.discard(alias)
             touched = not menu                                  # menubench restores the phone itself
-            self.upd(jid, lambda x: x["parts"][cls].update(state="running", device=alias))
+            took = []
+            def go(x):                                              # only a still-pending part starts: a `farm cancel` since the tick snapshot wins
+                if x["parts"][cls]["state"] == "pending":
+                    x["parts"][cls].update(state="running", device=alias)
+                    took.append(1)
+            self.upd(jid, go)
+            if not took:                                         # cancelled, or another worker already took this part: only the one that made the transition runs it
+                log(f"{alias}: {jid}/{cls} was cancelled or already started by another worker; not starting")
+                return
             sha, why = self.build(job)
             if sha is None:
                 res = {"verdict": "error", "notes": why}
@@ -1813,8 +1818,7 @@ class Farm:
                 n = L.new_job(ref, commit, False, j["suite"], list(j["parts"]), j.get("env", ""), j.get("repo", ""), cases=j.get("cases"), repeat=j.get("repeat", 1),
                               only=j.get("only", ""), prio=L.job_prio(j), keep_old=True)
                 ids[ref] = n["id"]
-            j["bisect"] = ids
-            L.write_json(L.job_path(j["id"]), j)
+            L.update_job(j["id"], lambda x, ids=ids: x.update(bisect=ids))
             log(f"batch {j['id']} failed: bisecting per branch: " + " ".join(f"{r}={i}" for r, i in ids.items()))
 
     def auto_daily(self, att, jobs):
@@ -1900,16 +1904,18 @@ class Farm:
                 self.prebuild_t.start()
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
         for h in H.list_holds():                                                  # farmd restarted mid-hold: its lock died with it
-            if h["state"] == "active" and not any(t.name == "hold/" + h["device"] for t in self.threads.values()):
+            if h["state"] in ("active", "ending") and not any(t.name == "hold/" + h["device"] for t in self.threads.values()):
                 h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False, clean_note="restore runs before the next job or hold")
                 L.write_json(H.path(h["id"]), h)
                 self.restore_pending.add(h["device"])
         H.gc()
         for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
-                if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls) for t in self.threads.values()):
-                    self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="pending"))   # farmd restarted mid-run
-                    p["state"] = "pending"
+                if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls + "/") for t in self.threads.values()):
+                    def reset(x, c=cls):                                               # re-checked on the CURRENT file: the worker may have finished since the snapshot
+                        if x["parts"][c]["state"] == "running":
+                            x["parts"][c]["state"] = "pending"
+                    p["state"] = self.upd(j["id"], reset)["parts"][cls]["state"]       # farmd restarted mid-run
                 if p["state"] != "pending":
                     continue
                 if j["suite"] == "menu" and self.menu_stale(j):
