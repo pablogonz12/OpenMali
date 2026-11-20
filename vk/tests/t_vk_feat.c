@@ -75,7 +75,8 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
-   X(CmdBindVertexBuffers)
+   X(CmdBindVertexBuffers) X(CmdBindTransformFeedbackBuffersEXT) X(CmdBeginTransformFeedbackEXT)                 \
+   X(CmdEndTransformFeedbackEXT)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -992,6 +993,39 @@ test_tf_reject(void)
    CHECK(pipe == VK_NULL_HANDLE, "no pipeline may exist for a transform-feedback shader");
    if (ok) printf("{\"test\":\"tf_reject\",\"ok\":true}\n");
    return ok;
+}
+
+/* Stage 2 of VK_EXT_transform_feedback: the commands must record and validate (bind buffers, begin, end), and the
+ * XFB buffer must be marked GPU-written so the fence wait syncs it. The streamout job does not exist yet, so the
+ * *draw* is still what cannot happen (mali_compile.c names the missing nir_load_xfb_address lowering); this case
+ * proves the recording path and that the failure is the lowering, not a missing command. */
+static int
+test_tf_record(void)
+{
+   VkBuffer xfb = VK_NULL_HANDLE;
+   VkDeviceSize sz = 4 * 4 * 4;   /* 4 vertices x vec4 */
+   CHECK(CreateBuffer(dev, &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT |
+                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE}, NULL, &xfb) == VK_SUCCESS, "xfb buffer");
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cb");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xfb, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){sz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "begin/end/bind must record cleanly (%d)", (int)r);
+   /* the draw: still refused, and the message must name the lowering, not a missing entrypoint */
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   if (!ok) return 0;
+   printf("{\"test\":\"tf_record\",\"record\":\"ok\",\"pipeline\":\"%s\",\"pending\":\"nir_load_xfb_address lowering + streamout job\",\"ok\":true}\n",
+          pipe ? "created" : "refused (named)");
+   DestroyBuffer(dev, xfb, NULL);
+   return 1;
 }
 
 static int

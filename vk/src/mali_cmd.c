@@ -812,6 +812,82 @@ mali_CmdDispatchIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off)
    record_dispatch(cmd, 0, 0, 0, vk_buffer_address(buf, off));
 }
 
+/* ---- VK_EXT_transform_feedback (stage 2: recording) ----
+ * The streamout job does not exist yet: libkbase has RUN_IDVS/FINISH_TILING only (kbase_cs.h:111-154), so the
+ * gallium route is nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores (pan_shader.c:124-136) with the base
+ * addresses supplied as nir_load_xfb_address (nir_lower_xfb_to_stores.c:53), which our NIR backend does not lower
+ * yet. Until it does, these commands record and validate the state (so a draw can report the real blocker) and
+ * mark the XFB buffers as GPU-written, which they will be. */
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint32_t count, const VkBuffer *buffers,
+                                        const VkDeviceSize *offsets, const VkDeviceSize *sizes)
+{
+   CMD(h);
+   if (cmd->in_render) {
+      unsupported(cmd, "vkCmdBindTransformFeedbackBuffersEXT inside a render pass");
+      return;
+   }
+   if (!buffers || first + count > 4) {
+      unsupported(cmd, "VK_EXT_transform_feedback: more than 4 XFB buffers");
+      return;
+   }
+   for (uint32_t i = 0; i < count; i++) {
+      const unsigned b = first + i;
+      struct vk_buffer *vb = vk_buffer_from_handle(buffers[i]);
+      if (!vb) {
+         unsupported(cmd, "VK_EXT_transform_feedback: null XFB buffer");
+         return;
+      }
+      cmd->tf.buf[b] = buffers[i];
+      cmd->tf.off[b] = offsets ? offsets[i] : 0;
+      cmd->tf.size[b] = sizes ? sizes[i] : 0;
+      if (b + 1 > cmd->tf.nbufs)
+         cmd->tf.nbufs = b + 1;
+      /* the vertex stage stores the transformed vertices here: the fence wait for this submission must MEM_SYNC
+       * it device->CPU (the dump/readback path in mali_cmd_submit already sweeps these marks). */
+      mali_cmd_mark_buffer_written(cmd, buffers[i]);
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
+                                  const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets)
+{
+   CMD(h);
+   if (cmd->in_render) {
+      unsupported(cmd, "vkCmdBeginTransformFeedbackEXT inside a render pass");
+      return;
+   }
+   if (cmd->tf.active) {
+      unsupported(cmd, "vkCmdBeginTransformFeedbackEXT while transform feedback is active");
+      return;
+   }
+   if (counter_buffers && first_counter_buffer + counter_buffer_count > 4) {
+      unsupported(cmd, "VK_EXT_transform_feedback: more than 4 counter buffers");
+      return;
+   }
+   if (counter_buffers)   /* the streamout job increments these; mark them written for the same reason */
+      for (uint32_t i = 0; i < counter_buffer_count; i++)
+         mali_cmd_mark_buffer_written(cmd, counter_buffers[i]);
+   cmd->tf.active = true;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
+                                const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets)
+{
+   CMD(h);
+   if (!cmd->tf.active) {
+      unsupported(cmd, "vkCmdEndTransformFeedbackEXT without a matching Begin");
+      return;
+   }
+   if (counter_buffers)
+      for (uint32_t i = 0; i < counter_buffer_count; i++)
+         mali_cmd_mark_buffer_written(cmd, counter_buffers[i]);
+   cmd->tf.active = false;
+}
+
 /* ---- rendering ---- */
 void
 mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
