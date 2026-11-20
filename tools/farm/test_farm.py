@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Dry-run tests of queue, pending/resume, comparison and JSON logic (no phone, no build). Run: python3 tools/farm/test_farm.py"""
-import hashlib, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import hashlib, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -365,6 +365,7 @@ class DeviceStopGuard(unittest.TestCase):
         self.fd = importlib.util.module_from_spec(spec)
         ld.exec_module(self.fd)
         self.f = object.__new__(self.fd.Farm)
+        self.f.jl = threading.Lock()          # __init__ is bypassed; abort_job() takes the job-file lock
 
     def tearDown(self):
         if self.old is None:

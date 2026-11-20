@@ -416,6 +416,18 @@ def finished(j, cls):
     return p.get("state") == "done" and p.get("verdict")
 
 
+def cmd_sweep_resume(a):
+    """clear a persisted sweep stop (written when a sweep hit an out-of-memory kill or a device reboot)"""
+    for cls in a.cls:
+        p = os.path.join(L.state_dir(), "sweep-stop", f"{cls}.json")
+        if os.path.exists(p):
+            os.unlink(p)
+            print(f"{cls}: sweep stop cleared ({p})")
+        else:
+            print(f"{cls}: no sweep stop")
+    return 0
+
+
 def cmd_cancel(a):
     os.makedirs(os.path.join(L.state_dir(), "cancel"), exist_ok=True)
     for jid in a.job:
@@ -859,6 +871,9 @@ def main():
     s.add_argument("job", nargs="+")
     s.add_argument("--running", action="store_true")
     s.set_defaults(f=cmd_cancel)
+    s = sp.add_parser("sweep-resume", help="clear a persisted sweep stop (memory_cap / device_reboot) for a class")
+    s.add_argument("cls", nargs="+")
+    s.set_defaults(f=cmd_sweep_resume)
     s = sp.add_parser("bench", help="`bench publish`: merge the farm's bench rows into bench/results.jsonl + RESULTS.md on origin main now (farmd also does it by itself)")
     s.add_argument("what", choices=["publish"])
     s.set_defaults(f=cmd_bench)
