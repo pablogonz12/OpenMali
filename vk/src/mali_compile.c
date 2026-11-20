@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,13 +33,27 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 25 /* 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL); generated code is main's 23 ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 26 /* 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
 
 static atomic_ullong g_hits, g_misses, g_stores;
 static atomic_uint g_tmp_seq;   /* makes cache_store's temporary name unique between threads of one process */
+
+unsigned
+mali_subgroup_size_for_arch(unsigned arch)
+{
+   /* Mesa panfrost/compiler/pan_compiler.h pan_subgroup_size(): the lane count of a warp is a property of the architecture,
+    * not of the number of cores (shader_present is non-contiguous: 0xee0057 on G925 still has 16-wide warps). */
+   if (arch >= 9)
+      return 16;
+   if (arch >= 7)
+      return 8;
+   if (arch >= 6)
+      return 4;
+   return 1;   /* Midgard: no subgroups */
+}
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
@@ -147,6 +162,7 @@ type_size(const struct glsl_type *t, bool bindless)
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
    uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
+   uint32_t subgroup_size;   /* required subgroup size (0 = arch default): a requested 8/32 must not reuse a 16-wide binary */
    /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
    uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
    char mesa[24];
@@ -165,6 +181,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
    k.sample_shading = o->sample_shading != 0;
+   k.subgroup_size = o->subgroup_size;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    k.max_sets = MALI_MAX_SETS;
@@ -379,6 +396,19 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    const struct pan_model *model = g_model[arch == 13 ? 2 : arch == 10 ? 0 : 1];
    if (!model)
       return fail(err, errsz, "no GPU model");
+   /* One warp width per architecture: only the hardware's own size is a legal request (VUID-requiredSubgroupSize-02414 range is
+    * [minSubgroupSize,maxSubgroupSize], and both are this value). Refusing here means a pipeline that asks for 32 can never get
+    * 16-wide code, which is what silently corrupts ballot/shuffle/quad lowerings. */
+   const unsigned subgroup_size = o->subgroup_size ? o->subgroup_size : mali_subgroup_size_for_arch(arch);
+   if (subgroup_size != mali_subgroup_size_for_arch(arch)) {
+      char msg[128];
+      snprintf(msg, sizeof msg, "subgroup size %u is not supported on arch %u (warp is %u)",
+               subgroup_size, arch, mali_subgroup_size_for_arch(arch));
+      return fail(err, errsz, msg);
+   }
+   /* The Bifrost/Valhall backend lowers every subgroup op with pan_subgroup_size(arch) (bifrost_nir.c); a driver table that
+    * disagrees would validate one width and emit another. Tie the two together so the mismatch is loud. */
+   assert(subgroup_size == pan_subgroup_size(arch));
    mesa_shader_stage stage = o->stage == MALI_STAGE_VERTEX ? MESA_SHADER_VERTEX :
                              o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
    const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
@@ -419,6 +449,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
+   if (stage == MESA_SHADER_COMPUTE) {
+      /* Explicit, so no pass can assume the 32-wide SPIR-V default. The bifrost backend reads pan_subgroup_size(arch) too;
+       * keeping both in sync here is what makes a wrong request visible instead of silently changing the mask width. */
+      nir->info.api_subgroup_size = subgroup_size;
+      nir->info.min_subgroup_size = subgroup_size;
+      nir->info.max_subgroup_size = subgroup_size;
+   }
    if (stage == MESA_SHADER_VERTEX) {
       bool has_clip = false;
       nir_foreach_shader_out_variable(var, nir) {
@@ -589,6 +626,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (stage == MESA_SHADER_COMPUTE)
       for (int i = 0; i < 3; i++) out->local_size[i] = nir->info.workgroup_size[i];
    out->allow_merge = can_merge;
+   out->subgroup_size = subgroup_size;
    out->work_reg_count = info.work_reg_count;
    out->tls_size = info.tls_size;
    out->wls_size = info.wls_size;

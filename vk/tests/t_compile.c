@@ -230,6 +230,63 @@ test_determinism_and_cache(void)
    free(vs.w);
 }
 
+/* subgroup width: the driver reports the arch's warp, the compiler builds at that width, and any other requested size is
+ * refused instead of silently compiling at 16 (VUID-requiredSubgroupSize-02414; a 32-wide shader lowered to 16 corrupts
+ * ballot/shuffle/quad arithmetic). */
+static int
+subgroup_compile(unsigned arch, unsigned req, struct mali_compiled *c)
+{
+   struct spv s = load("subgroup.comp.spv");
+   if (!s.w) return -1;
+   struct mali_lbinding b = {.type = MALI_DT_STORAGE_BUFFER, .count = 1, .slot = 0, .stride = 1, .imm_off = MALI_NO_IMM_SAMPLER};
+   struct mali_compile_layout l = {0};
+   l.nsets = 1;
+   l.set[0] = (struct mali_lset){.nbindings = 1, .slot_count = 1, .b = &b};
+   struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n,
+                                 .layout = &l, .subgroup_size = req, .cache_dir = ""};
+   char err[256] = "";
+   int r = mali_compile(&o, c, err, sizeof err);
+   if (r) printf("  v%u req %u: %s\n", arch, req, err);
+   free(s.w);
+   return r;
+}
+
+static void
+test_subgroup(void)
+{
+   printf("subgroup width\n");
+   /* the reported VkPhysicalDeviceSubgroupProperties::subgroupSize is mali_subgroup_size_for_arch(); Mesa's pan_subgroup_size()
+    * gives 16 for every arch >= 9, which is all we accept (10/11/13). */
+   static const struct { unsigned arch, size; } tab[] = {{10, 16}, {11, 16}, {13, 16}};
+   for (unsigned i = 0; i < sizeof tab / sizeof tab[0]; i++) {
+      CHECK(mali_subgroup_size_for_arch(tab[i].arch) == tab[i].size, "v%u warp is %u, expected %u",
+            tab[i].arch, mali_subgroup_size_for_arch(tab[i].arch), tab[i].size);
+      struct mali_compiled c, ce;
+      if (subgroup_compile(tab[i].arch, 0, &c)) { CHECK(0, "v%u default subgroup compile failed", tab[i].arch); continue; }
+      CHECK(c.subgroup_size == tab[i].size, "v%u compiled for warp %u, expected %u", tab[i].arch, c.subgroup_size, tab[i].size);
+      CHECK(c.local_size[0] == 64, "v%u subgroup shader local_size %u", tab[i].arch, c.local_size[0]);
+      if (g_verbose)
+         printf("  v%u warp %u: %u B, nimm %u\n", tab[i].arch, c.subgroup_size, c.bin_size, c.nimm);
+      /* an explicit request for the hardware's size must compile to exactly the same code as the default */
+      int rc = subgroup_compile(tab[i].arch, tab[i].size, &ce);
+      CHECK(rc == 0, "v%u explicit warp %u compile failed", tab[i].arch, tab[i].size);
+      if (!rc) {
+         CHECK(ce.subgroup_size == tab[i].size && ce.bin_size == c.bin_size && !memcmp(ce.bin, c.bin, c.bin_size),
+               "v%u explicit warp %u gives the same code as the default", tab[i].arch, tab[i].size);
+         mali_compiled_free(&ce);
+      }
+      mali_compiled_free(&c);
+      /* 4/8/32 are legal subgroup sizes on other GPUs but not here: refuse, do not compile 16-wide code for them */
+      for (unsigned bad = 4; bad <= 64; bad <<= 1) {
+         if (bad == tab[i].size) continue;
+         struct mali_compiled cb;
+         int r = subgroup_compile(tab[i].arch, bad, &cb);
+         CHECK(r != 0, "v%u compiled a requested subgroup size of %u", tab[i].arch, bad);
+         if (!r) mali_compiled_free(&cb);
+      }
+   }
+}
+
 static void
 test_errors(void)
 {
@@ -740,6 +797,7 @@ main(int argc, char **argv)
    test_determinism_and_cache();
    test_ycbcr();
    test_wpos_center();
+   test_subgroup();
    test_spec();
    test_dyn_index();
    test_errors();
