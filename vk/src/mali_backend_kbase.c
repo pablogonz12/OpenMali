@@ -633,7 +633,10 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       if (!dev2cpu && b->imported)
          continue;
       uint64_t wrote = 0;
-      if (dev2cpu) {
+      /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
+       * check would either skip them or claim them synced before their submission completes: sync a foreign
+       * import on every device->CPU wait until write generations exist for it. */
+      if (dev2cpu && !b->imported) {
          wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
          if (!sweep_all && wrote == b->synced_writes)
             continue;
@@ -642,8 +645,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
-      kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
-      if (dev2cpu)
+      int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
    }
    pthread_mutex_unlock(&k->bo_lock);
