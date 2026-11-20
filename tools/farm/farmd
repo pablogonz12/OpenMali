@@ -1799,7 +1799,8 @@ class Farm:
                                 "notes": term["notes"][:300], "at": L.now()})
             log(f"{alias}: sweep stopped: verdict: {term['verdict']} (no retry)")
             alert(f"{term['verdict'].upper()} {alias} sweep {job['id']}: {term['notes']}")
-            user_alert(f"{term['verdict'].upper()} {alias} sweep: {term['notes']} -- sweep backed off for 30 min")
+            user_alert(f"{term['verdict'].upper()} {alias} sweep: {term['notes']} -- the {cls} sweep stays STOPPED until "
+                       f"`farm sweep-resume {cls}` after the phone has been looked at (30 min cooldown too)")
             return False
         if sok is False or rc in (76, 77):
             alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
