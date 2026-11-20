@@ -1,203 +1,269 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Normalise the benchmark history into docs/bench.jsonl.
+"""Normalise the raw benchmark logs into docs/bench.jsonl: displayed fps only.
 
-  tools/bench/import.py            write docs/bench.jsonl (idempotent, deterministic)
-  tools/bench/import.py --check    exit 1 if the committed docs/bench.jsonl is stale
+    tools/bench/import.py            rewrite docs/bench.jsonl and docs/rejected.jsonl
+    tools/bench/import.py --check    exit 1 if either committed file would change
 
-Sources (read-only; nothing outside this repo is modified):
-  docs/bench-seed.jsonl                      hand-curated rows, every one with a dated source
-  bench/results.jsonl                        bench2 triangle/cube rows (tools/bench2 --report)
-  bench/menu.jsonl                           menubench Steam-menu rows (mali-open copy)
-  $MEDIADECK/results/menubench.jsonl         menubench's own append log (default
-                                             ~/Documents/scripts/MediaDeck/results)
+The store's contract (see docs/MEASURE.md):
 
-One output object per run:
-  {ts, device, stack, version, workload, fps, brightness_mean, status, source[, note]}
+  fps        displayed frames per second the user could see: menubench `screen.fps`
+             (SurfaceFlinger present timestamps). Render-side and producer-side rates
+             are stored in `render_fps` / `presented_fps` and are never plotted,
+             compared or used for "best".
+  metric     always "displayed_fps".
+  profile    "default" | "uncapped" | other. Uncapped runs are skipped: not comparable.
+  panel_hz   the panel's refresh rate at the time; fps > panel_hz + 2 is instrument
+             error (rejected, never clamped).
+  reps       number of visible reps in the same run group (device/stack/version/
+             workload/profile/panel/day). "best" needs >= 3.
 
-`status` is visible|black|crash|not_run|unverified. A row with no fps is written with fps 0 and a
-status that says why; nothing is interpolated, and a field the source does not carry is null or
-"unknown" rather than a guess.
+A row is skipped, never guessed, when `ok != true`, `profile == "uncapped"`, there is
+no displayed-fps source, or fps exceeds the panel. Every skipped source row lands in
+docs/rejected.jsonl with its reason and the value that was observed.
+
+Python 3.11+, stdlib only, deterministic.
 """
 import json
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "docs/bench.jsonl"
-SEED = ROOT / "docs/bench-seed.jsonl"
+REJ = ROOT / "docs/rejected.jsonl"
 MEDIADECK = Path(os.environ.get("MEDIADECK", Path.home() / "Documents/scripts/MediaDeck"))
-SOURCES = [SEED, ROOT / "bench/results.jsonl", ROOT / "bench/menu.jsonl",
-           MEDIADECK / "results/menubench.jsonl"]
+MENUBENCH = MEDIADECK / "results/menubench.jsonl"
+BENCH2 = ROOT / "bench/results.jsonl"
+MENU = ROOT / "bench/menu.jsonl"
+# The archived seed and the owner's hand-typed rows are kept as evidence only: a line in
+# FINDINGS.md or an owner note is not a measurement and cannot carry panel_hz or reps.
+SEED = ROOT / "docs/bench-archive/2026-11-20-invalid/bench-seed.jsonl"
 
 DEVICE = {"poco-x8": "x8", "x8": "x8", "cmf": "cmf", "poco-x4": "x4", "x4": "x4"}
 STACK = {"bridge": "bridge", "ours": "mali-open", "mali-open": "mali-open"}
-WORKLOAD = {"triangle": "triangles", "cube": "cards", "menu": "steam-menu", "menubench": "steam-menu"}
+WORKLOAD = {"triangle": "triangles", "cube": "cards", "menu": "steam-menu",
+            "menubench": "steam-menu"}
+PANEL = {"x8": 120, "cmf": 120, "x4": 144}  # fallback only when the log omits panel_hz
+FIELDS = ("ts", "device", "stack", "version", "driver_sha", "workload", "metric", "profile",
+          "fps", "panel_hz", "reps", "brightness_mean", "status", "source",
+          "render_fps", "presented_fps", "note")
+
+
+def read_jsonl(path):
+    if not Path(path).is_file():
+        return []
+    out = []
+    for line in Path(path).read_text().splitlines():
+        if line.strip():
+            out.append(json.loads(line))
+    return out
 
 
 def p_version(text):
-    """'malideck p25 (...)' -> v25; '0.7.1 (vc 27)' -> vc27; '1.0.0-p22-...' -> p22.
-
-    The p25 APK is the MediaDeck 1.0.0 build that installs as versionCode 25. Its APK was pulled
-    from the X8 before the update (/tmp/opencode/x8-current-v25.apk), so that build is named v25 and
-    its historical rows stay attributable now that the original p25 file is gone.
-    """
+    """'malideck p25 (...)' -> v25; '0.7.1 (vc 27)' -> vc27; 'p22 ...' -> p22."""
     t = str(text)
     if re.search(r"\bp25\b|\bvc\s*25\b", t):
         return "v25"
     m = re.search(r"p(\d+)\b", t)
     if m:
         return "p" + m.group(1)
-    m = re.search(r"\bvc\s*(\d+)\b", str(text))
+    m = re.search(r"\bvc\s*(\d+)\b", t)
     if m:
         return "vc" + m.group(1)
-    m = re.search(r"\b(v\d+)\b", str(text))
+    m = re.search(r"\b(v\d+)\b", t)
     return m.group(1) if m else "unknown"
 
 
 def mali_version(text):
-    """A driver commit stays as its short hash; anything else is not a version we can name."""
     t = str(text or "").split("-dirty")[0]
     return t[:9] if re.fullmatch(r"[0-9a-f]{7,40}", t) else "unknown"
 
 
+def commit_of(text):
+    """Short driver hash when the build string names one, else None."""
+    m = re.search(r"\b(?:at|commit)\s+([0-9a-f]{7,40})", str(text or ""))
+    return m.group(1)[:9] if m else None
+
+
 def day(ts, date):
-    if ts:
-        return ts
-    return (date or "1970-01-01") + "T12:00:00+01:00"
+    return ts or (date or "1970-01-01") + "T12:00:00+01:00"
 
 
-def from_seed():
-    if not SEED.is_file():
-        return []
-    return [json.loads(l) for l in SEED.read_text().splitlines() if l.strip()]
+class Sink:
+    def __init__(self):
+        self.rows = []
+        self.rejected = []
 
-
-def from_bench2():
-    path = ROOT / "bench/results.jsonl"
-    rows = []
-    if not path.is_file():
-        return rows
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        dev = DEVICE.get(r.get("phone"))
-        pres = r.get("presented") or {}
-        fps = pres.get("fps")
-        if dev is None:
-            continue  # unknown phone: keep it out of the store rather than guessing a device
-        rows.append({
-            "ts": day(None, r.get("date")),
-            "device": dev,
-            "stack": STACK.get(r.get("driver"), "unknown"),
-            "version": p_version(r.get("version")) if r.get("driver") == "bridge"
-                       else mali_version(r.get("version")),
-            "workload": WORKLOAD.get(r.get("bench"), r.get("bench") or "unknown"),
-            "fps": float(fps) if fps else 0.0,
-            "brightness_mean": None,
-            "status": "visible" if fps else "unverified",
-            "source": f"bench/results.jsonl ({r.get('bench')}/{r.get('variant')}, {r.get('date')}, "
-                      f"presented.fps; date-only, no time)",
-            "note": r.get("variant"),
+    def reject(self, reason, detail, r, **extra):
+        self.rejected.append({
+            "ts": r.get("ts") or r.get("date"),
+            "device": extra.pop("device", None) or r.get("device") or r.get("alias") or r.get("phone"),
+            "workload": extra.pop("workload", None) or r.get("workload") or r.get("bench"),
+            "reason": reason,
+            "detail": detail,
+            "observed_fps": extra.get("observed_fps"),
+            "panel_hz": extra.get("panel_hz"),
+            "source": extra.get("source") or "",
         })
-    return rows
 
 
-def from_menu():
-    path = ROOT / "bench/menu.jsonl"
-    rows = []
-    if not path.is_file():
-        return rows
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        dev = DEVICE.get(r.get("phone"))
-        fps = r.get("avg_fps")
-        ok = bool(r.get("valid")) and bool(fps)
-        rows.append({
-            "ts": day(r.get("ts"), r.get("date")),
-            "device": dev or "unknown",
-            "stack": "bridge",
-            "version": p_version(f"{r.get('app_version') or ''} (vc {r.get('version_code')})"),
-            "workload": "steam-menu",
-            "fps": float(fps) if fps else 0.0,
-            "brightness_mean": None,
-            "status": "visible" if ok else "unverified",
-            "source": f"bench/menu.jsonl ({r.get('date')}, profile={r.get('profile')}, "
-                      f"avg_fps=render avg; invalid_reason={r.get('invalid_reason')})",
-            "note": "profile=" + str(r.get("profile")),
-        })
-    return rows
-
-
-def from_menubench():
-    path = MEDIADECK / "results/menubench.jsonl"
-    rows = []
-    if not path.is_file():
-        return rows
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        r = json.loads(line)
+def from_menubench(sink):
+    """menubench: screen.fps is displayed, render.avg_fps is the render producer."""
+    for r in read_jsonl(MENUBENCH):
         dev = DEVICE.get(r.get("alias"))
+        panel = r.get("panel_hz")
+        panel = round(float(panel)) if panel is not None else PANEL.get(dev)
+        src = f"menubench ({r.get('ts')}, scenario={r.get('scenario')}, rep={r.get('rep')})"
         if dev is None:
+            sink.reject("unknown_device", f"alias={r.get('alias')}", r, source=src,
+                        workload="steam-menu")
             continue
-        ren = r.get("render") or {}
-        fps = ren.get("avg_fps")
-        ok = bool(r.get("ok")) and bool(fps)
-        if ok:
-            status = "visible"
-        elif "FAILED" in str(r.get("status")) or "crash" in str(r.get("status")).lower():
-            status = "crash"
-        else:
-            status = "not_run"
-        rows.append({
+        if not r.get("ok"):
+            sink.reject("not_ok", str(r.get("status"))[:120], r, source=src, panel_hz=panel,
+                        workload="steam-menu")
+            continue
+        if str(r.get("profile")) == "uncapped":
+            scr = r.get("screen") or {}
+            ren = (r.get("render") or {}).get("avg_fps")
+            sink.reject("uncapped_profile",
+                        f"not comparable with default; screen.fps={scr.get('fps')}, "
+                        f"render.avg_fps={ren}", r, source=src,
+                        observed_fps=scr.get("fps"), panel_hz=panel, workload="steam-menu")
+            continue
+        scr = r.get("screen") or {}
+        fps = scr.get("fps")
+        if not isinstance(fps, (int, float)):
+            sink.reject("no_displayed_fps", "screen.fps absent", r, source=src, panel_hz=panel,
+                        workload="steam-menu")
+            continue
+        if panel is None:
+            sink.reject("no_panel_hz", "panel_hz absent; ceiling not checkable", r, source=src,
+                        workload="steam-menu")
+            continue
+        if fps > panel + 2:
+            sink.reject("above_panel_ceiling", f"{fps} fps on a {panel} Hz panel",
+                        r, source=src, observed_fps=fps, panel_hz=panel, workload="steam-menu")
+            continue
+        b = r.get("brightness_mean")
+        status = "black" if (fps < 5 or (isinstance(b, (int, float)) and b <= 20)) else "visible"
+        sink.rows.append({
             "ts": day(r.get("ts"), None),
             "device": dev,
             "stack": "bridge",
             "version": p_version(f"{r.get('app_version') or ''} (vc {r.get('version_code')})"),
+            "driver_sha": commit_of(r.get("build")),
             "workload": "steam-menu",
-            "fps": float(fps) if fps else 0.0,
-            "brightness_mean": None,
+            "metric": "displayed_fps",
+            "profile": str(r.get("profile") or "unknown"),
+            "fps": round(float(fps), 2),
+            "panel_hz": panel,
+            "reps": 1,
+            "brightness_mean": b if isinstance(b, (int, float)) else None,
             "status": status,
-            "source": f"{path} ({r.get('ts')}, profile={r.get('profile')}, "
-                      f"status={r.get('status')})",
-            "note": "profile=" + str(r.get("profile")) + ("" if ok else "; " + str(r.get("status"))),
+            "source": src,
+            "render_fps": round(float((r.get("render") or {}).get("avg_fps")), 2)
+                          if (r.get("render") or {}).get("avg_fps") is not None else None,
+            "presented_fps": None,
+            "note": f"screen.fps; render.avg_fps={((r.get('render') or {}).get('avg_fps'))} "
+                    f"is render-side and not used",
         })
+
+
+def from_bench2(sink):
+    """bench/results.jsonl: presented.fps is the app's present rate, not a displayed fps."""
+    for r in read_jsonl(BENCH2):
+        sink.reject("presented_fps_not_displayed",
+                    f"presented.fps={(r.get('presented') or {}).get('fps')} is producer-side",
+                    {"ts": (r.get("date") or "") + "T00:00:00",
+                     "device": DEVICE.get(r.get("phone"), r.get("phone")),
+                     "workload": WORKLOAD.get(r.get("bench"), r.get("bench"))},
+                    observed_fps=(r.get("presented") or {}).get("fps"),
+                    source=f"bench/results.jsonl ({r.get('bench')}/{r.get('variant')})")
+
+
+def from_menu(sink):
+    """bench/menu.jsonl: avg_fps is the render average, not screen.fps."""
+    for r in read_jsonl(MENU):
+        sink.reject("render_avg_not_displayed",
+                    f"avg_fps={r.get('avg_fps')} is render-side; no screen.fps in this file",
+                    {"ts": day(r.get("ts"), r.get("date")),
+                     "device": DEVICE.get(r.get("phone"), r.get("phone")),
+                     "workload": "steam-menu"},
+                    observed_fps=r.get("avg_fps"), panel_hz=r.get("panel_hz"),
+                    source=f"bench/menu.jsonl ({r.get('date')})")
+
+
+def from_seed(sink):
+    """FINDINGS.md / owner notes: a claim with no displayed-fps source, panel_hz or reps."""
+    for r in read_jsonl(SEED):
+        sink.reject("doc_claim_not_measurable",
+                    "no screen.fps, no panel_hz, no reps; re-run under docs/MEASURE.md",
+                    r, observed_fps=r.get("fps"), source=str(r.get("source"))[:120])
+
+
+def assign_reps(rows):
+    """reps = visible reps in the same (device, stack, version, workload, profile, panel, day)."""
+    groups = {}
+    for r in rows:
+        key = (r["device"], r["stack"], r["version"], r["workload"], r["profile"],
+               r["panel_hz"], r["ts"][:10])
+        groups.setdefault(key, []).append(r)
+    for group in groups.values():
+        visible = sum(1 for r in group if r["status"] == "visible" and r["fps"] and r["fps"] > 0)
+        for r in group:
+            r["reps"] = visible
     return rows
 
 
-def main():
-    check = "--check" in sys.argv[1:]
-    rows = []
-    for loader in (from_seed, from_bench2, from_menu, from_menubench):
-        rows.extend(loader())
-    # Stable order, then de-duplicate identical measurements (both logs can record the same run).
+def build():
+    sink = Sink()
+    from_menubench(sink)
+    from_bench2(sink)
+    from_menu(sink)
+    from_seed(sink)
+    rows = assign_reps(sink.rows)
     rows.sort(key=lambda r: (r["ts"], r["device"], r["stack"], r["workload"], r["version"],
                              r["fps"], r["source"]))
     seen, out = set(), []
     for r in rows:
-        key = (r["ts"], r["device"], r["stack"], r["version"], r["workload"], round(r["fps"], 3))
+        key = (r["ts"], r["device"], r["stack"], r["version"], r["workload"], r["profile"],
+               round(r["fps"], 2))
         if key in seen:
             continue
         seen.add(key)
-        out.append({k: r.get(k) for k in ("ts", "device", "stack", "version", "workload", "fps",
-                                          "brightness_mean", "status", "source", "note")
-                    if r.get(k) is not None or k in ("brightness_mean",)})
-    text = "".join(json.dumps(r, sort_keys=False, ensure_ascii=False) + "\n" for r in out)
+        out.append({k: r.get(k) for k in FIELDS})
+    rej = sorted(sink.rejected, key=lambda r: (str(r["ts"]), str(r["device"]),
+                                               str(r["workload"]), r["reason"]))
+    return out, rej
+
+
+def main():
+    check = "--check" in sys.argv[1:]
+    rows, rejected = build()
+    text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+    rtext = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rejected)
     if check:
-        cur = OUT.read_text() if OUT.is_file() else ""
-        if cur != text:
-            print(f"bench: {OUT.relative_to(ROOT)} is stale; run make bench", file=sys.stderr)
+        stale = []
+        if (OUT.read_text() if OUT.is_file() else "") != text:
+            stale.append(str(OUT.relative_to(ROOT)))
+        if (REJ.read_text() if REJ.is_file() else "") != rtext:
+            stale.append(str(REJ.relative_to(ROOT)))
+        if stale:
+            print("bench: stale: " + ", ".join(stale) + "; run make bench", file=sys.stderr)
             return 1
-        print(f"bench: {OUT.relative_to(ROOT)} up to date ({len(out)} rows)")
+        print(f"bench: {OUT.relative_to(ROOT)} and {REJ.relative_to(ROOT)} up to date "
+              f"({len(rows)} accepted, {len(rejected)} rejected)")
         return 0
     OUT.write_text(text)
-    print(f"bench: wrote {OUT.relative_to(ROOT)} ({len(out)} rows from {len(SOURCES)} sources)")
+    REJ.write_text(rtext)
+    counts = Counter(r["reason"] for r in rejected)
+    print(f"bench: wrote {OUT.relative_to(ROOT)} ({len(rows)} displayed-fps rows) and "
+          f"{REJ.relative_to(ROOT)} ({len(rejected)} rejected)")
+    for reason, n in counts.most_common():
+        print(f"bench:   rejected {n:4d} {reason}")
     return 0
 
 
