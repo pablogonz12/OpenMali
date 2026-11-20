@@ -393,8 +393,8 @@ Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/rig
 
 | phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
 |---|---|---|---|---|---|---|---|---|---|---|
-| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 60 | 0/5 | INVALID: FAILED after retries: env set failed: {'deviceSerial': '192.168.3.116:5555', 'er | 2026-11-20 |
-| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/5 | INVALID: FAILED after retries: env set failed: {'deviceSerial': '192.168.3.116:5555', 'er | 2026-11-20 |
+| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 60 | 0/5 | INVALID: FAILED after retries: env set failed: {'deviceSerial': '<device-serial>', 'er | 2026-11-20 |
+| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/5 | INVALID: FAILED after retries: env set failed: {'deviceSerial': '<device-serial>', 'er | 2026-11-20 |
 
 ### MediaDeck vc 29 (0.7.1) (2026-11-20)
 
