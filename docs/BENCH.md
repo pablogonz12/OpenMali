@@ -10,7 +10,7 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 
 ## Coverage
 
-9 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 219 missing of 231 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
+10 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 239 missing of 252 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
 
 | workload | device | stack | rows | valid points | no-valid-point rows | last valid version |
 |---|---|---|---|---|---|---|
@@ -21,7 +21,7 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 | steam-menu | x4 | bridge | 1 | 0 | 1 | — |
 | vkcube-wayland | x8 | mali-open | 3 | 0 | 3 | — |
 | vkcube-wayland | cmf | bridge | 3 | 3 | 0 | arm-v1.r44p1 |
-| vkcube-wayland | cmf | mali-open | 6 | 6 | 0 | 65feef75 |
+| vkcube-wayland | cmf | mali-open | 9 | 9 | 0 | efc5aa7f |
 
 ## cube/cards (bench2 --bench cube)
 
@@ -180,9 +180,9 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 | 2026-11-20 13:19 | x8 | bridge | vc19 | default | 81.4 | 120 | 3 | - | - | n/a | n/a | n/a | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
 | 2026-11-20 13:21 | x8 | bridge | vc19 | default | 79.4 | 120 | 3 | - | - | n/a | n/a | n/a | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
 | 2026-11-20 13:23 | x8 | bridge | vc19 | default | 108.2 | 120 | 3 | - | - | n/a | n/a | n/a | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
-| 2026-11-20 17:30 | x8 | mali-open | 461537b7 | default | 7.7 | 120 | 3 | - | 80.1 | 40.6 | n/a | n/a | visible | - | X8 rep 1 of 3; off-cadence 80.1 % (a ~7 fps shelf, honestly slow). temp 40.6 °C as reported with this run (no matching line in the lane note: unverified). cpu/gpu load not measured. brightness_mean not captured (fps from the compositor). |
-| 2026-11-20 17:31 | x8 | mali-open | 461537b7 | default | 3.3 | 120 | 3 | - | 78.6 | 40.6 | n/a | n/a | visible | - | X8 rep 2 of 3; off-cadence 78.6 %. cpu/gpu load not measured. |
-| 2026-11-20 17:32 | x8 | mali-open | 461537b7 | default | 5.0 | 120 | 3 | - | 75.5 | 40.6 | n/a | n/a | visible | - | X8 rep 3 of 3; off-cadence 75.5 %. Nothing above panel+2: the driver-mode shelf really is ~3-8 fps, while the bridge rows for the same workload are ~105 (X8 v25). |
+| 2026-11-20 17:30 | x8 | mali-open | 461537b7 | default | 7.7 | 120 | 3 | - | 80.1 | 40.6 | n/a | n/a | visible | - | X8 rep 1 of 3; off-cadence 80.1 % (a ~7 fps shelf, honestly slow). temp 40.6 °C as reported with this run (no matching line in the lane note: unverified). cpu/gpu load not measured. brightness_mean not captured (fps from the compositor). [Older X8 measurement of 549fae7c, 2 usable reps: contested, not comparable with the CMF efc5aa7f baseline — it predates the present-path fixes and was CPU-starved.] |
+| 2026-11-20 17:31 | x8 | mali-open | 461537b7 | default | 3.3 | 120 | 3 | - | 78.6 | 40.6 | n/a | n/a | visible | - | X8 rep 2 of 3; off-cadence 78.6 %. cpu/gpu load not measured. [Older X8 measurement of 549fae7c, 2 usable reps: contested, not comparable with the CMF efc5aa7f baseline — it predates the present-path fixes and was CPU-starved.] |
+| 2026-11-20 17:32 | x8 | mali-open | 461537b7 | default | 5.0 | 120 | 3 | - | 75.5 | 40.6 | n/a | n/a | visible | - | X8 rep 3 of 3; off-cadence 75.5 %. Nothing above panel+2: the driver-mode shelf really is ~3-8 fps, while the bridge rows for the same workload are ~105 (X8 v25). [Older X8 measurement of 549fae7c, 2 usable reps: contested, not comparable with the CMF efc5aa7f baseline — it predates the present-path fixes and was CPU-starved.] |
 | 2026-11-20 18:00 | cmf | mali-open | ef9f1e39 | default | 7.5 | 120 | 3 | - | 73.2 | 32.0 | n/a | n/a | visible | - | CMF rep 1 of 3 (navigating so the shelf repaints); off-cadence 73.2 %. Battery 30 °C before -&gt; 32 °C after. cpu/gpu load not measured. |
 | 2026-11-20 18:01 | cmf | mali-open | ef9f1e39 | default | 7.9 | 120 | 3 | - | 53.0 | 32.0 | n/a | n/a | visible | - | CMF rep 2 of 3; off-cadence 53.0 %. |
 | 2026-11-20 18:02 | cmf | mali-open | ef9f1e39 | default | 1.6 | 120 | 3 | - | 61.2 | 32.0 | n/a | n/a | visible | - | CMF rep 3 of 3; off-cadence 61.2 % — key loop ended and the shelf went static, so this rep is the weakest: median of the run is 7.5, not 7.9. |
@@ -239,9 +239,9 @@ glClear readback. A swap that succeeds while the screenshot stays black is a bla
 
 vkcube over Wayland: the first driver-mode lane that reaches a real present (`present #20 -> VK_SUCCESS`). A WSI smoke workload — it says the wayland swapchain/present path works and how fast the cube is paced, never a game's fps. Only compare within this lane.
 
-9 plotted point(s) from ≥3-rep default-profile runs; 12 stored row(s) total.
+12 plotted point(s) from ≥3-rep default-profile runs; 15 stored row(s) total.
 
-series (one line per build; a driver sha is never joined with another): bridge/CMF `arm-v1.r44p1` — 3 row(s), reps=3, latest 117.1 @11-20 15:42, off-cad 1.1 %; mali-open/CMF `65feef75` — 6 row(s), reps=3, latest 118.1 @11-20 15:22, off-cad 0.8 %, runs `r1` median 117.5 (3 reps), `r2` median 118.2 (3 reps) — current best `r2`; mali-open/X8 `549fae7c` — 2 row(s), reps=2, latest 72.9 @11-20 15:00
+series (one line per build; a driver sha is never joined with another): bridge/CMF `arm-v1.r44p1` — 3 row(s), reps=3, latest 117.1 @11-20 15:42, off-cad 1.1 %; mali-open/CMF `65feef75` — 6 row(s), reps=3, latest 118.1 @11-20 15:22, off-cad 0.8 %, runs `r1` median 117.5 (3 reps), `r2` median 118.2 (3 reps) — current best `r2`; mali-open/CMF `efc5aa7f` — 3 row(s), reps=3, latest 118.1 @11-21 02:27, off-cad 0.8 %; mali-open/X8 `549fae7c` — 2 row(s), reps=2, latest 72.9 @11-20 15:00
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="vkcube-wayland displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="330" fill="#ffffff"/>
@@ -261,42 +261,49 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 <line x1="56" y1="88.0" x2="884" y2="88.0" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.8"/>
 <text x="880" y="83.0" font-size="9.5" fill="#b91c1c" text-anchor="end">CMF/X8 panel 120 Hz ceiling</text>
 <line x1="56.0" y1="262" x2="56.0" y2="267" stroke="#9ca3af"/>
-<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:33</text>
+<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:56</text>
 <line x1="263.0" y1="262" x2="263.0" y2="267" stroke="#9ca3af"/>
-<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:56</text>
+<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 17:48</text>
 <line x1="470.0" y1="262" x2="470.0" y2="267" stroke="#9ca3af"/>
-<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:19</text>
+<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 20:41</text>
 <line x1="677.0" y1="262" x2="677.0" y2="267" stroke="#9ca3af"/>
-<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:42</text>
+<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 23:34</text>
 <line x1="884.0" y1="262" x2="884.0" y2="267" stroke="#9ca3af"/>
-<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 16:05</text>
-<polyline points="659.0,91.9 668.0,91.3 677.0,92.2" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
-<rect x="655.6" y="88.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="659.0" y="84.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
-<rect x="664.6" y="87.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="668.0" y="84.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.7×3</text>
-<rect x="673.6" y="88.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="677.0" y="85.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.1×3</text>
-<polyline points="281.0,235.0 299.0,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
-<circle cx="263.0" cy="262.0" r="4.2" fill="#ffffff" stroke="#b91c1c" stroke-width="1.6"/>
-<text x="263.0" y="255.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">unverified</text>
-<circle cx="281.0" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="281.0" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
-<circle cx="299.0" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="299.0" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
-<polyline points="299.0,91.9 308.0,91.6 317.0,91.6 479.0,90.6 488.0,90.6 497.0,90.8" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
-<rect x="295.6" y="88.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="299.0" y="84.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
-<rect x="304.6" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="308.0" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
-<rect x="313.6" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="317.0" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
-<rect x="475.6" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="479.0" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
-<rect x="484.6" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="488.0" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
-<rect x="493.6" y="87.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
-<text x="497.0" y="83.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.1×3</text>
+<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-21 02:27</text>
+<polyline points="108.7,91.9 109.9,91.3 111.1,92.2" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="105.3" y="88.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="108.7" y="84.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
+<rect x="106.5" y="87.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="109.9" y="84.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.7×3</text>
+<rect x="107.7" y="88.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="111.1" y="85.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.1×3</text>
+<polyline points="58.4,235.0 60.8,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
+<circle cx="56.0" cy="262.0" r="4.2" fill="#ffffff" stroke="#b91c1c" stroke-width="1.6"/>
+<text x="56.0" y="255.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">unverified</text>
+<circle cx="58.4" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="58.4" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
+<circle cx="60.8" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="60.8" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
+<polyline points="60.8,91.9 62.0,91.6 63.2,91.6 84.8,90.6 86.0,90.6 87.2,90.8" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="57.4" y="88.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="60.8" y="84.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
+<rect x="58.6" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="62.0" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
+<rect x="59.8" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="63.2" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
+<rect x="81.4" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="84.8" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
+<rect x="82.6" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="86.0" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
+<rect x="83.8" y="87.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="87.2" y="83.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.1×3</text>
+<polyline points="881.6,90.8 882.8,90.6 884.0,90.8" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="878.2" y="87.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="881.6" y="83.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.1×3</text>
+<rect x="879.4" y="87.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="882.8" y="83.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.2×3</text>
+<rect x="880.6" y="87.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="884.0" y="83.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">118.1×3</text>
 </svg>
 
 | day | run | device | stack | version | profile | panel Hz | median fps | reps |
@@ -304,13 +311,14 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 | 2026-11-20 | b1 | cmf | bridge | arm-v1.r44p1 | default | 120 | **117.3** | 3 (117.3, 117.7, 117.1) |
 | 2026-11-20 | r1 | cmf | mali-open | 65feef75 | default | 120 | **117.5** | 3 (117.3, 117.5, 117.5) |
 | 2026-11-20 | r2 | cmf | mali-open | 65feef75 | default | 120 | **118.2** | 3 (118.2, 118.2, 118.1) |
+| 2026-11-21 | r4 | cmf | mali-open | efc5aa7f | default | 120 | **118.1** | 3 (118.1, 118.2, 118.1) |
 
 | when | device | stack | version | profile | displayed fps | panel Hz | reps | brightness | off-cad % | temp °C | cpu idle % | gpu busy % | status | render_fps (not plotted) | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 2026-11-20 14:56 | x8 | mali-open | 549fae7c | default | 0 | 120 | 2 | - | - | n/a | n/a | n/a | unverified | - | rep 0 of 3: cube still starting, no usable present window yet; 0 fps here is &#x27;not measured&#x27;, not a black screen. 2 usable reps exist for this lane, so reps=2 and no best. |
-| 2026-11-20 14:58 | x8 | mali-open | 549fae7c | default | 18.6 | 120 | 2 | - | - | n/a | n/a | n/a | visible | - | usable rep 1 of 2 (rep 0 tainted by cube startup); present #20 -&gt; VK_SUCCESS, exit 0, panel 120 Hz, budget cap 2817 MiB. brightness_mean not captured in this lane (no screenshot); visible by the on-screen counter, never brightness-verified. |
+| 2026-11-20 14:56 | x8 | mali-open | 549fae7c | default | 0 | 120 | 2 | - | - | n/a | n/a | n/a | unverified | - | rep 0 of 3: cube still starting, no usable present window yet; 0 fps here is &#x27;not measured&#x27;, not a black screen. 2 usable reps exist for this lane, so reps=2 and no best. [Older X8 measurement of 549fae7c, 2 usable reps: contested, not comparable with the CMF efc5aa7f baseline — it predates the present-path fixes and was CPU-starved.] |
+| 2026-11-20 14:58 | x8 | mali-open | 549fae7c | default | 18.6 | 120 | 2 | - | - | n/a | n/a | n/a | visible | - | usable rep 1 of 2 (rep 0 tainted by cube startup); present #20 -&gt; VK_SUCCESS, exit 0, panel 120 Hz, budget cap 2817 MiB. brightness_mean not captured in this lane (no screenshot); visible by the on-screen counter, never brightness-verified. [Older X8 measurement of 549fae7c, 2 usable reps: contested, not comparable with the CMF efc5aa7f baseline — it predates the present-path fixes and was CPU-starved.] |
 | 2026-11-20 15:00 | cmf | mali-open | 65feef75 | default | 117.3 | 120 | 3 | - | - | n/a | n/a | n/a | visible | - | rep 1 of 3. present #20 -&gt; VK_SUCCESS, rc=0; driverName mali-own, guest ICD libvulkan_panfrost.so 65feef75, budget cap 1024 MiB, off-cadence 0.8%. 3/3 reps usable: this is a quotable point (median 117.5 on a 120 Hz panel). brightness_mean not captured in this lane (fps read from the compositor, no screenshot). Superseded by the later round-2 run of the same sha (118.2/118.2/118.1). |
-| 2026-11-20 15:00 | x8 | mali-open | 549fae7c | default | 72.9 | 120 | 2 | - | - | n/a | n/a | n/a | visible | - | usable rep 2 of 2 (rep 0 tainted by cube startup); median of 18.6/72.9 = 45.8, reps=2 so it is a point but not a quotable &#x27;best&#x27;. brightness_mean not captured in this lane; never brightness-verified. |
+| 2026-11-20 15:00 | x8 | mali-open | 549fae7c | default | 72.9 | 120 | 2 | - | - | n/a | n/a | n/a | visible | - | usable rep 2 of 2 (rep 0 tainted by cube startup); median of 18.6/72.9 = 45.8, reps=2 so it is a point but not a quotable &#x27;best&#x27;. brightness_mean not captured in this lane; never brightness-verified. [Older X8 measurement of 549fae7c, 2 usable reps: contested, not comparable with the CMF efc5aa7f baseline — it predates the present-path fixes and was CPU-starved.] |
 | 2026-11-20 15:01 | cmf | mali-open | 65feef75 | default | 117.5 | 120 | 3 | - | - | n/a | n/a | n/a | visible | - | rep 2 of 3. present #20 -&gt; VK_SUCCESS, rc=0; driverName mali-own, guest ICD libvulkan_panfrost.so 65feef75, budget cap 1024 MiB, off-cadence 0.8%. 3/3 reps usable: this is a quotable point (median 117.5 on a 120 Hz panel). brightness_mean not captured in this lane (fps read from the compositor, no screenshot). Superseded by the later round-2 run of the same sha (118.2/118.2/118.1). |
 | 2026-11-20 15:02 | cmf | mali-open | 65feef75 | default | 117.5 | 120 | 3 | - | - | n/a | n/a | n/a | visible | - | rep 3 of 3. present #20 -&gt; VK_SUCCESS, rc=0; driverName mali-own, guest ICD libvulkan_panfrost.so 65feef75, budget cap 1024 MiB, off-cadence 0.8%. 3/3 reps usable: this is a quotable point (median 117.5 on a 120 Hz panel). brightness_mean not captured in this lane (fps read from the compositor, no screenshot). Superseded by the later round-2 run of the same sha (118.2/118.2/118.1). |
 | 2026-11-20 15:20 | cmf | mali-open | 65feef75 | default | 118.2 | 120 | 3 | - | 0.8 | n/a | n/a | n/a | visible | - | rep 1 of 3 (round 2, persistent recipe; supersedes the earlier 15:0x run of this sha). 118.2/118.2/118.1 on a 120 Hz panel, offCadence 0.8 % (clean pacing, not just a mean), driverName mali-own 65feef75, present #20 -&gt; VK_SUCCESS rc 0, uptime 2173 s no panic. brightness_mean not captured in this lane (fps from the compositor, no screenshot). |
@@ -319,6 +327,9 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 | 2026-11-20 15:40 | cmf | bridge | arm-v1.r44p1 | default | 117.3 | 120 | 3 | - | 1.2 | n/a | n/a | n/a | visible | - | bridge rep 1 of 3 (mean 117.37, offCadence 1.2/0.9/1.1 %); app com.droiddeck.launcher vc19, vkBridge true, Arm proprietary v1.r44p1-01eac0. Reference for the mali-open pair on this device/workload. brightness_mean not captured (fps from the compositor). |
 | 2026-11-20 15:41 | cmf | bridge | arm-v1.r44p1 | default | 117.7 | 120 | 3 | - | 0.9 | n/a | n/a | n/a | visible | - | bridge rep 2 of 3 (mean 117.37, offCadence 1.2/0.9/1.1 %); app com.droiddeck.launcher vc19, vkBridge true, Arm proprietary v1.r44p1-01eac0. Reference for the mali-open pair on this device/workload. brightness_mean not captured (fps from the compositor). |
 | 2026-11-20 15:42 | cmf | bridge | arm-v1.r44p1 | default | 117.1 | 120 | 3 | - | 1.1 | n/a | n/a | n/a | visible | - | bridge rep 3 of 3 (mean 117.37, offCadence 1.2/0.9/1.1 %); app com.droiddeck.launcher vc19, vkBridge true, Arm proprietary v1.r44p1-01eac0. Reference for the mali-open pair on this device/workload. brightness_mean not captured (fps from the compositor). |
+| 2026-11-21 02:25 | cmf | mali-open | efc5aa7f | default | 118.1 | 120 | 3 | - | 0.8 | 36.0 | n/a | n/a | visible | - | CMF rep 1 of 3 on efc5aa7f: displayed fps 118.1 (compositor present timestamps, not a swapchain render rate), 3549 frames / 30 s, p2p ~8.5 ms, off-cadence 0.8 %; cube confirmed drawing (two screenshots 5 s apart, different orientations). Battery 37-&gt;36 C. Healthy present baseline after the #296 revert (d26e8cb). |
+| 2026-11-21 02:26 | cmf | mali-open | efc5aa7f | default | 118.2 | 120 | 3 | - | 0.8 | 36.0 | n/a | n/a | visible | - | CMF rep 2 of 3 on efc5aa7f: displayed fps 118.2 (compositor present timestamps, not a swapchain render rate), 3551 frames / 30 s, p2p ~8.5 ms, off-cadence 0.8 %; cube confirmed drawing (two screenshots 5 s apart, different orientations). Battery 37-&gt;36 C. Healthy present baseline after the #296 revert (d26e8cb). |
+| 2026-11-21 02:27 | cmf | mali-open | efc5aa7f | default | 118.1 | 120 | 3 | - | 0.8 | 36.0 | n/a | n/a | visible | - | CMF rep 3 of 3 on efc5aa7f: displayed fps 118.1 (compositor present timestamps, not a swapchain render rate), 3549 frames / 30 s, p2p ~8.5 ms, off-cadence 0.8 %; cube confirmed drawing (two screenshots 5 s apart, different orientations). Battery 37-&gt;36 C. Healthy present baseline after the #296 revert (d26e8cb). |
 
 <details><summary>sources for these rows</summary>
 
@@ -334,6 +345,9 @@ series (one line per build; a driver sha is never joined with another): bridge/C
 - `2026-11-20` cmf/bridge/arm-v1.r44p1/vkcube-wayland fps=117.3 reps=3 — bridge reference run 2026-11-20 15:3x (CMF 001003469003711), vkcube --c 100000 in the guest Wayland session, 3 x droiddeckctl pacing --seconds 30, driverName Mali-G615 MC2 v1.r44p1-01eac0 (Arm proprietary, droidbridge_icd.json), lane note /tmp/opencode/cmf-lane2.md §2-6
 - `2026-11-20` cmf/bridge/arm-v1.r44p1/vkcube-wayland fps=117.7 reps=3 — bridge reference run 2026-11-20 15:3x (CMF 001003469003711), vkcube --c 100000 in the guest Wayland session, 3 x droiddeckctl pacing --seconds 30, driverName Mali-G615 MC2 v1.r44p1-01eac0 (Arm proprietary, droidbridge_icd.json), lane note /tmp/opencode/cmf-lane2.md §2-6
 - `2026-11-20` cmf/bridge/arm-v1.r44p1/vkcube-wayland fps=117.1 reps=3 — bridge reference run 2026-11-20 15:3x (CMF 001003469003711), vkcube --c 100000 in the guest Wayland session, 3 x droiddeckctl pacing --seconds 30, driverName Mali-G615 MC2 v1.r44p1-01eac0 (Arm proprietary, droidbridge_icd.json), lane note /tmp/opencode/cmf-lane2.md §2-6
+- `2026-11-21` cmf/mali-open/efc5aa7f/vkcube-wayland fps=118.1 reps=3 — driver mode 2026-11-21 02:20-02:40 (CMF 001003469003711, round 22), build efc5aa7f (integration @d26e8cb), vkcube --wsi wayland --width 1600 --height 720 --c 100000 in a desktop session, 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/cmf-lane2.md §Round 22
+- `2026-11-21` cmf/mali-open/efc5aa7f/vkcube-wayland fps=118.2 reps=3 — driver mode 2026-11-21 02:20-02:40 (CMF 001003469003711, round 22), build efc5aa7f (integration @d26e8cb), vkcube --wsi wayland --width 1600 --height 720 --c 100000 in a desktop session, 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/cmf-lane2.md §Round 22
+- `2026-11-21` cmf/mali-open/efc5aa7f/vkcube-wayland fps=118.1 reps=3 — driver mode 2026-11-21 02:20-02:40 (CMF 001003469003711, round 22), build efc5aa7f (integration @d26e8cb), vkcube --wsi wayland --width 1600 --height 720 --c 100000 in a desktop session, 3 x droiddeckctl pacing --seconds 30, panel 120 Hz, lane note /tmp/opencode/cmf-lane2.md §Round 22
 
 </details>
 
@@ -350,10 +364,10 @@ vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vk
 3. **steam-menu / x8 / mali-open / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next mali-open commit.
 4. **steam-menu / cmf / mali-open / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next mali-open commit.
 5. **vkcube-wayland / cmf / bridge / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next MediaDeck build (vc 28, unavailable on this host).
-6. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
-7. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+6. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+7. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
 8. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
-_Generated from 43 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._
+_Generated from 46 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._

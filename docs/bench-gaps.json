@@ -39,14 +39,15 @@
    "65feef75",
    "461537b7",
    "ef9f1e39",
+   "efc5aa7f",
    "next"
   ]
  },
  "counts": {
-  "measured": 9,
+  "measured": 10,
   "failed": 3,
-  "missing": 219,
-  "cells": 231,
+  "missing": 239,
+  "cells": 252,
   "unattributed_rows": 0
  },
  "per_workload": {
@@ -119,8 +120,8 @@
    "best_eligible": []
   },
   "vkcube-wayland": {
-   "rows": 12,
-   "valid_points": 9,
+   "rows": 15,
+   "valid_points": 12,
    "best_eligible": [
     [
      "cmf",
@@ -132,6 +133,12 @@
      "cmf",
      "mali-open",
      "65feef75",
+     "default"
+    ],
+    [
+     "cmf",
+     "mali-open",
+     "efc5aa7f",
      "default"
     ]
    ]
@@ -229,23 +236,6 @@
    }
   },
   {
-   "device": "cmf",
-   "stack": "mali-open",
-   "version": "next",
-   "workload": "vkcube-wayland",
-   "state": "missing",
-   "value": 100,
-   "why": "moves a line's endpoint (series has data)",
-   "series_valid": 6,
-   "runbook": {
-    "device": "CMF Phone 1 (v11, G615)",
-    "apk_or_driver": "next mali-open commit",
-    "driver": "mali-open ICD",
-    "test": "vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf",
-    "build_available": false
-   }
-  },
-  {
    "device": "x8",
    "stack": "bridge",
    "version": "next",
@@ -259,6 +249,23 @@
     "apk_or_driver": "next MediaDeck build (vc 28, unavailable on this host)",
     "driver": "MaliBridge (MediaDeck)",
     "test": "MediaDeck scripts/quick/menubench poco-x8 --profile default",
+    "build_available": false
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "next",
+   "workload": "vkcube-wayland",
+   "state": "missing",
+   "value": 100,
+   "why": "moves a line's endpoint (series has data)",
+   "series_valid": 9,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "next mali-open commit",
+    "driver": "mali-open ICD",
+    "test": "vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf",
     "build_available": false
    }
   },
@@ -1449,6 +1456,125 @@
   {
    "device": "x8",
    "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "cards",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "tools/bench2 poco-x8 --bench cube --driver ours",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "triangles",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "tools/bench2 poco-x8 --bench triangle --driver ours",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "steam-menu",
+   "state": "missing",
+   "value": 10,
+   "why": "another version of an existing series",
+   "series_valid": 3,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "MediaDeck scripts/quick/menubench poco-x8 --profile default",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "megabonk",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "bench/megabonk-compare.sh run ours 90 30",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "glclear",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "mali-gaming kopperglc run against the ours ICD",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "vkcube-wayland",
+   "state": "missing",
+   "value": 10,
+   "why": "another version of an existing series",
+   "series_valid": 0,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x8",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "vkcube-xcb",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "Poco X8 Pro Max (v13, G925)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "vkcube --c 20 --wsi xcb under DISPLAY (driver mode) on poco-x8",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x8",
+   "stack": "mali-open",
    "version": "next",
    "workload": "cards",
    "state": "missing",
@@ -2352,7 +2478,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 6,
+   "series_valid": 9,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at 549fae7c",
@@ -2471,7 +2597,7 @@
    "state": "measured",
    "value": 0,
    "why": "measured",
-   "series_valid": 6,
+   "series_valid": 9,
    "points": 6,
    "valid_points": 6
   },
@@ -2585,7 +2711,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 6,
+   "series_valid": 9,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at 461537b7",
@@ -2699,7 +2825,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 6,
+   "series_valid": 9,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at ef9f1e39",
@@ -2720,6 +2846,120 @@
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at ef9f1e39",
+    "driver": "mali-open ICD",
+    "test": "vkcube --c 20 --wsi xcb under DISPLAY (driver mode) on cmf",
+    "build_available": true
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "cards",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "tools/bench2 cmf --bench cube --driver ours",
+    "build_available": true
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "triangles",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "tools/bench2 cmf --bench triangle --driver ours",
+    "build_available": true
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "steam-menu",
+   "state": "missing",
+   "value": 10,
+   "why": "another version of an existing series",
+   "series_valid": 3,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "MediaDeck scripts/quick/menubench cmf --profile default",
+    "build_available": true
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "megabonk",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "bench/megabonk-compare.sh run ours 90 30",
+    "build_available": true
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "glclear",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "mali-gaming kopperglc run against the ours ICD",
+    "build_available": true
+   }
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "vkcube-wayland",
+   "state": "measured",
+   "value": 0,
+   "why": "measured",
+   "series_valid": 9,
+   "points": 3,
+   "valid_points": 3
+  },
+  {
+   "device": "cmf",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "vkcube-xcb",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "CMF Phone 1 (v11, G615)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
     "driver": "mali-open ICD",
     "test": "vkcube --c 20 --wsi xcb under DISPLAY (driver mode) on cmf",
     "build_available": true
@@ -2818,7 +3058,7 @@
    "state": "missing",
    "value": 100,
    "why": "moves a line's endpoint (series has data)",
-   "series_valid": 6,
+   "series_valid": 9,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "next mali-open commit",
@@ -4032,6 +4272,125 @@
   {
    "device": "x4",
    "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "cards",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "tools/bench2 poco-x4 --bench cube --driver ours",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "triangles",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "tools/bench2 poco-x4 --bench triangle --driver ours",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "steam-menu",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "MediaDeck scripts/quick/menubench poco-x4 --profile default",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "megabonk",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "bench/megabonk-compare.sh run ours 90 30",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "glclear",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "mali-gaming kopperglc run against the ours ICD",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "vkcube-wayland",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x4",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
+   "version": "efc5aa7f",
+   "workload": "vkcube-xcb",
+   "state": "missing",
+   "value": 40,
+   "why": "starts a line (no data for this series yet)",
+   "series_valid": 0,
+   "runbook": {
+    "device": "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)",
+    "apk_or_driver": "mali-open ICD at efc5aa7f",
+    "driver": "mali-open ICD",
+    "test": "vkcube --c 20 --wsi xcb under DISPLAY (driver mode) on poco-x4",
+    "build_available": true
+   }
+  },
+  {
+   "device": "x4",
+   "stack": "mali-open",
    "version": "next",
    "workload": "cards",
    "state": "missing",
@@ -4217,10 +4576,10 @@
    "device": "cmf",
    "stack": "mali-open",
    "workload": "vkcube-wayland",
-   "points": 6,
-   "valid": 6,
+   "points": 9,
+   "valid": 9,
    "hollow": 0,
-   "last": "65feef75"
+   "last": "efc5aa7f"
   }
  ]
 }
