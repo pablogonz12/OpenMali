@@ -201,7 +201,8 @@ driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/p
 ## Limitations
 
 - gamescope cannot work in driver mode: `drmGetDeviceFromDevId()` resolves a node through sysfs, so a bind-mounted `/dev/dri` node can never satisfy it and both of gamescope's backends refuse without one. Returning `hasRender=false` is the honest answer, not a bug to work around (`vk/src/mali_physical_device.c:184-191`, `9476179`).
-- X11 present has three paths (`vk/src/mali_wsi.c`): dma-buf with DRI3+Present (default when the server has both), our own
+- X11 present has three paths (`vk/src/mali_wsi.c`), chosen by the probe *before* the swapchain exists, never as runtime
+  recovery after a failed import: dma-buf with DRI3+Present (default when the server has both), our own
   MIT-SHM segment (a SysV segment plus `XShmPutImage`, `mali_x11_shm_create`), and plain `XPutImage` as the last resort.
   The SHM segment needs neither DRI3 nor `EXT_external_memory_host` — it is the default for an X server without DRI3, and
   `MALI_WSI=dmabuf`/`MALI_WSI=sw` still force either path. Without any of them GL presents slowly.

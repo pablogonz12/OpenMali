@@ -35,7 +35,8 @@ grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
 # 77 = the ICD has no X11 WSI: nothing to test. Any other 77 (a dead X connection, a missing extension the test
 # needs but could not report) is a failure, not a skip.
 if [ "$(cat "$W/nodri3.rc")" = 77 ]; then
-   grep -qE "no X11 WSI|no xcb|VK_ICD_WSI_PLATFORM_XCB" "$W/nodri3.log" && { echo "skip: ICD without X11 WSI"; exit 77; }
+   grep -qE "no X11 WSI|no xcb|VK_ICD_WSI_PLATFORM_XCB|does not advertise VK_KHR_xcb_surface" "$W/nodri3.log" \
+      && { echo "skip: ICD without X11 WSI"; exit 77; }
    echo "FAIL: exit 77 without a 'no X11 WSI' diagnostic"; tail -5 "$W/nodri3.log"; exit 1
 fi
 [ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && ! grep -q 'SUBOPTIMAL' "$W/nodri3.log" \
