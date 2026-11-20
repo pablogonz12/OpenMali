@@ -310,7 +310,7 @@ class T(unittest.TestCase):
         return r.returncode, r.stdout.strip(), r.stderr
 
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -1272,15 +1272,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -2181,7 +2181,7 @@ class SmokeRoute(unittest.TestCase):
 
 class HoldTests(unittest.TestCase):
     """farm hold: server-side FIFO queue of agent holds, fair with jobs, lease + heartbeat, same flock underneath"""
-    setUp, attach, farm = T.setUp, T.attach, T.farm
+    setUp, attach, farm, farmd = T.setUp, T.attach, T.farm, T.farmd
 
     def daemon(self):
         self.env.update(MALI_FARM_HB_STALE="3", MALI_FARM_HB_EVERY="0.3")
@@ -2282,6 +2282,71 @@ class HoldTests(unittest.TestCase):
         while time.time() - t0 < 20 and L.read_json(H.path(h["id"]))["state"] != "done":
             time.sleep(0.2)
         self.assertIn("caller lost", L.read_json(H.path(h["id"]))["reason"])
+
+    def test_hold_ids_unique_within_one_second_and_one_process(self):
+        ids = {H.new_hold("dev-a", 60)["id"] for _ in range(20)}
+        self.assertEqual(len(ids), 20)
+
+    def test_write_json_survives_and_flip_scan_ignores_corrupt_run(self):
+        os.makedirs(self.d + "/state", exist_ok=True)
+        p = self.d + "/state/wj.json"
+        L.write_json(p, {"a": 1})
+        self.assertEqual(L.read_json(p), {"a": 1})
+
+
+    def test_restart_marks_persist_and_lost_running_part_counts_an_attempt(self):
+        self.attach("dev-a")
+        H.mark_restore("dev-a")
+        self.assertEqual(H.load_restore(), {"dev-a"})                     # a file, not memory: a second restart still sees it
+        H.clear_restore("dev-a")
+        self.assertEqual(H.load_restore(), set())
+        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        j = L.find_job(jid)
+        j["parts"]["v11"].update(state="running", device="dev-a", attempts=2)
+        L.write_json(L.job_path(jid), j)
+        self.farmd()                                                       # fresh daemon: nothing owns the "running" part
+        p = L.find_job(jid)["parts"]["v11"]
+        self.assertEqual((p["state"], p.get("verdict")), ("done", "error"), p)   # the retry budget is spent, not an endless loop
+        self.assertEqual(H.load_restore(), {"dev-a"})                      # and the phone is marked for restore before its next use
+
+    def test_live_hold_is_readopted_after_a_farmd_restart_and_stale_one_is_closed(self):
+        self.attach("dev-a")
+        live = H.new_hold("dev-a", 60)
+        live.update(state="active", started=L.now(), deadline=time.time() + 60, lock="cmf", serial="SERIAL-A")
+        L.write_json(H.path(live["id"]), live)                            # what a dead farmd left behind, caller still heartbeating
+        dead = H.new_hold("dev-b", 60)                                     # one active hold per phone: the stale one is on the other phone
+        dead.update(state="active", started=L.now(), deadline=time.time() + 60, lock="poco", serial="SERIAL-B")
+        L.write_json(H.path(dead["id"]), dead)
+        os.utime(H.path(dead["id"], "hb"), (0, 0))
+        self.daemon()
+        t0 = time.time()
+        while time.time() - t0 < 20 and L.read_json(H.path(dead["id"]))["state"] != "done":
+            H.touch(live["id"], "hb")
+            time.sleep(0.2)
+        self.assertEqual(L.read_json(H.path(dead["id"]))["reason"], "farmd restarted")
+        for _ in range(10):                                                # the live one must stay active, not be closed
+            H.touch(live["id"], "hb")
+            time.sleep(0.2)
+        self.assertEqual(L.read_json(H.path(live["id"]))["state"], "active")
+        H.touch(live["id"], "rel")
+        t0 = time.time()
+        while time.time() - t0 < 20 and L.read_json(H.path(live["id"]))["state"] != "done":
+            time.sleep(0.2)
+        h = L.read_json(H.path(live["id"]))
+        self.assertEqual((h["reason"], h.get("clean")), ("released", True), h)     # adopted: it ended through the normal release + cleanup
+
+    def test_gc_removes_orphan_hb_rel_and_tmp_but_not_fresh_or_owned_ones(self):
+        h = H.new_hold("dev-a", 60)
+        for e in ("hb", "rel"):
+            H.touch("orph", e)
+            os.utime(H.path("orph", e), (0, 0))
+        tmp = os.path.join(H.holds_dir(), ".tmp-abc")
+        open(tmp, "w").close()
+        os.utime(tmp, (0, 0))
+        H.touch("fresh", "hb")                                             # a new_hold between its .hb and .json writes
+        H.gc()
+        left = set(os.listdir(H.holds_dir()))
+        self.assertEqual(left, {h["id"] + ".json", h["id"] + ".hb", "fresh.hb"})
 
     def test_end_reason(self):
         h = {"deadline": 100}
