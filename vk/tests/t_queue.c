@@ -183,7 +183,8 @@ test_dmabuf_one(int type, VkExternalMemoryHandleTypeFlagBits ht, const char *nam
       CHECK(pa[i] == ~(0xC0DE0000u + i), "reverse differ at %d", i);
    FreeMemory(dev, b, NULL);
    FreeMemory(dev, a, NULL);
-   close(fd);   /* the descriptor belongs to the caller once it has been returned */
+   /* On success the import took ownership of fd (the driver closes it with the BO): closing it here would
+    * close a descriptor the driver still owns. It is only closed on the failure paths above. */
    printf("{\"test\":\"dmabuf\",\"type\":%d,\"handle\":\"%s\",\"ok\":true}\n", type, name);
    return 1;
 }

@@ -395,7 +395,8 @@ main(int argc, char **argv)
       fflush(stderr);
       int saved = dup(2);
       FILE *cap = tmpfile();
-      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
+      CHECK(saved >= 0 && cap, "stderr capture: dup/tmpfile failed");   /* no dup2 before the file exists */
+      CHECK(dup2(fileno(cap), 2) >= 0, "stderr capture: dup2 failed");
       VkResult rr = CreateDevice(pd, &d2, NULL, &d);
       fflush(stderr);
       dup2(saved, 2);
