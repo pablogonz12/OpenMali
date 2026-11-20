@@ -201,7 +201,10 @@ driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/p
 ## Limitations
 
 - gamescope cannot work in driver mode: `drmGetDeviceFromDevId()` resolves a node through sysfs, so a bind-mounted `/dev/dri` node can never satisfy it and both of gamescope's backends refuse without one. Returning `hasRender=false` is the honest answer, not a bug to work around (`vk/src/mali_physical_device.c:184-191`, `9476179`).
-- X11 present costs one full-image round trip per frame: it is `XPutImage`. MIT-SHM is probed but inert without `EXT_external_memory_host` (`vk/src/mali_wsi.c:54,259`). With no DRI3, GL presents slowly — Steam's UI needs `BL_STEAM_SOFT_COMPOSITING=1` and renders at ~7 fps.
+- X11 present has three paths (`vk/src/mali_wsi.c`): dma-buf with DRI3+Present (default when the server has both), our own
+  MIT-SHM segment (a SysV segment plus `XShmPutImage`, `mali_x11_shm_create`), and plain `XPutImage` as the last resort.
+  The SHM segment needs neither DRI3 nor `EXT_external_memory_host` — it is the default for an X server without DRI3, and
+  `MALI_WSI=dmabuf`/`MALI_WSI=sw` still force either path. Without any of them GL presents slowly.
 - Wayland present is proven on hardware: `vkcube --c 20` on the X8, 20/20 presents, exit 0, 45.8 fps median. X11 present is
   proven on the host harness only (`vk/tests/xwsi-host.sh`); there is no device run of the X11 software path yet, and the
   Steam windows appearing is not evidence that their scene paints. The fake backend issues no kbase BO flags, so the

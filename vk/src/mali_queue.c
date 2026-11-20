@@ -680,13 +680,13 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
     * CPU-visible semaphore to wait, so they wait this fence before reading the image this submission wrote. */
    if (fd >= 0) {
       int d = dup(fd);
-      if (d >= 0) {
-         pthread_mutex_lock(&dev->sync_lock);
-         if (dev->present_fence_fd >= 0)
-            close(dev->present_fence_fd);
-         dev->present_fence_fd = d;
-         pthread_mutex_unlock(&dev->sync_lock);
-      }
+      pthread_mutex_lock(&dev->sync_lock);
+      if (dev->present_fence_fd >= 0)
+         close(dev->present_fence_fd);
+      /* -1 on a failed dup: keeping the previous submission's fence would make the shm present wait a dependency
+       * that has nothing to do with the frame it is about to copy. No fence means "present it now". */
+      dev->present_fence_fd = d;
+      pthread_mutex_unlock(&dev->sync_lock);
    }
    close(fd);
    /* M15: vk_common's present submit has no command buffers, the image acquire semaphores as waits and the render

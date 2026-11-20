@@ -18,6 +18,7 @@
 
 #include <dlfcn.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -307,7 +308,14 @@ parse(int argc, char **argv)
    for (int i = 1; i < argc; i++) {
       const char *a = argv[i];
 #define NEXT() (i + 1 < argc ? argv[++i] : (usage(), (char *)0))
-      if (!strcmp(a, "--seconds")) seconds = atof(NEXT());
+      if (!strcmp(a, "--seconds")) {
+         char *end = NULL;
+         seconds = strtod(NEXT(), &end);
+         if (!end || *end || !isfinite(seconds) || seconds <= 0) {
+            fprintf(stderr, "t_bench: --seconds needs a positive finite number\n");
+            exit(2);   /* parse() is void: same exit path as usage() */
+         }
+      }
       else if (!strcmp(a, "--width")) width = atoi(NEXT());
       else if (!strcmp(a, "--height")) height = atoi(NEXT());
       else if (!strcmp(a, "--samples")) samples = atoi(NEXT());

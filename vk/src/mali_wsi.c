@@ -661,6 +661,9 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
             sc->release_images(sc, 1, &idx);
       }
       if (all_shm) {
+         if (info->pResults)
+            for (uint32_t i = 0; i < info->swapchainCount; i++)
+               info->pResults[i] = VK_SUCCESS;   /* the caller asked for per-swapchain results */
          if (mali_wsi_debug()) {
             static int shm_logged;
             if (!shm_logged) {

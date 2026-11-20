@@ -480,8 +480,11 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       if (env && env[0]) {
          char *end = NULL;
          errno = 0;
+         const char *p = env;
+         while (*p == ' ' || *p == '\t')
+            p++;
          unsigned long long mb = strtoull(env, &end, 10);
-         if (end != env && *end == '\0' && errno == 0 && mb > 0 && mb <= (UINT64_MAX >> 20)) {
+         if (*p != '-' && end != env && *end == '\0' && errno == 0 && mb > 0 && mb <= (UINT64_MAX >> 20)) {
             cap = mb << 20;
             overridden = true;
          } else if (getenv("MALI_WSI_DEBUG")) {
