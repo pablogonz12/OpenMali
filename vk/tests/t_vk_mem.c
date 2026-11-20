@@ -10,7 +10,9 @@
  * M15 device-local type (vk/MEMORY.md): with MALI_DEVICE_LOCAL=1 there is exactly one DEVICE_LOCAL type
  * that is not HOST_VISIBLE, it is type 0 (so a front end taking the lowest bit of a DEVICE_LOCAL mask
  * picks it), vkMapMemory on it fails instead of handing out a pointer that could go stale, and flush/
- * invalidate are accepted as no-ops; without the variable the type is absent. Exit 0 = pass. */
+ * invalidate are accepted as no-ops; without the variable the type is absent. An INDIRECT buffer is never
+ * offered the non-host-visible type, including when its INDIRECT bit arrives through the maintenance5
+ * VkBufferUsageFlags2CreateInfoKHR chain. Exit 0 = pass. */
 #define _DEFAULT_SOURCE
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -81,6 +83,7 @@ main(int argc, char **argv)
 #define D(n) PFN_vk##n n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n)
    D(AllocateMemory); D(FreeMemory); D(MapMemory); D(UnmapMemory); D(FlushMappedMemoryRanges); D(InvalidateMappedMemoryRanges);
    D(GetDeviceMemoryCommitment); D(GetDeviceMemoryOpaqueCaptureAddress); D(DestroyDevice);
+   D(GetDeviceBufferMemoryRequirements);
 
    /* ---- map state machine ---- */
    VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = 65536, .memoryTypeIndex = t_coh};
@@ -151,6 +154,33 @@ main(int argc, char **argv)
    } else {
       CHECK(t_dev < 0, "device-local type advertised without MALI_DEVICE_LOCAL=1 (type %d)", t_dev);
       CHECK(mp.memoryTypeCount == 2, "two memory types by default, got %u", mp.memoryTypeCount);
+   }
+
+   /* ---- M15: an INDIRECT buffer may not be offered the non-host-visible type ----
+    * maintenance5: the chained VkBufferUsageFlags2CreateInfoKHR *replaces* usage, so the filter has to read
+    * the effective flags; one that reads only pCreateInfo->usage leaks the device-local type to an indirect
+    * buffer whose INDIRECT bit came from the chain (mali_cmd expand_indirect then reads it unsynchronised). */
+   VkBufferUsageFlags2CreateInfo u2 = {.sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO,
+                                       .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
+                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, .pNext = &u2};
+   VkDeviceBufferMemoryRequirements dbr = {.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &bci};
+   VkMemoryRequirements2 mr2 = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+   const uint32_t all_bits = (1u << mp.memoryTypeCount) - 1;
+   GetDeviceBufferMemoryRequirements(dev, &dbr, &mr2);
+   const uint32_t ind_chain = mr2.memoryRequirements.memoryTypeBits;
+   bci.pNext = NULL; bci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+   GetDeviceBufferMemoryRequirements(dev, &dbr, &mr2);
+   const uint32_t ind_plain = mr2.memoryRequirements.memoryTypeBits;
+   bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+   GetDeviceBufferMemoryRequirements(dev, &dbr, &mr2);
+   const uint32_t ubo_bits = mr2.memoryRequirements.memoryTypeBits;
+   CHECK(ind_chain == ind_plain, "chained usage2 is the effective usage (INDIRECT 0x%x vs plain 0x%x)", ind_chain, ind_plain);
+   if (want_dev) {
+      CHECK(ind_plain == (all_bits & ~1u), "INDIRECT: non-host-visible device-local type 0 masked out (bits 0x%x, all 0x%x)", ind_plain, all_bits);
+      CHECK(ubo_bits == all_bits, "non-indirect buffer keeps every type (bits 0x%x)", ubo_bits);
+   } else {
+      CHECK(ind_plain == all_bits, "no device-local type: INDIRECT is offered every type (bits 0x%x)", ind_plain);
    }
 
    /* ---- allocation limits ---- */

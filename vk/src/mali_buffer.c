@@ -56,7 +56,20 @@ mali_GetDeviceBufferMemoryRequirements(VkDevice _dev, const VkDeviceBufferMemory
    const struct mali_physical_device *pd = mali_device_pdev(dev);
    r->memoryRequirements.size = align_up(info->pCreateInfo->size, MALI_BUF_ALIGN);
    r->memoryRequirements.alignment = MALI_BUF_ALIGN;
-   r->memoryRequirements.memoryTypeBits = (1u << pd->memory.memoryTypeCount) - 1;
+   uint32_t bits = (1u << pd->memory.memoryTypeCount) - 1;
+   /* Computed indirect draws are expanded on the CPU (mali_cmd.c expand_indirect reads the arguments through
+    * the mapping), so an INDIRECT buffer must be bound to a HOST_VISIBLE type: a device-local BO keeps
+    * host_lazy (kbase_bo_host_touch skips it) and never gets a CPU-side MEM_SYNC, so those reads would go
+    * unsynchronised. Mask the non-host-visible types out instead of letting the app bind it (vk/MEMORY.md).
+    * maintenance5: a chained VkBufferUsageFlags2CreateInfoKHR *replaces* pCreateInfo->usage, so read the
+    * effective flags (vk_buffer_usage_flags) - reading only pCreateInfo->usage would miss INDIRECT there. */
+   const VkBufferUsageFlags usage = vk_buffer_usage_flags(info->pCreateInfo);
+   if (usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) {
+      for (uint32_t i = 0; i < pd->memory.memoryTypeCount; i++)
+         if (!(pd->memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+            bits &= ~(1u << i);
+   }
+   r->memoryRequirements.memoryTypeBits = bits;
    vk_foreach_struct(st, e, r->pNext) {
       if (st == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
          VkMemoryDedicatedRequirements *dr = e;
