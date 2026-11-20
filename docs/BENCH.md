@@ -8,24 +8,28 @@ line style is the device. A run with no visible frame is plotted at fps 0 with a
 a short reason (black screen / crash / not attempted / unverified); it is never omitted and never
 drawn as a filled measurement. Lines join visible points only.
 
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="26" viewBox="0 0 900 26"><line x1="56" y1="14" x2="82" y2="14" stroke="#1d4ed8" stroke-width="2"/><circle cx="69" cy="14" r="3.2" fill="#1d4ed8"/><text x="88" y="17.5" font-size="10" fill="#111827">bridge / X8</text><line x1="191" y1="14" x2="217" y2="14" stroke="#1d4ed8" stroke-width="2" stroke-dasharray="7 4"/><circle cx="204" cy="14" r="3.2" fill="#1d4ed8"/><text x="223" y="17.5" font-size="10" fill="#111827">bridge / CMF</text><line x1="333" y1="14" x2="359" y2="14" stroke="#b91c1c" stroke-width="2"/><circle cx="346" cy="14" r="3.2" fill="#b91c1c"/><text x="365" y="17.5" font-size="10" fill="#111827">mali-open / X8</text><line x1="489" y1="14" x2="515" y2="14" stroke="#b91c1c" stroke-width="2" stroke-dasharray="7 4"/><circle cx="502" cy="14" r="3.2" fill="#b91c1c"/><text x="521" y="17.5" font-size="10" fill="#111827">mali-open / CMF</text><circle cx="656" cy="14" r="4" fill="#ffffff" stroke="#111827"/><text x="666" y="17.5" font-size="10" fill="#111827">no visible frame (fps 0, reason labelled)</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="26" viewBox="0 0 900 26"><rect width="900" height="26" fill="#ffffff"/><line x1="56" y1="14" x2="80" y2="14" stroke="#1d4ed8" stroke-width="2" stroke-linecap="round"/><circle cx="68.0" cy="14.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/><text x="85" y="17.5" font-size="10" fill="#111827">bridge/X8</text><line x1="162.8" y1="14" x2="186.8" y2="14" stroke="#1d4ed8" stroke-width="2" stroke-dasharray="8 4" stroke-linecap="round"/><rect x="171.4" y="10.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/><text x="191.8" y="17.5" font-size="10" fill="#111827">bridge/CMF</text><line x1="275.8" y1="14" x2="299.8" y2="14" stroke="#1d4ed8" stroke-width="2" stroke-dasharray="1 4" stroke-linecap="round"/><polygon points="287.8,9.4 292.2,17.4 283.4,17.4" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/><text x="304.8" y="17.5" font-size="10" fill="#111827">bridge/X4</text><line x1="382.6" y1="14" x2="406.6" y2="14" stroke="#b91c1c" stroke-width="2" stroke-linecap="round"/><circle cx="394.6" cy="14.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/><text x="411.6" y="17.5" font-size="10" fill="#111827">mali-open/X8</text><line x1="508.0" y1="14" x2="532.0" y2="14" stroke="#b91c1c" stroke-width="2" stroke-dasharray="8 4" stroke-linecap="round"/><rect x="516.6" y="10.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/><text x="537.0" y="17.5" font-size="10" fill="#111827">mali-open/CMF</text><line x1="639.6" y1="14" x2="663.6" y2="14" stroke="#b91c1c" stroke-width="2" stroke-dasharray="1 4" stroke-linecap="round"/><polygon points="651.6,9.4 656.0,17.4 647.2,17.4" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/><text x="668.6" y="17.5" font-size="10" fill="#111827">mali-open/X4</text><circle cx="769.0" cy="14.0" r="4.2" fill="#ffffff" stroke="#111827" stroke-width="1.6"/><text x="779.0" y="17.5" font-size="10" fill="#111827">no visible frame (fps 0, reason labelled)</text></svg>
 
 ## Coverage
 
-65 measured, 3 failed, 242 missing of 310 (device × stack × version × workload) cells. `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
+69 measured, 4 failed, 407 missing of 480 (device × stack × version × workload) cells. `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
 
 | workload | device | stack | rows | visible | hollow | last version |
 |---|---|---|---|---|---|---|
-| cards | x8 | bridge | 14 | 14 | 0 | p25 |
+| cards | x8 | bridge | 14 | 14 | 0 | v25 |
 | cards | x8 | mali-open | 15 | 15 | 0 | kopper |
-| cards | cmf | bridge | 31 | 31 | 0 | p25 |
+| cards | cmf | bridge | 31 | 31 | 0 | v25 |
 | cards | cmf | mali-open | 32 | 32 | 0 | 46631edd8 |
-| triangles | x8 | bridge | 9 | 9 | 0 | p25 |
+| cards | x4 | bridge | 2 | 2 | 0 | p22 |
+| triangles | x8 | bridge | 9 | 9 | 0 | v25 |
 | triangles | x8 | mali-open | 9 | 9 | 0 | 46631edd8 |
-| triangles | cmf | bridge | 20 | 20 | 0 | p25 |
+| triangles | cmf | bridge | 20 | 20 | 0 | v25 |
 | triangles | cmf | mali-open | 20 | 20 | 0 | 46631edd8 |
+| triangles | x4 | bridge | 1 | 1 | 0 | p22 |
+| triangles | x4 | mali-open | 1 | 1 | 0 | 23edb3f94 |
 | steam-menu | x8 | bridge | 38 | 12 | 26 | p22 |
-| steam-menu | cmf | bridge | 42 | 27 | 15 | p25 |
+| steam-menu | cmf | bridge | 42 | 27 | 15 | v25 |
+| steam-menu | x4 | bridge | 3 | 1 | 2 | p24 |
 | megabonk | x8 | bridge | 4 | 4 | 0 | p22 |
 | megabonk | cmf | bridge | 2 | 2 | 0 | p8 |
 | glclear | x8 | mali-open | 1 | 0 | 1 | — |
@@ -34,7 +38,7 @@ drawn as a filled measurement. Lines join visible points only.
 
 cube-720p and cube-native variants share this chart (the note column says which); both are GPU-heavy cube draws, so a mixed line is not a like-for-like comparison.
 
-92 real points, 0 at fps 0 (hollow).
+94 real points, 0 at fps 0 (hollow).
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="cards benchmark chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="300" fill="#ffffff"/>
@@ -62,101 +66,104 @@ cube-720p and cube-native variants share this chart (the note column says which)
 <line x1="884.0" y1="244" x2="884.0" y2="249" stroke="#9ca3af"/>
 <text x="884.0" y="262" font-size="10" fill="#6b7280" text-anchor="middle">11-20 01:50</text>
 <polyline points="56.0,183.2 56.0,178.0 377.4,108.1 377.4,99.9 377.4,150.4 377.4,144.3 377.4,142.9 377.4,142.7 377.4,142.5 377.4,128.9 377.4,105.4 377.4,103.4 377.4,102.6 377.4,101.3" fill="none" stroke="#1d4ed8" stroke-width="1.8" />
-<circle cx="56.0" cy="183.2" r="3.6" fill="#1d4ed8"/>
-<circle cx="56.0" cy="178.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="108.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="99.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="150.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="144.3" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="142.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="142.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="142.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="128.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="105.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="103.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="102.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="101.3" r="3.6" fill="#1d4ed8"/>
-<polyline points="377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.8 377.4,222.0 377.4,221.9 377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.7 377.4,221.7 377.4,221.7 377.4,221.7 377.4,221.6 377.4,221.6 377.4,221.6 377.4,221.5 377.4,221.5 377.4,221.5 377.4,221.4 377.4,221.1 377.4,221.1 377.4,221.0 377.4,221.0 377.4,220.9 377.4,220.9 377.4,220.9 698.8,222.0 698.8,222.0" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="7 4"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="222.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="221.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="220.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="220.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="377.4" cy="220.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="698.8" cy="222.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="698.8" cy="222.0" r="3.6" fill="#1d4ed8"/>
+<circle cx="56.0" cy="183.2" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="56.0" cy="178.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="108.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="99.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="150.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="144.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="142.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="142.7" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="142.5" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="128.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="105.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="103.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="102.6" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="377.4" cy="101.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<polyline points="377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.8 377.4,222.0 377.4,221.9 377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.8 377.4,221.7 377.4,221.7 377.4,221.7 377.4,221.7 377.4,221.6 377.4,221.6 377.4,221.6 377.4,221.5 377.4,221.5 377.4,221.5 377.4,221.4 377.4,221.1 377.4,221.1 377.4,221.0 377.4,221.0 377.4,220.9 377.4,220.9 377.4,220.9 698.8,222.0 698.8,222.0" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="218.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.7" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.7" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="374.0" y="217.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="695.4" y="218.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="695.4" y="218.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<polyline points="377.4,207.9 377.4,206.8" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="1 4"/>
+<polygon points="377.4,203.3 381.8,211.3 373.0,211.3" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<polygon points="377.4,202.2 381.8,210.2 373.0,210.2" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
 <polyline points="56.0,220.1 56.0,219.9 377.4,206.5 377.4,101.6 377.4,90.5 377.4,89.2 377.4,218.3 377.4,218.1 377.4,209.5 377.4,208.8 377.4,206.5 377.4,73.7 377.4,206.5 377.4,91.0 884.0,226.9" fill="none" stroke="#b91c1c" stroke-width="1.8" />
-<circle cx="56.0" cy="220.1" r="3.6" fill="#b91c1c"/>
-<circle cx="56.0" cy="219.9" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="206.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="101.6" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="90.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="89.2" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="218.3" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="218.1" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="209.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="208.8" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="206.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="73.7" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="206.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="91.0" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="226.9" r="3.6" fill="#b91c1c"/>
-<polyline points="377.4,230.2 377.4,227.4 377.4,229.6 377.4,229.1 377.4,226.8 377.4,222.2 377.4,228.9 377.4,228.1 377.4,227.1 377.4,224.1 377.4,226.9 377.4,224.9 377.4,229.0 377.4,228.2 377.4,229.0 377.4,228.5 377.4,229.6 377.4,228.7 377.4,229.8 377.4,228.8 377.4,229.8 377.4,229.5 377.4,227.2 377.4,224.3 377.4,225.1 377.4,224.8 377.4,229.6 377.4,228.7 377.4,229.7 377.4,229.7 698.8,224.6 698.8,224.6" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="7 4"/>
-<circle cx="377.4" cy="230.2" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="227.4" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.6" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.1" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="226.8" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="222.2" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.9" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.1" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="227.1" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="224.1" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="226.9" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="224.9" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.0" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.2" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.0" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.6" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.7" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.8" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.8" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.8" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.5" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="227.2" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="224.3" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="225.1" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="224.8" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.6" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="228.7" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.7" r="3.6" fill="#b91c1c"/>
-<circle cx="377.4" cy="229.7" r="3.6" fill="#b91c1c"/>
-<circle cx="698.8" cy="224.6" r="3.6" fill="#b91c1c"/>
-<circle cx="698.8" cy="224.6" r="3.6" fill="#b91c1c"/>
+<circle cx="56.0" cy="220.1" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="56.0" cy="219.9" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="206.5" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="101.6" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="90.5" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="89.2" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="218.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="218.1" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="209.5" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="208.8" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="206.5" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="73.7" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="206.5" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="377.4" cy="91.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="884.0" cy="226.9" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<polyline points="377.4,230.2 377.4,227.4 377.4,229.6 377.4,229.1 377.4,226.8 377.4,222.2 377.4,228.9 377.4,228.1 377.4,227.1 377.4,224.1 377.4,226.9 377.4,224.9 377.4,229.0 377.4,228.2 377.4,229.0 377.4,228.5 377.4,229.6 377.4,228.7 377.4,229.8 377.4,228.8 377.4,229.8 377.4,229.5 377.4,227.2 377.4,224.3 377.4,225.1 377.4,224.8 377.4,229.6 377.4,228.7 377.4,229.7 377.4,229.7 698.8,224.6 698.8,224.6" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="374.0" y="226.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="224.0" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="223.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="218.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="224.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="223.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="220.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="223.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="221.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="224.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.1" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.3" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.1" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="223.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="220.9" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="221.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="221.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="225.3" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.3" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="374.0" y="226.3" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="695.4" y="221.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="695.4" y="221.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
 <line x1="56.0" y1="211.1" x2="79.4" y2="198.1" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
 <text x="79.4" y="201.1" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">20e290c1a</text>
 <text x="63.8" y="164.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
@@ -167,17 +174,21 @@ cube-720p and cube-native variants share this chart (the note column says which)
 <line x1="377.4" y1="212.8" x2="415.4" y2="199.8" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
 <text x="415.4" y="202.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p24</text>
 <line x1="377.4" y1="212.8" x2="339.4" y2="199.8" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="339.4" y="202.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="339.4" y="202.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <line x1="377.4" y1="212.5" x2="415.4" y2="223.5" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="415.4" y="226.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="415.4" y="226.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <line x1="377.4" y1="199.8" x2="377.4" y2="172.8" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
 <text x="377.4" y="175.8" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">6de4ce393</text>
-<text x="377.4" y="131.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<text x="377.4" y="109.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<text x="377.4" y="82.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<line x1="377.4" y1="198.9" x2="415.4" y2="185.9" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="415.4" y="188.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
+<line x1="377.4" y1="197.8" x2="339.4" y2="184.8" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="339.4" y="187.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
+<text x="377.4" y="131.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<text x="377.4" y="109.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<text x="377.4" y="82.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <text x="377.4" y="70.2" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">453cd8d0c</text>
 <text x="698.8" y="205.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">46631edd8</text>
-<text x="698.8" y="227.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="698.8" y="227.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <line x1="884.0" y1="217.9" x2="868.4" y2="204.9" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
 <text x="868.4" y="207.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">kopper</text>
 </svg>
@@ -192,31 +203,31 @@ cube-720p and cube-native variants share this chart (the note column says which)
 | 2026-11-18 12:00 | cmf | bridge | p24 | 71.3 | - | visible | cube-native |
 | 2026-11-18 12:00 | cmf | bridge | p24 | 71.3 | - | visible | cube-720p |
 | 2026-11-18 12:00 | cmf | bridge | p24 | 71.3 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 70.6 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.1 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.2 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.3 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.3 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.3 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.4 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.5 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.5 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.6 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.6 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 71.9 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 72.0 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 72.1 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 72.1 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 72.2 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 72.4 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 72.5 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 73.6 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 73.7 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 73.8 | - | visible | cube-native |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 74.0 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 74.0 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 74.1 | - | visible | cube-720p |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 74.3 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 70.6 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.1 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.2 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.3 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.3 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.3 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.4 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.5 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.5 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.6 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.6 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 71.9 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 72.0 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 72.1 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 72.1 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 72.2 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 72.4 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 72.5 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 73.6 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 73.7 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 73.8 | - | visible | cube-native |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 74.0 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 74.0 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 74.1 | - | visible | cube-720p |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 74.3 | - | visible | cube-720p |
 | 2026-11-18 12:00 | cmf | mali-open | 0bc0e771d | 44.3 | - | visible | cube-native |
 | 2026-11-18 12:00 | cmf | mali-open | 0bc0e771d | 53.3 | - | visible | cube-720p |
 | 2026-11-18 12:00 | cmf | mali-open | 20e290c1a | 46.2 | - | visible | cube-native |
@@ -247,18 +258,20 @@ cube-720p and cube-native variants share this chart (the note column says which)
 | 2026-11-18 12:00 | cmf | mali-open | ddf33c459 | 49.0 | - | visible | cube-720p |
 | 2026-11-18 12:00 | cmf | mali-open | e2cd68cd2 | 45.9 | - | visible | cube-native |
 | 2026-11-18 12:00 | cmf | mali-open | e2cd68cd2 | 46.0 | - | visible | cube-720p |
+| 2026-11-18 12:00 | x4 | bridge | p22 | 115.8 | - | visible | cube-native |
+| 2026-11-18 12:00 | x4 | bridge | p22 | 119.6 | - | visible | cube-720p |
 | 2026-11-18 12:00 | x8 | bridge | p22 | 436.4 | - | visible | cube-720p |
 | 2026-11-18 12:00 | x8 | bridge | p22 | 462.8 | - | visible | cube-native |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 300.5 | - | visible | cube-native |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 320.1 | - | visible | cube-720p |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 324.5 | - | visible | cube-native |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 325.3 | - | visible | cube-native |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 325.8 | - | visible | cube-720p |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 369.5 | - | visible | cube-720p |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 445.2 | - | visible | cube-720p |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 451.6 | - | visible | cube-720p |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 454.1 | - | visible | cube-native |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 458.3 | - | visible | cube-native |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 300.5 | - | visible | cube-native |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 320.1 | - | visible | cube-720p |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 324.5 | - | visible | cube-native |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 325.3 | - | visible | cube-native |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 325.8 | - | visible | cube-720p |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 369.5 | - | visible | cube-720p |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 445.2 | - | visible | cube-720p |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 451.6 | - | visible | cube-720p |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 454.1 | - | visible | cube-native |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 458.3 | - | visible | cube-native |
 | 2026-11-18 12:00 | x8 | mali-open | 253b6c893 | 120.4 | - | visible | cube-native |
 | 2026-11-18 12:00 | x8 | mali-open | 253b6c893 | 457.1 | - | visible | cube-720p |
 | 2026-11-18 12:00 | x8 | mali-open | 453cd8d0c | 492.8 | - | visible | cube-720p |
@@ -271,8 +284,8 @@ cube-720p and cube-native variants share this chart (the note column says which)
 | 2026-11-18 12:00 | x8 | mali-open | a85c7bb0b | 546.8 | - | visible | cube-720p |
 | 2026-11-18 12:00 | x8 | mali-open | d2d8f7259 | 120.4 | - | visible | cube-native |
 | 2026-11-18 12:00 | x8 | mali-open | d2d8f7259 | 491.3 | - | visible | cube-720p |
-| 2026-11-19 12:00 | cmf | bridge | p25 | 70.5 | - | visible | cube-native |
-| 2026-11-19 12:00 | cmf | bridge | p25 | 70.7 | - | visible | cube-720p |
+| 2026-11-19 12:00 | cmf | bridge | v25 | 70.5 | - | visible | cube-native |
+| 2026-11-19 12:00 | cmf | bridge | v25 | 70.7 | - | visible | cube-720p |
 | 2026-11-19 12:00 | cmf | mali-open | 46631edd8 | 62.1 | - | visible | cube-native |
 | 2026-11-19 12:00 | cmf | mali-open | 46631edd8 | 62.4 | - | visible | cube-720p |
 | 2026-11-20 01:50 | x8 | mali-open | kopper | 55.0 | - | visible | approximate, owner-reported; not a bench2 row |
@@ -287,31 +300,31 @@ cube-720p and cube-native variants share this chart (the note column says which)
 - `2026-11-18` cmf/bridge/p24/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/bridge/p24/cards fps=71.3 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/bridge/p24/cards fps=71.3 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=70.6 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.2 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.4 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.5 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.6 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=71.9 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=72.0 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=72.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=72.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=72.2 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=72.4 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=72.5 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=73.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=73.7 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=73.8 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=74.0 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=74.0 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=74.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/cards fps=74.3 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=70.6 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.2 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.4 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.5 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.6 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=71.9 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=72.0 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=72.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=72.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=72.2 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=72.4 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=72.5 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=73.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=73.7 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=73.8 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=74.0 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=74.0 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=74.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/cards fps=74.3 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/0bc0e771d/cards fps=44.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/0bc0e771d/cards fps=53.3 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/20e290c1a/cards fps=46.2 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
@@ -342,18 +355,20 @@ cube-720p and cube-native variants share this chart (the note column says which)
 - `2026-11-18` cmf/mali-open/ddf33c459/cards fps=49.0 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/e2cd68cd2/cards fps=45.9 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/e2cd68cd2/cards fps=46.0 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x4/bridge/p22/cards fps=115.8 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x4/bridge/p22/cards fps=119.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/bridge/p22/cards fps=436.4 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/bridge/p22/cards fps=462.8 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=300.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=320.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=324.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=325.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=325.8 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=369.5 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=445.2 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=451.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=454.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/cards fps=458.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=300.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=320.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=324.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=325.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=325.8 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=369.5 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=445.2 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=451.6 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=454.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/cards fps=458.3 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/253b6c893/cards fps=120.4 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/253b6c893/cards fps=457.1 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/453cd8d0c/cards fps=492.8 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
@@ -366,8 +381,8 @@ cube-720p and cube-native variants share this chart (the note column says which)
 - `2026-11-18` x8/mali-open/a85c7bb0b/cards fps=546.8 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/d2d8f7259/cards fps=120.4 visible — bench/results.jsonl (cube/cube-native, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/d2d8f7259/cards fps=491.3 visible — bench/results.jsonl (cube/cube-720p, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-19` cmf/bridge/p25/cards fps=70.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-19, presented.fps; date-only, no time)
-- `2026-11-19` cmf/bridge/p25/cards fps=70.7 visible — bench/results.jsonl (cube/cube-720p, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` cmf/bridge/v25/cards fps=70.5 visible — bench/results.jsonl (cube/cube-native, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` cmf/bridge/v25/cards fps=70.7 visible — bench/results.jsonl (cube/cube-720p, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` cmf/mali-open/46631edd8/cards fps=62.1 visible — bench/results.jsonl (cube/cube-native, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` cmf/mali-open/46631edd8/cards fps=62.4 visible — bench/results.jsonl (cube/cube-720p, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-20` x8/mali-open/kopper/cards fps=55.0 visible — owner note 2026-11-20 (X8 vkcube ~55 fps, mali-own ICD); run log ~/Projects/mali-gaming/koppervk2.log
@@ -378,7 +393,7 @@ cube-720p and cube-native variants share this chart (the note column says which)
 
 triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 
-58 real points, 0 at fps 0 (hollow).
+60 real points, 0 at fps 0 (hollow).
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="triangles benchmark chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="300" fill="#ffffff"/>
@@ -406,67 +421,69 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 <line x1="884.0" y1="244" x2="884.0" y2="249" stroke="#9ca3af"/>
 <text x="884.0" y="262" font-size="10" fill="#6b7280" text-anchor="middle">11-19 12:00</text>
 <polyline points="56.0,180.1 470.0,164.9 470.0,169.4 470.0,168.2 470.0,168.0 470.0,167.4 470.0,166.8 884.0,186.9 884.0,169.5" fill="none" stroke="#1d4ed8" stroke-width="1.8" />
-<circle cx="56.0" cy="180.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="164.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="169.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="168.2" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="168.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="167.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="166.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="186.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="169.5" r="3.6" fill="#1d4ed8"/>
-<polyline points="56.0,214.5 470.0,203.9 470.0,202.6 470.0,211.8 470.0,211.7 470.0,209.2 470.0,206.6 470.0,204.1 470.0,203.8 470.0,203.6 470.0,203.5 470.0,203.2 470.0,203.0 470.0,202.9 470.0,201.5 470.0,200.9 884.0,234.0 884.0,226.0 884.0,214.0 884.0,199.6" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="7 4"/>
-<circle cx="56.0" cy="214.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="203.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="202.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="211.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="211.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="209.2" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="206.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="204.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="203.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="203.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="203.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="203.2" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="203.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="202.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="201.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="470.0" cy="200.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="234.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="226.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="214.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="199.6" r="3.6" fill="#1d4ed8"/>
+<circle cx="56.0" cy="180.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="470.0" cy="164.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="470.0" cy="169.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="470.0" cy="168.2" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="470.0" cy="168.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="470.0" cy="167.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="470.0" cy="166.8" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="884.0" cy="186.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="884.0" cy="169.5" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<polyline points="56.0,214.5 470.0,203.9 470.0,202.6 470.0,211.8 470.0,211.7 470.0,209.2 470.0,206.6 470.0,204.1 470.0,203.8 470.0,203.6 470.0,203.5 470.0,203.2 470.0,203.0 470.0,202.9 470.0,201.5 470.0,200.9 884.0,234.0 884.0,226.0 884.0,214.0 884.0,199.6" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="52.6" y="211.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="200.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="199.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="208.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="208.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="205.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="203.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="200.7" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="200.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="200.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="200.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="199.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="199.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="199.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="198.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="466.6" y="197.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="880.6" y="230.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="880.6" y="222.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="880.6" y="210.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="880.6" y="196.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<polygon points="470.0,165.7 474.4,173.7 465.6,173.7" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
 <polyline points="56.0,222.2 470.0,102.5 470.0,112.9 470.0,220.4 470.0,203.1 470.0,101.2 470.0,119.0 884.0,83.6 884.0,58.6" fill="none" stroke="#b91c1c" stroke-width="1.8" />
-<circle cx="56.0" cy="222.2" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="102.5" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="112.9" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="220.4" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="203.1" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="101.2" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="119.0" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="83.6" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="58.6" r="3.6" fill="#b91c1c"/>
-<polyline points="56.0,228.2 470.0,216.2 470.0,231.2 470.0,173.8 470.0,218.3 470.0,194.9 470.0,181.3 470.0,219.3 470.0,219.6 470.0,231.0 470.0,231.1 470.0,218.0 470.0,201.9 470.0,218.6 470.0,231.2 470.0,231.1 884.0,223.4 884.0,212.3 884.0,187.0 884.0,171.2" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="7 4"/>
-<circle cx="56.0" cy="228.2" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="216.2" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="231.2" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="173.8" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="218.3" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="194.9" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="181.3" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="219.3" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="219.6" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="231.0" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="231.1" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="218.0" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="201.9" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="218.6" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="231.2" r="3.6" fill="#b91c1c"/>
-<circle cx="470.0" cy="231.1" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="223.4" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="212.3" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="187.0" r="3.6" fill="#b91c1c"/>
-<circle cx="884.0" cy="171.2" r="3.6" fill="#b91c1c"/>
+<circle cx="56.0" cy="222.2" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="470.0" cy="102.5" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="470.0" cy="112.9" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="470.0" cy="220.4" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="470.0" cy="203.1" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="470.0" cy="101.2" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="470.0" cy="119.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="884.0" cy="83.6" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<circle cx="884.0" cy="58.6" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<polyline points="56.0,228.2 470.0,216.2 470.0,231.2 470.0,173.8 470.0,218.3 470.0,194.9 470.0,181.3 470.0,219.3 470.0,219.6 470.0,231.0 470.0,231.1 470.0,218.0 470.0,201.9 470.0,218.6 470.0,231.2 470.0,231.1 884.0,223.4 884.0,212.3 884.0,187.0 884.0,171.2" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="52.6" y="224.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="212.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="227.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="170.4" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="214.9" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="191.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="177.9" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="215.9" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="216.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="227.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="227.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="214.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="198.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="215.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="227.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="466.6" y="227.7" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="880.6" y="220.0" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="880.6" y="208.9" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="880.6" y="183.6" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<rect x="880.6" y="167.8" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<polygon points="470.0,206.8 474.4,214.8 465.6,214.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
 <line x1="56.0" y1="219.2" x2="79.4" y2="206.2" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
 <text x="79.4" y="209.2" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">3cd6b12b8</text>
 <line x1="56.0" y1="213.2" x2="79.4" y2="224.2" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
@@ -475,21 +492,23 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 <text x="63.8" y="161.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <text x="470.0" y="201.4" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">531f79fa4</text>
 <text x="470.0" y="223.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">befc62510</text>
-<text x="470.0" y="187.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<line x1="470.0" y1="193.9" x2="470.0" y2="166.9" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="470.0" y="169.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<line x1="470.0" y1="172.3" x2="470.0" y2="145.3" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
-<text x="470.0" y="148.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">633f2069a</text>
+<line x1="470.0" y1="202.4" x2="470.0" y2="175.4" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
+<text x="470.0" y="178.4" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">23edb3f94</text>
+<text x="470.0" y="211.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<line x1="470.0" y1="193.9" x2="508.0" y2="180.9" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="508.0" y="183.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<text x="470.0" y="162.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">633f2069a</text>
+<text x="470.0" y="151.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <line x1="470.0" y1="159.2" x2="470.0" y2="132.2" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="470.0" y="135.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="470.0" y="135.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <line x1="470.0" y1="158.4" x2="508.0" y2="145.4" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="508.0" y="148.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="508.0" y="148.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <text x="470.0" y="82.2" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">a85c7bb0b</text>
-<text x="876.2" y="180.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="876.2" y="180.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <line x1="884.0" y1="162.2" x2="860.6" y2="149.2" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
 <text x="860.6" y="152.2" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">46631edd8</text>
 <line x1="884.0" y1="160.5" x2="876.2" y2="133.5" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="876.2" y="136.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="876.2" y="136.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 <line x1="884.0" y1="49.6" x2="860.6" y2="36.6" stroke="#b91c1c" stroke-width="0.6" opacity="0.55"/>
 <text x="860.6" y="39.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">46631edd8</text>
 </svg>
@@ -502,19 +521,19 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 | 2026-11-17 12:00 | x8 | mali-open | 20e290c1a | 100.1 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | bridge | p24 | 184.2 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | bridge | p24 | 189.9 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 147.5 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 148.4 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 159.8 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 171.5 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 182.9 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 184.5 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 185.5 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 185.8 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 187.0 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 188.0 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 188.5 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 194.8 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | cmf | bridge | p25 | 197.5 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 147.5 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 148.4 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 159.8 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 171.5 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 182.9 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 184.5 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 185.5 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 185.8 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 187.0 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 188.0 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 188.5 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 194.8 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | cmf | bridge | v25 | 197.5 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | mali-open | 0bc0e771d | 127.6 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | mali-open | 20e290c1a | 58.8 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | mali-open | 253b6c893 | 321.9 | - | visible | triangle-3k |
@@ -530,28 +549,30 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 | 2026-11-18 12:00 | cmf | mali-open | befc62510 | 116.5 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | mali-open | ddf33c459 | 58.9 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | cmf | mali-open | e2cd68cd2 | 59.2 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x4 | bridge | p22 | 338.3 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x4 | mali-open | 23edb3f94 | 149.7 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | bridge | p22 | 362.9 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 342.2 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 347.6 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 348.7 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 351.3 | - | visible | triangle-3k |
-| 2026-11-18 12:00 | x8 | bridge | p25 | 354.1 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 342.2 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 347.6 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 348.7 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 351.3 | - | visible | triangle-3k |
+| 2026-11-18 12:00 | x8 | bridge | v25 | 354.1 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | mali-open | 253b6c893 | 649.0 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | mali-open | 453cd8d0c | 601.6 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | mali-open | 531f79fa4 | 108.4 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | mali-open | 6de4ce393 | 187.7 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | mali-open | a85c7bb0b | 655.1 | - | visible | triangle-3k |
 | 2026-11-18 12:00 | x8 | mali-open | d2d8f7259 | 573.2 | - | visible | triangle-3k |
-| 2026-11-19 12:00 | cmf | bridge | p25 | 45.9 | - | visible | triangle-20k |
-| 2026-11-19 12:00 | cmf | bridge | p25 | 82.7 | - | visible | triangle-10k |
-| 2026-11-19 12:00 | cmf | bridge | p25 | 137.5 | - | visible | triangle-5k |
-| 2026-11-19 12:00 | cmf | bridge | p25 | 203.5 | - | visible | triangle-3k |
+| 2026-11-19 12:00 | cmf | bridge | v25 | 45.9 | - | visible | triangle-20k |
+| 2026-11-19 12:00 | cmf | bridge | v25 | 82.7 | - | visible | triangle-10k |
+| 2026-11-19 12:00 | cmf | bridge | v25 | 137.5 | - | visible | triangle-5k |
+| 2026-11-19 12:00 | cmf | bridge | v25 | 203.5 | - | visible | triangle-3k |
 | 2026-11-19 12:00 | cmf | mali-open | 46631edd8 | 94.7 | - | visible | triangle-20k |
 | 2026-11-19 12:00 | cmf | mali-open | 46631edd8 | 145.3 | - | visible | triangle-10k |
 | 2026-11-19 12:00 | cmf | mali-open | 46631edd8 | 261.5 | - | visible | triangle-5k |
 | 2026-11-19 12:00 | cmf | mali-open | 46631edd8 | 334.1 | - | visible | triangle-3k |
-| 2026-11-19 12:00 | x8 | bridge | p25 | 261.7 | - | visible | triangle-5k |
-| 2026-11-19 12:00 | x8 | bridge | p25 | 341.5 | - | visible | triangle-3k |
+| 2026-11-19 12:00 | x8 | bridge | v25 | 261.7 | - | visible | triangle-5k |
+| 2026-11-19 12:00 | x8 | bridge | v25 | 341.5 | - | visible | triangle-3k |
 | 2026-11-19 12:00 | x8 | mali-open | 46631edd8 | 735.7 | - | visible | triangle-5k |
 | 2026-11-19 12:00 | x8 | mali-open | 46631edd8 | 850.6 | - | visible | triangle-3k |
 
@@ -563,19 +584,19 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 - `2026-11-17` x8/mali-open/20e290c1a/triangles fps=100.1 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-17, presented.fps; date-only, no time)
 - `2026-11-18` cmf/bridge/p24/triangles fps=184.2 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/bridge/p24/triangles fps=189.9 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=147.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=148.4 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=159.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=171.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=182.9 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=184.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=185.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=185.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=187.0 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=188.0 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=188.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=194.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` cmf/bridge/p25/triangles fps=197.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=147.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=148.4 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=159.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=171.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=182.9 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=184.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=185.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=185.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=187.0 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=188.0 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=188.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=194.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` cmf/bridge/v25/triangles fps=197.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/0bc0e771d/triangles fps=127.6 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/20e290c1a/triangles fps=58.8 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/253b6c893/triangles fps=321.9 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
@@ -591,28 +612,30 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 - `2026-11-18` cmf/mali-open/befc62510/triangles fps=116.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/ddf33c459/triangles fps=58.9 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` cmf/mali-open/e2cd68cd2/triangles fps=59.2 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x4/bridge/p22/triangles fps=338.3 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x4/mali-open/23edb3f94/triangles fps=149.7 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/bridge/p22/triangles fps=362.9 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/triangles fps=342.2 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/triangles fps=347.6 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/triangles fps=348.7 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/triangles fps=351.3 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-18` x8/bridge/p25/triangles fps=354.1 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/triangles fps=342.2 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/triangles fps=347.6 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/triangles fps=348.7 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/triangles fps=351.3 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
+- `2026-11-18` x8/bridge/v25/triangles fps=354.1 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/253b6c893/triangles fps=649.0 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/453cd8d0c/triangles fps=601.6 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/531f79fa4/triangles fps=108.4 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/6de4ce393/triangles fps=187.7 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/a85c7bb0b/triangles fps=655.1 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
 - `2026-11-18` x8/mali-open/d2d8f7259/triangles fps=573.2 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-18, presented.fps; date-only, no time)
-- `2026-11-19` cmf/bridge/p25/triangles fps=45.9 visible — bench/results.jsonl (triangle/triangle-20k, 2026-11-19, presented.fps; date-only, no time)
-- `2026-11-19` cmf/bridge/p25/triangles fps=82.7 visible — bench/results.jsonl (triangle/triangle-10k, 2026-11-19, presented.fps; date-only, no time)
-- `2026-11-19` cmf/bridge/p25/triangles fps=137.5 visible — bench/results.jsonl (triangle/triangle-5k, 2026-11-19, presented.fps; date-only, no time)
-- `2026-11-19` cmf/bridge/p25/triangles fps=203.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` cmf/bridge/v25/triangles fps=45.9 visible — bench/results.jsonl (triangle/triangle-20k, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` cmf/bridge/v25/triangles fps=82.7 visible — bench/results.jsonl (triangle/triangle-10k, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` cmf/bridge/v25/triangles fps=137.5 visible — bench/results.jsonl (triangle/triangle-5k, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` cmf/bridge/v25/triangles fps=203.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` cmf/mali-open/46631edd8/triangles fps=94.7 visible — bench/results.jsonl (triangle/triangle-20k, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` cmf/mali-open/46631edd8/triangles fps=145.3 visible — bench/results.jsonl (triangle/triangle-10k, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` cmf/mali-open/46631edd8/triangles fps=261.5 visible — bench/results.jsonl (triangle/triangle-5k, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` cmf/mali-open/46631edd8/triangles fps=334.1 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-19, presented.fps; date-only, no time)
-- `2026-11-19` x8/bridge/p25/triangles fps=261.7 visible — bench/results.jsonl (triangle/triangle-5k, 2026-11-19, presented.fps; date-only, no time)
-- `2026-11-19` x8/bridge/p25/triangles fps=341.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` x8/bridge/v25/triangles fps=261.7 visible — bench/results.jsonl (triangle/triangle-5k, 2026-11-19, presented.fps; date-only, no time)
+- `2026-11-19` x8/bridge/v25/triangles fps=341.5 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` x8/mali-open/46631edd8/triangles fps=735.7 visible — bench/results.jsonl (triangle/triangle-5k, 2026-11-19, presented.fps; date-only, no time)
 - `2026-11-19` x8/mali-open/46631edd8/triangles fps=850.6 visible — bench/results.jsonl (triangle/triangle-3k, 2026-11-19, presented.fps; date-only, no time)
 
@@ -622,7 +645,7 @@ triangle-3k/5k/10k/20k share this chart; the draw count is in the note column.
 
 Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 owner-reported runs are screen-side and their metric is stated in the source.
 
-39 real points, 41 at fps 0 (hollow).
+40 real points, 43 at fps 0 (hollow).
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="steam-menu benchmark chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="300" fill="#ffffff"/>
@@ -650,11 +673,11 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 <line x1="884.0" y1="244" x2="884.0" y2="249" stroke="#9ca3af"/>
 <text x="884.0" y="262" font-size="10" fill="#6b7280" text-anchor="middle">11-20 12:50</text>
 <polyline points="56.0,140.1 57.6,191.8 58.0,191.8 58.5,192.4 59.4,192.3 221.7,140.1 222.2,105.6 222.7,140.1 223.1,60.4 223.6,156.6 223.6,140.1 230.6,240.8" fill="none" stroke="#1d4ed8" stroke-width="1.8" />
-<circle cx="56.0" cy="140.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="57.6" cy="191.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="58.0" cy="191.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="58.5" cy="192.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="59.4" cy="192.3" r="3.6" fill="#1d4ed8"/>
+<circle cx="56.0" cy="140.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="57.6" cy="191.8" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="58.0" cy="191.8" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="58.5" cy="192.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="59.4" cy="192.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <circle cx="62.3" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
 <line x1="62.3" y1="244.0" x2="62.3" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
 <circle cx="70.4" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
@@ -675,15 +698,15 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 <line x1="149.4" y1="244.0" x2="149.4" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
 <circle cx="151.8" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
 <line x1="151.8" y1="244.0" x2="151.8" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="221.7" cy="140.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="222.2" cy="105.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="222.7" cy="140.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="223.1" cy="60.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="223.6" cy="156.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="223.6" cy="140.1" r="3.6" fill="#1d4ed8"/>
+<circle cx="221.7" cy="140.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="222.2" cy="105.6" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="222.7" cy="140.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="223.1" cy="60.4" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="223.6" cy="156.6" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="223.6" cy="140.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <circle cx="224.9" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
 <line x1="224.9" y1="244.0" x2="224.9" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="230.6" cy="240.8" r="3.6" fill="#1d4ed8"/>
+<circle cx="230.6" cy="240.8" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <circle cx="438.5" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
 <line x1="438.5" y1="244.0" x2="438.5" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
 <circle cx="582.1" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
@@ -714,64 +737,69 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 <line x1="881.2" y1="244.0" x2="881.2" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
 <circle cx="881.3" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
 <line x1="881.3" y1="244.0" x2="881.3" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<polyline points="76.1,134.7 76.8,164.4 78.8,165.3 85.3,168.9 85.8,166.7 86.3,165.7 86.8,172.0 87.3,177.9 109.2,167.1 152.8,166.0 153.3,172.4 153.8,157.1 154.3,175.9 154.8,172.0 155.3,166.3 395.2,171.9 395.8,177.8 396.3,183.3 396.8,174.6 397.3,175.6 431.7,178.3 431.7,177.8 875.1,226.9 877.3,230.8 879.5,234.6 881.8,229.9 884.0,236.2" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="7 4"/>
-<circle cx="76.1" cy="134.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="76.8" cy="164.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="78.1" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<polyline points="76.1,134.7 76.8,164.4 78.8,165.3 85.3,168.9 85.8,166.7 86.3,165.7 86.8,172.0 87.3,177.9 109.2,167.1 152.8,166.0 153.3,172.4 153.8,157.1 154.3,175.9 154.8,172.0 155.3,166.3 395.2,171.9 395.8,177.8 396.3,183.3 396.8,174.6 397.3,175.6 431.7,178.3 431.7,177.8 875.1,226.9 877.3,230.8 879.5,234.6 881.8,229.9 884.0,236.2" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="72.7" y="131.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="73.4" y="161.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="74.7" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="78.1" y1="244.0" x2="78.1" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="78.8" cy="165.3" r="3.6" fill="#1d4ed8"/>
-<circle cx="85.3" cy="168.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="85.8" cy="166.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="86.3" cy="165.7" r="3.6" fill="#1d4ed8"/>
-<circle cx="86.8" cy="172.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="87.3" cy="177.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="109.2" cy="167.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="152.8" cy="166.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="153.3" cy="172.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="153.8" cy="157.1" r="3.6" fill="#1d4ed8"/>
-<circle cx="154.3" cy="175.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="154.8" cy="172.0" r="3.6" fill="#1d4ed8"/>
-<circle cx="155.3" cy="166.3" r="3.6" fill="#1d4ed8"/>
-<circle cx="395.2" cy="171.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="395.8" cy="177.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="396.3" cy="183.3" r="3.6" fill="#1d4ed8"/>
-<circle cx="396.8" cy="174.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="397.3" cy="175.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="431.7" cy="178.3" r="3.6" fill="#1d4ed8"/>
-<circle cx="431.7" cy="177.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="603.4" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="75.4" y="161.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="81.9" y="165.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="82.4" y="163.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="82.9" y="162.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="83.4" y="168.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="83.9" y="174.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="105.8" y="163.7" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="149.4" y="162.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="149.9" y="169.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="150.4" y="153.7" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="150.9" y="172.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="151.4" y="168.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="151.9" y="162.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="391.8" y="168.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="392.4" y="174.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="392.9" y="179.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="393.4" y="171.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="393.9" y="172.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="428.3" y="174.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="428.3" y="174.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="600.0" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="603.4" y1="244.0" x2="603.4" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="603.5" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="600.1" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="603.5" y1="244.0" x2="603.5" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="603.6" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="600.2" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="603.6" y1="244.0" x2="603.6" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="603.7" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="600.3" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="603.7" y1="244.0" x2="603.7" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="603.8" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="600.4" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="603.8" y1="244.0" x2="603.8" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="603.9" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="600.5" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="603.9" y1="244.0" x2="603.9" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="606.0" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="602.6" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="606.0" y1="244.0" x2="606.0" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="606.1" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="602.7" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="606.1" y1="244.0" x2="606.1" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="606.2" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="602.8" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="606.2" y1="244.0" x2="606.2" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="606.3" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="602.9" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="606.3" y1="244.0" x2="606.3" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="606.4" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="603.0" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="606.4" y1="244.0" x2="606.4" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="606.5" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="603.1" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="606.5" y1="244.0" x2="606.5" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="875.1" cy="226.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="876.4" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="871.7" y="223.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="873.0" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="876.4" y1="244.0" x2="876.4" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="877.3" cy="230.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="879.5" cy="234.6" r="3.6" fill="#1d4ed8"/>
-<circle cx="880.4" cy="244.0" r="4.2" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.6"/>
+<rect x="873.9" y="227.4" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="876.1" y="231.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="877.0" y="240.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <line x1="880.4" y1="244.0" x2="880.4" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
-<circle cx="881.8" cy="229.9" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="236.2" r="3.6" fill="#1d4ed8"/>
+<rect x="878.4" y="226.5" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="880.6" y="232.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<polygon points="92.0,239.4 96.4,247.4 87.6,247.4" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
+<line x1="92.0" y1="244.0" x2="92.0" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
+<polygon points="95.3,125.5 99.7,133.5 90.9,133.5" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<polygon points="130.9,239.4 135.3,247.4 126.5,247.4" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
+<line x1="130.9" y1="244.0" x2="130.9" y2="232.0" stroke="#1d4ed8" stroke-width="0.8" stroke-dasharray="2 2"/>
 <text x="63.8" y="121.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <text x="63.8" y="173.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <line x1="70.4" y1="228.0" x2="87.2" y2="215.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
@@ -779,15 +807,20 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 <text x="76.1" y="139.7" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <line x1="78.1" y1="228.0" x2="79.4" y2="201.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
 <text x="79.4" y="204.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22 crash</text>
-<line x1="146.9" y1="228.0" x2="146.9" y2="201.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="146.9" y="204.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25 crash x7</text>
-<text x="152.8" y="147.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<text x="222.7" y="121.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<text x="224.9" y="218.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25 crash</text>
-<line x1="230.6" y1="231.8" x2="230.6" y2="204.8" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="230.6" y="207.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
-<text x="396.3" y="164.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
-<text x="583.2" y="218.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25 crash x6</text>
+<line x1="92.0" y1="228.0" x2="92.0" y2="187.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="92.0" y="190.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p24 crash</text>
+<text x="95.3" y="111.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p24</text>
+<line x1="130.9" y1="228.0" x2="130.9" y2="201.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="130.9" y="204.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25 crash</text>
+<line x1="146.9" y1="228.0" x2="184.9" y2="215.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="184.9" y="218.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25 crash x7</text>
+<text x="152.8" y="147.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<text x="222.7" y="121.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<line x1="224.9" y1="228.0" x2="224.9" y2="201.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
+<text x="224.9" y="204.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25 crash</text>
+<text x="230.6" y="221.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
+<text x="396.3" y="164.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
+<text x="583.2" y="218.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25 crash x6</text>
 <line x1="603.9" y1="228.0" x2="603.9" y2="201.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
 <text x="603.9" y="204.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">vc26 crash x12</text>
 <line x1="876.4" y1="228.0" x2="858.0" y2="215.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
@@ -797,7 +830,7 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 <line x1="880.4" y1="228.0" x2="858.0" y2="187.0" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
 <text x="858.0" y="190.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">vc26 crash</text>
 <line x1="884.0" y1="227.2" x2="876.2" y2="172.2" stroke="#1d4ed8" stroke-width="0.6" opacity="0.55"/>
-<text x="876.2" y="175.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p25</text>
+<text x="876.2" y="175.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">v25</text>
 </svg>
 
 | when | device | stack | version | fps | brightness | status | note |
@@ -819,41 +852,44 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 | 2026-11-18 01:12 | cmf | bridge | p24 | 179.5 | - | visible | profile=default |
 | 2026-11-18 01:15 | cmf | bridge | p24 | 165.2 | - | visible | profile=uncapped |
 | 2026-11-18 01:17 | cmf | bridge | p24 | 151.7 | - | visible | profile=uncapped |
-| 2026-11-18 02:55 | cmf | bridge | p25 | 176.3 | - | visible | profile=default |
-| 2026-11-18 03:13 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-18 05:27 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-18 05:33 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (STARTING_STEAM) |
-| 2026-11-18 05:44 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-18 05:50 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-18 05:56 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-18 06:06 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-18 06:11 | cmf | bridge | p25 | 178.8 | - | visible | profile=default |
-| 2026-11-18 06:13 | cmf | bridge | p25 | 164.3 | - | visible | profile=uncapped |
-| 2026-11-18 06:15 | cmf | bridge | p25 | 199.4 | - | visible | profile=default |
-| 2026-11-18 06:17 | cmf | bridge | p25 | 156.3 | - | visible | profile=uncapped |
-| 2026-11-18 06:20 | cmf | bridge | p25 | 165.2 | - | visible | profile=default |
-| 2026-11-18 06:22 | cmf | bridge | p25 | 178.3 | - | visible | profile=uncapped |
-| 2026-11-18 11:20 | x8 | bridge | p25 | 238.2 | - | visible | profile=default |
-| 2026-11-18 11:22 | x8 | bridge | p25 | 317.4 | - | visible | profile=uncapped |
-| 2026-11-18 11:24 | x8 | bridge | p25 | 238.4 | - | visible | profile=default |
-| 2026-11-18 11:26 | x8 | bridge | p25 | 421.1 | - | visible | profile=uncapped |
-| 2026-11-18 11:28 | x8 | bridge | p25 | 200.4 | - | visible | profile=default |
-| 2026-11-18 11:28 | x8 | bridge | p25 | 238.2 | - | visible | profile=default |
-| 2026-11-18 11:34 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (STARTING_STEAM) |
+| 2026-11-18 01:38 | x4 | bridge | p24 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 01:53 | x4 | bridge | p24 | 261.2 | - | visible | profile=default |
+| 2026-11-18 02:55 | cmf | bridge | v25 | 176.3 | - | visible | profile=default |
+| 2026-11-18 03:13 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 04:33 | x4 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
+| 2026-11-18 05:27 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 05:33 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (STARTING_STEAM) |
+| 2026-11-18 05:44 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 05:50 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 05:56 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 06:06 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-18 06:11 | cmf | bridge | v25 | 178.8 | - | visible | profile=default |
+| 2026-11-18 06:13 | cmf | bridge | v25 | 164.3 | - | visible | profile=uncapped |
+| 2026-11-18 06:15 | cmf | bridge | v25 | 199.4 | - | visible | profile=default |
+| 2026-11-18 06:17 | cmf | bridge | v25 | 156.3 | - | visible | profile=uncapped |
+| 2026-11-18 06:20 | cmf | bridge | v25 | 165.2 | - | visible | profile=default |
+| 2026-11-18 06:22 | cmf | bridge | v25 | 178.3 | - | visible | profile=uncapped |
+| 2026-11-18 11:20 | x8 | bridge | v25 | 238.2 | - | visible | profile=default |
+| 2026-11-18 11:22 | x8 | bridge | v25 | 317.4 | - | visible | profile=uncapped |
+| 2026-11-18 11:24 | x8 | bridge | v25 | 238.4 | - | visible | profile=default |
+| 2026-11-18 11:26 | x8 | bridge | v25 | 421.1 | - | visible | profile=uncapped |
+| 2026-11-18 11:28 | x8 | bridge | v25 | 200.4 | - | visible | profile=default |
+| 2026-11-18 11:28 | x8 | bridge | v25 | 238.2 | - | visible | profile=default |
+| 2026-11-18 11:34 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (STARTING_STEAM) |
 | 2026-11-18 12:00 | x8 | bridge | p22 | 7.4 | - | visible | software-composited CEF (no Vulkan webhelper); owner note 7.25 fps, 2026-11-20, same config |
-| 2026-11-19 00:18 | cmf | bridge | p25 | 165.4 | - | visible | profile=default |
-| 2026-11-19 00:20 | cmf | bridge | p25 | 151.8 | - | visible | profile=uncapped |
-| 2026-11-19 00:22 | cmf | bridge | p25 | 139.3 | - | visible | profile=default |
-| 2026-11-19 00:25 | cmf | bridge | p25 | 159.1 | - | visible | profile=uncapped |
-| 2026-11-19 00:27 | cmf | bridge | p25 | 156.8 | - | visible | profile=default |
-| 2026-11-19 03:01 | cmf | bridge | p25 | 150.6 | - | visible | profile=uncapped |
-| 2026-11-19 03:01 | cmf | bridge | p25 | 151.8 | - | visible | profile=uncapped |
-| 2026-11-19 03:32 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: no frames: only 0 present events |
-| 2026-11-19 14:16 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-19 14:21 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (IDLE) |
-| 2026-11-19 14:26 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
-| 2026-11-19 14:36 | x8 | bridge | p25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (IDLE) |
-| 2026-11-19 14:41 | x8 | bridge | p25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (STARTING_STEAM) |
+| 2026-11-19 00:18 | cmf | bridge | v25 | 165.4 | - | visible | profile=default |
+| 2026-11-19 00:20 | cmf | bridge | v25 | 151.8 | - | visible | profile=uncapped |
+| 2026-11-19 00:22 | cmf | bridge | v25 | 139.3 | - | visible | profile=default |
+| 2026-11-19 00:25 | cmf | bridge | v25 | 159.1 | - | visible | profile=uncapped |
+| 2026-11-19 00:27 | cmf | bridge | v25 | 156.8 | - | visible | profile=default |
+| 2026-11-19 03:01 | cmf | bridge | v25 | 150.6 | - | visible | profile=uncapped |
+| 2026-11-19 03:01 | cmf | bridge | v25 | 151.8 | - | visible | profile=uncapped |
+| 2026-11-19 03:32 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: no frames: only 0 present events |
+| 2026-11-19 14:16 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-19 14:21 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (IDLE) |
+| 2026-11-19 14:26 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (SUSPENDED) |
+| 2026-11-19 14:36 | x8 | bridge | v25 | 0 | - | crash | profile=default; FAILED after retries: session not READY (IDLE) |
+| 2026-11-19 14:41 | x8 | bridge | v25 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (STARTING_STEAM) |
 | 2026-11-19 15:51 | cmf | bridge | vc26 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
 | 2026-11-19 15:52 | cmf | bridge | vc26 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
 | 2026-11-19 15:52 | cmf | bridge | vc26 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
@@ -866,22 +902,22 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 | 2026-11-19 16:04 | cmf | bridge | vc26 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
 | 2026-11-19 16:05 | cmf | bridge | vc26 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
 | 2026-11-19 16:05 | cmf | bridge | vc26 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
-| 2026-11-20 12:10 | cmf | bridge | p25 | 39.3 | - | visible | default; 31.2 = 1% low |
+| 2026-11-20 12:10 | cmf | bridge | v25 | 39.3 | - | visible | default; 31.2 = 1% low |
 | 2026-11-20 12:16 | cmf | bridge | vc26 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:19 | x8 | bridge | vc27 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
-| 2026-11-20 12:20 | cmf | bridge | p25 | 30.3 | - | visible | control |
+| 2026-11-20 12:20 | cmf | bridge | v25 | 30.3 | - | visible | control |
 | 2026-11-20 12:23 | x8 | bridge | vc27 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:24 | x8 | bridge | vc27 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:28 | x8 | bridge | vc27 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:29 | x8 | bridge | vc27 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
-| 2026-11-20 12:30 | cmf | bridge | p25 | 21.5 | - | visible | uncapped profile |
+| 2026-11-20 12:30 | cmf | bridge | v25 | 21.5 | - | visible | uncapped profile |
 | 2026-11-20 12:33 | cmf | bridge | vc26 | 0 | - | crash | profile=default; session not READY (FAILED) |
 | 2026-11-20 12:36 | x8 | bridge | vc27 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:37 | x8 | bridge | vc27 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:37 | x8 | bridge | vc27 | 0 | - | crash | profile=default; FAILED after retries: session not READY (FAILED) |
 | 2026-11-20 12:37 | x8 | bridge | vc27 | 0 | - | crash | profile=uncapped; FAILED after retries: session not READY (FAILED) |
-| 2026-11-20 12:40 | cmf | bridge | p25 | 32.4 | - | visible | fps limiter |
-| 2026-11-20 12:50 | cmf | bridge | p25 | 18.0 | - | visible | CEF flags |
+| 2026-11-20 12:40 | cmf | bridge | v25 | 32.4 | - | visible | fps limiter |
+| 2026-11-20 12:50 | cmf | bridge | v25 | 18.0 | - | visible | CEF flags |
 
 <details><summary>sources for these rows</summary>
 
@@ -902,41 +938,44 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 - `2026-11-18` cmf/bridge/p24/steam-menu fps=179.5 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T01:12:53+01:00, profile=default, status=ok)
 - `2026-11-18` cmf/bridge/p24/steam-menu fps=165.2 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T01:15:06+01:00, profile=uncapped, status=ok)
 - `2026-11-18` cmf/bridge/p24/steam-menu fps=151.7 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T01:17:19+01:00, profile=uncapped, status=ok)
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=176.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T02:55:56+01:00, profile=default, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T03:13:10+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:27:32+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:33:12+01:00, profile=uncapped, status=FAILED after retries: session not READY (STARTING_STEAM))
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:44:43+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:50:23+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:56:09+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:06:52+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=178.8 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:11:23+01:00, profile=default, status=ok)
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=164.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:13:36+01:00, profile=uncapped, status=ok)
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=199.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:15:47+01:00, profile=default, status=ok)
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=156.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:17:56+01:00, profile=uncapped, status=ok)
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=165.2 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:20:04+01:00, profile=default, status=ok)
-- `2026-11-18` cmf/bridge/p25/steam-menu fps=178.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:22:15+01:00, profile=uncapped, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=238.2 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:20:10+01:00, profile=default, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=317.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:22:20+01:00, profile=uncapped, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=238.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:24:27+01:00, profile=default, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=421.1 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:26:38+01:00, profile=uncapped, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=200.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:28:53+01:00, profile=default, status=ok)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=238.2 visible — bench/menu.jsonl (2026-11-18, profile=default, avg_fps=render avg; invalid_reason=None)
-- `2026-11-18` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:34:35+01:00, profile=uncapped, status=FAILED after retries: session not READY (STARTING_STEAM))
+- `2026-11-18` x4/bridge/p24/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T01:38:44+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` x4/bridge/p24/steam-menu fps=261.2 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T01:53:19+01:00, profile=default, status=ok)
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=176.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T02:55:56+01:00, profile=default, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T03:13:10+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` x4/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T04:33:09+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:27:32+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:33:12+01:00, profile=uncapped, status=FAILED after retries: session not READY (STARTING_STEAM))
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:44:43+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:50:23+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T05:56:09+01:00, profile=default, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:06:52+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=178.8 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:11:23+01:00, profile=default, status=ok)
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=164.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:13:36+01:00, profile=uncapped, status=ok)
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=199.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:15:47+01:00, profile=default, status=ok)
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=156.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:17:56+01:00, profile=uncapped, status=ok)
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=165.2 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:20:04+01:00, profile=default, status=ok)
+- `2026-11-18` cmf/bridge/v25/steam-menu fps=178.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T06:22:15+01:00, profile=uncapped, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=238.2 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:20:10+01:00, profile=default, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=317.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:22:20+01:00, profile=uncapped, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=238.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:24:27+01:00, profile=default, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=421.1 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:26:38+01:00, profile=uncapped, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=200.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:28:53+01:00, profile=default, status=ok)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=238.2 visible — bench/menu.jsonl (2026-11-18, profile=default, avg_fps=render avg; invalid_reason=None)
+- `2026-11-18` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-18T11:34:35+01:00, profile=uncapped, status=FAILED after retries: session not READY (STARTING_STEAM))
 - `2026-11-18` x8/bridge/p22/steam-menu fps=7.4 visible — ~/Documents/scripts/MediaDeck/docs/MENUBENCH.md:12 (#2506 default BL_VKBRIDGE_CEF_VULKAN=0, X8 2 reps 7.4-7.8 fps)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=165.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:18:07+01:00, profile=default, status=ok)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=151.8 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:20:42+01:00, profile=uncapped, status=ok)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=139.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:22:55+01:00, profile=default, status=ok)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=159.1 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:25:08+01:00, profile=uncapped, status=ok)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=156.8 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:27:28+01:00, profile=default, status=ok)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=150.6 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T03:01:53+01:00, profile=uncapped, status=ok)
-- `2026-11-19` cmf/bridge/p25/steam-menu fps=151.8 visible — bench/menu.jsonl (2026-11-19, profile=uncapped, avg_fps=render avg; invalid_reason=None)
-- `2026-11-19` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T03:32:28+01:00, profile=default, status=FAILED after retries: no frames: only 0 present events)
-- `2026-11-19` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:16:06+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-19` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:21:10+01:00, profile=default, status=FAILED after retries: session not READY (IDLE))
-- `2026-11-19` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:26:10+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
-- `2026-11-19` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:36:13+01:00, profile=default, status=FAILED after retries: session not READY (IDLE))
-- `2026-11-19` x8/bridge/p25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:41:12+01:00, profile=uncapped, status=FAILED after retries: session not READY (STARTING_STEAM))
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=165.4 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:18:07+01:00, profile=default, status=ok)
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=151.8 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:20:42+01:00, profile=uncapped, status=ok)
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=139.3 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:22:55+01:00, profile=default, status=ok)
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=159.1 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:25:08+01:00, profile=uncapped, status=ok)
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=156.8 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T00:27:28+01:00, profile=default, status=ok)
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=150.6 visible — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T03:01:53+01:00, profile=uncapped, status=ok)
+- `2026-11-19` cmf/bridge/v25/steam-menu fps=151.8 visible — bench/menu.jsonl (2026-11-19, profile=uncapped, avg_fps=render avg; invalid_reason=None)
+- `2026-11-19` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T03:32:28+01:00, profile=default, status=FAILED after retries: no frames: only 0 present events)
+- `2026-11-19` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:16:06+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-19` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:21:10+01:00, profile=default, status=FAILED after retries: session not READY (IDLE))
+- `2026-11-19` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:26:10+01:00, profile=uncapped, status=FAILED after retries: session not READY (SUSPENDED))
+- `2026-11-19` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:36:13+01:00, profile=default, status=FAILED after retries: session not READY (IDLE))
+- `2026-11-19` x8/bridge/v25/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T14:41:12+01:00, profile=uncapped, status=FAILED after retries: session not READY (STARTING_STEAM))
 - `2026-11-19` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T15:51:55+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-19` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T15:52:22+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-19` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T15:52:48+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
@@ -949,22 +988,22 @@ Steam Big Picture menu. menubench rows are render-side avg fps; the 2026-11-20 o
 - `2026-11-19` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T16:04:37+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-19` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T16:05:03+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-19` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-19T16:05:29+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
-- `2026-11-20` cmf/bridge/p25/steam-menu fps=39.3 visible — owner note 2026-11-20 (CMF bridge Steam menu, default profile: 39.3 avg, 31.2 1% low)
+- `2026-11-20` cmf/bridge/v25/steam-menu fps=39.3 visible — owner note 2026-11-20 (CMF bridge Steam menu, default profile: 39.3 avg, 31.2 1% low)
 - `2026-11-20` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:16:01+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:19:44+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
-- `2026-11-20` cmf/bridge/p25/steam-menu fps=30.3 visible — owner note 2026-11-20 (CMF bridge Steam menu, control run)
+- `2026-11-20` cmf/bridge/v25/steam-menu fps=30.3 visible — owner note 2026-11-20 (CMF bridge Steam menu, control run)
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:23:12+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:24:49+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:28:21+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:29:53+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
-- `2026-11-20` cmf/bridge/p25/steam-menu fps=21.5 visible — owner note 2026-11-20 (CMF bridge Steam menu, uncapped profile)
+- `2026-11-20` cmf/bridge/v25/steam-menu fps=21.5 visible — owner note 2026-11-20 (CMF bridge Steam menu, uncapped profile)
 - `2026-11-20` cmf/bridge/vc26/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:33:45+01:00, profile=default, status=session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:36:42+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:37:07+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:37:32+01:00, profile=default, status=FAILED after retries: session not READY (FAILED))
 - `2026-11-20` x8/bridge/vc27/steam-menu fps=0.0 crash — /home/pgm1207/Documents/scripts/MediaDeck/results/menubench.jsonl (2026-11-20T12:37:57+01:00, profile=uncapped, status=FAILED after retries: session not READY (FAILED))
-- `2026-11-20` cmf/bridge/p25/steam-menu fps=32.4 visible — owner note 2026-11-20 (CMF bridge Steam menu, DXVK_FRAME_RATE limiter run)
-- `2026-11-20` cmf/bridge/p25/steam-menu fps=18.0 visible — owner note 2026-11-20 (CMF bridge Steam menu, CEF webhelper flags run)
+- `2026-11-20` cmf/bridge/v25/steam-menu fps=32.4 visible — owner note 2026-11-20 (CMF bridge Steam menu, DXVK_FRAME_RATE limiter run)
+- `2026-11-20` cmf/bridge/v25/steam-menu fps=18.0 visible — owner note 2026-11-20 (CMF bridge Steam menu, CEF webhelper flags run)
 
 </details>
 
@@ -1000,13 +1039,13 @@ Megabonk (app 3405340), pad loop, on-screen fps from the mali-gaming runs. No ma
 <line x1="884.0" y1="244" x2="884.0" y2="249" stroke="#9ca3af"/>
 <text x="884.0" y="262" font-size="10" fill="#6b7280" text-anchor="middle">11-15 15:10</text>
 <polyline points="56.0,61.8 327.1,102.5 340.9,111.3 354.3,148.6" fill="none" stroke="#1d4ed8" stroke-width="1.8" />
-<circle cx="56.0" cy="61.8" r="3.6" fill="#1d4ed8"/>
-<circle cx="327.1" cy="102.5" r="3.6" fill="#1d4ed8"/>
-<circle cx="340.9" cy="111.3" r="3.6" fill="#1d4ed8"/>
-<circle cx="354.3" cy="148.6" r="3.6" fill="#1d4ed8"/>
-<polyline points="873.9,191.4 884.0,183.7" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="7 4"/>
-<circle cx="873.9" cy="191.4" r="3.6" fill="#1d4ed8"/>
-<circle cx="884.0" cy="183.7" r="3.6" fill="#1d4ed8"/>
+<circle cx="56.0" cy="61.8" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="327.1" cy="102.5" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="340.9" cy="111.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<circle cx="354.3" cy="148.6" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<polyline points="873.9,191.4 884.0,183.7" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="870.5" y="188.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<rect x="880.6" y="180.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
 <text x="63.8" y="42.8" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <text x="327.1" y="83.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
 <text x="340.9" y="116.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">p22</text>
@@ -1084,14 +1123,14 @@ glClear readback test. A swap that succeeds while the screenshot stays black is 
 ## Next cells to fill
 
 1. **glclear / x8 / mali-open / next** — moves a line's endpoint (series has data). `mali-gaming kopperglc run against the ours ICD` on Poco X8 Pro Max (v13, G925) with next mali-open commit.
-2. **megabonk / cmf / bridge / next** — moves a line's endpoint (series has data). `bench/megabonk-compare.sh run bridge 90 30` on CMF Phone 1 (v11, G615) with next MediaDeck build (vc 28, bridge 0.5.5.4).
-3. **megabonk / x8 / bridge / next** — moves a line's endpoint (series has data). `bench/megabonk-compare.sh run bridge 90 30` on Poco X8 Pro Max (v13, G925) with next MediaDeck build (vc 28, bridge 0.5.5.4).
-4. **triangles / x8 / bridge / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x8 --bench triangle --driver bridge` on Poco X8 Pro Max (v13, G925) with next MediaDeck build (vc 28, bridge 0.5.5.4).
-5. **triangles / x8 / mali-open / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x8 --bench triangle --driver ours` on Poco X8 Pro Max (v13, G925) with next mali-open commit.
-6. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` on Poco X8 Pro Max (v13, G925) with next MediaDeck build (vc 28, bridge 0.5.5.4).
-7. **cards / x8 / bridge / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x8 --bench cube --driver bridge` on Poco X8 Pro Max (v13, G925) with next MediaDeck build (vc 28, bridge 0.5.5.4).
-8. **cards / x8 / mali-open / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x8 --bench cube --driver ours` on Poco X8 Pro Max (v13, G925) with next mali-open commit.
+2. **triangles / x4 / bridge / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x4 --bench triangle --driver bridge` on POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G) with next MediaDeck build (vc 28, unavailable on this host).
+3. **triangles / x4 / mali-open / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x4 --bench triangle --driver ours` on POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G) with next mali-open commit.
+4. **steam-menu / x4 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x4 --profile default` on POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G) with next MediaDeck build (vc 28, unavailable on this host).
+5. **cards / x4 / bridge / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x4 --bench cube --driver bridge` on POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G) with next MediaDeck build (vc 28, unavailable on this host).
+6. **megabonk / cmf / bridge / next** — moves a line's endpoint (series has data). `bench/megabonk-compare.sh run bridge 90 30` on CMF Phone 1 (v11, G615) with next MediaDeck build (vc 28, unavailable on this host).
+7. **megabonk / x8 / bridge / next** — moves a line's endpoint (series has data). `bench/megabonk-compare.sh run bridge 90 30` on Poco X8 Pro Max (v13, G925) with next MediaDeck build (vc 28, unavailable on this host).
+8. **triangles / x8 / bridge / next** — moves a line's endpoint (series has data). `tools/bench2 poco-x8 --bench triangle --driver bridge` on Poco X8 Pro Max (v13, G925) with next MediaDeck build (vc 28, unavailable on this host).
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
-_Generated from 237 rows; 0 source rows carry no device/version and are excluded from the matrix._
+_Generated from 244 rows; 0 source rows carry no device/version and are excluded from the matrix._

@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 ROWS = ROOT / "docs/bench.jsonl"
 OUT = ROOT / "docs/bench-gaps.json"
 
-DEVICES = OrderedDict([("x8", "Poco X8 Pro Max (v13, G925)"), ("cmf", "CMF Phone 1 (v11, G615)")])
+DEVICES = OrderedDict([("x8", "Poco X8 Pro Max (v13, G925)"),
+                       ("cmf", "CMF Phone 1 (v11, G615)"),
+                       ("x4", "POCO X4 (v10, G610; adb 192.168.3.115:5555, model 22041216G)")])
 STACKS = OrderedDict([("bridge", "MaliBridge (MediaDeck)"), ("mali-open", "mali-open ICD")])
 WORKLOADS = OrderedDict([
     ("cards", "cube/cards (bench2 --bench cube)"),
@@ -37,7 +39,11 @@ RUNBOOK = {
     "megabonk": "bench/megabonk-compare.sh run {drv} 90 30",
     "glclear": "mali-gaming kopperglc run against the {drv} ICD",
 }
-ALIAS = {"x8": "poco-x8", "cmf": "cmf"}
+ALIAS = {"x8": "poco-x8", "cmf": "cmf", "x4": "poco-x4"}
+# Bridge builds this host can actually install. p22/p24/p25/vc26/vc27/vc28 are gone;
+# the p25 build was pulled from the X8 before the update and is kept as v25.
+BUILD_APK = {"v25": "/tmp/opencode/x8-current-v25.apk"}
+UNAVAILABLE = ("p8", "p19", "p22", "p24", "p25", "vc26", "vc27", "vc28")
 
 
 def load():
@@ -100,10 +106,19 @@ def build(rows):
                         value = 0
                         why = "measured"
                     if state == "missing":
-                        apk = ("next MediaDeck build (vc 28, bridge 0.5.5.4)" if st == "bridge" and ver == NEXT
-                               else f"MediaDeck {ver} (bridge 0.5.5.4)" if st == "bridge"
-                               else "next mali-open commit" if ver == NEXT
-                               else f"mali-open ICD at {ver}")
+                        if st == "bridge":
+                            apk_path = BUILD_APK.get(ver)
+                            if apk_path and Path(apk_path).is_file():
+                                apk, avail = f"{ver} APK at {apk_path}", True
+                            elif ver == NEXT:
+                                apk, avail = "next MediaDeck build (vc 28, unavailable on this host)", False
+                            elif ver in UNAVAILABLE:
+                                apk, avail = f"MediaDeck {ver} APK (unavailable on this host)", False
+                            else:
+                                apk, avail = f"MediaDeck {ver} (bridge 0.5.5.4)", False
+                        else:
+                            apk = "next mali-open commit" if ver == NEXT else f"mali-open ICD at {ver}"
+                            avail = ver != NEXT
                         cells.append({
                             "device": dev, "stack": st, "version": ver, "workload": wl,
                             "state": state, "value": value, "why": why,
@@ -114,6 +129,7 @@ def build(rows):
                                 "driver": STACKS[st],
                                 "test": RUNBOOK[wl].format(alias=ALIAS[dev],
                                                            drv="bridge" if st == "bridge" else "ours"),
+                                "build_available": avail,
                             },
                         })
                     else:

@@ -26,8 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gaps as gapmod  # noqa: E402
 
 COLOUR = {"bridge": "#1d4ed8", "mali-open": "#b91c1c"}
-DASH = {"x8": "", "cmf": "7 4"}
-DEVICE_NAME = {"x8": "X8", "cmf": "CMF"}
+DASH = {"x8": "", "cmf": "8 4", "x4": "1 4"}
+MARK = {"x8": "circle", "cmf": "square", "x4": "triangle"}
+DEVICE_NAME = {"x8": "X8", "cmf": "CMF", "x4": "X4"}
 SHORT = {"black": "black screen", "crash": "crash", "not_run": "not attempted",
          "unverified": "unverified"}
 W, H = 900, 300
@@ -43,6 +44,18 @@ def ts_of(r):
         return datetime.fromisoformat(r["ts"]).timestamp()
     except ValueError:
         return 0.0
+
+
+def marker(cx, cy, kind, col, hollow=False):
+    fill = "#ffffff" if hollow else col
+    if kind == "square":
+        return (f'<rect x="{cx - 3.4:.1f}" y="{cy - 3.4:.1f}" width="6.8" height="6.8" fill="{fill}" '
+                f'stroke="{col}" stroke-width="1.4"/>')
+    if kind == "triangle":
+        return (f'<polygon points="{cx:.1f},{cy - 4.6:.1f} {cx + 4.4:.1f},{cy + 3.4:.1f} '
+                f'{cx - 4.4:.1f},{cy + 3.4:.1f}" fill="{fill}" stroke="{col}" stroke-width="1.4"/>')
+    return (f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{4.2 if hollow else 3.6}" fill="{fill}" '
+            f'stroke="{col}" stroke-width="{1.6 if hollow else 0}"/>')
 
 
 def nice_max(v):
@@ -107,11 +120,11 @@ def chart(rows, wl):
         for r in srows:
             xx, ok = X(ts_of(r)), r["status"] == "visible" and r["fps"] > 0
             yy = Y(r["fps"]) if ok else B
+            kind = MARK.get(dev, "circle")
             if ok:
-                out.append(f'<circle cx="{xx:.1f}" cy="{yy:.1f}" r="3.6" fill="{col}"/>')
+                out.append(marker(xx, yy, kind, col))
             else:
-                out.append(f'<circle cx="{xx:.1f}" cy="{yy:.1f}" r="4.2" fill="#ffffff" '
-                           f'stroke="{col}" stroke-width="1.6"/>')
+                out.append(marker(xx, yy, kind, col, hollow=True))
                 out.append(f'<line x1="{xx:.1f}" y1="{yy:.1f}" x2="{xx:.1f}" y2="{yy - 12:.1f}" '
                            f'stroke="{col}" stroke-width="0.8" stroke-dasharray="2 2"/>')
         # Label the first point of each version run, and group repeated failures as "v reason xN".
@@ -198,22 +211,25 @@ NOTE = {
 
 
 def legend():
-    parts = []
-    x = 56
+    parts, x, y = [], 56, 14
     for stack, col in COLOUR.items():
         for dev, dash in DASH.items():
+            label = f"{stack}/{DEVICE_NAME[dev]}"
+            if x + 34 + 6.2 * len(label) > W - 10:
+                x, y = 56, y + 20
             d = f' stroke-dasharray="{dash}"' if dash else ""
-            parts.append(f'<line x1="{x}" y1="14" x2="{x + 26}" y2="14" stroke="{col}" '
-                         f'stroke-width="2"{d}/>')
-            parts.append(f'<circle cx="{x + 13}" cy="14" r="3.2" fill="{col}"/>')
-            parts.append(f'<text x="{x + 32}" y="17.5" font-size="10" fill="#111827">'
-                         f'{escape(stack)} / {DEVICE_NAME[dev]}</text>')
-            x += 32 + 7 * len(f"{stack} / {DEVICE_NAME[dev]}") + 26
-    parts.append(f'<circle cx="{x + 4}" cy="14" r="4" fill="#ffffff" stroke="#111827"/>')
-    parts.append(f'<text x="{x + 14}" y="17.5" font-size="10" fill="#111827">'
+            parts.append(f'<line x1="{x}" y1="{y}" x2="{x + 24}" y2="{y}" stroke="{col}" '
+                         f'stroke-width="2"{d} stroke-linecap="round"/>')
+            parts.append(marker(x + 12, y, MARK.get(dev, "circle"), col))
+            parts.append(f'<text x="{x + 29}" y="{y + 3.5}" font-size="10" fill="#111827">'
+                         f'{escape(label)}</text>')
+            x += 29 + 6.2 * len(label) + 22
+    parts.append(marker(x + 4, y, "circle", "#111827", hollow=True))
+    parts.append(f'<text x="{x + 14}" y="{y + 3.5}" font-size="10" fill="#111827">'
                  f'no visible frame (fps 0, reason labelled)</text>')
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="26" '
-            f'viewBox="0 0 {W} 26">' + "".join(parts) + "</svg>")
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{y + 12}" '
+            f'viewBox="0 0 {W} {y + 12}"><rect width="{W}" height="{y + 12}" fill="#ffffff"/>'
+            + "".join(parts) + "</svg>")
 
 
 def table(rows):

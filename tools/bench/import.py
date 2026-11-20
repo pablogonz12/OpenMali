@@ -32,14 +32,22 @@ MEDIADECK = Path(os.environ.get("MEDIADECK", Path.home() / "Documents/scripts/Me
 SOURCES = [SEED, ROOT / "bench/results.jsonl", ROOT / "bench/menu.jsonl",
            MEDIADECK / "results/menubench.jsonl"]
 
-DEVICE = {"poco-x8": "x8", "x8": "x8", "cmf": "cmf"}
+DEVICE = {"poco-x8": "x8", "x8": "x8", "cmf": "cmf", "poco-x4": "x4", "x4": "x4"}
 STACK = {"bridge": "bridge", "ours": "mali-open", "mali-open": "mali-open"}
 WORKLOAD = {"triangle": "triangles", "cube": "cards", "menu": "steam-menu", "menubench": "steam-menu"}
 
 
 def p_version(text):
-    """'malideck p25 (...)' -> p25; '0.7.1 (vc 27)' -> vc27; '1.0.0-p22-...' -> p22."""
-    m = re.search(r"p(\d+)\b", str(text))
+    """'malideck p25 (...)' -> v25; '0.7.1 (vc 27)' -> vc27; '1.0.0-p22-...' -> p22.
+
+    The p25 APK is the MediaDeck 1.0.0 build that installs as versionCode 25. Its APK was pulled
+    from the X8 before the update (/tmp/opencode/x8-current-v25.apk), so that build is named v25 and
+    its historical rows stay attributable now that the original p25 file is gone.
+    """
+    t = str(text)
+    if re.search(r"\bp25\b|\bvc\s*25\b", t):
+        return "v25"
+    m = re.search(r"p(\d+)\b", t)
     if m:
         return "p" + m.group(1)
     m = re.search(r"\bvc\s*(\d+)\b", str(text))
@@ -80,7 +88,7 @@ def from_bench2():
         pres = r.get("presented") or {}
         fps = pres.get("fps")
         if dev is None:
-            continue  # poco-x4 (v10) is not one of the charted devices; kept in the source file
+            continue  # unknown phone: keep it out of the store rather than guessing a device
         rows.append({
             "ts": day(None, r.get("date")),
             "device": dev,
