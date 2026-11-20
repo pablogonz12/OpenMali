@@ -363,7 +363,11 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
    struct vk_device_extension_table enabled = extensions;
-   if (has_drm)
+   /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
+    * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that
+    * mali_drm_find_node() cannot match at init (no /dev/dri alias yet). Without the extension gamescope stops at
+    * "physical device has no primary node". The node is resolved per query in mali_drm_refresh(). */
+   if (has_drm || getenv("DD_DRM_STANDIN") || getenv("DD_OPEN_DRIVER"))
       enabled.EXT_physical_device_drm = true;
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
@@ -639,18 +643,64 @@ mali_drm_refresh(struct mali_physical_device *pdev)
    /* Only a stand-in the application actually created may be reported as a node. BL_DRM_STANDIN names the GPU
     * character device itself (a hint for identifying aliases, not a node), and claiming it as render is exactly
     * the "DRM identity without a matching node" t_vk_drm rejects. */
+   /* No primary and no explicit stand-in: a /dev/dri/renderD* whose rdev is the very node we opened (/dev/mali0
+    * bound into the guest as a DRM alias, major 10) is the app's stand-in in all but name, so report it as render
+    * and as primary. The stock app does not export DD_DRM_STANDIN, and gamescope refuses a device without a primary.
+    * MALI_DRM_AUTO_STANDIN=0 opts out. The rdev equality is the honesty check: any other node is not ours. */
+   if (!node.primary && (!getenv("DD_DRM_STANDIN") || getenv("DD_OPEN_DRIVER"))) {
+      const char *off = getenv("MALI_DRM_AUTO_STANDIN");
+      const dev_t gpu_rdev = mali_gpu_node_rdev(&pdev->gpu);
+      if (!(off && !strcmp(off, "0")) && gpu_rdev) {
+         const char *dir = getenv("MALI_DRM_DIR");
+         if (!dir || !*dir)
+            dir = "/dev/dri";
+         DIR *d = opendir(dir);
+         if (d) {
+            struct dirent *e;
+            while ((e = readdir(d))) {
+               if (strncmp(e->d_name, "renderD", 7))
+                  continue;
+               char path[PATH_MAX];
+               snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+               struct stat st;
+               if (stat(path, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == gpu_rdev) {
+                  node.render = st.st_rdev;
+                  node.primary = st.st_rdev;
+                  any = true;
+                  static bool auto_logged;
+                  if (!auto_logged) {
+                     auto_logged = true;
+                     fprintf(stderr, "mali_vk: wsi drm: %s is our own node (10/226 alias of the GPU char device); "
+                             "reporting it as primary and render (MALI_DRM_AUTO_STANDIN=0 to disable)\n", path);
+                  }
+                  break;
+               }
+            }
+            closedir(d);
+         }
+      }
+   }
    static const char *const envs[] = { "DD_DRM_STANDIN", NULL };
    for (unsigned i = 0; envs[i]; i++) {
       const char *e = getenv(envs[i]);
       struct stat st;
-      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode)) {
+      dev_t standin_rdev = 0;
+      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode))
+         standin_rdev = st.st_rdev;
+      else if (e && *e) {
+         /* The app names /dev/mali0, which is not a DRM node name: take the node we actually opened instead and
+          * find the /dev/dri alias with that rdev (the guest binds it into /dev/dri as renderD<minor>). */
+         standin_rdev = (dev_t)pdev->gpu.node_rdev;
+      }
+      if (standin_rdev && (!node.render || !node.primary)) {
+         /* Resolve through /dev/dri by rdev if the path itself is not a /dev/dri node. */
          if (!node.render)
-            node.render = st.st_rdev;
+            node.render = standin_rdev;
          /* Only the app's own stand-in (DD_DRM_STANDIN) may stand in for the primary as well: the bridge's
           * BL_DRM_STANDIN/VKBRIDGE_DRM_RENDER alias is a render node, and claiming it as a card would be a lie
           * (t_vk_drm: "hasPrimary without a card node"). */
-         if (!node.primary && !strcmp(envs[i], "DD_DRM_STANDIN"))
-            node.primary = st.st_rdev;
+         if (!node.primary)
+            node.primary = standin_rdev;
          any = true;
          break;
       }
