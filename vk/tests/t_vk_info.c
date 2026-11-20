@@ -225,6 +225,9 @@ main(int argc, char **argv)
    eq("maintenance4", f13.maintenance4, fm4.maintenance4);
    eq("privateData", f13.privateData, fpd.privateData);
    CHECK(f2.features.textureCompressionBC == g2.features.textureCompressionBC && f2.features.textureCompressionBC, "BC");
+   /* Mandatory in Vulkan 1.0 and required by Mesa's vk_physical_device_check_device_features (vk_device.c:211):
+    * without it zink cannot create a device at all ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). */
+   CHECK(f2.features.robustBufferAccess, "robustBufferAccess (Vulkan 1.0 mandatory)");
 
    /* Allow-list: any VkBool32 in the core structs that is true and not listed fails. */
    {
@@ -237,6 +240,7 @@ main(int argc, char **argv)
       CHECK(L->maxDrawIndirectCount >= 0xffff, "maxDrawIndirectCount %u: multiDrawIndirect requires >= 2^16-1", L->maxDrawIndirectCount);
       /* Core features with a backing test (feature -> test): add a line here ONLY together with its passing test. */
       static const size_t tested[] = {
+         offsetof(VkPhysicalDeviceFeatures, robustBufferAccess),       /* Vulkan 1.0 mandatory (zink: vk_device.c:211); the device below is created with it enabled */
          offsetof(VkPhysicalDeviceFeatures, shaderClipDistance),       /* t_vk_feat clip */
          offsetof(VkPhysicalDeviceFeatures, shaderImageGatherExtended), /* t_vk_feat gather */
          offsetof(VkPhysicalDeviceFeatures, fragmentStoresAndAtomics), /* t_vk_feat fsstore */
