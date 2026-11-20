@@ -17,6 +17,8 @@
 #include "util/list.h"
 #include "vk_alloc.h"
 #include "vk_util.h"
+#include "vk_common_entrypoints.h"
+#include <time.h>
 
 /* M1 policy: every limit is the Vulkan 1.0 required minimum (spec table "Required Limits").
  * The milestone that implements a feature raises its limits to what the hardware does. */
@@ -596,4 +598,74 @@ mali_GetPhysicalDeviceExternalBufferProperties(
          .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
       };
    pExternalBufferProperties->externalMemoryProperties = p;
+}
+
+/* VK_EXT_physical_device_drm is evaluated when a client asks, not once when the physical device is created: the
+ * guest binds /dev/dri nodes (or the app's stand-in) after the first vkEnumeratePhysicalDevices, and gamescope
+ * enumerates early, so a cached answer says "no primary node" for a node that exists a moment later. Re-probe with
+ * stat() (cheap) behind a one second cache, and report each half independently. An explicit node from the app wins:
+ * DD_DRM_STANDIN / VKBRIDGE_DRM_RENDER / BL_DRM_STANDIN is reported as the render node, and as primary when no card
+ * matched (gamescope refuses a device without a primary when it drives DRM, and a misc alias is all the guest has). */
+static void
+mali_drm_refresh(struct mali_physical_device *pdev)
+{
+   static struct timespec last;
+   struct timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   if (last.tv_sec && now.tv_sec - last.tv_sec < 1 && now.tv_nsec >= last.tv_nsec)
+      return;
+   last = now;
+
+   struct vk_properties *p = &pdev->vk.properties;
+   const bool was_primary = p->drmHasPrimary, was_render = p->drmHasRender;
+   struct mali_drm_node node = {0};
+   bool any = mali_drm_find_node(&pdev->gpu, &node);
+
+   static const char *const envs[] = { "DD_DRM_STANDIN", "VKBRIDGE_DRM_RENDER", "BL_DRM_STANDIN", NULL };
+   for (unsigned i = 0; envs[i]; i++) {
+      const char *e = getenv(envs[i]);
+      struct stat st;
+      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode)) {
+         if (!node.render)
+            node.render = st.st_rdev;
+         /* Only the app's own stand-in (DD_DRM_STANDIN) may stand in for the primary as well: the bridge's
+          * BL_DRM_STANDIN/VKBRIDGE_DRM_RENDER alias is a render node, and claiming it as a card would be a lie
+          * (t_vk_drm: "hasPrimary without a card node"). */
+         if (!node.primary && !strcmp(envs[i], "DD_DRM_STANDIN"))
+            node.primary = st.st_rdev;
+         any = true;
+         break;
+      }
+   }
+
+   p->drmHasPrimary = any && node.primary != 0;
+   p->drmPrimaryMajor = p->drmHasPrimary ? (int64_t)major(node.primary) : 0;
+   p->drmPrimaryMinor = p->drmHasPrimary ? (int64_t)minor(node.primary) : 0;
+   p->drmHasRender = any && node.render != 0;
+   p->drmRenderMajor = p->drmHasRender ? (int64_t)major(node.render) : 0;
+   p->drmRenderMinor = p->drmHasRender ? (int64_t)minor(node.render) : 0;
+
+   if (p->drmHasPrimary != was_primary || p->drmHasRender != was_render)
+      fprintf(stderr, "mali_vk: wsi drm: primary=%s(%lld:%lld) render=%s(%lld:%lld) (re-probed)\n",
+              p->drmHasPrimary ? "node" : "none", (long long)p->drmPrimaryMajor, (long long)p->drmPrimaryMinor,
+              p->drmHasRender ? "node" : "none", (long long)p->drmRenderMajor, (long long)p->drmRenderMinor);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2 *pProperties)
+{
+   VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
+   vk_common_GetPhysicalDeviceProperties2(physicalDevice, pProperties);
+   mali_drm_refresh(pdev);
+   for (VkBaseOutStructure *ext = pProperties->pNext; ext; ext = ext->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT) {
+         VkPhysicalDeviceDrmPropertiesEXT *drm = (VkPhysicalDeviceDrmPropertiesEXT *)ext;
+         drm->hasPrimary = pdev->vk.properties.drmHasPrimary;
+         drm->hasRender = pdev->vk.properties.drmHasRender;
+         drm->primaryMajor = pdev->vk.properties.drmPrimaryMajor;
+         drm->primaryMinor = pdev->vk.properties.drmPrimaryMinor;
+         drm->renderMajor = pdev->vk.properties.drmRenderMajor;
+         drm->renderMinor = pdev->vk.properties.drmRenderMinor;
+      }
+   }
 }
