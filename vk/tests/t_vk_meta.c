@@ -2,7 +2,7 @@
 /* M12/M13 test: meta copies/blits/clears/resolve, events, timestamps through the ICD. Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|event|ts]
+ *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|inpass|tiled_reject|argb8srgb|view3d2d|event|ts]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -54,7 +54,9 @@ static const char *g_only;
    X(CreateEvent) X(DestroyEvent) X(GetEventStatus) X(SetEvent) X(ResetEvent)                      \
    X(CmdSetEvent) X(CmdResetEvent) X(CmdWaitEvents)                                                \
    X(CreateQueryPool) X(DestroyQueryPool) X(GetQueryPoolResults) X(CmdResetQueryPool)              \
-   X(CmdWriteTimestamp) X(CmdCopyQueryPoolResults)
+   X(CmdWriteTimestamp) X(CmdCopyQueryPoolResults)                                                  \
+   X(CreateImageView) X(DestroyImageView) X(CreateRenderPass) X(DestroyRenderPass)                 \
+   X(CreateFramebuffer) X(DestroyFramebuffer) X(CmdBeginRenderPass) X(CmdEndRenderPass)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -157,9 +159,10 @@ layout_tr(VkCommandBuffer cb, VkImage im, VkImageLayout from, VkImageLayout to, 
 struct img { VkImage i; VkDeviceMemory m; };
 
 static int
-mkimg3(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, uint32_t d, VkImageUsageFlags usage, VkSampleCountFlagBits s)
+mkimg3f(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, uint32_t d, VkImageUsageFlags usage, VkSampleCountFlagBits s,
+        VkImageCreateFlags flags)
 {
-   VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, .format = fmt,
+   VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, .format = fmt,
                            .extent = {w, h, d ? d : 1}, .mipLevels = 1, .arrayLayers = 1, .samples = s,
                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    CHECK(CreateImage(dev, &ci, NULL, &o->i) == VK_SUCCESS, "CreateImage fmt %d", fmt);
@@ -171,6 +174,12 @@ mkimg3(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, uint32_t d, VkImageU
    CHECK(AllocateMemory(dev, &ai, NULL, &o->m) == VK_SUCCESS, "img alloc");
    CHECK(BindImageMemory(dev, o->i, o->m, 0) == VK_SUCCESS, "img bind");
    return 1;
+}
+
+static int
+mkimg3(struct img *o, VkFormat fmt, uint32_t w, uint32_t h, uint32_t d, VkImageUsageFlags usage, VkSampleCountFlagBits s)
+{
+   return mkimg3f(o, fmt, w, h, d, usage, s, 0);
 }
 
 static int
@@ -719,6 +728,245 @@ case_dsfmt(const char *name, VkFormat fmt)
 }
 
 /* 4x MSAA clear then resolve */
+/* A meta op recorded inside a render pass is legal Vulkan: mali_meta_vk.c queues the compute frame and
+ * mali_cmd_push_frame_deferred() pushes it right after the pass' own frame. The command buffer must succeed AND the
+ * deferred work must have run (the filled bytes are read back after the submission). */
+static int
+case_inpass(void)
+{
+   struct img at = {0};
+   TRY(mkimg(&at, VK_FORMAT_R8G8B8A8_UNORM, W, H,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SAMPLE_COUNT_1_BIT));
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = at.i,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view = VK_NULL_HANDLE;
+   CHECK(CreateImageView(dev, &vci, NULL, &view) == VK_SUCCESS, "attachment view");
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                              .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                  .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpci, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp,
+                                  .attachmentCount = 1, .pAttachments = &view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fci, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   struct buf b = {0};
+   TRY(mkbuf(&b, 1024, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   memset(b.p, 0, 1024);
+
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdFillBuffer(cb, b.b, 0, 256, 0x12345678u);
+   CmdEndRenderPass(cb);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "an in-pass meta op must not poison the command buffer (%d)", r);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   ResetFences(dev, 1, &fence);
+   CHECK(QueueSubmit(queue, 1, &si, fence) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &fence, VK_TRUE, 20ull * 1000000000ull) == VK_SUCCESS, "fence");
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   if (!g_fake)
+      for (int i = 0; i < 256; i += 4) {
+         uint32_t v;
+         memcpy(&v, (uint8_t *)b.p + i, sizeof v);
+         CHECK(v == 0x12345678u, "deferred fill at %d = 0x%08x", i, v);
+      }
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyImageView(dev, view, NULL);
+   rmimg(&at);
+   DestroyBuffer(dev, b.b, NULL);
+   FreeMemory(dev, b.m, NULL);
+   report("inpass", g_fake ? "pixels: fake backend" : NULL);
+   return 1;
+}
+
+/* The negative case that stays: an image created with MALI_IMAGE_TILED=1 (opt-in u-interleaved layout) cannot be
+ * addressed by the linear meta path, and that refusal must name the command and the reason. */
+static int
+case_tiled_reject(void)
+{
+   setenv("MALI_IMAGE_TILED", "1", 1);
+   struct img a = {0}, b = {0};
+   int ok = mkimg(&a, VK_FORMAT_R8G8B8A8_UNORM, W, H, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  VK_SAMPLE_COUNT_1_BIT) &&
+            mkimg(&b, VK_FORMAT_R8G8B8A8_UNORM, W, H, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  VK_SAMPLE_COUNT_1_BIT);
+   unsetenv("MALI_IMAGE_TILED");
+   CHECK(ok, "tiled images");
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {W, H, 1}};
+   char msg[512] = "";
+   fflush(stderr);
+   int saved = dup(2);
+   FILE *cap = tmpfile();
+   CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
+   CmdCopyImage(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+   VkResult rr = EndCommandBuffer(cb);
+   fflush(stderr);
+   dup2(saved, 2);
+   close(saved);
+   rewind(cap);
+   if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
+   CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "a tiled copy must be refused (%d)", rr);
+   CHECK(strstr(msg, "CmdCopyImage2") != NULL, "the message must name the command: %s", msg);
+   CHECK(strstr(msg, "plan error") != NULL, "the message must name the reason: %s", msg);
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   rmimg(&a);
+   rmimg(&b);
+   report("tiled_reject", NULL);
+   return 1;
+}
+
+/* VK_FORMAT_A8B8G8R8_SRGB_PACK32 as a colour attachment + sampled view: the format HL2's swapchain picks, which the
+ * view resolver used to refuse (rc=-22). Renders a known colour and reads it back (sRGB byte encoding). */
+static int
+case_argb8srgb(void)
+{
+   struct img at = {0};
+   TRY(mkimg(&at, VK_FORMAT_A8B8G8R8_SRGB_PACK32, W, H,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+             VK_SAMPLE_COUNT_1_BIT));
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = at.i,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_A8B8G8R8_SRGB_PACK32,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view = VK_NULL_HANDLE;
+   CHECK(CreateImageView(dev, &vci, NULL, &view) == VK_SUCCESS, "srgb attachment view");
+   VkAttachmentDescription ad = {.format = VK_FORMAT_A8B8G8R8_SRGB_PACK32, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                              .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                  .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpci, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp,
+                                  .attachmentCount = 1, .pAttachments = &view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fci, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   /* 0.5 linear -> sRGB ~188 (0xbc); the resolver/draw path only needs the attachment to be accepted. */
+   VkClearValue cv = {.color = {{0.5f, 0.25f, 0.75f, 1.0f}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdEndRenderPass(cb);
+   struct buf rd = {0};
+   TRY(mkbuf(&rd, (size_t)W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   layout_tr(cb, at.i, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy dn = {.imageSubresource = sl, .imageExtent = {W, H, 1}};
+   CmdCopyImageToBuffer(cb, at.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rd.b, 1, &dn);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "an A8B8G8R8_SRGB_PACK32 attachment must be accepted (%d)", r);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   ResetFences(dev, 1, &fence);
+   CHECK(QueueSubmit(queue, 1, &si, fence) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &fence, VK_TRUE, 20ull * 1000000000ull) == VK_SUCCESS, "fence");
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   if (!g_fake) {
+      /* bytes: R,G,B,A; the clear colour is linear, an sRGB target stores the encoded value: 0.5 -> ~0xbc */
+      const uint8_t *p = (const uint8_t *)rd.p;
+      CHECK(p[0] > 0xa0 && p[0] < 0xd0, "R = %u", p[0]);
+      CHECK(p[1] > 0x70 && p[1] < 0xa0, "G = %u", p[1]);
+      CHECK(p[2] > 0xd0 && p[2] < 0xf0, "B = %u", p[2]);
+      CHECK(p[3] > 0xf0, "A = %u", p[3]);
+   }
+   rmbuf(&rd);
+   rmimg(&at);
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyImageView(dev, view, NULL);
+   report("argb8srgb", g_fake ? "pixels: fake backend" : NULL);
+   return 1;
+}
+
+/* A 2D view of one slice of a 3D image is a legal render target (the 3D *view* stays refused: it hangs the GPU).
+ * Clears slice 1 through a 2D view and reads the whole volume back: slice 0 must stay untouched. */
+static int
+case_view3d2d(void)
+{
+   struct img vol = {0};
+   /* a 2D (or 2D array) view of a 3D image is legal only with VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT */
+   TRY(mkimg3f(&vol, VK_FORMAT_R8G8B8A8_UNORM, W, H, 4,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SAMPLE_COUNT_1_BIT,
+              VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT));
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = vol.i,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 1, 1}};
+   VkImageView view = VK_NULL_HANDLE;
+   CHECK(CreateImageView(dev, &vci, NULL, &view) == VK_SUCCESS, "2D view of a 3D slice");
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                              .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                  .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpci, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp,
+                                  .attachmentCount = 1, .pAttachments = &view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fci, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   struct buf rd = {0};
+   TRY(mkbuf(&rd, (size_t)W * H * 4 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   memset(rd.p, 0xEE, (size_t)W * H * 4 * 4);
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   VkClearValue cv = {.color = {{1.0f, 0.0f, 0.0f, 1.0f}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdEndRenderPass(cb);
+   layout_tr(cb, vol.i, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkBufferImageCopy dn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 4}, .imageExtent = {W, H, 4}};
+   CmdCopyImageToBuffer(cb, vol.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rd.b, 1, &dn);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "a 2D view of a 3D slice must be accepted (%d)", r);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   ResetFences(dev, 1, &fence);
+   CHECK(QueueSubmit(queue, 1, &si, fence) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &fence, VK_TRUE, 20ull * 1000000000ull) == VK_SUCCESS, "fence");
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   if (!g_fake) {
+      const uint8_t *p = (const uint8_t *)rd.p;
+      const size_t slice = (size_t)W * H * 4;
+      CHECK(p[0] == 0 && p[1] == 0 && p[2] == 0, "slice 0 must be untouched: %u %u %u", p[0], p[1], p[2]);
+      CHECK(p[slice + 0] > 0xf0 && p[slice + 1] < 0x10 && p[slice + 2] < 0x10,
+            "slice 1 must hold the clear colour: %u %u %u", p[slice], p[slice + 1], p[slice + 2]);
+   }
+   rmbuf(&rd);
+   rmimg(&vol);
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyImageView(dev, view, NULL);
+   report("view3d2d", g_fake ? "pixels: fake backend" : NULL);
+   return 1;
+}
+
 static int
 case_resolve(void)
 {
@@ -936,6 +1184,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("d16")) ok &= case_dsfmt("d16", VK_FORMAT_D16_UNORM);
    if (ok && CASE_ON("d32s8")) ok &= case_dsfmt("d32s8", VK_FORMAT_D32_SFLOAT_S8_UINT);
    if (ok && CASE_ON("resolve")) ok &= case_resolve();
+   if (ok && g_only && CASE_ON("inpass")) ok &= case_inpass();   /* explicit only: keeps the golden BO sequence */
+   if (ok && g_only && CASE_ON("tiled_reject")) ok &= case_tiled_reject();
+   if (ok && g_only && CASE_ON("argb8srgb")) ok &= case_argb8srgb();
+   if (ok && g_only && CASE_ON("view3d2d")) ok &= case_view3d2d();
    if (ok && CASE_ON("event")) ok &= case_event();
    if (ok && CASE_ON("ts")) ok &= case_ts();
 

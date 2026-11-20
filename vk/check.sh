@@ -34,7 +34,7 @@ fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
 # Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=4            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
+DXVK_MISSING=3            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
@@ -77,15 +77,23 @@ ln -s /dev/null "$DRMB/renderD42"; ln -s /dev/null "$DRMB/card1"
 ln -s /dev/zero "$DRMX/renderD43"
 DRMT="$OUT/t_vk_drm --direct $OUT/libvulkan_mali.so"
 run "drm absent v11"        0 -u BL_DRM_STANDIN $LOADER_ENV MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
-run "drm render v11"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
-run "drm render v13"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v13 $DRMT --node "$DRMR/renderD42"
+run "drm render v11"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_AUTO_STANDIN=0 MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
+run "drm render v13"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_AUTO_STANDIN=0 MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v13 $DRMT --node "$DRMR/renderD42"
+# Auto stand-in: the same node without MALI_DRM_AUTO_STANDIN=0 is reported as primary and render (stock app path).
+run "drm auto standin v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
+# The stock app's own values (SessionService.kt:1044-1053): /dev/mali0 does not exist under that name here, so the
+# driver has to resolve it to the /dev/dri alias of the GPU node we opened - render *and* primary.
+run "drm stock standin v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null DD_OPEN_DRIVER=1 DD_DRM_STANDIN=/dev/mali0 MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42" --primary "$DRMR/renderD42"
 run "drm render+primary"   0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMB" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMB/renderD42" --primary "$DRMB/card1"
 run "drm mismatch absent"  0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMX" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
 # With a node identity zink's list loses that item: only logicOp remains (0 hard).
 run "steam_caps v11 drm node" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing 0
 rm -rf "$DRMR" "$DRMB" "$DRMX"
+# 4x MSAA is opt-in (MALI_EXPERIMENTAL_MSAA=1): the plain `vk_info $g` run above asserts the default 1x, these assert the gate and
+# that switching it off again (0) matches the default.
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
@@ -144,6 +152,15 @@ for g in v11 v13; do
    # batch<seq timing assert stays off: MALI_SHADER_CACHE is a path, and a timing check would flake on a loaded host.
    run "vk_compute batch $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only batch
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
+   # A meta op inside a render pass is refused, and the refusal names the command and the reason on stderr.
+   run "vk_meta inpass $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only inpass
+   run "vk_meta tiled_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only tiled_reject
+   # packed A8B8G8R8 render target + a 2D view of one slice of a 3D image (zink's 3D render targets)
+   run "vk_meta argb8srgb $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only argb8srgb
+   run "vk_meta view3d2d $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only view3d2d
+   # loadOp LOAD of the formats Source-engine/wined3d content uses: D24S8 depth (zs_format 2) and A8B8G8R8 colour.
+   run "vk_draw load_d24s8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only load_depth24s8
+   run "vk_draw load_argb8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only load_colour_argb8
 done
 
 # Golden command streams + hardware-bug rules (tests/golden.py): the fake backend dumps every submitted CS with the live BOs

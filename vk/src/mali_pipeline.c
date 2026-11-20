@@ -12,6 +12,7 @@
 #include "mali_cs_emit.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
+#include "vk_enum_to_str.h"
 #include "mali_msaa.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
@@ -164,6 +165,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
+    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
+    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
+    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
 
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
@@ -517,6 +522,10 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
+    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
+    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
+    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
    /* Compute defaults to 8 reserved FAU words (32 B of push constants); a larger push block is copied in from word 0, so reserve it or
@@ -630,16 +639,19 @@ res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 }
 
 static int
-target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, struct mali_cmd_target *out)
+target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, bool view_is_3d,
+          struct mali_cmd_target *out)
 {
    if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled) {
-      if (getenv("MALI_PIPE_DBG"))
-         fprintf(stderr, "mali_vk: render target rejected: format %d va=%llx level %u/%u tiled=%d\n", (int)img->vk.format, (unsigned long long)img->va, level,
-                 img->lay.d.levels, (int)img->lay.d.tiled);
+      fprintf(stderr, "mali_vk: render target rejected: %s va=%llx level %u/%u tiled=%d\n",
+              vk_Format_to_str(img->vk.format), (unsigned long long)img->va, level, img->lay.d.levels,
+              (int)img->lay.d.tiled);
       return -EINVAL;
    }
-   if (img->vk.image_type == VK_IMAGE_TYPE_3D)
-      return -EINVAL;   /* render to a 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too); rejected until the slice addressing is understood */
+   const bool image_3d = img->vk.image_type == VK_IMAGE_TYPE_3D;
+   if (image_3d && view_is_3d)
+      return -EINVAL;   /* render to a whole 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too).
+                         * A 2D / 2D-array view of one slice is a different case and is accepted below: the slice is just a 2D surface. */
    int zs = 0;
    bool has_d = true;   /* the format has a depth plane we can attach */
    out->rt = NULL;
@@ -656,8 +668,8 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       bool ok;
       out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
       if (!ok) {
-         if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: render target format %d not renderable\n", (int)img->vk.format);
+         fprintf(stderr, "mali_vk: render target format %s is not renderable (%d)\n",
+                 vk_Format_to_str(img->vk.format), (int)img->vk.format);
          return -EINVAL;
       }
       break;
@@ -677,11 +689,18 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    out->width = MAX2(img->lay.d.extent.width >> level, 1u);
    out->height = MAX2(img->lay.d.extent.height >> level, 1u);
    out->zs_format = want_d ? zs : 0;
-   out->va = img->va + mali_image_subresource_offset(pl, level, layer);
+   /* A 2D view of a 3D image names a slice, which is a plain linear surface at base + layer * surface_stride.
+    * A 3D view is refused above; the image-level resolver keeps refusing 3D images for copies/clears. */
+   if (image_3d) {
+      out->va = img->va + mali_image_subresource_offset(pl, level, 0) +
+                (uint64_t)layer * pl->slice[level].surface_stride;
+   } else {
+      out->va = img->va + mali_image_subresource_offset(pl, level, layer);
+   }
    out->row_stride = pl->slice[level].row_stride;
    out->is_zs = zs || st_fmt;
    out->samples = img->lay.d.samples;
-   out->surface_stride = (uint32_t)pl->slice[level].surface_stride;
+   out->surface_stride = image_3d ? 0 : (uint32_t)pl->slice[level].surface_stride;   /* a 2D view of a slice is one surface */
    if (want_s) {
       const struct mali_plane_layout *sp = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_STENCIL_BIT);
       if (!sp)
@@ -713,10 +732,15 @@ res_image_view(VkImageView h, struct mali_cmd_target *out)
    }
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
-   int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
-   if (r && getenv("MALI_PIPE_DBG"))
-      fprintf(stderr, "mali_vk: image view rejected rc=%d: format %d aspects 0x%x view aspect 0x%x type %d usage 0x%x samples %u\n", r, (int)img->vk.format,
-              (unsigned)v->vk.aspects, (unsigned)a, (int)img->vk.image_type, (unsigned)img->vk.usage, img->lay.d.samples);
+   int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer,
+                     v->vk.view_type == VK_IMAGE_VIEW_TYPE_3D, out);
+   if (r)
+      fprintf(stderr, "mali_vk: image view rejected rc=%d: format %s (%d) image type %s view type %d aspects 0x%x "
+              "view aspect 0x%x usage 0x%x samples %u level %u/%u layer %u/%u\n", r, vk_Format_to_str(img->vk.format),
+              (int)img->vk.format, img->vk.image_type == VK_IMAGE_TYPE_3D ? "3D" :
+              img->vk.image_type == VK_IMAGE_TYPE_2D ? "2D" : "1D", (int)v->vk.view_type, (unsigned)v->vk.aspects,
+              (unsigned)a, (unsigned)img->vk.usage, img->lay.d.samples, v->vk.base_mip_level, img->lay.d.levels,
+              v->vk.base_array_layer, img->lay.d.layers);
    return r;
 }
 
@@ -726,7 +750,7 @@ res_image(VkImage h, struct mali_cmd_target *out)
    struct mali_image *img = mali_image_from_handle(h);
    if (!img)
       return -EINVAL;
-   int r = target_of(img, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, out);
+   int r = target_of(img, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, img->vk.image_type == VK_IMAGE_TYPE_3D, out);
    if (!r)
       out->multi = img->lay.d.levels != 1 || img->lay.d.layers != 1 || img->lay.d.type != VK_IMAGE_TYPE_2D || img->lay.d.samples != 1;
    return r;

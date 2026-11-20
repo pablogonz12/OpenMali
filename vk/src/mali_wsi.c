@@ -6,6 +6,7 @@
  * into the image's dma-buf (DMA_BUF_IOCTL_IMPORT_SYNC_FILE). No explicit-sync protocol (gamescope has none).
  * Everything else lives in the runtime, wsi_common and the entrypoints in mali_image.c / mali_memory.c. */
 #include "mali_private.h"
+#include "mali_image.h"
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
@@ -16,6 +17,8 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkS
 VKAPI_ATTR VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                        VkSemaphore semaphore, VkFence fence, uint32_t *pImageIndex);
 VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo);
+VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                  const VkAllocationCallbacks *pAllocator);
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -26,7 +29,19 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresen
 
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 #include <xcb/xcb.h>
+#include <xcb/shm.h>
 #endif
+#if defined(__linux__)
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
+struct mali_x11_shm;
+static void mali_x11_shm_destroy(VkSwapchainKHR sc);
+static struct mali_x11_shm *mali_x11_shm_find(VkSwapchainKHR sc);
+static bool mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index);
 
 #define MALI_DRM_FORMAT_MOD_LINEAR 0ull
 const uint64_t mali_wsi_modifier = MALI_DRM_FORMAT_MOD_LINEAR;
@@ -98,6 +113,19 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
  *
  * MALI_WSI_DEBUG=1 prints one line per X11 swapchain creation with the request, what the surface offers, what the
  * connection can do and the VkResult; a failed creation always prints a line. */
+/* A software swapchain image is a CPU buffer with no dma-buf fd, so the dma-buf implicit-sync path cannot work on
+ * it: wsi_common creates a dma-buf semaphore when wsi_drm_check_dma_buf_sync_file_import_export()
+ * (wsi_common_drm.c:97) answers "works", and then every present calls
+ * wsi_dma_buf_import_sync_file(image->dma_buf_fd == -1, ...), which fails with EBADF and is mapped to
+ * VK_ERROR_FEATURE_NOT_PRESENT (wsi_common_drm.c:214) before the frame is put. Declare the capability we have
+ * (none) in wsi's cache, which stores result - 1. This has to be applied when the *swapchain* is created, not only
+ * when the device was built in software mode: on hardware the software path is chosen per surface. */
+static void
+mali_wsi_disable_dmabuf_sync(struct wsi_device *wsi)
+{
+   wsi->cached_sync_file_import_export_result = (uint32_t)(VK_ERROR_FEATURE_NOT_PRESENT - 1);
+}
+
 static bool
 mali_wsi_debug(void)
 {
@@ -138,11 +166,6 @@ mali_wsi_x11_probe(VkIcdSurfaceBase *surface, struct mali_wsi_x11_probe *p)
    VkIcdSurfaceXcb *s = (VkIcdSurfaceXcb *)surface;
    if (!s->connection)
       return;
-   /* Batch the three queries into one round trip, and ask for them up front: retrieving a reply can still
-    * block while the server answers, unlike a lookup in an already-fetched setup reply. */
-   xcb_prefetch_extension_data(s->connection, &xcb_dri3_id);
-   xcb_prefetch_extension_data(s->connection, &xcb_present_id);
-   xcb_prefetch_extension_data(s->connection, &xcb_shm_id);
    const struct xcb_query_extension_reply_t *dri3 = xcb_get_extension_data(s->connection, &xcb_dri3_id);
    const struct xcb_query_extension_reply_t *present = xcb_get_extension_data(s->connection, &xcb_present_id);
    const struct xcb_query_extension_reply_t *shm = xcb_get_extension_data(s->connection, &xcb_shm_id);
@@ -182,12 +205,237 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
    }
    VkPresentModeKHR mode[8];
    n = 8;
-   if (iface->get_present_modes && iface->get_present_modes(surface, &pdev->wsi, &n, mode) == VK_SUCCESS) {
+   if (iface->get_present_modes && mali_wsi_get_present_modes(mali_physical_device_to_handle(pdev),
+                                                             (VkSurfaceKHR)(uintptr_t)surface, &n, mode) == VK_SUCCESS) {
       fprintf(stderr, "mali_vk: wsi present modes:");
       for (uint32_t i = 0; i < n && i < 8; i++)
          fprintf(stderr, " %u", mode[i]);
       fprintf(stderr, "%s\n", n > 8 ? " ..." : "");
    }
+}
+
+/* wsi_common_x11 advertises all four present modes, but a software (PutImage) swapchain is only useful to a
+ * measurement when IMMEDIATE is really offered: with FIFO/MAILBOX the producer rate equals the displayed rate by
+ * construction, which is what hid the GPU headroom (1600x720 and 2400x1080 both 118 fps). IMMEDIATE is additive,
+ * FIFO/MAILBOX stay first and unchanged for real apps. */
+VKAPI_ATTR void VKAPI_CALL
+mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *alloc)
+{
+   mali_x11_shm_destroy(swapchain);
+   wsi_DestroySwapchainKHR(device, swapchain, alloc);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
+                           uint32_t *count, VkPresentModeKHR *modes)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   struct wsi_interface *iface = pdev->wsi.wsi[((VkIcdSurfaceBase *)(uintptr_t)surface)->platform];
+
+   if (!iface)
+      return VK_ERROR_SURFACE_LOST_KHR;
+   if (!modes) {
+      VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, count, NULL);
+      if (r == VK_SUCCESS && pdev->wsi.sw && *count < UINT32_MAX)
+         (*count)++;   /* upper bound: the enumeration below decides whether IMMEDIATE is really missing */
+      return r;
+   }
+   /* Enumerate, then return the list unchanged except for IMMEDIATE appended on the software path. */
+   VkPresentModeKHR all[8];
+   uint32_t n = 8;
+   VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, &n, all);
+   if (r != VK_SUCCESS && r != VK_INCOMPLETE)
+      return r;
+   const bool x11 = ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XCB ||
+                    ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XLIB;
+   if (pdev->wsi.sw && x11) {   /* X11 only: Wayland's driver (wsi_common_wayland) has its own list */
+      bool has = false;
+      for (uint32_t i = 0; i < n; i++)
+         has |= all[i] == VK_PRESENT_MODE_IMMEDIATE_KHR;
+      if (!has && n < 8)
+         all[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+   }
+   const uint32_t out = MIN2(*count, n);
+   memcpy(modes, all, out * sizeof(*modes));
+   *count = out;
+   return out < n ? VK_INCOMPLETE : VK_SUCCESS;
+}
+
+/* Software present over MIT-SHM, our own segment: the frame leaves the driver as a memcpy into shared pages plus
+ * XShmPutImage on the socket, instead of a ~w*h*4 byte PutImage request per frame (which capped the CMF at ~113 fps
+ * whatever the resolution). We do not need EXT_external_memory_host for this: the segment is ours
+ * (shmget/shmat), attached to the server with XShmAttach-equivalent xcb_shm_attach.
+ *
+ * One segment holds one buffer per swapchain image (offset = image_index * stride * height): a present writes the
+ * new frame into its own buffer, so a server still reading the previous image cannot show a torn mix of two frames,
+ * and nothing has to be copied twice. The whole segment is attached once per swapchain and released with
+ * shmdt + shmctl(IPC_RMID) on destroy; a leaked segment is pinned memory that survives the process.
+ * MALI_WSI=xput forces the old PutImage path (A/B). */
+struct mali_x11_shm {
+   VkSwapchainKHR swapchain;
+   bool active;
+   void *conn;          /* xcb_connection_t *: opaque so this file also compiles without XCB (t_cmd) */
+   uint32_t window;
+   uint32_t gc;
+   uint8_t depth;
+   uint32_t width, height, stride, n_images;
+   uint32_t seg;
+   int shmid;
+   void *addr;
+   size_t size;
+};
+static struct mali_x11_shm mali_x11_shm_slots[8];
+
+static struct mali_x11_shm *
+mali_x11_shm_find(VkSwapchainKHR sc)
+{
+   for (unsigned i = 0; i < sizeof(mali_x11_shm_slots) / sizeof(mali_x11_shm_slots[0]); i++)
+      if (mali_x11_shm_slots[i].active && mali_x11_shm_slots[i].swapchain == sc)
+         return &mali_x11_shm_slots[i];
+   return NULL;
+}
+
+#define MALI_SHM_FAILED ((void *)-1)
+
+static void
+mali_x11_shm_destroy(VkSwapchainKHR sc)
+{
+   struct mali_x11_shm *st = mali_x11_shm_find(sc);
+   if (!st)
+      return;
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   xcb_shm_detach((xcb_connection_t *)st->conn, st->seg);
+   xcb_flush((xcb_connection_t *)st->conn);
+#endif
+   if (st->addr && st->addr != MALI_SHM_FAILED)
+      shmdt(st->addr);
+   if (st->shmid >= 0)
+      shmctl(st->shmid, IPC_RMID, NULL);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: x11 shm: released %zu B segment (shmid %d)\n", st->size, st->shmid);
+   memset(st, 0, sizeof(*st));
+   st->shmid = -1;
+}
+
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+static void
+mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swapchain *chain,
+                    const VkSwapchainCreateInfoKHR *ci)
+{
+   if (surface->platform != VK_ICD_WSI_PLATFORM_XCB)
+      return;
+   VkIcdSurfaceXcb *s = (VkIcdSurfaceXcb *)surface;
+   const char *e = getenv("MALI_WSI");
+   if (!s->connection || (e && !strcmp(e, "xput"))) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (%s)\n", e ? "MALI_WSI=xput" : "no connection");
+      return;
+   }
+   const struct xcb_query_extension_reply_t *shm = xcb_get_extension_data(s->connection, &xcb_shm_id);
+   if (!shm || !shm->present) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (server has no MIT-SHM)\n");
+      return;
+   }
+   struct mali_x11_shm *st = NULL;
+   for (unsigned i = 0; i < sizeof(mali_x11_shm_slots) / sizeof(mali_x11_shm_slots[0]); i++)
+      if (!mali_x11_shm_slots[i].active) { st = &mali_x11_shm_slots[i]; break; }
+   if (!st)
+      return;
+
+   struct wsi_image *img0 = chain->get_wsi_image(chain, 0);
+   const uint32_t stride = img0->row_pitches[0];
+   const uint32_t w = ci->imageExtent.width, h = ci->imageExtent.height;
+
+   xcb_get_geometry_reply_t *geom =
+      xcb_get_geometry_reply(s->connection, xcb_get_geometry(s->connection, s->window), NULL);
+   if (!geom) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (no window geometry)\n");
+      return;
+   }
+   const uint8_t depth = geom->depth;
+   free(geom);
+
+   const size_t size = (size_t)stride * h * chain->image_count;
+   int shmid = shmget(IPC_PRIVATE, size, IPC_CREAT | 0600);
+   if (shmid < 0) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (shmget: %s)\n", strerror(errno));
+      return;
+   }
+   void *addr = shmat(shmid, NULL, 0);
+   if (addr == MALI_SHM_FAILED) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (shmat: %s)\n", strerror(errno));
+      shmctl(shmid, IPC_RMID, NULL);
+      return;
+   }
+   const xcb_shm_seg_t seg = xcb_generate_id(s->connection);
+   xcb_void_cookie_t ck = xcb_shm_attach_checked(s->connection, seg, shmid, 0);
+   if (xcb_request_check(s->connection, ck)) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (xcb_shm_attach rejected)\n");
+      shmdt(addr);
+      shmctl(shmid, IPC_RMID, NULL);
+      return;
+   }
+   const xcb_gcontext_t gc = xcb_generate_id(s->connection);
+   xcb_create_gc(s->connection, gc, s->window, XCB_GC_GRAPHICS_EXPOSURES, (uint32_t []){0});
+   xcb_flush(s->connection);
+
+   *st = (struct mali_x11_shm){.swapchain = sc, .active = true, .conn = s->connection, .window = s->window,
+                              .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
+                              .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
+                              .size = size};
+   fprintf(stderr, "mali_vk: x11 present: shm=1 putimage=0 (%ux%u, %u images, %zu B segment, stride %u)\n",
+           w, h, chain->image_count, size, stride);
+}
+#else
+static void mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swapchain *chain,
+                                const VkSwapchainCreateInfoKHR *ci) { (void)sc; (void)surface; (void)chain; (void)ci; }
+#endif
+
+/* The CPU is about to read the presented image: wait for the GPU's writes (DMA_BUF_IOCTL_SYNC START|READ on the
+ * image's dma-buf, kbase_bo_cache in mali_backend_kbase.c) and drop any stale cache lines. Without this the copy
+ * below can read memory the GPU has not written yet: the client only waits its fence after presenting, and a
+ * semaphore wait at present cannot stand in for it (see driver-xcb.md: vk_sync_wait on the present semaphore
+ * blocks on an object only our submit path fills, and times out). */
+static void
+present_image_cpu_sync(struct mali_device *dev, struct mali_image *mi, uint32_t image_index)
+{
+   if (!dev || !mi || !mi->mem)
+      return;
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   if (be->bo_host_touch)
+      be->bo_host_touch(dev->kdev, &mi->mem->bo);   /* a mapped BO: the next sync must cover it */
+   if (be->bo_cache)
+      be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: wsi present: image %u BO 0x%llx synced device->CPU before the copy\n",
+              image_index, (unsigned long long)mi->va);
+}
+
+/* Present one image through the shared segment. Returns false when the image cannot be copied (no CPU map), in
+ * which case the caller falls back to wsi's PutImage present. */
+static bool
+mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+{
+#if !defined(VK_USE_PLATFORM_XCB_KHR)
+   (void)chain; (void)image_index;
+   return false;   /* built without XCB: wsi_common_x11's PutImage present handles it */
+#else
+   struct mali_x11_shm *st = mali_x11_shm_find((VkSwapchainKHR)(uintptr_t)chain);
+   if (!st || !st->active)
+      return false;
+   struct wsi_image *img = chain->get_wsi_image(chain, image_index);
+   if (!img || !img->cpu_map)
+      return false;
+   const size_t off = (size_t)st->stride * st->height * image_index;
+   if (off + (size_t)st->stride * st->height > st->size)
+      return false;
+   present_image_cpu_sync(dev, mali_image_from_handle(img->image), image_index);
+   memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
+   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
+                     0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
+   xcb_flush((xcb_connection_t *)st->conn);
+   return true;
+#endif
 }
 
 /* MALI_WSI_DEBUG=1: one line per acquire/present so a stall shows as an "enter" without its matching result
@@ -212,15 +460,196 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
    return r;
 }
 
+/* The swapchain image of a VkPresentInfoKHR entry as our object (NULL for a swapchain we do not know, or an
+ * image wsi did not create through us). Shared by the dump and the debug line so both name the same BO. */
+static struct mali_image *
+present_image(struct wsi_swapchain *chain, uint32_t image_index, struct wsi_image **wsi_out)
+{
+   struct wsi_image *wi = chain ? chain->get_wsi_image(chain, image_index) : NULL;
+   if (wsi_out)
+      *wsi_out = wi;
+   return wi && wi->image != VK_NULL_HANDLE ? mali_image_from_handle(wi->image) : NULL;
+}
+
+/* MALI_WSI_DUMP=<prefix>: write every MALI_WSI_DUMP_EVERY-th presented frame (default 30) as a PPM (P6) at
+ * <prefix>-NNNNN.ppm and one line per dump into <prefix>.txt (frame, image, extent, stride, VkFormat, BO va).
+ * Debug only, default off. Cost: one CPU read of the presented BO plus a cache invalidate, i.e. a full
+ * w*h*bpp pass on the presenting thread every N frames (and it drops the BO's HOSTLAZY flag, so the next
+ * fence wait MEM_SYNCs it once). Only 8-bit RGBA/BGRA rows are reordered to RGB; anything else is written
+ * with the raw first three bytes of the texel and the format named in the sidecar. */
+static void
+mali_wsi_dump_frame(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+{
+   const char *prefix = getenv("MALI_WSI_DUMP");
+   if (!prefix || !prefix[0])
+      return;
+   unsigned every = 30;
+   const char *e = getenv("MALI_WSI_DUMP_EVERY");
+   if (e && e[0])
+      every = (unsigned)strtoul(e, NULL, 10);
+   if (!every)
+      every = 1;
+   static uint64_t seq;
+   const uint64_t n = p_atomic_inc_return(&seq);
+   if (n % every)
+      return;
+
+   struct wsi_image *wi = NULL;
+   struct mali_image *mi = present_image(chain, image_index, &wi);
+   if (!mi || !mi->mem || !mi->mem->bo.cpu) {
+      fprintf(stderr, "mali_vk: wsi dump #%llu: image %u has no CPU mapping (unbound or not ours)\n",
+              (unsigned long long)n, image_index);
+      return;
+   }
+   const struct mali_backend_ops *be = dev ? mali_device_pdev(dev)->backend : NULL;
+   if (be && be->bo_host_touch)
+      be->bo_host_touch(dev->kdev, &mi->mem->bo);   /* device wrote it: the next sync must cover it */
+   if (be && be->bo_cache)
+      be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+
+   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&mi->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+   if (!pl || !pl->slice[0].row_stride || !mi->lay.d.extent.width || !mi->lay.d.extent.height) {
+      fprintf(stderr, "mali_vk: wsi dump #%llu: image %u has no colour plane layout\n", (unsigned long long)n, image_index);
+      return;
+   }
+   const unsigned w = mi->lay.d.extent.width, h = mi->lay.d.extent.height;
+   const unsigned stride = pl->slice[0].row_stride, bpp = pl->bs ? pl->bs : 4;
+   const int fmt = (int)mi->vk.format;
+   const char *fname = vk_Format_to_str(mi->vk.format);
+   const uint8_t *base = (const uint8_t *)mi->mem->bo.cpu + mi->mem_off + pl->offset;
+   const bool bgra = mi->vk.format == VK_FORMAT_B8G8R8A8_UNORM || mi->vk.format == VK_FORMAT_B8G8R8A8_SRGB;
+   const bool rgba = mi->vk.format == VK_FORMAT_R8G8B8A8_UNORM || mi->vk.format == VK_FORMAT_R8G8B8A8_SRGB ||
+                     mi->vk.format == VK_FORMAT_A8B8G8R8_UNORM_PACK32 || mi->vk.format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+
+   char path[1024];
+   snprintf(path, sizeof path, "%s-%05llu.ppm", prefix, (unsigned long long)n);
+   FILE *f = fopen(path, "wb");
+   if (!f) {
+      fprintf(stderr, "mali_vk: wsi dump #%llu: open %s: %s\n", (unsigned long long)n, path, strerror(errno));
+      return;
+   }
+   fprintf(f, "P6\n%u %u\n255\n", w, h);
+   uint8_t *row = malloc((size_t)w * 3);
+   if (!row) { fclose(f); return; }
+   for (unsigned y = 0; y < h; y++) {
+      const uint8_t *src = base + (size_t)y * stride;
+      for (unsigned x = 0; x < w; x++) {
+         const uint8_t *p = src + (size_t)x * bpp;
+         if (bgra)      { row[x * 3 + 0] = p[2]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[0]; }
+         else if (rgba) { row[x * 3 + 0] = p[0]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[2]; }
+         else           { row[x * 3 + 0] = p[0]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[2]; }   /* raw, see the sidecar */
+      }
+      fwrite(row, 1, (size_t)w * 3, f);
+   }
+   free(row);
+   fclose(f);
+
+   snprintf(path, sizeof path, "%s.txt", prefix);
+   FILE *t = fopen(path, "a");
+   if (t) {
+      fprintf(t, "frame %llu: image %u %ux%u stride %u bpp %u samples %u format %s (%d)%s%s%s bo 0x%llx\n",
+              (unsigned long long)n, image_index, w, h, stride, bpp, mi->lay.d.samples, fname, fmt,
+              bgra ? " bgra->rgb" : rgba ? " rgba->rgb" : " raw", pl->bw == 1 && pl->bh == 1 ? "" : " (block format)",
+              wi && wi->cpu_map ? " cpu_map" : "", (unsigned long long)mi->va);
+      fclose(t);
+   }
+   fprintf(stderr, "mali_vk: wsi dump #%llu: image %u %ux%u stride %u %s -> %s-%05llu.ppm\n", (unsigned long long)n,
+           image_index, w, h, stride, fname, prefix, (unsigned long long)n);
+}
+
+/* MALI_WSI_DEBUG=1: the image, BO and present path of the frame being put (shm = our segment, dma-buf = wsi). */
+static void
+mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index, const char *path,
+                       VkResult res)
+{
+   if (!mali_wsi_debug())
+      return;
+   struct wsi_image *wi = NULL;
+   struct mali_image *mi = present_image(chain, image_index, &wi);
+   fprintf(stderr, "mali_vk: wsi present image %u path %s result %s: %s %ux%u va=0x%llx stride %u\n",
+           image_index, path ? path : "?", vk_Result_to_str(res),
+           mi ? vk_Format_to_str(mi->vk.format) : "no image", mi ? mi->lay.d.extent.width : 0,
+           mi ? mi->lay.d.extent.height : 0, mi ? (unsigned long long)mi->va : 0ull,
+           mi && mi->lay.plane[0].slice[0].row_stride ? mi->lay.plane[0].slice[0].row_stride : 0u);
+   (void)dev; (void)wi;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
-   if (mali_wsi_debug())
-      fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u\n", (unsigned long long)n,
-              info->swapchainCount, info->waitSemaphoreCount);
+   VK_FROM_HANDLE(vk_queue, vq, queue);
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   if (mali_wsi_debug()) {
+      const struct mali_physical_device *qpdev = mali_device_pdev(dev);
+      fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u dma_buf_sync=%d sw=%d\n",
+              (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
+              __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
+              (int)qpdev->wsi.sw);
+   }
+   /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
+   {
+      bool all_shm = info->swapchainCount > 0;
+      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
+         const uint32_t idx = info->pImageIndices[i];
+         if (sc)
+            mali_wsi_dump_frame(dev, sc, idx);   /* MALI_WSI_DUMP: the BO as it is handed to the compositor */
+         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) && mali_x11_shm_present(dev, sc, idx);
+         if (mali_wsi_debug() && sc)
+            mali_wsi_debug_present(dev, sc, idx, shm ? "shm" : "dma-buf", VK_SUCCESS);
+         if (!shm) {
+            all_shm = false;
+            break;
+         }
+         struct wsi_image *img = sc->get_wsi_image(sc, idx);
+         img->acquired = false;
+         img->present_serial = ++sc->present_serial;
+         if (sc->release_images)
+            sc->release_images(sc, 1, &idx);
+      }
+      if (all_shm) {
+         if (mali_wsi_debug()) {
+            static int shm_logged;
+            if (!shm_logged) {
+               shm_logged = 1;
+               fprintf(stderr, "mali_vk: wsi present: shared-memory segment (no image bytes on the socket)\n");
+            }
+         }
+         return VK_SUCCESS;
+      }
+   }
+   if (mali_wsi_debug()) {
+      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
+         if (sc && sc->present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+            static int imm_logged;
+            if (!imm_logged) {
+               imm_logged = 1;
+               fprintf(stderr, "mali_vk: wsi present: IMMEDIATE - put and return, no wait on the previous frame "
+                       "(drop-oldest if the X server is still busy with it)\n");
+            }
+         }
+      }
+   }
    VkResult r = wsi_QueuePresentKHR(queue, info);
+   /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at
+    * the next present or inside vkWaitForPresentKHR. An app that presents its last frame and destroys the
+    * swapchain never gets that pump, so the frame callback/presentation feedback of that commit is still
+    * outstanding and wsi_wl_swapchain_chain_free() asserts (!chain->present_ids.dispatch_in_progress)
+    * (wsi_common_wayland.c:3782, and the same in the retire path at :2779). Drain it here, bounded: a slow
+    * compositor costs at most the cap and never blocks the frame. Only when the swapchain asked for present-id
+    * waiting: without that, wsi does not queue an id at all and there is nothing to drain. */
+   const VkPresentIdKHR *ids = vk_find_struct_const(info->pNext, PRESENT_ID_KHR);
+   if (r == VK_SUCCESS && ids) {
+      for (uint32_t i = 0; i < info->swapchainCount && i < ids->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, chain, info->pSwapchains[i]);
+         if (chain && chain->present_wait_enabled && chain->wait_for_present2 && ids->pPresentIds &&
+             ids->pPresentIds[i])
+            chain->wait_for_present2(chain, ids->pPresentIds[i], 20ull * 1000 * 1000);   /* ns, bounded */
+      }
+   }
    /* SUBOPTIMAL/OUT_OF_DATE are normal swapchain states, not errors: one line per frame would be noise. */
    bool quiet = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR;
    if (mali_wsi_debug() || !quiet)
@@ -256,16 +685,26 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    if (!wsi_dev->sw && !forced_dmabuf && x11_surface) {
       wsi_dev->sw = true;
       wsi_dev->supports_modifiers = false;
+      mali_wsi_disable_dmabuf_sync(wsi_dev);
       fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (MALI_WSI=dmabuf for dma-buf)\n",
               mali_wsi_platform_name(surface->platform));
    }
 
+   if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
+      fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
+              wsi_dev->GetSemaphoreFdKHR ? "set" : "NULL", wsi_dev->GetMemoryFdKHR ? "set" : "NULL",
+              __atomic_load_n(&wsi_dev->cached_sync_file_import_export_result, __ATOMIC_RELAXED),
+              __atomic_load_n(&wsi_dev->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX);
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: x11 present path: shm=%d dri3=%d%s\n",
               (int)(probe.mit_shm && wsi_dev->has_import_memory_host), (int)probe.dri3,
               wsi_dev->sw ? " (software)" : " (dma-buf)");
 
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
+   if (r == VK_SUCCESS && wsi_dev->sw) {
+      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
+      mali_x11_shm_create(*out, surface, chain, ci);
+   }
 
    if (mali_wsi_debug() || r != VK_SUCCESS) {
       fprintf(stderr, "mali_vk: wsi create_swapchain: platform=%s format=%u colorSpace=%u usage=0x%x mode=%u "
@@ -300,6 +739,17 @@ mali_wsi_init(struct mali_physical_device *pdev)
    /* No DRM node behind kbase: wsi sees no render/primary device and assumes the compositor is on our GPU.
     * Modifiers (linear only) exist only on the dma-buf path; the software path copies into CPU-visible buffers. */
    pdev->wsi.supports_modifiers = !sw;
+   /* Capability rule for the software present path: wsi_cpu_image_needs_buffer_blit() (wsi_common.c:3599) returns
+    * true unless wsi->wants_linear, and a buffer blit makes wsi record vkCmdBlitImage/vkCmdCopyImage between a
+    * CPU buffer image and the presentable one. We do not implement those transfer commands, so vkEndCommandBuffer
+    * failed with VK_ERROR_FEATURE_NOT_PRESENT inside the present and vkQueuePresentKHR returned -8 *after* the
+    * frame had been copied (mali_cmd.c:1330/1370/1386). wants_linear makes wsi allocate the linear CPU-visible
+    * image itself: no blit, the present is a plain PutImage of that memory, and the pixels the app rendered are the
+    * pixels that get displayed. It also removes the SHM/blit branch that needs EXT_external_memory_host, which we
+    * do not implement: SHM is only used where the extension exists, otherwise PutImage, and both report VK_SUCCESS. */
+   pdev->wsi.wants_linear = true;
+   if (sw)
+      mali_wsi_disable_dmabuf_sync(&pdev->wsi);
    pdev->wsi_real_destroy_query_pool = pdev->wsi.DestroyQueryPool;
    pdev->wsi.DestroyQueryPool = mali_wsi_destroy_query_pool;
    pdev->vk.wsi_device = &pdev->wsi;
