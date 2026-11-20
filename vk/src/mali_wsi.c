@@ -61,6 +61,9 @@ VkResult
 mali_wsi_init(struct mali_physical_device *pdev)
 {
    bool sw = mali_wsi_use_sw(pdev);
+   /* test knob: force wsi_common's BUFFER_BLIT (copy at present) regardless of what
+    * the platform backend picked, cf. wsi_cpu_image_needs_buffer_blit (wsi_common.c:3599) */
+   if (getenv("MALI_FORCE_BLIT")) setenv("MESA_VK_WSI_DEBUG", "buffer", 1);
    VkResult r = wsi_device_init(&pdev->wsi, mali_physical_device_to_handle(pdev), mali_wsi_proc_addr,
                                 &pdev->vk.instance->alloc, -1, NULL,
                                 &(struct wsi_device_options){.sw_device = sw});

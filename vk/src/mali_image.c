@@ -401,6 +401,13 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
 {
+   if (getenv("MALI_WSI_TRACE")) for (uint32_t i = 0; i < n; i++) {
+      struct mali_image *im = mali_image_from_handle(b[i].image);
+      const VkBindImageMemorySwapchainInfoKHR *sw = vk_find_struct_const(b[i].pNext, BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR);
+      fprintf(stderr, "mali_trace: BindImage %ux%u fmt=%u mem=%p swapchain=%d off=%llu\n",
+              im->vk.extent.width, im->vk.extent.height, (unsigned)im->vk.format,
+              (void *)b[i].memory, sw ? 1 : 0, (unsigned long long)b[i].memoryOffset);
+   }
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_image, img, b[i].image);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);

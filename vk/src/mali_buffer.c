@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* M5: VkBuffer, VkBufferView and the resolver table the descriptor code uses (mali_res_ops). */
+#include <stdlib.h>
 #include "mali_image.h"
 
 #include <errno.h>
@@ -32,6 +33,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateBuffer(VkDevice _dev, const VkBufferCreateInfo *ci, const VkAllocationCallbacks *alloc, VkBuffer *out)
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
+   if (getenv("MALI_WSI_TRACE")) fprintf(stderr, "mali_trace: CreateBuffer size=%llu usage=0x%x flags=0x%x\n", (unsigned long long)ci->size, (unsigned)ci->usage, (unsigned)ci->flags);
    if (ci->flags & (VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT))
       return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
    struct mali_buffer *b = vk_buffer_create(&dev->vk, ci, alloc, sizeof *b);

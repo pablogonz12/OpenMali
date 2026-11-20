@@ -64,6 +64,22 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    mem->bo.dmabuf_fd = -1;
+   {
+      /* An unimplemented import must fail, not be silently replaced by a fresh
+       * BO: wsi_common's NO_BLIT path imports the wl_shm pages with
+       * VkImportMemoryHostPointerInfoEXT (wsi_common.c:3556) and then assumes
+       * image memory == surface memory. Silently allocating here is what makes
+       * zink's swapchain attach an unfilled buffer. */
+      const VkImportMemoryHostPointerInfoEXT *hp =
+         vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
+      if (hp && !getenv("MALI_ALLOW_HPI")) {
+         fprintf(stderr, "mali: host-pointer import (pHostPointer=%p size=%llu) refused: not implemented\n",
+                 hp->pHostPointer, (unsigned long long)pAllocateInfo->allocationSize);
+         vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
+         p_atomic_dec(&dev->mem_count);
+         return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+      }
+   }
    if (imp && imp->handleType != 0) {
       if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
          r = -EINVAL;
