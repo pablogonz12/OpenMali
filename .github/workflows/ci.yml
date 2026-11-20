@@ -37,22 +37,19 @@ jobs:
         run: tools/private-lint.sh
       - name: skill-lint
         run: tools/skill-lint.sh
-      # On main the "progress" job refreshes a stale diagram instead of failing the run.
-      - name: progress diagram is current
-        if: github.event_name == 'pull_request'
-        run: python3 tools/progress.py --check
+      # The generated status page needs the built ICD and a gate log, so job "check" verifies it below.
 
   # Job B: build the ICD for the host against a pinned Mesa and run vk/check.sh on the fake backend.
   # Covered: the whole vk/check.sh (loader and direct dlopen on fake v11/v13, caps, queue, fault injection, resources,
   #   draw/feature/compute/meta command-stream tests, export list, no libelf/panvk symbols, vulkaninfo, private-lint,
-  #   progress diagram on PRs).
+  #   generated status page on PRs).
   # Skipped (not run here, by design): libkbase/check.sh, the aarch64 cross builds (need the Android NDK / cross
   #   toolchains), the a64 warning gate, anything with /dev/mali0, the farm and every dEQP run.
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      # On main the progress job refreshes the diagram, so a stale one must not turn this job red.
+      # On main the status job refreshes the page, so a stale one must not turn this job red.
       MALI_SKIP_PROGRESS_CHECK: ${{ github.event_name == 'push' && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,31 +113,10 @@ jobs:
           key: ${{ steps.mesa-cache.outputs.cache-primary-key }}
 
       - name: vk/check.sh (builds the ICD, fake backend)
-        run: timeout 600 vk/check.sh
-
-  # Job C: refresh docs/progress.svg on main. The only job with write access; never runs on pull requests.
-  progress:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: lint
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-          fetch-depth: 0
-      - name: Regenerate the diagram if stale and commit it
         run: |
-          if python3 tools/progress.py --check; then
-            echo "diagram is current"
-            exit 0
-          fi
-          python3 tools/progress.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/progress.svg docs/progress.md
-          git commit -m "docs: refresh progress diagram [skip ci]"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          mkdir -p vk/out/native
+          timeout 600 vk/check.sh > vk/out/native/check.log 2>&1 || { tail -100 vk/out/native/check.log; exit 1; }
+
+      - name: generated status page is current
+        run: python3 tools/status/status.py --check
+

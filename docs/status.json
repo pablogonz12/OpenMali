@@ -1,0 +1,3966 @@
+{
+ "commit": "c59ee50",
+ "date": "2026-11-19T23:55:13+01:00",
+ "dirty": true,
+ "generator": "tools/status/status.py",
+ "history_entries": 2,
+ "items": [
+  [
+   "entrypoints",
+   "vkCreateInstance",
+   "done",
+   "vk/src/mali_instance.c:209",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkEnumerateInstanceLayerProperties",
+   "done",
+   "vk/src/mali_instance.c:190",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkEnumerateInstanceExtensionProperties",
+   "done",
+   "vk/src/mali_instance.c:198",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateDevice",
+   "done",
+   "vk/src/mali_device.c:124",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyInstance",
+   "done",
+   "vk/src/mali_instance.c:250",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceFormatProperties2",
+   "done",
+   "vk/src/mali_format.c:361",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceImageFormatProperties2",
+   "done",
+   "vk/src/mali_format.c:398",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceMemoryProperties2",
+   "done",
+   "vk/src/mali_physical_device.c:537",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceQueueFamilyProperties2",
+   "done",
+   "vk/src/mali_physical_device.c:518",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceSparseImageFormatProperties2",
+   "done",
+   "vk/src/mali_format.c:430",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyDevice",
+   "done",
+   "vk/src/mali_device.c:137",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkAllocateMemory",
+   "done",
+   "vk/src/mali_memory.c:30",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkFreeMemory",
+   "done",
+   "vk/src/mali_memory.c:84",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkMapMemory",
+   "done",
+   "vk/src/mali_memory.c:98",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkUnmapMemory",
+   "done",
+   "vk/src/mali_memory.c:118",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkFlushMappedMemoryRanges",
+   "done",
+   "vk/src/mali_memory.c:144",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkInvalidateMappedMemoryRanges",
+   "done",
+   "vk/src/mali_memory.c:154",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetDeviceMemoryCommitment",
+   "done",
+   "vk/src/mali_memory.c:164",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetDeviceBufferMemoryRequirements",
+   "done",
+   "vk/src/mali_buffer.c:53",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetImageMemoryRequirements2",
+   "done",
+   "vk/src/mali_image.c:379",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetDeviceImageMemoryRequirements",
+   "done",
+   "vk/src/mali_image.c:387",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetImageSparseMemoryRequirements2",
+   "done",
+   "vk/src/mali_image.c:412",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateEvent",
+   "done",
+   "vk/src/mali_event_vk.c:30",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyEvent",
+   "done",
+   "vk/src/mali_event_vk.c:47",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetEventStatus",
+   "done",
+   "vk/src/mali_event_vk.c:58",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkSetEvent",
+   "done",
+   "vk/src/mali_event_vk.c:65",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkResetEvent",
+   "done",
+   "vk/src/mali_event_vk.c:72",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateQueryPool",
+   "done",
+   "vk/src/mali_query.c:36",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyQueryPool",
+   "done",
+   "vk/src/mali_query.c:56",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkGetQueryPoolResults",
+   "done",
+   "vk/src/mali_query.c:73",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateBuffer",
+   "done",
+   "vk/src/mali_buffer.c:32",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyBuffer",
+   "done",
+   "vk/src/mali_buffer.c:44",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateBufferView",
+   "done",
+   "vk/src/mali_buffer.c:98",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyBufferView",
+   "done",
+   "vk/src/mali_buffer.c:112",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateImage",
+   "done",
+   "vk/src/mali_image.c:331",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyImage",
+   "done",
+   "vk/src/mali_image.c:354",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateImageView",
+   "done",
+   "vk/src/mali_image.c:478",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyImageView",
+   "done",
+   "vk/src/mali_image.c:528",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateGraphicsPipelines",
+   "done",
+   "vk/src/mali_pipeline.c:457",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateComputePipelines",
+   "done",
+   "vk/src/mali_pipeline.c:540",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyPipeline",
+   "done",
+   "vk/src/mali_pipeline.c:564",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateSampler",
+   "done",
+   "vk/src/mali_sampler.c:85",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroySampler",
+   "done",
+   "vk/src/mali_sampler.c:96",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateDescriptorSetLayout",
+   "done",
+   "vk/src/mali_resources.c:55",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCreateDescriptorPool",
+   "done",
+   "vk/src/mali_resources.c:69",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkDestroyDescriptorPool",
+   "done",
+   "vk/src/mali_resources.c:76",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkResetDescriptorPool",
+   "done",
+   "vk/src/mali_resources.c:83",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkAllocateDescriptorSets",
+   "done",
+   "vk/src/mali_resources.c:90",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkFreeDescriptorSets",
+   "done",
+   "vk/src/mali_resources.c:97",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkUpdateDescriptorSets",
+   "done",
+   "vk/src/mali_resources.c:143",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkBeginCommandBuffer",
+   "done",
+   "vk/src/mali_cmd.c:162",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkEndCommandBuffer",
+   "done",
+   "vk/src/mali_cmd.c:170",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkUpdateDescriptorSetWithTemplate",
+   "done",
+   "vk/src/mali_resources.c:151",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkResetQueryPool",
+   "done",
+   "vk/src/mali_query.c:67",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBindPipeline",
+   "done",
+   "vk/src/mali_cmd.c:180",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBindVertexBuffers2",
+   "done",
+   "vk/src/*.c (source scan)",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBindDescriptorSets",
+   "done",
+   "vk/src/mali_cmd.c:248",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBindIndexBuffer",
+   "done",
+   "vk/src/mali_cmd.c:326",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBindVertexBuffers",
+   "done",
+   "vk/src/mali_cmd.c:302",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDraw",
+   "done",
+   "vk/src/mali_cmd.c:569",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDrawIndexed",
+   "done",
+   "vk/src/mali_cmd.c:589",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDrawIndirect",
+   "done",
+   "vk/src/mali_cmd.c:671",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDrawIndirectCount",
+   "done",
+   "vk/src/mali_cmd.c:683",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDrawIndexedIndirect",
+   "done",
+   "vk/src/mali_cmd.c:677",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDrawIndexedIndirectCount",
+   "done",
+   "vk/src/mali_cmd.c:689",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDispatch",
+   "done",
+   "vk/src/mali_cmd.c:790",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdDispatchIndirect",
+   "done",
+   "vk/src/mali_cmd.c:799",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyBuffer2",
+   "done",
+   "vk/src/mali_meta_vk.c:221",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyImage2",
+   "done",
+   "vk/src/mali_meta_vk.c:239",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBlitImage2",
+   "done",
+   "vk/src/mali_meta_vk.c:569",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyBufferToImage2",
+   "done",
+   "vk/src/mali_meta_vk.c:281",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyImageToBuffer2",
+   "done",
+   "vk/src/mali_meta_vk.c:311",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdUpdateBuffer",
+   "done",
+   "vk/src/mali_meta_vk.c:354",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdFillBuffer",
+   "done",
+   "vk/src/mali_meta_vk.c:340",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdClearColorImage",
+   "done",
+   "vk/src/mali_cmd.c:1287",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdClearDepthStencilImage",
+   "done",
+   "vk/src/mali_cmd.c:1318",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdClearAttachments",
+   "done",
+   "vk/src/mali_cmd.c:1149",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdResolveImage2",
+   "done",
+   "vk/src/mali_meta_vk.c:582",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetEvent2",
+   "done",
+   "vk/src/mali_event_vk.c:79",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdResetEvent2",
+   "done",
+   "vk/src/mali_event_vk.c:87",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdWaitEvents2",
+   "done",
+   "vk/src/mali_event_vk.c:95",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdPipelineBarrier2",
+   "done",
+   "vk/src/mali_pipeline.c:577",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBeginQuery",
+   "done",
+   "vk/src/mali_query.c:113",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdEndQuery",
+   "done",
+   "vk/src/mali_query.c:125",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdResetQueryPool",
+   "done",
+   "vk/src/mali_query.c:80",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdWriteTimestamp2",
+   "done",
+   "vk/src/mali_query.c:100",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyQueryPoolResults",
+   "done",
+   "vk/src/mali_query.c:89",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdPushConstants",
+   "done",
+   "vk/src/mali_cmd.c:348",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdBeginRendering",
+   "done",
+   "vk/src/mali_cmd.c:855",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkCmdEndRendering",
+   "done",
+   "vk/src/mali_cmd.c:1082",
+   ""
+  ],
+  [
+   "entrypoints",
+   "vkEnumerateDeviceExtensionProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkEnumeratePhysicalDevices",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceExternalSemaphoreProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceFeatures",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceFeatures2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceFormatProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceProperties2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceImageFormatProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceMemoryProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceQueueFamilyProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPhysicalDeviceSparseImageFormatProperties",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetDeviceQueue",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkQueueSubmit",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkQueueSubmit2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkQueueWaitIdle",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDeviceWaitIdle",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkBindBufferMemory",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkBindImageMemory",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetBufferMemoryRequirements",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetBufferMemoryRequirements2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetImageMemoryRequirements",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetImageSparseMemoryRequirements",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkQueueBindSparse",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateFence",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyFence",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkResetFences",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetFenceStatus",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkWaitForFences",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateSemaphore",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroySemaphore",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetImageSubresourceLayout",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateShaderModule",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyShaderModule",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreatePipelineCache",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyPipelineCache",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetPipelineCacheData",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkMergePipelineCaches",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreatePipelineLayout",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyPipelineLayout",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyDescriptorSetLayout",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateFramebuffer",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyFramebuffer",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateRenderPass",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateRenderPass2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyRenderPass",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetRenderAreaGranularity",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateCommandPool",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyCommandPool",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkResetCommandPool",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkAllocateCommandBuffers",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkFreeCommandBuffers",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkResetCommandBuffer",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCreateDescriptorUpdateTemplate",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkDestroyDescriptorUpdateTemplate",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetBufferDeviceAddress",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkGetSemaphoreCounterValue",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkSignalSemaphore",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkWaitSemaphores",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetViewport",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetScissor",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetLineWidth",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthBias",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetBlendConstants",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthBounds",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetStencilCompareMask",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetStencilWriteMask",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetStencilReference",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetCullMode",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthBoundsTestEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthCompareOp",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthTestEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthWriteEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetFrontFace",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetPrimitiveTopology",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetScissorWithCount",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetStencilOp",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetStencilTestEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetViewportWithCount",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetRasterizerDiscardEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetDepthBiasEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetPrimitiveRestartEnable",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyBuffer",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyImage",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdBlitImage",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyBufferToImage",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdCopyImageToBuffer",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdResolveImage",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdSetEvent",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdResetEvent",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdWaitEvents",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdPipelineBarrier",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdWriteTimestamp",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdBeginRenderPass",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdBeginRenderPass2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdNextSubpass",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdNextSubpass2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdEndRenderPass",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdEndRenderPass2",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "entrypoints",
+   "vkCmdExecuteCommands",
+   "partial",
+   "vk_common_* in the built ICD",
+   "served by Mesa's runtime, not by this driver: no mali_ implementation yet"
+  ],
+  [
+   "formats",
+   "#1 VK_FORMAT_R4G4_UNORM_PACK8",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#2 VK_FORMAT_R4G4B4A4_UNORM_PACK16",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#3 VK_FORMAT_B4G4R4A4_UNORM_PACK16",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#4 VK_FORMAT_R5G6B5_UNORM_PACK16",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#5 VK_FORMAT_B5G6R5_UNORM_PACK16",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#6 VK_FORMAT_R5G5B5A1_UNORM_PACK16",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#7 VK_FORMAT_B5G5R5A1_UNORM_PACK16",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#8 VK_FORMAT_A1R5G5B5_UNORM_PACK16",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#9 VK_FORMAT_R8_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#10 VK_FORMAT_R8_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#11 VK_FORMAT_R8_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#12 VK_FORMAT_R8_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#13 VK_FORMAT_R8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#14 VK_FORMAT_R8_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#15 VK_FORMAT_R8_SRGB",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#16 VK_FORMAT_R8G8_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#17 VK_FORMAT_R8G8_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#18 VK_FORMAT_R8G8_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#19 VK_FORMAT_R8G8_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#20 VK_FORMAT_R8G8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#21 VK_FORMAT_R8G8_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#22 VK_FORMAT_R8G8_SRGB",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#23 VK_FORMAT_R8G8B8_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#24 VK_FORMAT_R8G8B8_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#25 VK_FORMAT_R8G8B8_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#26 VK_FORMAT_R8G8B8_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#27 VK_FORMAT_R8G8B8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#28 VK_FORMAT_R8G8B8_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#29 VK_FORMAT_R8G8B8_SRGB",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#30 VK_FORMAT_B8G8R8_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#31 VK_FORMAT_B8G8R8_SNORM",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#32 VK_FORMAT_B8G8R8_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#33 VK_FORMAT_B8G8R8_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#34 VK_FORMAT_B8G8R8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#35 VK_FORMAT_B8G8R8_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#36 VK_FORMAT_B8G8R8_SRGB",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#37 VK_FORMAT_R8G8B8A8_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#38 VK_FORMAT_R8G8B8A8_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#39 VK_FORMAT_R8G8B8A8_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#40 VK_FORMAT_R8G8B8A8_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#41 VK_FORMAT_R8G8B8A8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#42 VK_FORMAT_R8G8B8A8_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#43 VK_FORMAT_R8G8B8A8_SRGB",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#44 VK_FORMAT_B8G8R8A8_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#45 VK_FORMAT_B8G8R8A8_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#46 VK_FORMAT_B8G8R8A8_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#47 VK_FORMAT_B8G8R8A8_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#48 VK_FORMAT_B8G8R8A8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#49 VK_FORMAT_B8G8R8A8_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#50 VK_FORMAT_B8G8R8A8_SRGB",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#51 VK_FORMAT_A8B8G8R8_UNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#52 VK_FORMAT_A8B8G8R8_SNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#53 VK_FORMAT_A8B8G8R8_USCALED_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#54 VK_FORMAT_A8B8G8R8_SSCALED_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#55 VK_FORMAT_A8B8G8R8_UINT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#56 VK_FORMAT_A8B8G8R8_SINT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#57 VK_FORMAT_A8B8G8R8_SRGB_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#58 VK_FORMAT_A2R10G10B10_UNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#59 VK_FORMAT_A2R10G10B10_SNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#60 VK_FORMAT_A2R10G10B10_USCALED_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#61 VK_FORMAT_A2R10G10B10_SSCALED_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#62 VK_FORMAT_A2R10G10B10_UINT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#63 VK_FORMAT_A2R10G10B10_SINT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#64 VK_FORMAT_A2B10G10R10_UNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#65 VK_FORMAT_A2B10G10R10_SNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#66 VK_FORMAT_A2B10G10R10_USCALED_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#67 VK_FORMAT_A2B10G10R10_SSCALED_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#68 VK_FORMAT_A2B10G10R10_UINT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#69 VK_FORMAT_A2B10G10R10_SINT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#70 VK_FORMAT_R16_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#71 VK_FORMAT_R16_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#72 VK_FORMAT_R16_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#73 VK_FORMAT_R16_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#74 VK_FORMAT_R16_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#75 VK_FORMAT_R16_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#76 VK_FORMAT_R16_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#77 VK_FORMAT_R16G16_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#78 VK_FORMAT_R16G16_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#79 VK_FORMAT_R16G16_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#80 VK_FORMAT_R16G16_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#81 VK_FORMAT_R16G16_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#82 VK_FORMAT_R16G16_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#83 VK_FORMAT_R16G16_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#84 VK_FORMAT_R16G16B16_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#85 VK_FORMAT_R16G16B16_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#86 VK_FORMAT_R16G16B16_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#87 VK_FORMAT_R16G16B16_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#88 VK_FORMAT_R16G16B16_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#89 VK_FORMAT_R16G16B16_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#90 VK_FORMAT_R16G16B16_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#91 VK_FORMAT_R16G16B16A16_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#92 VK_FORMAT_R16G16B16A16_SNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#93 VK_FORMAT_R16G16B16A16_USCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#94 VK_FORMAT_R16G16B16A16_SSCALED",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#95 VK_FORMAT_R16G16B16A16_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#96 VK_FORMAT_R16G16B16A16_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#97 VK_FORMAT_R16G16B16A16_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#98 VK_FORMAT_R32_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#99 VK_FORMAT_R32_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#100 VK_FORMAT_R32_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#101 VK_FORMAT_R32G32_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#102 VK_FORMAT_R32G32_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#103 VK_FORMAT_R32G32_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#104 VK_FORMAT_R32G32B32_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#105 VK_FORMAT_R32G32B32_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#106 VK_FORMAT_R32G32B32_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#107 VK_FORMAT_R32G32B32A32_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#108 VK_FORMAT_R32G32B32A32_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#109 VK_FORMAT_R32G32B32A32_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#110 VK_FORMAT_R64_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#111 VK_FORMAT_R64_SINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#112 VK_FORMAT_R64_SFLOAT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#113 VK_FORMAT_R64G64_UINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#114 VK_FORMAT_R64G64_SINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#115 VK_FORMAT_R64G64_SFLOAT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#116 VK_FORMAT_R64G64B64_UINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#117 VK_FORMAT_R64G64B64_SINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#118 VK_FORMAT_R64G64B64_SFLOAT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#119 VK_FORMAT_R64G64B64A64_UINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#120 VK_FORMAT_R64G64B64A64_SINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#121 VK_FORMAT_R64G64B64A64_SFLOAT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#122 VK_FORMAT_B10G11R11_UFLOAT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#123 VK_FORMAT_E5B9G9R9_UFLOAT_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#124 VK_FORMAT_D16_UNORM",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#125 VK_FORMAT_X8_D24_UNORM_PACK32",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#126 VK_FORMAT_D32_SFLOAT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#127 VK_FORMAT_S8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#128 VK_FORMAT_D16_UNORM_S8_UINT",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "format table has no entry: probe returns zero feature bits"
+  ],
+  [
+   "formats",
+   "#129 VK_FORMAT_D24_UNORM_S8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#130 VK_FORMAT_D32_SFLOAT_S8_UINT",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#131 VK_FORMAT_BC1_RGB_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#132 VK_FORMAT_BC1_RGB_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#133 VK_FORMAT_BC1_RGBA_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#134 VK_FORMAT_BC1_RGBA_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#135 VK_FORMAT_BC2_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#136 VK_FORMAT_BC2_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#137 VK_FORMAT_BC3_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#138 VK_FORMAT_BC3_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#139 VK_FORMAT_BC4_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#140 VK_FORMAT_BC4_SNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#141 VK_FORMAT_BC5_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#142 VK_FORMAT_BC5_SNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#143 VK_FORMAT_BC6H_UFLOAT_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#144 VK_FORMAT_BC6H_SFLOAT_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#145 VK_FORMAT_BC7_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#146 VK_FORMAT_BC7_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#147 VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#148 VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#149 VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#150 VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#151 VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#152 VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#153 VK_FORMAT_EAC_R11_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#154 VK_FORMAT_EAC_R11_SNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#155 VK_FORMAT_EAC_R11G11_UNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#156 VK_FORMAT_EAC_R11G11_SNORM_BLOCK",
+   "done",
+   "runtime vkGetPhysicalDeviceFormatProperties (fake v13)",
+   ""
+  ],
+  [
+   "formats",
+   "#157 VK_FORMAT_ENUM_157",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#158 VK_FORMAT_ENUM_158",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#159 VK_FORMAT_ENUM_159",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#160 VK_FORMAT_ENUM_160",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#161 VK_FORMAT_ENUM_161",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#162 VK_FORMAT_ENUM_162",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#163 VK_FORMAT_ENUM_163",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#164 VK_FORMAT_ENUM_164",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#165 VK_FORMAT_ENUM_165",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#166 VK_FORMAT_ENUM_166",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#167 VK_FORMAT_ENUM_167",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#168 VK_FORMAT_ENUM_168",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#169 VK_FORMAT_ENUM_169",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#170 VK_FORMAT_ENUM_170",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#171 VK_FORMAT_ENUM_171",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#172 VK_FORMAT_ENUM_172",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#173 VK_FORMAT_ENUM_173",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#174 VK_FORMAT_ENUM_174",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#175 VK_FORMAT_ENUM_175",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#176 VK_FORMAT_ENUM_176",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#177 VK_FORMAT_ENUM_177",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#178 VK_FORMAT_ENUM_178",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#179 VK_FORMAT_ENUM_179",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#180 VK_FORMAT_ENUM_180",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#181 VK_FORMAT_ENUM_181",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#182 VK_FORMAT_ENUM_182",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#183 VK_FORMAT_ENUM_183",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "formats",
+   "#184 VK_FORMAT_ENUM_184",
+   "missing",
+   "vk/src/mali_format.c table + runtime probe",
+   "outside the driver's 1..156 scan: ASTC has no plane descriptor (vk/src/mali_format.c)"
+  ],
+  [
+   "features",
+   "fullDrawIndexUint32",
+   "done",
+   "vk/src/mali_physical_device.c:381",
+   ""
+  ],
+  [
+   "features",
+   "imageCubeArray",
+   "done",
+   "vk/src/mali_physical_device.c:382",
+   ""
+  ],
+  [
+   "features",
+   "independentBlend",
+   "done",
+   "vk/src/mali_physical_device.c:421",
+   ""
+  ],
+  [
+   "features",
+   "sampleRateShading",
+   "partial",
+   "branch:feat/msaa",
+   "declared partial: only part of the feature is implemented"
+  ],
+  [
+   "features",
+   "dualSrcBlend",
+   "partial",
+   "branch:feat/msaa",
+   "declared partial: only part of the feature is implemented"
+  ],
+  [
+   "features",
+   "logicOp",
+   "done",
+   "vk/src/mali_physical_device.c:420",
+   ""
+  ],
+  [
+   "features",
+   "multiDrawIndirect",
+   "done",
+   "vk/src/mali_physical_device.c:378",
+   ""
+  ],
+  [
+   "features",
+   "drawIndirectFirstInstance",
+   "done",
+   "vk/src/mali_physical_device.c:381",
+   ""
+  ],
+  [
+   "features",
+   "depthClamp",
+   "done",
+   "vk/src/mali_physical_device.c:380",
+   ""
+  ],
+  [
+   "features",
+   "depthBiasClamp",
+   "done",
+   "vk/src/mali_physical_device.c:416",
+   ""
+  ],
+  [
+   "features",
+   "fillModeNonSolid",
+   "done",
+   "vk/src/mali_physical_device.c:418",
+   ""
+  ],
+  [
+   "features",
+   "wideLines",
+   "done",
+   "vk/src/mali_physical_device.c:381",
+   ""
+  ],
+  [
+   "features",
+   "multiViewport",
+   "done",
+   "vk/src/mali_physical_device.c:414",
+   ""
+  ],
+  [
+   "features",
+   "samplerAnisotropy",
+   "done",
+   "vk/src/mali_physical_device.c:381",
+   ""
+  ],
+  [
+   "features",
+   "textureCompressionBC",
+   "done",
+   "vk/src/mali_physical_device.c:367",
+   ""
+  ],
+  [
+   "features",
+   "occlusionQueryPrecise",
+   "done",
+   "vk/src/mali_physical_device.c:419",
+   ""
+  ],
+  [
+   "features",
+   "fragmentStoresAndAtomics",
+   "done",
+   "vk/src/mali_physical_device.c:389",
+   ""
+  ],
+  [
+   "features",
+   "shaderImageGatherExtended",
+   "done",
+   "vk/src/mali_physical_device.c:388",
+   ""
+  ],
+  [
+   "features",
+   "shaderStorageImageExtendedFormats",
+   "done",
+   "vk/src/mali_physical_device.c:381",
+   ""
+  ],
+  [
+   "features",
+   "shaderStorageImageWriteWithoutFormat",
+   "done",
+   "vk/src/mali_physical_device.c:381",
+   ""
+  ],
+  [
+   "features",
+   "shaderSampledImageArrayDynamicIndexing",
+   "done",
+   "vk/src/mali_physical_device.c:375",
+   ""
+  ],
+  [
+   "features",
+   "shaderClipDistance",
+   "done",
+   "vk/src/mali_physical_device.c:387",
+   ""
+  ],
+  [
+   "features",
+   "shaderInt64",
+   "done",
+   "vk/src/mali_physical_device.c:391",
+   ""
+  ],
+  [
+   "features",
+   "shaderInt16",
+   "done",
+   "vk/src/mali_physical_device.c:392",
+   ""
+  ],
+  [
+   "features",
+   "inlineUniformBlock",
+   "done",
+   "vk/src/mali_physical_device.c:395",
+   ""
+  ],
+  [
+   "features",
+   "privateData",
+   "done",
+   "vk/src/mali_physical_device.c:373",
+   ""
+  ],
+  [
+   "features",
+   "shaderDemoteToHelperInvocation",
+   "done",
+   "vk/src/mali_physical_device.c:396",
+   ""
+  ],
+  [
+   "features",
+   "subgroupSizeControl",
+   "done",
+   "vk/src/mali_physical_device.c:394",
+   ""
+  ],
+  [
+   "features",
+   "computeFullSubgroups",
+   "done",
+   "vk/src/mali_physical_device.c:394",
+   ""
+  ],
+  [
+   "features",
+   "synchronization2",
+   "done",
+   "vk/src/mali_physical_device.c:369",
+   ""
+  ],
+  [
+   "features",
+   "shaderZeroInitializeWorkgroupMemory",
+   "done",
+   "vk/src/mali_physical_device.c:384",
+   ""
+  ],
+  [
+   "features",
+   "dynamicRendering",
+   "done",
+   "vk/src/mali_physical_device.c:370",
+   ""
+  ],
+  [
+   "features",
+   "shaderIntegerDotProduct",
+   "done",
+   "vk/src/mali_physical_device.c:398",
+   ""
+  ],
+  [
+   "features",
+   "maintenance4",
+   "done",
+   "vk/src/mali_physical_device.c:372",
+   ""
+  ],
+  [
+   "features",
+   "robustBufferAccess",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "out-of-range buffer accesses are not clamped; robustness is via robustness2 nullDescriptor only"
+  ],
+  [
+   "features",
+   "geometryShader",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "no geometry path; DXVK drops effects that need it and tiles with GS fail"
+  ],
+  [
+   "features",
+   "tessellationShader",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "no tessellation; DXVK re-tessellates or disables the effect"
+  ],
+  [
+   "features",
+   "depthBounds",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "depth-bounds test ignored; apps relying on it may show extra fragments"
+  ],
+  [
+   "features",
+   "largePoints",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "point size above 1 is ignored"
+  ],
+  [
+   "features",
+   "alphaToOne",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.alphaToOne is not advertised"
+  ],
+  [
+   "features",
+   "textureCompressionETC2",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "ETC2 textures are not decoded; DXVK must transcode them"
+  ],
+  [
+   "features",
+   "textureCompressionASTC_LDR",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "ASTC textures are not decoded; vkd3d-proton/DXVK transcode instead"
+  ],
+  [
+   "features",
+   "pipelineStatisticsQuery",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "query results for pipeline stats read as zero"
+  ],
+  [
+   "features",
+   "vertexPipelineStoresAndAtomics",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.vertexPipelineStoresAndAtomics is not advertised"
+  ],
+  [
+   "features",
+   "shaderTessellationAndGeometryPointSize",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderTessellationAndGeometryPointSize is not advertised"
+  ],
+  [
+   "features",
+   "shaderStorageImageMultisample",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderStorageImageMultisample is not advertised"
+  ],
+  [
+   "features",
+   "shaderStorageImageReadWithoutFormat",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderStorageImageReadWithoutFormat is not advertised"
+  ],
+  [
+   "features",
+   "shaderUniformBufferArrayDynamicIndexing",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderUniformBufferArrayDynamicIndexing is not advertised"
+  ],
+  [
+   "features",
+   "shaderStorageBufferArrayDynamicIndexing",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderStorageBufferArrayDynamicIndexing is not advertised"
+  ],
+  [
+   "features",
+   "shaderStorageImageArrayDynamicIndexing",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderStorageImageArrayDynamicIndexing is not advertised"
+  ],
+  [
+   "features",
+   "shaderCullDistance",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderCullDistance is not advertised"
+  ],
+  [
+   "features",
+   "shaderFloat64",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "fp64 shaders fail compilation"
+  ],
+  [
+   "features",
+   "shaderResourceResidency",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderResourceResidency is not advertised"
+  ],
+  [
+   "features",
+   "shaderResourceMinLod",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderResourceMinLod is not advertised"
+  ],
+  [
+   "features",
+   "sparseBinding",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "no sparse residency; apps using it must allocate full images"
+  ],
+  [
+   "features",
+   "sparseResidencyBuffer",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidencyBuffer is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidencyImage2D",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidencyImage2D is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidencyImage3D",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidencyImage3D is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidency2Samples",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidency2Samples is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidency4Samples",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidency4Samples is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidency8Samples",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidency8Samples is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidency16Samples",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidency16Samples is not advertised"
+  ],
+  [
+   "features",
+   "sparseResidencyAliased",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.sparseResidencyAliased is not advertised"
+  ],
+  [
+   "features",
+   "variableMultisampleRate",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.variableMultisampleRate is not advertised"
+  ],
+  [
+   "features",
+   "inheritedQueries",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "secondary command buffers cannot inherit queries"
+  ],
+  [
+   "features",
+   "robustImageAccess",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.robustImageAccess is not advertised"
+  ],
+  [
+   "features",
+   "descriptorBindingInlineUniformBlockUpdateAfterBind",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.descriptorBindingInlineUniformBlockUpdateAfterBind is not advertised"
+  ],
+  [
+   "features",
+   "pipelineCreationCacheControl",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.pipelineCreationCacheControl is not advertised"
+  ],
+  [
+   "features",
+   "shaderTerminateInvocation",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "bit stays false: enabling VkPhysicalDeviceFeatures.shaderTerminateInvocation is not advertised"
+  ],
+  [
+   "features",
+   "textureCompressionASTC_HDR",
+   "missing",
+   "vk/src/mali_physical_device.c:207 (= false)",
+   "HDR ASTC textures are not decoded"
+  ],
+  [
+   "extensions",
+   "VK_EXT_custom_border_color",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_debug_report",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_debug_utils",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_depth_clip_enable",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_extended_dynamic_state",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_extended_dynamic_state2",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_extended_dynamic_state3",
+   "partial",
+   "vk/src/mali_physical_device.c:312",
+   "advertised but partial: polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_"
+  ],
+  [
+   "extensions",
+   "VK_EXT_external_memory_dma_buf",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_graphics_pipeline_library",
+   "missing",
+   "vk/src/mali_physical_device.c extension table",
+   "DXVK 3.x recompiles whole pipelines instead of linking stages: longer hitches"
+  ],
+  [
+   "extensions",
+   "VK_EXT_host_query_reset",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_image_drm_format_modifier",
+   "partial",
+   "vk/src/mali_physical_device.c:312",
+   "advertised but partial: LINEAR only"
+  ],
+  [
+   "extensions",
+   "VK_EXT_image_view_min_lod",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_line_rasterization",
+   "partial",
+   "vk/src/mali_physical_device.c:312",
+   "advertised but partial: t_vk_feat linerast: rectangularLines only (hardware default wide line)"
+  ],
+  [
+   "extensions",
+   "VK_EXT_memory_budget",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_private_data",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_provoking_vertex",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_queue_family_foreign",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_robustness2",
+   "partial",
+   "vk/src/mali_physical_device.c:312",
+   "advertised but partial: nullDescriptor only (t_vk_feat nulld)"
+  ],
+  [
+   "extensions",
+   "VK_EXT_scalar_block_layout",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_surface_maintenance1",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_swapchain_maintenance1",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_EXT_vertex_attribute_divisor",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_buffer_device_address",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_calibrated_timestamps",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_create_renderpass2",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_descriptor_update_template",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_dynamic_rendering",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_fence",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_fence_capabilities",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_fence_fd",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_memory",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_memory_capabilities",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_memory_fd",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_semaphore",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_semaphore_capabilities",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_external_semaphore_fd",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_get_physical_device_properties2",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_get_surface_capabilities2",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_imageless_framebuffer",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_incremental_present",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_line_rasterization",
+   "partial",
+   "vk/src/mali_physical_device.c:312",
+   "advertised but partial: t_vk_feat linerast: rectangularLines only (hardware default wide line)"
+  ],
+  [
+   "extensions",
+   "VK_KHR_load_store_op_none",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_maintenance1",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_maintenance4",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_maintenance5",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_maintenance6",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_pipeline_library",
+   "missing",
+   "vk/src/mali_physical_device.c extension table",
+   "same: DXVK's pipeline-library fast path is off"
+  ],
+  [
+   "extensions",
+   "VK_KHR_present_id",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_present_wait",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_sampler_ycbcr_conversion",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_shader_expect_assume",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_shader_integer_dot_product",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_surface",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_swapchain",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_swapchain_maintenance1",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_swapchain_mutable_format",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_synchronization2",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_timeline_semaphore",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_unified_image_layouts",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_uniform_buffer_standard_layout",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_vertex_attribute_divisor",
+   "done",
+   "vk/src/mali_physical_device.c:312",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_wayland_surface",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_xcb_surface",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "extensions",
+   "VK_KHR_xlib_surface",
+   "done",
+   "vk/src/mali_instance.c:22",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): GPU id and uAPI probe",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): Submit and fences",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): ICD enumerates, creates a device",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): Graphics draw",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): Compute",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): Copy, blit, clear, queries",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): Present through WSI",
+   "missing",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G610 (v10): dEQP-VK daily sample runs",
+   "partial",
+   "branch:feat/v10",
+   "only on feat/v10, unmerged: bring-up on branch feat/v10 (unmerged): ladder passes through the ICD on hardware, dEQP sample 302 pass in the branch notes"
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): GPU id and uAPI probe",
+   "done",
+   "libkbase/src/ctx.c",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): Submit and fences",
+   "done",
+   "vk/tests/t_queue.c",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): ICD enumerates, creates a device",
+   "done",
+   "vk/tests/t_icd.c, vk/check.sh#direct v11",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): Graphics draw",
+   "done",
+   "vk/tests/t_vk_draw.c, vk/deqp/ours-daily-sample-cmf.tsv",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): Compute",
+   "done",
+   "vk/tests/t_vk_compute.c, vk/deqp/ours-daily-sample-cmf.tsv",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): Copy, blit, clear, queries",
+   "done",
+   "vk/tests/t_vk_meta.c, vk/tests/t_query.c",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): Present through WSI",
+   "done",
+   "vk/tests/t_vk_present.c",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G615 (v11): dEQP-VK daily sample runs",
+   "done",
+   "vk/deqp/qdeqp.py, vk/deqp/ours-daily-sample-cmf.tsv",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): GPU id and uAPI probe",
+   "done",
+   "libkbase/src/ctx.c",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): Submit and fences",
+   "done",
+   "vk/tests/t_queue.c",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): ICD enumerates, creates a device",
+   "done",
+   "vk/tests/t_icd.c, vk/check.sh#direct v11",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): Graphics draw",
+   "done",
+   "vk/tests/t_vk_draw.c, vk/deqp/ours-daily-sample-poco.tsv",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): Compute",
+   "done",
+   "vk/tests/t_vk_compute.c, vk/deqp/ours-daily-sample-poco.tsv",
+   ""
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): Copy, blit, clear, queries",
+   "partial",
+   "vk/tests/t_vk_meta.c, vk/tests/t_query.c",
+   "Copy, blit, clear, queries is not fully exercised on Mali-G925: fewer hours of testing than v11"
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): Present through WSI",
+   "partial",
+   "vk/tests/t_vk_present.c",
+   "Present through WSI is not fully exercised on Mali-G925: fewer hours of testing than v11"
+  ],
+  [
+   "gpu",
+   "Mali-G925 (v13): dEQP-VK daily sample runs",
+   "done",
+   "vk/deqp/qdeqp.py, vk/deqp/ours-daily-sample-poco.tsv",
+   ""
+  ],
+  [
+   "pipeline",
+   "Indexed draws (16 and 32 bit)",
+   "done",
+   "vk/tests/t_vk_draw.c#idx32",
+   ""
+  ],
+  [
+   "pipeline",
+   "Depth test and depth formats",
+   "done",
+   "vk/tests/t_vk_draw.c#depth32s8",
+   ""
+  ],
+  [
+   "pipeline",
+   "Stencil",
+   "done",
+   "vk/tests/t_vk_draw.c#stencil",
+   ""
+  ],
+  [
+   "pipeline",
+   "Blending (fixed function, constants, write masks)",
+   "done",
+   "vk/tests/t_vk_draw.c#s_const_half",
+   ""
+  ],
+  [
+   "pipeline",
+   "Dual-source blending",
+   "partial",
+   "branch:feat/msaa",
+   "only on branch feat/msaa; single-source blending is done"
+  ],
+  [
+   "pipeline",
+   "MSAA 4x and resolve",
+   "partial",
+   "branch:feat/msaa",
+   "only on branch feat/msaa; no 2x/8x, no MSAA on v13"
+  ],
+  [
+   "pipeline",
+   "Textures and samplers",
+   "done",
+   "vk/tests/t_vk_draw.c#texture",
+   ""
+  ],
+  [
+   "pipeline",
+   "BC1-BC7 decode (offline; hardware wiring pending)",
+   "partial",
+   "vk/tests/t_bc.c, vk/tests/t_bc_hw.c",
+   "decoder tested offline; not wired into the image path"
+  ],
+  [
+   "pipeline",
+   "Uniform buffers and push constants",
+   "done",
+   "vk/tests/t_vk_draw.c#pushfs",
+   ""
+  ],
+  [
+   "pipeline",
+   "Descriptor updates and indexing",
+   "done",
+   "vk/tests/t_vk_feat.c#test_didx, vk/tests/t_vk_draw.c#descupd",
+   ""
+  ],
+  [
+   "pipeline",
+   "Compute and indirect dispatch",
+   "done",
+   "vk/tests/t_vk_compute.c",
+   ""
+  ],
+  [
+   "pipeline",
+   "Copy, blit, clear, resolve (meta ops)",
+   "done",
+   "vk/tests/t_vk_meta.c",
+   ""
+  ],
+  [
+   "pipeline",
+   "Queries (occlusion, timestamp)",
+   "done",
+   "vk/tests/t_query.c",
+   ""
+  ],
+  [
+   "pipeline",
+   "Render passes and dynamic rendering",
+   "done",
+   "vk/tests/t_vk_draw.c, vk/tests/t_vk_meta.c",
+   ""
+  ],
+  [
+   "pipeline",
+   "Timeline semaphores and sync2",
+   "done",
+   "vk/tests/t_queue.c",
+   ""
+  ],
+  [
+   "pipeline",
+   "WSI and presentation (Wayland)",
+   "partial",
+   "vk/tests/t_vk_present.c",
+   "X11 and presentation edge cases (OUT_OF_DATE, fence-poll CSYNC) still open"
+  ],
+  [
+   "pipeline",
+   "multiViewport (viewport 0 only without geometry shaders)",
+   "partial",
+   "vk/tests/t_vk_draw.c#multivp",
+   "viewport 1+ ignored without geometry shaders; apps using split-screen get one viewport"
+  ],
+  [
+   "pipeline",
+   "Shader compiler path and disk cache",
+   "done",
+   "vk/tests/t_compile.c",
+   ""
+  ],
+  [
+   "pipeline",
+   "Render target compression (AFBC)",
+   "missing",
+   "vk/GPU-GAP.md",
+   "not implemented; bandwidth-heavy titles run slower"
+  ],
+  [
+   "pipeline",
+   "Robust buffer access (robustness2 bounds clamping)",
+   "missing",
+   "README.md",
+   "not implemented; only nullDescriptor is advertised"
+  ],
+  [
+   "pipeline",
+   "Geometry and tessellation shaders (emulated)",
+   "missing",
+   "ROADMAP.md",
+   "not implemented; DXVK disables effects that need them"
+  ],
+  [
+   "pipeline",
+   "Transform feedback (emulated)",
+   "missing",
+   "ROADMAP.md",
+   "not implemented; apps using it fail pipeline creation"
+  ],
+  [
+   "pipeline",
+   "Graphics pipeline library",
+   "missing",
+   "ROADMAP.md",
+   "not implemented; DXVK has to monolithically recompile pipelines (stutter)"
+  ],
+  [
+   "milestone",
+   "R1: Standalone libkbase on both phones: hand-built command stream, dma-heap import, fences, 10k submits, injected fault decoded",
+   "done",
+   "ROADMAP.md",
+   ""
+  ],
+  [
+   "milestone",
+   "R2: Compiled-shader triangle through a zero-copy present at refresh rate",
+   "done",
+   "ROADMAP.md",
+   ""
+  ],
+  [
+   "milestone",
+   "R3: Own Vulkan ICD: vkcube and dEQP-VK api/pipeline/renderpass at 95 % or more on v11 and v13",
+   "partial",
+   "ROADMAP.md",
+   "stage goal not reached: R3: Own Vulkan ICD: vkcube and dEQP-VK api/pipeline/renderpass at 95 % or more on v11 and v13"
+  ],
+  [
+   "milestone",
+   "R4: Vulkan 1.3 and the DXVK feature set. A DXVK title reaches a menu",
+   "partial",
+   "ROADMAP.md",
+   "stage goal not reached: R4: Vulkan 1.3 and the DXVK feature set. A DXVK title reaches a menu"
+  ],
+  [
+   "milestone",
+   "R5: Emulated geometry, tessellation and transform feedback. Target title matches oracle screenshots",
+   "missing",
+   "ROADMAP.md",
+   "stage goal not reached: R5: Emulated geometry, tessellation and transform feedback. Target title matches oracle screenshots"
+  ],
+  [
+   "milestone",
+   "R6: Target title on the G615 phone at least as good as the bridge, with fewer frames over 50 ms. Steam UI at least as good on both phones",
+   "missing",
+   "ROADMAP.md",
+   "stage goal not reached: R6: Target title on the G615 phone at least as good as the bridge, with fewer frames over 50 ms. Steam UI at least as good on both phones"
+  ],
+  [
+   "milestone",
+   "R7: vkd3d-proton title in gameplay, 2 h soak, 10-title matrix",
+   "missing",
+   "ROADMAP.md",
+   "stage goal not reached: R7: vkd3d-proton title in gameplay, 2 h soak, 10-title matrix"
+  ],
+  [
+   "milestone",
+   "A DXVK title reaches a menu",
+   "missing",
+   "ROADMAP.md",
+   "end-to-end goal not demonstrated in this tree"
+  ],
+  [
+   "milestone",
+   "Steam UI runs on mali-open",
+   "missing",
+   "ROADMAP.md",
+   "end-to-end goal not demonstrated in this tree"
+  ]
+ ],
+ "summary": {
+  "done": 349,
+  "half": "72.8%",
+  "missing": 92,
+  "panel": "all",
+  "partial": 123,
+  "strict": "61.9%",
+  "total": 564
+ }
+}
