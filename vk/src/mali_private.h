@@ -57,6 +57,7 @@ struct mali_device {
    pthread_cond_t sync_cv;    /* a sync got a fence or was signalled */
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
+   int last_submit_fd;        /* dup of the last submission's fence: handed to the WSI so the wait happens when the image is reused (mali_wsi.c) */
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
@@ -84,6 +85,7 @@ extern const uint64_t mali_wsi_modifier; /* DRM_FORMAT_MOD_LINEAR, the only one 
 VkResult mali_wsi_create_swapchain(VkDevice, const VkSwapchainCreateInfoKHR*, const VkAllocationCallbacks*, VkSwapchainKHR*);
 VkResult mali_wsi_acquire_next_image(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t*);
 VkResult mali_wsi_queue_present(VkQueue, const VkPresentInfoKHR*);
+bool mali_wsi_sync_enabled(void);
 VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkPresentModeKHR*);
 void mali_wsi_destroy_swapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
