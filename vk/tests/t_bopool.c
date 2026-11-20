@@ -138,6 +138,20 @@ int main(void)
       d[pooled] = kb_fake_mem_free_count() - f0;
    }
    EXPECT(d[1] - d[0] == 5, "device_destroy frees the 5 pooled BOs (%u vs %u frees)", d[1], d[0]);
+
+   /* MALI_BO_POOL_MB=0 disables the pool: a freed HOSTLAZY BO is really freed and the next alloc is a MEM_ALLOC. */
+   setenv("MALI_BO_POOL_MB", "0", 1);
+   if (b->device_create(&gi, &k)) { printf("FAIL  device_create (pool disabled)\n"); return 1; }
+   f0 = kb_fake_mem_free_count();
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &x)) return 1;
+   b->bo_free(k, &x);
+   EXPECT(kb_fake_mem_free_count() - f0 == 1, "MALI_BO_POOL_MB=0: free of a HOSTLAZY BO really frees it");
+   a0 = kb_fake_mem_alloc_count();
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &y)) return 1;
+   EXPECT(kb_fake_mem_alloc_count() == a0 + 1, "MALI_BO_POOL_MB=0: next alloc is a fresh MEM_ALLOC, not a pool hit");
+   b->bo_free(k, &y);
+   b->device_destroy(k);
+
    printf("{\"test\":\"t_bopool\",\"pass\":%s}\n", fails ? "false" : "true");
    return fails != 0;
 }
