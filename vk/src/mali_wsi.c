@@ -238,7 +238,7 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    if (!modes) {
       VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, count, NULL);
       if (r == VK_SUCCESS && pdev->wsi.sw && *count < UINT32_MAX)
-         (*count)++;   /* + IMMEDIATE */
+         (*count)++;   /* upper bound: the enumeration below decides whether IMMEDIATE is really missing */
       return r;
    }
    /* Enumerate, then return the list unchanged except for IMMEDIATE appended on the software path. */
@@ -247,7 +247,9 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, &n, all);
    if (r != VK_SUCCESS && r != VK_INCOMPLETE)
       return r;
-   if (pdev->wsi.sw) {
+   const bool x11 = ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XCB ||
+                    ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XLIB;
+   if (pdev->wsi.sw && x11) {   /* X11 only: Wayland's driver (wsi_common_wayland) has its own list */
       bool has = false;
       for (uint32_t i = 0; i < n; i++)
          has |= all[i] == VK_PRESENT_MODE_IMMEDIATE_KHR;

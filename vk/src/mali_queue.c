@@ -582,6 +582,8 @@ mali_present_fence_ok(struct mali_device *dev)
    if (forced >= 0)
       return forced;
    const struct wsi_device *w = &mali_device_pdev(dev)->wsi;
+   if (w->sw)
+      return 0;   /* software present: the CPU copies the frame, so the queue must wait for rendering first */
    return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
 }
 

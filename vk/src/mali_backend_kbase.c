@@ -151,7 +151,7 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
       fprintf(stderr, "mali_vk: kbase bo flags 0x%llx (%s): COHERENT_LOCAL applies to native and imported BOs; "
               "internal BOs %s\n", (unsigned long long)kb_bo_extra_flags,
               kb_bo_extra_flags & 0x800 ? "COHERENT_LOCAL" : "none",
-              k_int_nocoh_default ? "opt out (MALI_INT_NOCOH)" : "keep it");
+              int_nocoh ? "driver-internal BOs without COHERENT_LOCAL (MALI_INT_NOCOH)" : "every BO gets it");
    const char *fi = getenv("MALI_FAULT_INJECT");
    k->fault_at = fi ? strtoul(fi, NULL, 10) : 0;
    pthread_mutex_init(&k->submit_lock, NULL);
