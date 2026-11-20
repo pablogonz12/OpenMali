@@ -13,6 +13,7 @@ it is a claim, and claims go to `docs/rejected.jsonl` or stay in prose, never on
 | menubench (`MediaDeck/results/menubench.jsonl`) | `screen.fps` | SurfaceFlinger present timestamps for the panel |
 | SurfaceFlinger / perfetto present trace | present timestamps | count frames presented, divide by window |
 | a HUD the user reads on screen | the number on screen | quote the screenshot/labelled capture, not a log line |
+| driver-mode `vkcube` present counter | the fps the cube shows on the panel | `bench/driver.jsonl` only; quote the lane note (`/tmp/opencode/*.md`), never a render loop rate |
 
 Everything else lives in its own field and is **never plotted, never compared, never used for
 "best"**:
@@ -43,8 +44,24 @@ build, same profile:
 5. Record `reps`, `panel_hz`, `profile`, `driver_sha`/`version` and the workload on every row.
    A row missing `reps` or `panel_hz` cannot be plotted.
 
-### Profiles are not comparable
+### Workload names: game lanes and WSI smoke lanes
 
+Two kinds of workload share the store, and they are never compared with each other:
+
+* **game / app lanes** — `cards`, `triangles`, `steam-menu`, `megabonk`. A real workload whose
+  displayed fps a player would feel. These compete for "best" inside their own lane only.
+* **WSI smoke lanes** — `vkcube-wayland` and `vkcube-xcb`. `vkcube` on the same device and build,
+  run to prove a swapchain + present path works and at what pace the cube is paced:
+  `vkcube-wayland` is the Wayland path (`present -> VK_SUCCESS`, exit 0), `vkcube-xcb` is the
+  X11/dri3 path (`vkCreateXcbSurfaceKHR` + putimage/shm present). A smoke lane is a
+  **go/no-go on a WSI path, not a game fps**: never plot it against `cards`/`triangles`, never
+  quote it as "the driver's performance", and never compare a wayland point with an xcb point
+  (different presentation paths, different pacing). Run the exact command
+  (`vkcube --c 20 --wsi wayland` / `--wsi xcb`) in `source`, with `--c` and the diagnostics env
+  cleared; a smoke lane has no screenshot brightness gate (see below), so record
+  `brightness_mean: null` and say so in `note` rather than inventing one.
+
+### Profiles are not comparable
 `profile=default` is the comparable lane. `uncapped` runs are *skipped* by the importer: they
 are a different configuration, they are never compared with `default`, and they can never win a
 "best". Other variants (`cefv0`, `cefv1`, …) are stored with their profile but are not drawn as
@@ -64,6 +81,7 @@ run day. No best exists for a group with 1 or 2 reps, however good the single nu
 | no displayed-fps source (only render/presented/offscreen) | `presented_fps_not_displayed`, `render_avg_not_displayed`, `no_displayed_fps` |
 | `fps > panel_hz + 2` | `above_panel_ceiling` |
 | panel missing or device unknown | `no_panel_hz`, `unknown_device` |
+| workload not a known lane (`bench/driver.jsonl`) | `unknown_workload` |
 | a figure typed into a doc/FINDINGS/owner note | `doc_claim_not_measurable` |
 
 `fps > panel_hz + 2` is instrument error: the sample is rejected and logged with the observed

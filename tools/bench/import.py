@@ -38,6 +38,9 @@ MEDIADECK = Path(os.environ.get("MEDIADECK", Path.home() / "Documents/scripts/Me
 MENUBENCH = MEDIADECK / "results/menubench.jsonl"
 BENCH2 = ROOT / "bench/results.jsonl"
 MENU = ROOT / "bench/menu.jsonl"
+# Driver-mode WSI smoke lanes (vkcube under wayland / xcb), one line per rep. These are the only
+# source of `stack: mali-open` displayed-fps points: no APK, no menubench, just the driver.
+DRIVER = ROOT / "bench/driver.jsonl"
 # The archived seed and the owner's hand-typed rows are kept as evidence only: a line in
 # FINDINGS.md or an owner note is not a measurement and cannot carry panel_hz or reps.
 SEED = ROOT / "docs/bench-archive/2026-11-20-invalid/bench-seed.jsonl"
@@ -46,6 +49,8 @@ DEVICE = {"poco-x8": "x8", "x8": "x8", "cmf": "cmf", "poco-x4": "x4", "x4": "x4"
 STACK = {"bridge": "bridge", "ours": "mali-open", "mali-open": "mali-open"}
 WORKLOAD = {"triangle": "triangles", "cube": "cards", "menu": "steam-menu",
             "menubench": "steam-menu"}
+# WSI smoke lanes: a swapchain + present that a human can see, not a game fps.
+DRIVER_WORKLOADS = ("vkcube-wayland", "vkcube-xcb")
 PANEL = {"x8": 120, "cmf": 120, "x4": 144}  # fallback only when the log omits panel_hz
 FIELDS = ("ts", "device", "stack", "version", "driver_sha", "workload", "metric", "profile",
           "fps", "panel_hz", "reps", "brightness_mean", "status", "source",
@@ -196,6 +201,71 @@ def from_menu(sink):
                     source=f"bench/menu.jsonl ({r.get('date')})")
 
 
+def from_driver(sink):
+    """bench/driver.jsonl: driver-mode vkcube runs. One line per rep, displayed fps on screen.
+
+    The lane has no APK and no SurfaceFlinger trace: the displayed rate is the number the
+    vkcube present counter shows on the panel, with diagnostics env cleared. The importer
+    applies the same contract as every other source (named displayed-fps source, default
+    profile, panel ceiling) and never invents a rep: `reps` is recomputed from the visible
+    reps that actually exist, so a lane that only delivered 2 usable reps stays at reps=2.
+    """
+    for r in read_jsonl(DRIVER):
+        dev = DEVICE.get(r.get("device"))
+        wl = r.get("workload")
+        panel = r.get("panel_hz")
+        src = str(r.get("source") or "")
+        if dev is None:
+            sink.reject("unknown_device", f"device={r.get('device')}", r, source=src)
+            continue
+        if wl not in DRIVER_WORKLOADS:
+            sink.reject("unknown_workload", f"workload={wl} is not a WSI smoke lane", r,
+                        source=src, workload=wl)
+            continue
+        if str(r.get("profile")) == "uncapped":
+            sink.reject("uncapped_profile", "not comparable with default", r, source=src,
+                        observed_fps=r.get("fps"), panel_hz=panel, workload=wl)
+            continue
+        fps = r.get("fps")
+        if not isinstance(fps, (int, float)):
+            sink.reject("no_displayed_fps", "fps absent", r, source=src, panel_hz=panel,
+                        workload=wl)
+            continue
+        panel = round(float(panel)) if panel is not None else PANEL.get(dev)
+        if panel is None:
+            sink.reject("no_panel_hz", "panel_hz absent; ceiling not checkable", r, source=src,
+                        workload=wl)
+            continue
+        if fps > panel + 2:
+            sink.reject("above_panel_ceiling", f"{fps} fps on a {panel} Hz panel",
+                        r, source=src, observed_fps=fps, panel_hz=panel, workload=wl)
+            continue
+        b = r.get("brightness_mean")
+        if r.get("status") in ("visible", "black", "crash", "not_run", "unverified"):
+            status = str(r.get("status"))
+        else:
+            status = "black" if (fps < 5 or (isinstance(b, (int, float)) and b <= 20)) else "visible"
+        sink.rows.append({
+            "ts": day(r.get("ts"), None),
+            "device": dev,
+            "stack": "mali-open" if str(r.get("stack")) != "bridge" else "bridge",
+            "version": str(r.get("version") or mali_version(r.get("driver_sha"))),
+            "driver_sha": mali_version(r.get("driver_sha")),
+            "workload": wl,
+            "metric": "displayed_fps",
+            "profile": str(r.get("profile") or "unknown"),
+            "fps": round(float(fps), 2),
+            "panel_hz": panel,
+            "reps": 1,
+            "brightness_mean": b if isinstance(b, (int, float)) else None,
+            "status": status,
+            "source": src,
+            "render_fps": None,
+            "presented_fps": None,
+            "note": str(r.get("note") or ""),
+        })
+
+
 def from_seed(sink):
     """FINDINGS.md / owner notes: a claim with no displayed-fps source, panel_hz or reps."""
     for r in read_jsonl(SEED):
@@ -223,6 +293,7 @@ def build():
     from_menubench(sink)
     from_bench2(sink)
     from_menu(sink)
+    from_driver(sink)
     from_seed(sink)
     rows = assign_reps(sink.rows)
     rows.sort(key=lambda r: (r["ts"], r["device"], r["stack"], r["workload"], r["version"],

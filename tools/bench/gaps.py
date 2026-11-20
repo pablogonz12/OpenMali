@@ -31,6 +31,8 @@ WORKLOADS = OrderedDict([
     ("steam-menu", "Steam Big Picture menu (menubench)"),
     ("megabonk", "Megabonk (bench/megabonk-compare.sh)"),
     ("glclear", "glclear readback (mali-gaming kopperglc)"),
+    ("vkcube-wayland", "vkcube --wsi wayland (driver-mode WSI smoke)"),
+    ("vkcube-xcb", "vkcube --wsi xcb (driver-mode WSI smoke)"),
 ])
 PANEL_HZ = {"x8": 120, "cmf": 120, "x4": 144}
 NEXT = "next"
@@ -40,6 +42,8 @@ RUNBOOK = {
     "steam-menu": "MediaDeck scripts/quick/menubench {alias} --profile default",
     "megabonk": "bench/megabonk-compare.sh run {drv} 90 30",
     "glclear": "mali-gaming kopperglc run against the {drv} ICD",
+    "vkcube-wayland": "vkcube --c 20 --wsi wayland (driver mode, env cleared) on {alias}",
+    "vkcube-xcb": "vkcube --c 20 --wsi xcb under DISPLAY (driver mode) on {alias}",
 }
 ALIAS = {"x8": "poco-x8", "cmf": "cmf", "x4": "poco-x4"}
 BUILD_APK = {"v25": "/tmp/opencode/x8-current-v25.apk"}

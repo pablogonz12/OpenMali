@@ -10,13 +10,14 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 
 ## Coverage
 
-4 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 83 missing of 90 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
+5 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 139 missing of 147 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
 
 | workload | device | stack | rows | valid points | no-valid-point rows | last valid version |
 |---|---|---|---|---|---|---|
-| steam-menu | x8 | bridge | 10 | 6 | 4 | v25 |
+| steam-menu | x8 | bridge | 11 | 9 | 2 | vc19 |
 | steam-menu | cmf | bridge | 13 | 10 | 3 | v25 |
 | steam-menu | x4 | bridge | 1 | 0 | 1 | — |
+| vkcube-wayland | x8 | mali-open | 3 | 0 | 3 | — |
 
 ## cube/cards (bench2 --bench cube)
 
@@ -34,7 +35,7 @@ triangles. No valid displayed-fps point exists yet. The 850.6 that used to be pl
 
 Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger present timestamps) are plotted; `render.avg_fps` stays in its own column.
 
-16 plotted point(s) from ≥3-rep default-profile runs; 24 stored row(s) total.
+19 plotted point(s) from ≥3-rep default-profile runs; 25 stored row(s) total.
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="steam-menu displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="330" fill="#ffffff"/>
@@ -62,12 +63,12 @@ Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger pr
 <line x1="263.0" y1="262" x2="263.0" y2="267" stroke="#9ca3af"/>
 <text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-18 14:33</text>
 <line x1="470.0" y1="262" x2="470.0" y2="267" stroke="#9ca3af"/>
-<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-19 06:09</text>
+<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-19 06:10</text>
 <line x1="677.0" y1="262" x2="677.0" y2="267" stroke="#9ca3af"/>
-<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-19 21:45</text>
+<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-19 21:47</text>
 <line x1="884.0" y1="262" x2="884.0" y2="267" stroke="#9ca3af"/>
-<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 13:21</text>
-<polyline points="56.0,109.0 57.6,178.9 58.0,175.6 59.4,175.9 220.3,107.3 221.2,109.0 222.2,109.3 883.4,144.0 884.0,146.9" fill="none" stroke="#1d4ed8" stroke-width="1.8"/>
+<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 13:23</text>
+<polyline points="56.0,109.0 57.6,178.9 58.0,175.6 59.4,175.9 220.2,107.3 221.2,109.0 222.1,109.3 883.0,144.0 883.6,146.9 884.0,105.1" fill="none" stroke="#1d4ed8" stroke-width="1.8"/>
 <circle cx="56.0" cy="109.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <text x="56.0" y="102.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.5×1</text>
 <circle cx="57.6" cy="178.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
@@ -78,23 +79,25 @@ Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger pr
 <text x="58.5" y="255.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">black screen</text>
 <circle cx="59.4" cy="175.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <text x="59.4" y="168.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">59.4×3</text>
-<circle cx="220.3" cy="107.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="220.3" y="100.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">106.7×3</text>
+<circle cx="220.2" cy="107.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="220.2" y="100.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">106.7×3</text>
 <circle cx="221.2" cy="109.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
 <text x="221.2" y="102.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.5×3</text>
-<circle cx="222.2" cy="109.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="222.2" y="102.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.3×3</text>
-<circle cx="883.4" cy="144.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="883.4" y="137.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">81.4×2</text>
-<circle cx="884.0" cy="146.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
-<text x="884.0" y="139.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.4×2</text>
-<polyline points="85.0,163.4 85.5,158.3 86.0,150.9 108.8,158.6 152.0,150.6 153.0,132.2 153.9,157.3 392.3,166.7 393.4,173.0 394.4,163.5" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
+<circle cx="222.1" cy="109.3" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="222.1" y="102.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">105.3×3</text>
+<circle cx="883.0" cy="144.0" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="883.0" y="137.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">81.4×3</text>
+<circle cx="883.6" cy="146.9" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="883.6" y="139.9" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.4×3</text>
+<circle cx="884.0" cy="105.1" r="3.6" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="0"/>
+<text x="884.0" y="98.1" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">108.2×3</text>
+<polyline points="85.0,163.4 85.5,158.3 86.0,150.9 108.8,158.6 152.0,150.6 152.9,132.2 153.9,157.3 392.1,166.7 393.2,173.0 394.2,163.5" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="8 4"/>
 <rect x="72.5" y="249.2" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <text x="75.9" y="245.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">6.5 (cefv0)</text>
 <rect x="73.2" y="143.8" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
 <text x="76.6" y="140.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">79.2 (cefv1)</text>
-<rect x="75.2" y="153.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="78.6" y="150.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.4 (cefv1)</text>
+<rect x="75.1" y="153.6" width="6.8" height="6.8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="78.5" y="150.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.4 (cefv1)</text>
 <rect x="81.6" y="160.0" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
 <text x="85.0" y="156.4" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">68.0×3</text>
 <rect x="82.1" y="154.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
@@ -105,18 +108,18 @@ Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger pr
 <text x="108.8" y="151.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">71.3×4</text>
 <rect x="148.6" y="147.2" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
 <text x="152.0" y="143.6" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">76.8×4</text>
-<rect x="149.6" y="128.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="153.0" y="125.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">89.5×4</text>
+<rect x="149.5" y="128.8" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="152.9" y="125.2" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">89.5×4</text>
 <rect x="150.5" y="153.9" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
 <text x="153.9" y="150.3" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.2×4</text>
-<rect x="388.9" y="163.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="392.3" y="159.7" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">65.7×3</text>
-<rect x="390.0" y="169.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="393.4" y="166.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">61.4×3</text>
-<rect x="391.0" y="160.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="394.4" y="156.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">67.9×3</text>
-<polygon points="95.0,79.9 99.4,87.9 90.6,87.9" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
-<text x="95.0" y="77.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">122.4×1</text>
+<rect x="388.7" y="163.3" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="392.1" y="159.7" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">65.7×3</text>
+<rect x="389.8" y="169.6" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="393.2" y="166.0" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">61.4×3</text>
+<rect x="390.8" y="160.1" width="6.8" height="6.8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="394.2" y="156.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">67.9×3</text>
+<polygon points="94.9,79.9 99.3,87.9 90.5,87.9" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="94.9" y="77.5" font-size="8.5" fill="#1d4ed8" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">122.4×1</text>
 </svg>
 
 | day | device | stack | version | profile | panel Hz | median fps | reps |
@@ -126,6 +129,7 @@ Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger pr
 | 2026-11-19 | cmf | bridge | v25 | default | 120 | **65.7** | 3 (65.7, 61.4, 67.9) |
 | 2026-11-17 | x8 | bridge | p22 | default | 60 | **59.4** | 3 (57.3, 59.6, 59.4) |
 | 2026-11-18 | x8 | bridge | v25 | default | 120 | **105.5** | 3 (106.7, 105.5, 105.3) |
+| 2026-11-20 | x8 | bridge | vc19 | default | 120 | **81.4** | 3 (81.4, 79.4, 108.2) |
 
 | when | device | stack | version | profile | displayed fps | panel Hz | reps | brightness | status | render_fps (not plotted) | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -151,8 +155,9 @@ Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger pr
 | 2026-11-19 00:18 | cmf | bridge | v25 | default | 65.7 | 120 | 3 | - | visible | 165.4 | screen.fps; render.avg_fps=165.4 is render-side and not used |
 | 2026-11-19 00:22 | cmf | bridge | v25 | default | 61.4 | 120 | 3 | - | visible | 139.3 | screen.fps; render.avg_fps=139.3 is render-side and not used |
 | 2026-11-19 00:27 | cmf | bridge | v25 | default | 67.9 | 120 | 3 | - | visible | 156.8 | screen.fps; render.avg_fps=156.8 is render-side and not used |
-| 2026-11-20 13:19 | x8 | bridge | vc19 | default | 81.4 | 120 | 2 | - | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
-| 2026-11-20 13:21 | x8 | bridge | vc19 | default | 79.4 | 120 | 2 | - | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
+| 2026-11-20 13:19 | x8 | bridge | vc19 | default | 81.4 | 120 | 3 | - | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
+| 2026-11-20 13:21 | x8 | bridge | vc19 | default | 79.4 | 120 | 3 | - | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
+| 2026-11-20 13:23 | x8 | bridge | vc19 | default | 108.2 | 120 | 3 | - | visible | - | screen.fps; render.avg_fps=None is render-side and not used |
 
 <details><summary>sources for these rows</summary>
 
@@ -178,8 +183,9 @@ Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger pr
 - `2026-11-19` cmf/bridge/v25/steam-menu fps=65.7 reps=3 — menubench (2026-11-19T00:18:07+01:00, scenario=lr8x@150ms+shelf/3, rep=1)
 - `2026-11-19` cmf/bridge/v25/steam-menu fps=61.4 reps=3 — menubench (2026-11-19T00:22:55+01:00, scenario=lr8x@150ms+shelf/3, rep=2)
 - `2026-11-19` cmf/bridge/v25/steam-menu fps=67.9 reps=3 — menubench (2026-11-19T00:27:28+01:00, scenario=lr8x@150ms+shelf/3, rep=3)
-- `2026-11-20` x8/bridge/vc19/steam-menu fps=81.4 reps=2 — menubench (2026-11-20T13:19:10+01:00, scenario=lr8x@150ms+shelf/3, rep=1)
-- `2026-11-20` x8/bridge/vc19/steam-menu fps=79.4 reps=2 — menubench (2026-11-20T13:21:42+01:00, scenario=lr8x@150ms+shelf/3, rep=2)
+- `2026-11-20` x8/bridge/vc19/steam-menu fps=81.4 reps=3 — menubench (2026-11-20T13:19:10+01:00, scenario=lr8x@150ms+shelf/3, rep=1)
+- `2026-11-20` x8/bridge/vc19/steam-menu fps=79.4 reps=3 — menubench (2026-11-20T13:21:42+01:00, scenario=lr8x@150ms+shelf/3, rep=2)
+- `2026-11-20` x8/bridge/vc19/steam-menu fps=108.2 reps=3 — menubench (2026-11-20T13:23:42+01:00, scenario=lr8x@150ms+shelf/3, rep=3)
 
 </details>
 
@@ -195,17 +201,81 @@ glClear readback. A swap that succeeds while the screenshot stays black is a bla
 
 **No rows at all.** Nothing on this chart is a measurement yet. Runbook: `mali-gaming kopperglc run against the ours ICD`.
 
+## vkcube --wsi wayland (driver-mode WSI smoke)
+
+vkcube over Wayland: the first driver-mode lane that reaches a real present (`present #20 -> VK_SUCCESS`). A WSI smoke workload — it says the wayland swapchain/present path works and how fast the cube is paced, never a game's fps. Only compare within this lane.
+
+0 plotted point(s) from ≥3-rep default-profile runs; 3 stored row(s) total.
+
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="vkcube-wayland displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="900" height="330" fill="#ffffff"/>
+<line x1="56" y1="262.0" x2="884" y2="262.0" stroke="#e5e7eb"/>
+<text x="48" y="265.0" font-size="10" fill="#6b7280" text-anchor="end">0</text>
+<line x1="56" y1="215.6" x2="884" y2="215.6" stroke="#e5e7eb"/>
+<text x="48" y="218.6" font-size="10" fill="#6b7280" text-anchor="end">32</text>
+<line x1="56" y1="169.2" x2="884" y2="169.2" stroke="#e5e7eb"/>
+<text x="48" y="172.2" font-size="10" fill="#6b7280" text-anchor="end">64</text>
+<line x1="56" y1="122.8" x2="884" y2="122.8" stroke="#e5e7eb"/>
+<text x="48" y="125.8" font-size="10" fill="#6b7280" text-anchor="end">96</text>
+<line x1="56" y1="76.4" x2="884" y2="76.4" stroke="#e5e7eb"/>
+<text x="48" y="79.4" font-size="10" fill="#6b7280" text-anchor="end">128</text>
+<line x1="56" y1="30.0" x2="884" y2="30.0" stroke="#e5e7eb"/>
+<text x="48" y="33.0" font-size="10" fill="#6b7280" text-anchor="end">160</text>
+<text x="8" y="16" font-size="10" fill="#6b7280">displayed fps</text>
+<line x1="56" y1="88.0" x2="884" y2="88.0" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.8"/>
+<text x="880" y="83.0" font-size="9.5" fill="#b91c1c" text-anchor="end">X8 panel 120 Hz ceiling</text>
+<line x1="56.0" y1="262" x2="56.0" y2="267" stroke="#9ca3af"/>
+<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 02:56</text>
+<line x1="263.0" y1="262" x2="263.0" y2="267" stroke="#9ca3af"/>
+<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 08:57</text>
+<line x1="470.0" y1="262" x2="470.0" y2="267" stroke="#9ca3af"/>
+<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:58</text>
+<line x1="677.0" y1="262" x2="677.0" y2="267" stroke="#9ca3af"/>
+<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 20:59</text>
+<line x1="884.0" y1="262" x2="884.0" y2="267" stroke="#9ca3af"/>
+<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-21 03:00</text>
+<polyline points="470.0,235.0 471.1,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
+<circle cx="468.9" cy="262.0" r="4.2" fill="#ffffff" stroke="#b91c1c" stroke-width="1.6"/>
+<text x="468.9" y="255.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">unverified</text>
+<circle cx="470.0" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="470.0" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
+<circle cx="471.1" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="471.1" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
+</svg>
+
+**No valid point yet:** no default-profile group has 3 reps, so this workload has no number to quote. That is the honest state, not a gap in the drawing.
+
+| when | device | stack | version | profile | displayed fps | panel Hz | reps | brightness | status | render_fps (not plotted) | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-20 14:56 | x8 | mali-open | 549fae7c | default | 0 | 120 | 2 | - | unverified | - | rep 0 of 3: cube still starting, no usable present window yet; 0 fps here is &#x27;not measured&#x27;, not a black screen. 2 usable reps exist for this lane, so reps=2 and no best. |
+| 2026-11-20 14:58 | x8 | mali-open | 549fae7c | default | 18.6 | 120 | 2 | - | visible | - | usable rep 1 of 2 (rep 0 tainted by cube startup); present #20 -&gt; VK_SUCCESS, exit 0, panel 120 Hz, budget cap 2817 MiB. brightness_mean not captured in this lane (no screenshot); visible by the on-screen counter, never brightness-verified. |
+| 2026-11-20 15:00 | x8 | mali-open | 549fae7c | default | 72.9 | 120 | 2 | - | visible | - | usable rep 2 of 2 (rep 0 tainted by cube startup); median of 18.6/72.9 = 45.8, reps=2 so it is a point but not a quotable &#x27;best&#x27;. brightness_mean not captured in this lane; never brightness-verified. |
+
+<details><summary>sources for these rows</summary>
+
+- `2026-11-20` x8/mali-open/549fae7c/vkcube-wayland fps=0.0 reps=2 — driver-mode session 2026-11-20 14:5x, vkcube --c 20 (wayland, no diagnostics env), lane note /tmp/opencode/stock-restore.md § 14:5x
+- `2026-11-20` x8/mali-open/549fae7c/vkcube-wayland fps=18.6 reps=2 — driver-mode session 2026-11-20 14:5x, vkcube --c 20 (wayland, no diagnostics env), on-screen present-counter read, lane note /tmp/opencode/stock-restore.md § 14:5x
+- `2026-11-20` x8/mali-open/549fae7c/vkcube-wayland fps=72.9 reps=2 — driver-mode session 2026-11-20 14:5x, vkcube --c 20 (wayland, no diagnostics env), on-screen present-counter read, lane note /tmp/opencode/stock-restore.md § 14:5x
+
+</details>
+
+## vkcube --wsi xcb (driver-mode WSI smoke)
+
+vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vkCreateXcbSurfaceKHR` + the xcb present path, not game performance.
+
+**No rows at all.** Nothing on this chart is a measurement yet. Runbook: `vkcube --c 20 --wsi xcb under DISPLAY (driver mode) on poco-x8`.
+
 ## Next cells to fill
 
 1. **steam-menu / x4 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x4 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-2. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-3. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-4. **cards / x8 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
-5. **cards / x8 / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver ours` with next mali-open commit.
-6. **cards / cmf / bridge / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
-7. **cards / cmf / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver ours` with next mali-open commit.
-8. **cards / x4 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x4 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
+2. **vkcube-wayland / x8 / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x8` with next mali-open commit.
+3. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+4. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+5. **cards / x8 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
+6. **cards / x8 / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver ours` with next mali-open commit.
+7. **cards / cmf / bridge / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
+8. **cards / cmf / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver ours` with next mali-open commit.
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
-_Generated from 24 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._
+_Generated from 28 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._

@@ -239,6 +239,12 @@ NOTE = {
                 "panel_hz or reps, so none is plotted; it needs a MEASURE.md run.",
     "glclear": "glClear readback. A swap that succeeds while the screenshot stays black is a "
                "black screen, not a measurement.",
+    "vkcube-wayland": "vkcube over Wayland: the first driver-mode lane that reaches a real "
+                      "present (`present #20 -> VK_SUCCESS`). A WSI smoke workload — it says the "
+                      "wayland swapchain/present path works and how fast the cube is paced, never "
+                      "a game's fps. Only compare within this lane.",
+    "vkcube-xcb": "vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves "
+                  "`vkCreateXcbSurfaceKHR` + the xcb present path, not game performance.",
 }
 
 
