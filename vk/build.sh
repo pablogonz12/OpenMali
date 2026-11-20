@@ -73,8 +73,11 @@ for s in $KBSRCS; do
    OBJS="$OBJS $o"
 done
 # Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
+# -dirty means THE DRIVER TREE (vk/ + libkbase/) has tracked modifications, the same basis
+# tools/build-artefact.sh records in .provenance: a doc/skill/tool edit does not change the .so, and a
+# repo-wide check made driverInfo and provenance disagree about the same build.
 if MALI_SHA=$(git -C "$V" rev-parse --short=10 HEAD 2>/dev/null) && [ -n "$MALI_SHA" ]; then
-   rc=0; git -C "$V" diff --quiet HEAD -- 2>/dev/null || rc=$?
+   rc=0; git -C "$D" diff --quiet HEAD -- vk libkbase 2>/dev/null || rc=$?
    case $rc in
       0) ;;
       1) MALI_SHA="$MALI_SHA-dirty" ;;
