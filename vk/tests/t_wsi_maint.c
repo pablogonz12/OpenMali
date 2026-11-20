@@ -411,7 +411,9 @@ main(int argc, char **argv)
     * semaphore is reused) and signals `render_done`, which the present waits on. */
    for (int f = 0; f < FRAMES; f++) {
       uint32_t idx;
-      CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
+      /* VK_SUBOPTIMAL_KHR is still a successful acquisition: the image is usable for this frame. */
+      VkResult ar = AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx);
+      CK(ar == VK_SUCCESS || ar == VK_SUBOPTIMAL_KHR ? VK_SUCCESS : ar);
       REQ(idx < ni, "acquired image index %u outside the %u images the test got", idx, ni);
       CK(BeginCommandBuffer(cb[f], &(VkCommandBufferBeginInfo){
              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -456,7 +458,8 @@ main(int argc, char **argv)
    /* vkReleaseSwapchainImagesEXT: acquire, then hand the image back without presenting. Acquire with a fence so
     * no semaphore signal is left pending (releasing the image does not consume an acquisition semaphore). */
    uint32_t ridx;
-   CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, VK_NULL_HANDLE, acq_fence, &ridx));
+   VkResult ar2 = AcquireNextImageKHR(dev, sc, UINT64_MAX, VK_NULL_HANDLE, acq_fence, &ridx);
+   CK(ar2 == VK_SUCCESS || ar2 == VK_SUBOPTIMAL_KHR ? VK_SUCCESS : ar2);
    CK(WaitForFences(dev, 1, &acq_fence, VK_TRUE, 2000ull * 1000 * 1000));
    CK(ResetFences(dev, 1, &acq_fence));
    CK(ReleaseSwapchainImagesEXT(dev, &(VkReleaseSwapchainImagesInfoKHR){
