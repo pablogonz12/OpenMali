@@ -700,9 +700,45 @@ class Farm:
             return {"verdict": "invalid", "notes": f"driver on the phone was not this job's build ({what} sha256 check): " + out.strip()[-160:]}
         if rc == 81:
             return {"verdict": "invalid", "notes": "device unstable: crash bursts kept coming back after pauses and device re-checks; result discarded: " + out.strip()[-160:]}
+        if rc == 82:                                            # the phone rebooted mid-run: a new boot, not this job's device state any more
+            return {"verdict": "device_reboot", "notes": "device rebooted during the run (boot id/uptime changed); job aborted, never retried blindly: " + out.strip()[-160:]}
+        if rc == 83:                                            # the run hit its memory bound (ulimit -v / cgroup memory.max): a smaller shard is the fix
+            return {"verdict": "memory_cap", "notes": "run hit its memory bound on the device; aborting instead of retrying: " + out.strip()[-160:]}
         if rc in (78, 79):
             return {"verdict": "error", "notes": f"shell route: {out.strip()[-200:]}"} if rc == 78 else {"lost": True}
         return None
+
+    TERMINAL_VERDICTS = ("device_reboot", "memory_cap")
+
+    def abort_job(self, jid, cls, alias, res):
+        """device-level stop (the phone rebooted mid-run, or the run hit its memory bound): end the WHOLE job at once instead of retrying it.
+        The part is done with that verdict and its remaining parts are cancelled, so another phone is not fed the same job and the queue does
+        not come back to this one. A human is told: 2026-11-19 the farm resubmitted a sweep after every reboot of a phone whose kernel had
+        panicked with `Out of memory and no killable processes`; the phone looped for hours. That must never come from the farm again."""
+        v, notes = res["verdict"], (res.get("notes") or "")[:300]
+        j = L.read_json(L.job_path(jid))
+        for c, p in j["parts"].items():
+            if c == cls:
+                p.update(state="done", verdict=v, device=alias)
+            elif p["state"] in ("pending", "running"):
+                p.update(state="cancelled")
+        L.write_json(L.job_path(jid), j)
+        L.write_json(L.run_path(jid, cls).replace(".json", ".terminal.json"),
+                     {"job": jid, "class": cls, "device": alias, "verdict": v, "notes": notes, "at": L.now()})
+        log(f"{alias}: verdict: {v} {jid}/{cls} -> job aborted, never retried")
+        alert(f"{v.upper()} {jid}/{cls}: {notes}")
+        user_alert(f"{v.upper()} {jid}/{cls} on {alias}: {notes} -- the job was aborted and will NOT be retried. Check the phone before it takes jobs again.")
+        if v == "device_reboot":                              # reboots in a row: stop feeding that phone, say so loudly
+            d = os.path.join(L.state_dir(), "reboots")
+            os.makedirs(d, exist_ok=True)
+            hp = os.path.join(d, alias + ".json")
+            hist = L.read_json(hp) if os.path.exists(hp) else []
+            hist = [t for t in hist if time.time() - t < 1800] + [time.time()]
+            L.write_json(hp, hist)
+            if len(hist) >= 2:
+                alert(f"REBOOT-LOOP {alias}: {len(hist)} reboots in 30 min")
+                user_alert(f"REBOOT-LOOP {alias}: {len(hist)} reboots in 30 min and every job on it was aborted; `farm disable {alias}` until it is looked at.")
+        return j
 
     def fake_swap(self, job):
         """test hook FAKE_SO_SWAP=1: the first run of the job finds a foreign .so on the phone"""
@@ -873,7 +909,7 @@ class Farm:
             rc, out = self.run_shellroute(job, dev, "daily", run_id, ["--list", listf, "--out", out_tsv, "--chunk", "100"],
                                           int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400")))
             so_phone = f"/data/local/tmp/g/icd.{run_id}.so"
-            if rc not in (75, 124, 125, 73, 76, 81):
+            if rc not in (75, 124, 125, 73, 76, 81, 82, 83):
                 ok_s, got = self.verify_so(job, dev, so_phone)
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s and rc in (0, 1):
@@ -915,7 +951,7 @@ class Farm:
                 return {"lost": True}
             if rc == 73:
                 return {"gated": True}
-            why = self.unstaged(out) if rc not in (75, 124, 76) else None
+            why = self.unstaged(out) if rc not in (75, 124, 76, 82, 83) else None
             if why:                                                      # never staged: not a foreign driver (cmf: locked screen = session SUSPENDED)
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 self.cool[dev["alias"]] = time.time() + 300
@@ -1499,6 +1535,9 @@ class Farm:
             finally:
                 lock.release()
         job = L.read_json(L.job_path(jid))
+        if res and res.get("verdict") in self.TERMINAL_VERDICTS:        # reboot / memory bound: abort the job, never retry it
+            self.abort_job(jid, cls, alias, res)
+            return
         if res is not None and res.get("gated"):
             if self.is_disabled(dev) or self.thresholds(dev).get("require_charging") and self.health(dev).get("powered") is not True:
                 self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", "disabled by owner" if self.is_disabled(dev) else "on battery: paused")
@@ -1720,6 +1759,14 @@ class Farm:
         if why_stop and why_stop != "preempted":
             self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "cooling" if why_stop.startswith("cooling") else "on_battery", why_stop)
             log(f"{alias}: sweep stopped ({why_stop})")
+        if rc in (82, 83):                                    # reboot / memory bound under the sweep: back off hard, do not keep walking the list
+            term = self.shell_rc(rc, out, "run")
+            self.set_dstate(alias, "down", f"{term['verdict']}: {term['notes'][:120]}")
+            self.cool[alias] = time.time() + 1800
+            log(f"{alias}: sweep stopped: verdict: {term['verdict']} (no retry)")
+            alert(f"{term['verdict'].upper()} {alias} sweep {job['id']}: {term['notes']}")
+            user_alert(f"{term['verdict'].upper()} {alias} sweep: {term['notes']} -- sweep backed off for 30 min")
+            return False
         if sok is False or rc in (76, 77):
             alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
             self.cool[alias] = time.time() + 60

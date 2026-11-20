@@ -21,6 +21,13 @@ ONLY_FEAT = ["storfmt_nf", "ycbcr", "spec", "linerast", "divisor"]              
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 SERIAL = os.environ.get("ANDROID_SERIAL", "")
 
+# --- resource guards (2026-11-19: a dEQP sweep on the CMF ran as uid shell with oom_score_adj=-1000, inherited from adbd; the kernel could
+# not kill it and panicked with "Out of memory and no killable processes", the farm retried after the reboot and the phone looped for hours)
+MEM_KB = int(os.environ.get("SHELLROUTE_MEM_KB", "3145728"))       # 3 GiB hard cap per deqp-vk launch: ulimit -v (or cgroup memory.max)
+CHUNK_MAX = int(os.environ.get("SHELLROUTE_CHUNK_MAX", "40"))      # cases per deqp-vk launch: a shard cannot grow its heap without bound
+BOOT_DRIFT = 5.0                                                   # s of uptime slack: /proc/uptime is read around the adb round trip
+OOM_RE = re.compile(r"out of memory|Out of memory|bad_alloc|Cannot allocate memory|cannot allocate memory|memory exhausted")
+
 
 def adb(*a, timeout=60):
     try:
@@ -28,6 +35,55 @@ def adb(*a, timeout=60):
         return p.returncode, p.stdout + p.stderr
     except subprocess.TimeoutExpired:
         return 124, "timeout"
+
+
+def device_identity():
+    """(boot id, uptime s) of the phone in ONE adb call; (None, None) when the phone cannot be read"""
+    rc, o = adb("shell", "cat /proc/sys/kernel/random/boot_id; cat /proc/uptime", timeout=30)
+    bid, up = None, None
+    for l in o.splitlines():
+        t = l.strip()
+        if not t:
+            continue
+        if re.fullmatch(r"[0-9a-fA-F-]{32,40}", t):
+            bid = t.lower()
+        else:
+            f = t.split()
+            if len(f) >= 2:
+                try:
+                    up = float(f[0])
+                except ValueError:
+                    pass
+    return bid, up
+
+
+def reboot_reason(before, after):
+    """'' when the phone is the same boot, else why it is not (a new boot id, or uptime that went backwards).
+    Missing reads are not a reboot: a phone that cannot answer is handled by the caller's own reachability check."""
+    if not before or not after:
+        return ""
+    b_id, b_up = before
+    a_id, a_up = after
+    if b_id and a_id and b_id != a_id:
+        return f"boot id changed ({b_id[:8]} -> {a_id[:8]})"
+    if b_up is not None and a_up is not None and a_up + BOOT_DRIFT < b_up:
+        return f"uptime went backwards ({b_up:.0f}s -> {a_up:.0f}s)"
+    return ""
+
+
+def limit_preamble(run, mem_kb=None):
+    """device-side shell snippet, run in the SAME shell that forks deqp-vk, so the child inherits it:
+      * oom_score_adj -> 0. adbd gives its shell children -1000 (unkillable); a batch process must never be OOM-protected.
+      * cgroup v2 memory.max when the shell user can create one, else ulimit -v (address space). uid shell on the CMF/Poco cannot write
+        /sys/fs/cgroup (root-owned, no CAP_SYS_ADMIN), so the ulimit branch is the bound that actually applies there; the cgroup branch
+        is used where the phone allows it (su/root). 3 GiB default keeps headroom on an 8-12 GB phone; a 40-case shard needs far less.
+    Prints one `LIMITS ...` line so the bound in force is visible in the farm log."""
+    mem_kb = MEM_KB if mem_kb is None else int(mem_kb)
+    cg = f"/sys/fs/cgroup/mali-farm-{run}"
+    return (f"echo 0 > /proc/self/oom_score_adj 2>/dev/null; "
+            f"mkdir -p {cg} 2>/dev/null && echo $$ > {cg}/cgroup.procs 2>/dev/null && echo {mem_kb * 1024} > {cg}/memory.max 2>/dev/null; "
+            f"if [ -w {cg}/memory.max ]; then echo LIMITS cgroup {cg} {mem_kb}KB; "
+            f"else ulimit -v {mem_kb} 2>/dev/null && echo LIMITS ulimit-v {mem_kb}KB || echo LIMITS none; fi")
 
 
 def require_lock(lock):
@@ -248,6 +304,12 @@ def daily(a):
     envs = " ".join(a.env.split())
     t0, fails = time.time(), 0
     tmp = tempfile.mkdtemp(prefix="shellroute-")
+    boot0 = device_identity()
+    if boot0 == (None, None):
+        print("WARN: cannot read boot id/uptime; a device reboot mid-run cannot be detected on this phone", flush=True)
+    chunk = max(1, min(a.chunk, CHUNK_MAX))
+    if chunk != a.chunk:
+        print(f"CHUNK {a.chunk} capped to {chunk}: a shard must not be able to exhaust the phone", flush=True)
     guard = BurstGuard(int(os.environ.get("SHELLROUTE_BURST_STREAK", BURST_STREAK)), int(os.environ.get("SHELLROUTE_BURST_MAX", BURST_MAX)))
     while True:
         todo = [c for c in cases if c not in done and c not in guard.held]
@@ -260,7 +322,11 @@ def daily(a):
         if sha_phone(icd) != a.sha:                            # before every chunk, ON THE PHONE
             print("SO MISMATCH on the phone", flush=True)
             sys.exit(76)
-        batch = todo[:a.chunk]
+        why = reboot_reason(boot0, device_identity())          # the phone rebooted under us: the boot is not this run's any more
+        if why:
+            print(f"verdict: device_reboot {why}; aborting this run, never retrying it blindly", flush=True)
+            sys.exit(82)
+        batch = todo[:chunk]
         cf, qf = f"{G}/c.{a.run}.cases", f"{G}/c.{a.run}.qpa"
         open(os.path.join(tmp, "c.cases"), "w").write("\n".join(batch) + "\n")
         if adb("push", os.path.join(tmp, "c.cases"), cf)[0] != 0:
@@ -269,11 +335,14 @@ def daily(a):
                 sys.exit(79)
             time.sleep(10)
             continue
-        cmd = (f"cd {G} && rm -f {qf} && {envs} MALI_ICD={icd} timeout {a.wall} lib/ld-linux-aarch64.so.1 --library-path {G}/lib "
+        cmd = (f"cd {G}; rm -f {qf}; {limit_preamble(a.run)}; {envs} MALI_ICD={icd} timeout {a.wall} lib/ld-linux-aarch64.so.1 --library-path {G}/lib "
                f"./deqp-vk --deqp-caselist-file={cf} --deqp-log-filename={qf} --deqp-log-images=disable --deqp-log-shader-sources=disable "
                "--deqp-surface-type=fbo --deqp-gl-config-name=rgba8888d24s8 --deqp-visibility=hidden --deqp-shadercache=disable "
                f"--deqp-watchdog=enable --deqp-log-flush=enable >c.{a.run}.out 2>&1; echo rc=$?")
         rc, o = adb("shell", cmd, timeout=a.wall + 40)
+        for l in o.splitlines():
+            if l.startswith("LIMITS "):
+                print(f"chunk{len(done)} {l.strip()}", flush=True)
         if rc == 124:
             adb("shell", "pkill -f deqp-vk", timeout=15)
         pr = os.path.join(tmp, "c.qpa")
@@ -282,6 +351,15 @@ def daily(a):
         adb("pull", qf, pr, timeout=90)
         text = open(pr, errors="replace").read() if os.path.exists(pr) else ""
         if rc not in (0, 124) or ("rc=" not in o and rc != 124):        # adb itself failed: not the cases' fault
+            why = reboot_reason(boot0, device_identity())
+            if why:
+                print(f"verdict: device_reboot {why}; aborting this run (the phone rebooted under this chunk)", flush=True)
+                sys.exit(82)
+            if rc in (134, 135, 136, 137):                          # killed by the memory bound (ulimit -v: bad_alloc/abort, cgroup/kernel: SIGKILL)
+                tail = adb("shell", f"tail -c 2000 {G}/c.{a.run}.out 2>/dev/null", timeout=20)[1]
+                if OOM_RE.search(tail):
+                    print(f"verdict: memory_cap rc={rc} cap={MEM_KB}KB: the run hit its memory bound; shard smaller (SHELLROUTE_CHUNK_MAX) rather than retrying", flush=True)
+                    sys.exit(83)
             fails += 1
             if fails > 2:
                 print("phone unreachable: " + o.strip()[-120:], flush=True)
@@ -305,6 +383,9 @@ def daily(a):
                 nf.write(f"{unfinished}\t{crash_note(text, tail)}\n")
         if not got:
             tail = adb("shell", f"tail -c 400 {G}/c.{a.run}.out", timeout=20)[1].strip().replace("\n", " | ")
+            if OOM_RE.search(tail):
+                print(f"verdict: memory_cap cap={MEM_KB}KB: no result and the run ran out of memory; shard smaller instead of retrying: {tail[-200:]}", flush=True)
+                sys.exit(83)
             print(f"NOPARSE {batch[0]} rc-line={o.strip()[-30:]!r} out: {tail}", flush=True)       # diagnostics for the farm log
             got[batch[0]] = "Crash"                            # nothing parsed: first case counts as Crash so we always progress
         crashed = [c for c in batch if got.get(c) == "Crash"]
@@ -354,6 +435,7 @@ def smoke(a):
     envs = " ".join(a.env.split())
     ok, tmp = True, tempfile.mkdtemp(prefix="shellroute-")
     runs = []
+    boot0 = device_identity()
     # a t_vk_feat case runs only if this tree's binary knows it (the route may merge ahead of the cases)
     try:
         feat_bin = open(os.path.join(out, "t_vk_feat"), "rb").read()
@@ -378,8 +460,12 @@ def smoke(a):
         if sha_phone(f"{d}/libvulkan_mali.so") != a.sha:
             print("SO MISMATCH on the phone", flush=True)
             sys.exit(77)
+        why = reboot_reason(boot0, device_identity())
+        if why:
+            print(f"verdict: device_reboot {why}; aborting this smoke run, never retrying it blindly", flush=True)
+            sys.exit(82)
         sp = "" if n == "t_vk_meta" else f"--spv-dir {d}/s"
-        rc, o = adb("shell", f"cd {d} && {envs} timeout 120 ./{n} --direct {d}/libvulkan_mali.so {sp} {extra} >{n}.log 2>&1; echo rc=$?", timeout=170)
+        rc, o = adb("shell", f"cd {d}; {limit_preamble(a.run)}; {envs} timeout 120 ./{n} --direct {d}/libvulkan_mali.so {sp} {extra} >{n}.log 2>&1; echo rc=$?", timeout=170)
         m = re.search(r"rc=(\d+)", o)
         if not m:
             print("phone unreachable: " + o.strip()[-120:], flush=True)
