@@ -181,6 +181,9 @@ for g in v11 v13; do
    # loadOp LOAD of the formats Source-engine/wined3d content uses: D24S8 depth (zs_format 2) and A8B8G8R8 colour.
    # MSAA loadOp LOAD + storeOp STORE with a resolve (per-sample preload + separate resolve pass), opt-in gate
    run "vk_draw msaa_load_resolve $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only msaa_load_resolve
+   # storeOp STORE + AVERAGE resolve with no LOAD: the resolved alpha histogram must be bucket-equal to the load/resolve
+   # case's shape (fake backend: records the pass + resolve, skips the histogram; the histogram needs hardware)
+   run "vk_draw msaa_store_resolve $g" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only msaa_store_resolve
    run "vk_draw load_d24s8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only load_depth24s8
    run "vk_draw load_argb8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only load_colour_argb8
 done

@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|ubo_big|descupd|sets8|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|ubo_big|descupd|sets8|texture|depth16|depth32s8|stencil|msaa_store_resolve]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -1318,14 +1318,21 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
 
 /* Alpha histogram in quarter steps: a LOAD that loses samples shows up as a shift to the 0 bucket. Diagnostics. */
 static void
-alpha_hist(const char *tag, struct scene *s)
+alpha_buckets(struct scene *s, unsigned b[6])
 {
-   unsigned b[6] = {0};
+   memset(b, 0, 6 * sizeof *b);
    for (int y = 0; y < H; y++)
       for (int x = 0; x < W; x++) {
          unsigned a = s->px[y * s->pitch + x * 4 + 3];
          b[a == 0 ? 0 : a == 255 ? 5 : 1 + (a - 1) / 64] += 1;
       }
+}
+
+static void
+alpha_hist(const char *tag, struct scene *s)
+{
+   unsigned b[6];
+   alpha_buckets(s, b);
    printf("{\"hist\":\"%s\",\"a0\":%u,\"a1_63\":%u,\"a64_127\":%u,\"a128_191\":%u,\"a192_254\":%u,\"a255\":%u}\n",
           tag, b[0], b[1], b[2], b[3], b[4], b[5]);
 }
@@ -1399,6 +1406,66 @@ test_msaa_load(const char *name)
    int ok = ok_main && ok_rt;
    g_msaa = 0;
    g_msaa_store = 0;
+   return ok;
+}
+
+/* 4x colour, loadOp CLEAR, storeOp STORE, AVERAGE resolve into the single-sample image: the samples reach
+ * memory and the resolve runs as its own pass (mali_cmd.c:1122-1131 saves the two images, mali_CmdEndRendering
+ * runs mali_CmdResolveImage2). This is the load/resolve case's clear+draw pass on its own, so its resolved
+ * alpha histogram must be bucket-equal to that case's known-good shape: a resolve that averages one sample
+ * plane instead of four, or that never runs after the frame, moves pixels out of the edge buckets. */
+static int
+msaa_store_resolve(const char *name)
+{
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {   /* the driver's advertised count, not the env: see test_msaa */
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised by the driver\",\"ok\":true}\n", name);
+      return 1;
+   }
+   /* The known-good shape of the load/resolve case (the analogue, same scene and draw): a0 57216, a1_63 64,
+    * a64_127 128, a128_191 64, a255 8064. a192_254 is 0 because those five buckets already hold all 65536 px. */
+   static const unsigned WANT[6] = {57216, 64, 128, 64, 0, 8064};
+   g_msaa = 1;
+   g_msaa_store = 1;
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   int ok = CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS;
+   if (ok) ok = scene_create(&s, 0);
+   float A[1][4] = {{1, 0, -.5f, 0}};   /* load_roundtrip's pass-1 draw */
+   if (ok) ok = scene_draw(&s, 1, A, f);
+   g_msaa = 0;
+   g_msaa_store = 0;
+   if (!ok) {
+      /* A driver that refuses storeOp STORE + resolve sets VK_ERROR_FEATURE_NOT_PRESENT on the command buffer
+       * (unsupported() in mali_cmd.c), so vkEndCommandBuffer/vkQueueSubmit fail: name the refusal here, so the
+       * case reads as this feature and not as a crash or a generic "end = -3". */
+      printf("{\"fail\":\"%s: storeOp STORE + an AVERAGE resolve did not complete; a driver that refuses it "
+             "returns VK_ERROR_FEATURE_NOT_PRESENT from vkEndCommandBuffer (unsupported(), mali_cmd.c)\"}\n", name);
+      g_fail = 1;
+      scene_destroy(&s);
+      DestroyFence(dev, f, NULL);
+      return 0;
+   }
+   if (!g_fake) {
+      unsigned b[6];
+      uint32_t cov = count_cov(&s);
+      alpha_buckets(&s, b);
+      alpha_hist(name, &s);
+      int eq = 1;
+      for (int i = 0; i < 6; i++) eq &= b[i] == WANT[i];
+      printf("{\"test\":\"%s\",\"cov\":%u,\"a0\":%u,\"a1_63\":%u,\"a64_127\":%u,\"a128_191\":%u,\"a192_254\":%u,"
+             "\"a255\":%u,\"hist_equal\":%s,\"ok\":%s}\n", name, cov, b[0], b[1], b[2], b[3], b[4], b[5],
+             eq ? "true" : "false", eq ? "true" : "false");
+      if (!eq)
+         printf("{\"fail\":\"%s: resolved alpha histogram %u %u %u %u %u %u, want %u %u %u %u %u %u "
+                "(the load/resolve case's shape; more a0 = the resolve averaged one sample plane)\"}\n", name,
+                b[0], b[1], b[2], b[3], b[4], b[5], WANT[0], WANT[1], WANT[2], WANT[3], WANT[4], WANT[5]);
+      ok = eq;
+   } else {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend: histogram readback\",\"ok\":true}\n", name);
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
    return ok;
 }
 
@@ -2359,6 +2426,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
+   if (ok && g_only && CASE_ON("msaa_store_resolve")) ok &= msaa_store_resolve("msaa_store_resolve");
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
