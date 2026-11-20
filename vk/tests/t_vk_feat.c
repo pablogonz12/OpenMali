@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -43,6 +43,7 @@ static int test_zinit(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
@@ -258,7 +259,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw, .pNext = g_rs_next};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                              .sampleShadingEnable = g_sample_shading, .minSampleShading = g_sample_shading ? 1.0f : 0.0f};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
@@ -410,6 +412,56 @@ test_firstinst(void)
    } else {
       printf("{\"test\":\"firstinst\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&ib);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* multiDrawIndirect at maxDrawIndirectCount with a padded stride (32 != sizeof(VkDrawIndirectCommand) = 16). Entries 0, 1 and limit-1 hold real draws
+ * (firstInstance 0, 2, 3 -> columns 0, 2, 3 of the inst shader); every other entry is all-zero (no-op), and the 16 padding bytes of the used entries
+ * are garbage that a stride-16 reader would execute. */
+static int
+test_mdilimit(void)
+{
+   if (!g_feat.multiDrawIndirect) { printf("{\"test\":\"mdilimit\",\"skipped\":\"multiDrawIndirect not advertised\",\"ok\":true}\n"); return 1; }
+   uint32_t lim = g_props.limits.maxDrawIndirectCount;
+   CHECK(lim >= 0xffff, "maxDrawIndirectCount %u < 65535 with multiDrawIndirect", lim);
+   const uint32_t stride = 32;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "inst.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   struct hbuf ib;
+   VkDeviceSize sz = 16 + (VkDeviceSize)stride * (lim - 1) + 16;
+   if (!hbuf_create(&ib, sz, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) return 0;
+   memset(ib.p, 0, sz);
+   static const uint32_t idx[3] = {0, 1, 2};
+   memcpy(ib.p, idx, sizeof idx);
+   static const uint32_t first[3] = {0, 2, 3};
+   const uint32_t slot[3] = {0, 1, lim - 1};
+   for (int i = 0; i < 3; i++) {
+      uint32_t *e = (uint32_t *)(void *)(ib.p + 16 + (size_t)stride * slot[i]);
+      e[0] = 3; e[1] = 1; e[2] = 0; e[3] = first[i];
+      e[4] = 3; e[5] = 1; e[6] = 0; e[7] = 1;   /* padding: would be a visible triangle if the stride were 16 */
+   }
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   CmdDrawIndirect(cb, ib.b, 16, lim, stride);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      uint32_t cov = coverage(&t);
+      CHECK(abs((int)cov - 3 * 2048) <= 3 * 2048 / 50, "coverage %u expected %u", cov, 3 * 2048);
+      static const int cx[4] = {21, 85, 149, 213};
+      for (int i = 0; i < 4; i++)
+         CHECK(red_at(&t, cx[i], 117) == (i != 1), "column %d: %s", i, i == 1 ? "padding was executed (stride ignored)" : "triangle missing");
+      printf("{\"test\":\"mdilimit\",\"coverage\":%u,\"limit\":%u,\"ok\":true}\n", cov, lim);
+   } else printf("{\"test\":\"mdilimit\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    hbuf_destroy(&ib);
@@ -1658,6 +1710,170 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
    return 1;
 }
 
+/* didxbuf: hardware probe for dynamic + non-uniform indexing of arrays of UBOs, SSBOs and storage images (didx_buf.comp).
+ * Runs only when the device advertises (and we enable) shader{Uniform,Storage}BufferArray{Dynamic,NonUniform}Indexing and
+ * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
+ * rejects unadvertised features at vkCreateDevice), so the lowering can be verified on hardware before the bits are advertised. */
+static int g_dbuf, g_dbuf_force;
+static int
+test_didxbuf(void)
+{
+   if (!g_dbuf) { printf("{\"test\":\"didxbuf\",\"skipped\":\"buffer/storage-image array indexing not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { NT = 64, IW = 8, IH = 16, IMGB = IW * IH * 4, SW = 192 };
+   struct hbuf ub[4], sb[4], ob, stg, rb;
+   for (int i = 0; i < 4; i++) {
+      if (!hbuf_create(&ub[i], 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) || !hbuf_create(&sb[i], SW * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+      uint32_t *u = (uint32_t *)(void *)ub[i].p, *s = (uint32_t *)(void *)sb[i].p;
+      for (int j = 0; j < 4; j++) u[j] = 0xA000u + i * 16 + j;
+      for (int j = 0; j < SW; j++) s[j] = j < NT ? 0xB000u + i * 256 + j : 0xEEEEEEEEu;
+   }
+   const size_t osz = 16 + NT * 6 * 4;
+   if (!hbuf_create(&ob, osz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&stg, 4 * IMGB, VK_BUFFER_USAGE_TRANSFER_SRC_BIT) ||
+       !hbuf_create(&rb, 4 * IMGB, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(ob.p, 0xEE, osz);
+   ((uint32_t *)(void *)ob.p)[0] = 2;   /* dyn index */
+   uint32_t *st = (uint32_t *)(void *)stg.p;
+   for (int i = 0; i < 4; i++)
+      for (int k = 0; k < IW * IH; k++) st[i * IW * IH + k] = (k < IW * 8) ? 0xC000u + i * 0x100u + k : 0xEEEEEEEEu;
+   memset(rb.p, 0, 4 * IMGB);
+
+   VkImage img[4]; VkDeviceMemory imem[4]; VkImageView iv[4];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R32_UINT, IW, IH, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkDescriptorImageInfo ii[4];
+   for (int i = 0; i < 4; i++) {
+      CHECK(CreateImage(dev, &ici, NULL, &img[i]) == VK_SUCCESS, "image");
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, img[i], &mr);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+      CHECK(AllocateMemory(dev, &ai, NULL, &imem[i]) == VK_SUCCESS, "image memory");
+      CHECK(BindImageMemory(dev, img[i], imem[i], 0) == VK_SUCCESS, "bind image");
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = VK_FORMAT_R32_UINT, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view");
+      ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, iv[i], VK_IMAGE_LAYOUT_GENERAL};
+   }
+
+   VkDescriptorSetLayoutBinding lb[4] = {
+      {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 4, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo ubi[4], sbi[4], obi = {ob.b, 0, VK_WHOLE_SIZE};
+   for (int i = 0; i < 4; i++) { ubi[i] = (VkDescriptorBufferInfo){ub[i].b, 0, 16}; sbi[i] = (VkDescriptorBufferInfo){sb[i].b, 0, SW * 4}; }
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = ubi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = sbi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 2, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("didx_buf.comp.spv");
+   CHECK(m, "shader didx_buf.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "pipeline didx_buf = %d", r);
+
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   VkImageMemoryBarrier ib[4];
+   for (int i = 0; i < 4; i++)
+      ib[i] = (VkImageMemoryBarrier){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .image = img[i], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   for (int i = 0; i < 4; i++) {
+      VkBufferImageCopy reg = {.bufferOffset = (VkDeviceSize)i * IMGB, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {IW, IH, 1}};
+      CmdCopyBufferToImage(cb, stg.b, img[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+   }
+   for (int i = 0; i < 4; i++) {
+      ib[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      ib[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      ib[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      ib[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, 1, 1, 1);
+   for (int i = 0; i < 4; i++) {
+      ib[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      ib[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      ib[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   for (int i = 0; i < 4; i++) {
+      VkBufferImageCopy reg = {.bufferOffset = (VkDeviceSize)i * IMGB, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {IW, IH, 1}};
+      CmdCopyImageToBuffer(cb, img[i], VK_IMAGE_LAYOUT_GENERAL, rb.b, 1, &reg);
+   }
+   if (!cb_submit(&t, cb)) return 0;
+
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)(const void *)ob.p + 4;
+      const uint32_t *ri = (const uint32_t *)(const void *)rb.p;
+      int bad[8] = {0}, first[8] = {0};
+#define BAD(c, got) do { if (!(bad[c]++)) first[c] = (got); } while (0)
+      for (int tt = 0; tt < NT; tt++) {
+         uint32_t nu = tt & 3, di = 2, x = tt & 7, y = tt >> 3;
+         uint32_t want[6] = {0xA000u + di * 16, 0xA000u + nu * 16 + 1, 0xB000u + di * 256 + tt, 0xB000u + nu * 256 + tt,
+                             0xC000u + di * 0x100u + y * IW + x, 0xC000u + nu * 0x100u + y * IW + x};
+         for (int k = 0; k < 6; k++) if (o[tt * 6 + k] != want[k]) BAD(k, o[tt * 6 + k]);
+         /* every SSBO, both write regions: the selected one holds the written value, all others stay 0xEEEEEEEE */
+         for (uint32_t i = 0; i < 4; i++) {
+            const uint32_t *s = (const uint32_t *)(const void *)sb[i].p;
+            uint32_t w6 = i == nu ? 0x5000u + tt * 8u + nu : 0xEEEEEEEEu; /* non-uniform SSBO write */
+            uint32_t w7 = i == di ? 0x6000u + tt : 0xEEEEEEEEu;           /* dynamic SSBO write */
+            if (s[64 + tt] != w6) BAD(6, s[64 + tt]);
+            if (s[128 + tt] != w7) BAD(7, s[128 + tt]);
+         }
+      }
+      int ibad = 0;
+      for (int i = 0; i < 4; i++)
+         for (int tt = 0; tt < NT; tt++) {
+            uint32_t got = ri[i * IW * IH + (8 + (tt >> 3)) * IW + (tt & 7)], want = (uint32_t)(tt & 3) == (uint32_t)i ? 0xD000u + tt : 0xEEEEEEEEu;
+            if (got != want) ibad++;
+         }
+      static const char *nm[8] = {"ubo_dyn", "ubo_nonuniform", "ssbo_dyn_read", "ssbo_nonuniform_read", "img_dyn_load", "img_nonuniform_load", "ssbo_nonuniform_write", "ssbo_dyn_write"};
+      int tot = ibad;
+      for (int k = 0; k < 8; k++) {
+         tot += bad[k];
+         printf("{\"didxbuf\":\"%s\",\"bad\":%d,\"first\":\"0x%x\"}\n", nm[k], bad[k], first[k]);
+      }
+      printf("{\"didxbuf\":\"img_nonuniform_store\",\"bad\":%d}\n", ibad);
+      CHECK(tot == 0, "%d wrong results (forced=%d)", tot, g_dbuf_force);
+      printf("{\"test\":\"didxbuf\",\"forced\":%s,\"ok\":true}\n", g_dbuf_force ? "true" : "false");
+   } else printf("{\"test\":\"didxbuf\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 4; i++) {
+      DestroyImageView(dev, iv[i], NULL); DestroyImage(dev, img[i], NULL); FreeMemory(dev, imem[i], NULL);
+      hbuf_destroy(&ub[i]); hbuf_destroy(&sb[i]);
+   }
+   hbuf_destroy(&ob); hbuf_destroy(&stg); hbuf_destroy(&rb);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static int
 test_scalar(void)
 {
@@ -1764,6 +1980,130 @@ test_inlineub(void)
    return 1;
 }
 
+/* Push constants at the advertised limit: DXVK 3.1.x refuses the device below 256 B (dxvk_limits.h). A 256-byte block is pushed
+ * whole; the VS and the FS read the last word (offset 252, the FS turns it into the colour) and the CS copies it to a storage
+ * buffer. The shaders also carry FAU immediates, so a reservation that does not cover the push block corrupts one of the two
+ * (t_compile checks the invariant directly; here the API path and the reported limit are checked against what works). */
+static int
+test_push256(void)
+{
+   uint32_t lim = g_props.limits.maxPushConstantsSize;
+   CHECK(lim >= 256, "maxPushConstantsSize %u < 256 (DXVK 3.1.x needs 256)", lim);
+   uint8_t pc[256];
+   for (unsigned i = 0; i < sizeof pc; i += 4) {
+      float f = i == 252 ? 1.0f : 0.0f;   /* offset 252: the value the shaders read */
+      memcpy(pc + i, &f, 4);
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf ob;
+   if (!hbuf_create(&ob, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(ob.p, 0xEE, 64);
+
+   /* graphics: one layout, both stages, the full advertised block */
+   VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .offset = 0, .size = lim};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "pipeline layout %u B", lim);
+   /* the limit is the real one: a pipeline over it must be refused (layout creation itself is not validated: the flatten that
+    * bounds it runs when a pipeline is created) */
+   pcr.size = lim + 4;
+   VkPipelineLayout over = VK_NULL_HANDLE;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &over) == VK_SUCCESS, "layout of %u B", lim + 4);
+   pcr.size = lim;
+
+   VkShaderModule vm = load_spv("push252.vert.spv"), fm = load_spv("push252.frag.spv");
+   CHECK(vm && fm, "shaders push252.vert/frag");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = lay, .renderPass = t.rp};
+   VkPipeline pipe;
+   gp.layout = over;
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r != VK_SUCCESS, "graphics pipeline with %u B push constants (over the advertised %u) accepted", lim + 4, lim);
+   DestroyPipelineLayout(dev, over, NULL);
+   gp.layout = lay;
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r == VK_SUCCESS, "graphics pipeline with %u B push constants = %d", lim, r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf graphics");
+   begin_pass(cb, &t, pipe);
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, lim, pc);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0, "centre %u,%u,%u want 255,0,0 (push constant at offset 252)", p[0], p[1], p[2]);
+   }
+
+   /* compute: same block, the word at 252 lands in the storage buffer */
+   VkDescriptorSetLayoutBinding lb = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo bi = {ob.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet wds = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 1, &wds, 0, NULL);
+   VkPushConstantRange cpcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = lim};
+   VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &cpcr};
+   VkPipelineLayout clay;
+   CHECK(CreatePipelineLayout(dev, &cpli, NULL, &clay) == VK_SUCCESS, "compute layout %u B", lim);
+   VkShaderModule cm = load_spv("push252.comp.spv");
+   CHECK(cm, "shader push252.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = clay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = cm, .pName = "main"}};
+   VkPipeline cpipe;
+   r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &cpipe);
+   CHECK(r == VK_SUCCESS, "compute pipeline with %u B push constants = %d", lim, r);
+   VkCommandBuffer ccb = cb_begin(&t);   /* no render pass: a bare dispatch */
+   CHECK(ccb, "cmdbuf compute");
+   CmdBindPipeline(ccb, VK_PIPELINE_BIND_POINT_COMPUTE, cpipe);
+   CmdBindDescriptorSets(ccb, VK_PIPELINE_BIND_POINT_COMPUTE, clay, 0, 1, &ds, 0, NULL);
+   CmdPushConstants(ccb, clay, VK_SHADER_STAGE_COMPUTE_BIT, 0, lim, pc);
+   CmdDispatch(ccb, 1, 1, 1);
+   if (!cb_submit(&t, ccb)) return 0;
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)ob.p;
+      CHECK(o[0] == 0x3f800000u, "CS read the word at offset 252: %08x want 3f800000", o[0]);
+      printf("{\"test\":\"push256\",\"ok\":true}\n");
+   } else printf("{\"test\":\"push256\",\"skipped\":\"pixels: fake backend (limit %u B, layouts, pipelines, draws and dispatch ran)\",\"ok\":true}\n", lim);
+   DestroyPipeline(dev, cpipe, NULL);
+   DestroyPipelineLayout(dev, clay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyShaderModule(dev, cm, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyShaderModule(dev, vm, NULL);
+   DestroyShaderModule(dev, fm, NULL);
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static int
 test_ubostd(void)
 {
@@ -1853,7 +2193,78 @@ test_demote(void)
    return 1;
 }
 
+/* sampleRateShading with 1-sample rasterisation (always supported): sample shading is a no-op, gl_SampleID is 0 and gl_SamplePosition the
+ * pixel centre. Shader uses the `sample` qualifier, gl_SampleID and gl_SamplePosition (SPIR-V SampleRateShading). Red = ok. */
+static int
+test_samplerate(void)
+{
+   if (!g_feat.sampleRateShading) { printf("{\"test\":\"samplerate\",\"skipped\":\"sampleRateShading not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_sample_shading = VK_TRUE;
+   int ok = make_pipe(&t, "sampid.vert.spv", "sampid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_sample_shading = VK_FALSE;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(near(p, 255, 0, 0, 255, 2), "sample shading at 1 sample: %u,%u,%u,%u (want 255,0,0,255)", p[0], p[1], p[2], p[3]);
+      printf("{\"test\":\"samplerate\",\"ok\":true}\n");
+   } else printf("{\"test\":\"samplerate\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+/* VK_EXT_provoking_vertex on hardware: flat colour (v0 red, v1 green, v2 blue) over a covering triangle; FIRST must read red, LAST blue */
+static VkBool32 g_pv_last;
+static int
+test_provoking(void)
+{
+   if (!g_pv_last) { printf("{\"test\":\"provoking\",\"skipped\":\"provokingVertexLast not advertised\",\"ok\":true}\n"); return 1; }
+   static const struct { VkProvokingVertexModeEXT m; const char *n; uint8_t r, g, b; } modes[2] = {
+      {VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT, "first", 255, 0, 0}, {VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT, "last", 0, 0, 255}};
+   for (int i = 0; i < 2; i++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pv = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
+                                                                     .provokingVertexMode = modes[i].m};
+      g_rs_next = &pv;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      int okp = make_pipe(&t, "provoking.vert.spv", "provoking.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_rs_next = NULL;
+      if (!okp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      CmdDraw(cb, 3, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         int bad = 0, n = 0;
+         for (int y = 4; y < H - 4; y += 7)
+            for (int x = 4; x < W - 4; x += 7) { const uint8_t *p = pix(&t, x, y); n++; bad += !near(p, modes[i].r, modes[i].g, modes[i].b, 255, 2); }
+         const uint8_t *p = pix(&t, 100, 100);
+         CHECK(bad == 0, "provoking %s: %d of %d pixels wrong (centre %u,%u,%u,%u, want %u,%u,%u,255)", modes[i].n, bad, n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+         printf("{\"test\":\"provoking\",\"mode\":\"%s\",\"centre\":[%u,%u,%u,%u],\"want\":[%u,%u,%u,255],\"ok\":true}\n", modes[i].n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+      } else printf("{\"test\":\"provoking\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   return 1;
+}
+
 static int
 test_clip(void)
 {
@@ -1882,6 +2293,43 @@ test_clip(void)
       CHECK(bad == 0, "%d of %d pixels wrong (in %u,%u,%u,%u  x<128 %u,%u,%u,%u  y<192 %u,%u,%u,%u)", bad, n, pix(&t, 200, 220)[0], pix(&t, 200, 220)[1], pix(&t, 200, 220)[2], pix(&t, 200, 220)[3], pix(&t, 60, 220)[0], pix(&t, 60, 220)[1], pix(&t, 60, 220)[2], pix(&t, 60, 220)[3], pix(&t, 200, 100)[0], pix(&t, 200, 100)[1], pix(&t, 200, 100)[2], pix(&t, 200, 100)[3]);
       printf("{\"test\":\"clip\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
    } else printf("{\"test\":\"clip\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* shaderClipDistance: 8 distances: clip[0]=ndc.x, clip[7]=ndc.y-0.5; limits must report 8 / cull 0 / combined 8; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+static int
+test_clip8(void)
+{
+   if (!g_feat.shaderClipDistance) { printf("{\"test\":\"clip8\",\"skipped\":\"shaderClipDistance not advertised\",\"ok\":true}\n"); return 1; }
+   const VkPhysicalDeviceProperties pr = g_props;
+   CHECK(pr.limits.maxClipDistances == 8 && pr.limits.maxCullDistances == (g_feat.shaderCullDistance ? 8u : 0u) && pr.limits.maxCombinedClipAndCullDistances == 8, "clip/cull limits %u/%u/%u", pr.limits.maxClipDistances, pr.limits.maxCullDistances, pr.limits.maxCombinedClipAndCullDistances);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "clip8.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - 128) <= 2 || abs(y - 192) <= 2) continue;
+            int in = x >= 128 && y >= 192;
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            bad += in ? !near(p, 255, 0, 0, 255, 2) : p[3] != 0;
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (in %u,%u,%u,%u  x<128 %u,%u,%u,%u  y<192 %u,%u,%u,%u)", bad, n, pix(&t, 200, 220)[0], pix(&t, 200, 220)[1], pix(&t, 200, 220)[2], pix(&t, 200, 220)[3], pix(&t, 60, 220)[0], pix(&t, 60, 220)[1], pix(&t, 60, 220)[2], pix(&t, 60, 220)[3], pix(&t, 200, 100)[0], pix(&t, 200, 100)[1], pix(&t, 200, 100)[2], pix(&t, 200, 100)[3]);
+      printf("{\"test\":\"clip8\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"clip8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
@@ -2246,12 +2694,40 @@ test_sgctl(void)
    g_sgctl = 1;
    int ok = test_subgroup_one();
    g_sgctl = 0;
+   /* A size the hardware does not have must be refused at pipeline creation, not silently compiled at 16: that is the
+    * corruption path (masks/shuffles lowered for 32 lanes but executed by 16). */
+   VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("subgroup.comp.spv");
+   CHECK(m, "shader subgroup.comp.spv");
+   for (unsigned bad = 8; bad <= 32; bad <<= 1) {
+      if (bad == p13.maxSubgroupSize) continue;
+      VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+                                                                 .requiredSubgroupSize = bad};
+      VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &rss,
+                   .flags = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                   .module = m, .pName = "main"}};
+      VkPipeline pipe = VK_NULL_HANDLE;
+      VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+      CHECK(r != VK_SUCCESS, "requiredSubgroupSize %u accepted (%d)", bad, r);
+      if (r == VK_SUCCESS) DestroyPipeline(dev, pipe, NULL);
+   }
+   DestroyShaderModule(dev, m, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
    if (ok) printf("{\"test\":\"sgctl\",\"ok\":true}\n");
    return ok;
 }
 
 /* shaderInt16 + storageBuffer16BitAccess / shaderInt8 + storageBuffer8BitAccess */
-static VkBool32 g_i16, g_i8;
+static VkBool32 g_i16, g_i8, g_intdot;
 static int
 test_int16(void)
 {
@@ -2319,6 +2795,86 @@ test_int8(void)
       CHECK(bad == 0, "%d wrong int8 results", bad);
       printf("{\"test\":\"int8\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
    } else printf("{\"test\":\"int8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* intdot_props: VkPhysicalDeviceShaderIntegerDotProductProperties must be fully written (0xCD garbage must be gone) and honest:
+ * no dot instruction exists in the backend, so every *Accelerated hint is VK_FALSE. Also checked through the Vulkan 1.3 properties chain. */
+static int
+test_intdot_props(void)
+{
+   if (!g_intdot) return 1;
+   VkPhysicalDeviceShaderIntegerDotProductProperties dp;
+   memset(&dp, 0xCD, sizeof(dp));
+   dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES; dp.pNext = NULL;
+   VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+   g_gp2(g_pd, &p2);
+   const VkBool32 *b = (const VkBool32 *)((const char *)&dp + offsetof(VkPhysicalDeviceShaderIntegerDotProductProperties, integerDotProduct8BitUnsignedAccelerated));
+   int n = (int)((sizeof(dp) - offsetof(VkPhysicalDeviceShaderIntegerDotProductProperties, integerDotProduct8BitUnsignedAccelerated)) / sizeof(VkBool32));
+   int bad = 0;
+   for (int i = 0; i < n; i++) if (b[i] != VK_FALSE) bad++;
+   VkPhysicalDeviceVulkan13Properties p13;
+   memset(&p13, 0xCD, sizeof(p13));
+   p13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES; p13.pNext = NULL;
+   p2.pNext = &p13;
+   g_gp2(g_pd, &p2);
+   if (p13.integerDotProduct8BitUnsignedAccelerated != VK_FALSE || p13.integerDotProduct64BitMixedSignednessAccelerated != VK_FALSE ||
+       p13.integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated != VK_FALSE) bad++;
+   printf("{\"test\":\"intdot_props\",\"fields\":%d,\"bad\":%d,\"ok\":%s}\n", n, bad, bad || n != 30 ? "false" : "true");
+   return !bad && n == 30;
+}
+
+/* shaderIntegerDotProduct: packed 4x8 u/s/mixed, accumulating-saturating and 8-/16-bit vector dot products against a C reference
+ * (operands include 0xFF/0x80 bytes so signedness mistakes and missing saturation change the result). */
+static int
+test_intdot(void)
+{
+   if (!g_intdot) { printf("{\"test\":\"intdot\",\"skipped\":\"shaderIntegerDotProduct not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 192 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 64 * 9 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   uint32_t *a = (uint32_t *)bf[0].p;
+   uint32_t seed = 0x1234567u;
+   for (int i = 0; i < 64; i++) {
+      seed = seed * 1664525u + 1013904223u;
+      a[i] = i == 0 ? 0xFFFFFFFFu : i == 1 ? 0x80808080u : seed;
+      seed = seed * 1664525u + 1013904223u;
+      a[64 + i] = i == 0 ? 0xFFFFFFFFu : i == 1 ? 0x80808080u : seed;
+      a[128 + i] = i < 8 ? 0x7FFFFFF0u : i < 16 ? 0x80000010u : i < 24 ? 0xFFFFFF00u : (seed ^ (seed >> 7));   /* near the saturation limits */
+   }
+   memset(bf[1].p, 0xEE, 64 * 9 * 4);
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "intdot.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int i = 0; i < 64; i++) {
+         uint32_t x = a[i], y = a[64 + i], c = a[128 + i];
+         int64_t u8 = 0, s8 = 0, m8 = 0, u16 = 0, s16 = 0;
+         for (int k = 0; k < 4; k++) {
+            uint32_t xb = (x >> (8 * k)) & 0xff, yb = (y >> (8 * k)) & 0xff;
+            u8 += (int64_t)xb * yb;
+            s8 += (int64_t)(int8_t)xb * (int8_t)yb;
+            m8 += (int64_t)xb * (int8_t)yb;
+         }
+         for (int k = 0; k < 2; k++) {
+            uint32_t xh = (x >> (16 * k)) & 0xffff, yh = (y >> (16 * k)) & 0xffff;
+            u16 += (int64_t)xh * yh;
+            s16 += (int64_t)(int16_t)xh * (int16_t)yh;
+         }
+         int64_t us = (int64_t)c + u8; if (us > 0xffffffffll) us = 0xffffffffll;
+         int64_t ss = (int64_t)(int32_t)c + s8; if (ss > INT32_MAX) ss = INT32_MAX; if (ss < INT32_MIN) ss = INT32_MIN;
+         const uint32_t e[9] = {(uint32_t)u8, (uint32_t)s8, (uint32_t)m8, (uint32_t)us, (uint32_t)ss, (uint32_t)u8, (uint32_t)s8, (uint32_t)u16, (uint32_t)s16};
+         for (int k = 0; k < 9; k++) {
+            uint32_t g = ((uint32_t *)bf[1].p)[i * 9 + k];
+            if (g != e[k] && !bad++) printf("{\"info\":\"intdot i=%d k=%d x=%08x y=%08x c=%08x got %08x want %08x\"}\n", i, k, x, y, c, g, e[k]);
+         }
+      }
+      CHECK(bad == 0, "%d wrong integer dot product results", bad);
+      printf("{\"test\":\"intdot\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
+   } else printf("{\"test\":\"intdot\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
    tgt_destroy(&t);
    return 1;
@@ -2457,7 +3013,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -2471,16 +3027,24 @@ main(int argc, char **argv)
    g_bda = f12.bufferDeviceAddress;
    g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
             f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
+   {
+      const char *fe = getenv("MALI_TEST_FORCE_DIDX_BUF");   /* test-only: probe the lowering before the bits are advertised */
+      g_dbuf_force = fe && *fe == '1';
+      g_dbuf = (g_feat.shaderUniformBufferArrayDynamicIndexing && g_feat.shaderStorageBufferArrayDynamicIndexing && g_feat.shaderStorageImageArrayDynamicIndexing &&
+                f12.shaderUniformBufferArrayNonUniformIndexing && f12.shaderStorageBufferArrayNonUniformIndexing && f12.shaderStorageImageArrayNonUniformIndexing) || g_dbuf_force;
+   }
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    /* enable exactly what is advertised (everything advertised is under test somewhere) */
    VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress, .runtimeDescriptorArray = f12.runtimeDescriptorArray,
       .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
+      .shaderUniformBufferArrayNonUniformIndexing = f12.shaderUniformBufferArrayNonUniformIndexing, .shaderStorageBufferArrayNonUniformIndexing = f12.shaderStorageBufferArrayNonUniformIndexing,
+      .shaderStorageImageArrayNonUniformIndexing = f12.shaderStorageImageArrayNonUniformIndexing,
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderIntegerDotProduct = f13.shaderIntegerDotProduct, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
@@ -2495,7 +3059,13 @@ main(int argc, char **argv)
                                                             .vertexAttributeInstanceRateZeroDivisor = fdv.vertexAttributeInstanceRateZeroDivisor};
    VkPhysicalDeviceLineRasterizationFeaturesEXT elr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &edv, .rectangularLines = flr.rectangularLines};
    e2.pNext = &elr;
-   const char *dexts[6]; uint32_t ndx = 0;
+   VkPhysicalDeviceProvokingVertexFeaturesEXT epv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT, .pNext = e2.pNext, .provokingVertexLast = VK_TRUE};
+   { VkPhysicalDeviceProvokingVertexFeaturesEXT fpv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
+     GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
+   if (g_pv_last) e2.pNext = &epv;
+   const char *dexts[7]; uint32_t ndx = 0;
+   if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
@@ -2520,6 +3090,7 @@ main(int argc, char **argv)
    int ok = 1;
    if (ok && CASE_ON("imageless")) ok &= test_imageless();
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
+   if (ok && CASE_ON("mdilimit")) ok &= test_mdilimit();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
@@ -2536,18 +3107,24 @@ main(int argc, char **argv)
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
+   if (ok && CASE_ON("push256")) ok &= test_push256();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("int16")) ok &= test_int16();
    if (ok && CASE_ON("int64")) ok &= test_int64();
    if (ok && CASE_ON("int8")) ok &= test_int8();
+   if (ok && CASE_ON("intdot")) ok &= test_intdot() && test_intdot_props();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
+   if (ok && CASE_ON("provoking")) ok &= test_provoking();
+   if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
+   if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();

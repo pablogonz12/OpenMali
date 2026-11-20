@@ -67,6 +67,9 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
    GetPhysicalDeviceProperties2(pd, &pr);
    CHECK(pr.properties.apiVersion >= VK_API_VERSION_1_3, "DXVK needs 1.3 (info.cpp:115)");
+   /* DXVK 3.1.x checks limits.maxPushConstantsSize >= 256 and refuses the device otherwise (dxvk_limits.h). */
+   CHECK(pr.properties.limits.maxPushConstantsSize >= 256, "maxPushConstantsSize %u < 256 (DXVK dxvk_limits.h requirement)",
+         pr.properties.limits.maxPushConstantsSize);
 
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
@@ -135,6 +138,14 @@ main(int argc, char **argv)
       CHECK(adv == (int)dce.depthClipEnable, "VK_EXT_depth_clip_enable advertised=%d but depthClipEnable=%u", adv, dce.depthClipEnable);
    }
    {
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_image_view_min_lod");
+      CHECK(adv == (int)ml.minLod, "VK_EXT_image_view_min_lod advertised=%d but minLod=%u", adv, ml.minLod);
+   }
+   {
       VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
       VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds};
       GetPhysicalDeviceFeatures2(pd, &q);
@@ -150,6 +161,16 @@ main(int argc, char **argv)
       int adv = 0;
       for (unsigned i = 0; i < nhave; i++) adv |= !strcmp(have_ext[i], "VK_KHR_maintenance6");
       CHECK(adv == (int)m6.maintenance6, "VK_KHR_maintenance6 advertised=%d but maintenance6=%u", adv, m6.maintenance6);
+   }
+   {
+      VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds2};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state2");
+      CHECK(adv == 1 && eds2.extendedDynamicState2 == 1, "VK_EXT_extended_dynamic_state2 advertised=%d extendedDynamicState2=%u (want 1/1)", adv, eds2.extendedDynamicState2);
+      /* the driver does not honour these: logic op is unsupported() in the draw snapshot, there is no tessellation */
+      CHECK(!eds2.extendedDynamicState2LogicOp && !eds2.extendedDynamicState2PatchControlPoints, "EDS2 logicOp=%u patchControlPoints=%u must stay false", eds2.extendedDynamicState2LogicOp, eds2.extendedDynamicState2PatchControlPoints);
    }
    /* VK_KHR_unified_image_layouts: name and feature bit move together, and the feature is reported through vkGetPhysicalDeviceFeatures2. */
    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR uil = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};

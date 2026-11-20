@@ -34,8 +34,8 @@ fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
 # Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=5            # gate off (default); measured with t_dxvk_caps. MALI_EXPERIMENTAL_MSAA=1 advertises sampleRateShading: one fewer
-DXVK_MISSING_MSAA=$((DXVK_MISSING - 1))
+DXVK_MISSING=4            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
+DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
 run() { # name, expected exit status, command...
@@ -54,25 +54,57 @@ run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --di
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_vram $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_vram" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_qerr $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_qerr" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
+for g in v11 v13; do run "dxvk_api $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_api" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "angle_seq $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_angle_seq" --direct "$OUT/libvulkan_mali.so"; done
 run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
+run "banner status file" 0 sh "$V/tests/t_banner.sh" "$OUT"
 # Steam session (STEAM-GAPS.md): none of gamescope's vkCreateDevice requirements is missing any more.
 STEAM_MISSING=0
-# zink (STEAM-GAPS.md): logicOp and EXT_physical_device_drm still missing; lower only together with the passing test.
-ZINK_MISSING=2
-for g in v11 v13; do run "steam_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
+# zink (STEAM-GAPS.md): logicOp is on main; EXT_physical_device_drm is advertised only together with a DRM alias of the
+# GPU node (t_vk_drm below), which the fake backend has none of, so it stays in this count.
+ZINK_MISSING=1
+for g in v11 v13; do run "steam_caps $g" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
+# VK_EXT_physical_device_drm: the extension exists only with a node that stat() proves is the GPU char device (/dev/mali0;
+# the guest's /dev/dri/renderD<N> alias, BL_DRM_STANDIN). Symlinks stand in for the guest's nodes; /dev/null is 1:3.
+DRMR=$OUT/drm-render; DRMB=$OUT/drm-both; DRMX=$OUT/drm-bad
+rm -rf "$DRMR" "$DRMB" "$DRMX"; mkdir -p "$DRMR" "$DRMB" "$DRMX"
+ln -s /dev/null "$DRMR/renderD42"; ln -s /dev/zero "$DRMR/renderD43"; ln -s /dev/zero "$DRMR/card0"
+ln -s /dev/null "$DRMB/renderD42"; ln -s /dev/null "$DRMB/card1"
+ln -s /dev/zero "$DRMX/renderD43"
+DRMT="$OUT/t_vk_drm --direct $OUT/libvulkan_mali.so"
+run "drm absent v11"        0 -u BL_DRM_STANDIN $LOADER_ENV MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
+run "drm render v11"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMR/renderD42"
+run "drm render v13"       0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v13 $DRMT --node "$DRMR/renderD42"
+run "drm render+primary"   0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMB" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMB/renderD42" --primary "$DRMB/card1"
+run "drm mismatch absent"  0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMX" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
+# With a node identity zink's list loses that item: only logicOp remains (0 hard).
+run "steam_caps v11 drm node" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing 0
+rm -rf "$DRMR" "$DRMB" "$DRMX"
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
+run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
+run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
+run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
+
+# M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
+# silent output: the unset path is the normal driver path, and the test fails if anything is printed or written.
+for g in v11 v13; do
+   run "frameprof $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_frameprof" --direct "$OUT/libvulkan_mali.so"
+   run "frameprof $g unset" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_frameprof" --direct "$OUT/libvulkan_mali.so" --off
+done
 
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
@@ -81,17 +113,36 @@ for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$O
 for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_draw many $g"  0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only many_draws
+   run "vk_draw sets8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only sets8
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
 done
+
+# Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
+# colour attachment read back by vkCmdCopyImageToBuffer. The fake backend executes nothing, so this is the record-side gate
+# that keeps the client honest; the RADV reference run and the phone comparison are documented commands, not check.sh cases.
+for g in v11 v13; do
+   run "vk_ref $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_ref" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
+done
+run "refdiff selftest" 0 python3 -I "$V/tests/refdiff.py" --selftest
 
 # R4-B2: DXVK-required core feature tests (pixels only on hardware).
 for g in v11 v13; do
    run "vk_feat $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
 done
 
+# VK_EXT_provoking_vertex: the fake backend asserts the two hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx
+# word 2 bit 18) in t_cmd --extra (build-t_cmd.sh, below); the t_vk_feat provoking case (flat v0 red / v2 blue) is named here so the
+# fake-backend gate cannot silently drop it. Its pixel assertion only runs on hardware (FIRST=red, LAST=blue).
+for g in v11 v13; do
+   run "vk_feat provoking $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only provoking
+done
+
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
 for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
+   # A batch of 8 compute pipelines in one call goes through the parallel create path (cache is cold here, so it really compiles). The
+   # batch<seq timing assert stays off: MALI_SHADER_CACHE is a path, and a timing check would flake on a loaded host.
+   run "vk_compute batch $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only batch
    run "vk_meta $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --loop 20
 done
 
@@ -102,7 +153,7 @@ GOLD=$V/tests/golden; GDIR=$OUT/golden; mkdir -p "$GOLD" "$GDIR"
 golden() { # test, gpu, extra args...
    local t=$1 g=$2 name out rc; shift 2
    name=$t-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
-   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_$t" --direct "$OUT/libvulkan_mali.so" "$@" 2>&1); rc=$?
+   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" timeout -k 5 120 env MALI_EXPERIMENTAL_MSAA=${GOLD_MSAA:-0} MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_$t" --direct "$OUT/libvulkan_mali.so" "$@" 2>&1); rc=$?
    if [ $rc -ne 0 ]; then echo "FAIL  golden $name (test exit $rc)"; echo "$out" | tail -15 | sed 's/^/        /'; fail=1; return; fi
    out=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); rc=$?
    if [ $rc -ne 0 ]; then echo "FAIL  rules $name"; echo "$out" | head -20 | sed 's/^/        /'; fail=1; return; fi
@@ -115,7 +166,7 @@ golden() { # test, gpu, extra args...
 for g in v11 v13; do
    golden vk_draw $g --spv-dir "$V/shader"
    golden vk_feat $g --spv-dir "$V/shader"
-   golden vk_meta $g
+   GOLD_MSAA=1 golden vk_meta $g
 done
 # Shader cache, cold vs warm: the same test on an empty private cache and again on the cache that run left must give byte-identical decoded
 # streams (a cached shader that yields different GPU state than a fresh compile would hide behind every host run that has a warm cache; see
@@ -157,7 +208,10 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in bc cmd compile desc image memsync meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in bc bopool cmd compile desc image memsync meta qpool query txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
+   # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
+   for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done
 fi
 
 # v10 (Mali-G610, Poco X4 GT): every fake-backend case above, once more on MALI_FAKE_GPU=v10.
@@ -173,7 +227,9 @@ run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
 run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200
 run "vk_draw many v10"  0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only many_draws
+run "vk_draw sets8 v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only sets8
 run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
+run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
@@ -192,6 +248,19 @@ if readelf -d "$OUT/libvulkan_mali.so" | grep NEEDED | grep -qi libelf; then ech
 
 # No PanVK code in the binary.
 if nm "$OUT/libvulkan_mali.so" 2>/dev/null | grep -qi 'panvk'; then echo "FAIL  panvk symbols linked"; fail=1; else echo "ok    no panvk symbols"; fi
+
+# Desktop software rasteriser (MALI_SOFT=1, docs/host-harness.md): real frames rendered on the CPU from the frame record and
+# compared tile by tile with tests/golden/soft-frame.txt. Deterministic across v10/v11/v13 (the CPU path never looks at the arch).
+if [ -x "$OUT/t_soft_frame" ]; then
+   if [ $bless = 1 ]; then
+      # a failed render under --bless must fail the gate: the golden is then stale or untouched, not blessed
+      if out=$(MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" --bless 2>&1); then echo "ok    soft frames (golden re-blessed)"
+      else echo "FAIL  soft frames (--bless):"; echo "$out" | sed 's/^/        /'; fail=1; fi
+   elif out=$(MALI_TARGET=${MALI_TARGET:-native} "$V/tests/soft-frame.sh" 2>&1); then echo "ok    ${out#ok }"
+   else echo "FAIL  soft frames:"; echo "$out" | sed 's/^/        /'; fail=1; fi
+else
+   echo "skip  soft frames (t_soft_frame not built)"
+fi
 
 if command -v vulkaninfo >/dev/null; then
    out=$(env $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v13 vulkaninfo --summary 2>&1); rc=$?

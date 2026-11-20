@@ -8,8 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -18,6 +20,10 @@
 #include "kbase_uapi.h"
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
+
+#define POOL_MAX_ENTS 64
+#define POOL_DEFAULT_BYTES (64u << 20)   /* MALI_BO_POOL_MB overrides, 0 disables */
+#define POOL_MAX_BO_BYTES (16u << 20)    /* bigger BOs are really freed: one of them must not flush the whole pool */
 
 struct mali_kdev {
    struct kb_ctx *ctx;
@@ -39,6 +45,16 @@ struct mali_kdev {
    pthread_mutex_t bo_lock;
    struct kb_bo **bos;
    unsigned nbos, capbos;
+   bool sync_all_pending;   /* M15: a write the front end could not pin to a BO: next device->CPU sync sweeps everything */
+
+   /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
+    * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
+   struct pool_ent {
+      struct kb_bo *bo;
+      uint32_t flags;
+   } pool[POOL_MAX_ENTS];
+   unsigned npool;
+   size_t pool_bytes, pool_max;
 };
 
 /* MALI_SUBMIT_DBG bits (hardware diagnosis, default 0). */
@@ -86,6 +102,10 @@ kbase_probe(struct mali_gpu_info *out)
    out->heap_bytes = pages > 0 && psz > 0 ? (uint64_t)pages * psz / 2 : 1ull << 30;
    snprintf(out->name, sizeof(out->name), "%s MC%u", product_name(p->arch_major), out->core_count);
 
+   struct stat st;
+   if (fstat(kb_fd(ctx), &st) == 0)   /* the descriptor actually probed: the path may have been replaced since */
+      out->node_rdev = st.st_rdev;
+
    kb_close(ctx); /* the probe holds no fd after returning */
    return 0;
 }
@@ -128,6 +148,10 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    pthread_mutex_init(&k->submit_lock, NULL);
    pthread_mutex_init(&k->wait_lock, NULL);
    pthread_mutex_init(&k->bo_lock, NULL);
+   {
+      const char *pe = getenv("MALI_BO_POOL_MB");
+      k->pool_max = pe ? (size_t)strtoul(pe, NULL, 10) << 20 : POOL_DEFAULT_BYTES;
+   }
 
    r = kb_bo_alloc(k->ctx, 4096, KB_BO_CSF_EVENT | KB_BO_GPU_RD | KB_BO_GPU_WR, &k->cqs);
    if (r != 0) {
@@ -147,6 +171,10 @@ kbase_device_destroy(struct mali_kdev *k)
 {
    if (!k)
       return;
+   for (unsigned i = 0; i < k->npool; i++) {   /* no other thread uses the device any more */
+      kb_bo_free(k->pool[i].bo);
+      free(k->pool[i].bo);
+   }
    if (k->cqs_live)
       kb_bo_free(&k->cqs);
    if (k->queue_live)
@@ -185,13 +213,85 @@ track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
    pthread_mutex_unlock(&k->bo_lock);
 }
 
+/* Only VkDeviceMemory: Vulkan does not promise zeroed memory, driver-internal BOs may rely on it. */
+static bool
+pool_eligible(uint32_t flags)
+{
+   return (flags & MALI_BO_HOSTLAZY) && !(flags & (MALI_BO_EXPORT | MALI_BO_EVENT | MALI_BO_EXEC | MALI_BO_HOT));
+}
+
+static struct kb_bo *
+pool_take(struct mali_kdev *k, size_t size, uint32_t flags)
+{
+   struct kb_bo *bo = NULL;
+   pthread_mutex_lock(&k->bo_lock);
+   for (unsigned i = k->npool; i-- > 0;)   /* newest first: warmest pages */
+      if (k->pool[i].flags == flags && k->pool[i].bo->size == size) {
+         bo = k->pool[i].bo;
+         memmove(&k->pool[i], &k->pool[i + 1], (k->npool - i - 1) * sizeof k->pool[0]);
+         k->npool--;
+         k->pool_bytes -= size;
+         break;
+      }
+   pthread_mutex_unlock(&k->bo_lock);
+   return bo;
+}
+
+/* can the pool ever retain a BO of this size (pool disabled with MALI_BO_POOL_MB=0, or too big)? */
+static bool
+pool_fits(const struct mali_kdev *k, size_t size)
+{
+   return size <= POOL_MAX_BO_BYTES && size <= k->pool_max;
+}
+
+/* true: the pool kept bo (the caller must not free it). Evicted BOs are freed outside the lock. */
+static bool
+pool_put(struct mali_kdev *k, struct kb_bo *bo, uint32_t flags)
+{
+   struct kb_bo *victim[POOL_MAX_ENTS];
+   unsigned nv = 0;
+   bool kept = false;
+   if (!pool_fits(k, bo->size))
+      return false;
+   pthread_mutex_lock(&k->bo_lock);
+   unsigned drop = 0;
+   size_t bytes = k->pool_bytes;
+   while (drop < k->npool && (bytes + bo->size > k->pool_max || k->npool - drop >= POOL_MAX_ENTS)) {
+      bytes -= k->pool[drop].bo->size;
+      victim[nv++] = k->pool[drop++].bo;
+   }
+   memmove(&k->pool[0], &k->pool[drop], (k->npool - drop) * sizeof k->pool[0]);
+   k->npool -= drop;
+   k->pool[k->npool++] = (struct pool_ent){bo, flags};
+   k->pool_bytes = bytes + bo->size;
+   kept = true;
+   pthread_mutex_unlock(&k->bo_lock);
+   for (unsigned i = 0; i < nv; i++) {
+      kb_bo_free(victim[i]);
+      free(victim[i]);
+   }
+   return kept;
+}
+
 static int
 kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
 {
+   size = (size + 4095) & ~(size_t)4095;
+   if (pool_eligible(flags)) {
+      struct kb_bo *hit = pool_take(k, size, flags);
+      if (hit) {
+         hit->host_lazy = true;   /* the next user has not touched it yet; contents are stale (Vulkan allows it) */
+         hit->hot = false;
+         hit->gpu_writes = hit->synced_writes = 0;   /* a pooled BO starts with no pending write marks */
+         *out = (struct mali_bo){.gpu_va = hit->gpu_va, .cpu = hit->cpu, .size = size, .flags = flags,
+                                 .dmabuf_fd = hit->dmabuf_fd, .priv = hit};
+         track_bo(k, hit, true);
+         return 0;
+      }
+   }
    struct kb_bo *bo = calloc(1, sizeof(*bo));
    if (!bo)
       return -ENOMEM;
-   size = (size + 4095) & ~(size_t)4095;
 
    /* MALI_INT_NOCOH=1 (experiment): driver-internal BOs (arena, descriptors, CS, heaps: no HOSTLAZY/EXPORT, i.e. not VkDeviceMemory) without COHERENT_LOCAL.
     * Only VkDeviceMemory (SSBO atomics from the app) needs the cross-core coherency; internal data is written by the CPU (WC) and read by the GPU. */
@@ -244,6 +344,21 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
 }
 
 static void
+kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
+{
+   if (!k)
+      return;
+   if (!b) {
+      /* the front end could not enumerate the writes: one full sweep at the next device->CPU sync */
+      __atomic_store_n(&k->sync_all_pending, true, __ATOMIC_RELAXED);
+      return;
+   }
+   struct kb_bo *bo = b->priv;
+   if (bo)
+      __atomic_add_fetch(&bo->gpu_writes, 1, __ATOMIC_RELAXED);
+}
+
+static void
 kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 {
    if (b && b->priv)
@@ -273,8 +388,14 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
    if (!bo->priv)
       return;
    track_bo(k, bo->priv, false);
-   kb_bo_free(bo->priv);
-   free(bo->priv);
+   /* A pooled CPU-cached BO keeps its mapping and is handed out again without the zero+flush of a fresh one: write back any CPU-dirty lines now, or they could
+    * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
+   if (pool_eligible(bo->flags) && pool_fits(k, bo->size) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)
+      kb_bo_cache_flush_inv(bo->priv, 0, bo->size);
+   if (!(pool_eligible(bo->flags) && pool_put(k, bo->priv, bo->flags))) {
+      kb_bo_free(bo->priv);
+      free(bo->priv);
+   }
    bo->priv = NULL;
 }
 
@@ -388,12 +509,35 @@ out:
 }
 
 static void mem_sync_all(struct mali_kdev *k, unsigned op);
-static void mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only);
+enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD };
+static void mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel);
 static int
 kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
 {
    /* kb_fence_wait reads kbase notifications from the shared fd, so only one thread at a time; slice
     * the wait so that others (and the timeout) get their turn. */
+   if (timeout_ms == 0) {
+      /* A poll must not queue behind another thread's slice on wait_lock (up to 20 ms): the sync_file itself says signalled or not,
+       * and a signalled fence has no notification left to read. Error state is still reported (POLLERR / faulted queue). */
+      struct pollfd pf = {fence_fd, POLLIN, 0};
+      int pr;
+      while ((pr = poll(&pf, 1, 0)) < 0 && errno == EINTR) {}
+      if (pr < 0)
+         return -errno;
+      if (pr == 0) {
+         if (kb_queue_faulted(&k->queue)) {
+            k->lost = true;
+            return -EIO;
+         }
+         return -ETIMEDOUT;
+      }
+      if (pf.revents & POLLERR) {
+         k->lost = true;
+         return -EIO;
+      }
+      mem_sync_all(k, 2);
+      return 0;
+   }
    struct timespec t0;
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (;;) {
@@ -440,21 +584,29 @@ kbase_device_lost(struct mali_kdev *k)
 }
 
 /* ---- M9: frame command streams, counter wait, tiler heap ---- */
-#define CS_PIECE 256u /* instructions per ring write: 2 KiB, a multiple of 64 bytes */
 
 static void
 mem_sync_all(struct mali_kdev *k, unsigned op)
 {
-   mem_sync_bos(k, op, false);
+   mem_sync_bos(k, op, SYNC_ALL);
 }
 
 static void
-mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
+mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
 {
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
    if (!(kb_bo_extra_flags & 0x800))
       return;
+   /* M15: a device->CPU sync only has to cover BOs the GPU wrote since the last one. The front end marks every
+    * GPU write (copy destinations, render targets, clears, storage descriptors) with bo_wrote, whose counter is
+    * monotonic per BO: a BO also marked by a frame that is still in flight is synced again at the next wait
+    * instead of being skipped. MALI_SYNC_ALL=1 restores the old full sweep for A/B; a mark the front end could
+    * not place (bo_wrote(NULL)) sweeps everything once. The CPU->device direction (op 1) is unchanged. */
+   const bool dev2cpu = op == 2;
+   const char *e = getenv("MALI_SYNC_ALL"), *t = getenv("MALI_SYNC_TRACK");   /* read per call: the tests flip them */
    pthread_mutex_lock(&k->bo_lock);
+   bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
+   k->sync_all_pending = false;
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
       unsigned n = 0;
@@ -463,13 +615,21 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
    }
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
-      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (hot_only && !b->hot))
+      if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (sel == SYNC_HOT && !b->hot) || (sel == SYNC_COLD && b->hot))
          continue;
+      uint64_t wrote = 0;
+      if (dev2cpu) {
+         wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
+         if (!sweep_all && wrote == b->synced_writes)
+            continue;
+      }
       struct {
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
       kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      if (dev2cpu)
+         b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
    }
    pthread_mutex_unlock(&k->bo_lock);
 }
@@ -477,7 +637,9 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, bool hot_only)
 static void
 kbase_host_sync(struct mali_kdev *k)
 {
-   mem_sync_bos(k, 1, false);
+   /* Hot BOs (arena, overflow) are written only by the frame build, which always ends in kbase_submit_cs; that syncs them
+    * after the build. Syncing them here too was a second ioctl per hot BO per queue submit that covered no CPU write. */
+   mem_sync_bos(k, 1, SYNC_COLD);
 }
 
 static int
@@ -490,9 +652,13 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
       r = -EIO;
       goto out;
    }
-   mem_sync_bos(k, 1, true);   /* the other BOs were synced by host_sync at the start of the queue submit */
-   for (unsigned i = 0; i < n && !r; i += CS_PIECE) {
-      unsigned m = n - i < CS_PIECE ? n - i : CS_PIECE;
+   mem_sync_bos(k, 1, SYNC_HOT);   /* the other BOs were synced by host_sync at the start of the queue submit */
+   /* One kick per piece: the old fixed 2 KiB piece kicked every 256 instructions (a 3k-draw frame is 3064
+    * instructions = 12 kicks), and a piece larger than the ring made wait_ring_space spin until it timed out.
+    * A quarter of the ring keeps three quarters free for the GPU, so any frame size makes progress. */
+   const unsigned piece = kb_queue_piece_instrs(k->queue.ring_size);
+   for (unsigned i = 0; i < n && !r; i += piece) {
+      unsigned m = n - i < piece ? n - i : piece;
       if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63)))
          break;
       r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL);
@@ -584,6 +750,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .gpu_timestamp = kbase_gpu_timestamp,
    .host_sync = kbase_host_sync,
    .bo_host_touch = kbase_bo_host_touch,
+   .bo_wrote = kbase_bo_wrote,
    .submit_cs = kbase_submit_cs,
    .wait_counter = kbase_wait_counter,
    .heap_create = kbase_heap_create,

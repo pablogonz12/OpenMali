@@ -65,7 +65,7 @@ static const struct ext dev_exts[] = {
    {"VK_EXT_extended_dynamic_state3", "ANGLE(optional)", 0},
    {"VK_EXT_shader_stencil_export", "ANGLE(optional)", 0},
    {"VK_EXT_index_type_uint8", "ANGLE(optional)", 0},
-   {"VK_KHR_incremental_present", "ANGLE(optional)", 0},
+   {"VK_KHR_incremental_present", "ANGLE(optional)", 1},
 };
 
 static const struct ext inst_exts[] = {
@@ -201,7 +201,7 @@ main(int argc, char **argv)
          {"timelineSemaphore", f12.timelineSemaphore, 1, "-"},
          {"VK_KHR_external_memory_fd", has(eps, ne, "VK_KHR_external_memory_fd"), 1, "-"},
          {"VK_KHR_maintenance1 extension flag", has(eps, ne, "VK_KHR_maintenance1"), 0, "S"},
-         {"logicOp", f2.features.logicOp, 0, "M"},
+         {"logicOp", f2.features.logicOp, 0, "done"},
          {"VK_EXT_custom_border_color", has(eps, ne, "VK_EXT_custom_border_color"), 0, "M"},
          {"VK_EXT_line_rasterization", has(eps, ne, "VK_EXT_line_rasterization"), 0, "M"},
          {"VK_EXT_physical_device_drm", has(eps, ne, "VK_EXT_physical_device_drm"), 0, "S"},

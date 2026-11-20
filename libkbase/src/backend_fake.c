@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "kbase_uapi.h"
+#include <stdbool.h>
 
 #define FAKE_BASE 0x5f00000000ull
 #define MAXFD 4096
@@ -36,7 +37,8 @@ enum { FD_NONE = 0, FD_MALI, FD_HEAP, FD_DMABUF };
 static unsigned char fdt[MAXFD];
 
 enum { R_BO = 1, R_IMPORT, R_USERIO, R_HEAPCTX, R_CHUNK, R_TRACK };
-struct region { uint64_t va; size_t len; int kind; uint32_t flags; int live; int q; uint64_t freed_seq; void *cpu; };
+/* shadow: the fake "GPU cache" copy of a BO, see kb_fake_gpu_write() */
+struct region { uint64_t va; size_t len; int kind; uint32_t flags; int live; int q; uint64_t freed_seq; void *cpu; void *shadow; };
 static struct region reg[1024];
 static int nreg;
 static uint64_t next_va = FAKE_BASE, next_exec = 0x20000000ull, cookie_n;
@@ -81,7 +83,7 @@ static void *new_region(size_t len, int kind, uint32_t flags, int exec)
 	if (p == MAP_FAILED || (long)p < 0) return MAP_FAILED;
 	if (exec) { next_exec += (len + 0xfffff) & ~0xfffffull; }
 	else next_va += len + 4096; /* guard page; VAs never reused */
-	if (nreg < 1024) reg[nreg++] = (struct region){ exec ? va : (uint64_t)(uintptr_t)p, len, kind, flags, 1, -1, 0, p };
+	if (nreg < 1024) reg[nreg++] = (struct region){ exec ? va : (uint64_t)(uintptr_t)p, len, kind, flags, 1, -1, 0, p, NULL };
 	return p;
 }
 
@@ -187,9 +189,41 @@ static int mkprops(void *buf, size_t cap)
 
 static void *map_new_bo(uint64_t flags_unused, size_t len, uint32_t kind, uint32_t fl, int exec) { (void)flags_unused; return new_region(len, (int)kind, fl, exec); }
 
+/* ---- incoherence model for the MEM_SYNC policy tests (t_memsync.c) ----
+ * The fake kernel is otherwise fully coherent, so a missing MEM_SYNC cannot be observed. kb_fake_gpu_write()
+ * creates a shadow copy of a BO on first use (initialised from the CPU mapping) and writes into the shadow:
+ * the CPU mapping keeps the old bytes until MEM_SYNC type 2 (device->CPU) copies shadow -> mapping. MEM_SYNC
+ * type 1 (CPU->device) copies mapping -> shadow. A skipped sync therefore reads as stale data. */
+static struct region *find_region(uint64_t va)
+{
+	for (int i = 0; i < nreg; i++)
+		if (reg[i].live && reg[i].va == va)
+			return &reg[i];
+	return NULL;
+}
+
+int kb_fake_gpu_write(uint64_t va, size_t off, const void *src, size_t len)
+{
+	struct region *r = find_region(va);
+	if (!r || !r->cpu || off + len > r->len) return -1;
+	if (!r->shadow) {
+		r->shadow = real_mmap(NULL, r->len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (r->shadow == MAP_FAILED) { r->shadow = NULL; return -1; }
+		memcpy(r->shadow, r->cpu, r->len);
+	}
+	memcpy((uint8_t *)r->shadow + off, src, len);
+	return 0;
+}
+
+bool kb_fake_incoherent(uint64_t va) { struct region *r = find_region(va); return r && r->shadow; }
+
 struct synccnt { uint64_t va; unsigned n; };
 static struct synccnt syncs[256];
 static int nsync;
+static unsigned n_mem_alloc, n_mem_free;
+unsigned kb_fake_mem_alloc_count(void) { return n_mem_alloc; }   /* test hooks (t_bopool.c) */
+unsigned kb_fake_mem_free_count(void) { return n_mem_free; }
+unsigned kb_fake_memsync_count(uint64_t va);   /* test hook (t_memsync.c) */
 unsigned kb_fake_memsync_count(uint64_t va) { for (int i = 0; i < nsync; i++) if (syncs[i].va == va) return syncs[i].n; return 0; }
 
 int ioctl(int fd, unsigned long req, ...)
@@ -242,6 +276,7 @@ int ioctl(int fd, unsigned long req, ...)
 	}
 	case 59: {
 		union kbase_ioctl_mem_alloc_ex *m = arg;
+		n_mem_alloc++;
 		uint64_t fl = m->in.flags, pages = m->in.va_pages;
 		int same = (fl & BASE_MEM_SAME_VA) != 0;
 		struct pend *p = &pend[npend++ % 1024];
@@ -284,6 +319,12 @@ int ioctl(int fd, unsigned long req, ...)
 	}
 	case 15: { /* MEM_SYNC: counted per gpu_va for tests (kb_fake_memsync_count) */
 		struct { uint64_t handle, user_addr, size; uint8_t type; } *m = arg;
+		struct region *r = find_region(m->handle);
+		if (r && r->shadow && r->cpu) {
+			/* type 1 = CPU -> device (clean), type 2 = device -> CPU (invalidate) */
+			if (m->type == 2) memcpy(r->cpu, r->shadow, r->len);
+			else if (m->type == 1) memcpy(r->shadow, r->cpu, r->len);
+		}
 		for (int i = 0; i < nsync; i++) if (syncs[i].va == m->handle) { syncs[i].n++; OK; }
 		if (nsync < 256) syncs[nsync++] = (struct synccnt){ m->handle, 1 };
 		OK;
@@ -317,7 +358,7 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
 int munmap(void *addr, size_t len)
 {
 	for (int i = 0; i < nreg; i++)
-		if (reg[i].live && reg[i].cpu == addr) { reg[i].live = 0; reg[i].freed_seq = kick_no; break; }
+		if (reg[i].live && reg[i].cpu == addr) { n_mem_free++; reg[i].live = 0; reg[i].freed_seq = kick_no; break; }
 	long r = rsys(SYS_munmap, (long)addr, (long)len, 0, 0, 0, 0);
 	if (r < 0) { errno = (int)-r; return -1; }
 	return 0;
