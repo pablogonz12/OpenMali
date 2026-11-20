@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 static int g_fail;
 static const char *g_only;
@@ -142,21 +143,23 @@ test_many_allocs(void)
    return 1;
 }
 
+/* One run per handle type: DMA_BUF and OPAQUE_FD must both export a fresh, valid descriptor that can be imported
+ * back into a second allocation and sees the same bytes (gamescope's zink asks for OPAQUE_FD). */
 static int
-test_dmabuf(int type)
+test_dmabuf_one(int type, VkExternalMemoryHandleTypeFlagBits ht, const char *name)
 {
-   VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-                                    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .handleTypes = ht};
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex,
                               .allocationSize = 1 << 20, .memoryTypeIndex = type};
    VkDeviceMemory a, b;
-   CHECK(AllocateMemory(dev, &ai, NULL, &a) == VK_SUCCESS, "alloc exportable");
-   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = a,
-                              .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   CHECK(AllocateMemory(dev, &ai, NULL, &a) == VK_SUCCESS, "alloc exportable (%s)", name);
+   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = a, .handleType = ht};
    int fd = -1;
-   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "get fd");
+   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "get fd (%s)", name);
+   struct stat st;
+   CHECK(fstat(fd, &st) == 0, "exported fd is not a valid descriptor (%s)", name);
    VkImportMemoryFdInfoKHR im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
-                                 .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
+                                 .handleType = ht, .fd = fd};
    VkMemoryAllocateInfo bi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im,
                               .allocationSize = 1 << 20, .memoryTypeIndex = type};
    CHECK(AllocateMemory(dev, &bi, NULL, &b) == VK_SUCCESS, "import");
@@ -180,8 +183,16 @@ test_dmabuf(int type)
       CHECK(pa[i] == ~(0xC0DE0000u + i), "reverse differ at %d", i);
    FreeMemory(dev, b, NULL);
    FreeMemory(dev, a, NULL);
-   printf("{\"test\":\"dmabuf\",\"type\":%d,\"ok\":true}\n", type);
+   close(fd);   /* the descriptor belongs to the caller once it has been returned */
+   printf("{\"test\":\"dmabuf\",\"type\":%d,\"handle\":\"%s\",\"ok\":true}\n", type, name);
    return 1;
+}
+
+static int
+test_dmabuf(int type)
+{
+   return test_dmabuf_one(type, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, "dma_buf") &
+          test_dmabuf_one(type, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, "opaque_fd");
 }
 
 /* ------------------------------------------------------------------ sync */

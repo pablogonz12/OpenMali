@@ -133,7 +133,8 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
 
    mem->bo.dmabuf_fd = -1;
    if (imp && imp->handleType != 0) {
-      if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+      if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+          imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) {
          r = -EINVAL;
       } else {
          r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
@@ -255,7 +256,12 @@ mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_memory, mem, pGetFdInfo->memory);
 
-   if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   /* OPAQUE_FD and DMA_BUF are the same object to this driver: kbase hands out a dma-buf fd, and that fd is also a
+    * valid opaque fd (the two handle types differ in ownership/transfer semantics, not in what the descriptor is).
+    * We advertise VK_KHR_external_memory_fd, so refusing OPAQUE_FD (which gamescope's zink asks for) was a lie. */
+   const bool fd_ok = pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ||
+                      pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+   if (!fd_ok)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    int fd = mali_device_pdev(dev)->backend->bo_export(dev->kdev, &mem->bo);
    if (fd < 0)
@@ -270,7 +276,8 @@ mali_GetMemoryFdPropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBi
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
 
-   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+       handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    pProps->memoryTypeBits = (1u << MALI_MEM_TYPE_COUNT) - 1;
    return VK_SUCCESS;
