@@ -75,11 +75,13 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
-   X(CmdBindVertexBuffers) X(CmdBindTransformFeedbackBuffersEXT) X(CmdBeginTransformFeedbackEXT)                 \
-   X(CmdEndTransformFeedbackEXT)
+   X(CmdBindVertexBuffers)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
+static PFN_vkCmdBindTransformFeedbackBuffersEXT CmdBindTransformFeedbackBuffersEXT;
+static PFN_vkCmdBeginTransformFeedbackEXT CmdBeginTransformFeedbackEXT;
+static PFN_vkCmdEndTransformFeedbackEXT CmdEndTransformFeedbackEXT;
 static VkDevice dev;
 static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
@@ -987,11 +989,12 @@ test_tf_reject(void)
    if (!tgt_create(&t)) return 0;
    VkPipelineLayout lay = VK_NULL_HANDLE;
    VkPipeline pipe = VK_NULL_HANDLE;
-   g_expect_xfb_fail = 1;
-   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   /* stage 3: the XFB outputs are lowered to global stores, so the pipeline compiles (the stores' base address is
+    * still 0 until the per-buffer address is wired, which is what the buffer-content test will check). */
    g_expect_xfb_fail = 0;
-   CHECK(pipe == VK_NULL_HANDLE, "no pipeline may exist for a transform-feedback shader");
-   if (ok) printf("{\"test\":\"tf_reject\",\"ok\":true}\n");
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   CHECK(pipe != VK_NULL_HANDLE, "an XFB pipeline must compile now that the lowering is in");
+   if (ok) printf("{\"test\":\"tf_reject\",\"pipeline\":\"compiled\",\"ok\":true}\n");
    return ok;
 }
 
@@ -1002,6 +1005,10 @@ test_tf_reject(void)
 static int
 test_tf_record(void)
 {
+   if (!CmdBindTransformFeedbackBuffersEXT) {
+      printf("{\"test\":\"tf_record\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
    VkBuffer xfb = VK_NULL_HANDLE;
    VkDeviceSize sz = 4 * 4 * 4;   /* 4 vertices x vec4 */
    CHECK(CreateBuffer(dev, &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
@@ -1789,6 +1796,7 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
  * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
  * rejects unadvertised features at vkCreateDevice), so the lowering can be verified on hardware before the bits are advertised. */
 static int g_dbuf, g_dbuf_force;
+static int g_tf;   /* VK_EXT_transform_feedback advertised (MALI_EXPERIMENTAL_TF=1) */
 static int
 test_didxbuf(void)
 {
@@ -3138,7 +3146,20 @@ main(int argc, char **argv)
      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
      GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
    if (g_pv_last) e2.pNext = &epv;
-   const char *dexts[7]; uint32_t ndx = 0;
+   /* VK_EXT_transform_feedback: enabled only when the driver advertises it (MALI_EXPERIMENTAL_TF=1 on the driver),
+    * so --only tf_record can reach the three commands. */
+   VkPhysicalDeviceTransformFeedbackFeaturesEXT ftf = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT, .pNext = e2.pNext};
+   {
+      VkPhysicalDeviceTransformFeedbackFeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+      GetPhysicalDeviceFeatures2(pd, &q2);
+      g_tf = q.transformFeedback;
+      ftf.transformFeedback = q.transformFeedback;
+      ftf.geometryStreams = q.geometryStreams;
+   }
+   if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
+   const char *dexts[8]; uint32_t ndx = 0;
    if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
@@ -3146,12 +3167,17 @@ main(int argc, char **argv)
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
+   if (g_tf) dexts[ndx++] = "VK_EXT_transform_feedback";
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
+   /* the three TF commands exist only when VK_EXT_transform_feedback is enabled on the device: optional loads */
+   CmdBindTransformFeedbackBuffersEXT = (PFN_vkCmdBindTransformFeedbackBuffersEXT)GetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
+   CmdBeginTransformFeedbackEXT = (PFN_vkCmdBeginTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
+   CmdEndTransformFeedbackEXT = (PFN_vkCmdEndTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
    g_gsl = (PFN_vkGetImageSubresourceLayout)GetDeviceProcAddr(dev, "vkGetImageSubresourceLayout");
    g_rf = (PFN_vkResetFences)GetDeviceProcAddr(dev, "vkResetFences");
    g_pd_cr = (PFN_vkCreatePrivateDataSlot)GetDeviceProcAddr(dev, "vkCreatePrivateDataSlotEXT");
