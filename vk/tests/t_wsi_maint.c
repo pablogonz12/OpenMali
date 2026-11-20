@@ -308,7 +308,10 @@ main(int argc, char **argv)
       else if (compat[i] == VK_PRESENT_MODE_IMMEDIATE_KHR && mode_b == VK_PRESENT_MODE_FIFO_KHR)
          mode_b = VK_PRESENT_MODE_IMMEDIATE_KHR;
    }
-   if (!fifo_self || mode_b == mode_a) {
+   /* The queried mode must list itself as compatible with itself: a valid list that omits it is a driver
+    * defect, not a skip. Only a list with no alternate mode is a legitimate skip. */
+   REQ(fifo_self, "compatibility query for mode %d omitted the queried mode itself", (int)mode_a);
+   if (mode_b == mode_a) {
       printf("skipped: FIFO reports no alternate compatible present mode, cannot test a per-present switch\n");
       return 77;
    }
@@ -343,7 +346,7 @@ main(int argc, char **argv)
    DPFN(QueuePresentKHR); DPFN(DestroySwapchainKHR); DPFN(CreateSemaphore); DPFN(DestroySemaphore);
    DPFN(CreateFence); DPFN(WaitForFences); DPFN(ResetFences); DPFN(QueueWaitIdle); DPFN(DeviceWaitIdle);
    DPFN(DestroyFence); DPFN(DestroyDevice);
-   DPFN(QueueSubmit); DPFN(CreateCommandPool); DPFN(AllocateCommandBuffers); DPFN(ResetCommandBuffer);
+   DPFN(QueueSubmit); DPFN(CreateCommandPool); DPFN(AllocateCommandBuffers);
    DPFN(BeginCommandBuffer); DPFN(EndCommandBuffer); DPFN(CmdPipelineBarrier); DPFN(DestroyCommandPool);
    DPFN(ReleaseSwapchainImagesEXT);
    DPFN(CreateImage); DPFN(DestroyImage); DPFN(GetImageMemoryRequirements2); DPFN(GetImageSubresourceLayout);
@@ -410,7 +413,6 @@ main(int argc, char **argv)
       uint32_t idx;
       CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
       REQ(idx < ni, "acquired image index %u outside the %u images the test got", idx, ni);
-      CK(ResetCommandBuffer(cb[f], 0));
       CK(BeginCommandBuffer(cb[f], &(VkCommandBufferBeginInfo){
              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
              .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
