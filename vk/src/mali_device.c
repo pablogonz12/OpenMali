@@ -59,6 +59,8 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &mali_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);
    dispatch_table.CreateSwapchainKHR = mali_wsi_create_swapchain;   /* mali_wsi.c: X11 diagnostics + no-DRI3 fallback */
+   dispatch_table.AcquireNextImageKHR = mali_wsi_acquire_next_image;   /* mali_wsi.c: stage trace around the swapchain wait */
+   dispatch_table.QueuePresentKHR = mali_wsi_queue_present;           /* mali_wsi.c: stage trace around present */
 
    result = vk_device_init(&dev->vk, &pdev->vk, &dispatch_table, pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
