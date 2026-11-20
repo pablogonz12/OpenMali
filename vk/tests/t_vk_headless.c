@@ -120,7 +120,9 @@ main(int argc, char **argv)
       if (idx >= ni_have) break;
       CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 5000000000ull) == VK_SUCCESS, "acquire fence signals");
       /* reset not loaded: use a fresh fence each frame */
-      DestroyFence(dev, f, NULL); CreateFence(dev, &fi, NULL, &f);
+      DestroyFence(dev, f, NULL);
+      /* A failed recreate would leave f invalid for the next acquire/wait while the test still reported success. */
+      REQ(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "recreate fence for frame %d", frame);
       /* This image is UNDEFINED on its first use and PRESENT_SRC once it has been presented; QueuePresentKHR
        * requires a presentation layout, so transition it (from the layout it is really in) before presenting. */
       VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
