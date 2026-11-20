@@ -1280,7 +1280,7 @@ static int
 test_msaa_load(const char *name)
 {
    const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");
-   if (!(gate && gate[0] == '1') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
+   if ((gate && gate[0] == '0') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
       printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name);
       return 1;
    }
@@ -1347,8 +1347,8 @@ test_two(int depth)
 static int
 test_msaa(const char *name, int mode)
 {
-   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");   /* 4x pipelines are gated; sample counts are advertised regardless (as on main) */
-   if (!(gate && gate[0] == '1') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
+   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");   /* 4x is default on; MALI_EXPERIMENTAL_MSAA=0 opts out */
+   if ((gate && gate[0] == '0') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
       printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name,
              mode == 2 ? " / sampleRateShading" : "");
       return 1;
