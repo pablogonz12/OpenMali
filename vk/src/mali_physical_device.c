@@ -187,9 +187,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxBufferSize = 1u << 30;
    p->provokingVertexModePerPipeline = false;   /* the bit lives in the per-render-pass FBD and tiler context */
    p->transformFeedbackPreservesTriangleFanProvokingVertex = false;
-   /* VK_EXT_transform_feedback (WIP, MALI_EXPERIMENTAL_TF=1): the limits the streamout job will be built against.
-    * One stream (no geometry shaders), four buffers, 16 MiB each, 64-byte per-vertex records. Provisional until the
-    * job exists (mali_tf.h); nothing here can be used by an application while the extension is not advertised. */
+   /* VK_EXT_transform_feedback (MALI_EXPERIMENTAL_TF=1, default off: mali_tf.h): one stream (no geometry shaders),
+    * four buffers, 16 MiB each, 64-byte per-vertex records. The lowering writes through the ordinary store path, so
+    * these are enforced by mali_pipeline.c/mali_cmd.c rather than by a streamout job. */
    if (mali_experimental_tf()) {
       p->maxTransformFeedbackStreams = 1;
       p->maxTransformFeedbackBuffers = 4;
@@ -382,8 +382,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
    struct vk_device_extension_table enabled = extensions;
-   /* VK_EXT_transform_feedback (WIP): the extension is advertised only with the opt-in gate; the streamout job that
-    * would make it honest does not exist yet (mali_tf.h). geometryStreams stays false (no geometry stage). */
+   /* VK_EXT_transform_feedback: advertised only with the opt-in gate (MALI_EXPERIMENTAL_TF=1, mali_tf.h), which also
+    * drives the limits and features above. geometryStreams stays false (one stream, no geometry stage). */
    enabled.EXT_transform_feedback = mali_experimental_tf();
    /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
     * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that

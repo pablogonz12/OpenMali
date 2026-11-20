@@ -1,9 +1,17 @@
 /* SPDX-License-Identifier: MIT */
-/* VK_EXT_transform_feedback is WIP: the extension, features, properties and the NIR lowering are in place, but the
- * streamout job does not exist yet (libkbase has no vertex-only/streamout job: kbase_cs.h:111-154 is
- * RUN_IDVS/FINISH_TILING only), so a pipeline that declares XFB failes to compile with a message naming the reason
- * (mali_compile.c). MALI_EXPERIMENTAL_TF=1 advertises the plumbing for tests; it stays off by default, and nothing
- * may advertise the extension to applications before the job can write the buffers. */
+/* VK_EXT_transform_feedback, gated on MALI_EXPERIMENTAL_TF=1 (default off), like MALI_EXPERIMENTAL_MSAA in
+ * mali_msaa.h: limits, features, properties, the extension entry and the XFB lowering all follow this one switch,
+ * so nothing is advertised that the driver would then reject. With the gate on, a vertex shader that declares XFB
+ * is lowered to global stores (mali_compile.c: nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores); no
+ * streamout job is needed, since the stores use the ordinary memory path, and each draw writes the four buffer
+ * bases (bound buffer address + offset) into a 32 B push-constant slot the pipeline reserved (mali_pipeline.c,
+ * mali_cmd.c). Verified on the fake backend only so far; t_vk_feat --only tf_write is the device test.
+ *
+ * Known gaps while the gate is on: the stores run even outside BeginTransformFeedback/EndTransformFeedback;
+ * geometryStreams and rasterizationStream are false (one stream, stream 0 only); num_vertices is 0, so draws with
+ * instance_count > 1 are refused with a named message instead of overlapping the first instance's slots;
+ * transformFeedbackQueries and transformFeedbackDraw are false. Do not advertise this by default until a device
+ * run of tf_write passes. */
 #ifndef MALI_TF_H
 #define MALI_TF_H
 
