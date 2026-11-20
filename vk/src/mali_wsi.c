@@ -644,6 +644,10 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
                                        VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
             if (wr != VK_SUCCESS)
                return wr;
+            /* wsi_QueuePresentKHR would have consumed a binary semaphore; this shortcut returns before it, so reset
+             * it here or the next submit that waits on it would see a still-signalled semaphore. */
+            if (sem->type == VK_SEMAPHORE_TYPE_BINARY)
+               vk_semaphore_reset_temporary(&qdev->vk, sem);
          }
       }
       for (uint32_t i = 0; all_shm && i < info->swapchainCount; i++) {

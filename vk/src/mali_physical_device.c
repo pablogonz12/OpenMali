@@ -642,7 +642,14 @@ mali_GetPhysicalDeviceExternalBufferProperties(
 static bool
 drm_rdev_has_alias(dev_t rdev)
 {
-   const char *dirs[] = { "/dev/dri", "/dev/dri/by-path" };
+   /* The same directory policy as the rest of the node lookup: MALI_DRM_DIR overrides /dev/dri (tests point it at a
+    * temp dir of real chardev nodes), and by-path is only an alias table of that same directory. */
+   const char *base = getenv("MALI_DRM_DIR");
+   if (!base || !*base)
+      base = "/dev/dri";
+   char bypath[PATH_MAX];
+   snprintf(bypath, sizeof bypath, "%s/by-path", base);
+   const char *dirs[] = { base, bypath };
    for (unsigned d = 0; d < 2; d++) {
       DIR *dp = opendir(dirs[d]);
       if (!dp)
