@@ -89,8 +89,10 @@ run "drm mismatch absent"  0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="
 # With a node identity zink's list loses that item: only logicOp remains (0 hard).
 run "steam_caps v11 drm node" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMR" MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing 0
 rm -rf "$DRMR" "$DRMB" "$DRMX"
-for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
-for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# 4x MSAA is on by default; MALI_EXPERIMENTAL_MSAA=0 is the opt-out, and both states are checked.
+for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
+for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_info $g msaa opt-out" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
