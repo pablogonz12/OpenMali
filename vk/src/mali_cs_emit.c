@@ -213,6 +213,8 @@ struct ddesc {   /* per-draw GPU blocks */
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
    uint32_t bl23[2];         /* words 2..3 of the blend descriptor (CPU copy: the arena is write-combined, never read back) */
+   bool static_same;         /* this draw's static state (pipeline, FX, bound sets, firstInstance) equals the previous draw's (s1) */
+   bool dyn_same;            /* ... and so do its dynamic offsets (s2) */
 };
 
 static void *
@@ -278,13 +280,16 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       return -EINVAL;
    unsigned vs_entries = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);
    const unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;   /* SRT entries: driver set, user sets, (dynamic table at MALI_DYN_TABLE) */
-   const unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
+   const unsigned res_alloc = (((nres + 3) & ~3u) * KB_RES_SIZE + 63u) & ~63u;   /* 64-aligned: the dynamic table follows it in the same block */
+   const unsigned dyn_alloc = d->ndyn ? ((d->ndyn * KB_DESC_SET_STRIDE) + 63u) & ~63u : 0;
 
    /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter. */
    const bool s1 = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
    /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
+   o->static_same = s1;   /* emit_draw_regs skips the registers derived from the static state when the previous draw set them */
+   o->dyn_same = s2;
    const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !(d->dirty & (MALI_D_VP | MALI_D_PUSH));   /* FAUs reusable */
    if (check_dirty()) {   /* trap: whatever the mask lets us reuse must be byte-equal to what the compares would have reused */
       const bool o1 = po && same_static(pd, d);
@@ -326,15 +331,18 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       o->fst = po->fst;
       vst = NULL;
    } else {
-      vst = A(hw, res_alloc, 64, &o->vst);
-      o->fst = o->vst;
-      if (d->ndyn) {
-         dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
-         if (!dyn)
-            return -ENOMEM;
-      }
+      /* The resource table and the dynamic table are one block: one bump instead of two, and the 16-byte SRT entry that points at the
+       * table sits next to the table itself. Not zeroed (Anz): every entry the hardware reads is written below (entry 0, one per bound
+       * user set, and MALI_DYN_TABLE), and the gaps are never read (kb_draw_srt_ptr's count only bounds the reads). The arena is
+       * uncached on the device, where a zeroing memset here costs more per draw than everything this function does afterwards. */
+      vst = Anz(hw, res_alloc + dyn_alloc, 64, &o->vst);
       if (!vst)
          return -ENOMEM;
+      o->fst = o->vst;
+      if (dyn_alloc) {
+         dyn = (uint32_t *)((uint8_t *)vst + res_alloc);
+         va_dyn = o->vst + res_alloc;
+      }
    }
    if (s3) {
       o->vfau = po->vfau; o->ffau = po->ffau;
@@ -674,14 +682,16 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    memcpy(&minz, &d->vp[4], 4);
    memcpy(&maxz, &d->vp[5], 4);
 
+   /* The registers derived from the static state (shader programs, blend, depth-stencil, the frame's tiler/FBD pointers) are re-emitted
+    * only when this draw's record says the previous draw of the frame did not already write the identical values: MALI_D_PIPE/FX/BIND
+    * clean and the same firstInstance (`static_same`, the same predicate build_draw_descs reuses the blocks with). The hardware keeps
+    * the last write, and the `known` shadow would have suppressed an identical value anyway, so the command stream is unchanged.
+    * The SRT pointers follow the per-draw dynamic table, so they belong to the `dyn_same` group instead. */
    if (!v13) {
-      M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
-      M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);
-      M48(c, KB_IDVS_FRAGMENT_SPD, o->spd_f);
-      M48(c, KB_IDVS_TSD, va_tsd);
-      M32(c, KB_IDVS_GLOBAL_ATTR_OFFSET, 0);
+      if (!o->dyn_same) {
+         M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+         M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+      }
       M32(c, KB_IDVS_INDEX_COUNT, d->count);
       M32(c, KB_IDVS_INSTANCE_COUNT, d->instance_count);
       M32(c, KB_IDVS_INDEX_OFFSET, d->first_index);
@@ -689,36 +699,39 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M48(c, KB_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 (no hardware evidence) */
       M32(c, KB_IDVS_INSTANCE_OFFSET, d->first_instance);
-      M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, nort ? 0 : 1, 1, 1));
-      M48(c, KB_IDVS_TILER_CTX, va_tctx);
       M32(c, KB_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB_IDVS_LOW_DEPTH_CLAMP, minz);
       M32(c, KB_IDVS_HIGH_DEPTH_CLAMP, maxz);
       M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
-      M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
-      M48(c, KB_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
-      M48(c, KB_IDVS_ZSD, o->zsd);
       M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
       M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
-      M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
-      M32(c, KB_IDVS_TILER_FLAGS2, 0);
+      if (!o->static_same) {
+         M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
+         M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);
+         M48(c, KB_IDVS_FRAGMENT_SPD, o->spd_f);
+         M48(c, KB_IDVS_TSD, va_tsd);
+         M32(c, KB_IDVS_GLOBAL_ATTR_OFFSET, 0);
+         M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, nort ? 0 : 1, 1, 1));
+         M48(c, KB_IDVS_TILER_CTX, va_tctx);
+         M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
+         M48(c, KB_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
+         M48(c, KB_IDVS_ZSD, o->zsd);
+         M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
+         M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
+         M32(c, KB_IDVS_TILER_FLAGS2, 0);
+      }
    } else {
       uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
-      M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB13_IDVS_VERTEX_SPD, o->spd_p);
-      M48(c, KB13_IDVS_FRAGMENT_SPD, o->spd_f);
-      M48(c, KB13_IDVS_VERTEX_TSD, va_tsd);
-      M48(c, KB13_IDVS_FRAGMENT_TSD, va_tsd);
-      M32(c, KB13_IDVS_GLOBAL_ATTR_OFFSET, 0);
+      if (!o->dyn_same) {
+         M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+         M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+      }
       M32(c, KB13_IDVS_INDEX_COUNT, d->count);
       M32(c, KB13_IDVS_INSTANCE_COUNT, d->instance_count);
       M32(c, KB13_IDVS_INDEX_OFFSET, d->first_index);
       M32(c, KB13_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 */
       M32(c, KB13_IDVS_INSTANCE_OFFSET, d->first_instance);
-      M48(c, KB13_IDVS_TILER_CTX, va_tctx);
       M32(c, KB13_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB13_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB13_IDVS_VIEWPORT_HIGH, (uint32_t)vh);
@@ -727,16 +740,24 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_VIEWPORT_LOW + 1, (uint32_t)(vl >> 32));
       M64(c, KB13_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB13_IDVS_INDEX_BUFFER_SIZE, d->indexed ? d->index_bytes : 0);
-      M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
-      M48(c, KB13_IDVS_ZSD, o->zsd);
-      M48(c, KB13_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
       M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
       M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
-      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, 0, 0));
-      M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
-      M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
+      if (!o->static_same) {
+         M48(c, KB13_IDVS_VERTEX_SPD, o->spd_p);
+         M48(c, KB13_IDVS_FRAGMENT_SPD, o->spd_f);
+         M48(c, KB13_IDVS_VERTEX_TSD, va_tsd);
+         M48(c, KB13_IDVS_FRAGMENT_TSD, va_tsd);
+         M32(c, KB13_IDVS_GLOBAL_ATTR_OFFSET, 0);
+         M48(c, KB13_IDVS_TILER_CTX, va_tctx);
+         M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
+         M48(c, KB13_IDVS_ZSD, o->zsd);
+         M48(c, KB13_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
+         M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
+         M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, 0, 0));
+         M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
+         M32(c, KB13_IDVS_TILER_FLAGS2, 0);
+      }
    }
 }
 
