@@ -94,6 +94,7 @@ main(int argc, char **argv)
    if (!inst) return 1;
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceProperties2); I(GetPhysicalDeviceFeatures2);
    I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2); I(GetPhysicalDeviceImageFormatProperties);
+   I(EnumerateDeviceExtensionProperties);
    I(CreateDevice); I(DestroyInstance);
 
    uint32_t n = 1;
@@ -179,6 +180,39 @@ main(int argc, char **argv)
       VkResult dr = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &dip);
       CHECK(dr == VK_SUCCESS && (dip.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x depth image format samples follow the MSAA gate");
+   }
+   /* VK_EXT_transform_feedback is WIP plumbing behind MALI_EXPERIMENTAL_TF=1 (mali_tf.h): the extension, the
+    * feature bit and the properties follow the same gate, and geometryStreams/queries/draw stay false. */
+   {
+      const char *g = getenv("MALI_EXPERIMENTAL_TF");
+      const int want = g && g[0] == '1';
+      uint32_t en = 0;
+      int have = 0;
+      EnumerateDeviceExtensionProperties(pd, NULL, &en, NULL);
+      VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+      if (e && EnumerateDeviceExtensionProperties(pd, NULL, &en, e) == VK_SUCCESS)
+         for (uint32_t i = 0; i < en; i++)
+            if (!strcmp(e[i].extensionName, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME)) have = 1;
+      free(e);
+      CHECK(have == want, "VK_EXT_transform_feedback %s, gate %d", have ? "advertised" : "absent", want);
+
+      VkPhysicalDeviceTransformFeedbackFeaturesEXT tff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &tff};
+      GetPhysicalDeviceFeatures2(pd, &q2);
+      CHECK(tff.transformFeedback == (VkBool32)want, "transformFeedback feature follows the gate");
+      CHECK(tff.geometryStreams == VK_FALSE, "geometryStreams stays false (no geometry stage)");
+
+      VkPhysicalDeviceTransformFeedbackPropertiesEXT tfp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
+      VkPhysicalDeviceProperties2 q3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &tfp};
+      GetPhysicalDeviceProperties2(pd, &q3);
+      if (want) {
+         CHECK(tfp.maxTransformFeedbackStreams >= 1 && tfp.maxTransformFeedbackBuffers >= 1 &&
+               tfp.maxTransformFeedbackBufferSize > 0 && tfp.maxTransformFeedbackBufferDataSize > 0 &&
+               tfp.maxTransformFeedbackBufferDataStride > 0, "transform feedback properties");
+         CHECK(!tfp.transformFeedbackQueries && !tfp.transformFeedbackDraw &&
+               !tfp.transformFeedbackRasterizationStreamSelect && !tfp.transformFeedbackStreamsLinesTriangles,
+               "only implemented transform-feedback properties may be set");
+      }
    }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 

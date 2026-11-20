@@ -89,6 +89,8 @@ struct mali_gfx_state {
    unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 and the draw is likewise rewritten to an indexed point list */
    unsigned poly_prim;                    /* LINE/POINT: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
+   unsigned xfb_pc;                       /* VK_EXT_transform_feedback: push offset of the 4 u64 XFB buffer addresses */
+   bool xfb;                              /* the pipeline reserves that area (xfb_pc may legitimately be 0) */
 };
 
 /* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply

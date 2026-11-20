@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define W 256
 #define H 256
@@ -45,6 +46,7 @@ static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
+static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must be refused, with a message naming TF */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
@@ -73,10 +75,13 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
-   X(CmdBindVertexBuffers)
+   X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
+static PFN_vkCmdBindTransformFeedbackBuffersEXT CmdBindTransformFeedbackBuffersEXT;
+static PFN_vkCmdBeginTransformFeedbackEXT CmdBeginTransformFeedbackEXT;
+static PFN_vkCmdEndTransformFeedbackEXT CmdEndTransformFeedbackEXT;
 static VkDevice dev;
 static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
@@ -270,7 +275,27 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                       .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
-   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+   VkResult r;
+   if (g_expect_xfb_fail) {
+      /* Capture stderr: the refusal must name the reason, not just return an error code. */
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture (tf)");
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
+      if (g_modless) { free(vcode); free(fcode); }
+      else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
+      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "a transform-feedback pipeline must be refused (%d)", r);
+      CHECK(strstr(msg, "transform feedback") != NULL, "the refusal must name transform feedback: %s", msg);
+      return 1;
+   }
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
    if (g_modless) { free(vcode); free(fcode); }
    else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
@@ -951,6 +976,140 @@ test_linerast(void)
    } else {
       printf("{\"test\":\"linerast\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
+   return 1;
+}
+
+/* VK_EXT_transform_feedback is plumbing-only (mali_tf.h): the XFB decorations are lowered to global stores by the
+ * compiler, and the pipeline is then refused because no streamout job exists to execute it. The test proves both the
+ * code and that the message names the reason. */
+static int
+test_tf_reject(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   /* stage 3: the XFB outputs are lowered to global stores, so the pipeline compiles (the stores' base address is
+    * still 0 until the per-buffer address is wired, which is what the buffer-content test will check). */
+   g_expect_xfb_fail = 0;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   CHECK(pipe != VK_NULL_HANDLE, "an XFB pipeline must compile now that the lowering is in");
+   if (ok) printf("{\"test\":\"tf_reject\",\"pipeline\":\"compiled\",\"ok\":true}\n");
+   return ok;
+}
+
+/* Stage 2 of VK_EXT_transform_feedback: the commands must record and validate (bind buffers, begin, end), and the
+ * XFB buffer must be marked GPU-written so the fence wait syncs it. The streamout job does not exist yet, so the
+ * *draw* is still what cannot happen (mali_compile.c names the missing nir_load_xfb_address lowering); this case
+ * proves the recording path and that the failure is the lowering, not a missing command. */
+static int
+test_tf_record(void)
+{
+   if (!CmdBindTransformFeedbackBuffersEXT) {
+      printf("{\"test\":\"tf_record\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   VkBuffer xfb = VK_NULL_HANDLE;
+   VkDeviceSize sz = 4 * 4 * 4;   /* 4 vertices x vec4 */
+   CHECK(CreateBuffer(dev, &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT |
+                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE}, NULL, &xfb) == VK_SUCCESS, "xfb buffer");
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cb");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xfb, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){sz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "begin/end/bind must record cleanly (%d)", (int)r);
+   /* the draw: still refused, and the message must name the lowering, not a missing entrypoint */
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   if (!ok) return 0;
+   printf("{\"test\":\"tf_record\",\"record\":\"ok\",\"pipeline\":\"%s\",\"pending\":\"nir_load_xfb_address lowering + streamout job\",\"ok\":true}\n",
+          pipe ? "created" : "refused (named)");
+   DestroyBuffer(dev, xfb, NULL);
+   return 1;
+}
+
+/* Stage 4 of VK_EXT_transform_feedback: the lowered stores must land in the buffers passed to
+ * vkCmdBindTransformFeedbackBuffersEXT, at the bind offset plus the declared xfb_offset. Two buffers, the second
+ * bound at byte 16 and written through a 4-byte xfb_offset inside an 8-byte stride: the 0xcc words that survive
+ * prove the offsets and the stride are honoured, not that everything landed at address 0. */
+static int
+test_tf_write(void)
+{
+   if (!CmdBindTransformFeedbackBuffersEXT) {
+      printf("{\"test\":\"tf_write\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 3 };
+   static const float pos[NV][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
+   struct hbuf vb, xb[2];
+   const VkDeviceSize xsz[2] = {NV * 16, 16 + NV * 8}, xoff[2] = {0, 16};
+   if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memcpy(vb.p, pos, sizeof pos);
+   for (int i = 0; i < 2; i++) {
+      if (!hbuf_create(&xb[i], xsz[i], VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+         return 0;
+      memset(xb[i].p, 0xcc, xsz[i]);   /* a word the XFB stores must not touch */
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb2.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   /* begin/end outside the render pass, like the spec requires */
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 2, (VkBuffer[2]){xb[0].b, xb[1].b}, xoff, xsz);
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   VkDeviceSize voff = 0;
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, &voff);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   /* the buffers are GPU-written, so invalidate the host mapping before reading it */
+   VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE};
+   for (int i = 0; i < 2; i++) {
+      rg.memory = xb[i].m;
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb %d", i);
+   }
+   if (!g_fake) {
+      const float *a = (const float *)xb[0].p;
+      const uint32_t *w1 = (const uint32_t *)xb[1].p;
+      for (int i = 0; i < NV; i++) {
+         for (int c = 0; c < 4; c++)
+            CHECK(a[i * 4 + c] == pos[i][c], "xfb buffer 0 vertex %d comp %d: got %g want %g", i, c, a[i * 4 + c], pos[i][c]);
+         /* buffer 1: bind offset 16 + xfb_offset 4, stride 8 -> the float sits at word 5 + 2i */
+         CHECK(((const float *)w1)[5 + 2 * i] == pos[i][0] * 2.0f, "xfb buffer 1 vertex %d: got %g want %g", i,
+               ((const float *)w1)[5 + 2 * i], pos[i][0] * 2.0f);
+         CHECK(w1[4 + 2 * i] == 0xccccccccu, "xfb buffer 1 stride: word before vertex %d must be untouched", i);
+      }
+      for (unsigned w = 0; w < 4; w++)
+         CHECK(w1[w] == 0xccccccccu, "xb buffer 1: the 16 bytes before the bind offset must be untouched (word %u)", w);
+      printf("{\"test\":\"tf_write\",\"buffers\":2,\"offsets\":[0,16],\"vertices\":%d,\"ok\":true}\n", NV);
+   } else {
+      printf("{\"test\":\"tf_write\",\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   for (int i = 0; i < 2; i++) hbuf_destroy(&xb[i]);
    return 1;
 }
 
@@ -1715,6 +1874,7 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
  * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
  * rejects unadvertised features at vkCreateDevice), so the lowering can be verified on hardware before the bits are advertised. */
 static int g_dbuf, g_dbuf_force;
+static int g_tf;   /* VK_EXT_transform_feedback advertised (MALI_EXPERIMENTAL_TF=1) */
 static int
 test_didxbuf(void)
 {
@@ -3064,7 +3224,20 @@ main(int argc, char **argv)
      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
      GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
    if (g_pv_last) e2.pNext = &epv;
-   const char *dexts[7]; uint32_t ndx = 0;
+   /* VK_EXT_transform_feedback: enabled only when the driver advertises it (MALI_EXPERIMENTAL_TF=1 on the driver),
+    * so --only tf_record can reach the three commands. */
+   VkPhysicalDeviceTransformFeedbackFeaturesEXT ftf = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT, .pNext = e2.pNext};
+   {
+      VkPhysicalDeviceTransformFeedbackFeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+      GetPhysicalDeviceFeatures2(pd, &q2);
+      g_tf = q.transformFeedback;
+      ftf.transformFeedback = q.transformFeedback;
+      ftf.geometryStreams = q.geometryStreams;
+   }
+   if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
+   const char *dexts[8]; uint32_t ndx = 0;
    if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
@@ -3072,12 +3245,17 @@ main(int argc, char **argv)
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
+   if (g_tf) dexts[ndx++] = "VK_EXT_transform_feedback";
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
+   /* the three TF commands exist only when VK_EXT_transform_feedback is enabled on the device: optional loads */
+   CmdBindTransformFeedbackBuffersEXT = (PFN_vkCmdBindTransformFeedbackBuffersEXT)GetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
+   CmdBeginTransformFeedbackEXT = (PFN_vkCmdBeginTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
+   CmdEndTransformFeedbackEXT = (PFN_vkCmdEndTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
    g_gsl = (PFN_vkGetImageSubresourceLayout)GetDeviceProcAddr(dev, "vkGetImageSubresourceLayout");
    g_rf = (PFN_vkResetFences)GetDeviceProcAddr(dev, "vkResetFences");
    g_pd_cr = (PFN_vkCreatePrivateDataSlot)GetDeviceProcAddr(dev, "vkCreatePrivateDataSlotEXT");
@@ -3100,6 +3278,9 @@ main(int argc, char **argv)
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("linerast")) ok &= test_linerast();
+   if (ok && g_only && CASE_ON("tf_reject")) ok &= test_tf_reject();   /* explicit only: keeps the golden BO/address sequence */
+   if (ok && g_only && CASE_ON("tf_record")) ok &= test_tf_record();
+   if (ok && g_only && CASE_ON("tf_write")) ok &= test_tf_write();   /* stage 4: the data must land in the bound buffers */   /* stage 2: the commands record; the draw still refuses */
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
