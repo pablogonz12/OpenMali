@@ -60,6 +60,9 @@ def git(*a, cwd=HERE, timeout=120):
     return L.sh(["git", "-C", cwd, *a], timeout)
 
 
+ADB_READ_FAILED = "adb-read-failed"
+
+
 class Farm:
     def __init__(self, fake, once, poll):
         self.fake, self.once, self.poll = fake, once, poll
@@ -661,10 +664,24 @@ class Farm:
         """sha256 of the driver .so ON THE PHONE == the job's so_sha256 (key: so_sha256_bionic for the shell smoke)? -> (ok, got)"""
         if self.fake:
             return True, job.get(key)
-        rc, o = self.adb(dev, "shell", f"sha256sum {path} 2>/dev/null", timeout=30)
+        rc, o = self.adb(dev, "shell", f"if [ -f {path} ]; then sha256sum {path}; else echo NOFILE; fi", timeout=30)
         f = o.split()
-        got = f[0] if f else None
+        if rc != 0 or not f:
+            got = ADB_READ_FAILED                      # transport trouble: says nothing about the driver on the phone
+        elif f[0] == "NOFILE":
+            got = None
+        else:
+            got = f[0]
         return got == job.get(key), got
+
+    def so_gone_result(self, job, got, rc, out):
+        """guest-route daily, the on-phone sha check failed -> result dict. No .so at all (got None) after a normal exit: qdeqp stopped before
+        it staged the driver (session not READY, adb/focus trouble), a plain error with qdeqp's own message, not a swapped driver"""
+        if got == ADB_READ_FAILED:
+            return {"verdict": "invalid", "notes": f"could not read the driver sha256 from the phone (adb read failed, rc={rc}); transient, not judged: retry. {out.strip()[-200:]}"}
+        if got is None and rc in (0, 1):
+            return {"verdict": "error", "notes": f"qdeqp left no driver on the phone (rc={rc}, stopped before the push); not a sha mismatch: {out.strip()[-200:]}"}
+        return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
 
     def shell_route(self, dev):
         return dev.get("route") == "shell"
@@ -978,7 +995,7 @@ class Farm:
                 ok_s, got = (rc != 76) and self.verify_so(job, dev, so_phone) or (False, "changed mid-run")
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s:
-                    return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
+                    return self.so_gone_result(job, got, rc, out)
             note = out.strip()[-200:]
             if rc == 75:
                 return {"gated": True}
@@ -1270,8 +1287,16 @@ class Farm:
         jl = os.path.join(wd, "results.jsonl")
         rows = [json.loads(l) for l in open(jl)] if os.path.exists(jl) else []
         rows = [r for r in rows if r.get("commit") == job["commit"][:9] and "bench" in r]
-        if rc == 0 and not rows and not out.strip():                         # exit 0, no rows, empty log: nothing ran (a dialog on top of the app); not a driver error
-            return {"verdict": "invalid", "max_attempts": 2, "notes": "UI-BLOCKED?: bench2 rc=0, 0 rows, empty log (foreground dialog?)"}
+        if rc == 0 and not rows:                                              # exit 0, no rows: nothing ran (a dialog on top of the app) or the guest session failed (pending.json has bench2's error, even when bench2 also printed a diagnostic)
+            pj = os.path.join(wd, "pending.json")
+            try:
+                perr = "; ".join(f"{k}: {v}" for k, v in json.load(open(pj)).items())[:300]
+            except (OSError, ValueError, AttributeError):
+                perr = ""
+            if perr:
+                return {"verdict": "invalid", "max_attempts": 2, "notes": "bench2 error: " + perr + (" | log tail: " + out.strip()[-120:] if out.strip() else "")}
+            if not out.strip():
+                return {"verdict": "invalid", "max_attempts": 2, "notes": "UI-BLOCKED?: bench2 rc=0, 0 rows, empty log (foreground dialog?)"}
         ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/mdb_icd.so")
         if not ok_s:
             shutil.rmtree(wd, ignore_errors=True)

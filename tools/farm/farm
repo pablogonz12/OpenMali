@@ -416,6 +416,15 @@ def finished(j, cls):
     return p.get("state") == "done" and p.get("verdict")
 
 
+def cmd_ready(a):
+    import ready as R
+    def anc(old, new):
+        rc = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "merge-base", "--is-ancestor", old, new], capture_output=True).returncode
+        return True if rc == 0 else False if rc == 1 else None   # other status (missing/pruned object): unknown, not "not an ancestor"
+    rows = R.run(a.repo, L.list_jobs(), anc, L.job_verdict, set(a.pr) or None)
+    print(R.render(rows))
+
+
 def cmd_sweep_resume(a):
     """clear a persisted sweep stop (written when a sweep hit an out-of-memory kill or a device reboot)"""
     for cls in a.cls:
@@ -867,6 +876,10 @@ def main():
     s.add_argument("job")
     s.add_argument("--json", action="store_true", help="(cases suite prints text by default)")
     s.set_defaults(f=cmd_results)
+    s = sp.add_parser("ready", help="READY-TO-MERGE table of all open PRs: head, covering smoke job, GitHub checks, unresolved threads, symlinks, mergeable")
+    s.add_argument("pr", nargs="*", type=int, help="only these PR numbers")
+    s.add_argument("--repo", default="pgm1207/mali-open")
+    s.set_defaults(f=cmd_ready)
     s = sp.add_parser("cancel", help="cancel pending parts of jobs (--running also stops a running part cleanly)")
     s.add_argument("job", nargs="+")
     s.add_argument("--running", action="store_true")

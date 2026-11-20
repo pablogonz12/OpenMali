@@ -126,6 +126,14 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
 
    const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL;
    for (uint32_t i = 0; i < ci->stageCount; i++) {
+      /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
+      const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
+         vk_find_struct_const(ci->pStages[i].pNext, PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+      if (rss && rss->requiredSubgroupSize) {
+         fprintf(stderr, "mali_vk: requiredSubgroupSize %u on a non-compute stage\n", rss->requiredSubgroupSize);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
       if (ci->pStages[i].stage == VK_SHADER_STAGE_VERTEX_BIT)
          vss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -491,6 +499,16 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
 
    if (!stage_spirv(&ci->stage, &ccode, &cwords) || ci->stage.stage != VK_SHADER_STAGE_COMPUTE_BIT)
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   /* subgroupSizeControl: we advertise min == max == the hardware warp (16). A different requiredSubgroupSize is a spec
+    * violation (VUID-requiredSubgroupSize-02414) that we must not turn into 16-wide code behind the shader's back: that would
+    * corrupt every ballot/shuffle/quad/arithmetic lowering. Refuse it (and never compile it below). */
+   const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
+      vk_find_struct_const(ci->stage.pNext, PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+   const unsigned hw_subgroup_size = mali_subgroup_size_for_arch(arch);
+   if (rss && rss->requiredSubgroupSize && rss->requiredSubgroupSize != hw_subgroup_size) {
+      fprintf(stderr, "mali_vk: requiredSubgroupSize %u refused: the warp is %u\n", rss->requiredSubgroupSize, hw_subgroup_size);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
    p = vk_object_zalloc(&dev->vk, alloc, sizeof *p, VK_OBJECT_TYPE_PIPELINE);
    if (!p)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -508,6 +526,7 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    o.spirv = ccode;
    o.spirv_words = cwords;
    o.entry = ci->stage.pName;
+   o.subgroup_size = rss ? rss->requiredSubgroupSize : 0;   /* 0 or == hw_subgroup_size; mali_compile refuses the rest too */
    struct mali_spec_entry specbuf[MALI_SPEC_MAX];
    set_spec(&o, specbuf, ci->stage.pSpecializationInfo);
    if (mali_compile(&o, &p->cs, err, sizeof err)) {

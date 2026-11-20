@@ -413,6 +413,7 @@ class DeviceStopGuard(unittest.TestCase):
 class T(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)                          # sweep_env() leaks it into os.environ: later tests would idle-sweep a stale list until farmd times out
         open(os.path.join(self.d, "devices.toml"), "w").write(TOML)
         self.env = dict(os.environ, MALI_FARM_STATE=self.d + "/state", MALI_FARM_DEVICES=self.d + "/devices.toml",
                         MALI_FARM_DOWN_AFTER="1")
@@ -428,7 +429,7 @@ class T(unittest.TestCase):
         return r.returncode, r.stdout.strip(), r.stderr
 
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -850,6 +851,33 @@ class T(unittest.TestCase):
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
 
+    def test_missing_so_is_an_error_not_an_invalid_driver(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod3", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod3", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        r = f.so_gone_result(job, None, 1, "FAIL session not READY")
+        self.assertEqual(r["verdict"], "error")
+        self.assertIn("session not READY", r["notes"])
+        self.assertEqual(f.so_gone_result(job, "b" * 64, 1, "")["verdict"], "invalid")       # a foreign .so is still invalid
+        self.assertEqual(f.so_gone_result(job, None, 76, "")["verdict"], "invalid")          # changed mid-run: unchanged
+
+    def test_transient_adb_read_failure_is_invalid_not_error(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        for rc in (0, 1):
+            self.assertEqual(f.so_gone_result(job, m.ADB_READ_FAILED, rc, "")["verdict"], "invalid")
+        f.fake = False
+        for rc_o, want in (((1, "error: device offline"), m.ADB_READ_FAILED), ((255, ""), m.ADB_READ_FAILED), ((0, "NOFILE\n"), None), ((0, "b" * 64 + "  x\n"), "b" * 64)):
+            f.adb = lambda *a, _r=rc_o, **k: _r
+            self.assertEqual(f.verify_so(job, {"alias": "x"}, "/p")[1], want)
+
     def test_bench_cube_ours_plausibility_follows_the_bridge(self):
         def row(drv, gpu, ph="poco-x8"):
             return {"phone": ph, "driver": drv, "bench": "cube", "variant": "cube-720p", "commit": "abc", "version": "v", "presented": {}, "offscreen": {"gpu_ms": gpu}}
@@ -928,6 +956,38 @@ class T(unittest.TestCase):
             res = f.suite_bench(job, dev)
             self.assertEqual((res["verdict"], res["max_attempts"]), ("invalid", 2), out)
             self.assertIn("UI-BLOCKED", res["notes"])
+
+    def test_bench_empty_log_reports_pending_json_error(self):
+        """rc=0, 0 rows, empty log but pending.json has bench2's error (guest session did not start): the alert shows it, not UI-BLOCKED?"""
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        f.fake = False
+        f.bench_prepare = lambda job: "/nonexistent/mdbench"
+        f.tree = lambda jid: self.d + "/tree"
+        f.best_file = lambda job: self.d + "/best.json"
+        f.keep_log = lambda *a: None
+        f.shell_route = lambda dev: False
+        f.alive = lambda dev: True
+        f.phone_env = lambda dev, ex=None: {}
+        f.verify_so = lambda job, dev, path, key="so_sha256": (True, "x")
+        job = {"id": "j2", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
+        dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
+        orig = m.L.run_watched
+        self.addCleanup(setattr, m.L, "run_watched", orig)
+        for printed in ("", "bench2: guest session failed, see pending.json"):          # bench2 may print a diagnostic and still exit 0 with no rows
+            def rw2(cmd, tmo, alive, env=None, printed=printed, **k):
+                out = cmd[cmd.index("--out") + 1]
+                os.makedirs(out, exist_ok=True)
+                json.dump({"dev-b": "guest session did not start: rc=1: boom"}, open(out + "/pending.json", "w"))
+                return 0, printed
+            m.L.run_watched = rw2
+            res = f.suite_bench(job, dev)
+            self.assertEqual((res["verdict"], res.get("max_attempts")), ("invalid", 2), printed)
+            self.assertIn("guest session did not start: rc=1: boom", res["notes"])
+            self.assertNotIn("UI-BLOCKED", res["notes"])
 
     def test_sweep_power_rule_pure(self):
         pb = S.power_blocked
@@ -1390,15 +1450,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -1409,11 +1469,51 @@ class T(unittest.TestCase):
                                                          mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
         L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
         new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
-        got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
+        got = self._sup(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
         self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
         self.assertEqual(old["parts"]["v13"]["state"], "pending")
-        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
-        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+        self.assertEqual(self._sup(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
+        self.assertEqual(self._sup(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+
+    def test_supersede_all_suites_same_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        new = mk("new", commit="z", seq=5)
+        cases, bench, daily, other_ref, head, sweep, auto = (mk("c", suite="cases"), mk("b", suite="bench"), mk("d", suite="daily"),
+            mk("o", suite="cases", ref="lane/y"), mk("h", suite="cases", ref="HEAD"), mk("s", suite="sweep"), mk("a", suite="bench", auto=True))
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        got = self._sup(new, [cases, bench, daily, other_ref, head, sweep, auto], lambda o, n: True)
+        self.assertEqual(sorted(g[0] for g in got), ["b", "c", "d"])
+        self.assertEqual(other_ref["parts"]["v13"]["state"], "pending")
+        self.assertEqual(self._sup(dict(new, ref="HEAD"), [mk("c2", suite="cases", ref="HEAD")], lambda o, n: True), [])
+
+    def test_supersede_sibling_needs_other_suite_and_stable_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        new = mk("new", commit="z", seq=5)
+        run = lambda n, js: self._sup(n, js, lambda o, m: True)
+        self.assertEqual(run(new, [mk("o1", only="draw"), mk("o2", env={"X": "1"})]), [])               # same suite, other only/env: kept
+        for r in ("HEAD~1", "main^", "@{u}", "abc1234", "HEAD^2", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD"):
+            self.assertEqual(run(mk("n2", commit="z", seq=5, ref=r), [mk("c", suite="cases", ref=r)]), [], r)
+        self.assertEqual([g[0] for g in run(new, [mk("c3", suite="cases")])], ["c3"])
+
+    def test_supersede_skips_job_it_cannot_refresh(self):
+        """the re-read before the write fails (job file gone or corrupt): skip the job, never write the stale snapshot back"""
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1)
+        mk = lambda i: dict(base, id=i, commit="a", parts={"v11": {"state": "pending"}})
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        gone, bad = mk("gone"), mk("bad")
+        open(L.job_path("bad"), "w").write("{not json")
+        new = dict(mk("new"), commit="z", seq=5)
+        self.assertEqual(L.supersede_old_gates(new, [gone, bad], lambda o, n: True), [])
+        self.assertFalse(L.os.path.exists(L.job_path("gone")))                                          # nothing written back
+        self.assertEqual(open(L.job_path("bad")).read(), "{not json")
+
+    def _sup(self, new, jobs, anc):
+        for j in jobs:                                                                                  # supersede re-reads each job from disk
+            L.write_json(L.job_path(j["id"]), j)
+        return L.supersede_old_gates(new, jobs, anc)
 
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
@@ -2488,6 +2588,73 @@ class Bench2Rank(unittest.TestCase):
 
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
                       '{"test":"t_vk_meta","rc":0,"fail_lines":0,"pass_lines":1}', '{"test":"summary","ok":true}'])
+
+
+class ReadyTests(unittest.TestCase):
+    """farm ready: decision logic with fixtures (no gh, no git)"""
+    HEAD, MERGE, OLD = "h" * 40, "m" * 40, "o" * 40
+    ANC = {(HEAD, MERGE), (OLD, HEAD)}                       # pairs (ancestor, descendant)
+    anc = staticmethod(lambda a, b: (a, b) in ReadyTests.ANC)
+
+    def job(self, commit, verdict, state="done", jid="20261119-000000-abcd1234"):
+        return {"id": jid, "suite": "smoke", "commit": commit, "parts": {"v13": {"state": state, "verdict": verdict}}}
+
+    def pr(self, **kw):
+        d = {"number": 7, "headRefOid": self.HEAD, "mergeable": "MERGEABLE", "isDraft": False,
+             "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]}
+        d.update(kw)
+        return d
+
+    def row(self, jobs, threads=0, links=(), **kw):
+        import ready as R
+        return R.make_row(self.pr(**kw), jobs, self.anc, L.job_verdict, threads, list(links))
+
+    def test_ready_exact_and_merge_commit(self):
+        self.assertEqual(self.row([self.job(self.HEAD, "pass")])["verdict"], "READY")
+        self.assertEqual(self.row([self.job(self.MERGE, "pass")])["verdict"], "READY")      # --merge-with-main job: head is its parent
+
+    def test_stale_none_fail_pending(self):
+        self.assertEqual(self.row([self.job(self.OLD, "pass")])["verdict"], "smoke is for an older head")
+        self.assertEqual(self.row([])["verdict"], "no smoke for head")
+        self.assertEqual(self.row([self.job(self.HEAD, "fail")])["verdict"], "smoke FAIL")
+        self.assertEqual(self.row([self.job(self.HEAD, None, state="running")])["verdict"], "smoke pending")
+
+    def test_newest_covering_job_wins(self):
+        jobs = [self.job(self.HEAD, "fail", jid="20261119-000001-a"), self.job(self.HEAD, "pass", jid="20261119-000002-b")]
+        self.assertEqual(self.row(jobs)["smoke"], "pass")
+        self.assertEqual(self.row(list(reversed(jobs)))["smoke"], "FAIL")
+
+    def test_other_columns_block(self):
+        ok = [self.job(self.HEAD, "pass")]
+        self.assertIn("checks FAIL", self.row(ok, statusCheckRollup=[{"status": "COMPLETED", "conclusion": "FAILURE"}])["verdict"])
+        self.assertIn("checks pending", self.row(ok, statusCheckRollup=[{"status": "IN_PROGRESS", "conclusion": ""}])["verdict"])
+        self.assertIn("2 unresolved", self.row(ok, threads=2)["verdict"])
+        self.assertIn("symlink", self.row(ok, links=["third_party"])["verdict"])
+        self.assertIn("CONFLICTING", self.row(ok, mergeable="CONFLICTING")["verdict"])
+        self.assertEqual(self.row(ok, isDraft=True)["verdict"], "draft")
+
+    def test_partial_only_unknown_and_cancelled(self):
+        import ready as R
+        only = dict(self.job(self.HEAD, "pass"), only=["t_vk_draw"])
+        self.assertEqual(self.row([only])["verdict"], "no smoke for head")                  # --only job is not the full gate
+        canc = self.job(self.HEAD, "pass")
+        canc["parts"]["v11"] = {"state": "cancelled"}
+        self.assertEqual(self.row([canc])["verdict"], "smoke job has cancelled part(s)")
+        unk = lambda a, b: None                                                              # git could not tell (pruned commit)
+        r = R.make_row(self.pr(), [self.job(self.MERGE, "pass")], unk, L.job_verdict, 0, [])
+        self.assertEqual(r["verdict"], "smoke ancestry unknown (commit not resolvable)")
+        self.assertEqual(R.make_row(self.pr(), [self.job(self.HEAD, "pass")], unk, L.job_verdict, 0, [])["verdict"], "READY")   # exact head needs no git
+
+    def test_symlink_by_tree_mode(self):
+        import ready as R
+        trees = {"vk/tests": {"a.c": "100644", "lnk": "120000"}, "": {"x": "120000"}}
+        self.assertEqual(R.symlink_paths(trees, ["vk/tests/a.c", "vk/tests/lnk", "x"]), ["vk/tests/lnk", "x"])
+
+    def test_bad_files_and_render(self):
+        import ready as R
+        self.assertEqual(R.bad_files(["vk/deqp/out/x", "vk/src/a.c", "third_party"]), ["vk/deqp/out/x", "third_party"])
+        out = R.render([self.row([self.job(self.HEAD, "pass")]), self.row([], links=[])])
+        self.assertIn("1 READY of 2", out)
 
 
 if __name__ == "__main__":

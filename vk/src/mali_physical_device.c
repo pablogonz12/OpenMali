@@ -3,6 +3,7 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_compile.h"
 
 #include <dirent.h>
 #include <limits.h>
@@ -11,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <unistd.h>
 
 #include "mali_entrypoints.h"
 #include "util/list.h"
@@ -144,10 +146,12 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
             gpu->fake ? ", fake backend" : "");
 
    /* ---- Vulkan 1.1 ---- R4-M1: only what is true. No subgroup operation or stage is advertised yet
-    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16). */
+    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16, and Mesa's
+    * pan_subgroup_size() is 16 for every arch >= 9: shader_present 0xee0057 is non-contiguous, the warp is not). */
    memcpy(p->driverUUID, "mali-own-vk\0\0\0\0\0", VK_UUID_SIZE);
    memcpy(p->deviceUUID, &gpu->gpu_id, sizeof(gpu->gpu_id));
-   p->subgroupSize = 16;
+   const unsigned subgroup_size = mali_subgroup_size_for_arch(gpu->arch_major);
+   p->subgroupSize = subgroup_size;
    /* subgroup ops: same set as PanVK on this compiler (bifrost_nir.c lowers the rest); not in vertex shaders (PanVK: no helper-lane guarantees) */
    p->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* fragment stage only after a pixel test */
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
@@ -170,10 +174,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
    /* ---- Vulkan 1.3 ---- */
-   p->minSubgroupSize = 16;
-   p->maxSubgroupSize = 16;
+   p->minSubgroupSize = subgroup_size;
+   p->maxSubgroupSize = subgroup_size;
    p->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* min == max == 16: the only size; t_vk_feat sgctl */
-   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
+   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / subgroup_size;
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->maxBufferSize = 1u << 30;
@@ -327,7 +331,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_provoking_vertex = true,          /* FBD word 11 bit 14 + tiler ctx word 2 bit 18 (First provoking vertex); t_cmd provoking checks. NOT per pipeline: one mode per render pass */
       .EXT_extended_dynamic_state3 = true,   /* polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
       .KHR_shader_expect_assume = true,      /* t_dxvk_caps: spirv_to_nir default caps include ExpectAssumeKHR (OpExpectKHR passthrough, OpAssumeTrueKHR dropped) */
-      .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
+      .KHR_load_store_op_none = true,        /* t_cmd loadstore: LOAD_OP_NONE/DONT_CARE do not preload, LOAD does; STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
       .EXT_custom_border_color = true,       /* t_vk_feat cbc: runtime border_color_value -> sampler descriptor words 4..7 (same path as the fixed colours) */
@@ -443,6 +447,27 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    pdev->gpu = *gpu;
    mali_sync_init_physical(pdev);
 
+   /* Device-wide commit budget. kbase commits and pins every byte of a native BO at allocation time
+    * (libkbase/src/bo.c:45, commit_pages = va_pages), so it is not reclaimable under pressure: without a
+    * total, a session can pin half of RAM (the heap we advertise) and take the phone into an OOM panic.
+    * Default: half the advertised heap, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. */
+   {
+      long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+      uint64_t ram = pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
+      uint64_t cap = gpu->heap_bytes / 2;
+      if (ram && ram / 4 < cap)
+         cap = ram / 4;
+      const char *env = getenv("MALI_VRAM_CAP_MB");
+      if (env && env[0])
+         cap = strtoull(env, NULL, 10) << 20;
+      pdev->mem_cap = cap;
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
+                 (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
+                 env && env[0] ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 pdev->gpu.name);
+   }
+
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
     * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
    pdev->memory = (VkPhysicalDeviceMemoryProperties){
@@ -510,6 +535,9 @@ mali_destroy_physical_device(struct vk_physical_device *vk_pdev)
    struct vk_instance *instance = vk_pdev->instance;
 
    mali_wsi_finish(pdev);
+   /* Every VkDeviceMemory of this physical device is gone with its devices; a non-zero counter here would mean
+    * one was leaked, so it must not be inherited by anything that reuses the slot. */
+   pdev->mem_used = 0;
    vk_physical_device_finish(&pdev->vk);
    vk_free(&instance->alloc, pdev);
 }
