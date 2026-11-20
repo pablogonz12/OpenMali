@@ -23,7 +23,6 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 #include "vk_alloc.h"
 #include "vk_log.h"
 #include "vk_util.h"
-#include "vk_semaphore.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +41,7 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 struct mali_x11_shm;
 static void mali_x11_shm_destroy(VkSwapchainKHR sc);
 static struct mali_x11_shm *mali_x11_shm_find(VkSwapchainKHR sc);
-static bool mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index);
+static bool mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index);
 
 #define MALI_DRM_FORMAT_MOD_LINEAR 0ull
 const uint64_t mali_wsi_modifier = MALI_DRM_FORMAT_MOD_LINEAR;
@@ -392,10 +391,30 @@ static void mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, st
                                 const VkSwapchainCreateInfoKHR *ci) { (void)sc; (void)surface; (void)chain; (void)ci; }
 #endif
 
+/* The CPU is about to read the presented image: wait for the GPU's writes (DMA_BUF_IOCTL_SYNC START|READ on the
+ * image's dma-buf, kbase_bo_cache in mali_backend_kbase.c) and drop any stale cache lines. Without this the copy
+ * below can read memory the GPU has not written yet: the client only waits its fence after presenting, and a
+ * semaphore wait at present cannot stand in for it (see driver-xcb.md: vk_sync_wait on the present semaphore
+ * blocks on an object only our submit path fills, and times out). */
+static void
+present_image_cpu_sync(struct mali_device *dev, struct mali_image *mi, uint32_t image_index)
+{
+   if (!dev || !mi || !mi->mem)
+      return;
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   if (be->bo_host_touch)
+      be->bo_host_touch(dev->kdev, &mi->mem->bo);   /* a mapped BO: the next sync must cover it */
+   if (be->bo_cache)
+      be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: wsi present: image %u BO 0x%llx synced device->CPU before the copy\n",
+              image_index, (unsigned long long)mi->va);
+}
+
 /* Present one image through the shared segment. Returns false when the image cannot be copied (no CPU map), in
  * which case the caller falls back to wsi's PutImage present. */
 static bool
-mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
+mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
 {
 #if !defined(VK_USE_PLATFORM_XCB_KHR)
    (void)chain; (void)image_index;
@@ -410,6 +429,7 @@ mali_x11_shm_present(struct wsi_swapchain *chain, uint32_t image_index)
    const size_t off = (size_t)st->stride * st->height * image_index;
    if (off + (size_t)st->stride * st->height > st->size)
       return false;
+   present_image_cpu_sync(dev, mali_image_from_handle(img->image), image_index);
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
    xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
@@ -568,28 +588,6 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
               __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
               (int)qpdev->wsi.sw);
    }
-   /* The shared-memory present reads the image on the CPU, so it must not run before the wait semaphores (the
-    * render that filled the image) have signalled: otherwise the copy can read a frame the GPU has not written
-    * yet, and it also misses the device->CPU MEM_SYNC the fence wait performs (kbase_fence_wait ->
-    * mem_sync_bos, mali_backend_kbase.c:580-620). wsi's dma-buf present carries the frame's fence to the
-    * compositor instead, so this wait is only taken when a present swapchain uses our segment; there the copy is
-    * already a synchronous CPU pass, so ordering it behind the render costs nothing that was not already paid.
-    * Vulkan also makes the present consume these semaphores; before this, nothing did. */
-   bool all_shm_chains = info->swapchainCount > 0;
-   for (uint32_t i = 0; i < info->swapchainCount; i++)
-      all_shm_chains &= mali_x11_shm_find(info->pSwapchains[i]) != NULL;
-   if (all_shm_chains) {
-      for (uint32_t i = 0; i < info->waitSemaphoreCount; i++) {
-         VK_FROM_HANDLE(vk_semaphore, sem, info->pWaitSemaphores[i]);
-         VkResult wr = sem ? vk_sync_wait(&dev->vk, vk_semaphore_get_active_sync(sem), 0, VK_SYNC_WAIT_COMPLETE,
-                                          10ull * 1000 * 1000 * 1000)   /* a lost render must not hang the present forever */
-                           : VK_SUCCESS;
-         if (wr != VK_SUCCESS) {
-            fprintf(stderr, "mali_vk: wsi present: wait semaphore %u: %s\n", i, vk_Result_to_str(wr));
-            return wr;
-         }
-      }
-   }
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
       bool all_shm = info->swapchainCount > 0;
@@ -598,7 +596,7 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
          const uint32_t idx = info->pImageIndices[i];
          if (sc)
             mali_wsi_dump_frame(dev, sc, idx);   /* MALI_WSI_DUMP: the BO as it is handed to the compositor */
-         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) && mali_x11_shm_present(sc, idx);
+         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) && mali_x11_shm_present(dev, sc, idx);
          if (mali_wsi_debug() && sc)
             mali_wsi_debug_present(dev, sc, idx, shm ? "shm" : "dma-buf", VK_SUCCESS);
          if (!shm) {
