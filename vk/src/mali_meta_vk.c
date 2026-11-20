@@ -118,15 +118,17 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err, const 
       mali_meta_list_free(l);
       return;
    }
-   if (!mali_cmd_push_frame || cmd->in_render) {
-      fprintf(stderr, "mali_vk: %s: %s -> VK_ERROR_FEATURE_NOT_PRESENT\n", op,
-              cmd->in_render ? "recorded inside a render pass (this driver runs meta ops outside a pass only)"
-                             : "no meta frame push hook");
-      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_meta_vk: meta op %s\n", cmd->in_render ? "inside render pass" : "no push_frame");
+   if (!mali_cmd_push_frame) {
+      fprintf(stderr, "mali_vk: %s: no meta frame push hook -> VK_ERROR_FEATURE_NOT_PRESENT\n", op);
       fail(cmd, VK_ERROR_FEATURE_NOT_PRESENT);
       mali_meta_list_free(l);
       return;
    }
+   /* Recorded inside a render pass: the frame is queued and pushed right after the pass' own frame
+    * (mali_cmd_push_frame_deferred, mali_cmd.c), which is what "in submission order with the pass" means on one
+    * in-order CS ring. Legal Vulkan, no longer an error. */
+   if (cmd->in_render && getenv("MALI_META_DBG"))
+      fprintf(stderr, "mali_meta_vk: %s deferred to the end of the render pass\n", op);
    struct mali_meta_mem *mem = mem_of(cmd);
    if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: emit %u jobs\n", l->n);
    for (unsigned i = 0; i < l->n; i++) {
@@ -140,7 +142,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err, const 
          fail(cmd, r == -ENOMEM ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_ERROR_FEATURE_NOT_PRESENT);
          break;
       }
-      mali_cmd_push_frame(cmd, &f);
+      mali_cmd_push_frame_deferred(cmd, &f);
    }
    mali_meta_list_free(l);
 }

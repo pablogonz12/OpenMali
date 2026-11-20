@@ -2,7 +2,7 @@
 /* M12/M13 test: meta copies/blits/clears/resolve, events, timestamps through the ICD. Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|inpass|event|ts]
+ *   t_vk_compute --direct <icd.so> [--loop N] [--only buf|fill|img|copyimg|blit|clearc|cleard|resolve|inpass|tiled_reject|event|ts]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -721,9 +721,9 @@ case_dsfmt(const char *name, VkFormat fmt)
 }
 
 /* 4x MSAA clear then resolve */
-/* A meta op recorded inside a render pass is refused by mali_meta_vk.c's emit() (cmd->in_render): the failure must be
- * a sticky VK_ERROR_FEATURE_NOT_PRESENT at vkEndCommandBuffer AND name the command and the reason on stderr. The
- * VkResult alone is what HL2/wined3d report as a black screen. */
+/* A meta op recorded inside a render pass is legal Vulkan: mali_meta_vk.c queues the compute frame and
+ * mali_cmd_push_frame_deferred() pushes it right after the pass' own frame. The command buffer must succeed AND the
+ * deferred work must have run (the filled bytes are read back after the submission). */
 static int
 case_inpass(void)
 {
@@ -753,6 +753,7 @@ case_inpass(void)
    CHECK(CreateFramebuffer(dev, &fci, NULL, &fb) == VK_SUCCESS, "framebuffer");
    struct buf b = {0};
    TRY(mkbuf(&b, 1024, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   memset(b.p, 0, 1024);
 
    VkCommandBuffer cb = begin_cb();
    CHECK(cb, "cb");
@@ -760,29 +761,67 @@ case_inpass(void)
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
                                .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-   char msg[512] = "";
-   fflush(stderr);
-   int saved = dup(2);
-   FILE *cap = tmpfile();
-   CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
    CmdFillBuffer(cb, b.b, 0, 256, 0x12345678u);
+   CmdEndRenderPass(cb);
    VkResult r = EndCommandBuffer(cb);
-   fflush(stderr);
-   dup2(saved, 2);
-   close(saved);
-   rewind(cap);
-   if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
-   CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "in-pass meta op must fail the command buffer (%d)", r);
-   CHECK(strstr(msg, "CmdFillBuffer") != NULL, "the message must name the command: %s", msg);
-   CHECK(strstr(msg, "inside a render pass") != NULL, "the message must name the reason: %s", msg);
+   CHECK(r == VK_SUCCESS, "an in-pass meta op must not poison the command buffer (%d)", r);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   ResetFences(dev, 1, &fence);
+   CHECK(QueueSubmit(queue, 1, &si, fence) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &fence, VK_TRUE, 20ull * 1000000000ull) == VK_SUCCESS, "fence");
    FreeCommandBuffers(dev, pool, 1, &cb);
+   if (!g_fake)
+      for (int i = 0; i < 256; i += 4) {
+         uint32_t v;
+         memcpy(&v, (uint8_t *)b.p + i, sizeof v);
+         CHECK(v == 0x12345678u, "deferred fill at %d = 0x%08x", i, v);
+      }
    DestroyFramebuffer(dev, fb, NULL);
    DestroyRenderPass(dev, rp, NULL);
    DestroyImageView(dev, view, NULL);
    rmimg(&at);
    DestroyBuffer(dev, b.b, NULL);
    FreeMemory(dev, b.m, NULL);
-   report("inpass", NULL);
+   report("inpass", g_fake ? "pixels: fake backend" : NULL);
+   return 1;
+}
+
+/* The negative case that stays: an image created with MALI_IMAGE_TILED=1 (opt-in u-interleaved layout) cannot be
+ * addressed by the linear meta path, and that refusal must name the command and the reason. */
+static int
+case_tiled_reject(void)
+{
+   setenv("MALI_IMAGE_TILED", "1", 1);
+   struct img a = {0}, b = {0};
+   int ok = mkimg(&a, VK_FORMAT_R8G8B8A8_UNORM, W, H, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  VK_SAMPLE_COUNT_1_BIT) &&
+            mkimg(&b, VK_FORMAT_R8G8B8A8_UNORM, W, H, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  VK_SAMPLE_COUNT_1_BIT);
+   unsetenv("MALI_IMAGE_TILED");
+   CHECK(ok, "tiled images");
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {W, H, 1}};
+   char msg[512] = "";
+   fflush(stderr);
+   int saved = dup(2);
+   FILE *cap = tmpfile();
+   CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
+   CmdCopyImage(cb, a.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+   VkResult rr = EndCommandBuffer(cb);
+   fflush(stderr);
+   dup2(saved, 2);
+   close(saved);
+   rewind(cap);
+   if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
+   CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "a tiled copy must be refused (%d)", rr);
+   CHECK(strstr(msg, "CmdCopyImage2") != NULL, "the message must name the command: %s", msg);
+   CHECK(strstr(msg, "plan error") != NULL, "the message must name the reason: %s", msg);
+   FreeCommandBuffers(dev, pool, 1, &cb);
+   rmimg(&a);
+   rmimg(&b);
+   report("tiled_reject", NULL);
    return 1;
 }
 
@@ -1004,6 +1043,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("d32s8")) ok &= case_dsfmt("d32s8", VK_FORMAT_D32_SFLOAT_S8_UINT);
    if (ok && CASE_ON("resolve")) ok &= case_resolve();
    if (ok && g_only && CASE_ON("inpass")) ok &= case_inpass();   /* explicit only: keeps the golden BO sequence */
+   if (ok && g_only && CASE_ON("tiled_reject")) ok &= case_tiled_reject();
    if (ok && CASE_ON("event")) ok &= case_event();
    if (ok && CASE_ON("ts")) ok &= case_ts();
 
