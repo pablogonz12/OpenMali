@@ -195,12 +195,52 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
    }
    VkPresentModeKHR mode[8];
    n = 8;
-   if (iface->get_present_modes && iface->get_present_modes(surface, &pdev->wsi, &n, mode) == VK_SUCCESS) {
+   if (iface->get_present_modes && mali_wsi_get_present_modes(mali_physical_device_to_handle(pdev),
+                                                             (VkSurfaceKHR)(uintptr_t)surface, &n, mode) == VK_SUCCESS) {
       fprintf(stderr, "mali_vk: wsi present modes:");
       for (uint32_t i = 0; i < n && i < 8; i++)
          fprintf(stderr, " %u", mode[i]);
       fprintf(stderr, "%s\n", n > 8 ? " ..." : "");
    }
+}
+
+/* wsi_common_x11 advertises all four present modes, but a software (PutImage) swapchain is only useful to a
+ * measurement when IMMEDIATE is really offered: with FIFO/MAILBOX the producer rate equals the displayed rate by
+ * construction, which is what hid the GPU headroom (1600x720 and 2400x1080 both 118 fps). IMMEDIATE is additive,
+ * FIFO/MAILBOX stay first and unchanged for real apps. */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
+                           uint32_t *count, VkPresentModeKHR *modes)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   struct wsi_interface *iface = pdev->wsi.wsi[((VkIcdSurfaceBase *)(uintptr_t)surface)->platform];
+
+   if (!iface)
+      return VK_ERROR_SURFACE_LOST_KHR;
+   if (!modes) {
+      VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, count, NULL);
+      if (r == VK_SUCCESS && pdev->wsi.sw && *count < UINT32_MAX)
+         (*count)++;   /* + IMMEDIATE */
+      return r;
+   }
+   /* Enumerate, then return the list unchanged except for IMMEDIATE appended on the software path. */
+   VkPresentModeKHR all[8];
+   uint32_t n = 8;
+   VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, &n, all);
+   if (r != VK_SUCCESS && r != VK_INCOMPLETE)
+      return r;
+   if (pdev->wsi.sw) {
+      bool has = false;
+      for (uint32_t i = 0; i < n; i++)
+         has |= all[i] == VK_PRESENT_MODE_IMMEDIATE_KHR;
+      if (!has && n < 8)
+         all[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+   }
+   const uint32_t out = MIN2(*count, n);
+   memcpy(modes, all, out * sizeof(*modes));
+   *count = out;
+   return out < n ? VK_INCOMPLETE : VK_SUCCESS;
 }
 
 /* MALI_WSI_DEBUG=1: one line per acquire/present so a stall shows as an "enter" without its matching result
@@ -238,6 +278,19 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
               (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
               __atomic_load_n(&qpdev->wsi.cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX,
               (int)qpdev->wsi.sw);
+   }
+   if (mali_wsi_debug()) {
+      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+         VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
+         if (sc && sc->present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+            static int imm_logged;
+            if (!imm_logged) {
+               imm_logged = 1;
+               fprintf(stderr, "mali_vk: wsi present: IMMEDIATE - put and return, no wait on the previous frame "
+                       "(drop-oldest if the X server is still busy with it)\n");
+            }
+         }
+      }
    }
    VkResult r = wsi_QueuePresentKHR(queue, info);
    /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at
