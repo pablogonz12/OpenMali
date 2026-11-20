@@ -21,6 +21,8 @@
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
 
+_Thread_local unsigned mali_fence_wait_no_csync; /* mali_backend.h: set by mali_wsi.c around wsi_common's own waits */
+
 #define POOL_MAX_ENTS 64
 #define POOL_DEFAULT_BYTES (64u << 20)   /* MALI_BO_POOL_MB overrides, 0 disables */
 #define POOL_MAX_BO_BYTES (16u << 20)    /* bigger BOs are really freed: one of them must not flush the whole pool */
@@ -535,7 +537,8 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
          k->lost = true;
          return -EIO;
       }
-      mem_sync_all(k, 2);
+      if (!mali_fence_wait_no_csync)
+         mem_sync_all(k, 2);
       return 0;
    }
    struct timespec t0;
@@ -552,7 +555,8 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
       int r = kb_fence_wait(k->ctx, fence_fd, slice);
       pthread_mutex_unlock(&k->wait_lock);
       if (r == 0) {
-         mem_sync_all(k, 2); /* device -> CPU (CSYNC): CPU caches may hold stale lines of COHERENT_LOCAL BOs */
+         if (!mali_fence_wait_no_csync)
+            mem_sync_all(k, 2); /* device -> CPU (CSYNC): CPU caches may hold stale lines of COHERENT_LOCAL BOs */
          return 0;
       }
       if (r == -EIO) {
@@ -605,8 +609,11 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    const bool dev2cpu = op == 2;
    const char *e = getenv("MALI_SYNC_ALL"), *t = getenv("MALI_SYNC_TRACK");   /* read per call: the tests flip them */
    pthread_mutex_lock(&k->bo_lock);
-   bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
-   k->sync_all_pending = false;
+   /* The pending full-sweep flag is consumed only by a device->CPU pass, never by the CPU->device pass that every
+    * submit runs first: that one throttles/skips nothing and would otherwise swallow a mark a later app wait needs.
+    * Exchange before the loop, so a bo_wrote(NULL) that lands mid-sweep survives for the next wait. */
+   const bool pending_all = dev2cpu && __atomic_exchange_n(&k->sync_all_pending, false, __ATOMIC_RELAXED);
+   bool sweep_all = pending_all || (dev2cpu && ((e && e[0] == '1') || (t && t[0] == '0')));
    static unsigned prof_calls;
    if (getenv("MALI_PROF") && ++prof_calls == 600) {
       unsigned n = 0;

@@ -36,6 +36,25 @@ mali_wsi_destroy_query_pool(VkDevice _dev, VkQueryPool pool, const VkAllocationC
       real(_dev, pool, a);
 }
 
+/* wsi_common waits on its own per-image throttle fence before every present (wsi_common.c:2469 in
+ * wsi_common_queue_present, with a ~0ull timeout; the X11 present thread at wsi_common_x11.c:2557; the software path
+ * at wsi_common.c:2890). No CPU read of driver memory follows any of those waits: the driver submits the present next
+ * and the app gets no host-coherent snapshot out of them. The device->CPU CSYNC sweep in kbase_fence_wait (one
+ * MEM_SYNC ioctl per mapped BO, per present) therefore buys nothing there, so flag the thread while the wait runs.
+ * An app's own vkWaitForFences/vkGetFenceStatus runs with the flag clear and still invalidates. */
+static VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_wait_for_fences(VkDevice _dev, uint32_t fence_count, const VkFence *fences, VkBool32 wait_all, uint64_t timeout)
+{
+   VK_FROM_HANDLE(mali_device, dev, _dev);
+   PFN_vkWaitForFences real = mali_device_pdev(dev)->wsi_real_wait_for_fences;
+   if (!real)
+      return vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
+   mali_fence_wait_no_csync++;
+   VkResult r = real(_dev, fence_count, fences, wait_all, timeout);
+   mali_fence_wait_no_csync--;
+   return r;
+}
+
 /* X11 WSI (wsi_common_x11, see STEAM-GAPS.md "X11 WSI"): two present paths, chosen once per device.
  *   dma-buf (default on hardware): images are the linear exportable BOs above; the X server imports them through DRI3
  *     (Present). Needs an X server that can import our dma-bufs: Xwayland with glamor on a render node. DroidDeck's
@@ -70,6 +89,8 @@ mali_wsi_init(struct mali_physical_device *pdev)
    pdev->wsi.supports_modifiers = !sw;
    pdev->wsi_real_destroy_query_pool = pdev->wsi.DestroyQueryPool;
    pdev->wsi.DestroyQueryPool = mali_wsi_destroy_query_pool;
+   pdev->wsi_real_wait_for_fences = pdev->wsi.WaitForFences;
+   pdev->wsi.WaitForFences = mali_wsi_wait_for_fences;
    pdev->vk.wsi_device = &pdev->wsi;
    return VK_SUCCESS;
 }

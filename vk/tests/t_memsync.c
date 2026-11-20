@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include "mali_backend.h"
 
 extern const struct mali_backend_ops mali_backend_kbase;
@@ -200,6 +201,124 @@ int main(void)
    b->bo_wrote(k, &exp);
    b->wait_counter(k, &cnt, 1, 100);
    EXPECT(kb_fake_memsync_count(exp.gpu_va) > before, "mapped export: device->CPU invalidate after a counter wait, once the GPU wrote it");
+
+   /* ---- a bo_wrote(NULL) mark is a FULL sweep *owed* to the next device->CPU pass. Every queue submit runs
+    * mem_sync_bos(op 1) first; that pass must not consume the flag (it used to, mali_backend_kbase.c:612-613), or
+    * the app's own fence wait sweeps only BOs whose per-BO counter advanced and a BO covered only by the
+    * full-sweep mark is skipped. Field sequence: pending mark -> wsi throttle wait -> submit -> app wait. ---- */
+   {
+      enum { NF = 2 };
+      struct mali_bo fb[NF];
+      unsigned after_submit[NF];
+      for (int i = 0; i < NF; i++) {
+         if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &fb[i])) { printf("FAIL  bo_alloc full-sweep\n"); return 1; }
+         b->bo_host_touch(k, &fb[i]);   /* app-mapped, non-hot: every op-1 pass touches it, the marks do not */
+         memset(fb[i].cpu, 0x22, 64);
+      }
+      b->bo_wrote(k, NULL);            /* the front end could not pin the write: owe one full sweep */
+      int tfd = -1;
+      if (b->submit_signal(k, &tfd) == 0 && tfd > 0) {  /* the per-image throttle wait wsi_common does before a present */
+         unsigned t0[NF];
+         for (int i = 0; i < NF; i++) t0[i] = kb_fake_memsync_count(fb[i].gpu_va);
+         mali_fence_wait_no_csync++;
+         EXPECT(b->fence_wait(k, tfd, 100) == 0, "full-sweep pending: throttle wait signalled");
+         mali_fence_wait_no_csync--;
+         close(tfd);
+         bool held = true;
+         for (int i = 0; i < NF; i++) held &= kb_fake_memsync_count(fb[i].gpu_va) == t0[i];
+         EXPECT(held, "full-sweep pending: the throttled wsi wait consumes no MEM_SYNC");
+      }
+      b->host_sync(k);                 /* CPU->device pass first, then the submit: neither may clear the flag */
+      b->submit_cs(k, cs, 0);
+      for (int i = 0; i < NF; i++) after_submit[i] = kb_fake_memsync_count(fb[i].gpu_va);
+      static volatile uint64_t c5 = 1;
+      b->wait_counter(k, &c5, 1, 100); /* the app's own vkWaitForFences: it owes the full sweep */
+      bool swept = true;
+      for (int i = 0; i < NF; i++) {
+         unsigned d = kb_fake_memsync_count(fb[i].gpu_va) - after_submit[i];
+         swept &= d == 1;
+         EXPECT(d == 1, "bo_wrote(NULL) full sweep survives the submit: BO %d CSYNCed at the app wait (%u)", i, d);
+      }
+      EXPECT(swept, "pending full sweep reaches the app wait instead of being swallowed by op 1");
+      /* and it is consumed by that device->CPU pass, so the next wait does not sweep again */
+      unsigned a0 = kb_fake_memsync_count(fb[0].gpu_va) + kb_fake_memsync_count(fb[1].gpu_va);
+      b->wait_counter(k, &c5, 1, 100);
+      EXPECT(kb_fake_memsync_count(fb[0].gpu_va) + kb_fake_memsync_count(fb[1].gpu_va) == a0,
+             "the full sweep is consumed by the device->CPU pass that ran it (no permanent sweep)");
+   }
+
+   /* ---- present path: wsi_common waits on its own per-image throttle fence before every present (wsi_common.c:2469)
+    * and that wait precedes no CPU read of driver memory, so the device->CPU sweep must be skipped there. The app's
+    * own vkWaitForFences must keep it. M15: mem_sync_bos skips a BO whose gpu_writes mark did not change, so each
+    * stage marks the mapped BOs as GPU-written first: that is what makes a sweeping wait observable, and the skipped
+    * throttle wait observable as "no change" while its marks stay pending. ---- */
+   {
+      #define SWEPT() (kb_fake_memsync_count(exp.gpu_va) + kb_fake_memsync_count(expc.gpu_va) + kb_fake_memsync_count(hl.gpu_va))
+      #define MARK_ALL() do { b->bo_wrote(k, &exp); b->bo_wrote(k, &expc); b->bo_wrote(k, &hl); } while (0)
+      int fd = -1;
+      EXPECT(b->submit_signal(k, &fd) == 0 && fd > 0, "submit_signal: fence fd (%d)", fd);
+      MARK_ALL();
+      unsigned w0 = SWEPT();
+      EXPECT(b->fence_wait(k, fd, 100) == 0, "app fence wait: signalled");
+      EXPECT(SWEPT() > w0, "app fence wait (vkWaitForFences): still invalidates the marked mapped BOs (%u)", SWEPT() - w0);
+
+      /* the throttle wait, blocking (wsi_common.c:2469: timeout ~0ull) and as the timeout-0 poll zink issues */
+      MARK_ALL();
+      w0 = SWEPT();
+      mali_fence_wait_no_csync++;
+      EXPECT(b->fence_wait(k, fd, 100) == 0, "wsi throttle wait (blocking): signalled");
+      EXPECT(SWEPT() == w0, "wsi throttle wait: no MEM_SYNC sweep (%u)", SWEPT() - w0);
+      EXPECT(b->fence_wait(k, fd, 0) == 0, "wsi throttle wait (poll, timeout 0): signalled");
+      EXPECT(SWEPT() == w0, "wsi throttle poll: no MEM_SYNC sweep (%u)", SWEPT() - w0);
+      mali_fence_wait_no_csync--;
+      close(fd);
+
+      /* mutation check: with the flag clear the same poll must sweep again, otherwise the case above could pass
+       * because the sweep never runs at all. The MARK_ALL marks above are still pending (a flagged wait consumes
+       * none of them). */
+      fd = -1;
+      b->submit_signal(k, &fd);
+      w0 = SWEPT();
+      EXPECT(b->fence_wait(k, fd, 0) == 0, "flag clear, poll: signalled");
+      EXPECT(SWEPT() > w0, "flag clear, poll: the sweep runs (mutation check, %u)", SWEPT() - w0);
+      close(fd);
+      /* measurement: 300 present-shaped frames (frame CS + signal + throttle wait), old sweep vs skipped */
+      enum { FR = 300 };
+      double best[2] = {1e30, 1e30};
+      unsigned n[2] = {0, 0};
+      for (int pass = 0; pass < 3; pass++) {
+         for (int skip = 0; skip < 2; skip++) {
+            unsigned tot = 0;
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            for (int f = 0; f < FR; f++) {
+               int f2 = -1;
+               b->submit_cs(k, cs, 0);
+               if (b->submit_signal(k, &f2) != 0 || f2 < 0) { EXPECT(0, "present bench: submit_signal"); break; }
+               MARK_ALL();   /* M15: a mark per frame is what a sweeping wait would pick up */
+               unsigned b0 = SWEPT();
+               if (skip)
+                  mali_fence_wait_no_csync++;
+               b->fence_wait(k, f2, (f & 1) ? 0 : 100);   /* both wsi wait shapes */
+               if (skip)
+                  mali_fence_wait_no_csync--;
+               close(f2);
+               tot += SWEPT() - b0;
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double us = (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
+            if (us < best[skip]) best[skip] = us;
+            n[skip] = tot;
+         }
+      }
+      printf("present-path bench (host fake kernel, 300 presents, 3 mapped BOs):\n");
+      printf("  throttle wait sweeping (today): MEM_SYNC %u = %.2f/present, %.2f us/present\n", n[0], n[0] / 300.0, best[0] / 300.0);
+      printf("  throttle wait skipped (fix):    MEM_SYNC %u = %.2f/present, %.2f us/present\n", n[1], n[1] / 300.0, best[1] / 300.0);
+      EXPECT(n[1] == 0, "300 presents: the throttle wait issues no MEM_SYNC at all (%u)", n[1]);
+      EXPECT(n[0] >= 300, "300 presents without the fix: at least one MEM_SYNC sweep per present (%u)", n[0]);
+      #undef SWEPT
+      #undef MARK_ALL
+   }
    b->device_destroy(k);
    printf("{\"test\":\"t_memsync\",\"pass\":%s}\n", fails ? "false" : "true");
    return fails != 0;

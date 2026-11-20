@@ -30,6 +30,12 @@ struct mali_gpu_info {
 
 struct mali_kdev;
 
+/* Non-zero while the calling thread is inside a wait wsi_common issues itself (the per-image throttle fence before
+ * every present, the X11 present thread's wait, the software path's wait): no CPU read of driver memory follows one,
+ * so the device->CPU MEM_SYNC sweep in the backend buys nothing there. Set by mali_wsi.c; the app's own
+ * vkWaitForFences/vkGetFenceStatus run with it clear and still invalidate. Defined in mali_backend_kbase.c. */
+extern _Thread_local unsigned mali_fence_wait_no_csync;
+
 /* ---- M4: memory, submit, fences ---- */
 #define MALI_BO_CACHED (1u << 0) /* CPU-cached mapping: needs bo_cache() before GPU reads / after GPU writes */
 #define MALI_BO_EXPORT (1u << 1) /* dma-heap backed, can be exported as a dma-buf fd */
