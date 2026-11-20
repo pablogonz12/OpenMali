@@ -389,6 +389,26 @@ Workloads (bench/mdbench): **triangle** = 3000 draws/frame (5k/10k/20k draw scal
 
 Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/right through the library (`scripts/quick/menubench` in the MediaDeck repo, run by the farm `menu` suite). Render fps from the web helper's present events over 30 s, medians over the reps that passed the self-checks; `default` = as shipped, `uncapped` = frame limits off. It runs on the Mali bridge, not on mali-open: numbers change with the MediaDeck build, not with our commits. An **invalid** row (self-check failed) never replaces a valid one.
 
+### MediaDeck vc 30 (0.7.1) (2026-11-20)
+
+| phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
+|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 60 | 0/5 | INVALID: FAILED after retries: env set failed: {'deviceSerial': '<device-serial>', 'er | 2026-11-20 |
+| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/5 | INVALID: FAILED after retries: env set failed: {'deviceSerial': '<device-serial>', 'er | 2026-11-20 |
+
+### MediaDeck vc 29 (0.7.1) (2026-11-20)
+
+| phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
+|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 120 | 0/1 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-20 |
+
+### MediaDeck vc 27 (0.7.1) (2026-11-20)
+
+| phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
+|---|---|---|---|---|---|---|---|---|---|---|
+| poco-x8 | v13 | default | n/a | n/a | n/a | n/a | 120 | 0/5 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-20 |
+| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/4 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-20 |
+
 ### MediaDeck vc 26 (0.7.1) (2026-11-19)
 
 | phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
@@ -396,14 +416,14 @@ Steam Big Picture menu in the DroidDeck guest: scripted D-pad scrolling left/rig
 | cmf | v11 | default | n/a | n/a | n/a | n/a | 120.00000762939453 | 0/3 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-19 |
 | cmf | v11 | uncapped | n/a | n/a | n/a | n/a | 120.00000762939453 | 0/3 | INVALID: FAILED after retries: session not READY (FAILED) | 2026-11-19 |
 
-### MediaDeck vc 25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) (2026-11-19)
+### MediaDeck vc 25 (1.0.0-p25-bridge0.5.5.4+dd0.7.1.mb0.5.5.4) (2026-11-18)
 
 | phone | class | profile | avg fps | median fps | 1% low | p99 ms | panel Hz | reps ok/failed | self-checks | date |
 |---|---|---|---|---|---|---|---|---|---|---|
-| cmf | v11 | default | 156.8 | n/a | 37.0 | 27.06 | 120.00000762939453 | 3/0 | passed | 2026-11-19 |
-| cmf | v11 | uncapped | 151.8 | n/a | 34.2 | 29.26 | 120.00000762939453 | 3/0 | passed | 2026-11-19 |
+| cmf | v11 | default | 178.8 | n/a | 44.2 | 22.64 | 120.00000762939453 | 3/0 | passed | 2026-11-18 |
+| cmf | v11 | uncapped | 164.3 | n/a | 41.4 | 24.15 | 120.00000762939453 | 3/0 | passed | 2026-11-18 |
 | poco-x8 | v13 | default | 238.2 | n/a | 81.8 | 12.23 | 120 | 3/0 | passed | 2026-11-18 |
-| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/3 | INVALID: FAILED after retries: session not READY (STARTING_STEAM); FAILED after retries:  | 2026-11-19 |
+| poco-x8 | v13 | uncapped | n/a | n/a | n/a | n/a | 120 | 0/3 | INVALID: FAILED after retries: session not READY (STARTING_STEAM); screen fps far below r | 2026-11-18 |
 
 Settings swept (rows record the winner): present mode mailbox/fifo/immediate x swapchain images 2/3/4 x frames in flight 1/2/3; ours additionally env sets `default`; `MALI_RING=67108864 MALI_GEOM_SIZE=67108864`; `MALI_HF=0 MALI_NOTF=1`; `MALI_NO_MERGE=1`. Bridge options: none exposed in the guest besides the above.
 Method, workloads and open items: bench/README.md. Pitfalls: CMF timings are bimodal, so single runs mean nothing (medians of interleaved runs); a row is only comparable within the same phone and the same thermal band (battery temp in results.jsonl).

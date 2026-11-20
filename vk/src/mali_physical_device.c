@@ -4,8 +4,13 @@
 #include "mali_format.h"
 #include "mali_msaa.h"
 
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 #include "mali_entrypoints.h"
 #include "util/list.h"
@@ -215,6 +220,82 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = false;
 }
 
+/* VK_EXT_physical_device_drm (vk/STEAM-GAPS.md, zink choose_pdev). The GPU is reached through kbase
+ * (/dev/mali0), which is not a DRM device. DroidDeck's guest publishes that same char device as
+ * /dev/dri/renderD<N> (a node with the same st_rdev; its graphics report says "render node for the
+ * guest: /dev/dri/renderD105 -> /dev/mali0 (10:105)"), and that alias is the node an EGL/GBM client
+ * opens and stats, so its major/minor are an honest identity for this physical device.
+ * A node is reported only when stat() proves it is the very device the backend opened; a /dev/dri
+ * node of another device (the guest's /dev/dri/card0 is 226:0) is never claimed, and with no such
+ * alias the extension stays unadvertised (zink 26.0.8 then prints "failed to choose pdev" instead
+ * of being sent to a device it cannot present from).
+ * BL_DRM_STANDIN is the app's declaration of the GPU node (the same variable PanVK's kbase build
+ * reads); MALI_DRM_DIR overrides the directory searched (tests, containers). */
+struct mali_drm_node {
+   dev_t render;
+   dev_t primary;
+};
+
+static dev_t
+mali_gpu_node_rdev(const struct mali_gpu_info *gpu)
+{
+   if (gpu->node_rdev)
+      return (dev_t)gpu->node_rdev;
+
+   const char *standin = getenv("BL_DRM_STANDIN");
+   struct stat st;
+   if (standin && *standin && stat(standin, &st) == 0)
+      return st.st_rdev;
+
+   return 0;
+}
+
+static bool
+mali_drm_node_at(const char *dir, const char *name, dev_t gpu_rdev, dev_t *out)
+{
+   char path[PATH_MAX];
+   struct stat st;
+
+   if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
+      return false;
+   if (stat(path, &st) != 0 || !S_ISCHR(st.st_mode) || st.st_rdev != gpu_rdev)
+      return false;
+
+   *out = st.st_rdev;
+   return true;
+}
+
+static bool
+mali_drm_find_node(const struct mali_gpu_info *gpu, struct mali_drm_node *node)
+{
+   dev_t gpu_rdev = mali_gpu_node_rdev(gpu);
+   *node = (struct mali_drm_node){0};
+   if (!gpu_rdev)
+      return false;
+
+   const char *dir = getenv("MALI_DRM_DIR");
+   if (!dir || !*dir)
+      dir = "/dev/dri";
+
+   DIR *d = opendir(dir);
+   if (!d)
+      return false;
+
+   struct dirent *e;
+   while ((e = readdir(d))) {
+      if (!strncmp(e->d_name, "renderD", 7)) {
+         if (!node->render)
+            mali_drm_node_at(dir, e->d_name, gpu_rdev, &node->render);
+      } else if (!strncmp(e->d_name, "card", 4)) {
+         if (!node->primary)
+            mali_drm_node_at(dir, e->d_name, gpu_rdev, &node->primary);
+      }
+   }
+   closedir(d);
+
+   return node->render || node->primary;
+}
+
 static VkResult
 mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instance *instance,
                           const struct mali_backend_ops *backend, const struct mali_gpu_info *gpu)
@@ -224,7 +305,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
 
-   /* No device extensions and no optional features yet. */
+   struct mali_drm_node drm;
+   bool has_drm = mali_drm_find_node(gpu, &drm);
+
+   /* No optional features yet. */
    const struct vk_device_extension_table extensions = {
       .KHR_timeline_semaphore = true,
       .KHR_sampler_ycbcr_conversion = true,   /* t_vk_feat ycbcr: G8_B8R8_2PLANE_420 */
@@ -272,6 +356,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
       .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
+   /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
+   struct vk_device_extension_table enabled = extensions;
+   if (has_drm)
+      enabled.EXT_physical_device_drm = true;
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
    const struct vk_features features = {
@@ -334,8 +422,19 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    struct vk_properties properties;
    mali_get_properties(gpu, &properties);
+   /* VK_EXT_physical_device_drm: the numbers are stat() of the node that backs /dev/mali0 (the bridge's
+    * renderD<N> alias in the guest), so a stat-based consumer matches. A drmGetDevice2-based consumer
+    * (zink's zink_render_rdev) still fails: the node is a misc char device, not a DRM device. */
+   if (has_drm) {
+      properties.drmHasRender = drm.render != 0;
+      properties.drmRenderMajor = major(drm.render);
+      properties.drmRenderMinor = minor(drm.render);
+      properties.drmHasPrimary = drm.primary != 0;
+      properties.drmPrimaryMajor = major(drm.primary);
+      properties.drmPrimaryMinor = minor(drm.primary);
+   }
 
-   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &extensions, &features,
+   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &enabled, &features,
                                              &properties, &dispatch_table);
    if (result != VK_SUCCESS)
       return result;
