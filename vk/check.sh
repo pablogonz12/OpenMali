@@ -21,6 +21,8 @@ if [ "$SAN" = 1 ]; then
    # The test executables are not sanitized; the sanitized driver .so needs the runtime preloaded. Leaks are reported by LSan at exit.
    export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
    export ASAN_OPTIONS=detect_leaks=${MALI_SAN_LEAKS:-0}:abort_on_error=0:halt_on_error=1
+   # LD_PRELOAD also reaches gcc/sed/bash spawned by the cases; their own leaks are not ours.
+   export LSAN_OPTIONS=suppressions=$V/tests/lsan.supp:print_suppressions=0
    export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 fi
 # The compile cache (mali_compile.c, ~/.cache by default) must not decide a golden: a stale entry from an older compiler made main's own goldens
@@ -28,7 +30,7 @@ fi
 # MALI_OPT_GCM=1 bypasses the cache (mali_compile.c use_cache), which the cold/warm and damaged-entry checks below need active: do not inherit it.
 unset MALI_OPT_GCM
 export MALI_SHADER_CACHE=$OUT/shader-cache; rm -rf "$MALI_SHADER_CACHE"; mkdir -p "$MALI_SHADER_CACHE"
-if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
+if [ $build = 1 ]; then env -u LD_PRELOAD "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
 fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
