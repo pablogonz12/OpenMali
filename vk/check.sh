@@ -91,8 +91,8 @@ run "steam_caps v11 drm node" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DI
 rm -rf "$DRMR" "$DRMB" "$DRMX"
 # 4x MSAA is opt-in (MALI_EXPERIMENTAL_MSAA=1): the plain `vk_info $g` run above asserts the default 1x, these assert the gate and
 # that switching it off again (0) matches the default.
-for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
-for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
+for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
@@ -160,7 +160,7 @@ for g in v11 v13; do
    run "vk_meta view3d2d $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --only view3d2d
    # loadOp LOAD of the formats Source-engine/wined3d content uses: D24S8 depth (zs_format 2) and A8B8G8R8 colour.
    # MSAA loadOp LOAD + storeOp STORE with a resolve (per-sample preload + separate resolve pass), opt-in gate
-   run "vk_draw msaa_load_resolve $g" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only msaa_load_resolve
+   run "vk_draw msaa_load_resolve $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only msaa_load_resolve
    run "vk_draw load_d24s8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only load_depth24s8
    run "vk_draw load_argb8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only load_colour_argb8
 done
