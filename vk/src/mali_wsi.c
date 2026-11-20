@@ -13,6 +13,9 @@
 /* wsi_common.c: what the device dispatch would have called; not in wsi_common.h in this tree. */
 VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
                                                      const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain);
+VKAPI_ATTR VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
+                                                       VkSemaphore semaphore, VkFence fence, uint32_t *pImageIndex);
+VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo);
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -119,15 +122,20 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
       return false;
    if (pdev->gpu.fake)
       return true;
-   /* Hardware, no MALI_WSI: choose before wsi_common creates its per-connection state, so the software path
-    * (shm/PutImage) is in place from the first surface. A server without DRI3 cannot import a single dma-buf
-    * image (x11_image_init -> xcb_dri3_pixmap_from_buffer -> VK_ERROR_INITIALIZATION_FAILED), which is the
-    * "zink: could not create swapchain" a GLX client gets on Xwayland with no DRM node. */
+   /* Hardware, no MALI_WSI. X11 clients get the software (PutImage) path even when the server advertises DRI3:
+    * DRI3 present is fire-and-forget, so an X server that cannot import our dma-bufs (Xwayland without glamor or
+    * without a render node) does not fail vkCreateSwapchainKHR, it drops the pixmaps and never sends
+    * PresentCompleteNotify. Images then never return to the acquire queue and the next
+    * wsi_queue_pull(acquire_queue, timeout=UINT64_MAX) in wsi_common_x11.c:2202 blocks for ever: vkcube --wsi xcb
+    * hung with RC 124 and no log line. A hang is not an acceptable failure mode, so software is the default and
+    * dma-buf is opt-in (MALI_WSI=dmabuf), where a broken import fails loudly instead. */
    struct mali_x11_server srv;
    mali_x11_probe_server(&srv);
-   if (srv.ok && !srv.dri3) {
-      fprintf(stderr, "mali_vk: wsi: X server without DRI3: X11 swapchains use the software (shm/PutImage) path "
-              "for the whole device\n");
+   if (getenv("DISPLAY")) {
+      fprintf(stderr, "mali_vk: wsi: X11 present path: software (PutImage); server: connected=%d dri3=%d "
+              "present=%d mit_shm=%d%s%s\n", (int)srv.ok, (int)srv.dri3, (int)srv.present, (int)srv.mit_shm,
+              srv.ok ? "" : " (connect failed: DISPLAY set but no cookie/authority)",
+              " - MALI_WSI=dmabuf opts into the dma-buf path");
       return true;
    }
    return false;
@@ -235,6 +243,42 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
          fprintf(stderr, " %u", mode[i]);
       fprintf(stderr, "%s\n", n > 8 ? " ..." : "");
    }
+}
+
+/* MALI_WSI_DEBUG=1: one line per acquire/present so a stall shows as an "enter" without its matching result
+ * (the software present path copies the whole image and PutImage is fire-and-forget, so this is also the only way
+ * to see how far a client got). Both are thin wrappers around the runtime's wsi entrypoints. */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore,
+                            VkFence fence, uint32_t *image_index)
+{
+   VK_FROM_HANDLE(mali_device, dev, device);
+   struct mali_physical_device *pdev = mali_device_pdev(dev);
+   static uint64_t seq;
+   uint64_t n = p_atomic_inc_return(&seq);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: wsi acquire #%llu: timeout=%llu sem=%d fence=%d sw=%d\n", (unsigned long long)n,
+              (unsigned long long)timeout, semaphore != VK_NULL_HANDLE, fence != VK_NULL_HANDLE,
+              (int)pdev->wsi.sw);
+   VkResult r = wsi_AcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, image_index);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: wsi acquire #%llu -> %s image=%u\n", (unsigned long long)n,
+              vk_Result_to_str(r), r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR ? *image_index : 0);
+   return r;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
+{
+   static uint64_t seq;
+   uint64_t n = p_atomic_inc_return(&seq);
+   if (mali_wsi_debug())
+      fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u\n", (unsigned long long)n,
+              info->swapchainCount, info->waitSemaphoreCount);
+   VkResult r = wsi_QueuePresentKHR(queue, info);
+   if (mali_wsi_debug() || r != VK_SUCCESS)
+      fprintf(stderr, "mali_vk: wsi present #%llu -> %s (%d)\n", (unsigned long long)n, vk_Result_to_str(r), (int)r);
+   return r;
 }
 
 /* Device entrypoint (installed in mali_device.c) in front of wsi_CreateSwapchainKHR: it only observes and, for an
