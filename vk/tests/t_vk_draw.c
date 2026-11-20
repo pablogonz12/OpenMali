@@ -81,7 +81,7 @@ static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
-static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
+static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (the cases gate on the driver's advertised counts, not on MALI_EXPERIMENTAL_MSAA) */
 static int g_msaa_store;   /* g_msaa: storeOp STORE on the 4x attachment (samples stored, resolve in a separate pass) instead of DONT_CARE (hardware Average) */
 
 enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8 };
@@ -1282,12 +1282,7 @@ test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
    return test_int_clear_f(name, fmt, bpp, want0, NULL);
 }
 
-/* MSAA colour loadOp LOAD + storeOp STORE with a resolve: the two-pass colour test (pass 1 clear+A store,
- * pass 2 LOAD+B store) run at 4x. The 4x attachment is stored (not the hardware Average) and the resolve
- * runs as its own pass, so this covers the per-sample preload and the STORE+resolve combination together. */
-/* Alpha histogram in quarter steps (0, 1-63, 64-127, 128-191, 192-254, 255): an edge pixel the LOAD lost shows up
- * as a shift from the partial buckets to 0, which tells "the draw after LOAD dropped uncovered samples" from
- * "the preload never restored them". */
+/* Alpha histogram in quarter steps: a LOAD that loses samples shows up as a shift to the 0 bucket. Diagnostics. */
 static void
 alpha_hist(const char *tag, struct scene *s)
 {
@@ -1307,9 +1302,8 @@ alpha_hist(const char *tag, struct scene *s)
 static int
 load_roundtrip(const char *name)
 {
-   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");
-   if ((gate && gate[0] == '0') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
-      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised\",\"ok\":true}\n", name);
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised by the driver\",\"ok\":true}\n", name);
       return 1;
    }
    g_msaa = 1;
@@ -1360,9 +1354,8 @@ load_roundtrip(const char *name)
 static int
 test_msaa_load(const char *name)
 {
-   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");
-   if ((gate && gate[0] == '0') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
-      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name);
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {   /* the driver's advertised count, not the env: see test_msaa */
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised by the driver\",\"ok\":true}\n", name);
       return 1;
    }
    g_msaa = 1;
@@ -1430,9 +1423,11 @@ test_two(int depth)
 static int
 test_msaa(const char *name, int mode)
 {
-   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");   /* 4x is default on; MALI_EXPERIMENTAL_MSAA=0 opts out */
-   if ((gate && gate[0] == '0') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
-      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name,
+   /* Gate on the driver's advertised sample counts (g_fbcounts comes from the limits the driver reports, so
+    * MALI_EXPERIMENTAL_MSAA=0 shows up here as "no 4x"), never on the env var: an env gate skips the test on a
+    * driver that does advertise 4x, which is exactly the mistake that hid this case. */
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised by the driver\",\"ok\":true}\n", name,
              mode == 2 ? " / sampleRateShading" : "");
       return 1;
    }
