@@ -324,6 +324,18 @@ mali_wsi_init(struct mali_physical_device *pdev)
     * pixels that get displayed. It also removes the SHM/blit branch that needs EXT_external_memory_host, which we
     * do not implement: SHM is only used where the extension exists, otherwise PutImage, and both report VK_SUCCESS. */
    pdev->wsi.wants_linear = true;
+   if (sw) {
+      /* Software images are CPU buffers with no dma-buf fd. wsi still asks for implicit sync on them: it creates a
+       * dma-buf semaphore when wsi_drm_check_dma_buf_sync_file_import_export() (wsi_common_drm.c:97) succeeds, then
+       * at every present wsi_signal_dma_buf_from_semaphore() -> wsi_dma_buf_import_sync_file(image->dma_buf_fd = -1)
+       * gets EBADF, which wsi_common_drm.c maps to VK_ERROR_FEATURE_NOT_PRESENT (the -8 vkcube --wsi xcb returned
+       * before the frame was ever put). Declare the capability we really have: no dma-buf sync-file import/export
+       * for CPU images, so wsi skips the semaphore and presents with PutImage. The cache stores result - 1. */
+      pdev->wsi.cached_sync_file_import_export_result = (uint32_t)(VK_ERROR_FEATURE_NOT_PRESENT - 1);
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: wsi: software path: no dma-buf sync-file import/export (CPU images), "
+                 "present is PutImage\n");
+   }
    pdev->wsi_real_destroy_query_pool = pdev->wsi.DestroyQueryPool;
    pdev->wsi.DestroyQueryPool = mali_wsi_destroy_query_pool;
    pdev->vk.wsi_device = &pdev->wsi;
