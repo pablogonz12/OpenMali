@@ -311,6 +311,7 @@ VKAPI_ATTR void VKAPI_CALL
 mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci)
 {
    CMD(h);
+   if (getenv("MALI_META_TRACE")) fprintf(stderr, "mali_trace: CopyImageToBuffer2 regions=%u fmt=%u dstBuf=%p off=%llu ext=%ux%u rowLen=%u\n", ci->regionCount, (unsigned)mali_image_from_handle(ci->srcImage)->vk.format, (void *)ci->dstBuffer, (unsigned long long)(ci->regionCount ? ci->pRegions[0].bufferOffset : 0), ci->regionCount ? ci->pRegions[0].imageExtent.width : 0, ci->regionCount ? ci->pRegions[0].imageExtent.height : 0, ci->regionCount ? ci->pRegions[0].bufferRowLength : 0);
    struct mali_image *img = mali_image_from_handle(ci->srcImage);
    struct vk_buffer *buf = vk_buffer_from_handle(ci->dstBuffer);
    struct mali_meta_list l = { 0 };

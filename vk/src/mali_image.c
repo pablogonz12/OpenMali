@@ -331,6 +331,10 @@ VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc, VkImage *out)
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
+   if (getenv("MALI_WSI_TRACE"))
+      fprintf(stderr, "mali_trace: CreateImage %ux%u fmt=%u tiling=%u usage=0x%x flags=0x%x\n",
+              ci->extent.width, ci->extent.height, (unsigned)ci->format, (unsigned)ci->tiling,
+              (unsigned)ci->usage, (unsigned)ci->flags);
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;

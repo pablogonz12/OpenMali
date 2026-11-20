@@ -12,6 +12,7 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,6 +69,10 @@ mali_wsi_init(struct mali_physical_device *pdev)
    /* No DRM node behind kbase: wsi sees no render/primary device and assumes the compositor is on our GPU.
     * Modifiers (linear only) exist only on the dma-buf path; the software path copies into CPU-visible buffers. */
    pdev->wsi.supports_modifiers = !sw;
+   if (getenv("MALI_WSI_TRACE"))
+      fprintf(stderr, "mali_trace: wsi sw=%d wants_linear=%d supports_modifiers=%d env=%s\n",
+              (int)sw, (int)pdev->wsi.wants_linear, (int)pdev->wsi.supports_modifiers,
+              getenv("MESA_VK_WSI_DEBUG") ? getenv("MESA_VK_WSI_DEBUG") : "(unset)");
    pdev->wsi_real_destroy_query_pool = pdev->wsi.DestroyQueryPool;
    pdev->wsi.DestroyQueryPool = mali_wsi_destroy_query_pool;
    pdev->vk.wsi_device = &pdev->wsi;

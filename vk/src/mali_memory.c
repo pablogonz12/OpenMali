@@ -2,6 +2,7 @@
 /* VkDeviceMemory on backend BOs. Heap 0 = device local. Type 0: HOST_VISIBLE|COHERENT (uncached
  * CPU mapping, write-combined); type 1: HOST_VISIBLE|CACHED (cached CPU mapping, explicit
  * flush/invalidate). The memory is always CPU mapped; vkMapMemory only hands out the pointer. */
+#include <stdlib.h>
 #include "mali_queue.h"
 
 #include <errno.h>
@@ -54,6 +55,13 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    const VkImportMemoryFdInfoKHR *imp =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
    int r;
+   if (getenv("MALI_WSI_TRACE")) {
+      const VkImportMemoryHostPointerInfoEXT *hp =
+         vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
+      fprintf(stderr, "mali_trace: AllocateMemory size=%llu type=%u fd_import=%d host_ptr=%p\n",
+              (unsigned long long)pAllocateInfo->allocationSize, pAllocateInfo->memoryTypeIndex,
+              imp && imp->handleType ? 1 : 0, hp ? hp->pHostPointer : NULL);
+   }
 
    mem->bo.dmabuf_fd = -1;
    if (imp && imp->handleType != 0) {
@@ -98,6 +106,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 mali_MapMemory(VkDevice _device, VkDeviceMemory _mem, VkDeviceSize offset, VkDeviceSize size,
                VkMemoryMapFlags flags, void **ppData)
 {
+   if (getenv("MALI_WSI_TRACE")) fprintf(stderr, "mali_trace: MapMemory mem=%p off=%llu size=%llu\n", (void *)_mem, (unsigned long long)offset, (unsigned long long)size);
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_memory, mem, _mem);
 
