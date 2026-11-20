@@ -315,6 +315,18 @@ main(int argc, char **argv)
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_R8G8B8A8_UNORM, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "RGBA8 sampled");
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "RGBA8 color");
+      /* HL2's swapchain/zink render targets: the packed A8B8G8R8 aliases must be renderable and sampled like RGBA8. */
+      static const VkFormat argb8[] = {VK_FORMAT_A8B8G8R8_UNORM_PACK32, VK_FORMAT_A8B8G8R8_SRGB_PACK32};
+      for (unsigned i = 0; i < 2; i++) {
+         VkFormatProperties2 afp = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+         GetPhysicalDeviceFormatProperties2(pd, argb8[i], &afp);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT,
+               "A8B8G8R8 variant %d: colour attachment", (int)argb8[i]);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
+               "A8B8G8R8 variant %d: sampled", (int)argb8[i]);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
+               "A8B8G8R8 variant %d: transfer src", (int)argb8[i]);
+      }
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
