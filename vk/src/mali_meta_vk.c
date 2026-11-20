@@ -143,6 +143,49 @@ mali_meta_vk_emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int pla
    emit(cmd, l, plan_err);
 }
 
+/* MALI_SOFT (desktop harness): execute the dispatch of a compute frame on the CPU with the reference runner of the shaders, so a host
+ * test sees the pixels a blit/copy/clear wrote instead of only "the command buffer took it". Everything the runner needs is in the
+ * materialised dispatch: the shader VA names the built-in job, the descriptor set holds the two buffer VAs (mali_meta_materialize packs
+ * them with pack_buffer), the push block is the compiled shader's, and the group counts are the dispatch's. BC decode jobs have no
+ * reference runner here: false, and mali_frame_build turns that into -ENOTSUP (never a silent no-op). */
+bool
+mali_meta_vk_host_run(const struct mali_dispatch *d, void *(*va_cpu)(void *u, uint64_t va, size_t size), void *u)
+{
+   if (!d || !va_cpu || d->indirect_va || d->nsets != 1 || d->set_bytes[0] == 0 || d->set_bytes[0] > 64 || (d->set_bytes[0] & 31))
+      return false;
+   struct mali_meta_job j;
+   memset(&j, 0, sizeof j);
+   for (unsigned s = 0; s < (unsigned)MALI_META_BC_FIRST; s++) {
+      const struct mali_compiled *c;
+      uint64_t va = 0;
+      if (mali_meta_shader_get((enum mali_meta_shader)s, &c, &va) || va != d->cs_va || !c)
+         continue;
+      j.sh = (enum mali_meta_shader)s;
+      j.push_bytes = c->push_const_bytes;
+      break;
+   }
+   if (j.push_bytes == 0 || j.push_bytes > sizeof j.push)
+      return false;
+   const uint32_t *set = va_cpu(u, d->set_va[0], d->set_bytes[0]);
+   if (!set)
+      return false;
+   j.nbind = d->set_bytes[0] / 32;
+   for (unsigned i = 0; i < j.nbind; i++) {
+      uint32_t w[8];
+      memcpy(w, set + i * 8, sizeof w);
+      const uint64_t va = ((uint64_t)w[3] << 32) | w[2];
+      const uint8_t *p = va ? va_cpu(u, va, w[1]) : NULL;
+      if (va && !p)
+         return false;
+      j.bind[i].va = (uint64_t)(uintptr_t)p;   /* the reference runner treats VAs as host pointers */
+      j.bind[i].size = w[1];
+   }
+   memcpy(j.push, d->push, j.push_bytes);
+   memcpy(j.groups, d->groups, sizeof j.groups);
+   mali_meta_ref_run(&j);
+   return true;
+}
+
 /* ---- surfaces ---- */
 static void
 buf_surf(struct mali_meta_surf *s, struct vk_buffer *b, uint64_t off)

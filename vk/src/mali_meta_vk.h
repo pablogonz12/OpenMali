@@ -6,6 +6,9 @@
 struct mali_cmd_buffer;
 struct mali_meta_list;
 void mali_meta_vk_emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err);
+/* MALI_SOFT (desktop harness): run one materialised meta dispatch on the host through mali_meta_ref_run, so host tests check the
+ * pixels a blit/copy/clear really wrote. False when the dispatch is not a built-in meta job (BC decode) or a VA is unmapped. */
+bool mali_meta_vk_host_run(const struct mali_dispatch *d, void *(*va_cpu)(void *u, uint64_t va, size_t size), void *u);
 #include "mali_meta.h"
 struct mali_draw;
 int mali_meta_vk_preload(struct mali_cmd_buffer *cmd, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
