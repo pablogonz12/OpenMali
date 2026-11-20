@@ -10,7 +10,7 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 
 ## Coverage
 
-5 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 139 missing of 147 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
+6 measured cells (a valid point exists), 3 failed (a run exists, no valid point), 159 missing of 168 (device × stack × version × workload). `docs/bench-gaps.json` lists every missing cell with the runbook that would fill it.
 
 | workload | device | stack | rows | valid points | no-valid-point rows | last valid version |
 |---|---|---|---|---|---|---|
@@ -18,6 +18,7 @@ How to read a chart: x is real time, colour is the stack, line style is the devi
 | steam-menu | cmf | bridge | 13 | 10 | 3 | v25 |
 | steam-menu | x4 | bridge | 1 | 0 | 1 | — |
 | vkcube-wayland | x8 | mali-open | 3 | 0 | 3 | — |
+| vkcube-wayland | cmf | mali-open | 3 | 3 | 0 | 65feef75 |
 
 ## cube/cards (bench2 --bench cube)
 
@@ -36,6 +37,8 @@ triangles. No valid displayed-fps point exists yet. The 850.6 that used to be pl
 Steam Big Picture menu. Only menubench rows with `screen.fps` (SurfaceFlinger present timestamps) are plotted; `render.avg_fps` stays in its own column.
 
 19 plotted point(s) from ≥3-rep default-profile runs; 25 stored row(s) total.
+
+series (one line per build; a driver sha is never joined with another): bridge/CMF `p22/p24/v25` — 13 row(s), reps=4; bridge/X4 `p24` — 1 row(s), reps=1; bridge/X8 `p22/v25/vc19` — 10 row(s), reps=3
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="steam-menu displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="330" fill="#ffffff"/>
@@ -205,7 +208,9 @@ glClear readback. A swap that succeeds while the screenshot stays black is a bla
 
 vkcube over Wayland: the first driver-mode lane that reaches a real present (`present #20 -> VK_SUCCESS`). A WSI smoke workload — it says the wayland swapchain/present path works and how fast the cube is paced, never a game's fps. Only compare within this lane.
 
-0 plotted point(s) from ≥3-rep default-profile runs; 3 stored row(s) total.
+3 plotted point(s) from ≥3-rep default-profile runs; 6 stored row(s) total.
+
+series (one line per build; a driver sha is never joined with another): mali-open/CMF `65feef75` — 3 row(s), reps=3; mali-open/X8 `549fae7c` — 2 row(s), reps=2
 
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" role="img" aria-label="vkcube-wayland displayed-fps chart" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="900" height="330" fill="#ffffff"/>
@@ -223,39 +228,54 @@ vkcube over Wayland: the first driver-mode lane that reaches a real present (`pr
 <text x="48" y="33.0" font-size="10" fill="#6b7280" text-anchor="end">160</text>
 <text x="8" y="16" font-size="10" fill="#6b7280">displayed fps</text>
 <line x1="56" y1="88.0" x2="884" y2="88.0" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.8"/>
-<text x="880" y="83.0" font-size="9.5" fill="#b91c1c" text-anchor="end">X8 panel 120 Hz ceiling</text>
+<text x="880" y="83.0" font-size="9.5" fill="#b91c1c" text-anchor="end">CMF/X8 panel 120 Hz ceiling</text>
 <line x1="56.0" y1="262" x2="56.0" y2="267" stroke="#9ca3af"/>
-<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 02:56</text>
+<text x="56.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:51</text>
 <line x1="263.0" y1="262" x2="263.0" y2="267" stroke="#9ca3af"/>
-<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 08:57</text>
+<text x="263.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:55</text>
 <line x1="470.0" y1="262" x2="470.0" y2="267" stroke="#9ca3af"/>
-<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:58</text>
+<text x="470.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 14:59</text>
 <line x1="677.0" y1="262" x2="677.0" y2="267" stroke="#9ca3af"/>
-<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 20:59</text>
+<text x="677.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:03</text>
 <line x1="884.0" y1="262" x2="884.0" y2="267" stroke="#9ca3af"/>
-<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-21 03:00</text>
-<polyline points="470.0,235.0 471.1,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
-<circle cx="468.9" cy="262.0" r="4.2" fill="#ffffff" stroke="#b91c1c" stroke-width="1.6"/>
-<text x="468.9" y="255.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">unverified</text>
-<circle cx="470.0" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="470.0" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
-<circle cx="471.1" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
-<text x="471.1" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
+<text x="884.0" y="280" font-size="10" fill="#6b7280" text-anchor="middle">11-20 15:07</text>
+<polyline points="418.2,235.0 521.8,156.3" fill="none" stroke="#b91c1c" stroke-width="1.8"/>
+<circle cx="314.8" cy="262.0" r="4.2" fill="#ffffff" stroke="#b91c1c" stroke-width="1.6"/>
+<text x="314.8" y="255.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">unverified</text>
+<circle cx="418.2" cy="235.0" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="418.2" y="228.0" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">18.6×2</text>
+<circle cx="521.8" cy="156.3" r="3.6" fill="#b91c1c" stroke="#b91c1c" stroke-width="0"/>
+<text x="521.8" y="149.3" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">72.9×2</text>
+<polyline points="521.8,91.9 573.5,91.6 625.2,91.6" fill="none" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="8 4"/>
+<rect x="518.4" y="88.5" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="521.8" y="84.9" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.3×3</text>
+<rect x="570.1" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="573.5" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
+<rect x="621.9" y="88.2" width="6.8" height="6.8" fill="#b91c1c" stroke="#b91c1c" stroke-width="1.4"/>
+<text x="625.2" y="84.6" font-size="8.5" fill="#b91c1c" text-anchor="middle" style="paint-order:stroke" stroke="#ffffff" stroke-width="2.5">117.5×3</text>
 </svg>
 
-**No valid point yet:** no default-profile group has 3 reps, so this workload has no number to quote. That is the honest state, not a gap in the drawing.
+| day | device | stack | version | profile | panel Hz | median fps | reps |
+|---|---|---|---|---|---|---|---|
+| 2026-11-20 | cmf | mali-open | 65feef75 | default | 120 | **117.5** | 3 (117.3, 117.5, 117.5) |
 
 | when | device | stack | version | profile | displayed fps | panel Hz | reps | brightness | status | render_fps (not plotted) | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-11-20 14:56 | x8 | mali-open | 549fae7c | default | 0 | 120 | 2 | - | unverified | - | rep 0 of 3: cube still starting, no usable present window yet; 0 fps here is &#x27;not measured&#x27;, not a black screen. 2 usable reps exist for this lane, so reps=2 and no best. |
 | 2026-11-20 14:58 | x8 | mali-open | 549fae7c | default | 18.6 | 120 | 2 | - | visible | - | usable rep 1 of 2 (rep 0 tainted by cube startup); present #20 -&gt; VK_SUCCESS, exit 0, panel 120 Hz, budget cap 2817 MiB. brightness_mean not captured in this lane (no screenshot); visible by the on-screen counter, never brightness-verified. |
+| 2026-11-20 15:00 | cmf | mali-open | 65feef75 | default | 117.3 | 120 | 3 | - | visible | - | rep 1 of 3. present #20 -&gt; VK_SUCCESS, rc=0; driverName mali-own, guest ICD libvulkan_panfrost.so 65feef75, budget cap 1024 MiB, off-cadence 0.8%. 3/3 reps usable: this is a quotable point (median 117.5 on a 120 Hz panel). brightness_mean not captured in this lane (fps read from the compositor, no screenshot). |
 | 2026-11-20 15:00 | x8 | mali-open | 549fae7c | default | 72.9 | 120 | 2 | - | visible | - | usable rep 2 of 2 (rep 0 tainted by cube startup); median of 18.6/72.9 = 45.8, reps=2 so it is a point but not a quotable &#x27;best&#x27;. brightness_mean not captured in this lane; never brightness-verified. |
+| 2026-11-20 15:01 | cmf | mali-open | 65feef75 | default | 117.5 | 120 | 3 | - | visible | - | rep 2 of 3. present #20 -&gt; VK_SUCCESS, rc=0; driverName mali-own, guest ICD libvulkan_panfrost.so 65feef75, budget cap 1024 MiB, off-cadence 0.8%. 3/3 reps usable: this is a quotable point (median 117.5 on a 120 Hz panel). brightness_mean not captured in this lane (fps read from the compositor, no screenshot). |
+| 2026-11-20 15:02 | cmf | mali-open | 65feef75 | default | 117.5 | 120 | 3 | - | visible | - | rep 3 of 3. present #20 -&gt; VK_SUCCESS, rc=0; driverName mali-own, guest ICD libvulkan_panfrost.so 65feef75, budget cap 1024 MiB, off-cadence 0.8%. 3/3 reps usable: this is a quotable point (median 117.5 on a 120 Hz panel). brightness_mean not captured in this lane (fps read from the compositor, no screenshot). |
 
 <details><summary>sources for these rows</summary>
 
 - `2026-11-20` x8/mali-open/549fae7c/vkcube-wayland fps=0.0 reps=2 — driver-mode session 2026-11-20 14:5x, vkcube --c 20 (wayland, no diagnostics env), lane note /tmp/opencode/stock-restore.md § 14:5x
 - `2026-11-20` x8/mali-open/549fae7c/vkcube-wayland fps=18.6 reps=2 — driver-mode session 2026-11-20 14:5x, vkcube --c 20 (wayland, no diagnostics env), on-screen present-counter read, lane note /tmp/opencode/stock-restore.md § 14:5x
+- `2026-11-20` cmf/mali-open/65feef75/vkcube-wayland fps=117.3 reps=3 — driver-mode session 2026-11-20 14:41-15:14 (CMF 001003469003711, USB), vkcube --c 20 --wsi wayland, compositor fpsOnScreen (droiddeckctl pacing --seconds 5), lane note /tmp/opencode/cmf-lane2.md §6-7
 - `2026-11-20` x8/mali-open/549fae7c/vkcube-wayland fps=72.9 reps=2 — driver-mode session 2026-11-20 14:5x, vkcube --c 20 (wayland, no diagnostics env), on-screen present-counter read, lane note /tmp/opencode/stock-restore.md § 14:5x
+- `2026-11-20` cmf/mali-open/65feef75/vkcube-wayland fps=117.5 reps=3 — driver-mode session 2026-11-20 14:41-15:14 (CMF 001003469003711, USB), vkcube --c 20 --wsi wayland, compositor fpsOnScreen (droiddeckctl pacing --seconds 5), lane note /tmp/opencode/cmf-lane2.md §6-7
+- `2026-11-20` cmf/mali-open/65feef75/vkcube-wayland fps=117.5 reps=3 — driver-mode session 2026-11-20 14:41-15:14 (CMF 001003469003711, USB), vkcube --c 20 --wsi wayland, compositor fpsOnScreen (droiddeckctl pacing --seconds 5), lane note /tmp/opencode/cmf-lane2.md §6-7
 
 </details>
 
@@ -269,13 +289,13 @@ vkcube over X11 (dri3). Same WSI smoke contract as vkcube-wayland: it proves `vk
 
 1. **steam-menu / x4 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x4 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
 2. **vkcube-wayland / x8 / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on poco-x8` with next mali-open commit.
-3. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-4. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
-5. **cards / x8 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
-6. **cards / x8 / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver ours` with next mali-open commit.
-7. **cards / cmf / bridge / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
-8. **cards / cmf / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver ours` with next mali-open commit.
+3. **vkcube-wayland / cmf / mali-open / next** — moves a line's endpoint (series has data). `vkcube --c 20 --wsi wayland (driver mode, env cleared) on cmf` with next mali-open commit.
+4. **steam-menu / x8 / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench poco-x8 --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+5. **steam-menu / cmf / bridge / next** — moves a line's endpoint (series has data). `MediaDeck scripts/quick/menubench cmf --profile default` with next MediaDeck build (vc 28, unavailable on this host).
+6. **cards / x8 / bridge / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
+7. **cards / x8 / mali-open / next** — starts a line (no data for this series yet). `tools/bench2 poco-x8 --bench cube --driver ours` with next mali-open commit.
+8. **cards / cmf / bridge / next** — starts a line (no data for this series yet). `tools/bench2 cmf --bench cube --driver bridge` with next MediaDeck build (vc 28, unavailable on this host).
 
 Full matrix and per-cell runbooks: `docs/bench-gaps.json`.
 
-_Generated from 28 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._
+_Generated from 31 rows; every plotted point carries `reps` and `panel_hz`. Rejected source rows are listed with reasons in `docs/rejected.jsonl`._

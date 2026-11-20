@@ -80,7 +80,10 @@ def chart(rows, wl):
     xs = [ts_of(r) for r in pts]
     x0, x1 = min(xs), max(xs)
     if x1 - x0 < 3600:
-        x0, x1 = x0 - 43200, x1 + 43200
+        # A lane that ran inside one hour: half a day of padding squeezes every point into a
+        # few pixels and the labels collide. Pad by half the run length (at least 5 min).
+        pad = max(300.0, (x1 - x0) / 2)
+        x0, x1 = x0 - pad, x1 + pad
     top = nice_max(max((r["fps"] for r in pts if visible(r)), default=0.0))
     panels = sorted({r["panel_hz"] for r in pts
                      if isinstance(r.get("panel_hz"), (int, float))})
@@ -128,10 +131,14 @@ def chart(rows, wl):
 
     series = {}
     for r in pts:
-        series.setdefault((r["stack"], r["device"]), []).append(r)
-    for (stack, dev), srows in sorted(series.items(),
-                                      key=lambda kv: (list(COLOUR).index(kv[0][0]),
-                                                      list(DASH).index(kv[0][1]))):
+        # A driver sha is its own code base: two mali-open builds are two series, never one
+        # line. Bridge rows keep one line per device across their labelled versions.
+        key = (r["stack"], r["device"], "" if r["stack"] == "bridge" else r["version"])
+        series.setdefault(key, []).append(r)
+    for (stack, dev, ver), srows in sorted(series.items(),
+                                           key=lambda kv: (list(COLOUR).index(kv[0][0]),
+                                                           list(DASH).index(kv[0][1]),
+                                                           kv[0][2])):
         srows.sort(key=ts_of)
         col = COLOUR.get(stack, "#374151")
         dash = DASH.get(dev, "")
@@ -179,6 +186,28 @@ def legend():
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{y + 12}" '
             f'viewBox="0 0 {W} {y + 12}"><rect width="{W}" height="{y + 12}" fill="#ffffff"/>'
             + "".join(parts) + "</svg>")
+
+
+def series_caption(rows):
+    """Which build each line is: a mali-open sha is its own series, bridge lists its versions."""
+    groups = {}
+    for r in rows:
+        if not visible(r):
+            continue
+        ver = "" if r["stack"] == "bridge" else str(r.get("version"))
+        g = groups.setdefault((r["stack"], r["device"], ver),
+                              {"n": 0, "reps": 0, "versions": []})
+        g["n"] += 1
+        g["reps"] = max(g["reps"], r.get("reps") or 0)
+        if str(r.get("version")) not in g["versions"]:
+            g["versions"].append(str(r.get("version")))
+    parts = []
+    for (stack, dev, ver), g in sorted(groups.items()):
+        ident = escape(ver) if ver else "/".join(escape(v) for v in g["versions"])
+        parts.append(f"{stack}/{DEVICE_NAME.get(dev, dev)} `{ident}` — {g['n']} row(s), "
+                     f"reps={g['reps']}")
+    return ("series (one line per build; a driver sha is never joined with another): "
+            + "; ".join(parts)) if parts else ""
 
 
 def table(rows):
@@ -300,7 +329,11 @@ def build(rows):
                       f"`{gapmod.RUNBOOK[wl].format(alias='poco-x8', drv='ours')}`.", ""]
             continue
         lines += [f"{len(val)} plotted point(s) from ≥3-rep default-profile runs; "
-                  f"{len(wrows)} stored row(s) total.", "", chart(wrows, wl), ""]
+                  f"{len(wrows)} stored row(s) total.", ""]
+        cap = series_caption(wrows)
+        if cap:
+            lines += [cap, ""]
+        lines += [chart(wrows, wl), ""]
         best = bests(wrows)
         if best:
             lines += ["| day | device | stack | version | profile | panel Hz | median fps | reps |",
