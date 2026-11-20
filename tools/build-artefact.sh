@@ -95,9 +95,11 @@ check_artefact() {
    short=$(git -C "$WT" rev-parse --short=10 HEAD)
    want=$short; other="$short-dirty"
    if [ "$p_dirty" != 0 ]; then want="$short-dirty"; other=$short; fi
-   # the .so must carry exactly the driverInfo string these counts imply: no silent disagreement
-   strings -a "$OUT" | grep -qxF -- "$want" || { echo "FAIL: driverInfo '$want' not found in the .so (provenance says dirty=$p_dirty)"; exit 1; }
-   if strings -a "$OUT" | grep -qxF -- "$other"; then
+   # the .so must carry exactly the driverInfo string these counts imply: no silent disagreement.
+   # (strings is captured first: `strings | grep -q` breaks under pipefail when grep exits early.)
+   di=$(strings -a "$OUT")
+   grep -qxF -- "$want" <<<"$di" || { echo "FAIL: driverInfo '$want' not found in the .so (provenance says dirty=$p_dirty)"; exit 1; }
+   if grep -qxF -- "$other" <<<"$di"; then
       echo "FAIL: driverInfo carries both '$want' and '$other': stale objects in $OUT"; exit 1
    fi
    [ "$p_commit" = "$commit" ] || { echo "FAIL: provenance commit ${p_commit:0:7} != HEAD ${commit:0:7}: rebuild before deploying"; exit 1; }
