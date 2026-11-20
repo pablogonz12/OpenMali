@@ -294,6 +294,10 @@ if [ -x "$OUT/t_wsi_maint" ] && command -v gamescope >/dev/null; then
    # 77 = the test skipped itself (no gamescope X server / no t_vk_xcb): visible as `skip`, not as a pass
    for g in v11 v13; do RUN_TIMEOUT=400 run "wsi maint $g" "0|77" "$V/tests/xwsi-maint.sh" "$OUT" $g; done
 fi
+# The same server without DRI3 (the X4's Xwayland: no DRM node, so MIT-SHM/PutImage is the only present path). zink asks
+# surface support first and stops on FALSE (zink_kopper.c:130-132), so the switch has to be taken at that query and not in
+# vkCreateSwapchainKHR: this case fails on such a driver with "surface not supported by the graphics queue".
+for g in v10 v13; do run "x11 no-dri3 $g" 0 "$V/tests/xwsi-nodri3.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
