@@ -58,9 +58,13 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    if (getenv("MALI_WSI_TRACE")) {
       const VkImportMemoryHostPointerInfoEXT *hp =
          vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
-      fprintf(stderr, "mali_trace: AllocateMemory size=%llu type=%u fd_import=%d host_ptr=%p\n",
+      const VkMemoryDedicatedAllocateInfo *ded =
+         vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
+      fprintf(stderr, "mali_trace: AllocateMemory size=%llu type=%u kind=%s fd=%d host_ptr=%p dedicated_img=%d dedicated_buf=%d\n",
               (unsigned long long)pAllocateInfo->allocationSize, pAllocateInfo->memoryTypeIndex,
-              imp && imp->handleType ? 1 : 0, hp ? hp->pHostPointer : NULL);
+              imp && imp->handleType ? "fd-import" : "fresh-alloc",
+              imp && imp->handleType ? imp->fd : -1, hp ? hp->pHostPointer : NULL,
+              ded ? (int)(uintptr_t)ded->image : 0, ded ? (int)(uintptr_t)ded->buffer : 0);
    }
 
    mem->bo.dmabuf_fd = -1;
@@ -81,7 +85,11 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       }
    }
    if (imp && imp->handleType != 0) {
-      if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+      if (getenv("MALI_REJECT_FD")) {
+         fprintf(stderr, "mali: dma-buf import fd=%d size=%llu refused (MALI_REJECT_FD)\n",
+                 imp->fd, (unsigned long long)pAllocateInfo->allocationSize);
+         r = -EINVAL;
+      } else if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
          r = -EINVAL;
       } else {
          r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
@@ -99,6 +107,10 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
       return errno_to_vk(dev, r);
    }
 
+   if (getenv("MALI_WSI_TRACE"))
+      fprintf(stderr, "mali_trace: MemoryHandle size=%llu h=%p %s\n",
+              (unsigned long long)pAllocateInfo->allocationSize, (void *)*pMemory,
+              (imp && imp->handleType) ? "IMPORTED" : "OWN-BO");
    p_atomic_add(&pdev->mem_used, mem->vk.size);
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
