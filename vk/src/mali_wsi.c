@@ -44,7 +44,8 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 struct mali_x11_shm;
 static void mali_x11_shm_destroy(VkSwapchainKHR sc);
 static struct mali_x11_shm *mali_x11_shm_find(VkSwapchainKHR sc);
-static bool mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index);
+static bool mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, struct mali_x11_shm *st,
+                                 uint32_t image_index);
 
 #define MALI_DRM_FORMAT_MOD_LINEAR 0ull
 const uint64_t mali_wsi_modifier = MALI_DRM_FORMAT_MOD_LINEAR;
@@ -420,13 +421,14 @@ present_image_cpu_sync(struct mali_device *dev, struct mali_image *mi, uint32_t 
 /* Present one image through the shared segment. Returns false when the image cannot be copied (no CPU map), in
  * which case the caller falls back to wsi's PutImage present. */
 static bool
-mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, struct mali_x11_shm *st,
+                     uint32_t image_index)
 {
 #if !defined(VK_USE_PLATFORM_XCB_KHR)
-   (void)chain; (void)image_index;
+   (void)chain; (void)st; (void)image_index;
    return false;   /* built without XCB: wsi_common_x11's PutImage present handles it */
 #else
-   struct mali_x11_shm *st = mali_x11_shm_find((VkSwapchainKHR)(uintptr_t)chain);
+   /* `st` is the slot the caller already found for this swapchain: one scan per image, not two. */
    if (!st || !st->active)
       return false;
    struct wsi_image *img = chain->get_wsi_image(chain, image_index);
@@ -508,18 +510,35 @@ present_image(struct wsi_swapchain *chain, uint32_t image_index, struct wsi_imag
  * w*h*bpp pass on the presenting thread every N frames (and it drops the BO's HOSTLAZY flag, so the next
  * fence wait MEM_SYNCs it once). Only 8-bit RGBA/BGRA rows are reordered to RGB; anything else is written
  * with the raw first three bytes of the texel and the format named in the sidecar. */
+/* MALI_WSI_DUMP / MALI_WSI_DUMP_EVERY are read once (mali_wsi_debug()'s pattern): they are consulted on every
+ * present and never change during a run. */
+static const char *
+mali_wsi_dump_prefix(unsigned *every)
+{
+   static const char *prefix;
+   static unsigned cached_every;
+   static int done;
+   if (!done) {
+      done = 1;
+      prefix = getenv("MALI_WSI_DUMP");
+      cached_every = 30;
+      const char *e = getenv("MALI_WSI_DUMP_EVERY");
+      if (e && e[0])
+         cached_every = (unsigned)strtoul(e, NULL, 10);
+      if (!cached_every)
+         cached_every = 1;
+   }
+   *every = cached_every;
+   return prefix;
+}
+
 static void
 mali_wsi_dump_frame(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
 {
-   const char *prefix = getenv("MALI_WSI_DUMP");
+   unsigned every;
+   const char *prefix = mali_wsi_dump_prefix(&every);
    if (!prefix || !prefix[0])
       return;
-   unsigned every = 30;
-   const char *e = getenv("MALI_WSI_DUMP_EVERY");
-   if (e && e[0])
-      every = (unsigned)strtoul(e, NULL, 10);
-   if (!every)
-      every = 1;
    static uint64_t seq;
    const uint64_t n = p_atomic_inc_return(&seq);
    if (n % every)
@@ -655,7 +674,8 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
          const uint32_t idx = info->pImageIndices[i];
          if (sc)
             mali_wsi_dump_frame(dev, sc, idx);   /* MALI_WSI_DUMP: the BO as it is handed to the compositor */
-         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) && mali_x11_shm_present(dev, sc, idx);
+         struct mali_x11_shm *st = mali_x11_shm_find(info->pSwapchains[i]);
+         const bool shm = sc && st && mali_x11_shm_present(dev, sc, st, idx);
          if (mali_wsi_debug() && sc)
             mali_wsi_debug_present(dev, sc, idx, shm ? "shm" : "dma-buf", VK_SUCCESS);
          if (!shm) {
