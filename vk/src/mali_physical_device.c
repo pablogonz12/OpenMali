@@ -3,9 +3,16 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_compile.h"
 
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
 
 #include "mali_entrypoints.h"
 #include "util/list.h"
@@ -17,9 +24,8 @@
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
-   /* KNOWN GAP (feat-audit): 1x|4x is advertised unconditionally (dEQP relies on it; the multisample lane is making 4x real), but 4x pipelines
-    * are still rejected unless MALI_EXPERIMENTAL_MSAA=1 (mali_pipeline.c) and resolve/LOAD/depth cases are limited (vk/README.md "Known gaps"). */
-   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+   /* 4x is advertised only with MALI_EXPERIMENTAL_MSAA=1: without it 4x pipelines are rejected (mali_pipeline.c), so advertising it would lie. */
+   const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -37,11 +43,13 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxTexelBufferElements = 65536,
       .maxUniformBufferRange = 16384,
       .maxStorageBufferRange = 1u << 27,
-      .maxPushConstantsSize = 128,
+      .maxPushConstantsSize = 256,   /* 64 FAU words. Hardware: 64 FAU slots = 128 words (Mesa pan_compiler.h PAN_MAX_PUSH, all known
+                                      * Bifrost/Valhall); PanVK advertises 256 on the same GPUs. VS/reserved words 0..9 leave 118
+                                      * words, FS (v13 blend words 4,5) and CS start at word 6/0. DXVK 3.1.x requires >= 256. */
       .maxMemoryAllocationCount = 4096,
       .maxSamplerAllocationCount = 4000,
       .bufferImageGranularity = 1,
-      .maxBoundDescriptorSets = 4,
+      .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
       .maxPerStageDescriptorSamplers = 16,
       .maxPerStageDescriptorUniformBuffers = 12,
       .maxPerStageDescriptorStorageBuffers = 4,
@@ -138,10 +146,12 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
             gpu->fake ? ", fake backend" : "");
 
    /* ---- Vulkan 1.1 ---- R4-M1: only what is true. No subgroup operation or stage is advertised yet
-    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16). */
+    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16, and Mesa's
+    * pan_subgroup_size() is 16 for every arch >= 9: shader_present 0xee0057 is non-contiguous, the warp is not). */
    memcpy(p->driverUUID, "mali-own-vk\0\0\0\0\0", VK_UUID_SIZE);
    memcpy(p->deviceUUID, &gpu->gpu_id, sizeof(gpu->gpu_id));
-   p->subgroupSize = 16;
+   const unsigned subgroup_size = mali_subgroup_size_for_arch(gpu->arch_major);
+   p->subgroupSize = subgroup_size;
    /* subgroup ops: same set as PanVK on this compiler (bifrost_nir.c lowers the rest); not in vertex shaders (PanVK: no helper-lane guarantees) */
    p->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* fragment stage only after a pixel test */
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
@@ -164,13 +174,15 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
    /* ---- Vulkan 1.3 ---- */
-   p->minSubgroupSize = 16;
-   p->maxSubgroupSize = 16;
+   p->minSubgroupSize = subgroup_size;
+   p->maxSubgroupSize = subgroup_size;
    p->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* min == max == 16: the only size; t_vk_feat sgctl */
-   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
+   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / subgroup_size;
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->maxBufferSize = 1u << 30;
+   p->provokingVertexModePerPipeline = false;   /* the bit lives in the per-render-pass FBD and tiler context */
+   p->transformFeedbackPreservesTriangleFanProvokingVertex = false;
    p->lineSubPixelPrecisionBits = 4;   /* == subPixelPrecisionBits; t_vk_feat linerast */
    p->maxCustomBorderColorSamplers = 4000;   /* == maxSamplerAllocationCount: a custom colour costs nothing beyond the descriptor */
    p->maxVertexAttribDivisor = 0xfffffff;   /* NPOT divisor encoding is exact to 2^28 (t_resources attr_instance) */
@@ -212,6 +224,82 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = false;
 }
 
+/* VK_EXT_physical_device_drm (vk/STEAM-GAPS.md, zink choose_pdev). The GPU is reached through kbase
+ * (/dev/mali0), which is not a DRM device. DroidDeck's guest publishes that same char device as
+ * /dev/dri/renderD<N> (a node with the same st_rdev; its graphics report says "render node for the
+ * guest: /dev/dri/renderD105 -> /dev/mali0 (10:105)"), and that alias is the node an EGL/GBM client
+ * opens and stats, so its major/minor are an honest identity for this physical device.
+ * A node is reported only when stat() proves it is the very device the backend opened; a /dev/dri
+ * node of another device (the guest's /dev/dri/card0 is 226:0) is never claimed, and with no such
+ * alias the extension stays unadvertised (zink 26.0.8 then prints "failed to choose pdev" instead
+ * of being sent to a device it cannot present from).
+ * BL_DRM_STANDIN is the app's declaration of the GPU node (the same variable PanVK's kbase build
+ * reads); MALI_DRM_DIR overrides the directory searched (tests, containers). */
+struct mali_drm_node {
+   dev_t render;
+   dev_t primary;
+};
+
+static dev_t
+mali_gpu_node_rdev(const struct mali_gpu_info *gpu)
+{
+   if (gpu->node_rdev)
+      return (dev_t)gpu->node_rdev;
+
+   const char *standin = getenv("BL_DRM_STANDIN");
+   struct stat st;
+   if (standin && *standin && stat(standin, &st) == 0)
+      return st.st_rdev;
+
+   return 0;
+}
+
+static bool
+mali_drm_node_at(const char *dir, const char *name, dev_t gpu_rdev, dev_t *out)
+{
+   char path[PATH_MAX];
+   struct stat st;
+
+   if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
+      return false;
+   if (stat(path, &st) != 0 || !S_ISCHR(st.st_mode) || st.st_rdev != gpu_rdev)
+      return false;
+
+   *out = st.st_rdev;
+   return true;
+}
+
+static bool
+mali_drm_find_node(const struct mali_gpu_info *gpu, struct mali_drm_node *node)
+{
+   dev_t gpu_rdev = mali_gpu_node_rdev(gpu);
+   *node = (struct mali_drm_node){0};
+   if (!gpu_rdev)
+      return false;
+
+   const char *dir = getenv("MALI_DRM_DIR");
+   if (!dir || !*dir)
+      dir = "/dev/dri";
+
+   DIR *d = opendir(dir);
+   if (!d)
+      return false;
+
+   struct dirent *e;
+   while ((e = readdir(d))) {
+      if (!strncmp(e->d_name, "renderD", 7)) {
+         if (!node->render)
+            mali_drm_node_at(dir, e->d_name, gpu_rdev, &node->render);
+      } else if (!strncmp(e->d_name, "card", 4)) {
+         if (!node->primary)
+            mali_drm_node_at(dir, e->d_name, gpu_rdev, &node->primary);
+      }
+   }
+   closedir(d);
+
+   return node->render || node->primary;
+}
+
 static VkResult
 mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instance *instance,
                           const struct mali_backend_ops *backend, const struct mali_gpu_info *gpu)
@@ -221,7 +309,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
 
-   /* No device extensions and no optional features yet. */
+   struct mali_drm_node drm;
+   bool has_drm = mali_drm_find_node(gpu, &drm);
+
+   /* No optional features yet. */
    const struct vk_device_extension_table extensions = {
       .KHR_timeline_semaphore = true,
       .KHR_sampler_ycbcr_conversion = true,   /* t_vk_feat ycbcr: G8_B8R8_2PLANE_420 */
@@ -237,8 +328,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_swapchain_mutable_format = true,
       .EXT_image_drm_format_modifier = true, /* LINEAR only */
       .EXT_depth_clip_enable = true,         /* t_dxvk_caps; pixels: t_vk_draw fx_dclip_* */
+      .EXT_provoking_vertex = true,          /* FBD word 11 bit 14 + tiler ctx word 2 bit 18 (First provoking vertex); t_cmd provoking checks. NOT per pipeline: one mode per render pass */
+      .EXT_extended_dynamic_state3 = true,   /* polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
       .KHR_shader_expect_assume = true,      /* t_dxvk_caps: spirv_to_nir default caps include ExpectAssumeKHR (OpExpectKHR passthrough, OpAssumeTrueKHR dropped) */
-      .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
+      .KHR_load_store_op_none = true,        /* t_cmd loadstore: LOAD_OP_NONE/DONT_CARE do not preload, LOAD does; STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
       .EXT_custom_border_color = true,       /* t_vk_feat cbc: runtime border_color_value -> sampler descriptor words 4..7 (same path as the fixed colours) */
@@ -252,7 +345,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
       .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
-      .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; logicOp/patchControlPoints stay off */
+      .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; dynamic LogicOp/patchControlPoints stay off (static logicOp runs through the blend shader) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
       /* Promoted-to-core names whose feature bit is already true and probed (t_vk_draw/t_vk_meta/t_vk_feat); ANGLE and DXVK look at the extension name.
@@ -267,6 +360,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
       .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
+   /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
+   struct vk_device_extension_table enabled = extensions;
+   if (has_drm)
+      enabled.EXT_physical_device_drm = true;
    /* The ONE feature table (R4-PLAN rule). A bit is true only if tests/t_vk_info.c probes it and passes;
     * dynamicRendering is probed by t_vk_draw/t_vk_meta (BeginRendering draws). Everything else stays false. */
    const struct vk_features features = {
@@ -283,7 +380,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,
-      .sampleRateShading = mali_experimental_msaa(),   /* MALI_EXPERIMENTAL_MSAA=1 */
+      .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
       .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
@@ -301,7 +398,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .subgroupSizeControl = true, .computeFullSubgroups = true,        /* t_vk_feat sgctl */
       .inlineUniformBlock = true,  /* t_vk_feat inlineub */
       .shaderDemoteToHelperInvocation = true,                           /* t_vk_feat demote */
+      .extendedDynamicState3PolygonMode = true,   /* mali_cmd.c: dyn->rs.polygon_mode -> gfx.poly_mode */
       .shaderIntegerDotProduct = true,                                  /* t_vk_feat intdot (vtn lowers OpSDot/UDot/SUDot; bifrost_nir.c lowers the unaccelerated forms) */
+      .provokingVertexLast = true, /* mali_cmd.c snapshot_draw -> frame.provoking_last -> FBD/tiler ctx bit cleared */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .extendedDynamicState = true,
       .maintenance5 = true,        /* t_vk_feat maint5 */
@@ -310,7 +409,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .minLod = true,              /* t_image view_min_lod */
       .unifiedImageLayouts = true, /* t_dxvk_caps unified */
       .nullDescriptor = true,      /* t_vk_feat nulld */
-      .extendedDynamicState2 = true,   /* t_dxvk_caps; LogicOp (cmd.c unsupported) and PatchControlPoints (no tessellation) stay false */
+      .extendedDynamicState2 = true,   /* t_dxvk_caps; dynamic LogicOp stays false (static logicOp runs through the blend shader) and PatchControlPoints stays false (no tessellation) */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
       .vertexAttributeInstanceRateDivisor = false, .vertexAttributeInstanceRateZeroDivisor = true,   /* divisor > 1 is NOT advertised: the hardware divides (firstInstance + i), Vulkan wants firstInstance + i / divisor, and dEQP draw.*.instanced.*attrib_divisor_{2,20} (firstInstance 0,1,3,4,20) Fail on v13 (job 20261118-142435-48673771); needs a per-run descriptor rebase. Implementation stays in mali_cs_emit.c. t_vk_feat divisor (zero: divisor 1 with stride 0, as panvk) */
@@ -322,12 +421,24 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .dualSrcBlend = true,        /* t_vk_draw fx_dual_* (blend shader) */
       .fillModeNonSolid = true,    /* t_vk_draw --only poly (line: CPU-built edge index list; point: point list) */
       .occlusionQueryPrecise = true, /* t_vk_draw occlusion: exact covered-pixel counts with the PRECISE bit */
+      .logicOp = true,             /* t_vk_draw fx_logic_* (static logicOpEnable through the blend shader) */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */
    };
    struct vk_properties properties;
    mali_get_properties(gpu, &properties);
+   /* VK_EXT_physical_device_drm: the numbers are stat() of the node that backs /dev/mali0 (the bridge's
+    * renderD<N> alias in the guest), so a stat-based consumer matches. A drmGetDevice2-based consumer
+    * (zink's zink_render_rdev) still fails: the node is a misc char device, not a DRM device. */
+   if (has_drm) {
+      properties.drmHasRender = drm.render != 0;
+      properties.drmRenderMajor = major(drm.render);
+      properties.drmRenderMinor = minor(drm.render);
+      properties.drmHasPrimary = drm.primary != 0;
+      properties.drmPrimaryMajor = major(drm.primary);
+      properties.drmPrimaryMinor = minor(drm.primary);
+   }
 
-   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &extensions, &features,
+   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &enabled, &features,
                                              &properties, &dispatch_table);
    if (result != VK_SUCCESS)
       return result;
@@ -335,6 +446,27 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    pdev->backend = backend;
    pdev->gpu = *gpu;
    mali_sync_init_physical(pdev);
+
+   /* Device-wide commit budget. kbase commits and pins every byte of a native BO at allocation time
+    * (libkbase/src/bo.c:45, commit_pages = va_pages), so it is not reclaimable under pressure: without a
+    * total, a session can pin half of RAM (the heap we advertise) and take the phone into an OOM panic.
+    * Default: half the advertised heap, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. */
+   {
+      long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+      uint64_t ram = pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
+      uint64_t cap = gpu->heap_bytes / 2;
+      if (ram && ram / 4 < cap)
+         cap = ram / 4;
+      const char *env = getenv("MALI_VRAM_CAP_MB");
+      if (env && env[0])
+         cap = strtoull(env, NULL, 10) << 20;
+      pdev->mem_cap = cap;
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
+                 (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
+                 env && env[0] ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 pdev->gpu.name);
+   }
 
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
     * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
@@ -403,6 +535,9 @@ mali_destroy_physical_device(struct vk_physical_device *vk_pdev)
    struct vk_instance *instance = vk_pdev->instance;
 
    mali_wsi_finish(pdev);
+   /* Every VkDeviceMemory of this physical device is gone with its devices; a non-zero counter here would mean
+    * one was leaked, so it must not be inherited by anything that reuses the slot. */
+   pdev->mem_used = 0;
    vk_physical_device_finish(&pdev->vk);
    vk_free(&instance->alloc, pdev);
 }
