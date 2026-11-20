@@ -138,6 +138,11 @@ mali_wsi_x11_probe(VkIcdSurfaceBase *surface, struct mali_wsi_x11_probe *p)
    VkIcdSurfaceXcb *s = (VkIcdSurfaceXcb *)surface;
    if (!s->connection)
       return;
+   /* Batch the three queries into one round trip, and ask for them up front: retrieving a reply can still
+    * block while the server answers, unlike a lookup in an already-fetched setup reply. */
+   xcb_prefetch_extension_data(s->connection, &xcb_dri3_id);
+   xcb_prefetch_extension_data(s->connection, &xcb_present_id);
+   xcb_prefetch_extension_data(s->connection, &xcb_shm_id);
    const struct xcb_query_extension_reply_t *dri3 = xcb_get_extension_data(s->connection, &xcb_dri3_id);
    const struct xcb_query_extension_reply_t *present = xcb_get_extension_data(s->connection, &xcb_present_id);
    const struct xcb_query_extension_reply_t *shm = xcb_get_extension_data(s->connection, &xcb_shm_id);
@@ -216,7 +221,9 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u\n", (unsigned long long)n,
               info->swapchainCount, info->waitSemaphoreCount);
    VkResult r = wsi_QueuePresentKHR(queue, info);
-   if (mali_wsi_debug() || r != VK_SUCCESS)
+   /* SUBOPTIMAL/OUT_OF_DATE are normal swapchain states, not errors: one line per frame would be noise. */
+   bool quiet = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR;
+   if (mali_wsi_debug() || !quiet)
       fprintf(stderr, "mali_vk: wsi present #%llu -> %s (%d)\n", (unsigned long long)n, vk_Result_to_str(r), (int)r);
    return r;
 }
