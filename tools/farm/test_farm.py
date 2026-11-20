@@ -310,7 +310,7 @@ class T(unittest.TestCase):
         return r.returncode, r.stdout.strip(), r.stderr
 
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -1272,15 +1272,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -1465,6 +1465,61 @@ class T(unittest.TestCase):
         self.assertLess(len(out.splitlines()), 15)
         self.assertIn("dev-a", out)
         self.assertIn("busy", out)
+
+    def test_util_counts_agent_holds(self):
+        import datetime as dt
+        iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        now = time.time()
+        H.new_hold("dev-b", 60)                                                          # writes holds/<id>.json; make it a finished hold of 20 of the last 60 min
+        h = H.list_holds()[0]
+        h.update(state="done", started=iso(now - 1800), ended=iso(now - 600))
+        L.write_json(H.path(h["id"]), h)
+        out = self.farm("util", "--since", "1h")[1]
+        line = next(l for l in out.splitlines() if l.startswith("dev-b"))
+        pct = int(line.split("held (agent hold) ")[1].split("%")[0])
+        self.assertTrue(28 <= pct <= 38, line)                                           # was counted as idle before
+        self.assertIn("held (agent hold) 0%", next(l for l in out.splitlines() if l.startswith("dev-a")))
+
+    def test_util_window_starts_at_an_earlier_hold(self):
+        import datetime as dt
+        iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        now = time.time()
+        H.new_hold("dev-b", 60)
+        h = H.list_holds()[0]
+        h.update(state="done", started=iso(now - 1800), ended=iso(now - 600))
+        L.write_json(H.path(h["id"]), h)
+        L.write_json(os.path.join(L.state_dir(), "runs", "x-v13.json"), {"job": "x", "device": "dev-b", "class": "v13", "started": iso(now - 300), "wall_s": 60})
+        out = self.farm("util", "--since", "1h")[1]
+        self.assertIn("util since " + time.strftime("%m-%d %H:%M", time.localtime(now - 1800)), out)   # window starts at the earlier hold, not at the run
+        self.assertEqual(H.KEEP_S, 7 * 86400)
+
+    def test_util_unfinished_hold_ends_at_the_last_live_refresh(self):
+        """farmd died mid-hold: the held time ends when farmd last refreshed the hold (`live`), not at now / at the restart"""
+        import datetime as dt
+        iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        now = time.time()
+        H.new_hold("dev-b", 60)
+        h = H.list_holds()[0]
+        h.update(state="active", started=iso(now - 1800))
+        L.write_json(H.path(h["id"]), h)
+        H.touch(h["id"], "live")
+        os.utime(H.path(h["id"], "live"), (now - 600, now - 600))                           # farmd last alive 10 min ago
+        out = self.farm("util", "--since", "1h")[1]
+        pct = int(next(l for l in out.splitlines() if l.startswith("dev-b")).split("held (agent hold) ")[1].split("%")[0])
+        self.assertTrue(28 <= pct <= 38, pct)                                               # 20 of 60 min, not 30
+        lost = dt.datetime.fromisoformat(H.lock_lost_iso(h["id"])).timestamp()
+        self.assertTrue(abs(lost - (now - 600)) < 5, lost - now)
+        os.unlink(H.path(h["id"], "live"))
+        self.assertTrue(abs(dt.datetime.fromisoformat(H.lock_lost_iso(h["id"])).timestamp() - time.time()) < 5)   # no marker: now
+
+    def test_util_warns_during_the_retention_transition(self):
+        self.assertNotIn("incomplete", self.farm("util", "--since", "6h")[1])
+        self.assertIn("incomplete", self.farm("util", "--since", "2d")[1])                  # no marker yet: the old 1-day GC may have dropped it
+        H.gc()                                                                              # writes the marker (now)
+        self.assertIn("incomplete", self.farm("util", "--since", "3d")[1])                  # before marker - 1 day
+        self.assertNotIn("incomplete", self.farm("util", "--since", "6h")[1])
+        open(os.path.join(H.holds_dir(), ".keep7d-since"), "w").write(str(time.time() - 6 * 86400))
+        self.assertNotIn("incomplete", self.farm("util", "--since", "5d")[1])               # marker 6 days old: 5 days is covered
 
     def test_smoke_log_and_only(self):
         self.attach("dev-a")

@@ -1398,11 +1398,13 @@ class Farm:
             now = time.time()
             h.update(state="active", started=L.now(), deadline=now + h["max_s"], lock=dev["lock"], serial=self.tid.get(alias) or dev["serial"])
             L.write_json(H.path(hid), h)
+            H.touch(hid, "live")
             log(f"{alias}: hold {hid} active (max {h['max_s']}s, waited {int(now - h['seq'] / 1e9)}s)")
             while True:
                 why = H.end_reason(h, H.age(hid), H.released(hid), disabled=self.is_disabled(dev))
                 if why:
                     break
+                H.touch(hid, "live")                                 # farmd is alive and owns the lock: a crash leaves this as the end of the held time
                 time.sleep(0.2 if self.fake else 2)
             h = L.read_json(H.path(hid))
             h.update(state="ending", reason=why)                     # the caller kills its command NOW: cleanup must not race a live command
@@ -1901,7 +1903,7 @@ class Farm:
         self.threads = {a: t for a, t in self.threads.items() if t.is_alive()}
         for h in H.list_holds():                                                  # farmd restarted mid-hold: its lock died with it
             if h["state"] == "active" and not any(t.name == "hold/" + h["device"] for t in self.threads.values()):
-                h.update(state="done", ended=L.now(), reason="farmd restarted", clean=False, clean_note="restore runs before the next job or hold")
+                h.update(state="done", ended=H.lock_lost_iso(h["id"]), reason="farmd restarted", clean=False, clean_note="restore runs before the next job or hold")
                 L.write_json(H.path(h["id"]), h)
                 self.restore_pending.add(h["device"])
         H.gc()
