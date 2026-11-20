@@ -13,6 +13,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "kbase_cs.h"
 #include "kbase_draw.h"
@@ -555,12 +556,16 @@ mali_queue_device_init(struct mali_device *dev)
    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
    pthread_cond_init(&dev->sync_cv, &ca);
    pthread_condattr_destroy(&ca);
+   dev->last_submit_fd = -1;
    return VK_SUCCESS;
 }
 
 void
 mali_queue_device_finish(struct mali_device *dev)
 {
+   if (dev->last_submit_fd >= 0)
+      close(dev->last_submit_fd);
+   dev->last_submit_fd = -1;
    pthread_cond_destroy(&dev->sync_cv);
    pthread_mutex_destroy(&dev->sync_lock);
 }
@@ -658,6 +663,20 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          pthread_mutex_lock(&dev->sync_lock);
          container_of(s, struct mali_sync, vk)->owner = vq;
          pthread_mutex_unlock(&dev->sync_lock);
+      }
+   }
+   /* Hand the submission's fence to the WSI: the frame it covers is waited for when its swapchain image is
+    * reused, not here and not in vkQueuePresentKHR (mali_wsi.c). A dup because fd is closed below and the
+    * runtime owns this one. */
+   if (mali_wsi_sync_enabled() && fd >= 0) {
+      int d = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+      if (d >= 0) {
+         pthread_mutex_lock(&dev->sync_lock);
+         int old = dev->last_submit_fd;
+         dev->last_submit_fd = d;
+         pthread_mutex_unlock(&dev->sync_lock);
+         if (old >= 0)
+            close(old);
       }
    }
    close(fd);
