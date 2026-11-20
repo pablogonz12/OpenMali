@@ -420,6 +420,8 @@ main(int argc, char **argv)
    } else if (dev) {
       ((PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice"))(dev, NULL);
    }
+   /* An instance left alive is reported by LSan in the sanitizer run (MALI_SAN=1 MALI_SAN_LEAKS=1 ./check.sh). */
+   ((PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance"))(inst, NULL);
    printf(g_fail ? "t_steam_caps FAILED\n" : "t_steam_caps OK\n");
    return g_fail;
 }
