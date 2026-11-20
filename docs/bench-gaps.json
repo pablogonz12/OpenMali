@@ -104,8 +104,8 @@
    "best_eligible": []
   },
   "vkcube-wayland": {
-   "rows": 6,
-   "valid_points": 3,
+   "rows": 9,
+   "valid_points": 6,
    "best_eligible": [
     [
      "cmf",
@@ -164,7 +164,7 @@
    "state": "missing",
    "value": 100,
    "why": "moves a line's endpoint (series has data)",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "next mali-open commit",
@@ -1865,7 +1865,7 @@
    "state": "missing",
    "value": 10,
    "why": "another version of an existing series",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "mali-open ICD at 549fae7c",
@@ -1984,9 +1984,9 @@
    "state": "measured",
    "value": 0,
    "why": "measured",
-   "series_valid": 3,
-   "points": 3,
-   "valid_points": 3
+   "series_valid": 6,
+   "points": 6,
+   "valid_points": 6
   },
   {
    "device": "cmf",
@@ -2098,7 +2098,7 @@
    "state": "missing",
    "value": 100,
    "why": "moves a line's endpoint (series has data)",
-   "series_valid": 3,
+   "series_valid": 6,
    "runbook": {
     "device": "CMF Phone 1 (v11, G615)",
     "apk_or_driver": "next mali-open commit",
@@ -3113,8 +3113,8 @@
    "device": "cmf",
    "stack": "mali-open",
    "workload": "vkcube-wayland",
-   "points": 3,
-   "valid": 3,
+   "points": 6,
+   "valid": 6,
    "hollow": 0,
    "last": "65feef75"
   }

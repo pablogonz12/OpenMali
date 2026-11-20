@@ -196,31 +196,51 @@ def series_caption(rows):
             continue
         ver = "" if r["stack"] == "bridge" else str(r.get("version"))
         g = groups.setdefault((r["stack"], r["device"], ver),
-                              {"n": 0, "reps": 0, "versions": []})
+                              {"n": 0, "reps": 0, "versions": [], "last": None, "runs": {}})
         g["n"] += 1
         g["reps"] = max(g["reps"], r.get("reps") or 0)
         if str(r.get("version")) not in g["versions"]:
             g["versions"].append(str(r.get("version")))
+        if g["last"] is None or str(r["ts"]) > str(g["last"]["ts"]):
+            g["last"] = r
+        if (r.get("reps") or 0) >= 3:
+            g["runs"].setdefault(str(r.get("run") or "—"), []).append(r["fps"])
     parts = []
     for (stack, dev, ver), g in sorted(groups.items()):
         ident = escape(ver) if ver else "/".join(escape(v) for v in g["versions"])
+        last = g["last"]
+        # Two runs of one build are two rows sets on the same line: name the newest one so the
+        # reader can tell the current point from the superseded one (history is kept).
+        runs = sorted(((k, median(v), len(v)) for k, v in g["runs"].items()),
+                      key=lambda kv: kv[1])
+        tail = ""
+        if len(runs) > 1:
+            # Two sessions of one build: say which row-set is the superseded one and which is
+            # the current best, instead of leaving one number for the line.
+            tail = ", runs " + ", ".join(f"`{k}` median {m:.1f} ({n} reps)" for k, m, n in runs)
+            tail += f" — current best `{runs[-1][0]}`"
         parts.append(f"{stack}/{DEVICE_NAME.get(dev, dev)} `{ident}` — {g['n']} row(s), "
-                     f"reps={g['reps']}")
+                     f"reps={g['reps']}, latest {last['fps']:.1f} @"
+                     f"{str(last['ts'])[5:16].replace('T', ' ')}"
+                     + (f", off-cad {last['off_cadence_pct']:.1f} %"
+                        if last.get("off_cadence_pct") is not None else "")
+                     + tail)
     return ("series (one line per build; a driver sha is never joined with another): "
             + "; ".join(parts)) if parts else ""
 
 
 def table(rows):
     out = ["| when | device | stack | version | profile | displayed fps | panel Hz | reps | "
-           "brightness | status | render_fps (not plotted) | note |",
-           "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+           "brightness | off-cad % | status | render_fps (not plotted) | note |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         fps = f"{r['fps']:.1f}" if visible(r) else "0"
         bright = "-" if r.get("brightness_mean") is None else f"{r['brightness_mean']:.2f}"
         rf = "-" if r.get("render_fps") is None else f"{r['render_fps']:.1f}"
+        oc = "-" if r.get("off_cadence_pct") is None else f"{r['off_cadence_pct']:.1f}"
         out.append(f"| {escape(str(r['ts'])[:16].replace('T', ' '))} | {r['device']} | "
                    f"{r['stack']} | {escape(str(r['version']))} | {r.get('profile')} | {fps} | "
-                   f"{r.get('panel_hz')} | {r.get('reps')} | {bright} | {r.get('status')} | "
+                   f"{r.get('panel_hz')} | {r.get('reps')} | {bright} | {oc} | {r.get('status')} | "
                    f"{rf} | {escape(str(r.get('note') or ''))} |")
     return "\n".join(out)
 
@@ -234,17 +254,18 @@ def median(values):
 
 
 def bests(rows):
-    """'best' = median of >= 3 reps at the same device/stack/version/profile, panel and day."""
+    """'best' = median of >= 3 reps: one row per run of the same device/stack/version/profile."""
     groups = {}
     for r in rows:
         if not (visible(r) and r.get("profile") == "default" and (r.get("reps") or 0) >= 3):
             continue
-        key = (r["device"], r["stack"], r["version"], r["profile"], r["panel_hz"], r["ts"][:10])
+        key = (r["device"], r["stack"], r["version"], r["profile"], r["panel_hz"], r["ts"][:10],
+               r.get("run") or "")
         groups.setdefault(key, []).append(r)
     out = []
-    for (dev, st, ver, prof, panel, day), group in sorted(groups.items()):
+    for (dev, st, ver, prof, panel, day, run), group in sorted(groups.items()):
         out.append({"device": dev, "stack": st, "version": ver, "profile": prof, "day": day,
-                    "panel_hz": panel, "reps": len(group),
+                    "run": run, "panel_hz": panel, "reps": len(group),
                     "median_fps": round(median([r["fps"] for r in group]), 1),
                     "values": [r["fps"] for r in group]})
     return out
@@ -336,10 +357,11 @@ def build(rows):
         lines += [chart(wrows, wl), ""]
         best = bests(wrows)
         if best:
-            lines += ["| day | device | stack | version | profile | panel Hz | median fps | reps |",
-                      "|---|---|---|---|---|---|---|---|"]
+            lines += ["| day | run | device | stack | version | profile | panel Hz | median fps | reps |",
+                      "|---|---|---|---|---|---|---|---|---|"]
             for b in best:
-                lines.append(f"| {b['day']} | {b['device']} | {b['stack']} | {escape(b['version'])} | "
+                lines.append(f"| {b['day']} | {escape(b.get('run') or '—')} | {b['device']} | "
+                             f"{b['stack']} | {escape(b['version'])} | "
                              f"{b['profile']} | {b['panel_hz']} | **{b['median_fps']}** | "
                              f"{b['reps']} ({', '.join(f'{v:.1f}' for v in b['values'])}) |")
             lines.append("")

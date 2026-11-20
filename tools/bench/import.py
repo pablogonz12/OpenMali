@@ -54,7 +54,7 @@ DRIVER_WORKLOADS = ("vkcube-wayland", "vkcube-xcb")
 PANEL = {"x8": 120, "cmf": 120, "x4": 144}  # fallback only when the log omits panel_hz
 FIELDS = ("ts", "device", "stack", "version", "driver_sha", "workload", "metric", "profile",
           "fps", "panel_hz", "reps", "brightness_mean", "status", "source",
-          "render_fps", "presented_fps", "note")
+          "render_fps", "presented_fps", "off_cadence_pct", "run", "note")
 
 
 def read_jsonl(path):
@@ -262,6 +262,9 @@ def from_driver(sink):
             "source": src,
             "render_fps": None,
             "presented_fps": None,
+            "off_cadence_pct": (round(float(r["off_cadence_pct"]), 2)
+                                if isinstance(r.get("off_cadence_pct"), (int, float)) else None),
+            "run": str(r.get("run") or ""),
             "note": str(r.get("note") or ""),
         })
 
@@ -275,11 +278,15 @@ def from_seed(sink):
 
 
 def assign_reps(rows):
-    """reps = visible reps in the same (device, stack, version, workload, profile, panel, day)."""
+    """reps = visible reps in the same (device, stack, version, workload, profile, panel, day, run).
+
+    Two separate sessions of one build on one day are two groups: a run that replaces an earlier
+    one (same sha, better pacing) does not silently turn into a 6-rep group and move the median.
+    """
     groups = {}
     for r in rows:
         key = (r["device"], r["stack"], r["version"], r["workload"], r["profile"],
-               r["panel_hz"], r["ts"][:10])
+               r["panel_hz"], r["ts"][:10], r.get("run") or "")
         groups.setdefault(key, []).append(r)
     for group in groups.values():
         visible = sum(1 for r in group if r["status"] == "visible" and r["fps"] and r["fps"] > 0)

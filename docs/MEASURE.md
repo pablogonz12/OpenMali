@@ -92,8 +92,19 @@ value. It is never clamped to the ceiling, because a clamped number hides the bu
 ```
 {ts, device, stack, version, driver_sha, workload, metric:"displayed_fps", profile, fps,
  panel_hz, reps, brightness_mean, status: visible|black|crash|not_run|unverified, source,
- render_fps, presented_fps, note}
+ render_fps, presented_fps, off_cadence_pct, run, note}
 ```
+
+`off_cadence_pct` is the share of presents that missed a refresh slot (the `pacing` harness
+reports it next to the fps). It is the signal that a rate is *even* rather than an average that
+hides stutter: 0.8 % on 118 fps is clean pacing, 40 % would not be. Informational like
+`render_fps` — it never replaces `fps`.
+
+`run` names one measurement session (`r1`, `r2`, …) when the same device/build/lane is measured
+twice on the same day. Two sessions are two groups: `reps` counts the reps inside one run and
+`best` is per run, so a newer run that supersedes an older one shows as its own row instead of
+being pooled into a 6-rep median. The older run stays in the store (history is never deleted);
+its `note` says what superseded it.
 
 `render_fps` / `presented_fps` are informational only. Charts read `fps` only, draw the panel
 ceiling (X8/CMF 120 Hz, X4 144 Hz) as a dashed line, and label every point with its `reps`.
