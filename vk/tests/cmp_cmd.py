@@ -217,6 +217,13 @@ for arch in (11, 13):
     else:
         print(w.stdout.strip().splitlines()[-1])
 
+    # load/store ops: per-attachment NONE/DONT_CARE must not preload, LOAD must (t_cmd --loadstore, record-time frame draw list)
+    l = run(['%s/t_cmd%d' % (out, arch), '--loadstore'], {'KB_FAKE_ARCH': str(arch)})
+    if l.returncode or 'FAIL' in l.stdout or '"test":"t_cmd%d"' % arch not in l.stdout:
+        fails.append('v%d loadstore: %s' % (arch, (l.stdout + l.stderr).strip()[-400:]))
+    else:
+        print(' '.join(x for x in l.stdout.splitlines() if 'ui_like' in x))
+
     # M13: occlusion draw + deferred op + ops frame (t_cmd --m13), our dump only: static rules, and the decoded stream must contain what was recorded
     md = '%s/m%d.jsonl' % (out, arch)
     if os.path.exists(md):

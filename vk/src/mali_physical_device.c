@@ -3,6 +3,7 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_compile.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -148,10 +149,12 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
             gpu->fake ? ", fake backend" : "");
 
    /* ---- Vulkan 1.1 ---- R4-M1: only what is true. No subgroup operation or stage is advertised yet
-    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16). */
+    * (R4-M4); the warp is 16 lanes on Valhall/5th gen (PanVK oracle on the same GPU reports 16, and Mesa's
+    * pan_subgroup_size() is 16 for every arch >= 9: shader_present 0xee0057 is non-contiguous, the warp is not). */
    memcpy(p->driverUUID, "mali-own-vk\0\0\0\0\0", VK_UUID_SIZE);
    memcpy(p->deviceUUID, &gpu->gpu_id, sizeof(gpu->gpu_id));
-   p->subgroupSize = 16;
+   const unsigned subgroup_size = mali_subgroup_size_for_arch(gpu->arch_major);
+   p->subgroupSize = subgroup_size;
    /* subgroup ops: same set as PanVK on this compiler (bifrost_nir.c lowers the rest); not in vertex shaders (PanVK: no helper-lane guarantees) */
    p->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* fragment stage only after a pixel test */
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
@@ -174,10 +177,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
    /* ---- Vulkan 1.3 ---- */
-   p->minSubgroupSize = 16;
-   p->maxSubgroupSize = 16;
+   p->minSubgroupSize = subgroup_size;
+   p->maxSubgroupSize = subgroup_size;
    p->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;   /* min == max == 16: the only size; t_vk_feat sgctl */
-   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / 16;
+   p->maxComputeWorkgroupSubgroups = p->maxComputeWorkGroupInvocations / subgroup_size;
    p->storageTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->uniformTexelBufferOffsetAlignmentBytes = p->minTexelBufferOffsetAlignment;
    p->maxBufferSize = 1u << 30;
@@ -332,7 +335,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_provoking_vertex = true,          /* FBD word 11 bit 14 + tiler ctx word 2 bit 18 (First provoking vertex); t_cmd provoking checks. NOT per pipeline: one mode per render pass */
       .EXT_extended_dynamic_state3 = true,   /* polygonMode only (mali_cmd.c snapshot); every other extendedDynamicState3* bit stays false. t_vk_draw poly_dyn_* */
       .KHR_shader_expect_assume = true,      /* t_dxvk_caps: spirv_to_nir default caps include ExpectAssumeKHR (OpExpectKHR passthrough, OpAssumeTrueKHR dropped) */
-      .KHR_load_store_op_none = true,        /* t_cmd: LOAD_OP_NONE == LOAD path, STORE_OP_NONE */
+      .KHR_load_store_op_none = true,        /* t_cmd loadstore: LOAD_OP_NONE/DONT_CARE do not preload, LOAD does; STORE_OP_NONE */
       .EXT_line_rasterization = true, .KHR_line_rasterization = true,   /* t_vk_feat linerast: rectangularLines only (hardware default wide line) */
       .KHR_maintenance1 = true,              /* promoted 1.1 name (zink checks the extension, not the version): t_steam_caps TrimCommandPoolKHR */
       .EXT_custom_border_color = true,       /* t_vk_feat cbc: runtime border_color_value -> sampler descriptor words 4..7 (same path as the fixed colours) */
