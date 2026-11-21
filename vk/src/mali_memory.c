@@ -50,8 +50,11 @@ mali_fd_is_dmabuf(struct mali_device *dev, int fd)
       return false;
    if (mali_device_pdev(dev)->gpu.fake)
       return true;
-   struct statfs sf;
-   return fstatfs(fd, &sf) == 0 && (unsigned long)sf.f_type == DMA_BUF_MAGIC;
+   /* bisect: 8f6d5df6/070ad057 replaced this ioctl test with fstatfs(DMA_BUF_MAGIC), which rejects real dma-bufs
+    * inside the guest (proot/Android: f_type is not DMA_BUF_MAGIC), so vkGetMemoryFdPropertiesKHR returned
+    * VK_ERROR_INVALID_EXTERNAL_HANDLE. Restored the pre-8f6d5df6 test for this build only. */
+   struct dma_buf_sync s = {.flags = 0};
+   return ioctl(fd, DMA_BUF_IOCTL_SYNC, &s) < 0 && errno == EINVAL;
 }
 
 /* Reserve `size` against the device-wide commit budget before anything is allocated, so an over-budget
