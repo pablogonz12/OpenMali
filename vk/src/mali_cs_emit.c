@@ -216,6 +216,7 @@ struct ddesc {   /* per-draw GPU blocks */
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
    uint32_t bl23[2];         /* words 2..3 of the blend descriptor (CPU copy: the arena is write-combined, never read back) */
+   uint64_t occ_scratch;     /* THROWAWAY occ (notes/occ.md): counter buffer for a draw given an occlusion mode by MALI_FORCE_OCC */
    bool static_same;         /* this draw's static state (pipeline, FX, bound sets, firstInstance) equals the previous draw's (s1) */
    bool dyn_same;            /* ... and so do its dynamic offsets (s2) */
 };
@@ -293,6 +294,14 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    const unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;   /* SRT entries: driver set, user sets, (dynamic table at MALI_DYN_TABLE) */
    const unsigned res_alloc = (((nres + 3) & ~3u) * KB_RES_SIZE + 63u) & ~63u;   /* 64-aligned: the dynamic table follows it in the same block */
    const unsigned dyn_alloc = d->ndyn ? ((d->ndyn * KB_DESC_SET_STRIDE) + 63u) & ~63u : 0;
+
+   if (getenv("MALI_FORCE_OCC") && atoi(getenv("MALI_FORCE_OCC")) && !d->occ_va) {
+      /* THROWAWAY occ (notes/occ.md): the query path also hands the draw a counter address; a draw forced into counter mode
+       * without a query gets this zeroed 64-byte buffer so the OQ register is never a null pointer in counter mode */
+      uint64_t va = 0;
+      Anz(hw, 64, 64, &va);
+      o->occ_scratch = va;
+   }
 
    /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter. */
    const bool s1 = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
@@ -872,9 +881,20 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB_IDVS_LOW_DEPTH_CLAMP, minz);
       M32(c, KB_IDVS_HIGH_DEPTH_CLAMP, maxz);
-      M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
+      /* THROWAWAY occ (notes/occ.md): MALI_FORCE_OCC=<0..3> replaces the draw's occlusion mode, with the counter address the
+       * query path would hand it (its own, or the scratch buffer when the draw has no query) */
+      unsigned occ_mode = d->occ_mode & 3u;
+      uint64_t oq_va = occ_mode ? d->occ_va : 0;
+      int occ_forced = 0;
+      if (getenv("MALI_FORCE_OCC")) {
+         unsigned m = (unsigned)atoi(getenv("MALI_FORCE_OCC")) & 3u;
+         occ_forced = 1;
+         occ_mode = m;
+         oq_va = m ? (d->occ_va ? d->occ_va : o->occ_scratch) : 0;
+      }
+      M48(c, KB_IDVS_OQ, oq_va);
       uint32_t tflags = (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d);
-      uint32_t dcd0w = kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14);
+      uint32_t dcd0w = kb_draw_dcd0(&dop) | dcd_extra | (occ_mode << 14);
       if (getenv("MALI_FLIP_FF"))   /* THROWAWAY facedbg A/B (notes/facedbg.md): emit the other front-face bit, nothing else */
          dcd0w ^= 1u << 16;
       if (getenv("MALI_FACEDBG")) {   /* THROWAWAY facedbg: the cull/front-face bits actually emitted */
@@ -884,6 +904,19 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
                     dn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, dcd0w,
                     (dcd0w >> 16) & 1u, (dcd0w >> 17) & 3u, tflags, (int)g->depth_test, (int)f->has_zs,
                     getenv("MALI_FLIP_FF") ? 1 : 0);
+      }
+      if (getenv("MALI_OCCDBG")) {   /* THROWAWAY occ (notes/occ.md): every register the occlusion/query path can change for this draw */
+         static unsigned on;
+         if (on++ < 80)
+            fprintf(stderr, "mali_occdbg: DRAW n=%u step=%s draw_id=%u prim=%u count=%u app_mode=%u app_oq=0x%llx forced=%d"
+                    " | dcd0=0x%08x occ_bits=%u front=%u cull=%u | OQ=0x%llx | tflags=0x%08x dcd1=0x%08x dcd2=0x%08x"
+                    " (no other IDVS register reads occ_mode/occ_va)\n",
+                    on, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, d->count,
+                    d->occ_mode & 3u, (unsigned long long)d->occ_va, occ_forced, dcd0w, (dcd0w >> 14) & 3u,
+                    (dcd0w >> 16) & 1u, (dcd0w >> 17) & 3u, (unsigned long long)oq_va, tflags,
+                    kb_draw_dcd1(0xffff, nort ? 0 : 1), kb_draw_dcd2(0, nort ? 0 : 1, 1, 1));
+         else if (on == 81)
+            fprintf(stderr, "mali_occdbg: ... (MALI_OCCDBG limit, 80 draws)\n");
       }
       M32(c, KB_IDVS_TILER_FLAGS, tflags);
       M32(c, KB_IDVS_DCD0, dcd0w);
@@ -922,8 +955,15 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M64(c, KB13_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB13_IDVS_INDEX_BUFFER_SIZE, d->indexed ? d->index_bytes : 0);
       M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
-      M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
+      unsigned occ_mode13 = d->occ_mode & 3u;
+      uint64_t oq_va13 = occ_mode13 ? d->occ_va : 0;
+      if (getenv("MALI_FORCE_OCC")) {
+         unsigned m = (unsigned)atoi(getenv("MALI_FORCE_OCC")) & 3u;
+         occ_mode13 = m;
+         oq_va13 = m ? (d->occ_va ? d->occ_va : o->occ_scratch) : 0;
+      }
+      M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | (occ_mode13 << 14));
+      M64(c, KB13_IDVS_OQ, oq_va13);
       if (!o->static_same) {
          M48(c, KB13_IDVS_VERTEX_SPD, o->spd_p);
          M48(c, KB13_IDVS_FRAGMENT_SPD, o->spd_f);
