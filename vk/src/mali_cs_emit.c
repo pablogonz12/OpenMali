@@ -719,6 +719,16 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
                           kb_draw_dcd1(0xffff, nort ? 0 : 1), kb_draw_dcd2(0, nort ? 0 : 1, 1, 1),
                           (unsigned long long)(nort ? 0 : (o->bl | 1)), g->vs->generic_size_B, g->samples,
                           (unsigned)(d->fx.set ? d->fx.wmask : 0xf), (int)d->fx.blend_en, (int)f->colour.store);
+            /* THROWAWAY RTDBG: the IDVS words that carry the draw's count / start / index buffer, exactly as emitted:
+             * KB_IDVS_INDEX_COUNT = d->count, INSTANCE_COUNT, INDEX_OFFSET = d->first_index,
+             * INDEX_BUFFER_SIZE = indexed ? index_bytes : 0, INDEX_BUFFER = indexed ? index_va : 0.
+             * gl_VertexID itself is the hardware's index stream (index + first_vertex): no register of ours carries
+             * the per-vertex value, so these five words and the sysval inputs are what can be read. */
+            mali_dbg_line("emit", "RTFIELDS2 count_reg=%u inst_reg=%u offset_reg=%u bufsize_reg=%u buf_reg=0x%llx indexed=%d "
+                                  "index_size=%u first_vertex=%d first_instance=%u draw_id=%u sysval_fau=0x%llx",
+                          d->count, d->instance_count, d->first_index, d->indexed ? d->index_bytes : 0,
+                          (unsigned long long)(d->indexed ? d->index_va : 0), (int)d->indexed, d->index_size,
+                          d->first_vertex, d->first_instance, d->draw_id, (unsigned long long)o->vfau);
          }
       }
       if (!o->static_same) {
