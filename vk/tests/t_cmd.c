@@ -151,7 +151,8 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
    /* --loadstore attachment handles: 1 = RGBA8 colour, 2 = D32F depth, 3 = D32F + S8 (depth and stencil, separate plane VAs),
-    * 4 = D24X8 (LOAD is unsupported but NONE is not). Handle 2 is also the D32 depth-only view of --extra logicOp-retained. */
+    * 4 = D24X8 (LOAD is unsupported but NONE is not). Handle 2 is also the D32 depth-only view of --extra logicOp-retained.
+    * 5 = 4x MSAA colour and 6 = its single-sample resolve target, for the M15 write-tracking check. */
    if ((uintptr_t)v == 1) {
       *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
       return 0;
@@ -164,11 +165,30 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
                                     .s_row_stride = st ? W : 0, .samples = 1};
       return 0;
    }
+   if ((uintptr_t)v == 5) {   /* 4x MSAA colour attachment (--extra MSAA resolve write tracking); 3 and 4 are the depth views above */
+      *o = (struct mali_cmd_target){F.rt.gpu_va + 0x40000, W * 4, W, H, 0, .samples = 4, .surface_stride = W * H * 4};
+      return 0;
+   }
+   if ((uintptr_t)v == 6) {   /* its single-sample resolve target: a separate image, so a separate BO at another VA */
+      *o = (struct mali_cmd_target){F.rt.gpu_va + 0x80000, W * 4, W, H, 0, .samples = 1};
+      return 0;
+   }
    return -1;
 }
 static int res_image(VkImage i, struct mali_cmd_target *o) { return res_view((VkImageView)i, o); }
 static int res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *va) { return -1; }
-static const struct mali_cmd_res_ops k_res = {res_pipeline, res_view, res_image, res_shader};
+/* M15 write tracking: the two MSAA images are distinct memory, so a recorded write must name the right one. Fake
+ * pointers, never dereferenced (mark_written only compares and stores them). */
+static struct mali_memory *const g_msaa_col_mem = (struct mali_memory *)(uintptr_t)0x100;
+static struct mali_memory *const g_msaa_res_mem = (struct mali_memory *)(uintptr_t)0x200;
+static struct mali_memory *res_view_mem(VkImageView v)
+{
+   if ((uintptr_t)v == 5) return g_msaa_col_mem;
+   if ((uintptr_t)v == 6) return g_msaa_res_mem;
+   return NULL;
+}
+static const struct mali_cmd_res_ops k_res = {.pipeline = res_pipeline, .image_view = res_view, .image = res_image,
+                                              .shader = res_shader, .image_view_mem = res_view_mem};
 
 /* ---- Vulkan helpers (through the ICD's own dispatch) ---- */
 static PFN_vkVoidFunction (*gipa)(VkInstance, const char *);
@@ -518,6 +538,35 @@ test_ringwrap(void)
    return g_fail ? 1 : 0;
 }
 
+/* #248 (CodeRabbit): the MSAA resolve destination is GPU-written memory of its own, so the command buffer must record it
+ * as written. Miss it and M15's device->CPU CSYNC skips that BO, so a later CPU read gets the pre-resolve pixels. */
+static void
+test_msaa_resolve_written(VkCommandPool pool)
+{
+   VkCommandBuffer c;
+   struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(new_cmd(pool, &c));
+   VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                   .imageView = (VkImageView)(uintptr_t)5,
+                                   .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   .resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+                                   .resolveImageView = (VkImageView)(uintptr_t)6,
+                                   .resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                   .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE};
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {W, H}}, .layerCount = 1,
+                         .colorAttachmentCount = 1, .pColorAttachments = &ca};
+   mali_CmdBeginRendering(c, &ri);
+   bool col = false, res = false;
+   for (unsigned i = 0; i < cmd->nwrote; i++) {
+      if (cmd->wrote[i] == g_msaa_col_mem) col = true;
+      if (cmd->wrote[i] == g_msaa_res_mem) res = true;
+   }
+   CHECK(col, "MSAA colour target not recorded as written (nwrote=%u)", cmd->nwrote);
+   CHECK(res, "MSAA resolve target not recorded as written (nwrote=%u)", cmd->nwrote);
+   CHECK(!cmd->wrote_full, "MSAA writes overflowed the write list");
+   CHECK(cmd->cur.colour.resolve_va == F.rt.gpu_va + 0x80000, "MSAA resolve VA = %llx", (unsigned long long)cmd->cur.colour.resolve_va);
+}
+
 /* VK_EXT_provoking_vertex: the mode reaches both hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx word 2 bit 18) */
 static void
 test_provoking(VkCommandPool pool, VkBuffer vbh)
@@ -762,6 +811,7 @@ int main(int argc, char **argv)
    }
    if (extra) {
       uint32_t n0 = F.nsubmit;
+      test_msaa_resolve_written(pool);
       test_provoking(pool, vbh);
       (void)n0;
    }

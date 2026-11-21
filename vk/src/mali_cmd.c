@@ -1134,6 +1134,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             f->colour.resolve_va = rt.va;
             f->colour.resolve_row_stride = rt.row_stride;
          }
+         /* M15: the average writeback lands in the resolve target's BO, not in the attachment's (the colour
+          * target's BO is already marked above), and this branch bypasses the separate resolve command that marks
+          * its own destination (CR #329 T7). Mark it here so the device->CPU CSYNC covers it. */
+         if (g_res.image_view_mem)
+            mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->resolveImageView));
       }
       if (load) {
          /* per-sample preload: the fragment shader runs once per sample (gl_SampleID) and reads that sample's
