@@ -23,6 +23,20 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "mali_soft.h"
 #include "vk_command_buffer.h"
 
+/* Debug env vars are read on every submit (twice per frame on the X11 shm path) and never change during a run:
+ * a getenv is a strlen+memcmp over every environ entry, so cache the answer once. MALI_ALLOC_STATS stays a live
+ * getenv on purpose (tests/t_vk_draw.c sets it after the device exists). */
+enum env_id { ENV_CSDUMP, ENV_PROF, ENV_PIPE_DBG, ENV_SYNC_SUBMIT, ENV_COUNT };
+static int
+env_flag(enum env_id id)
+{
+   static const char *const names[ENV_COUNT] = { "MALI_CSDUMP", "MALI_PROF", "MALI_PIPE_DBG", "MALI_SYNC_SUBMIT" };
+   static int on[ENV_COUNT] = { -1, -1, -1, -1 };
+   if (on[id] < 0)
+      on[id] = getenv(names[id]) != NULL;
+   return on[id];
+}
+
 /* ---- M9: frame resources ---- */
 #define MALI_MAX_INFLIGHT 3u
 #define MALI_MAX_OVF 64u
@@ -313,7 +327,7 @@ hw_job_begin(void *u)
    hw_retire(h, MALI_MAX_INFLIGHT - 1);
    kb_arena_begin(&h->ar);
    h->cur_start = h->ar.start;
-   if (h->nfl && !getenv("MALI_SYNC_SUBMIT")) {
+   if (h->nfl && !env_flag(ENV_SYNC_SUBMIT)) {
       /* the new frame must stay clear of the oldest in-flight frame's arena range */
       size_t so = h->fl[0].start;
       if (so > h->ar.start)
@@ -376,7 +390,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
 {
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
-   if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
+   if (env_flag(ENV_CSDUMP) && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
    {
       const char *sf = getenv("MALI_ALLOC_STATS");
       FILE *fp = sf ? fopen(sf, "w") : NULL;
@@ -395,12 +409,12 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    int r = be->submit_cs(h->dev->kdev, cs, n);
    if (h->fp.on && r == 0)
       mali_fprof_kicked(&h->fp, prof_now() - q0);
-   if (getenv("MALI_PROF")) {
+   if (env_flag(ENV_PROF)) {
       static double acc; static unsigned cnt;
       acc += prof_now() - q0;
       if (++cnt % 200 == 0) fprintf(stderr, "PROF/hw_submit submit_cs avg %.3f ms (n=%u instr)\n", acc / cnt, n);
    }
-   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
+   if (env_flag(ENV_PIPE_DBG)) fprintf(stderr, "mali_vk: submit_cs n=%u arena off=%zx start=%zx rc=%d\n", n, h->ar.off, h->ar.start, r);
    if (r)
       return r;
    /* The arena is rolling and must not hand out the VAs of an in-flight frame (INTERMITTENT.md): every frame retires
@@ -410,7 +424,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
       if (!h->ovf[i].tag)
          h->ovf[i].tag = h->expected;
    h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
-   if (!getenv("MALI_SYNC_SUBMIT")) {
+   if (!env_flag(ENV_SYNC_SUBMIT)) {
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
       h->nfl++;
@@ -418,8 +432,8 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double w0 = prof_now();
    int wr = hw_wait(h, h->expected);
-   if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
-   if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
+   if (env_flag(ENV_PROF)) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
+   if (env_flag(ENV_PIPE_DBG)) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
 }
 
@@ -663,7 +677,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
-      if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
+      if (cr == VK_ERROR_DEVICE_LOST && env_flag(ENV_PIPE_DBG)) fprintf(stderr, "mali_vk: frame submit lost\n");
       if (cr == VK_ERROR_DEVICE_LOST)
          return vk_queue_set_lost(vq, "frame submit failed");
       if (cr != VK_SUCCESS)
@@ -683,7 +697,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    if (submit->signal_count || light || always)
       r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
-      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
+      if (env_flag(ENV_PIPE_DBG)) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);
    }
 
@@ -699,26 +713,29 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       if (res == VK_SUCCESS)
          *imported = i + 1;
    }
-   /* Keep a duplicate of this submission's sync_file for the CPU-side present paths (X11 shared memory): they have no
-    * CPU-visible semaphore to wait, so they wait this fence before reading the image this submission wrote. */
+   /* Keep this submission's sync_file for the CPU-side present paths (X11 shared memory): they have no
+    * CPU-visible semaphore to wait, so they wait this fence before reading the image this submission wrote.
+    * The fd is taken over rather than dup'ed and closed again: mali_sync_import_sync_file already dup'ed what
+    * the signals keep, and this copy is only ever read through mali_queue_last_fence_dup (which dups for the
+    * caller), so the dup+close here was one syscall per submit for nothing. Replacing the previous fd is also
+    * what gives it its close, exactly as before. */
    if (fd >= 0) {
-      int d = dup(fd);
       pthread_mutex_lock(&dev->sync_lock);
       if (dev->present_fence_fd >= 0)
          close(dev->present_fence_fd);
-      /* -1 on a failed dup: keeping the previous submission's fence would make the shm present wait a dependency
-       * that has nothing to do with the frame it is about to copy. No fence means "present it now". */
-      dev->present_fence_fd = d;
+      dev->present_fence_fd = fd;
       pthread_mutex_unlock(&dev->sync_lock);
+      fd = -1;   /* owned by the device now (closed in mali_device_finish or by the next submission) */
    }
-   close(fd);
+   if (fd >= 0)
+      close(fd);
    /* M15: vk_common's present submit has no command buffers, the image acquire semaphores as waits and the render
     * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
    if (res != VK_SUCCESS)
       return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
-   if (getenv("MALI_PROF")) {
+   if (env_flag(ENV_PROF)) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
       if (++prof_n % 200 == 0) {
