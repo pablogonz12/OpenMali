@@ -49,6 +49,10 @@ mali_device_pdev(struct mali_device *dev)
  * base VA when base_va is not NULL. NULL when the range is not inside a CPU-mapped allocation. */
 const void *mali_mem_cpu_of(uint64_t va, size_t len, uint64_t *base_va);
 
+/* THROWAWAY MALI_FRAGDBG (notes/faudbg.md): prints the tiler context words the fragment job's tile walk consumes, read
+ * after the fence (the tiler writes the tile-list chunk pointers there). Called from the submit path. */
+void mali_fragdbg_post(void);
+
 /* Memory */
 struct mali_memory {
    struct vk_device_memory vk;

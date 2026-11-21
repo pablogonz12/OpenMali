@@ -447,6 +447,8 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
          fprintf(stderr, " (no cpu view: kernel-managed kbase tiler heap)");
       fprintf(stderr, "\n");
    }
+   if (wr == 0)
+      mali_fragdbg_post();
    if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;

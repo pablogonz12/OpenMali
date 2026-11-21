@@ -433,6 +433,25 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          m |= MALI_D_FX;
       vk_dynamic_graphics_state_clear_dirty((struct vk_dynamic_graphics_state *)dyn);
    }
+   if (getenv("MALI_SCISDBG")) {   /* THROWAWAY scisdbg (notes/faudbg.md): the dynamic-state source of this draw's vp/sc */
+      static unsigned cn;
+      if (cn++ < 400)
+         fprintf(stderr, "mali_scisdbg: REC n=%u step=%s dirty=0x%02x dyn_vp=%d vp_count=%u dyn_sc=%d sc_count=%u vp0=%g,%g,%g,%g,%g,%g sc0=%d,%d,%d,%d area=%d,%d,%d,%d rec_pv=%d\n",
+                 cn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", m,
+                 (int)BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS), dyn->vp.viewport_count,
+                 (int)BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_SCISSORS), dyn->vp.scissor_count,
+                 dyn->vp.viewport_count ? dyn->vp.viewports[0].x : 0.0f,
+                 dyn->vp.viewport_count ? dyn->vp.viewports[0].y : 0.0f,
+                 dyn->vp.viewport_count ? dyn->vp.viewports[0].width : 0.0f,
+                 dyn->vp.viewport_count ? dyn->vp.viewports[0].height : 0.0f,
+                 dyn->vp.viewport_count ? dyn->vp.viewports[0].minDepth : 0.0f,
+                 dyn->vp.viewport_count ? dyn->vp.viewports[0].maxDepth : 0.0f,
+                 dyn->vp.scissor_count ? dyn->vp.scissors[0].offset.x : -1,
+                 dyn->vp.scissor_count ? dyn->vp.scissors[0].offset.y : -1,
+                 dyn->vp.scissor_count ? (int)dyn->vp.scissors[0].extent.width : -1,
+                 dyn->vp.scissor_count ? (int)dyn->vp.scissors[0].extent.height : -1,
+                 a[0], a[1], a[2], a[3], pv ? 1 : 0);
+   }
    if (!pv)
       m = MALI_D_ALL;
    *d = (struct mali_rec){

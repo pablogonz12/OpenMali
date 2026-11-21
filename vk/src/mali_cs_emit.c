@@ -553,6 +553,24 @@ fau:;
    }
    if (g->blend_va && d->fx.blend_en)
       memcpy(ffau, d->fx.bconst, 16);   /* blend shader constants: FAU words 0..3 */
+   if (getenv("MALI_FAUDBG")) {   /* THROWAWAY faudbg (notes/faudbg.md): the FAU words the VS and FS read for this draw */
+      static unsigned fn;
+      if (fn++ < 400) {
+         unsigned vn = vs->fau_count, fnn = fs->fau_count;
+         fprintf(stderr, "mali_faudbg: DRAW n=%u step=%s draw_id=%u prim=%u count=%u vfau_n=%u ffau_n=%u push_base=%u/%u push_bytes=%u/%u vp=%g,%g,%g,%g,%g,%g vfau=",
+                 fn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, d->count, vn, fnn,
+                 g->push_base[0], g->push_base[1], vs->push_const_bytes, fs->push_const_bytes,
+                 d->vp[0], d->vp[1], d->vp[2], d->vp[3], d->vp[4], d->vp[5]);
+         for (unsigned i = 0; i < 12 && i < vn; i++)
+            fprintf(stderr, "%s%08x", i ? " " : "", vfau[i]);
+         fprintf(stderr, " ffau=");
+         for (unsigned i = 0; i < 8 && i < fnn; i++)
+            fprintf(stderr, "%s%08x", i ? " " : "", ffau[i]);
+         fprintf(stderr, "\n");
+      } else if (fn == 401) {
+         fprintf(stderr, "mali_faudbg: ... (MALI_FAUDBG limit, 400 draws)\n");
+      }
+   }
    return 0;
 }
 
@@ -732,6 +750,15 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    uint32_t minz, maxz;
    memcpy(&minz, &d->vp[4], 4);
    memcpy(&maxz, &d->vp[5], 4);
+   if (getenv("MALI_SCISDBG")) {   /* THROWAWAY scisdbg (notes/faudbg.md): what this draw really sends to the tiler */
+      static unsigned sn;
+      if (sn++ < 400)
+         fprintf(stderr, "mali_scisdbg: EMIT n=%u step=%s draw_id=%u vp=%g,%g,%g,%g minz=%g maxz=%g vp_ints=%u,%u..%u,%u clamp=0x%08x/0x%08x sc=%d,%d,%d,%d sc_set=%d scissor=0x%016llx (x %d..%d, y %d..%d)\n",
+                 sn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id,
+                 d->vp[0], d->vp[1], d->vp[2], d->vp[3], d->vp[4], d->vp[5], vx, vy, vmx, vmy,
+                 minz, maxz, d->sc[0], d->sc[1], d->sc[2], d->sc[3], (int)d->sc_set,
+                 (unsigned long long)scis, sx, sx + (d->sc[2] > 1 ? d->sc[2] : 1) - 1, sy, sy + (d->sc[3] > 1 ? d->sc[3] : 1) - 1);
+   }
 
    /* The registers derived from the static state (shader programs, blend, depth-stencil, the frame's tiler/FBD pointers) are re-emitted
     * only when this draw's record says the previous draw of the frame did not already write the identical values: MALI_D_PIPE/FX/BIND
@@ -810,6 +837,35 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       }
    }
+}
+
+/* THROWAWAY MALI_FRAGDBG (notes/faudbg.md): the tiler context the frame's fragment job walks. Stashed at build time (the
+ * driver writes words 0..9 and the firmware the tile-list chunk pointers) and printed again after the fence. */
+static struct {
+   bool valid;
+   const uint32_t *tctx;
+   uint64_t va_tctx, va_fbd;
+   unsigned area[4];
+   uint32_t w[32];
+} g_frag;
+
+void
+mali_fragdbg_post(void)
+{
+   if (!g_frag.valid || !getenv("MALI_FRAGDBG"))
+      return;
+   const uint32_t *t = g_frag.tctx;
+   fprintf(stderr, "mali_fragdbg: POST step=%s tctx=0x%llx fbd=0x%llx tctxw6..13=",
+           getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", (unsigned long long)g_frag.va_tctx,
+           (unsigned long long)g_frag.va_fbd);
+   unsigned chg = 0;
+   for (unsigned i = 6; i < 14; i++) {
+      fprintf(stderr, "%s%08x", i > 6 ? " " : "", t[i]);
+      if (t[i] != g_frag.w[i])
+         chg |= 1u << (i - 6);
+   }
+   fprintf(stderr, " changed_mask=0x%02x\n", chg);
+   g_frag.valid = false;   /* one POST line per frame */
 }
 
 static void
@@ -1154,6 +1210,33 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    }
    if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))
       goto out;
+   if (getenv("MALI_FRAGDBG") && geometry) {   /* THROWAWAY fragdbg (notes/faudbg.md) */
+      static unsigned gn;
+      int ax0 = f->area[0] < 0 ? 0 : f->area[0], ay0 = f->area[1] < 0 ? 0 : f->area[1];
+      unsigned ax1 = ax0 + (f->area[2] > 1 ? f->area[2] : 1) - 1, ay1 = ay0 + (f->area[3] > 1 ? f->area[3] : 1) - 1;
+      const uint32_t *fb = (const uint32_t *)fbd;
+      fprintf(stderr, "mali_fragdbg: FRAME n=%u step=%s ndraws=%u area=%d,%d,%d,%d bbox=%d,%d..%u,%u fbd=0x%llx fbd14..15=0x%08x%08x tctx=0x%llx tctxw2..13=",
+              ++gn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", f->ndraws,
+              f->area[0], f->area[1], f->area[2], f->area[3], ax0, ay0, ax1, ay1,
+              (unsigned long long)va_fbd, fb[15], fb[14], (unsigned long long)va_tctx);
+      for (unsigned i = 2; i < 14; i++)
+         fprintf(stderr, "%s%08x", i > 2 ? " " : "", tctx[i]);
+      fprintf(stderr, " draws=");
+      struct mali_draw dx;
+      memset(&dx, 0, sizeof dx);
+      for (unsigned i = 0; i < f->ndraws; i++) {
+         mali_draw_expand(&dx, &f->draws[i]);
+         fprintf(stderr, "%s%u/%u/%d", i ? "," : "", dx.gfx.prim, dx.count, (int)dx.indexed);
+      }
+      fprintf(stderr, "\n");
+      g_frag.valid = true;
+      g_frag.tctx = tctx;
+      g_frag.va_tctx = va_tctx;
+      g_frag.va_fbd = va_fbd;
+      memcpy(g_frag.area, f->area, sizeof g_frag.area);
+      for (unsigned i = 0; i < 32; i++)
+         g_frag.w[i] = tctx[i];
+   }
 
    /* head: flush stale descriptor lines, WAIT for it (async), then registers */
    E(&c, kb_cs_nop());
