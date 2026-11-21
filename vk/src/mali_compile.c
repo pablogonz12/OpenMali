@@ -426,7 +426,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       pan_nir_lower_mediump_io(nir);
 
       if (stage == MESA_SHADER_VERTEX) {
-         pan_varying_collect_formats(&vl, nir, arch);
+         pan_varying_collect_formats(&vl, nir, arch, false);
          pan_build_varying_layout_compact(&vl, nir, arch);
          in.varying_layout = &vl;
          vs_layout = &vl;
@@ -443,7 +443,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                if (loc == FRAG_RESULT_DEPTH || loc == FRAG_RESULT_STENCIL)
                   nir->info.outputs_written |= BITFIELD64_BIT(loc);
             }
-         NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, 0);
+         NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, arch, model, 0);
          if (o->link_vs && o->link_vs->size == sizeof vl) {
             memcpy(&vl, o->link_vs->data, sizeof vl);
             in.varying_layout = &vl;
