@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>   /* _exit for --shm-leak-exit */
 #include <vulkan/vulkan.h>
 #include <xcb/xcb.h>
 #if defined(HAVE_WAYLAND_CLIENT)
@@ -662,7 +663,7 @@ main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, wlfirst = 0, pressup = 0, caps2 = 0, twoconn = 0;
-   int present_ids = 0;
+   int present_ids = 0, shm_leak_exit = 0, shm_alive_ms = 0;
    unsigned win_w = W, win_h = H;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--size") && i + 1 < argc) {
@@ -684,9 +685,11 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else if (!strcmp(argv[i], "--present-ids")) present_ids = 1;
+      else if (!strcmp(argv[i], "--shm-leak-exit")) shm_leak_exit = 1;   /* xwsi-shm-leak.sh: no destroy, _exit(0) */
+      else if (!strcmp(argv[i], "--shm-alive-ms") && i + 1 < argc) shm_alive_ms = atoi(argv[++i]);   /* hold the chain open */
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
                             "[--size WxH] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s] "
-                            "[--present-ids]\n"); return 2; }
+                            "[--present-ids] [--shm-leak-exit] [--shm-alive-ms N]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -1146,6 +1149,19 @@ main(int argc, char **argv)
    }
    CK(QueueWaitIdle(q));
    xcb_flush(c);
+   if (shm_alive_ms > 0) {
+      /* xwsi-shm-leak.sh: stay alive with the segment attached (no destroy) so the harness can read
+       * /proc/sysvipc/shm while the chain exists - RMID-at-attach means it must not be listed. */
+      xcb_flush(c);
+      usleep((useconds_t)shm_alive_ms * 1000);
+   }
+   if (shm_leak_exit) {
+      /* The segment must already be unlinked (design-shm.md B): exit without destroying the swapchain, so nothing but
+       * the kernel's own accounting can reclaim it. The harness compares /proc/sysvipc/shm before and after. */
+      printf("PASS\n");
+      fflush(NULL);
+      _exit(0);
+   }
 
    int rc = 0;
    if (pixels) {

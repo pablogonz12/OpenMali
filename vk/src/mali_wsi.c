@@ -844,9 +844,7 @@ mali_x11_shm_destroy(VkSwapchainKHR sc)
    xcb_flush((xcb_connection_t *)st->conn);
 #endif
    if (st->addr && st->addr != MALI_SHM_FAILED)
-      shmdt(st->addr);
-   if (st->shmid >= 0)
-      shmctl(st->shmid, IPC_RMID, NULL);
+      shmdt(st->addr);   /* the segment was already unlinked at attach; this is the last detach that frees it */
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: x11 shm: released %zu B segment (shmid %d)\n", st->size, st->shmid);
    memset(st, 0, sizeof(*st));
@@ -910,6 +908,14 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
       shmctl(shmid, IPC_RMID, NULL);
       return;
    }
+   /* Unlink the segment now, not at destroy (CR #288/#289/#307, design-shm.md B): IPC_RMID only marks it, the pages
+    * live until the last detach - ours at destroy and the server's own attach until it processes our xcb_shm_detach,
+    * which is queued behind every PutImage on this connection. So the kernel reclaims a segment whose client is
+    * SIGKILLed or calls exit() without vkDestroySwapchainKHR (today that leaks 196 KB at 128x96 to ~6 MB at 800x600
+    * until reboot), and destroy-with-a-present-in-flight can no longer pull pages from under the server. */
+   if (shmctl(shmid, IPC_RMID, NULL) == 0 && mali_wsi_debug())
+      fprintf(stderr, "mali_vk: x11 shm: segment unlinked at attach (shmid %d, %zu B), reclaimed at our last detach\n",
+              shmid, size);
    const xcb_gcontext_t gc = xcb_generate_id(s->connection);
    xcb_create_gc(s->connection, gc, s->window, XCB_GC_GRAPHICS_EXPOSURES, (uint32_t []){0});
    xcb_flush(s->connection);
