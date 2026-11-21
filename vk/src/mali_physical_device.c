@@ -590,6 +590,11 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
                  pdev->gpu.name);
    }
 
+   /* maxMemoryAllocationSize must not exceed the size of the largest heap we report (VkPhysicalDeviceLimits). The
+    * fixed 1 GiB default breaks that as soon as MALI_VRAM_CAP_MB or the RAM clamp puts heap 0 below 1 GiB. */
+   if (pdev->vk.properties.maxMemoryAllocationSize > pdev->mem_cap)
+      pdev->vk.properties.maxMemoryAllocationSize = pdev->mem_cap;
+
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
     * readback. Which kbase allocation flags back them is decided in M3 on hardware.
     * The size is the commit budget mem_cap, not the RAM/2 the backend offers, so heap 0 is a size this driver commits. */
@@ -691,9 +696,11 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
 
    pMemoryProperties->memoryProperties = pdev->memory;
-   /* VK_EXT_memory_budget: one heap; usage is what this process still holds allocated and the budget is what is
-    * left of the heap. Reporting the heap itself as the budget (or, worse, `used` once usage passed the heap) tells
-    * a client there is room when there is none: heapBudget + heapUsage must not exceed the heap. */
+   /* VK_EXT_memory_budget: one heap. heapUsage is what this process still holds allocated and heapBudget is the
+    * total this process may use: the extension's contract has the *client* subtract usage from the budget, so
+    * reporting `heap - used` here made budget + usage exceed the heap and made a client double-count usage
+    * (VkPhysicalDeviceMemoryBudgetPropertiesEXT refpage: heapBudget is what the process is allowed to use, and a
+    * full heap still has a nonzero budget). */
    vk_foreach_struct(stype, ext, pMemoryProperties->pNext) {
       if (stype != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
          continue;
@@ -705,7 +712,7 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
       if (used > heap)
          used = heap;
       b->heapUsage[0] = used;
-      b->heapBudget[0] = heap - used;
+      b->heapBudget[0] = heap;   /* total, not remaining: heapBudget - heapUsage is what is left */
    }
 }
 

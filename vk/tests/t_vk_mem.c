@@ -70,7 +70,7 @@ main(int argc, char **argv)
    CHECK(t_coh >= 0 && t_cached >= 0, "memory types coherent=%d cached=%d", t_coh, t_cached);
    if (t_coh < 0 || t_cached < 0) return 1;
 
-   /* ---- heap 0 is a size this driver will commit, and the budget is what is left of it ---- */
+   /* ---- heap 0 is a size this driver will commit; the budget is the total the process may use ---- */
    /* (zink checks a request against memoryHeaps[].size and then calls vkAllocateMemory: a heap that is bigger than
     * mem_reserve()'s cap turns that into "zink: couldn't allocate memory: heap=0 size=...".) */
    PFN_vkGetPhysicalDeviceMemoryProperties2 GDPMP2 =
@@ -109,15 +109,17 @@ main(int argc, char **argv)
    CHECK(MapMemory(dev, m, 0, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "second map must fail");
    if (g_fail || !p) { printf("FAIL: alloc/map failed, remaining map tests need the mapping\n"); return 1; }   /* p[] below would dereference NULL */
    p[0] = 0x5a; p[65535] = 0xa5;
-   /* the budget is what is left of the heap, so usage and budget always add up to it */
+   /* VK_EXT_memory_budget: the client subtracts usage from the budget, so the budget stays the total heap and
+    * what is left is budget - usage (a budget of heap - usage would double-count the live 64 KiB). */
    bud.heapUsage[0] = 0;
    bud.heapBudget[0] = 0;
    mp2.pNext = &bud;
    GDPMP2(pd, &mp2);
    CHECK(bud.heapUsage[0] >= 65536, "heapUsage %llu must count the live 64 KiB", (unsigned long long)bud.heapUsage[0]);
-   CHECK(bud.heapUsage[0] <= heap && bud.heapBudget[0] == heap - bud.heapUsage[0],
-         "heapUsage %llu + heapBudget %llu must be the heap %llu", (unsigned long long)bud.heapUsage[0],
-         (unsigned long long)bud.heapBudget[0], (unsigned long long)heap);
+   CHECK(bud.heapUsage[0] <= heap && bud.heapBudget[0] == heap && bud.heapBudget[0] > bud.heapUsage[0],
+         "heap 0 %llu: budget %llu must be the total and stay above usage %llu (left = %llu)",
+         (unsigned long long)heap, (unsigned long long)bud.heapBudget[0], (unsigned long long)bud.heapUsage[0],
+         (unsigned long long)(bud.heapBudget[0] - bud.heapUsage[0]));
    UnmapMemory(dev, m);
    CHECK(MapMemory(dev, m, 65536, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "offset == size must fail");
    CHECK(MapMemory(dev, m, 4096, 4096, 0, (void **)&q) == VK_SUCCESS && q == p + 4096, "offset map is base+offset (%p vs %p)", (void *)q, (void *)p);
