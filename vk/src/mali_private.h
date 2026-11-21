@@ -42,7 +42,8 @@ struct mali_physical_device {
     * wsi.sw, because wsi.sw is device-wide and Mesa's Wayland driver builds every Wayland swapchain as a wl_shm/CPU
     * one while it is set (wsi_common_wayland.c:3940, :1506) - a Steam client asks about its X11 window first and
     * would lose the dma-buf path for the gamescope WSI layer's Wayland swapchain (X8). */
-   bool wsi_x11_sw;
+   bool wsi_x11_sw_xcb;    /* the server behind an XCB surface has no DRI3+Present */
+   bool wsi_x11_sw_xlib;   /* same for XLIB (never probed: no libX11 in the ICD, assumed software) */
 };
 
 struct mali_queue {
