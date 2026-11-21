@@ -1181,6 +1181,15 @@ mali_wsi_info_add(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, const VkSwapchai
       /* The slot index is a registry index and is reused once a chain is destroyed; the creation id is not, so a
        * replacement chain's frame 30 cannot open (and truncate) its predecessor's dump (CR thread, :1178). */
       e->chain_id = __atomic_add_fetch(&mali_wsi_chain_seq, 1, __ATOMIC_RELAXED);
+   } else {
+      /* Diagnostics only: the chain still works, it just has no record, so no dump and no summary line. Say it once
+       * instead of leaving a silent hole in the evidence (CR thread, vk/src/mali_wsi.c:1165). */
+      static bool warned;
+      if (!warned) {
+         warned = true;
+         fprintf(stderr, "mali_vk: wsi: all %d diagnostic records are in use; this swapchain gets no MALI_WSI_DUMP / "
+                         "summary lines (the chain itself is unaffected)\n", MALI_WSI_INFO_SLOTS);
+      }
    }
    pthread_mutex_unlock(&mali_wsi_infos_lock);
 }
@@ -1737,7 +1746,10 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
        * nor the requested format back to vkQueuePresentKHR. */
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       created = chain;
-      mali_wsi_info_add(*out, surface, ci, chain, wsi_dev->sw);
+      /* The *selected* instance's sw (pdev->vk.wsi_device), not wsi_dev's: a no-DRI3 X11 surface is created on the
+       * software instance, and recording &pdev->wsi's base mode made every summary of it say sw=0
+       * (CR thread, vk/src/mali_wsi.c:1740). */
+      mali_wsi_info_add(*out, surface, ci, chain, pdev->vk.wsi_device->sw);
    }
 
    if (mali_wsi_debug() || r != VK_SUCCESS) {

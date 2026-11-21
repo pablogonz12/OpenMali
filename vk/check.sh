@@ -41,9 +41,13 @@ DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
 run() { # name, expected exit status, command...
-   local name=$1 want=$2 out rc; shift 2
+   local name=$1 want=$2 out rc first; shift 2
    out=$(timeout -k 5 120 env "$@" 2>&1); rc=$?
-   if [ $rc -eq "$want" ]; then echo "ok    $name"
+   first=$(printf '%s\n' "$out" | head -1)
+   # A case that cannot run here says so in its first line ("skipped: ..."): report it as skip, never as ok, so a
+   # missing gamescope cannot make a whole WSI case look green (CR thread, vk/check.sh:312).
+   if [ $rc -eq "$want" ] && [ "${first#skipped}" != "$first" ]; then echo "skip  $name ($first)"
+   elif [ $rc -eq "$want" ]; then echo "ok    $name"
    elif [ $rc -eq 124 ] || [ $rc -eq 137 ]; then echo "FAIL  $name TIMEOUT (120 s, exit $rc)"; fail=1
    else echo "FAIL  $name (exit $rc, want $want)"; fail=1; fi
    if [ $verbose = 1 ] || [ $rc -ne "$want" ]; then echo "$out" | sed 's/^/        /'; fi
