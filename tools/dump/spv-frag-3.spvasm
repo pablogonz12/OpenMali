@@ -1,0 +1,83 @@
+; SPIR-V
+; Version: 1.6
+; Generator: Khronos; 0
+; Bound: 45
+; Schema: 0
+               OpCapability VulkanMemoryModel
+               OpCapability Shader
+               OpCapability VulkanMemoryModelDeviceScope
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint Fragment %main "main" %gfx_pushconst %in_0 %out_0 %sampler
+               OpExecutionMode %main OriginUpperLeft
+               OpSource Unknown 0
+               OpName %main "main"
+               OpName %gfx_pushconst "gfx_pushconst"
+               OpName %in_0 "in_0"
+               OpName %out_0 "out_0"
+               OpName %sampler "sampler"
+               OpDecorate %_arr_uint_uint_1 ArrayStride 4
+               OpDecorate %_arr_uint_uint_2 ArrayStride 4
+               OpDecorate %_arr_uint_uint_4 ArrayStride 4
+               OpMemberDecorate %_struct_12 0 Offset 0
+               OpMemberDecorate %_struct_12 1 Offset 4
+               OpMemberDecorate %_struct_12 2 Offset 8
+               OpMemberDecorate %_struct_12 3 Offset 12
+               OpMemberDecorate %_struct_12 4 Offset 20
+               OpMemberDecorate %_struct_12 5 Offset 36
+               OpMemberDecorate %_struct_12 6 Offset 40
+               OpMemberDecorate %_struct_12 7 Offset 48
+               OpDecorate %_struct_12 Block
+               OpDecorate %in_0 Location 0
+               OpDecorate %in_0 NoPerspective
+               OpDecorate %out_0 Location 0
+               OpDecorate %out_0 Index 0
+               OpDecorate %sampler DescriptorSet 2
+               OpDecorate %sampler Binding 128
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_1 = OpConstant %uint 1
+%_arr_uint_uint_1 = OpTypeArray %uint %uint_1
+     %uint_2 = OpConstant %uint 2
+%_arr_uint_uint_2 = OpTypeArray %uint %uint_2
+     %uint_4 = OpConstant %uint 4
+%_arr_uint_uint_4 = OpTypeArray %uint %uint_4
+ %_struct_12 = OpTypeStruct %_arr_uint_uint_1 %_arr_uint_uint_1 %_arr_uint_uint_1 %_arr_uint_uint_2 %_arr_uint_uint_4 %_arr_uint_uint_1 %_arr_uint_uint_2 %_arr_uint_uint_1
+%_ptr_PushConstant__struct_12 = OpTypePointer PushConstant %_struct_12
+%gfx_pushconst = OpVariable %_ptr_PushConstant__struct_12 PushConstant
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+       %in_0 = OpVariable %_ptr_Input_v4float Input
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+      %out_0 = OpVariable %_ptr_Output_v4float Output
+         %21 = OpTypeImage %float 2D 0 0 0 1 Unknown
+         %22 = OpTypeSampledImage %21
+%_ptr_UniformConstant_22 = OpTypePointer UniformConstant %22
+    %sampler = OpVariable %_ptr_UniformConstant_22 UniformConstant
+    %v2float = OpTypeVector %float 2
+    %v3float = OpTypeVector %float 3
+        %int = OpTypeInt 32 1
+      %v3int = OpTypeVector %int 3
+      %v2int = OpTypeVector %int 2
+       %main = OpFunction %void None %3
+         %26 = OpLabel
+               OpBranch %25
+         %25 = OpLabel
+         %27 = OpLoad %v4float %in_0
+         %29 = OpVectorShuffle %v2float %27 %27 0 1
+         %30 = OpExtInst %v2float %1 Trunc %29
+         %31 = OpCompositeExtract %float %30 0
+         %32 = OpCompositeExtract %float %30 1
+         %33 = OpCompositeExtract %float %27 3
+         %35 = OpCompositeConstruct %v3float %31 %32 %33
+         %38 = OpConvertFToS %v3int %35
+         %40 = OpVectorShuffle %v2int %38 %38 0 1
+         %41 = OpCompositeExtract %int %38 2
+         %42 = OpLoad %22 %sampler
+         %43 = OpImage %21 %42
+         %44 = OpImageFetch %v4float %43 %40 Lod %41
+               OpStore %out_0 %44
+               OpReturn
+               OpFunctionEnd
