@@ -651,6 +651,12 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       return;
    if (!icount || !inst)
       return;
+   /* Same restriction as mali_CmdDraw: num_vertices is not wired (mali_compile.c replaces it with 0), so instanced
+    * XFB would write every instance to the same slots (CodeRabbit on #313, vk/src/mali_cmd.c:633). */
+   if (cmd->tf.active && inst > 1) {
+      unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
    if (!sl || !snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -878,8 +884,10 @@ mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint3
                                         const VkDeviceSize *offsets, const VkDeviceSize *sizes)
 {
    CMD(h);
-   if (cmd->in_render) {
-      unsupported(cmd, "vkCmdBindTransformFeedbackBuffersEXT inside a render pass");
+   /* The command is valid in both scopes (in and out of a render pass; VUID-vkCmdBindTransformFeedbackBuffersEXT-
+    * renderpass does not exist), and only a rebind while capture is active is refused (CodeRabbit, #313). */
+   if (cmd->tf.active) {
+      unsupported(cmd, "vkCmdBindTransformFeedbackBuffersEXT while transform feedback is active");
       return;
    }
    if (!buffers || first + count > 4) {
@@ -921,9 +929,13 @@ mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buff
       unsupported(cmd, "VK_EXT_transform_feedback: more than 4 counter buffers");
       return;
    }
-   if (counter_buffers)   /* the streamout job increments these; mark them written for the same reason */
-      for (uint32_t i = 0; i < counter_buffer_count; i++)
-         mali_cmd_mark_buffer_written(cmd, counter_buffers[i]);
+   if (counter_buffers && counter_buffer_count) {
+      /* The captured byte position is not saved (mali_compile.c has no counter write), so a counter would stay
+       * stale and a pause/resume would overwrite records. Refuse loudly instead of marking it written
+       * (CodeRabbit on #313, vk/src/mali_cmd.c:915/:941). */
+      unsupported(cmd, "VK_EXT_transform_feedback: counter buffers are not implemented");
+      return;
+   }
    cmd->tf.active = true;
 }
 
@@ -936,9 +948,10 @@ mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer
       unsupported(cmd, "vkCmdEndTransformFeedbackEXT without a matching Begin");
       return;
    }
-   if (counter_buffers)
-      for (uint32_t i = 0; i < counter_buffer_count; i++)
-         mali_cmd_mark_buffer_written(cmd, counter_buffers[i]);
+   if (counter_buffers && counter_buffer_count) {
+      unsupported(cmd, "VK_EXT_transform_feedback: counter buffers are not implemented");
+      return;
+   }
    cmd->tf.active = false;
 }
 
