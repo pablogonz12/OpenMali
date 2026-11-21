@@ -14,8 +14,19 @@
  *                                                                              -> red   (BGR 0,0,255) each frame
  *   --copy      render into an offscreen image of the swapchain's own format and vkCmdCopyImage a WxH region
  *               into the swapchain image (1:1, no filter, no conversion)     -> red   (BGR 0,0,255)
- *   SPIR-V comes from --spv-dir (default "shader"): quad.vert.spv + solid.frag.spv, wsitex.frag.spv (--textured),
- *   wsiblend.frag.spv (--blend).
+ *   --rtt <how> render-to-texture: an offscreen R8G8B8A8_UNORM image (COLOR_ATTACHMENT|SAMPLED, optimal tiling, the
+ *               window's size) is written by vkCmdClearColorImage (how=cmdclear) or by a render pass with loadOp CLEAR
+ *               to (0.1,0.45,0.9) (how=clear) or a full-screen quad of that colour (how=draw); a barrier
+ *               COLOR_ATTACHMENT_WRITE|TRANSFER_WRITE -> SHADER_READ with the layout going to SHADER_READ_ONLY_OPTIMAL;
+ *               then a full-screen draw samples it into the swapchain image and presents.
+ *                                                                              -> blue   (BGR 230,115,26)
+ *               A black window means the sampling draw read zeros, i.e. the GPU-written image was not visible to the
+ *               fragment shader (the zink glBlitFramebuffer path).
+ *   --rtt-split  with --rtt: the offscreen write and the sampling draw go into TWO vkQueueSubmits, joined by a
+ *               semaphore (rules out "one submission is what makes it work").
+ *   --hold <s>  keep presenting for <s> seconds instead of 3 frames (a window to screenshot).
+ *   SPIR-V comes from --spv-dir (default "shader"): quad.vert.spv + solid.frag.spv, wsitex.frag.spv (--textured,
+ *   --rtt), wsiblend.frag.spv (--blend), rtt.frag.spv (--rtt draw).
  * Needs an X server ($DISPLAY). Exit 0 = pass, 77 = skipped (no X, or the ICD does not advertise VK_KHR_xcb_surface: Mesa configured
  * without -Dplatforms=x11), 1 = fail.
  *   --pixels  read the window back with xcb_get_image and require the clear colour (hardware only: the fake backend executes
@@ -413,6 +424,8 @@ main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
+   int rtt = 0, rtt_split = 0, hold = 0;
+   const char *rtt_how = "clear";
    unsigned win_w = W, win_h = H;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--size") && i + 1 < argc) {
@@ -430,13 +443,22 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--blend")) blend = 1;
       else if (!strcmp(argv[i], "--blit")) blit = 1;
       else if (!strcmp(argv[i], "--copy")) copyimg = 1;
+      else if (!strcmp(argv[i], "--rtt") && i + 1 < argc) {
+         rtt_how = argv[++i];
+         if (strcmp(rtt_how, "clear") && strcmp(rtt_how, "draw") && strcmp(rtt_how, "cmdclear")) {
+            fprintf(stderr, "usage: --rtt clear|draw|cmdclear\n"); return 2;
+         }
+         rtt = 1;
+      }
+      else if (!strcmp(argv[i], "--rtt-split")) rtt_split = 1;
+      else if (!strcmp(argv[i], "--hold") && i + 1 < argc) hold = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--wl-after-x11")) wlfirst = 1;
       else if (!strcmp(argv[i], "--pres-support")) pressup = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
-                            "[--draw|--textured|--depth|--blend|--blit|--copy] "
-                            "[--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
+                            "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split]] "
+                            "[--hold s] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -564,7 +586,7 @@ main(int argc, char **argv)
    float prio = 1.0f;
    /* --draw: the dynamic-rendering path (core 1.3 here, same as the zink/HL2 command streams). */
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                           .dynamicRendering = (draw || textured || depth || blend || blit || copyimg) ? VK_TRUE : VK_FALSE};
+                                           .dynamicRendering = (draw || textured || depth || blend || blit || copyimg || rtt) ? VK_TRUE : VK_FALSE};
    VkDevice dev;
    CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13,
                                              .queueCreateInfoCount = 1,
@@ -617,9 +639,9 @@ main(int argc, char **argv)
    /* Draw modes: one 2D colour view per swapchain image + quad.vert (full-screen quad from gl_VertexIndex, push constant
     * s = (1,1,0,0) so uv = q) with a per-mode fragment shader. --textured adds a 2x2 magenta texture + sampler,
     * --depth a D32 attachment, --blend a srcAlpha/1-srcAlpha blend over a blue clear. */
-   const int draw_like = draw || textured || depth || blend || blit || copyimg;
+   const int draw_like = draw || textured || depth || blend || blit || copyimg || rtt;
    VkImageView views[16] = {0};
-   VkPipeline pipe = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE, pipe2 = VK_NULL_HANDLE;   /* pipe2: --rtt draw, colour attachment R8G8B8A8 */
    VkPipelineLayout play = VK_NULL_HANDLE;
    VkDescriptorSet dset = VK_NULL_HANDLE;
    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
@@ -637,7 +659,33 @@ main(int argc, char **argv)
          CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = imgs[i],
                                                           .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt.format,
                                                           .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &views[i]));
-      if (textured) {
+      if (rtt) {
+         /* --rtt: an offscreen R8G8B8A8_UNORM colour attachment the GPU writes on its own, then a draw samples it
+          * into the swapchain image. Optimal tiling at the window's size, i.e. the shape of a game's render texture. */
+         VkImageUsageFlags uu = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+         if (!strcmp(rtt_how, "cmdclear")) uu |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+         CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                                  .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {ext.width, ext.height, 1},
+                                                  .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                                  .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = uu,
+                                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED}, NULL, &off));
+         VkMemoryRequirements rmr;
+         GetImageMemoryRequirements(dev, off, &rmr);
+         const int rmt = mem_type(pd, rmr.memoryTypeBits, 0, GetPhysicalDeviceMemoryProperties);
+         REQ(rmt >= 0, "no memory type for the render-to-texture image");
+         CK(AllocateMemory(dev, &(VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                                       .allocationSize = rmr.size, .memoryTypeIndex = (uint32_t)rmt},
+                           NULL, &offmem));
+         CK(BindImageMemory(dev, off, offmem, 0));
+         CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = off,
+                                                         .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &offview));
+         printf("rtt: %ux%u R8G8B8A8_UNORM optimal usage=0x%x how=%s split=%d\n", ext.width, ext.height, (unsigned)uu,
+                rtt_how, rtt_split);
+      }
+      if (textured || rtt) {
+         if (textured) {
          /* 2x2 R8G8B8A8 magenta, LINEAR tiling in host-visible memory: the sampler must return exactly (1,0,1). */
          CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                                   .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {2, 2, 1}, .mipLevels = 1,
@@ -664,6 +712,7 @@ main(int argc, char **argv)
          CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = tex,
                                                           .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
                                                           .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &texview));
+         }
          CK(CreateSampler(dev, &(VkSamplerCreateInfo){.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                                       .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
                                                       .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -687,7 +736,7 @@ main(int argc, char **argv)
                                  .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dset, .dstBinding = 0,
                                  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                  .pImageInfo = &(VkDescriptorImageInfo){
-                                    .sampler = samp, .imageView = texview,
+                                    .sampler = samp, .imageView = textured ? texview : offview,
                                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}, 0, NULL);
       }
       /* --blit/--copy: the quad is rendered into this image first, then blitted/copied into the swapchain image.
@@ -738,7 +787,7 @@ main(int argc, char **argv)
                                                           .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
                                                           .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}}, NULL, &dview));
       }
-      const char *fname = textured ? "wsitex.frag.spv" : blend ? "wsiblend.frag.spv" : "solid.frag.spv";
+      const char *fname = (textured || rtt) ? "wsitex.frag.spv" : blend ? "wsiblend.frag.spv" : "solid.frag.spv";
       size_t vsz = 0, fsz = 0;
       void *vcode = read_spv(spv_dir, "quad.vert.spv", &vsz), *fcode = read_spv(spv_dir, fname, &fsz);
       REQ(vcode && fcode, "SPIR-V not found (--spv-dir)");
@@ -749,7 +798,7 @@ main(int argc, char **argv)
                                                              .codeSize = fsz, .pCode = fcode}, NULL, &fm));
       free(vcode); free(fcode);
       CK(CreatePipelineLayout(dev, &(VkPipelineLayoutCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                                                 .setLayoutCount = textured ? 1 : 0, .pSetLayouts = &dsl,
+                                                                 .setLayoutCount = (textured || rtt) ? 1 : 0, .pSetLayouts = &dsl,
                                                                  .pushConstantRangeCount = 1,
                                                                  .pPushConstantRanges = &(VkPushConstantRange){
                                                                     .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .size = 16}},
@@ -801,9 +850,29 @@ main(int argc, char **argv)
                                                    .depthAttachmentFormat = depth ? dfmt : VK_FORMAT_UNDEFINED},
          .renderPass = VK_NULL_HANDLE};
       CK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe));
+      if (rtt && !strcmp(rtt_how, "draw")) {
+         /* the writer: the same full-screen quad, but a fragment colour of its own into the R8G8B8A8 offscreen image */
+         size_t f2sz = 0;
+         void *f2 = read_spv(spv_dir, "rtt.frag.spv", &f2sz);
+         REQ(f2, "SPIR-V not found for --rtt draw (--spv-dir)");
+         VkShaderModule fm2;
+         CK(CreateShaderModule(dev, &(VkShaderModuleCreateInfo){.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                                               .codeSize = f2sz, .pCode = f2}, NULL, &fm2));
+         free(f2);
+         VkPipelineShaderStageCreateInfo st2[2] = { st[0], st[1] };
+         st2[1].module = fm2;
+         VkFormat rfmt = VK_FORMAT_R8G8B8A8_UNORM;
+         VkGraphicsPipelineCreateInfo g2 = gpci;
+         g2.pStages = st2;
+         g2.pNext = &(VkPipelineRenderingCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                                    .colorAttachmentCount = 1, .pColorAttachmentFormats = &rfmt};
+         CK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &g2, NULL, &pipe2));
+         DestroyShaderModule(dev, fm2, NULL);
+      }
       DestroyShaderModule(dev, vm, NULL);
       DestroyShaderModule(dev, fm, NULL);
       printf("mode: %s (full-screen quad, dynamic rendering, loadOp CLEAR, STORE)\n",
+             rtt ? "render-to-texture, then a draw sampling it into the swapchain image" :
              blit ? "offscreen render + vkCmdBlitImage into the swapchain image" :
              copyimg ? "offscreen render + vkCmdCopyImage into the swapchain image" :
              textured ? "textured 2x2 magenta" : depth ? "depth-tested, D32 clear 1.0" :
@@ -814,20 +883,31 @@ main(int argc, char **argv)
    CK(CreateCommandPool(dev, &(VkCommandPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                                         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
                                                         .queueFamilyIndex = fam}, NULL, &pool));
-   VkCommandBuffer cb;
+   VkCommandBuffer cbs[2];
    CK(AllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                                                  .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                                                                 .commandBufferCount = 1}, &cb));
-   VkSemaphore acq, done;
+                                                                 .commandBufferCount = 2}, cbs));
+   VkCommandBuffer cb = cbs[0], cb2 = cbs[1];   /* --rtt-split: cb writes the image, cb2 samples it, in two submissions */
+   VkSemaphore acq, done, mid;
    VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
    CK(CreateSemaphore(dev, &sci, NULL, &acq));
    CK(CreateSemaphore(dev, &sci, NULL, &done));
+   CK(CreateSemaphore(dev, &sci, NULL, &mid));
    VkFence fence;
    CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &fence));
 
    const VkClearColorValue clr = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}};   /* BGRA8: 51,102,204 */
    int blitrc = 0;
-   for (int f = 0; f < FRAMES; f++) {
+   struct timespec t0 = {0, 0};
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   for (int f = 0; f < FRAMES || hold > 0; f++) {
+      if (hold > 0 && f >= FRAMES) {   /* --hold: keep presenting until the deadline, so a screenshot has a window */
+         struct timespec tn = {0, 0};
+         clock_gettime(CLOCK_MONOTONIC, &tn);
+         if (tn.tv_sec - t0.tv_sec >= hold) break;
+         struct timespec ts = {0, 16 * 1000 * 1000};
+         nanosleep(&ts, NULL);
+      }
       uint32_t idx;
       CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
       REQ(idx < ni, "acquired index out of range");
@@ -835,8 +915,92 @@ main(int argc, char **argv)
       CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
       VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      if (blit || copyimg) {
-         /* 1. the quad, into the offscreen image */
+      if (rtt) {
+         const int cmdclear = !strcmp(rtt_how, "cmdclear"), howdraw = !strcmp(rtt_how, "draw");
+         /* 1. the GPU writes the offscreen image on its own: vkCmdClearColorImage, a render-pass clear, or a quad */
+         const VkClearColorValue rclr = {.float32 = {0.1f, 0.45f, 0.9f, 1.0f}};   /* RGB 26,115,230 */
+         VkImageMemoryBarrier ob = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .dstAccessMask = cmdclear ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                    .newLayout = cmdclear ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = off, .subresourceRange = rng};
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            cmdclear ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            0, 0, NULL, 0, NULL, 1, &ob);
+         if (cmdclear) {
+            CmdClearColorImage(cb, off, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &rclr, 1, &rng);
+         } else {
+            /* --rtt draw: black clear, the quad supplies the colour; --rtt clear: the colour is the clear itself */
+            VkClearValue cv = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};
+            if (!howdraw) memcpy(cv.color.float32, rclr.float32, sizeof cv.color.float32);
+            VkRenderingAttachmentInfo rra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = offview,
+                                            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                            .clearValue = cv};
+            VkRenderingInfo rri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                   .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
+                                   .colorAttachmentCount = 1, .pColorAttachments = &rra};
+            CmdBeginRendering(cb, &rri);
+            if (howdraw) {
+               CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe2);
+               VkViewport rvp = {0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f};
+               VkRect2D rsr = {{0, 0}, {ext.width, ext.height}};
+               CmdSetViewport(cb, 0, 1, &rvp);
+               CmdSetScissor(cb, 0, 1, &rsr);
+               CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
+               CmdDraw(cb, 6, 1, 0, 0);
+            }
+            CmdEndRendering(cb);
+         }
+         /* 2. the write -> a fragment-shader read, layout to SHADER_READ_ONLY_OPTIMAL */
+         const VkImageLayout from = ob.newLayout;
+         ob.srcAccessMask = ob.dstAccessMask;
+         ob.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+         ob.oldLayout = from;
+         ob.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+         CmdPipelineBarrier(cb, cmdclear ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &ob);
+         /* 3. --rtt-split: the sampling draw goes into a second command buffer, so into a second submission */
+         VkCommandBuffer pcb = cb;
+         if (rtt_split) {
+            CK(EndCommandBuffer(cb));
+            CK(ResetCommandBuffer(cb2, 0));
+            CK(BeginCommandBuffer(cb2, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
+            pcb = cb2;
+         }
+         VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                   .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                   .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .image = imgs[idx], .subresourceRange = rng};
+         CmdPipelineBarrier(pcb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+         VkClearValue wblack = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};   /* a lost sample reads 0,0,0 */
+         VkRenderingAttachmentInfo wra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = views[idx],
+                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                         .clearValue = wblack};
+         VkRenderingInfo wri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
+                                .colorAttachmentCount = 1, .pColorAttachments = &wra};
+         CmdBeginRendering(pcb, &wri);
+         CmdBindPipeline(pcb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         CmdBindDescriptorSets(pcb, VK_PIPELINE_BIND_POINT_GRAPHICS, play, 0, 1, &dset, 0, NULL);
+         VkViewport wvp = {0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f};
+         VkRect2D wsr = {{0, 0}, {ext.width, ext.height}};
+         CmdSetViewport(pcb, 0, 1, &wvp);
+         CmdSetScissor(pcb, 0, 1, &wsr);
+         CmdPushConstants(pcb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
+         CmdDraw(pcb, 6, 1, 0, 0);
+         CmdEndRendering(pcb);
+         b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+         b.dstAccessMask = 0;
+         b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+         b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+         CmdPipelineBarrier(pcb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      } else if (blit || copyimg) {
+
          VkImageMemoryBarrier ob = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                     .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -879,8 +1043,9 @@ main(int argc, char **argv)
          } else {
             /* frame 0: a 1:1 WxH sub-rect; frame 1: half size (2W x 2H -> W x H); frame 2: the whole 1600x720 scaled */
             VkOffset3D s0 = {0, 0, 0}, d0 = {0, 0, 0}, d1 = {(int32_t)ext.width, (int32_t)ext.height, 1}, s1;
-            if (f == 0)      s1 = (VkOffset3D){(int32_t)ext.width, (int32_t)ext.height, 1};
-            else if (f == 1) s1 = (VkOffset3D){(int32_t)ext.width * 2, (int32_t)ext.height * 2, 1};
+            const int ph = f % 3;   /* --hold repeats the three cases */
+            if (ph == 0)      s1 = (VkOffset3D){(int32_t)ext.width, (int32_t)ext.height, 1};
+            else if (ph == 1) s1 = (VkOffset3D){(int32_t)ext.width * 2, (int32_t)ext.height * 2, 1};
             else             s1 = (VkOffset3D){(int32_t)offw, (int32_t)offh, 1};
             VkImageBlit bl = {.srcSubresource = sl, .dstSubresource = sl, .srcOffsets = {s0, s1}, .dstOffsets = {d0, d1}};
             CmdBlitImage(cb, off, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -943,12 +1108,25 @@ main(int argc, char **argv)
       b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
       CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
       }
-      CK(EndCommandBuffer(cb));
+      CK(EndCommandBuffer((rtt && rtt_split) ? cb2 : cb));
       VkPipelineStageFlags ws = draw_like ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
-      CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
-                                           .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
-                                           .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
-                     fence));
+      if (rtt && rtt_split) {
+         /* two submissions joined by a semaphore: the writer, then the sampling draw */
+         VkPipelineStageFlags ws2 = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+         CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
+                                              .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
+                                              .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &mid},
+                        fence));
+         CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
+                                              .pWaitSemaphores = &mid, .pWaitDstStageMask = &ws2, .commandBufferCount = 1,
+                                              .pCommandBuffers = &cb2, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
+                        VK_NULL_HANDLE));
+      } else {
+         CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
+                                              .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
+                                              .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
+                        fence));
+      }
       VkResult pres = VK_SUCCESS;
       r = QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
                                                  .pWaitSemaphores = &done, .swapchainCount = 1, .pSwapchains = &sc,
@@ -976,7 +1154,7 @@ main(int argc, char **argv)
             }
          }
          printf("frame %d (%s): pixel BGR = %u,%u,%u (want 0,0,255): %s\n", f,
-                copyimg ? "copy 1:1" : f == 0 ? "blit 1:1" : f == 1 ? "blit half size" : "blit full scaled",
+                copyimg ? "copy 1:1" : f % 3 == 0 ? "blit 1:1" : f % 3 == 1 ? "blit half size" : "blit full scaled",
                 px[0], px[1], px[2], ok ? "ok" : "MISMATCH");
          if (!ok)
             blitrc = 1;
@@ -997,7 +1175,9 @@ main(int argc, char **argv)
             memcpy(px, xcb_get_image_data(im), 3);
             /* X pixel = B,G,R. --textured: magenta (255,0,255); --blend: 50% red over 50% blue (128,0,128);
              * --depth / --draw: opaque red (0,0,255); the clear path: 0.2,0.4,0.8 (204,102,51). */
-            if (textured)
+            if (rtt)
+               ok = abs(px[0] - 230) <= 4 && abs(px[1] - 115) <= 4 && abs(px[2] - 26) <= 4;
+            else if (textured)
                ok = px[0] >= 253 && px[1] <= 2 && px[2] >= 253;
             else if (blend)
                ok = abs(px[0] - 128) <= 8 && px[1] <= 8 && abs(px[2] - 128) <= 8;
@@ -1013,6 +1193,7 @@ main(int argc, char **argv)
          }
       }
       printf("window pixel BGR = %u,%u,%u (want %s): %s\n", px[0], px[1], px[2],
+             rtt ? "230,115,26 (the sampled render texture)" :
              textured ? "255,0,255 (textured quad)" : blend ? "128,0,128 (blended quad)" :
              depth ? "0,0,255 (depth-tested quad)" : draw ? "0,0,255 (the drawn quad)" : "204,102,51 (the clear)",
              ok ? "ok" : "MISMATCH");
@@ -1022,18 +1203,22 @@ main(int argc, char **argv)
    DeviceWaitIdle(dev);
    if (draw_like) {
       DestroyPipeline(dev, pipe, NULL);
+      if (pipe2)
+         DestroyPipeline(dev, pipe2, NULL);
       DestroyPipelineLayout(dev, play, NULL);
       for (uint32_t i = 0; i < ni; i++)
          DestroyImageView(dev, views[i], NULL);
-      if (textured) {
+      if (textured || rtt) {
          DestroyDescriptorPool(dev, dpool, NULL);
          DestroyDescriptorSetLayout(dev, dsl, NULL);
          DestroySampler(dev, samp, NULL);
-         DestroyImageView(dev, texview, NULL);
-         DestroyImage(dev, tex, NULL);
-         FreeMemory(dev, texmem, NULL);
+         if (textured) {
+            DestroyImageView(dev, texview, NULL);
+            DestroyImage(dev, tex, NULL);
+            FreeMemory(dev, texmem, NULL);
+         }
       }
-      if (blit || copyimg) {
+      if (blit || copyimg || rtt) {
          DestroyImageView(dev, offview, NULL);
          DestroyImage(dev, off, NULL);
          FreeMemory(dev, offmem, NULL);
@@ -1047,6 +1232,7 @@ main(int argc, char **argv)
    DestroyFence(dev, fence, NULL);
    DestroySemaphore(dev, acq, NULL);
    DestroySemaphore(dev, done, NULL);
+   DestroySemaphore(dev, mid, NULL);
    DestroyCommandPool(dev, pool, NULL);
    DestroySwapchainKHR(dev, sc, NULL);
    DestroyDevice(dev, NULL);
