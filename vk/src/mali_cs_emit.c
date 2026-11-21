@@ -1128,7 +1128,21 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    bool geometry = f->ndraws > 0;
 
    void *smp = A(hw, sizeof kb_sample_positions, 64, &va_smp);
-   uint32_t *tctx = A(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
+   /* THROWAWAY: MALI_TCTX_REUSE=1 keeps ONE tiler context for the whole session, so a draw can run with the very
+    * block another draw built (and painted with). MALI_TCTX_PAD=<n> shifts the block's address. */
+   static uint32_t *tc_keep;
+   static uint64_t tc_keep_va;
+   if (getenv("MALI_TCTX_PAD")) {
+      uint64_t padv = 0;
+      A(hw, (size_t)strtoul(getenv("MALI_TCTX_PAD"), NULL, 0), 64, &padv);
+   }
+   uint32_t *tctx;
+   if (getenv("MALI_TCTX_REUSE") && tc_keep)
+      { tctx = tc_keep; va_tctx = tc_keep_va; }
+   else {
+      tctx = A(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
+      if (getenv("MALI_TCTX_REUSE")) { tc_keep = tctx; tc_keep_va = va_tctx; }
+   }
    uint8_t *fbd = A(hw, KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
    uint32_t *tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
    if (!smp || !tctx || !fbd || !tsd)
@@ -1155,6 +1169,22 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
       if (f->samples == 4 && v13)
          tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
+   /* THROWAWAY: the tiler context block the job will read, word for word, and the heap pointers */
+      static unsigned tcx;
+      if (tcx++ < 12) {
+         fprintf(stderr, "mali_dbg: TCTX step=%s n=%u va=0x%llx reuse=%d words:",
+                 getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", tcx,
+                 (unsigned long long)va_tctx, getenv("MALI_TCTX_REUSE") != NULL);
+         for (unsigned k = 0; k < 32; k++) fprintf(stderr, " %08x", tctx[k]);
+         fprintf(stderr, "\n");
+      }
+      static unsigned gx;
+      if (gx++ < 6)
+         fprintf(stderr, "mali_dbg: TCTXGEO step=%s ndraws=%u w=%u h=%u hmask=0x%x tile_log2=%u geo_va=0x%llx heap_desc=%d "
+                         "heap_chunk=%u heap_first=0x%llx samples=%u provoking_last=%d\n",
+                 getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", f->ndraws, f->width, f->height,
+                 env->hmask, env->tile_log2, (unsigned long long)env->geo_va, (int)env->heap_desc_ready,
+                 env->heap_chunk_size, (unsigned long long)env->heap_first_chunk_va, f->samples, (int)f->provoking_last);
       unsigned prev_prim = 0;
       struct mali_draw x, pv;   /* the running full draw (updated by the groups each record renewed) and what build_draw_descs needs of the previous one */
       memset(&x, 0, sizeof x);
