@@ -14,6 +14,7 @@
 
 #include "mali_cmd.h"
 #include "mali_dbg.h"
+#include "mali_compile.h"
 #include "kbase.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
@@ -209,6 +210,15 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
    }
    if (!ng.push_base[0])
       ng.push_base[0] = 40;   /* compile defaults: VS push block at FAU byte 40, FS at 0 */
+   {   /* THROWAWAY: the pipeline this command buffer binds, and whether ITS shaders are the overridden ones */
+      static unsigned pbr;
+      if (pbr++ < 16)
+         fprintf(stderr, "mali_ov: OVERRIDE pipeline=%p VS=0x%llx(%s) applied_vs=%d FS=0x%llx(%s) applied_fs=%d\n",
+                 (void *)p, (unsigned long long)ng.vs_va, mali_ov_name[0] ? mali_ov_name[0] : "none",
+                 (int)(ng.vs && ng.vs == mali_ov_compiled[0]),
+                 (unsigned long long)ng.fs_va, mali_ov_name[1] ? mali_ov_name[1] : "none",
+                 (int)(ng.fs && ng.fs == mali_ov_compiled[1]));
+   }
    if (memcmp(&ng, &cmd->gfx, sizeof ng)) {   /* rebinding an equal pipeline is not a change */
       cmd->gfx = ng;
       cmd->dirty |= MALI_D_PIPE;
@@ -234,6 +244,14 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
       if (!g_res.shader || g_res.shader(shaders[i], &c, &va)) {
          unsupported(cmd, "shader");
          return;
+      }
+      {   /* THROWAWAY: prove the override reached THIS draw's shader (pointer identity + VA at bind time) */
+         static unsigned ovr;
+         const int k = stages[i] == MESA_SHADER_VERTEX ? 0 : 1;
+         fprintf(stderr, "mali_ov: OVERRIDE step=%s bind=%u stage=%s va=0x%llx file=%s applied=%d\n",
+                 getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", ++ovr,
+                 k ? "FS" : "VS", (unsigned long long)va, mali_ov_name[k] ? mali_ov_name[k] : "none",
+                 (int)(c == mali_ov_compiled[k]));
       }
       if (stages[i] == MESA_SHADER_VERTEX) {
          cmd->gfx.vs = c;

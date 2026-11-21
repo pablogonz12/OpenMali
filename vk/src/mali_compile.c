@@ -783,6 +783,9 @@ mali_spirv_has_xfb(const uint32_t *w, uint32_t nwords)
  * ladder's own draw (count, target, pipeline layout, descriptors) runs with one shader swapped. Nothing else changes:
  * the pipeline layout and its descriptor sets stay bound (our override shaders declare no descriptors, so the sets are
  * simply unread — nothing dangles, the VAs and the SRT entries are still the app's and still valid). */
+const struct mali_compiled *mali_ov_compiled[2];
+const char *mali_ov_name[2];
+
 static int
 mali_override_spirv(const char *path, uint32_t **words, size_t *nwords)
 {
@@ -804,6 +807,7 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
 {
    if (!o || !out || !o->spirv || !o->spirv_words)
       return fail(err, errsz, "bad arguments");
+   int ov_applied = 0;
    {
       const char *ov = o->stage == MALI_STAGE_VERTEX ? getenv("MALI_VS_OVERRIDE")
                      : o->stage == MALI_STAGE_FRAGMENT ? getenv("MALI_FS_OVERRIDE") : NULL;
@@ -819,6 +823,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
             mutable->spirv = ovw[k];
             mutable->spirv_words = ovn[k];
             mutable->entry = NULL;
+            mali_ov_name[k] = ov;
+            ov_applied = 1;
          }
       }
    }
@@ -853,6 +859,8 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
    }
    atomic_fetch_add(&g_misses, 1);
    int r = do_compile(o, fau_reserved, push_base, out, err, errsz);
+   if (r == 0 && ov_applied)
+      mali_ov_compiled[o->stage == MALI_STAGE_VERTEX ? 0 : 1] = out;   /* THROWAWAY: prove the swap at bind time */
    if (r == 0 && use_cache)
       cache_store(dir, hex, out);
    return r;

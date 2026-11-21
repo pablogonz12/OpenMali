@@ -267,6 +267,17 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    int rc = kb_fb_pack(out, &p);
    if (rc)
       return rc;
+   {   /* THROWAWAY: the RT/FBD words the job will read, per target, with the tiler ctx it points at */
+      static unsigned fbdn;
+      if (fbdn++ < 16) {
+         fprintf(stderr, "mali_ov: FBD step=%s n=%u colour_va=0x%llx tiler_va=0x%llx stride=%u clear=%d store=%d samples=%u words:",
+                 getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", fbdn,
+                 (unsigned long long)p.rt_gpu_va, (unsigned long long)tiler_ctx_va, p.row_stride,
+                 (int)f->colour.clear, (int)f->colour.store, f->samples);
+         for (unsigned k = 0; k < 24; k++) fprintf(stderr, " %08x", ((const uint32_t *)out)[k]);
+         fprintf(stderr, "\n");
+      }
+   }
    if (env->arch == 13) {
       uint32_t *w = (uint32_t *)out;
       unsigned al = ((1u << env->tile_log2) * (f->colour.rt ? f->colour.rt->alloc : 4u)) >> 10;

@@ -110,6 +110,9 @@ int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *ou
  * VK_ERROR_FEATURE_NOT_PRESENT rather than VK_ERROR_INVALID_SHADER_NV). */
 #define MALI_COMPILE_UNSUPPORTED (-2)
 
+/* THROWAWAY: the mali_compiled a stage's override produced (NULL if none), so a draw can prove it used it. */
+extern const struct mali_compiled *mali_ov_compiled[2];
+extern const char *mali_ov_name[2];
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the

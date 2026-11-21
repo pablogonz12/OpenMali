@@ -27,6 +27,7 @@
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
 #include "mali_dbg.h"
+#include "mali_compile.h"
 #include "mali_event.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
