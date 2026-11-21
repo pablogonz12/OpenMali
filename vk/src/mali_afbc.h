@@ -225,6 +225,7 @@ mali_afbc_image_eligible(const struct mali_afbc_image_info *i, unsigned *bpp_out
       return MALI_AFBC_REJ_FLAGS;
    unsigned bpp = mali_afbc_format_bpp(i->format);
    if (!bpp) return MALI_AFBC_REJ_FORMAT;
+   if (i->format == 70 && i->arch < 10) return MALI_AFBC_REJ_FORMAT;   /* R16_UNORM AFBC exists from v10 on only (Mesa pan_afbc rejects it below arch 10; arch 7/8/9 are not targeted) */
    if (i->width < 16 || i->height < 16) return MALI_AFBC_REJ_EXTENT;
    if (bpp_out) *bpp_out = bpp;
    return MALI_AFBC_OK;

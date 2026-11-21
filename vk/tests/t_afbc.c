@@ -114,7 +114,7 @@ int main(void)
    e2 = e; e2.flags = MALI_AFBC_FLAG_DISJOINT;        EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FLAGS);
    e2 = e; e2.flags = MALI_AFBC_FLAG_ALIAS;           EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FLAGS);
    e2 = e; e2.flags = MALI_AFBC_FLAG_SPARSE_BINDING;  EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FLAGS);
-   e2 = e; e2.flags = 0x80 /* MUTABLE_FORMAT */;      EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_OK); /* allowed here; same-mode check is stage 5 */
+   e2 = e; e2.flags = 0x8 /* MUTABLE_FORMAT */;       EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_OK); /* allowed here; same-mode check is stage 5 */
    e2 = e; e2.width = 8;        EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_EXTENT);
    e2 = e; e2.height = 15;      EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_EXTENT);
    /* Formats: hits, then float / integer / depth / compressed / undefined / multiplanar misses. */
