@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* M5: image layout, plane/texture packers, VkImage and VkImageView. See mali_image.h. */
 #include "mali_image.h"
+#include "mali_dbg.h"
 #include "mali_msaa.h"
 
 #include <errno.h>
@@ -586,6 +587,19 @@ mali_image_view_desc(VkImageView h, VkDescriptorType type, struct mali_hw_desc *
    if (!v) return -EINVAL;
    view_refresh(v);
    *out = type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ? v->storage : v->tex;
+   {
+      struct mali_image *img = (struct mali_image *)v->vk.image;
+      mali_dbg_line("view", "VIEW view=%p fmt=%d(%s) swz=%d,%d,%d,%d lvl=%u+%u layer=%u+%u type=%d | image=%p fmt=%d(%s) "
+                    "usage=0x%llx tiling=%s ext=%ux%ux%u samples=%u va=0x%llx tiled=%d dtype=%d",
+                    (void *)h, (int)v->vd.format, mali_dbg_fmt(v->vd.format), (int)v->vd.swizzle.r, (int)v->vd.swizzle.g,
+                    (int)v->vd.swizzle.b, (int)v->vd.swizzle.a, v->vd.base_level, v->vd.levels, v->vd.base_layer, v->vd.layers,
+                    (int)v->vd.type, (void *)(img ? &img->vk : 0),
+                    img ? (int)img->vk.format : -1, img ? mali_dbg_fmt(img->vk.format) : "?",
+                    img ? (unsigned long long)(uint64_t)img->vk.usage : 0ull, img ? mali_dbg_tiling(img->vk.tiling) : "?",
+                    img ? img->vk.extent.width : 0, img ? img->vk.extent.height : 0, img ? img->vk.extent.depth : 0,
+                    img ? img->vk.samples : 0, img ? (unsigned long long)img->va : 0ull, img ? (int)img->lay.d.tiled : -1,
+                    v->vd.storage);
+   }
    return 0;
 }
 

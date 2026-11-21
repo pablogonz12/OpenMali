@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include "mali_image.h"
+#include "mali_dbg.h"
 
 uint32_t
 mali_wrap_mode(VkSamplerAddressMode m)
@@ -47,6 +48,10 @@ mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_
 {
    (void)arch;
    memset(o, 0, sizeof *o);
+   mali_dbg_line("sampler", "SAMPLER min=%d mag=%d mip=%d addr=%d,%d,%d aniso=%d/%g cmp=%d(%d) unnorm=%d lod=%g..%g",
+                 (int)ci->minFilter, (int)ci->magFilter, (int)ci->mipmapMode, (int)ci->addressModeU, (int)ci->addressModeV,
+                 (int)ci->addressModeW, (int)ci->anisotropyEnable, (double)ci->maxAnisotropy, (int)ci->compareEnable,
+                 (int)ci->compareOp, (int)ci->unnormalizedCoordinates, (double)ci->minLod, (double)ci->maxLod);
    /* genxml Sampler: Wrap Mode R = bits 8, T = 12, S = 16; Vulkan U -> S, V -> T, W -> R (as panvk_vX_sampler.c). Unnormalised coordinates ignore W. */
    uint32_t wr = ci->unnormalizedCoordinates ? mali_wrap_mode(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) : mali_wrap_mode(ci->addressModeW);
    uint32_t w0 = 1u | (wr << 8) | (mali_wrap_mode(ci->addressModeV) << 12) |

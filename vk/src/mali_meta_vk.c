@@ -16,6 +16,7 @@
 #include "mali_image.h"
 #include "mali_meta.h"
 #include "mali_meta_vk.h"
+#include "mali_dbg.h"
 #include "mali_bc.h"
 
 #include "util/format/u_format.h"
@@ -583,6 +584,16 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   mali_dbg_line("meta", "BLIT src=%p va=0x%llx fmt=%d(%s) usage=0x%llx tiling=%s tiled=%d ext=%ux%ux%u samples=%u lay=%s | "
+                 "dst=%p va=0x%llx fmt=%d(%s) usage=0x%llx tiling=%s tiled=%d ext=%ux%ux%u samples=%u lay=%s | "
+                 "filter=%d regions=%u",
+                 (void *)ci->srcImage, (unsigned long long)si->va, (int)si->vk.format, mali_dbg_fmt(si->vk.format),
+                 (unsigned long long)(uint64_t)si->vk.usage, mali_dbg_tiling(si->vk.tiling), (int)si->lay.d.tiled,
+                 si->vk.extent.width, si->vk.extent.height, si->vk.extent.depth, si->vk.samples, mali_dbg_layout(ci->srcImageLayout),
+                 (void *)ci->dstImage, (unsigned long long)di->va, (int)di->vk.format, mali_dbg_fmt(di->vk.format),
+                 (unsigned long long)(uint64_t)di->vk.usage, mali_dbg_tiling(di->vk.tiling), (int)di->lay.d.tiled,
+                 di->vk.extent.width, di->vk.extent.height, di->vk.extent.depth, di->vk.samples, mali_dbg_layout(ci->dstImageLayout),
+                 (int)ci->filter, ci->regionCount);
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);

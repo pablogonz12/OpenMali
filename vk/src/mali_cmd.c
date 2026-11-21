@@ -6,12 +6,14 @@
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "mali_dbg.h"
 #include "kbase.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
@@ -584,6 +586,13 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          if (mali_blend_equation(x, &eq, &cm))
             unsupported(cmd, "blend equation (fixed function)");
       }
+      mali_dbg_line("cmd", "DRAW count=%u inst=%u first=%u target va=0x%llx stride=%u area=%dx%d fmt=%d(%s) pass_samples=%u "
+                    "samples=%u discard=%d wmask=0x%x blend=%d blendpipe=%d vp=%.0f,%.0f,%.0fx%.0f sc=%d,%d,%dx%d",
+                    count, inst, first, (unsigned long long)fr->colour.va, fr->colour.row_stride, fr->width, fr->height,
+                    (int)(fr->colour.rt ? fr->colour.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM),
+                    mali_dbg_fmt(fr->colour.rt ? fr->colour.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM), fr->samples,
+                    bp->gfx.samples, (int)bp->gfx.discard, (unsigned)x->wmask, (int)x->blend_en, (int)(bp->gfx.blend_va != 0),
+                    bp->vp[2], bp->vp[3], bp->vp[2], bp->vp[3], bp->sc[0], bp->sc[1], bp->sc[2], bp->sc[3]);
    }
    return true;
 }
