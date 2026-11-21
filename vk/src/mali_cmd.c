@@ -1138,6 +1138,18 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    cmd->in_render = true;
 }
 
+/* Region of the deferred MSAA resolve (mali_CmdEndRendering). Extracted so the rect and the two subresources can be
+ * tested without a GPU: the source is the attachment view, the destination the resolve view, the rect the render area. */
+void
+mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
+{
+   memset(r, 0, sizeof *r);
+   r->sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2;
+   r->srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_level, f->resolve_layer, 1};
+   r->dstSubresource = r->srcSubresource;
+   r->extent = (VkExtent3D){f->width, f->height, 1};
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1149,8 +1161,6 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
-   const unsigned resolve_level = cmd->cur.resolve_level, resolve_layer = cmd->cur.resolve_layer;
-   const unsigned resolve_w = cmd->cur.width, resolve_h = cmd->cur.height;
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
@@ -1158,10 +1168,8 @@ mali_CmdEndRendering(VkCommandBuffer h)
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      VkImageResolve2 rr = {.sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
-                            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, resolve_level, resolve_layer, 1},
-                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, resolve_level, resolve_layer, 1},
-                            .extent = {resolve_w, resolve_h, 1}};
+      VkImageResolve2 rr;
+      mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
                                 .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
