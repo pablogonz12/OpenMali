@@ -5,6 +5,7 @@
 #ifndef MALI_IMAGE_H
 #define MALI_IMAGE_H
 
+#include "mali_afbc.h"
 #include "mali_bc.h"
 #include "mali_descriptor.h"
 #include "mali_format.h"
@@ -49,6 +50,11 @@ struct mali_image_layout {
    struct mali_plane_layout plane[2];
    uint64_t size;
    uint32_t alignment;
+   /* MALI_AFBC=1 only (default off, zero otherwise): an eligible colour image is sized for the AFBC header+body layout
+    * (size/alignment above are max(linear, AFBC)). Descriptors and meta paths still use the linear planes: nothing is rendered
+    * through AFBC yet and no modifier is exposed. */
+   bool afbc;
+   struct mali_afbc_image_layout afbc_lay;
 };
 
 #define MALI_IMAGE_ALIGN 64u
@@ -56,6 +62,13 @@ struct mali_image_layout {
 
 /* 0, or -EINVAL when the description is out of range (extent, levels, layers, samples) or the format is not advertised. */
 int mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct mali_image_layout *out);
+
+/* Stage 2 wiring: when `enabled` (MALI_AFBC=1) and the image is AFBC-eligible, grow lay->size/alignment to the AFBC layout and fill
+ * lay->afbc*. Returns true when applied. With !enabled it never touches `lay` (default path byte-identical). */
+int mali_image_ci_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layout *lay, struct mali_bc_layout *bc,
+                         struct mali_image_layout *sh, bool *is_bc);
+int mali_image_plain_layout(unsigned arch, const VkImageCreateInfo *ci, const struct mali_image_desc *d, bool afbc_on, struct mali_image_layout *lay);
+bool mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, struct mali_image_layout *lay);
 /* MALI_IMAGE_TILED=1 selects u-interleaved for OPTIMAL images (single sampled, not 1D). Default: linear everywhere (tiled is not
  * hardware-verified yet, see R3-PLAN M5). */
 bool mali_image_wants_tiled(VkImageTiling tiling, VkImageType type, uint32_t samples);

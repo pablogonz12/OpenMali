@@ -231,4 +231,127 @@ mali_afbc_image_eligible(const struct mali_afbc_image_info *i, unsigned *bpp_out
    return MALI_AFBC_OK;
 }
 
+
+/* ---- Stage 2 (host part): whole-image layout, mip chain + array layers. Within one array layer the mip levels are
+ * packed back to back, each level start aligned to its offset_align; layers repeat at array_stride (aligned to the
+ * largest level alignment). Level extent = max(1, dim >> level). Unused until mali_image.c is wired (default off). */
+#define MALI_AFBC_MAX_LEVELS 16
+
+struct mali_afbc_image_layout {
+   uint32_t levels, layers;
+   uint64_t level_offset[MALI_AFBC_MAX_LEVELS];  /* from layer start */
+   struct mali_afbc_layout level[MALI_AFBC_MAX_LEVELS];
+   uint64_t array_stride;
+   uint64_t size;
+   uint32_t base_align;    /* required alignment of the image base address */
+};
+
+static inline int
+mali_afbc_image_layout(unsigned arch, uint64_t modifier, unsigned bpp_bits, uint32_t width, uint32_t height,
+                       uint32_t levels, uint32_t layers, struct mali_afbc_image_layout *o)
+{
+   *o = (struct mali_afbc_image_layout){0};
+   if (!levels || levels > MALI_AFBC_MAX_LEVELS || !layers || !width || !height) return -1;
+   o->levels = levels; o->layers = layers;
+   uint64_t off = 0;
+   for (uint32_t l = 0; l < levels; l++) {
+      struct mali_afbc_params p = {arch, modifier, bpp_bits, width >> l ? width >> l : 1, height >> l ? height >> l : 1, 1};
+      if (mali_afbc_layout(&p, &o->level[l])) return -1;
+      if (o->level[l].offset_align > o->base_align) o->base_align = o->level[l].offset_align;
+      off = mali_afbc_align(off, o->level[l].offset_align);
+      o->level_offset[l] = off;
+      if (o->level[l].size > UINT64_MAX - off) return -1;
+      off += o->level[l].size;
+   }
+   o->array_stride = mali_afbc_align(off, o->base_align);
+   if (o->array_stride > UINT64_MAX / layers) return -1;
+   o->size = o->array_stride * layers;
+   return 0;
+}
+
+/* ---- Stage 3 (host part): AFBC RGB Render Target descriptor fields, v9+ packing (v10/v11/v13), genxml v13.xml:2476
+ * ("AFBC RGB Render Target", 16 words). Only the AFBC-specific words are produced; the linear RT words (formats, swizzle,
+ * clear colour, write enable) stay as the existing emission sets them. Pure, unused until the frame emission is wired. */
+#define MALI_AFBC_BLOCK_FORMAT_AFBC       12u   /* enum Block Format */
+#define MALI_AFBC_BLOCK_FORMAT_AFBC_TILED 13u
+#define MALI_AFBC_CM_R8        0u
+#define MALI_AFBC_CM_R16       1u
+#define MALI_AFBC_CM_R8G8      3u
+#define MALI_AFBC_CM_R5G6B5    4u
+#define MALI_AFBC_CM_R8G8B8A8  10u
+#define MALI_AFBC_CM_R10G10B10A2 11u
+
+/* VkFormat -> AFBC compression mode; -1 when not an AFBC colour format (same table as mali_afbc_format_bpp). */
+static inline int
+mali_afbc_compression_mode(unsigned fmt)
+{
+   switch (fmt) {
+   case 4: case 5:   return MALI_AFBC_CM_R5G6B5;
+   case 9: case 15:  return MALI_AFBC_CM_R8;
+   case 16: case 22: return MALI_AFBC_CM_R8G8;
+   case 37: case 43: case 44: case 50: return MALI_AFBC_CM_R8G8B8A8;
+   case 58: case 64: return MALI_AFBC_CM_R10G10B10A2;
+   case 70:          return MALI_AFBC_CM_R16;
+   default:          return -1;
+   }
+}
+
+/* Effective tile block for a tile of `tile_px` pixels (pan_effective_tile_block_size): square or twice as wide as high. */
+static inline void
+mali_afbc_tile_block(unsigned tile_px, uint32_t *w, uint32_t *h)
+{
+   unsigned sh = 0;
+   while ((2u << sh) <= tile_px) sh++;   /* floor(log2) */
+   *h = 1u << (sh >> 1);
+   *w = 1u << ((sh + 1) >> 1);
+}
+
+/* reverse_issue_order is required when the effective tile is smaller than the superblock (v7+). */
+static inline bool
+mali_afbc_needs_reverse_issue(uint64_t modifier, unsigned tile_px)
+{
+   uint32_t sw, sh, tw, th;
+   if (!mali_afbc_sb_size(modifier, &sw, &sh)) return false;
+   mali_afbc_tile_block(tile_px, &tw, &th);
+   return tw < sw || th < sh;
+}
+
+struct mali_afbc_rt_words {
+   uint32_t w1_block_format;  /* OR into word 1 bits 8..11 (Block Format) */
+   uint32_t w2;               /* word 2 complete: YTR, split, wide, reverse issue order, compression mode (bits 10..15) */
+   uint64_t header_va;        /* words 8-9 */
+   uint32_t row_stride;       /* word 10: header row stride, bytes */
+   uint32_t body_offset;      /* word 11: bytes from header start */
+};
+
+/* Returns 0, or -1 for an invalid modifier/format/layout or a body offset beyond 32 bits. `level` is the layout of the rendered mip. */
+static inline int
+mali_afbc_rt_words(uint64_t modifier, unsigned vk_format, unsigned tile_px, uint64_t header_va,
+                   const struct mali_afbc_layout *level, struct mali_afbc_rt_words *o)
+{
+   *o = (struct mali_afbc_rt_words){0};
+   uint32_t sw, sh;
+   int cm = mali_afbc_compression_mode(vk_format);
+   if (cm < 0 || !mali_afbc_sb_size(modifier, &sw, &sh) || level->body_offset > UINT32_MAX) return -1;
+   o->w1_block_format = (modifier & MALI_AFBC_MOD_TILED) ? MALI_AFBC_BLOCK_FORMAT_AFBC_TILED : MALI_AFBC_BLOCK_FORMAT_AFBC;
+   o->w2 = ((modifier & MALI_AFBC_MOD_YTR) ? 1u << 0 : 0) | ((modifier & MALI_AFBC_MOD_SPLIT) ? 1u << 1 : 0) |
+           (sw > 16 ? 1u << 2 : 0) | (mali_afbc_needs_reverse_issue(modifier, tile_px) ? 1u << 3 : 0) | ((uint32_t)cm << 10);
+   o->header_va = header_va;
+   o->row_stride = level->header_row_stride;
+   o->body_offset = (uint32_t)level->body_offset;
+   return 0;
+}
+
+/* Patch the words above into a 16-word RT descriptor that already carries the linear fields. Word 1 block-format bits are replaced. */
+static inline void
+mali_afbc_rt_patch(uint32_t rt[16], const struct mali_afbc_rt_words *w)
+{
+   rt[1] = (rt[1] & ~(0xfu << 8)) | (w->w1_block_format << 8);
+   rt[2] = w->w2;
+   rt[8] = (uint32_t)w->header_va;
+   rt[9] = (uint32_t)(w->header_va >> 32);
+   rt[10] = w->row_stride;
+   rt[11] = w->body_offset;
+}
+
 #endif
