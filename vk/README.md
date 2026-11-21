@@ -108,6 +108,11 @@ Env: `MALI_FAULT_INJECT=n` (n-th submit fails -> DEVICE_LOST), `MALI_FAKE_SLOW_U
 Status: offline all green; CMF all cases pass incl. 10000 unwaited and 10000 waited submits (2026-11-16). The ring must never be completely full
 (`insert - extract == size` gives CS_CONFIG_FAULT): one 64-byte unit stays free, see R3-PLAN.md. Cached allocations are zeroed at alloc.
 
+Per-frame profiling (`src/mali_fprof.c`): `MALI_FRAME_PROF=1` (stderr) or `=<path>` prints CPU submit time, a GPU busy
+*estimate* and the present interval per frame, plus a summary at device teardown; `tools/frameprof <log>` summarises a log.
+Off (no ioctl, no clock read) when unset. What it measures and its accuracy: `FRAME-PROF.md`.
+Test: `out/<target>/t_frameprof --direct lib.so [--off]` (`--off` = no output at all when unset).
+
 ## M9: graphics pipelines, queue wiring, client draw test
 
 `mali_pipeline.c` compiles VS+FS through `mali_compile`; `mali_queue_submit` runs the M8 command buffers via `mali_cmd_submit` (one frame at a time).
@@ -123,7 +128,7 @@ Meta ops (`mali_meta*`), query pools (`mali_query*`), events/ops frames (`mali_e
 
 ## Known gaps in advertised features (feat-audit, 2026-11-18)
 - **Colour attachments:** `maxColorAttachments`/`maxFragmentOutputAttachments` are the Vulkan minimum (4) but only ONE colour attachment renders; the check is on `colorAttachmentCount`, not on the number of non-null views: unless every slot is null (depth/stencil-only is fine) the count must be exactly 1 with a non-null view, so `colorAttachmentCount` 2 fails `vkEndCommandBuffer` even when only one view is non-null (`mali_cmd.c`, "need exactly one colour attachment"). Nulling the extra slots does not make a multi-slot rendering valid. `independentBlend` is true only because of that.
-- **MSAA:** sample counts 1|4 are advertised always (dEQP relies on it); 4x pipelines need `MALI_EXPERIMENTAL_MSAA=1` (`mali_pipeline.c`), and resolve/LOAD/depth cases are limited.
+- **MSAA:** 4x sample counts (limits, image format properties), `sampleRateShading` and 4x pipelines are all gated on `MALI_EXPERIMENTAL_MSAA=1`; off by default the driver advertises 1x only (`t_vk_info` checks both modes). With the gate on, `vkCmdClearAttachments` inside an MSAA pass is still unsupported (M8 gap, `mali_cmd.c`) and resolve/LOAD/depth cases are limited.
 - **multiViewport:** `maxViewports`=16 but viewports 1..15 are accepted and ignored (no geometry shader / ViewportIndex output).
 - **Indirect draws** are read on the CPU from a mappable buffer (`mali_cmd.c`); GPU-written indirect arguments are not supported.
 - **driverID** is `MESA_PANVK` on purpose: zink applies PanVK workarounds keyed on it.

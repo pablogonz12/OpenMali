@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -52,7 +52,9 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dynpoly;                 /* poly is set with vkCmdSetPolygonModeEXT (pipeline polygonMode FILL + VK_DYNAMIC_STATE_POLYGON_MODE_EXT) */
    int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
+   int logic;                   /* 1 + VkLogicOp: static logicOpEnable */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
 /* stencil test of the next scene (depth test is off then); values are Vulkan's */
@@ -74,13 +76,15 @@ static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between d
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
 static int g_dxvk;   /* dxvk_frame: second pipeline (cull back + alpha blend) and six dynamic states so the draw loop can churn state like DXVK */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
+static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
+static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8 };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -189,7 +193,9 @@ struct scene {
    VkDescriptorSetLayout dsl;
    VkDescriptorPool dpool;
    VkDescriptorSet dset[2];
-   VkBuffer ubo[3];          /* uniform buffers (colours) */
+   VkDescriptorSet dset8[8]; /* MODE_SETS8: eight sets bound in one draw */
+   VkDescriptorSetLayout dsl8[8]; /* persistent set-layout array (a stack array dangled behind the pipeline layout) */
+   VkBuffer ubo[8];          /* uniform buffers (colours) */
    VkDeviceMemory ubomem;
    uint8_t *ubop;            /* mapped, 256 bytes per buffer */
    VkImage tim;
@@ -213,7 +219,8 @@ scene_create(struct scene *s, int depth)
    const char *vsn = g_inst ? "inst_attr.vert.spv" : g_sparse ? "rot_sparse.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
-   if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
+   if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) fsn = "ubo.frag.spv";
+   if (mode == MODE_SETS8) fsn = "sets8.frag.spv";
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
    s->vs = load_spv(vsn);
    s->fs = load_spv(fsn);
@@ -223,22 +230,24 @@ scene_create(struct scene *s, int depth)
    if (mode == MODE_PUSHFS) { pcr.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT; pcr.size = 32; }
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
-   if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD) {
+   if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) {
       VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
       VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                              .bindingCount = 1, .pBindings = &lb};
       CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &s->dsl) == VK_SUCCESS, "dsl");
-      pli.setLayoutCount = 1;
-      pli.pSetLayouts = &s->dsl;
-      VkDescriptorPoolSize ps = {lb.descriptorType, 2};
-      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
+      for (unsigned i = 0; i < 8; i++) s->dsl8[i] = s->dsl;
+      VkDescriptorSetLayout *l8 = s->dsl8;
+      unsigned nset = mode == MODE_SETS8 ? 8 : 2;   /* MODE_SETS8: eight identical layouts, all bound in one draw */
+      pli.setLayoutCount = mode == MODE_SETS8 ? 8 : 1;
+      pli.pSetLayouts = l8;
+      VkDescriptorPoolSize ps = {lb.descriptorType, nset};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = nset,
                                         .poolSizeCount = 1, .pPoolSizes = &ps};
       CHECK(CreateDescriptorPool(dev, &dpi, NULL, &s->dpool) == VK_SUCCESS, "dpool");
-      VkDescriptorSetLayout l2[2] = {s->dsl, s->dsl};
       VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = s->dpool,
-                                         .descriptorSetCount = 2, .pSetLayouts = l2};
-      CHECK(AllocateDescriptorSets(dev, &dai, s->dset) == VK_SUCCESS, "alloc sets");
+                                         .descriptorSetCount = nset, .pSetLayouts = l8};
+      CHECK(AllocateDescriptorSets(dev, &dai, mode == MODE_SETS8 ? s->dset8 : s->dset) == VK_SUCCESS, "alloc sets");
    }
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &s->layout) == VK_SUCCESS, "pipeline layout");
 
@@ -403,27 +412,31 @@ scene_create(struct scene *s, int depth)
    UnmapMemory(dev, s->ibmem);
    CHECK(BindBufferMemory(dev, s->ib, s->ibmem, 0) == VK_SUCCESS, "bind ib");
 
-   if (mode == MODE_UBO || mode == MODE_DESCUPD) {
-      /* three 256-byte uniform buffers in one allocation; colours written by the test */
+   if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) {
+      /* 256-byte uniform buffers in one allocation; colours written by the test. MODE_SETS8: one per set (0..7) */
+      const unsigned nubo = mode == MODE_SETS8 ? 8 : 3;
       VkBufferCreateInfo ui = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
       VkDeviceSize step = 0;
-      for (int i = 0; i < 3; i++) CHECK(CreateBuffer(dev, &ui, NULL, &s->ubo[i]) == VK_SUCCESS, "ubo");
+      for (unsigned i = 0; i < nubo; i++) CHECK(CreateBuffer(dev, &ui, NULL, &s->ubo[i]) == VK_SUCCESS, "ubo");
       GetBufferMemoryRequirements(dev, s->ubo[0], &mr);
       step = (256 + mr.alignment - 1) & ~(mr.alignment - 1);
-      VkMemoryAllocateInfo ua = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = step * 3,
+      VkMemoryAllocateInfo ua = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = step * nubo,
                                  .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
       CHECK(AllocateMemory(dev, &ua, NULL, &s->ubomem) == VK_SUCCESS, "ubo mem");
       CHECK(MapMemory(dev, s->ubomem, 0, VK_WHOLE_SIZE, 0, (void **)&s->ubop) == VK_SUCCESS, "map ubo");
       static const float colA[4] = {0.25f, 0.5f, 0.75f, 1.0f}, colB[4] = {1.0f, 0.0f, 0.5f, 1.0f}, colC[4] = {0.0f, 1.0f, 0.0f, 1.0f};
-      memcpy(s->ubop, colA, 16);
-      memcpy(s->ubop + step, colB, 16);
-      memcpy(s->ubop + 2 * step, colC, 16);
-      for (int i = 0; i < 3; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
-      /* set 0 = colour A, set 1 = colour B */
-      for (int i = 0; i < 2; i++) {
+      static const float colD[4] = {0.5f, 0.0f, 1.0f, 1.0f};   /* sets 2..6: never read, must never alias to set 7 */
+      for (unsigned i = 0; i < nubo; i++) {
+         /* MODE_SETS8: only set 7 is green. UBO/DESCUPD: ubo[2] is the green one the descriptor update binds */
+         const float *c = i == 0 ? colA : i == 1 ? colB : (mode == MODE_SETS8 ? i == 7 : i == 2) ? colC : colD;
+         memcpy(s->ubop + step * i, c, 16);
+      }
+      for (unsigned i = 0; i < nubo; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
+      /* set 0 = colour A, set 1 = colour B, MODE_SETS8: set i = ubo[i], the shader reads set 7 = colour C */
+      for (unsigned i = 0; i < (mode == MODE_SETS8 ? 8u : 2u); i++) {
          VkDescriptorBufferInfo bi2 = {s->ubo[i], 0, 16};
-         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->dset[i], .dstBinding = 0,
+         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = mode == MODE_SETS8 ? s->dset8[i] : s->dset[i], .dstBinding = 0,
                                    .descriptorCount = 1, .descriptorType = g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
          UpdateDescriptorSets(dev, 1, &w, 0, NULL);
       }
@@ -484,7 +497,7 @@ scene_create(struct scene *s, int depth)
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                             .viewportCount = s->mode == MODE_MVP ? 4 : 1, .scissorCount = s->mode == MODE_MVP ? 4 : 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
+                                                .polygonMode = g_fx.dynpoly ? VK_POLYGON_MODE_FILL : (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f, .rasterizerDiscardEnable = g_discard != 0};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = g_msaa ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT,
@@ -519,12 +532,14 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
-   VkDynamicState dyn[9] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+   if (g_fx.on && g_fx.logic) { cbs.logicOpEnable = VK_TRUE; cbs.logicOp = (VkLogicOp)(g_fx.logic - 1); }
+   VkDynamicState dyn[11] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = (g_fx.on && g_fx.dyn) || g_dxvk ? 6 : 2, .pDynamicStates = dyn};
    if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+   if (g_fx.dynpoly) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
       for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
       dys.dynamicStateCount += 3;
@@ -605,7 +620,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
-   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   const int lop = g_fx.on && g_fx.logic;   /* logic-op cases need a nonzero destination: (51,102,153,204) */
+   VkClearValue cv[2] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
    if (g_clear_f)
       memcpy(cv[0].color.float32, g_clear_f, 16);
    if (g_nocol)
@@ -648,6 +664,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdSetDepthBias(cb, g_fx.bias_c, g_fx.bias_clamp, g_fx.bias_s);
       CmdSetBlendConstants(cb, g_fx.bc);
    }
+   if (g_fx.dynpoly) CmdSetPolygonModeEXT_(cb, (VkPolygonMode)g_fx.poly);
    VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
    VkDeviceSize offs[2] = {0, 0};
    if (g_st.on && g_st.dyn) {
@@ -695,6 +712,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
    if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
+   if (s->mode == MODE_SETS8)
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 8, s->dset8, 0, NULL);
    for (int i = 0; i < n; i++) {
       if (g_dirty == 1) {
          VkViewport vi = {(i & 1) ? W / 2 : 0, 0, W / 2, H, 0.0f, 1.0f};
@@ -735,8 +754,12 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdDrawIndexed(cb, 6, 1, 0, 7, g_share == 3 ? g_share_fi[i] : 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
-      else
+      else {
          CmdDraw(cb, 3, 1, 0, 0);
+         /* polygonMode POINT: a 2-vertex triangle-list draw assembles no triangle and is rewritten to a different primitive than the draw above;
+          * with MALI_DIRTY_CHECK (check.sh) a reuse of the previous descriptors across that change aborts in build_draw_descs */
+         if (g_fx.poly == 2) CmdDraw(cb, 2, 1, 0, 0);
+      }
    }
    if (s->mode == MODE_CLEARQUAD) {   /* CmdClearAttachments AFTER a draw, sub-rectangle: a constant-colour quad (the triangle must survive outside the rect) */
       VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0, .clearValue = {.color = {{0, 0, 1, 1}}}};
@@ -903,21 +926,47 @@ test_many(void)
 
 
 /* ---- dxvk_frame: a DXVK-shaped frame, the CPU cost of the driver per draw / per submit (host microbenchmark, fake backend) ----
- * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of one of two sets (DXVK rewrites
+ * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of a set of its own (DXVK rewrites
  * its UBO/texture sets every few draws), per 4 draws a pipeline switch (two pipelines), per 8 draws cull/front-face/depth-bias/
  * blend-constant/viewport/scissor changes, per 16 draws a vertex-buffer + index-buffer rebind; indexed draws. One QueueSubmit per frame.
  * MALI_DXVK_DRAWS (3000), MALI_DXVK_REPS (200). Prints ns_per_draw (record+submit), record_ns_per_draw, submit_ns_per_draw, submit_ns. */
 static int
 test_dxvk_frame(void)
 {
-   const int n = getenv("MALI_DXVK_DRAWS") ? atoi(getenv("MALI_DXVK_DRAWS")) : 3000;
-   const int nrep = getenv("MALI_DXVK_REPS") ? atoi(getenv("MALI_DXVK_REPS")) : 200;
+   long n_l = 3000, nrep_l = 200;
+   const char *ev[2] = {getenv("MALI_DXVK_DRAWS"), getenv("MALI_DXVK_REPS")};
+   long *dst[2] = {&n_l, &nrep_l};
+   for (int i = 0; i < 2; i++) {   /* checked conversion: a zero/negative/non-numeric count would divide by zero in the report yet print ok:true */
+      char *end = NULL;
+      if (!ev[i]) continue;
+      long v = strtol(ev[i], &end, 10);
+      if (end == ev[i] || *end || v <= 0 || v > 10000000) { printf("MALI_DXVK_%s must be a positive integer (got '%s')\n", i ? "REPS" : "DRAWS", ev[i]); return 0; }
+      *dst[i] = v;
+   }
+   const int n = (int)n_l, nrep = (int)nrep_l;
    g_dxvk = 1;
    struct scene s = {.mode = MODE_UBO};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    if (!scene_create(&s, 0)) { g_dxvk = 0; return 0; }
+   /* one set per draw: each is written once and bound once per command buffer (rewriting a set that the recording cb already bound is invalid);
+    * the previous frame has completed (fence) before its sets are written again */
+   VkDescriptorPool dxpool = VK_NULL_HANDLE;
+   VkDescriptorSet *dxsets = calloc((size_t)n, sizeof *dxsets);
+   if (!dxsets) { printf("out of memory for %d descriptor sets\n", n); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
+   {
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (uint32_t)n};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = (uint32_t)n, .poolSizeCount = 1, .pPoolSizes = &ps};
+      VkDescriptorSetLayout *ls = malloc((size_t)n * sizeof *ls);
+      if (!ls) { printf("out of memory for %d set layouts\n", n); free(dxsets); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
+      for (int i = 0; i < n; i++) ls[i] = s.dsl;
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = (uint32_t)n, .pSetLayouts = ls};
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dxpool) == VK_SUCCESS, "dx pool");
+      dai.descriptorPool = dxpool;
+      CHECK(AllocateDescriptorSets(dev, &dai, dxsets) == VK_SUCCESS, "dx sets");
+      free(ls);
+   }
    alloc_stats_start();
    double t_rec = 0, t_sub = 0, t_all = 0;
    int ok = 1;
@@ -952,10 +1001,10 @@ test_dxvk_frame(void)
             if ((d & 7) == 0) {
                CmdSetCullMode(cb, (d & 8) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
                CmdSetFrontFace(cb, (d & 16) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
-               CmdSetDepthBias(cb, (float)(d & 3), 0.0f, 1.0f);
+               CmdSetDepthBias(cb, (float)((d >> 3) & 3), 0.0f, 1.0f);   /* d is a multiple of 8 here: the update index d >> 3 is what changes */
                CmdSetBlendConstants(cb, bc);
-               vp.x = (float)(d & 1);
-               sc.offset.x = d & 1;
+               vp.x = (float)((d >> 3) & 1);
+               sc.offset.x = (d >> 3) & 1;
                CmdSetViewport(cb, 0, 1, &vp);
                CmdSetScissor(cb, 0, 1, &sc);
             }
@@ -965,10 +1014,10 @@ test_dxvk_frame(void)
                CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
             }
             VkDescriptorBufferInfo bi2 = {s.ubo[d % 3], 0, 16};
-            VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s.dset[d & 1], .dstBinding = 0,
+            VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dxsets[d], .dstBinding = 0,
                                       .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
             UpdateDescriptorSets(dev, 1, &w, 0, NULL);
-            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &s.dset[d & 1], 0, NULL);
+            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &dxsets[d], 0, NULL);
             float pc[4] = {1, 0, 0, (float)(d & 7)};
             CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
             CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
@@ -990,6 +1039,8 @@ test_dxvk_frame(void)
           n, nrep, t_all * 1000.0 / nrep / n, t_rec * 1000.0 / nrep / n, t_sub * 1000.0 / nrep / n, t_sub * 1000.0 / nrep,
           (double)alloc_bytes() / (nrep + 5) / n, ok ? "true" : "false");
    g_dxvk = 0;
+   if (dxpool) DestroyDescriptorPool(dev, dxpool, NULL);
+   free(dxsets);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1547,8 +1598,41 @@ test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx
    return good;
 }
 
+/* VK_EXT_extended_dynamic_state3 polygonMode: same scenes as test_poly, but the pipeline is created FILL with POLYGON_MODE_EXT dynamic and the mode
+ * comes from vkCmdSetPolygonModeEXT. On the fake backend nothing renders: the draw must still build and its decoded stream (golden) differs from FILL. */
+static int
+test_poly_dyn(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx, int cy)
+{
+   struct scene s = {.mode = mode};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   if (!g_have_eds3) { printf("{\"test\":\"%s\",\"skipped\":\"extendedDynamicState3PolygonMode not advertised\",\"ok\":true}\n", name); return 1; }
+   if (!g_feat.fillModeNonSolid) { printf("{\"test\":\"%s\",\"skipped\":\"fillModeNonSolid not advertised\",\"ok\":true}\n", name); return 1; }
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&g_fx, 0, sizeof g_fx);
+   g_fx.poly = poly;
+   g_fx.dynpoly = 1;
+   if (!scene_create(&s, 0)) return 0;
+   s.mode = mode;
+   float rot[1][4] = {{1, 0, 0, 0}};
+   int ok = scene_draw(&s, 1, rot, f);
+   int good = ok;
+   if (ok && !g_fake) {
+      uint32_t cov = count_cov(&s);
+      const uint8_t *c = s.px + cy * s.pitch + cx * 4;
+      good = cov >= lo && cov <= hi && c[3] == 0;
+      if (!good) { printf("{\"fail\":\"%s: coverage %u expected %u..%u, interior alpha %u (want 0)\"}\n", name, cov, lo, hi, c[3]); g_fail++; }
+      else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
+   } else if (ok)
+      printf("{\"test\":\"%s\",\"ok\":true,\"skipped\":\"pixels: fake backend\"}\n", name);
+   memset(&g_fx, 0, sizeof g_fx);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return good;
+}
+
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
-enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15, EXP_ONES, EXP_NOT, EXP_XOR, EXP_INV };
 struct fxcase {
    const char *name;
    int depth, n;                  /* depth attachment, draws */
@@ -1578,6 +1662,13 @@ static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_S
 static void s_d_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_inv_src1a(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_one_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_OP_ADD); }
+/* logicOp (static logicOpEnable, colour logic op in the blend shader): the framebuffer is cleared to 0 before the draw (destination = 51,102,153,204) */
+static void s_lop_clear(void) { g_fx.logic = 1 + VK_LOGIC_OP_CLEAR; }
+static void s_lop_set(void) { g_fx.logic = 1 + VK_LOGIC_OP_SET; }
+static void s_lop_copy(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY; }
+static void s_lop_copy_inv(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY_INVERTED; }
+static void s_lop_xor(void) { g_fx.logic = 1 + VK_LOGIC_OP_XOR; }   /* src ^ dst */
+static void s_lop_invert(void) { g_fx.logic = 1 + VK_LOGIC_OP_INVERT; }   /* ~dst */
 static void s_mask_r(void) { g_fx.wmask = 1; }
 static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
 static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
@@ -1607,6 +1698,12 @@ static const struct fxcase g_fxcases[] = {
    {"fx_blend_one_srccolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_src},
    {"fx_blend_2srcdst", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_dst_src},
    {"fx_blend_srcalpha", 0, 2, {0.5f, 0.5f}, EXP_SAME, 0, 0, s_src_alpha},
+   {"fx_logic_clear", 0, 1, {0.5f}, EXP_ZERO, 0, 8, s_lop_clear},
+   {"fx_logic_set", 0, 1, {0.5f}, EXP_ONES, 0, 8, s_lop_set},
+   {"fx_logic_copy", 0, 1, {0.5f}, EXP_SAME, 0, 8, s_lop_copy},
+   {"fx_logic_copy_inv", 0, 1, {0.5f}, EXP_NOT, 0, 8, s_lop_copy_inv},
+   {"fx_logic_xor", 0, 1, {0.5f}, EXP_XOR, 0, 8, s_lop_xor},
+   {"fx_logic_invert", 0, 1, {0.5f}, EXP_INV, 0, 8, s_lop_invert},
    {"fx_dual_src1_color", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_src1c},
    {"fx_dual_inv_src1_alpha", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_inv_src1a},
    {"fx_dual_one_src1_color", 0, 2, {0.5f, 0.5f}, EXP_X15, 0, 4, s_d_one_src1c},
@@ -1683,6 +1780,7 @@ test_fx(void)
       if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_have_dclip) { printf("{\"test\":\"%s\",\"skipped\":\"VK_EXT_depth_clip_enable not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 8) && !g_feat.logicOp) { printf("{\"test\":\"%s\",\"skipped\":\"logicOp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_feat.dualSrcBlend) { printf("{\"test\":\"%s\",\"skipped\":\"dualSrcBlend not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
@@ -1696,6 +1794,10 @@ test_fx(void)
       case EXP_ZERO: e[0] = e[1] = e[2] = e[3] = 0; break;
       case EXP_ADDSQ: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] * e[k] / 255; e[3] = 255; break;
       case EXP_X15: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] / 2; e[3] = 255; break;
+      case EXP_ONES: e[0] = e[1] = e[2] = e[3] = 255; break;
+      case EXP_NOT: for (int k = 0; k < 4; k++) e[k] = 255 - (k == 3 ? 255 : e[k]); break;   /* ~src; the alpha written is 1.0 */
+      case EXP_XOR: { const int d[4] = {51, 102, 153, 204}; for (int k = 0; k < 4; k++) e[k] = (k == 3 ? 255 : e[k]) ^ d[k]; break; }   /* src ^ dst */
+      case EXP_INV: e[0] = 255 - 51; e[1] = 255 - 102; e[2] = 255 - 153; e[3] = 255 - 204; break;   /* ~dst */
       case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
       }
       if (c->exp != EXP_COV)
@@ -2035,6 +2137,8 @@ test_quad(const char *name, int mode)
       const uint8_t *c = s.px + 128 * s.pitch + 128 * 4;
       if (mode == MODE_PUSHFS) CHECK(near3(c, 191, 64, 128, 2), "pc colour %u,%u,%u,%u", c[0], c[1], c[2], c[3]);
       if (mode == MODE_UBO) CHECK(near3(c, 64, 128, 191, 2), "ubo colour %u,%u,%u,%u", c[0], c[1], c[2], c[3]);
+      /* set 7 carries colour C and the shader reads ONLY set 7: the last of eight bound sets must reach the SRT */
+      if (mode == MODE_SETS8) CHECK(near3(c, 0, 255, 0, 2), "sets8 colour %u,%u,%u,%u (set 7's UBO)", c[0], c[1], c[2], c[3]);
       if (mode == MODE_DESCUPD) {
          const uint8_t *l = s.px + 128 * s.pitch + 64 * 4, *r = s.px + 128 * s.pitch + 192 * 4;
          CHECK(near3(l, 64, 128, 191, 2), "left (set 0) %u,%u,%u,%u", l[0], l[1], l[2], l[3]);
@@ -2113,11 +2217,13 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading};
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
-   const char *dce_ext[] = {"VK_EXT_depth_clip_enable"};
+   const char *dce_ext[] = {"VK_EXT_depth_clip_enable", "VK_EXT_extended_dynamic_state3"};
+   const char *en_ext[2];
+   VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
    {
       PFN_vkGetPhysicalDeviceFeatures2 GPF2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
       PFN_vkEnumerateDeviceExtensionProperties EDE = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
@@ -2126,21 +2232,40 @@ main(int argc, char **argv)
       VkExtensionProperties eps[128];
       if (ne > 128) ne = 128;
       EDE(pd, NULL, &ne, eps);
-      int has = 0;
-      for (uint32_t i = 0; i < ne; i++) has |= !strcmp(eps[i].extensionName, dce_ext[0]);
+      int has = 0, has3 = 0;
+      for (uint32_t i = 0; i < ne; i++) {
+         has |= !strcmp(eps[i].extensionName, dce_ext[0]);
+         has3 |= !strcmp(eps[i].extensionName, dce_ext[1]);
+      }
+      dce_f.pNext = &eds3_f;
       VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dce_f};
       GPF2(pd, &f2);
+      void *chain = NULL;
+      if (has3 && eds3_f.extendedDynamicState3PolygonMode) {
+         g_have_eds3 = 1;
+         /* enable polygonMode only: the other bits are not what this test exercises */
+         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+                                                               .extendedDynamicState3PolygonMode = VK_TRUE};
+         eds3_f = e3;
+         eds3_f.pNext = NULL;
+         en_ext[di.enabledExtensionCount++] = dce_ext[1];
+         chain = &eds3_f;
+      }
       if (has && dce_f.depthClipEnable) {
          g_have_dclip = 1;
-         di.pNext = &dce_f;
-         di.enabledExtensionCount = 1;
-         di.ppEnabledExtensionNames = dce_ext;
+         dce_f.pNext = chain;
+         chain = &dce_f;
+         en_ext[di.enabledExtensionCount++] = dce_ext[0];
       }
+      di.pNext = chain;
+      di.ppEnabledExtensionNames = en_ext;
    }
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
+   CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
+   if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
@@ -2174,6 +2299,10 @@ main(int argc, char **argv)
       if (ok && CASE_ON("rt_clear_a2b10g10r10ui")) ok &= test_int_clear("rt_clear_a2b10g10r10ui", VK_FORMAT_A2B10G10R10_UINT_PACK32, 4, 0xc32190c8u);
    }
    if (ok && CASE_ON("load_depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_load("load_depth16", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   /* Source-engine/wined3d content: D24S8 depth LOAD (zs_format 2, 24-bit UNORM preload) and packed colour formats.
+    * Explicit only: the golden dump sequence stays as it was. */
+   if (ok && g_only && CASE_ON("load_depth24s8")) { g_depfmt = VK_FORMAT_D24_UNORM_S8_UINT; ok &= test_load("load_depth24s8", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   if (ok && g_only && CASE_ON("load_colour_argb8")) { g_colfmt = VK_FORMAT_A8B8G8R8_UNORM_PACK32; g_colbpp = 4; ok &= test_load("load_colour_argb8", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
    if (ok && CASE_ON("load_stencil")) ok &= test_load("load_stencil", 1);
    if (ok && CASE_ON("st_op_invert")) ok &= test_load("st_op_invert", 3);
    if (ok && CASE_ON("st_op_decwrap")) ok &= test_load("st_op_decwrap", 4);
@@ -2199,6 +2328,9 @@ main(int argc, char **argv)
       ok &= test_poly("poly_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
       ok &= test_poly("poly_line_idx32", MODE_IDX32, 1, 250, 2500, 100, 130);
       ok &= test_poly("poly_line_mdi", MODE_MDI, 1, 250, 5000, 100, 130);
+      ok &= test_poly_dyn("poly_dyn_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
+      ok &= test_poly_dyn("poly_dyn_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
+      ok &= test_poly_dyn("poly_dyn_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
    }
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
@@ -2226,6 +2358,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
    if (ok && CASE_ON("ubo")) ok &= test_quad("ubo", MODE_UBO);
+   if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
 

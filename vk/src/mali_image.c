@@ -87,6 +87,27 @@ mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct ma
    return 0;
 }
 
+bool
+mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, struct mali_image_layout *lay)
+{
+   if (!enabled || lay->nplanes != 1 || lay->d.tiled) return false;
+   const struct mali_afbc_image_info info = {
+      .arch = arch, .tiling = (unsigned)ci->tiling, .image_type = (unsigned)ci->imageType, .samples = (unsigned)ci->samples,
+      .usage = ci->usage, .flags = ci->flags, .format = (unsigned)ci->format, .width = ci->extent.width, .height = ci->extent.height,
+      .afbc_env = true,
+   };
+   unsigned bpp = 0;
+   if (mali_afbc_image_eligible(&info, &bpp) != MALI_AFBC_OK) return false;
+   struct mali_afbc_image_layout al;
+   if (mali_afbc_image_layout(arch, MALI_AFBC_SB_16x16, bpp, ci->extent.width, ci->extent.height, ci->mipLevels, ci->arrayLayers, &al))
+      return false;
+   lay->afbc = true;
+   lay->afbc_lay = al;
+   if (al.size > lay->size) lay->size = al.size;
+   if (al.base_align > lay->alignment) lay->alignment = al.base_align;
+   return true;
+}
+
 const struct mali_plane_layout *
 mali_image_plane_for_aspect(const struct mali_image_layout *l, VkImageAspectFlags aspect)
 {
@@ -210,7 +231,7 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    tex->w[1] = (w0 - 1) | ((h0 - 1) << 16);
    tex->w[2] = swz | ((unsigned)interleave << 12) | ((levels - 1) << 16);
    {
-      const unsigned minlod = v->storage ? 0 : (unsigned)(fmaxf(v->min_lod - 0.0f, 0.0f) * 256.0f);
+      const unsigned minlod = v->storage ? 0 : (unsigned)(fmaxf(v->min_lod - (float)v->base_level, 0.0f) * 256.0f);   /* EXT_image_view_min_lod: minLod counts from image level 0, the descriptor from the view's first level */
       const unsigned maxlod = (levels - 1) * 256u;
       unsigned log2s = d->samples == 4 ? 2 : 0;
       tex->w[3] = (minlod & 0x1fff) | ((dim == 3 ? 0u : log2s) << 13) | ((maxlod & 0x1fff) << 16);
@@ -263,6 +284,15 @@ desc_from_ci(const VkImageCreateInfo *ci, struct mali_image_desc *d)
    d->tiled = mali_image_wants_tiled(ci->tiling, ci->imageType, ci->samples);
 }
 
+/* Plain (non-BC) layout of a VkImage: linear/tiled planes, plus the MALI_AFBC sizing when `afbc_on`. Host-testable entry. */
+int
+mali_image_plain_layout(unsigned arch, const VkImageCreateInfo *ci, const struct mali_image_desc *d, bool afbc_on, struct mali_image_layout *lay)
+{
+   int r = mali_image_layout_init(arch, d, lay);
+   if (!r) mali_image_afbc_apply(arch, ci, afbc_on, lay);
+   return r;
+}
+
 /* Layout of a VkImage: plain, or for a BC format the compressed region (planes overridden from the BC layout) + shadow layout. */
 static int
 image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layout *lay, struct mali_bc_layout *bc, struct mali_image_layout *sh,
@@ -280,7 +310,7 @@ image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layou
       if (ci->samples != 1 || mali_bc_layout_init(ci->format, ci->imageType, ci->extent, ci->mipLevels, ci->arrayLayers, bc) != 0)
          return -EINVAL;
    }
-   int r = mali_image_layout_init(arch, &d, lay);
+   int r = mali_image_plain_layout(arch, ci, &d, mali_afbc_enabled() && !*is_bc && !etc2, lay);
    if (r || !(*is_bc || etc2))
       return r;
    struct mali_plane_layout *p = &lay->plane[0];
@@ -334,11 +364,38 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
+   bool has_explicit = false;
+   uint64_t explicit_pitch = 0;   /* VkImageDrmFormatModifierExplicitCreateInfoEXT row pitch (must be non-zero when has_explicit) */
+   if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+      /* Linear is the only modifier (mali_wsi_modifier): the request must allow it, and an explicit layout must
+       * describe a single plane we can honour (offset 0; row pitch is the layout's, so a different one is refused). */
+      const VkImageDrmFormatModifierListCreateInfoEXT *ml =
+         vk_find_struct_const(ci->pNext, IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT);
+      const VkImageDrmFormatModifierExplicitCreateInfoEXT *me =
+         vk_find_struct_const(ci->pNext, IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
+      if (me) {
+         if (me->drmFormatModifier != mali_wsi_modifier || me->drmFormatModifierPlaneCount != 1 ||
+             me->pPlaneLayouts[0].offset != 0)
+            return vk_error(dev, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
+         explicit_pitch = me->pPlaneLayouts[0].rowPitch;
+         has_explicit = true;
+      } else {
+         bool ok = false;
+         if (ml)
+            for (uint32_t i = 0; i < ml->drmFormatModifierCount; i++)
+               ok |= ml->pDrmFormatModifiers[i] == mali_wsi_modifier;
+         if (!ok) return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
+      }
+   }
    struct mali_image *img = vk_image_create(&dev->vk, ci, alloc, sizeof *img);
    if (!img) return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
    if (image_layout(dev_arch(dev), ci, &lay, &bc, &img->sh_lay, &is_bc) != 0) {
       vk_image_destroy(&dev->vk, alloc, &img->vk);
       return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
+   }
+   if (has_explicit && lay.plane[0].slice[0].row_stride != explicit_pitch) {
+      vk_image_destroy(&dev->vk, alloc, &img->vk);
+      return vk_error(dev, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
    }
    img->bc = is_bc;
    img->native_view = is_bc && mali_bc_is_etc2(ci->format);
@@ -397,15 +454,25 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
 {
+   VK_FROM_HANDLE(mali_device, dev, _dev);
+   VkResult res = VK_SUCCESS;
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_image, img, b[i].image);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);
-      if (!mem) continue;   /* swapchain-aliased images (BindImageMemorySwapchainInfoKHR) are not supported: wsi_common has no lookup in this Mesa */
+      const VkBindMemoryStatus *st = vk_find_struct_const(b[i].pNext, BIND_MEMORY_STATUS);
+      if (!mem) {
+         /* Swapchain-aliased images (BindImageMemorySwapchainInfoKHR) are not supported: wsi_common has no lookup in
+          * this Mesa. FEATURE_NOT_PRESENT is not a permitted vkBindImageMemory2 result, so use VK_ERROR_UNKNOWN. Report it instead of returning success with an unbound image. */
+         if (st && st->pResult) *st->pResult = VK_ERROR_UNKNOWN;
+         res = VK_ERROR_UNKNOWN;
+         continue;
+      }
+      if (st && st->pResult) *st->pResult = VK_SUCCESS;
       img->mem = mem;
       img->mem_off = b[i].memoryOffset;
       img->va = mem->bo.gpu_va + b[i].memoryOffset;
    }
-   return VK_SUCCESS;
+   return res;
 }
 
 VKAPI_ATTR void VKAPI_CALL

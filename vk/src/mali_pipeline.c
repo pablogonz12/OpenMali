@@ -8,9 +8,11 @@
 #include <string.h>
 
 #include "mali_cmd.h"
+#include "mali_soft.h"
 #include "mali_cs_emit.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
+#include "vk_enum_to_str.h"
 #include "mali_msaa.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
@@ -19,6 +21,9 @@
 #include "vk_shader_module.h"
 #include "util/bitscan.h"
 #include "vk_util.h"
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 
 struct mali_pipeline {
    struct vk_object_base base;
@@ -122,6 +127,14 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
 
    const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL;
    for (uint32_t i = 0; i < ci->stageCount; i++) {
+      /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
+      const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
+         vk_find_struct_const(ci->pStages[i].pNext, PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+      if (rss && rss->requiredSubgroupSize) {
+         fprintf(stderr, "mali_vk: requiredSubgroupSize %u on a non-compute stage\n", rss->requiredSubgroupSize);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
       if (ci->pStages[i].stage == VK_SHADER_STAGE_VERTEX_BIT)
          vss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -152,6 +165,11 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
+    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
+    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
+    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
+   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
 
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
    o.stage = MALI_STAGE_VERTEX;
@@ -196,6 +214,16 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       for (unsigned i = 0; i < 4; i++)
          if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
             has_blend = true;
+      /* logicOp (static state; zink uses it statically as extendedDynamicState2LogicOp is not advertised): colour logic op in the blend shader */
+      /* a logic op can only change the output when colour output 0 is written and attachment 0 is writable; otherwise the pipeline is
+       * accepted without a blend shader and the draw-time check (gfx.logic_inert) lets it through */
+      const bool logic_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
+                               st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+                               (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      const bool logic = st.cb->logic_op_enable && !logic_inert;
+      p->gfx.logic_inert = st.cb->logic_op_enable && logic_inert;
+      if (logic)
+         has_blend = true;
       /* equations fixed function cannot express (MIN/MAX, SRC_ALPHA_SATURATE, unsupported factor pairs) also go through the blend shader */
       if (!has_blend && a->blend_enable) {
          struct mali_fixed fx = {.blend_en = true, .src_c = f[0], .dst_c = f[1], .src_a = f[2], .dst_a = f[3],
@@ -218,12 +246,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
             .alpha_src = a->src_alpha_blend_factor, .alpha_dst = a->dst_alpha_blend_factor,
             .color_mask = a->write_mask,
             .src0_type = p->fs.fs_blend0_type, .src1_type = p->fs.fs_blend_src1_type,
+            .logic_op_enable = logic, .logic_op = st.cb->logic_op,
          };
          bool uses_src1 = false;
          for (unsigned i = 0; i < 4; i++)
             if (f[i] >= VK_BLEND_FACTOR_SRC1_COLOR && f[i] <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
                uses_src1 = true;
-         if (!bo.src0_type || (uses_src1 && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
+         if (!bo.src0_type || (uses_src1 && !logic && !bo.src1_type)) {   /* the FS does not write a second output: SRC1 would read garbage */
             res = VK_ERROR_FEATURE_NOT_PRESENT;
             goto fail;
          }
@@ -284,7 +313,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
       /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */
       if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_POINT) {
-         g->poly_mode = 2; g->prim = 1; g->prim_restart = false;
+         g->poly_mode = 2; g->poly_prim = g->prim; g->prim = 1;   /* prim_restart stays: the rewrite uses it to split strips */
       } else if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_LINE) {
          g->poly_mode = 1; g->poly_prim = g->prim; g->prim = 2;
       }
@@ -304,7 +333,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const bool inst = vb->input_rate == VK_VERTEX_INPUT_RATE_INSTANCE;
          /* instance rate: HW has no zero divisor, panvk uses stride 0 (divisor 1). divisor > 1: 1D POT / NPOT divisor attribute */
          const struct mali_attr cur = {f.hw, a->binding, a->offset, inst && vb->divisor == 0 ? 0 : vb->stride, inst, inst && vb->divisor == 0,
-                                       inst && vb->divisor > 1 ? vb->divisor : 1};
+                                       inst && vb->divisor > 1 ? vb->divisor : 1, (int)a->format};
          /* sparse locations (dEQP vertex_input layout_skip): the shader reads attribute slot = location, so the skipped slots are filled with a copy
           * of this attribute (a valid binding; the shader never reads them) */
          while (g->nattr < loc)
@@ -336,6 +365,107 @@ early_return(VkPipelineCreateFlags flags, const void *pNext)
    return (flags & VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT) != 0;
 }
 
+
+/* Batched vkCreate*Pipelines: each create is independent (mali_compile is thread-safe, the shader cache is locked), so a batch of n > 1 is
+ * compiled by up to MALI_PIPE_THREADS workers (env, default 4, 1 = sequential). Results are per index; EARLY_RETURN_ON_FAILURE keeps its
+ * meaning (first failing index wins, later pipelines are destroyed again). */
+struct batch {
+   struct mali_device *dev;
+   const void *ci;
+   size_t stride;
+   bool compute;
+   const VkAllocationCallbacks *alloc;
+   VkPipeline *out;
+   VkResult *res;
+   uint32_t n;
+   atomic_uint next;
+};
+
+/* The Vulkan memory chapter: an implementation must only call an application-provided allocator from the thread that
+ * issued the command. create_one/create_compute_one allocate the pipeline object through `alloc` and set up temporary
+ * state through dev->vk.alloc, so batching on workers is only allowed when both allocators are the driver's default.
+ * With an application allocator the batch runs sequentially on the caller's thread (same results, no extra latency for
+ * the usual n = 1..few case, and no thread-local allocator can be used from a worker). */
+static bool
+alloc_is_default(const struct mali_device *dev, const VkAllocationCallbacks *alloc)
+{
+   if (alloc)
+      return false;
+   const VkAllocationCallbacks *d = vk_default_allocator();
+   return dev->vk.alloc.pfnAllocation == d->pfnAllocation && dev->vk.alloc.pfnFree == d->pfnFree;
+}
+
+static VkResult create_one(struct mali_device *, const VkGraphicsPipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
+static VkResult create_compute_one(struct mali_device *, const VkComputePipelineCreateInfo *, const VkAllocationCallbacks *, VkPipeline *);
+
+static void *
+batch_worker(void *arg)
+{
+   struct batch *b = arg;
+   for (uint32_t i; (i = atomic_fetch_add(&b->next, 1)) < b->n;) {
+      const char *ci = (const char *)b->ci + i * b->stride;
+      b->res[i] = b->compute ? create_compute_one(b->dev, (const void *)ci, b->alloc, &b->out[i])
+                             : create_one(b->dev, (const void *)ci, b->alloc, &b->out[i]);
+      if (b->res[i] != VK_SUCCESS)
+         b->out[i] = VK_NULL_HANDLE;
+   }
+   return NULL;
+}
+
+static unsigned
+pipe_threads(uint32_t n)
+{
+   const char *e = getenv("MALI_PIPE_THREADS");
+   unsigned t = e ? (unsigned)atoi(e) : 4;
+   return t > n ? n : t;
+}
+
+static VkResult
+create_batch(struct mali_device *dev, bool compute, const void *ci, size_t stride, uint32_t n, const VkAllocationCallbacks *alloc, VkPipeline *out)
+{
+   VkResult result = VK_SUCCESS;
+   /* Spec: when the command fails and creates no pipeline, every pPipelines element is VK_NULL_HANDLE. This path can
+    * fail before a single worker runs (the calloc below), so null every entry up front; workers overwrite only the
+    * indices they successfully created, and the failure scan below relies on the rest being null already. */
+   for (uint32_t i = 0; i < n; i++)
+      out[i] = VK_NULL_HANDLE;
+   VkResult *res = calloc(n ? n : 1, sizeof *res);
+   if (!res)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   struct batch b = {dev, ci, stride, compute, alloc, out, res, n, 0};
+   unsigned nt = pipe_threads(n);
+   pthread_t th[8];
+   unsigned started = 0;
+   if (nt > 8)
+      nt = 8;
+   for (unsigned k = 1; k < nt; k++)
+      if (pthread_create(&th[started], NULL, batch_worker, &b) == 0)
+         started++;
+   batch_worker(&b);
+   for (unsigned k = 0; k < started; k++)
+      pthread_join(th[k], NULL);
+   bool stop = false;
+   for (uint32_t i = 0; i < n; i++) {
+      if (stop) {
+         if (out[i] != VK_NULL_HANDLE) {
+            VK_FROM_HANDLE(mali_pipeline, p, out[i]);
+            pipeline_destroy(dev, p, alloc);
+         }
+         out[i] = VK_NULL_HANDLE;
+         continue;
+      }
+      if (res[i] != VK_SUCCESS) {
+         result = res[i];
+         const VkPipelineCreateFlags fl = *(const VkPipelineCreateFlags *)((const char *)ci + i * stride + offsetof(VkGraphicsPipelineCreateInfo, flags));
+         const void *pn = *(const void *const *)((const char *)ci + i * stride + offsetof(VkGraphicsPipelineCreateInfo, pNext));
+         if (early_return(fl, pn))
+            stop = true;
+      }
+   }
+   free(res);
+   return result;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const VkGraphicsPipelineCreateInfo *ci,
                              const VkAllocationCallbacks *alloc, VkPipeline *out)
@@ -344,6 +474,8 @@ mali_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n, cons
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
+   if (n > 1 && pipe_threads(n) > 1 && alloc_is_default(dev, alloc))
+      return create_batch(dev, false, ci, sizeof *ci, n, alloc, out);
    for (i = 0; i < n; i++) {
       VkResult r = create_one(dev, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
@@ -372,6 +504,16 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
 
    if (!stage_spirv(&ci->stage, &ccode, &cwords) || ci->stage.stage != VK_SHADER_STAGE_COMPUTE_BIT)
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   /* subgroupSizeControl: we advertise min == max == the hardware warp (16). A different requiredSubgroupSize is a spec
+    * violation (VUID-requiredSubgroupSize-02414) that we must not turn into 16-wide code behind the shader's back: that would
+    * corrupt every ballot/shuffle/quad/arithmetic lowering. Refuse it (and never compile it below). */
+   const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
+      vk_find_struct_const(ci->stage.pNext, PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+   const unsigned hw_subgroup_size = mali_subgroup_size_for_arch(arch);
+   if (rss && rss->requiredSubgroupSize && rss->requiredSubgroupSize != hw_subgroup_size) {
+      fprintf(stderr, "mali_vk: requiredSubgroupSize %u refused: the warp is %u\n", rss->requiredSubgroupSize, hw_subgroup_size);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
    p = vk_object_zalloc(&dev->vk, alloc, sizeof *p, VK_OBJECT_TYPE_PIPELINE);
    if (!p)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -380,10 +522,20 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
+   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
+    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
+    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
+    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
+   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
+   /* Compute defaults to 8 reserved FAU words (32 B of push constants); a larger push block is copied in from word 0, so reserve it or
+      Bifrost asserts (bi_emit_load_push_constant). Never shrink below the default: that would move the immediates of existing shaders. */
+   if (layout && (flat.c.push_size + 3) / 4 > 8)
+      o.fau_reserved = (flat.c.push_size + 3) / 4;
    o.spirv = ccode;
    o.spirv_words = cwords;
    o.entry = ci->stage.pName;
+   o.subgroup_size = rss ? rss->requiredSubgroupSize : 0;   /* 0 or == hw_subgroup_size; mali_compile refuses the rest too */
    struct mali_spec_entry specbuf[MALI_SPEC_MAX];
    set_spec(&o, specbuf, ci->stage.pSpecializationInfo);
    if (mali_compile(&o, &p->cs, err, sizeof err)) {
@@ -420,6 +572,8 @@ mali_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n, const
    VkResult result = VK_SUCCESS;
    uint32_t i;
 
+   if (n > 1 && pipe_threads(n) > 1 && alloc_is_default(dev, alloc))
+      return create_batch(dev, true, ci, sizeof *ci, n, alloc, out);
    for (i = 0; i < n; i++) {
       VkResult r = create_compute_one(dev, &ci[i], alloc, &out[i]);
       if (r != VK_SUCCESS) {
@@ -439,8 +593,11 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
 {
    VK_FROM_HANDLE(mali_device, dev, d);
    VK_FROM_HANDLE(mali_pipeline, p, pipeline);
-   if (p)
+   if (p) {
+      /* the software rasteriser keys its CPU programs on these addresses, which are about to be reusable */
+      mali_soft_retire(&p->vs, &p->fs);
       pipeline_destroy(dev, p, alloc);
+   }
 }
 
 /* Every submission is serialised by the queue (a frame is built and retired before the next one), so barriers have nothing to do. */
@@ -482,16 +639,19 @@ res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 }
 
 static int
-target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, struct mali_cmd_target *out)
+target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, bool view_is_3d,
+          struct mali_cmd_target *out)
 {
    if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled) {
-      if (getenv("MALI_PIPE_DBG"))
-         fprintf(stderr, "mali_vk: render target rejected: format %d va=%llx level %u/%u tiled=%d\n", (int)img->vk.format, (unsigned long long)img->va, level,
-                 img->lay.d.levels, (int)img->lay.d.tiled);
+      fprintf(stderr, "mali_vk: render target rejected: %s va=%llx level %u/%u tiled=%d\n",
+              vk_Format_to_str(img->vk.format), (unsigned long long)img->va, level, img->lay.d.levels,
+              (int)img->lay.d.tiled);
       return -EINVAL;
    }
-   if (img->vk.image_type == VK_IMAGE_TYPE_3D)
-      return -EINVAL;   /* render to a 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too); rejected until the slice addressing is understood */
+   const bool image_3d = img->vk.image_type == VK_IMAGE_TYPE_3D;
+   if (image_3d && view_is_3d)
+      return -EINVAL;   /* render to a whole 3D image: hangs the GPU (dEQP render_to_image.3d.mipmap, also with a1r5g5b5; level 0 too).
+                         * A 2D / 2D-array view of one slice is a different case and is accepted below: the slice is just a 2D surface. */
    int zs = 0;
    bool has_d = true;   /* the format has a depth plane we can attach */
    out->rt = NULL;
@@ -508,8 +668,8 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       bool ok;
       out->rt = mali_rtfmt_lookup(img->vk.format, &ok);
       if (!ok) {
-         if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: render target format %d not renderable\n", (int)img->vk.format);
+         fprintf(stderr, "mali_vk: render target format %s is not renderable (%d)\n",
+                 vk_Format_to_str(img->vk.format), (int)img->vk.format);
          return -EINVAL;
       }
       break;
@@ -529,11 +689,18 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
    out->width = MAX2(img->lay.d.extent.width >> level, 1u);
    out->height = MAX2(img->lay.d.extent.height >> level, 1u);
    out->zs_format = want_d ? zs : 0;
-   out->va = img->va + mali_image_subresource_offset(pl, level, layer);
+   /* A 2D view of a 3D image names a slice, which is a plain linear surface at base + layer * surface_stride.
+    * A 3D view is refused above; the image-level resolver keeps refusing 3D images for copies/clears. */
+   if (image_3d) {
+      out->va = img->va + mali_image_subresource_offset(pl, level, 0) +
+                (uint64_t)layer * pl->slice[level].surface_stride;
+   } else {
+      out->va = img->va + mali_image_subresource_offset(pl, level, layer);
+   }
    out->row_stride = pl->slice[level].row_stride;
    out->is_zs = zs || st_fmt;
    out->samples = img->lay.d.samples;
-   out->surface_stride = (uint32_t)pl->slice[level].surface_stride;
+   out->surface_stride = image_3d ? 0 : (uint32_t)pl->slice[level].surface_stride;   /* a 2D view of a slice is one surface */
    if (want_s) {
       const struct mali_plane_layout *sp = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_STENCIL_BIT);
       if (!sp)
@@ -565,10 +732,15 @@ res_image_view(VkImageView h, struct mali_cmd_target *out)
    }
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
-   int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer, out);
-   if (r && getenv("MALI_PIPE_DBG"))
-      fprintf(stderr, "mali_vk: image view rejected rc=%d: format %d aspects 0x%x view aspect 0x%x type %d usage 0x%x samples %u\n", r, (int)img->vk.format,
-              (unsigned)v->vk.aspects, (unsigned)a, (int)img->vk.image_type, (unsigned)img->vk.usage, img->lay.d.samples);
+   int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer,
+                     v->vk.view_type == VK_IMAGE_VIEW_TYPE_3D, out);
+   if (r)
+      fprintf(stderr, "mali_vk: image view rejected rc=%d: format %s (%d) image type %s view type %d aspects 0x%x "
+              "view aspect 0x%x usage 0x%x samples %u level %u/%u layer %u/%u\n", r, vk_Format_to_str(img->vk.format),
+              (int)img->vk.format, img->vk.image_type == VK_IMAGE_TYPE_3D ? "3D" :
+              img->vk.image_type == VK_IMAGE_TYPE_2D ? "2D" : "1D", (int)v->vk.view_type, (unsigned)v->vk.aspects,
+              (unsigned)a, (unsigned)img->vk.usage, img->lay.d.samples, v->vk.base_mip_level, img->lay.d.levels,
+              v->vk.base_array_layer, img->lay.d.layers);
    return r;
 }
 
@@ -578,7 +750,7 @@ res_image(VkImage h, struct mali_cmd_target *out)
    struct mali_image *img = mali_image_from_handle(h);
    if (!img)
       return -EINVAL;
-   int r = target_of(img, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, out);
+   int r = target_of(img, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, img->vk.image_type == VK_IMAGE_TYPE_3D, out);
    if (!r)
       out->multi = img->lay.d.levels != 1 || img->lay.d.layers != 1 || img->lay.d.type != VK_IMAGE_TYPE_2D || img->lay.d.samples != 1;
    return r;
@@ -590,4 +762,36 @@ res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *
    return -ENOTSUP;   /* shader objects: not exposed */
 }
 
-const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute, res_pipeline_dyn};
+static struct mali_memory *
+res_buffer_mem(VkBuffer b)
+{
+   struct mali_buffer *mb = mali_buffer_from_handle(b);
+   return mb ? mb->mem : NULL;
+}
+
+static struct mali_memory *
+res_image_mem(VkImage i)
+{
+   struct mali_image *mi = mali_image_from_handle(i);
+   return mi ? mi->mem : NULL;
+}
+
+static struct mali_memory *
+res_image_view_mem(VkImageView v)
+{
+   struct mali_image_view *iv = mali_image_view_from_handle(v);
+   return iv && iv->vk.image ? container_of(iv->vk.image, struct mali_image, vk)->mem : NULL;
+}
+
+const struct mali_cmd_res_ops mali_cmd_res = {res_pipeline, res_image_view, res_image, res_shader, res_compute, res_pipeline_dyn,
+                                              res_buffer_mem, res_image_mem, res_image_view_mem};
+
+/* Desktop software rasteriser (mali_soft.c): the compiled shader pointers the frame record carries, so a test can key its CPU
+ * program on the pipeline exactly the way the rasteriser will look it up. */
+void
+mali_soft_pipeline_keys(VkPipeline h, const struct mali_compiled **vs, const struct mali_compiled **fs)
+{
+   struct mali_pipeline *p = mali_pipeline_from_handle(h);
+   *vs = p ? &p->vs : NULL;
+   *fs = p ? &p->fs : NULL;
+}

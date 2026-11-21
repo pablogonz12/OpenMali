@@ -118,6 +118,15 @@ fail:
 	return r;
 }
 
+unsigned
+kb_queue_piece_instrs(uint32_t ring_size)
+{
+	if (ring_size < 4096)
+		ring_size = 4096;
+	unsigned n = (ring_size / 4) / 8; /* a quarter of the ring, padded 8-byte instruction words */
+	return n ? n : 1;
+}
+
 uint64_t kb_queue_extract(const struct kb_queue *q) { DMB(); return *q->cs_extract; }
 bool kb_queue_idle(const struct kb_queue *q) { return kb_queue_extract(q) == q->insert; }
 bool kb_queue_faulted(const struct kb_queue *q) { return q->ctx->group_faulted[q->group_handle]; }
