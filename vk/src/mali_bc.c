@@ -8,7 +8,11 @@
 
 #include "mali_bc_spv.h"
 
-#define F(v, n, sh, m, bs, shd, bpt, s) { VK_FORMAT_##v, n, sh, m, bs, VK_FORMAT_##shd, bpt, s }
+#define F(v, n, sh, m, bs, shd, bpt, s) { VK_FORMAT_##v, n, sh, m, bs, VK_FORMAT_##shd, bpt, s, 4, 4 }
+/* ASTC LDR: mode = block w | h << 8 | sRGB << 16 (astc.comp) */
+#define A(w, h) \
+   { VK_FORMAT_ASTC_##w##x##h##_UNORM_BLOCK, "ASTC_" #w "x" #h "_UNORM", MALI_BC_ASTC, w | (h << 8), 16, VK_FORMAT_R8G8B8A8_UNORM, 4, false, w, h }, \
+   { VK_FORMAT_ASTC_##w##x##h##_SRGB_BLOCK, "ASTC_" #w "x" #h "_SRGB", MALI_BC_ASTC, w | (h << 8) | 0x10000, 16, VK_FORMAT_R8G8B8A8_SRGB, 4, true, w, h }
 static const struct mali_bc_fmt g_fmt[] = {
    F(BC1_RGB_UNORM_BLOCK, "BC1_RGB_UNORM", MALI_BC_BC1, 3, 8, R8G8B8A8_UNORM, 4, false),
    F(BC1_RGB_SRGB_BLOCK, "BC1_RGB_SRGB", MALI_BC_BC1, 3, 8, R8G8B8A8_SRGB, 4, true),
@@ -37,22 +41,26 @@ static const struct mali_bc_fmt g_fmt[] = {
    F(EAC_R11_SNORM_BLOCK, "EAC_R11_SNORM", MALI_BC_ETC2, 3 | 8, 8, R16_SNORM, 2, false),
    F(EAC_R11G11_UNORM_BLOCK, "EAC_RG11_UNORM", MALI_BC_ETC2, 4, 16, R16G16_UNORM, 4, false),
    F(EAC_R11G11_SNORM_BLOCK, "EAC_RG11_SNORM", MALI_BC_ETC2, 4 | 8, 16, R16G16_SNORM, 4, false),
+   /* ASTC LDR 2D (formats 157..184): sampled through the shadow like BC (no plane descriptor for ASTC) */
+   A(4, 4), A(5, 4), A(5, 5), A(6, 5), A(6, 6), A(8, 5), A(8, 6), A(8, 8), A(10, 5), A(10, 6), A(10, 8), A(10, 10), A(12, 10), A(12, 12),
 };
 #undef F
+#undef A
 
 const struct mali_bc_fmt *
 mali_bc_format(VkFormat f)
 {
-   if (f < VK_FORMAT_BC1_RGB_UNORM_BLOCK || f > VK_FORMAT_EAC_R11G11_SNORM_BLOCK) return NULL;
+   if (f < VK_FORMAT_BC1_RGB_UNORM_BLOCK || f > VK_FORMAT_ASTC_12x12_SRGB_BLOCK) return NULL;
    return &g_fmt[f - VK_FORMAT_BC1_RGB_UNORM_BLOCK];
 }
 bool mali_bc_is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
+bool mali_bc_is_astc(VkFormat f) { return f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK; }
 bool mali_bc_is_etc2(VkFormat f) { return f >= VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK && f <= VK_FORMAT_EAC_R11G11_SNORM_BLOCK; }
 
 VkFormatFeatureFlags
 mali_bc_optimal_features(VkFormat f)
 {
-   if (!mali_bc_is_bc(f)) return 0;
+   if (!mali_bc_is_bc(f) && !mali_bc_is_astc(f)) return 0;
    return VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
           VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 }
@@ -61,7 +69,7 @@ VkResult
 mali_bc_image_supported(VkFormat f, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, uint32_t samples)
 {
    const VkResult no = VK_ERROR_FORMAT_NOT_SUPPORTED;
-   if (!mali_bc_is_bc(f)) return no;
+   if (!mali_bc_is_bc(f) && !mali_bc_is_astc(f)) return no;
    if (type == VK_IMAGE_TYPE_1D || tiling != VK_IMAGE_TILING_OPTIMAL || samples != 1) return no;
    const VkImageUsageFlags ok = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    if (usage & ~ok) return no;
@@ -89,12 +97,12 @@ mali_bc_layout_init(VkFormat f, VkImageType type, VkExtent3D ext, uint32_t level
    uint64_t coff = 0, soff = 0;
    for (uint32_t l = 0; l < levels; l++) {
       uint32_t w = mip(ext.width, l), h = mip(ext.height, l), d = type == VK_IMAGE_TYPE_3D ? mip(ext.depth, l) : 1;
-      uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+      uint32_t bw = (w + fm->bw - 1) / fm->bw, bh = (h + fm->bh - 1) / fm->bh;
       struct mali_bc_level *c = &o->comp.lv[l], *s = &o->shadow.lv[l];
       c->w = s->w = w; c->h = s->h = h; c->d = s->d = d; c->bw = s->bw = bw; c->bh = s->bh = bh;
       c->off = coff; c->row = bw * fm->block_bytes; c->slice = (uint64_t)c->row * bh; c->size = c->slice * d;
-      s->off = soff; s->row = (uint32_t)align_up((uint64_t)bw * 4 * fm->shadow_bpt, MALI_BC_ALIGN);
-      s->slice = (uint64_t)s->row * bh * 4; s->size = s->slice * d;
+      s->off = soff; s->row = (uint32_t)align_up((uint64_t)bw * fm->bw * fm->shadow_bpt, MALI_BC_ALIGN);
+      s->slice = (uint64_t)s->row * bh * fm->bh; s->size = s->slice * d;
       coff = align_up(coff + c->size, MALI_BC_ALIGN);
       soff = align_up(soff + s->size, MALI_BC_ALIGN);
    }
@@ -131,10 +139,12 @@ mali_bc_plan_decode(struct mali_bc_list *l, const struct mali_bc_layout *lay, ui
    const struct mali_bc_level *c = &lay->comp.lv[level], *s = &lay->shadow.lv[level];
    const bool is3d = lay->type == VK_IMAGE_TYPE_3D;
    if (off.x < 0 || off.y < 0 || off.z < 0 || !ext.width || !ext.height || !ext.depth) return -EINVAL;
-   if (off.x & 3 || off.y & 3) return -EINVAL;
+   const struct mali_bc_fmt *f = lay->fmt;
+   const uint32_t tw = f->bw, th = f->bh;
+   if ((uint32_t)off.x % tw || (uint32_t)off.y % th) return -EINVAL;
    if ((uint32_t)off.x + ext.width > c->w || (uint32_t)off.y + ext.height > c->h) return -EINVAL;
-   if (((uint32_t)off.x + ext.width) & 3 && (uint32_t)off.x + ext.width != c->w) return -EINVAL;
-   if (((uint32_t)off.y + ext.height) & 3 && (uint32_t)off.y + ext.height != c->h) return -EINVAL;
+   if (((uint32_t)off.x + ext.width) % tw && (uint32_t)off.x + ext.width != c->w) return -EINVAL;
+   if (((uint32_t)off.y + ext.height) % th && (uint32_t)off.y + ext.height != c->h) return -EINVAL;
    uint32_t nz;
    uint64_t src_z, dst_z, src_base = c->off, dst_base = s->off;
    if (is3d) {
@@ -146,11 +156,10 @@ mali_bc_plan_decode(struct mali_bc_list *l, const struct mali_bc_layout *lay, ui
       nz = nlayers; src_z = lay->comp.array_stride; dst_z = lay->shadow.array_stride;
       src_base += (uint64_t)layer0 * src_z; dst_base += (uint64_t)layer0 * dst_z;
    }
-   const uint32_t bx0 = (uint32_t)off.x / 4, by0 = (uint32_t)off.y / 4;
-   const uint32_t bw = ((uint32_t)off.x + ext.width + 3) / 4 - bx0, bh = ((uint32_t)off.y + ext.height + 3) / 4 - by0;
-   const struct mali_bc_fmt *f = lay->fmt;
+   const uint32_t bx0 = (uint32_t)off.x / tw, by0 = (uint32_t)off.y / th;
+   const uint32_t bw = ((uint32_t)off.x + ext.width + tw - 1) / tw - bx0, bh = ((uint32_t)off.y + ext.height + th - 1) / th - by0;
    src_base += (uint64_t)by0 * c->row + (uint64_t)bx0 * f->block_bytes;
-   dst_base += (uint64_t)by0 * 4 * s->row + (uint64_t)bx0 * 4 * f->shadow_bpt;
+   dst_base += (uint64_t)by0 * th * s->row + (uint64_t)bx0 * tw * f->shadow_bpt;
    if (src_base > 0xffffffffull || dst_base > 0xffffffffull || src_z > 0xffffffffull || dst_z > 0xffffffffull) return -ERANGE;
 
    struct mali_bc_job *j = job_new(l);
@@ -164,7 +173,9 @@ mali_bc_plan_decode(struct mali_bc_list *l, const struct mali_bc_layout *lay, ui
    j->bind[0] = (struct mali_bc_bind){ image_va + lay->comp.base, (uint32_t)lay->comp.size };
    j->bind[1] = (struct mali_bc_bind){ image_va + lay->shadow.base, (uint32_t)lay->shadow.size };
    j->nbind = 2;
-   uint64_t total = (uint64_t)bw * bh * nz, g = (total + 63) / 64;
+   uint64_t total = (uint64_t)bw * bh * nz, g;
+   if (f->sh == MALI_BC_ASTC) total *= tw * th;   /* ASTC: one invocation per texel */
+   g = (total + 63) / 64;
    j->groups[0] = g > 32768 ? 32768 : (uint32_t)g;
    j->groups[1] = (uint32_t)((g + 32767) / 32768);
    j->groups[2] = 1;
@@ -190,14 +201,15 @@ mali_bc_ref_run(const struct mali_bc_job *j, mali_bc_block_fn dec)
    const uint8_t *src = (const uint8_t *)(uintptr_t)j->bind[0].va;
    uint8_t *dst = (uint8_t *)(uintptr_t)j->bind[1].va;
    const unsigned bpt = j->fmt->shadow_bpt, bs = j->fmt->block_bytes;
-   uint8_t tmp[16 * 8];
+   uint8_t tmp[144 * 8];
+   const unsigned tw = j->fmt->bw, th = j->fmt->bh;
    uint64_t total = (uint64_t)p[6] * p[7] * p[8];
    for (uint64_t i = 0; i < total; i++) {
       uint32_t bx = i % p[6]; uint64_t r = i / p[6]; uint32_t by = r % p[7], z = (uint32_t)(r / p[7]);
       const uint8_t *so = src + p[0] + (uint64_t)z * p[2] + (uint64_t)by * p[1] + (uint64_t)bx * bs;
-      uint8_t *d0 = dst + p[3] + (uint64_t)z * p[5] + (uint64_t)by * 4 * p[4] + (uint64_t)bx * 4 * bpt;
+      uint8_t *d0 = dst + p[3] + (uint64_t)z * p[5] + (uint64_t)by * th * p[4] + (uint64_t)bx * tw * bpt;
       dec(j->fmt, so, tmp);
-      for (unsigned row = 0; row < 4; row++) memcpy(d0 + (uint64_t)row * p[4], tmp + row * 4 * bpt, 4 * bpt);
+      for (unsigned row = 0; row < th; row++) memcpy(d0 + (uint64_t)row * p[4], tmp + row * tw * bpt, tw * bpt);
    }
 }
 
@@ -210,6 +222,7 @@ mali_bc_spirv(enum mali_bc_shader s, size_t *words)
    case MALI_BC_BC6H: *words = sizeof bc6h_spv / 4; return bc6h_spv;
    case MALI_BC_BC7: *words = sizeof bc7_spv / 4; return bc7_spv;
    case MALI_BC_ETC2: *words = sizeof etc2_spv / 4; return etc2_spv;
+   case MALI_BC_ASTC: *words = sizeof astc_spv / 4; return astc_spv;
    default: *words = 0; return NULL;
    }
 }

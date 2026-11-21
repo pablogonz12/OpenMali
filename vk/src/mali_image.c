@@ -270,7 +270,7 @@ image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layou
 {
    struct mali_image_desc d;
    desc_from_ci(ci, &d);
-   *is_bc = mali_bc_is_bc(ci->format);
+   *is_bc = mali_bc_is_bc(ci->format) || mali_bc_is_astc(ci->format);
    /* ETC2 / EAC: the native layout stays (hardware samples it); a decoded shadow is appended after it as the blit source. Linear 2D / 3D only,
     * anything else keeps the plain layout (no shadow, blits from it are refused as before). */
    const bool etc2 = !*is_bc && mali_bc_is_etc2(ci->format) && !d.tiled && ci->samples == 1 &&

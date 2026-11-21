@@ -26,16 +26,18 @@ blend_table(unsigned arch)
    return arch >= 13 ? pan_blendable_formats_v13 : arch == 10 ? pan_blendable_formats_v10 : pan_blendable_formats_v11;
 }
 
-/* VkFormat range we look at: the core 1.0 formats. ASTC (157..184) is skipped: it needs the ASTC plane descriptor (gap, R3-PLAN M5). */
+/* VkFormat range we look at: the core 1.0 formats. ASTC LDR (157..184) is advertised only through the decode-to-shadow path (mali_bc.h): the
+ * hardware plane descriptor for ASTC is not implemented, so the images are sampled through an RGBA8 shadow like BC. */
 #define FMT_FIRST 1
-#define FMT_LAST  156
+#define FMT_LAST  184
 
 static bool
 fmt_skipped(VkFormat f, enum pipe_format p)
 {
    if (p == PIPE_FORMAT_NONE) return true;
+   if (f >= 157 && !mali_bc_is_astc(f)) return true;
    const struct util_format_description *d = util_format_description(p);
-   if (d->layout == UTIL_FORMAT_LAYOUT_ASTC || d->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED || d->layout == UTIL_FORMAT_LAYOUT_PLANAR2 ||
+   if (d->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED || d->layout == UTIL_FORMAT_LAYOUT_PLANAR2 ||
        d->layout == UTIL_FORMAT_LAYOUT_PLANAR3 || d->layout == UTIL_FORMAT_LAYOUT_FXT1)
       return true;
    if (p == PIPE_FORMAT_ETC1_RGB8) return true;
@@ -226,7 +228,7 @@ mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *o)
    o->buffer = buf;
    /* Linear tiling: single-level 2D, no compressed formats. Our layout is linear for both tilings by default, so same bits minus compressed. */
    o->linear = o->compressed ? 0 : (img & ~(VkFormatFeatureFlags)0);
-   if (mali_bc_is_bc(f)) {
+   if (mali_bc_is_bc(f) || mali_bc_is_astc(f)) {
       /* R4-M7: BC is emulated (decode to a shadow image, mali_bc.h), whatever the sampler tables say */
       o->optimal = mali_bc_optimal_features(f);
       o->linear = 0;
@@ -276,7 +278,7 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
    struct mali_fmt f;
    if (!mali_format_get(arch, format, &f)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    if (tiling != VK_IMAGE_TILING_LINEAR && tiling != VK_IMAGE_TILING_OPTIMAL) return VK_ERROR_FORMAT_NOT_SUPPORTED;
-   if (mali_bc_is_bc(format)) {
+   if (mali_bc_is_bc(format) || mali_bc_is_astc(format)) {
       VkResult br = mali_bc_image_supported(format, type, tiling, usage, flags, 1);
       if (br != VK_SUCCESS) return br;
    }
