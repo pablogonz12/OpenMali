@@ -10,6 +10,7 @@
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
+#include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below */
 
 /* wsi_common.c: what the device dispatch would have called; not in wsi_common.h in this tree. */
 VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
@@ -672,6 +673,23 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
          if (info->pResults)
             for (uint32_t i = 0; i < info->swapchainCount; i++)
                info->pResults[i] = VK_SUCCESS;   /* the caller asked for per-swapchain results */
+         /* VK_EXT_swapchain_maintenance1 present fences: wsi_common signals them at the end of the per-image GPU
+          * work (wsi_common.c:2679), which this shortcut never reaches - the frame is copied and the XShmPutImage
+          * is queued here, so signal them here too. Without it a client that waits a present fence (the pattern
+          * t_wsi_maint.c:453 checks) hangs until its timeout on the X11 shm path. */
+         const VkSwapchainPresentFenceInfoEXT *pf =
+            vk_find_struct_const(info->pNext, SWAPCHAIN_PRESENT_FENCE_INFO_EXT);
+         if (pf && pf->pFences) {
+            for (uint32_t i = 0; i < info->swapchainCount && i < pf->swapchainCount; i++) {
+               if (pf->pFences[i] == VK_NULL_HANDLE)
+                  continue;
+               VK_FROM_HANDLE(vk_fence, f, pf->pFences[i]);
+               if (f) {
+                  VkResult sr = vk_sync_signal(&dev->vk, vk_fence_get_active_sync(f), 0);
+                  (void)sr;   /* a lost device is reported by the next wait, not by present */
+               }
+            }
+         }
          if (mali_wsi_debug()) {
             static int shm_logged;
             if (!shm_logged) {
