@@ -1016,6 +1016,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
             f->resolve_level = cv->vk.base_mip_level;
             f->resolve_layer = cv->vk.base_array_layer;
+            f->resolve_dst_level = rv->vk.base_mip_level;   /* the resolve image is its own view: mip/layer may differ */
+            f->resolve_dst_layer = rv->vk.base_array_layer;
          } else {
             f->colour.resolve_va = rt.va;
             f->colour.resolve_row_stride = rt.row_stride;
@@ -1138,16 +1140,23 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    cmd->in_render = true;
 }
 
-/* Region of the deferred MSAA resolve (mali_CmdEndRendering). Extracted so the rect and the two subresources can be
- * tested without a GPU: the source is the attachment view, the destination the resolve view, the rect the render area. */
+/* Region of the deferred MSAA resolve (mali_CmdEndRendering). Both sides keep their own subresource: the source is the
+ * attachment view (level/layer recorded from it), the destination the resolve view, which may be mip 1 / layer 1 of a
+ * larger image. Vulkan resolves the render area only, so the rect is that area — a whole-attachment rect would overwrite
+ * the pixels outside it, which the app expects to keep. area[] zero (no render area recorded) = the whole attachment,
+ * as elsewhere (mali_soft.c, mali_render.c). */
 void
 mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 {
+   const int32_t *ar = f->area;
+   const uint32_t x = ar[2] ? (uint32_t)ar[0] : 0, y = ar[3] ? (uint32_t)ar[1] : 0;
    memset(r, 0, sizeof *r);
    r->sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2;
    r->srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_level, f->resolve_layer, 1};
-   r->dstSubresource = r->srcSubresource;
-   r->extent = (VkExtent3D){f->width, f->height, 1};
+   r->dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_dst_level, f->resolve_dst_layer, 1};
+   r->srcOffset = (VkOffset3D){(int32_t)x, (int32_t)y, 0};
+   r->dstOffset = r->srcOffset;
+   r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
 VKAPI_ATTR void VKAPI_CALL
