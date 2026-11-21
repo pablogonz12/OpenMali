@@ -334,11 +334,38 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    struct mali_image_layout lay;
    struct mali_bc_layout bc;
    bool is_bc;
+   bool has_explicit = false;
+   uint64_t explicit_pitch = 0;   /* VkImageDrmFormatModifierExplicitCreateInfoEXT row pitch (must be non-zero when has_explicit) */
+   if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+      /* Linear is the only modifier (mali_wsi_modifier): the request must allow it, and an explicit layout must
+       * describe a single plane we can honour (offset 0; row pitch is the layout's, so a different one is refused). */
+      const VkImageDrmFormatModifierListCreateInfoEXT *ml =
+         vk_find_struct_const(ci->pNext, IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT);
+      const VkImageDrmFormatModifierExplicitCreateInfoEXT *me =
+         vk_find_struct_const(ci->pNext, IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
+      if (me) {
+         if (me->drmFormatModifier != mali_wsi_modifier || me->drmFormatModifierPlaneCount != 1 ||
+             me->pPlaneLayouts[0].offset != 0)
+            return vk_error(dev, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
+         explicit_pitch = me->pPlaneLayouts[0].rowPitch;
+         has_explicit = true;
+      } else {
+         bool ok = false;
+         if (ml)
+            for (uint32_t i = 0; i < ml->drmFormatModifierCount; i++)
+               ok |= ml->pDrmFormatModifiers[i] == mali_wsi_modifier;
+         if (!ok) return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
+      }
+   }
    struct mali_image *img = vk_image_create(&dev->vk, ci, alloc, sizeof *img);
    if (!img) return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
    if (image_layout(dev_arch(dev), ci, &lay, &bc, &img->sh_lay, &is_bc) != 0) {
       vk_image_destroy(&dev->vk, alloc, &img->vk);
       return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
+   }
+   if (has_explicit && lay.plane[0].slice[0].row_stride != explicit_pitch) {
+      vk_image_destroy(&dev->vk, alloc, &img->vk);
+      return vk_error(dev, VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
    }
    img->bc = is_bc;
    img->native_view = is_bc && mali_bc_is_etc2(ci->format);
@@ -397,28 +424,25 @@ mali_GetDeviceImageMemoryRequirements(VkDevice _dev, const VkDeviceImageMemoryRe
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
 {
+   VK_FROM_HANDLE(mali_device, dev, _dev);
+   VkResult res = VK_SUCCESS;
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_image, img, b[i].image);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);
+      const VkBindMemoryStatus *st = vk_find_struct_const(b[i].pNext, BIND_MEMORY_STATUS);
       if (!mem) {
-         /* Swapchain-aliased binds (VkBindImageMemorySwapchainInfoKHR, memory == VK_NULL_HANDLE) are not implemented: wsi_common has no lookup
-            in this Mesa. Fail with VK_ERROR_UNKNOWN (FEATURE_NOT_PRESENT is not a permitted vkBindImageMemory2 result) instead of returning VK_SUCCESS for an image that stayed unbound. */
-         if (vk_find_struct_const(b[i].pNext, BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR)) {
-            /* VkBindMemoryStatus (VK_KHR_maintenance6): report each bind's own result, VK_SUCCESS for the ones before this one */
-            for (uint32_t j = 0; j < n; j++) {
-               const VkBindMemoryStatus *st = vk_find_struct_const(b[j].pNext, BIND_MEMORY_STATUS);
-               if (st && st->pResult)
-                  *st->pResult = j < i ? VK_SUCCESS : j == i ? VK_ERROR_UNKNOWN : VK_SUCCESS;
-            }
-            return VK_ERROR_UNKNOWN;
-         }
+         /* Swapchain-aliased images (BindImageMemorySwapchainInfoKHR) are not supported: wsi_common has no lookup in
+          * this Mesa. FEATURE_NOT_PRESENT is not a permitted vkBindImageMemory2 result, so use VK_ERROR_UNKNOWN. Report it instead of returning success with an unbound image. */
+         if (st && st->pResult) *st->pResult = VK_ERROR_UNKNOWN;
+         res = VK_ERROR_UNKNOWN;
          continue;
       }
+      if (st && st->pResult) *st->pResult = VK_SUCCESS;
       img->mem = mem;
       img->mem_off = b[i].memoryOffset;
       img->va = mem->bo.gpu_va + b[i].memoryOffset;
    }
-   return VK_SUCCESS;
+   return res;
 }
 
 VKAPI_ATTR void VKAPI_CALL

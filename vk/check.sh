@@ -21,6 +21,8 @@ if [ "$SAN" = 1 ]; then
    # The test executables are not sanitized; the sanitized driver .so needs the runtime preloaded. Leaks are reported by LSan at exit.
    export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
    export ASAN_OPTIONS=detect_leaks=${MALI_SAN_LEAKS:-0}:abort_on_error=0:halt_on_error=1
+   # LD_PRELOAD also reaches gcc/sed/bash spawned by the cases; their own leaks are not ours.
+   export LSAN_OPTIONS=suppressions=$V/tests/lsan.supp:print_suppressions=0
    export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 fi
 # The compile cache (mali_compile.c, ~/.cache by default) must not decide a golden: a stale entry from an older compiler made main's own goldens
@@ -28,7 +30,7 @@ fi
 # MALI_OPT_GCM=1 bypasses the cache (mali_compile.c use_cache), which the cold/warm and damaged-entry checks below need active: do not inherit it.
 unset MALI_OPT_GCM
 export MALI_SHADER_CACHE=$OUT/shader-cache; rm -rf "$MALI_SHADER_CACHE"; mkdir -p "$MALI_SHADER_CACHE"
-if [ $build = 1 ]; then "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
+if [ $build = 1 ]; then env -u LD_PRELOAD "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
 fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
@@ -129,6 +131,9 @@ run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake M
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
+# WSI audit regressions: fd validation, sync export waits for a queued signal, DRM modifier/bind checks, failed submit still signals
+for c in wsifd syncexport wsiimg; do run "wsi $c" 0 MALI_BACKEND=fake $TQ --only $c; done
+run "wsi failsignal" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only failsignal
 
 # M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
 # silent output: the unset path is the normal driver path, and the test fails if anything is printed or written.
@@ -219,15 +224,21 @@ cwdump() { # test, gpu, cache dir, out name
    MALI_SHADER_CACHE=$3 MALI_FAKE_DUMP="$GDIR/$4.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$2 "$OUT/t_$1" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" >/dev/null 2>&1 || return 1
    GOLDEN_ARCH=${2#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$4.jsonl" "$GDIR/$4.txt" >/dev/null 2>&1
 }
-for t in vk_draw vk_feat; do for g in v11 v13; do
+cwpair() { # test, gpu: one cold/warm pair; prints its result lines, exits 1 on failure
+   local t=$1 g=$2 fail=0 CW n0 sum0
    CW=$OUT/cw-cache-$t-$g; rm -rf "$CW"; mkdir -p "$CW"
-   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; fail=1; continue; fi
+   if ! cwdump $t $g "$CW" cw-cold-$t-$g; then echo "FAIL  cache cold/warm $t $g (cold run failed)"; return 1; fi
    n0=$(ls "$CW" | wc -l); sum0=$(cat "$CW"/*.bin 2>/dev/null | sha256sum)
-   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; fail=1; continue; fi
+   if ! cwdump $t $g "$CW" cw-warm-$t-$g; then echo "FAIL  cache cold/warm $t $g (warm run failed)"; return 1; fi
    if [ "$n0" -gt 0 ] && [ "$n0" = "$(ls "$CW" | wc -l)" ] && [ "$sum0" = "$(cat "$CW"/*.bin | sha256sum)" ] && cmp -s "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt"; then
       echo "ok    shader cache cold == warm $t $g ($n0 entries)"
    else echo "FAIL  shader cache cold != warm $t $g (entries $n0 -> $(ls "$CW" | wc -l)):"; diff -u "$GDIR/cw-cold-$t-$g.txt" "$GDIR/cw-warm-$t-$g.txt" | head -20 | sed 's/^/        /'; fail=1; fi
-done; done
+   return $fail
+}
+# the four pairs are independent (own cache dir, own output names): run them concurrently, print in the original order
+cwpids=""; cwtags=""
+for t in vk_draw vk_feat; do for g in v11 v13; do cwpair $t $g >"$GDIR/cw-res-$t-$g.out" 2>&1 & cwpids="$cwpids $!"; cwtags="$cwtags $t:$g"; done; done
+set -- $cwpids; for tg in $cwtags; do t=${tg%:*}; g=${tg#*:}; wait "$1" || fail=1; shift; cat "$GDIR/cw-res-$t-$g.out"; done
 # teeth: an entry whose immediates differ (what a stale entry of an older lowering looks like) must change the warm dump
 CW=$OUT/cw-cache-vk_draw-v11
 for f in "$CW"/*.bin; do python3 -I -c 'import sys; b=bytearray(open(sys.argv[1],"rb").read()); b[-1]^=0x5a; open(sys.argv[1],"wb").write(b)' "$f"; done
