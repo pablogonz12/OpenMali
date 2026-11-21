@@ -1279,7 +1279,12 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
    const bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
                             surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
-   if (r == VK_SUCCESS && x11_surface && !mali_wsi_x11_chain_add(*out, wsi_dev->sw)) {
+   /* The mode the chain was created on is the *selected* instance's sw (pdev->vk.wsi_device), not &pdev->wsi's:
+    * for a no-DRI3 X11 surface mali_wsi_sw_enter() picked pdev->wsi_sw_dev, whose sw is true while &pdev->wsi keeps
+    * the device's own value. Reading the wrong one registered the chain as dma-buf and skipped its SHM slot
+    * (CodeRabbit body finding, vk/src/mali_wsi.c:1257-1307). */
+   const bool chain_sw = pdev->vk.wsi_device->sw;
+   if (r == VK_SUCCESS && x11_surface && !mali_wsi_x11_chain_add(*out, chain_sw)) {
       /* The table is full: an untracked X11 chain would be presented as a Wayland one (sw=false, dma-buf) with no
        * fallback, so refuse the creation and destroy the chain wsi just built (CR #323 T3). */
       wsi_DestroySwapchainKHR(device, *out, alloc);
@@ -1288,7 +1293,7 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       fprintf(stderr, "mali_vk: wsi: no free X11 chain slot (%u); swapchain creation refused\n",
               (unsigned)(sizeof(mali_wsi_x11_chains) / sizeof(mali_wsi_x11_chains[0])));
    }
-   if (r == VK_SUCCESS && wsi_dev->sw) {
+   if (r == VK_SUCCESS && chain_sw) {
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       mali_x11_shm_create(*out, surface, chain, ci);
    }
