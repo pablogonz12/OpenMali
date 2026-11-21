@@ -828,8 +828,11 @@ mali_drm_refresh(struct mali_physical_device *pdev)
       const char *e = getenv(envs[i]);
       struct stat st;
       dev_t standin_rdev = 0;
-      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode))
+      bool standin_is_chardev = false;   /* the app's own path resolved to a character device (not the saved rdev) */
+      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode)) {
          standin_rdev = st.st_rdev;
+         standin_is_chardev = true;
+      }
       else if (e && *e) {
          /* The app names /dev/mali0, which is not a DRM node name: take the node we actually opened instead and
           * find the /dev/dri alias with that rdev (the guest binds it into /dev/dri as renderD<minor>). */
@@ -842,7 +845,11 @@ mali_drm_refresh(struct mali_physical_device *pdev)
        * our device even with no alias (X4's guest has only /dev/dri/card0 226:0, so mali0 10:113 is all there
        * is, and gamescope stops at "physical device has no primary node"). An unrelated node still fails the
        * equality test and is dropped (#291: only a stand-in the app supplies is reported as a node). */
-      if (standin_rdev && !drm_rdev_has_alias(standin_rdev) && standin_rdev != mali_gpu_node_rdev(&pdev->gpu))
+      /* The exception needs the app's path to resolve to a char device with our node's rdev: the `else` above saved
+       * pdev->gpu.node_rdev for a path stat() cannot use as a device, and that value would otherwise match the
+       * equality test and report an identity for a node the app's named path does not provide. */
+      if (standin_rdev && !drm_rdev_has_alias(standin_rdev) &&
+          !(standin_is_chardev && standin_rdev == mali_gpu_node_rdev(&pdev->gpu)))
          standin_rdev = 0;
       if (standin_rdev && (!node.render || !node.primary)) {
          /* Resolve through /dev/dri by rdev if the path itself is not a /dev/dri node. */
