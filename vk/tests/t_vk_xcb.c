@@ -88,6 +88,7 @@ main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0;
+   int win_w = W, win_h = H, hold_s = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
@@ -99,8 +100,19 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--copy")) copyimg = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
+      else if (!strcmp(argv[i], "--size") && i + 1 < argc) {
+         /* the window's surface size; FRAMES is all it takes to prove a path, this is for a screenshot */
+         if (sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2 || win_w <= 0 || win_h <= 0) {
+            fprintf(stderr, "FAIL --size wants WxH\n");
+            return 2;
+         }
+      }
+      else if (!strcmp(argv[i], "--hold") && i + 1 < argc) {
+         /* keep acquiring/presenting the same content for N seconds so a screenshot can catch it */
+         hold_s = atoi(argv[++i]);
+      }
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
-                            "[--spv-dir d] [--expect-name s]\n"); return 2; }
+                            "[--spv-dir d] [--expect-name s] [--size WxH] [--hold seconds]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -131,7 +143,7 @@ main(int argc, char **argv)
    xcb_screen_t *s = sit.data;
    xcb_window_t win = xcb_generate_id(c);
    uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY};
-   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, win_w, win_h, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
                      XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
    xcb_map_window(c, win);
    xcb_flush(c);
@@ -247,7 +259,7 @@ main(int argc, char **argv)
    GetDeviceQueue(dev, fam, 0, &q);
 
    VkExtent2D ext = caps.currentExtent;
-   if (ext.width == 0xFFFFFFFFu) ext = (VkExtent2D){W, H};
+   if (ext.width == 0xFFFFFFFFu) ext = (VkExtent2D){win_w, win_h};
    uint32_t want = caps.minImageCount + 1;
    if (caps.maxImageCount && want > caps.maxImageCount) want = caps.maxImageCount;
    VkSwapchainKHR sc;
@@ -482,7 +494,15 @@ main(int argc, char **argv)
 
    const VkClearColorValue clr = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}};   /* BGRA8: 51,102,204 */
    int blitrc = 0;
-   for (int f = 0; f < FRAMES; f++) {
+   const int total_frames = hold_s > 0 ? FRAMES + hold_s * 60 : FRAMES;   /* ~60 present/s while holding */
+   for (int f = 0; f < total_frames; f++) {
+      if (f >= FRAMES) {   /* --hold: same content, keep the surface alive and answer the compositor */
+         xcb_generic_event_t *hev;
+         xcb_flush(c);
+         while ((hev = xcb_poll_for_event(c))) free(hev);
+         struct timespec hts = {0, 16 * 1000 * 1000};
+         nanosleep(&hts, NULL);
+      }
       uint32_t idx;
       CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
       REQ(idx < ni, "acquired index out of range");
