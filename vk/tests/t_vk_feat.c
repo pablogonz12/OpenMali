@@ -1153,7 +1153,8 @@ tf_dbg_begin(void)
    setenv("MALI_TF_DBG", "1", 1);
    fflush(stderr);
    g_dbgsave = dup(2);
-   freopen(g_dbgfile, "w", stderr);
+   if (!freopen(g_dbgfile, "w", stderr))   /* glibc marks freopen warn_unused_result; CI builds with -Werror */
+      fprintf(stderr, "tf debug: cannot open %s\n", g_dbgfile);
 }
 
 static int
