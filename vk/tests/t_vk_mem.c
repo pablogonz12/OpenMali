@@ -2,7 +2,9 @@
 /* VkDeviceMemory / instance edge cases on the fake backend (mali_memory.c, mali_device.c, mali_instance.c error paths).
  *   t_vk_mem --direct <icd.so>
  * Checks: a layer-name extension query is LAYER_NOT_PRESENT; map twice and map past the end fail with MEMORY_MAP_FAILED and the
- * failed second map does not unmap the first; map after unmap works and offset maps are offset from the base; the cached memory
+ * failed second map does not unmap the first; map after unmap works and offset maps are offset from the base; heap 0's size is a
+ * size this driver grants (an allocation of exactly it succeeds) and the VK_EXT_memory_budget answers add up to it
+ * (heapUsage + heapBudget == heap, maxMemoryAllocationSize <= heap); the cached memory
  * type accepts flush/invalidate (explicit size, WHOLE_SIZE, unaligned range); an out-of-range memory type and an oversized
  * allocation are OUT_OF_DEVICE_MEMORY; the 4096-allocation cap returns TOO_MANY_OBJECTS and frees make room again;
  * vkGetDeviceMemoryCommitment is 0 (no lazily allocated type); the opaque capture address queries are 0 (no
@@ -68,6 +70,27 @@ main(int argc, char **argv)
    CHECK(t_coh >= 0 && t_cached >= 0, "memory types coherent=%d cached=%d", t_coh, t_cached);
    if (t_coh < 0 || t_cached < 0) return 1;
 
+   /* ---- heap 0 is a size this driver will commit, and the budget is what is left of it ---- */
+   /* (zink checks a request against memoryHeaps[].size and then calls vkAllocateMemory: a heap that is bigger than
+    * mem_reserve()'s cap turns that into "zink: couldn't allocate memory: heap=0 size=...".) */
+   PFN_vkGetPhysicalDeviceMemoryProperties2 GDPMP2 =
+      (PFN_vkGetPhysicalDeviceMemoryProperties2)gipa(inst, "vkGetPhysicalDeviceMemoryProperties2");
+   PFN_vkGetPhysicalDeviceProperties2 GDPP2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
+   VkPhysicalDeviceMemoryBudgetPropertiesEXT bud = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+   VkPhysicalDeviceMemoryProperties2 mp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &bud};
+   GDPMP2(pd, &mp2);
+   const uint64_t heap = mp2.memoryProperties.memoryHeaps[0].size;
+   VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
+   VkPhysicalDeviceProperties2 props2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
+   GDPP2(pd, &props2);
+   CHECK(heap > 0, "heap 0 size %llu", (unsigned long long)heap);
+   CHECK(m3.maxMemoryAllocationSize <= heap,
+         "maxMemoryAllocationSize %llu must fit the heap 0 it is reported with (%llu)",
+         (unsigned long long)m3.maxMemoryAllocationSize, (unsigned long long)heap);
+   CHECK(bud.heapUsage[0] == 0 && bud.heapBudget[0] == heap,
+         "fresh heap: usage %llu budget %llu, want 0/%llu", (unsigned long long)bud.heapUsage[0],
+         (unsigned long long)bud.heapBudget[0], (unsigned long long)heap);
+
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = 0, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci};
@@ -86,6 +109,15 @@ main(int argc, char **argv)
    CHECK(MapMemory(dev, m, 0, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "second map must fail");
    if (g_fail || !p) { printf("FAIL: alloc/map failed, remaining map tests need the mapping\n"); return 1; }   /* p[] below would dereference NULL */
    p[0] = 0x5a; p[65535] = 0xa5;
+   /* the budget is what is left of the heap, so usage and budget always add up to it */
+   bud.heapUsage[0] = 0;
+   bud.heapBudget[0] = 0;
+   mp2.pNext = &bud;
+   GDPMP2(pd, &mp2);
+   CHECK(bud.heapUsage[0] >= 65536, "heapUsage %llu must count the live 64 KiB", (unsigned long long)bud.heapUsage[0]);
+   CHECK(bud.heapUsage[0] <= heap && bud.heapBudget[0] == heap - bud.heapUsage[0],
+         "heapUsage %llu + heapBudget %llu must be the heap %llu", (unsigned long long)bud.heapUsage[0],
+         (unsigned long long)bud.heapBudget[0], (unsigned long long)heap);
    UnmapMemory(dev, m);
    CHECK(MapMemory(dev, m, 65536, VK_WHOLE_SIZE, 0, (void **)&q) == VK_ERROR_MEMORY_MAP_FAILED, "offset == size must fail");
    CHECK(MapMemory(dev, m, 4096, 4096, 0, (void **)&q) == VK_SUCCESS && q == p + 4096, "offset map is base+offset (%p vs %p)", (void *)q, (void *)p);
@@ -124,6 +156,13 @@ main(int argc, char **argv)
    CHECK(AllocateMemory(dev, &mai, NULL, &bad) == VK_ERROR_OUT_OF_DEVICE_MEMORY, "memory type out of range");
    mai.memoryTypeIndex = t_coh; mai.allocationSize = mp.memoryHeaps[0].size + 1;
    CHECK(AllocateMemory(dev, &mai, NULL, &bad) == VK_ERROR_OUT_OF_DEVICE_MEMORY, "alloc larger than the heap");
+   /* the other half of the promise: a single allocation of exactly the reported heap size is granted (a heap bigger
+    * than mem_reserve()'s cap would answer OUT_OF_DEVICE_MEMORY here, which is zink's "couldn't allocate memory") */
+   mai.allocationSize = heap;
+   VkDeviceMemory whole = VK_NULL_HANDLE;
+   CHECK(AllocateMemory(dev, &mai, NULL, &whole) == VK_SUCCESS,
+         "an allocation of heap 0's size (%llu) must be granted", (unsigned long long)heap);
+   if (whole) FreeMemory(dev, whole, NULL);
 
    mai.allocationSize = 64;
    VkDeviceMemory *all = calloc(MAXALLOC + 1, sizeof *all);
