@@ -26,6 +26,8 @@
  *               TRANSFER_DST|COLOR_ATTACHMENT, flags 0, minImageCount caps.minImageCount+1): zink's window swapchain is
  *               usage=0x97 flags=MUTABLE_FORMAT with 3 images, so a black window can be bisected on these three knobs.
  *               A refused combination is printed as the driver's VkResult.
+ *   --topology list|fan|strip  the quad's primitive (default list): glBlitFramebuffer through u_blitter is a 4-vertex
+ *               TRIANGLE_FAN, our own quad a 6-vertex list, and that was the last difference left in the draw record.
  *   --rtt-usage <hex>  with --rtt: the source image's usage (default 0x14 = COLOR_ATTACHMENT|SAMPLED); zink's RTT
  *               texture is 0x97, so the ladder's image can be matched too.
  *   --rtt-split  with --rtt: the offscreen write and the sampling draw go into TWO vkQueueSubmits, joined by a
@@ -516,6 +518,10 @@ main(int argc, char **argv)
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
    int rtt = 0, rtt_split = 0, hold = 0, rttblit = 0, rttblit_split = 0;
    unsigned long long swap_usage = 0, rtt_usage = 0;
+   /* --topology: the quad's primitive. quad.vert's 6 positions are (0,0),(1,0),(0,1),(0,1),(1,0),(1,1), whose fan and
+    * strip interpretations still cover the whole quad (fan: TL,TR,BL + TL,TR,BR; strip: TL,TR,BL + BL,TR,BR), so only the
+    * topology changes and the coverage stays identical. */
+   VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
    unsigned swap_flags = 0, swap_images = 0;
    unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
@@ -555,6 +561,13 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--swap-flags") && i + 1 < argc) swap_flags = (unsigned)strtoul(argv[++i], NULL, 0);
       else if (!strcmp(argv[i], "--swap-images") && i + 1 < argc) swap_images = (unsigned)strtoul(argv[++i], NULL, 0);
       else if (!strcmp(argv[i], "--rtt-usage") && i + 1 < argc) rtt_usage = strtoull(argv[++i], NULL, 16);
+      else if (!strcmp(argv[i], "--topology") && i + 1 < argc) {
+         const char *t = argv[++i];
+         if (!strcmp(t, "list")) topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+         else if (!strcmp(t, "fan")) topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+         else if (!strcmp(t, "strip")) topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+         else { fprintf(stderr, "usage: --topology list|fan|strip\n"); return 2; }
+      }
       else if (!strcmp(argv[i], "--rtt-dyn") && i + 1 < argc) {
          /* --rtt-dyn <mask>: the pipeline's dynamic states, bit i = the i-th entry of Mesa's MESA_VK_DYNAMIC_*
           * list (third_party/mesa/src/vulkan/runtime/vk_graphics_state.h). That is the numbering our driver prints
@@ -993,7 +1006,7 @@ main(int argc, char **argv)
          .stageCount = 2, .pStages = st,
          .pVertexInputState = &(VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO},
          .pInputAssemblyState = &(VkPipelineInputAssemblyStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                                         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST},
+                                                                         .topology = topo},
          .pViewportState = &(VkPipelineViewportStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                                .viewportCount = 1, .scissorCount = 1},
          .pRasterizationState = &(VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
