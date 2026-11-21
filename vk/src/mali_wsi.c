@@ -1088,11 +1088,24 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
    if (shmctl(shmid, IPC_RMID, NULL) == 0 && mali_wsi_debug())
       fprintf(stderr, "mali_vk: x11 shm: segment unlinked at attach (shmid %d, %zu B), reclaimed at our last detach\n",
               shmid, size);
+   /* The gate ring is what makes a present safe: without it the slot would present and release an image the server
+    * may still be reading. An allocation failure therefore unwinds the whole SHM setup (the present then falls back
+    * to wsi's own PutImage) instead of publishing an ungated slot (CR thread, k vk/src/mali_wsi.c:969). */
+   struct mali_x11_shm_gate *gates = calloc((size_t)chain->image_count + 1, sizeof *gates);
+   if (!gates) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (no memory for %u gate slots)\n",
+              chain->image_count + 1);
+      xcb_shm_detach(s->connection, seg);
+      shmdt(addr);
+      shmctl(shmid, IPC_RMID, NULL);
+      xcb_flush(s->connection);
+      return;
+   }
    const xcb_gcontext_t gc = xcb_generate_id(s->connection);
    xcb_create_gc(s->connection, gc, s->window, XCB_GC_GRAPHICS_EXPOSURES, (uint32_t []){0});
    xcb_flush(s->connection);
 
-   *st = (struct mali_x11_shm){.gates = calloc((size_t)chain->image_count + 1, sizeof *st->gates),
+   *st = (struct mali_x11_shm){.gates = gates,
                               .swapchain = sc, .active = true, .conn = s->connection, .window = s->window,
                               .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
                               .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
@@ -1219,21 +1232,28 @@ mali_x11_shm_wait_gate(struct mali_x11_shm *st, uint64_t timeout_ns)
       return 0;
    xcb_connection_t *c = (xcb_connection_t *)st->conn;
    const int fd = xcb_get_file_descriptor(c);
-   uint64_t budget = timeout_ns == UINT64_MAX ? 1000 : timeout_ns / 1000000;   /* ms */
-   if (budget > 1000)
-      budget = 1000;   /* one call never sleeps longer than this; the app's own timeout is honoured by the caller */
-   uint64_t spent = 0;
-   while (st->gate_count > 0 && spent < budget) {
+   uint64_t budget = timeout_ns == UINT64_MAX ? 1000000000ull : timeout_ns;   /* ns */
+   if (budget > 1000000000ull)
+      budget = 1000000000ull;   /* one call never sleeps longer than this; the caller repeats it against its own timeout */
+   struct timespec t0;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   while (st->gate_count > 0) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      const uint64_t spent = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000000ull +
+                             (uint64_t)(now.tv_nsec - t0.tv_nsec);
+      if (spent >= budget)
+         break;
+      uint64_t left_ms = (budget - spent + 999999) / 1000000;   /* never more than what is left */
+      if (left_ms > 20)
+         left_ms = 20;
       if (xcb_connection_has_error(c))
          return -1;
       struct pollfd p = {.fd = fd, .events = POLLIN};
-      const int pr = poll(&p, 1, 20);
-      if (pr < 0) {
-         if (errno == EINTR)
-            continue;
+      const int pr = poll(&p, 1, (int)left_ms);
+      if (pr < 0 && errno != EINTR)
          return -1;
-      }
-      spent += 20;
+      /* EINTR is not an answer and not free: the clock, not a fixed 20 ms, accounts for it (CR thread, :1103). */
       mali_x11_shm_drain(st, false);
    }
    return st->gate_count == 0 ? 1 : 0;
@@ -1348,7 +1368,7 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
     * which on a multi-threaded client (Steam's client + web helper) looks like a frozen UI (CR #323 N4). */
    struct mali_x11_shm *st = mali_x11_shm_find(swapchain);
    mali_x11_shm_drain(st, false);   /* release what the server has already read: never blocks */
-   const VkAcquireNextImageInfoKHR ai = {
+   VkAcquireNextImageInfoKHR ai = {
       .sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
       .swapchain = swapchain,
       .timeout = timeout,
@@ -1356,22 +1376,45 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
       .fence = fence,
       .deviceMask = 0,
    };
+   /* A pending gate means an image may be about to come free through the server's reply, and Mesa's own acquire
+    * queue is only refilled by wsi's release_images - a GetGeometry reply alone does not refill it. Entering that
+    * wait with every image gated would therefore block for the whole `timeout` (forever for UINT64_MAX) and never
+    * reach the gate wait that frees one. So probe with timeout 0 first and wait on the gates instead (CR thread,
+    * vk/src/mali_wsi.c:1233). */
+   const bool gated = st && st->gate_count && timeout != 0;
+   if (gated)
+      ai.timeout = 0;
    VkResult r = mali_wsi_acquire_next_image2(device, &ai, image_index);
-   if ((r == VK_NOT_READY || r == VK_TIMEOUT) && st && st->gate_count && timeout != 0) {
-      /* No image is free because every one of them is still being read by the server: that is the only wait in this
-       * design, and it is bounded by the caller's own timeout (design-shm.md A). */
-      const int wr = mali_x11_shm_wait_gate(st, timeout);
-      if (wr < 0)
-         return VK_ERROR_SURFACE_LOST_KHR;
-      const VkAcquireNextImageInfoKHR again = {
-         .sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
-         .swapchain = swapchain,
-         .timeout = 0,
-         .semaphore = semaphore,
-         .fence = fence,
-         .deviceMask = 0,
-      };
-      r = mali_wsi_acquire_next_image2(device, &again, image_index);
+   if (gated && (r == VK_NOT_READY || r == VK_TIMEOUT)) {
+      struct timespec t0;
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      for (;;) {
+         uint64_t remain = UINT64_MAX;
+         if (timeout != UINT64_MAX) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const uint64_t spent = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000000ull +
+                                   (uint64_t)(now.tv_nsec - t0.tv_nsec);
+            if (spent >= timeout) {
+               r = VK_TIMEOUT;
+               break;
+            }
+            remain = timeout - spent;
+         }
+         /* No image is free because every one of them is still being read by the server: that is the only wait in
+          * this design, and it is bounded by what is left of the caller's own timeout (design-shm.md A). */
+         const int wr = mali_x11_shm_wait_gate(st, remain);
+         if (wr < 0)
+            return VK_ERROR_SURFACE_LOST_KHR;
+         ai.timeout = 0;
+         r = mali_wsi_acquire_next_image2(device, &ai, image_index);
+         if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)
+            break;
+         if (!(r == VK_NOT_READY || r == VK_TIMEOUT))
+            break;
+         if (st->gate_count == 0)
+            break;   /* nothing left to wait for: hand Mesa's own answer back */
+      }
    }
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: wsi acquire #%llu -> %s image=%u\n", (unsigned long long)n,
@@ -2035,7 +2078,7 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    /* The chain is created on the instance its surface's path needs, and wsi_CreateSwapchainKHR stores that pointer in
     * chain->base.wsi: from here on the chain's mode is immutable, for the async present queue manager
     * (wsi_common_x11.c:2235 -> :2101) and for destroy (:2807) alike (CR #323 T7). */
-   struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface, sw_now);
+   struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface, sw_now);   /* reassigned by #328's retry */
 
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
