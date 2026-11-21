@@ -33,6 +33,10 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
 VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice, uint32_t,
                                                                              xcb_connection_t *, xcb_visualid_t);
 #endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceWaylandPresentationSupportKHR(VkPhysicalDevice, uint32_t,
+                                                                                   struct wl_display *);
+#endif
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice, uint32_t,
                                                                               Display *, VisualID);
@@ -706,6 +710,23 @@ mali_wsi_xcb_presentation_support(VkPhysicalDevice physicalDevice, uint32_t queu
       mali_wsi_sw_enter_value(pdev, pdev->wsi_sw_base || mali_wsi_x11_sw_decided(pdev, (uintptr_t)connection) ||
                                         pdev->wsi.GetMemoryFdKHR == NULL);
    VkBool32 r = wsi_GetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice, queueFamilyIndex, connection, visual_id);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
+}
+#endif
+
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+VKAPI_ATTR VkBool32 VKAPI_CALL
+mali_wsi_wayland_presentation_support(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex,
+                                      struct wl_display *display)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   /* It initialises a throwaway wsi_wl_display with wsi_device->sw (wsi_common_wayland.c:1839), so it must see
+    * Wayland's mode, not an X11 call's: same scope as the *2KHR queries (CR #323 N5). */
+   const struct mali_wsi_mode saved = mali_wsi_sw_enter_value(pdev, pdev->wsi_sw_base ||
+                                                                      pdev->wsi.GetMemoryFdKHR == NULL);
+   VkBool32 r = wsi_GetPhysicalDeviceWaylandPresentationSupportKHR(physicalDevice, queueFamilyIndex, display);
    mali_wsi_sw_leave(pdev, saved);
    return r;
 }

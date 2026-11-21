@@ -328,6 +328,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
    dispatch_table.GetPhysicalDeviceXlibPresentationSupportKHR = mali_wsi_xlib_presentation_support;
 #endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+   dispatch_table.GetPhysicalDeviceWaylandPresentationSupportKHR = mali_wsi_wayland_presentation_support;
+#endif
 
    struct mali_drm_node drm;
    bool has_drm = mali_drm_find_node(gpu, &drm);

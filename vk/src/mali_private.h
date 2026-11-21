@@ -114,6 +114,9 @@ VkBool32 mali_wsi_xcb_presentation_support(VkPhysicalDevice, uint32_t, xcb_conne
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 VkBool32 mali_wsi_xlib_presentation_support(VkPhysicalDevice, uint32_t, Display*, VisualID);
 #endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+VkBool32 mali_wsi_wayland_presentation_support(VkPhysicalDevice, uint32_t, struct wl_display*);
+#endif
 void mali_wsi_destroy_swapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
 
