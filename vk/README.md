@@ -129,6 +129,16 @@ Meta ops (`mali_meta*`), query pools (`mali_query*`), events/ops frames (`mali_e
 ## Known gaps in advertised features (feat-audit, 2026-11-18)
 - **Colour attachments:** `maxColorAttachments`/`maxFragmentOutputAttachments` are the Vulkan minimum (4) but only ONE colour attachment renders; the check is on `colorAttachmentCount`, not on the number of non-null views: unless every slot is null (depth/stencil-only is fine) the count must be exactly 1 with a non-null view, so `colorAttachmentCount` 2 fails `vkEndCommandBuffer` even when only one view is non-null (`mali_cmd.c`, "need exactly one colour attachment"). Nulling the extra slots does not make a multi-slot rendering valid. `independentBlend` is true only because of that.
 - **MSAA:** 4x sample counts (limits, image format properties), `sampleRateShading` and 4x pipelines are all gated on `MALI_EXPERIMENTAL_MSAA=1`; off by default the driver advertises 1x only (`t_vk_info` checks both modes). With the gate on, `vkCmdClearAttachments` inside an MSAA pass is still unsupported (M8 gap, `mali_cmd.c`) and resolve/LOAD/depth cases are limited.
+- **Transform feedback:** `VK_EXT_transform_feedback` is ON by default, `MALI_EXPERIMENTAL_TF=0` is the legacy opt-out (`mali_tf.h`, the same shape as `MALI_EXPERIMENTAL_MSAA`; `t_vk_info` checks both modes). One stream, four buffers; XFB outputs are lowered to global stores and each draw fills the four buffer bases (`mali_pipeline.c`, `mali_compile.c`, `mali_cmd.c`).
+  (same switch for the UBO counts: 128 with TF, 12/72 without, `mali_physical_device.c`). The reason it can default
+  on: a pipeline whose vertex shader declares XFB also gets a second vertex binary compiled without the lowering, and a
+  draw outside a Begin/End range runs that one (`mali_pipeline.c`, `mali_cmd.c`; `t_vk_feat --only tf_inactive`), so a
+  non-capturing draw stores nothing. Counters are not implemented (a second draw in one range overwrites instead of
+  appending, so GL pause/resume is wrong), bind sizes are never read (writes are not clamped, and an unbound index still
+  yields address 0 while a range is open), `PRIMITIVES_GENERATED` is refused with a sticky error, `geometryStreams` and
+  `rasterizationStream` are false, instanced XFB is refused per draw and `transformFeedbackDraw` is false
+  (`--only tf_multi` and `tf_overflow` assert the two silent limits). `t_vk_feat --only tf_write` is the only device
+  result; `dEQP-VK.transform_feedback.simple.*` has not been run on a phone.
 - **multiViewport:** `maxViewports`=16 but viewports 1..15 are accepted and ignored (no geometry shader / ViewportIndex output).
 - **Indirect draws** are read on the CPU from a mappable buffer (`mali_cmd.c`); GPU-written indirect arguments are not supported.
 - **driverID** is `MESA_PANVK` on purpose: zink applies PanVK workarounds keyed on it.

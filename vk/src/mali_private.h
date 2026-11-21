@@ -38,6 +38,21 @@ struct mali_physical_device {
    /* M14 (mali_wsi.c): Mesa wsi_common, Wayland platform, linear dma-buf swapchain images. */
    struct wsi_device wsi;
    PFN_vkDestroyQueryPool wsi_real_destroy_query_pool;   /* what wsi.DestroyQueryPool pointed to before the NULL-tolerant guard */
+   /* The software present path as its own immutable wsi_device (sw=true, no modifiers, no dma-buf sync). One wsi call
+    * runs with pdev->vk.wsi_device pointing at `wsi` (dma-buf / what Mesa asked for) or at this copy, and a swapchain
+    * keeps the pointer it was created with, so a chain's mode is fixed at creation and the X11/Wayland decision is
+    * never a device-wide flag that another thread can change (CR #323 N4/N5/T7). */
+   struct wsi_device wsi_sw_dev;
+   /* The X11 server has no DRI3+Present: X11 surfaces take the software (MIT-SHM/PutImage) path. One entry per X
+    * connection (an xcb_connection_t* or a Display*): two displays in one process are two servers, so they must not
+    * share the decision (CR #323 N2). */
+   /* conn + the connection's X resource-id base: an xcb_connection_t that was disconnected can be handed out again
+    * by a later xcb_connect() at the same address, and the base tells the two servers apart (CR #323 N2). */
+   struct { uintptr_t conn; uint32_t base; bool sw; } wsi_x11_sw[8];
+   /* wsi.sw as wsi_device_init left it: what Mesa itself asked for (VkDeviceCreateInfo's sw_device or
+    * MESA_VK_WSI_DEBUG=sw, wsi_common.c:89). A floor for mali_wsi_sw_enter(): lowering it would put a device whose
+    * wsi callbacks were fetched for software (GetMemoryFdKHR is NULL then, wsi_common.c:221) on the dma-buf path. */
+   bool wsi_sw_base;
 };
 
 struct mali_queue {
@@ -84,8 +99,26 @@ extern const uint64_t mali_wsi_modifier; /* DRM_FORMAT_MOD_LINEAR, the only one 
 /* mali_wsi.c: vkCreateSwapchainKHR with the X11 diagnostics and the no-DRI3 software fallback (mali_device.c). */
 VkResult mali_wsi_create_swapchain(VkDevice, const VkSwapchainCreateInfoKHR*, const VkAllocationCallbacks*, VkSwapchainKHR*);
 VkResult mali_wsi_acquire_next_image(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t*);
+/* vkAcquireNextImage2KHR: same, on the swapchain's own wsi_device (CR #323 T3). */
+VkResult mali_wsi_acquire_next_image2(VkDevice, const VkAcquireNextImageInfoKHR*, uint32_t*);
 VkResult mali_wsi_queue_present(VkQueue, const VkPresentInfoKHR*);
 VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkPresentModeKHR*);
+VkResult mali_wsi_get_surface_support(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32*);
+VkResult mali_wsi_get_surface_capabilities(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR*);
+VkResult mali_wsi_get_surface_formats(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkSurfaceFormatKHR*);
+VkResult mali_wsi_get_surface_capabilities2(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*,
+                                            VkSurfaceCapabilities2KHR*);
+VkResult mali_wsi_get_surface_formats2(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*, uint32_t*,
+                                       VkSurfaceFormat2KHR*);
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+VkBool32 mali_wsi_xcb_presentation_support(VkPhysicalDevice, uint32_t, xcb_connection_t*, xcb_visualid_t);
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+VkBool32 mali_wsi_xlib_presentation_support(VkPhysicalDevice, uint32_t, Display*, VisualID);
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+VkBool32 mali_wsi_wayland_presentation_support(VkPhysicalDevice, uint32_t, struct wl_display*);
+#endif
 void mali_wsi_destroy_swapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
 
