@@ -419,12 +419,91 @@ wl_after_x11(void)
 
 #endif /* HAVE_WAYLAND_CLIENT */
 
+/* --rtt-dyn: the dynamic states this test can drive, indexed the way Mesa numbers them (MESA_VK_DYNAMIC_*), which
+ * is also the bitmask our driver prints as `dyn=` at pipeline creation. Only states we advertise are listed: the core
+ * ones (viewport, scissor, line width, depth bias, blend constants, stencil masks/reference) plus
+ * VK_EXT_extended_dynamic_state (+2) and extendedDynamicState3PolygonMode. */
+static const struct {
+   unsigned bit;
+   VkDynamicState st;
+} dyn_tab[] = {
+   {2, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE}, {3, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY},
+   {4, VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE},    {8, VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT},
+   {9, VK_DYNAMIC_STATE_VIEWPORT},                    {10, VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT},
+   {11, VK_DYNAMIC_STATE_SCISSOR},                    {17, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE},
+   {20, VK_DYNAMIC_STATE_POLYGON_MODE_EXT},           {21, VK_DYNAMIC_STATE_CULL_MODE},
+   {22, VK_DYNAMIC_STATE_FRONT_FACE},                 {28, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE},
+   {29, VK_DYNAMIC_STATE_DEPTH_BIAS},                 {30, VK_DYNAMIC_STATE_LINE_WIDTH},
+   {41, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE},          {42, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE},
+   {43, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP},           {46, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE},
+   {47, VK_DYNAMIC_STATE_STENCIL_OP},                 {48, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK},
+   {49, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK},         {50, VK_DYNAMIC_STATE_STENCIL_REFERENCE},
+   {58, VK_DYNAMIC_STATE_BLEND_CONSTANTS},
+};
+
+/* set every state of the mask to the value the static pipeline above uses (rasterizerDiscardEnable FALSE, cull NONE,
+ * front face CCW, topology TRIANGLE_LIST, no restart, depth bias off, line width 1, blend constants 0, stencil
+ * KEEP/KEEP/KEEP with full masks, sample-free) so a difference in the picture is the driver's handling of the state
+ * and nothing else */
+static void
+dyn_set_all(VkDevice dev, PFN_vkGetDeviceProcAddr gdpa, VkCommandBuffer cb, unsigned long long mask, VkBool32 depth,
+            const VkViewport *vp, const VkRect2D *sc)
+{
+#define DP(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)
+   DP(CmdSetViewport); DP(CmdSetScissor); DP(CmdSetViewportWithCount); DP(CmdSetScissorWithCount);
+   DP(CmdSetLineWidth); DP(CmdSetDepthBias); DP(CmdSetDepthBiasEnable); DP(CmdSetBlendConstants);
+   DP(CmdSetStencilCompareMask); DP(CmdSetStencilWriteMask); DP(CmdSetStencilReference);
+   DP(CmdSetDepthTestEnable); DP(CmdSetDepthWriteEnable); DP(CmdSetDepthCompareOp);
+   DP(CmdSetStencilTestEnable); DP(CmdSetStencilOp); DP(CmdSetRasterizerDiscardEnable);
+   DP(CmdSetCullMode); DP(CmdSetFrontFace); DP(CmdSetPrimitiveTopology); DP(CmdSetPrimitiveRestartEnable);
+   DP(CmdSetPolygonModeEXT);
+#define NEED(bit, fn)                                                                                                  \
+   do {                                                                                                                \
+      if ((mask & (1ull << (bit))) && !fn)                                                                               \
+         fprintf(stderr, "MISSING %s (bit %u)\n", #fn, (unsigned)(bit));                                              \
+   } while (0)
+   NEED(9, CmdSetViewport); NEED(11, CmdSetScissor); NEED(8, CmdSetViewportWithCount); NEED(10, CmdSetScissorWithCount);
+   NEED(30, CmdSetLineWidth); NEED(29, CmdSetDepthBias); NEED(28, CmdSetDepthBiasEnable);
+   NEED(58, CmdSetBlendConstants); NEED(48, CmdSetStencilCompareMask); NEED(49, CmdSetStencilWriteMask);
+   NEED(50, CmdSetStencilReference); NEED(41, CmdSetDepthTestEnable); NEED(42, CmdSetDepthWriteEnable);
+   NEED(43, CmdSetDepthCompareOp); NEED(46, CmdSetStencilTestEnable); NEED(47, CmdSetStencilOp);
+   NEED(17, CmdSetRasterizerDiscardEnable); NEED(21, CmdSetCullMode); NEED(22, CmdSetFrontFace);
+   NEED(3, CmdSetPrimitiveTopology); NEED(4, CmdSetPrimitiveRestartEnable); NEED(20, CmdSetPolygonModeEXT);
+   if ((mask & (1ull << 9)) && CmdSetViewport) CmdSetViewport(cb, 0, 1, vp);
+   if ((mask & (1ull << 11)) && CmdSetScissor) CmdSetScissor(cb, 0, 1, sc);
+   if ((mask & (1ull << 8)) && CmdSetViewportWithCount) CmdSetViewportWithCount(cb, 1, vp);
+   if ((mask & (1ull << 10)) && CmdSetScissorWithCount) CmdSetScissorWithCount(cb, 1, sc);
+   if ((mask & (1ull << 30)) && CmdSetLineWidth) CmdSetLineWidth(cb, 1.0f);
+   if ((mask & (1ull << 29)) && CmdSetDepthBias) CmdSetDepthBias(cb, 0.0f, 0.0f, 0.0f);
+   if ((mask & (1ull << 28)) && CmdSetDepthBiasEnable) CmdSetDepthBiasEnable(cb, VK_FALSE);
+   if ((mask & (1ull << 58)) && CmdSetBlendConstants) CmdSetBlendConstants(cb, (const float [4]){0.0f, 0.0f, 0.0f, 0.0f});
+   if ((mask & (1ull << 48)) && CmdSetStencilCompareMask) CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+   if ((mask & (1ull << 49)) && CmdSetStencilWriteMask) CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+   if ((mask & (1ull << 50)) && CmdSetStencilReference) CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+   if ((mask & (1ull << 41)) && CmdSetDepthTestEnable) CmdSetDepthTestEnable(cb, depth);
+   if ((mask & (1ull << 42)) && CmdSetDepthWriteEnable) CmdSetDepthWriteEnable(cb, depth);
+   if ((mask & (1ull << 43)) && CmdSetDepthCompareOp) CmdSetDepthCompareOp(cb, VK_COMPARE_OP_LESS_OR_EQUAL);
+   if ((mask & (1ull << 46)) && CmdSetStencilTestEnable) CmdSetStencilTestEnable(cb, VK_FALSE);
+   if ((mask & (1ull << 47)) && CmdSetStencilOp)
+      CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+                      VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+   if ((mask & (1ull << 17)) && CmdSetRasterizerDiscardEnable) CmdSetRasterizerDiscardEnable(cb, VK_FALSE);
+   if ((mask & (1ull << 21)) && CmdSetCullMode) CmdSetCullMode(cb, VK_CULL_MODE_NONE);
+   if ((mask & (1ull << 22)) && CmdSetFrontFace) CmdSetFrontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+   if ((mask & (1ull << 3)) && CmdSetPrimitiveTopology) CmdSetPrimitiveTopology(cb, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+   if ((mask & (1ull << 4)) && CmdSetPrimitiveRestartEnable) CmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+   if ((mask & (1ull << 20)) && CmdSetPolygonModeEXT) CmdSetPolygonModeEXT(cb, VK_POLYGON_MODE_FILL);
+#undef NEED
+#undef DP
+}
+
 int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
    int rtt = 0, rtt_split = 0, hold = 0;
+   unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
    unsigned win_w = W, win_h = H;
    for (int i = 1; i < argc; i++) {
@@ -451,13 +530,29 @@ main(int argc, char **argv)
          rtt = 1;
       }
       else if (!strcmp(argv[i], "--rtt-split")) rtt_split = 1;
+      else if (!strcmp(argv[i], "--rtt-dyn") && i + 1 < argc) {
+         /* --rtt-dyn <mask>: the pipeline's dynamic states, bit i = the i-th entry of Mesa's MESA_VK_DYNAMIC_*
+          * list (third_party/mesa/src/vulkan/runtime/vk_graphics_state.h). That is the numbering our driver prints
+          * as `dyn=` in mali_pipeline.c ("state … dyn=60620f1c"), so a mask copied from a zink session replays
+          * zink's own dynamic set. Unknown bits are named and refused. */
+         char *end = NULL;
+         rtt_dyn = strtoull(argv[++i], &end, 16);
+         if (!rtt_dyn || (end && *end)) { fprintf(stderr, "usage: --rtt-dyn <mask-hex>, e.g. 0xa00 or 0x60620f1c\n"); return 2; }
+         for (unsigned b = 0; b < 64; b++) {
+            if (!(rtt_dyn & (1ull << b))) continue;
+            int known = 0;
+            for (unsigned k = 0; k < sizeof dyn_tab / sizeof dyn_tab[0]; k++)
+               known |= dyn_tab[k].bit == b;
+            if (!known) { fprintf(stderr, "usage: --rtt-dyn: bit %u is not a dynamic state this test can set\n", b); return 2; }
+         }
+      }
       else if (!strcmp(argv[i], "--hold") && i + 1 < argc) hold = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--wl-after-x11")) wlfirst = 1;
       else if (!strcmp(argv[i], "--pres-support")) pressup = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
-                            "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split]] "
+                            "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split] [--rtt-dyn m]] "
                             "[--hold s] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
@@ -587,6 +682,22 @@ main(int argc, char **argv)
    /* --draw: the dynamic-rendering path (core 1.3 here, same as the zink/HL2 command streams). */
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                            .dynamicRendering = (draw || textured || depth || blend || blit || copyimg || rtt) ? VK_TRUE : VK_FALSE};
+   /* --rtt-dyn: enable the dynamic-state features the mask needs, exactly as zink enables what it uses. Our driver
+    * advertises extendedDynamicState, extendedDynamicState2 and extendedDynamicState3PolygonMode only. */
+   const unsigned long long DYN1 = (1ull << 2) | (1ull << 3) | (1ull << 8) | (1ull << 10) | (1ull << 41) |
+                                   (1ull << 42) | (1ull << 43) | (1ull << 46) | (1ull << 47);
+   const unsigned long long DYN2 = (1ull << 4) | (1ull << 17) | (1ull << 28);
+   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT fed1 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
+      .extendedDynamicState = (rtt_dyn & DYN1) ? VK_TRUE : VK_FALSE};
+   VkPhysicalDeviceExtendedDynamicState2FeaturesEXT fed2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, .pNext = &fed1,
+      .extendedDynamicState2 = (rtt_dyn & DYN2) ? VK_TRUE : VK_FALSE};
+   VkPhysicalDeviceExtendedDynamicState3FeaturesEXT fed3 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT, .pNext = &fed2,
+      .extendedDynamicState3PolygonMode = (rtt_dyn & (1ull << 20)) ? VK_TRUE : VK_FALSE};
+   if (rtt_dyn) f13.pNext = &fed3;
+
    VkDevice dev;
    CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13,
                                              .queueCreateInfoCount = 1,
@@ -823,7 +934,15 @@ main(int argc, char **argv)
                                                    .depthTestEnable = depth ? VK_TRUE : VK_FALSE,
                                                    .depthWriteEnable = depth ? VK_TRUE : VK_FALSE,
                                                    .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL};
-      VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+      VkDynamicState dyn2[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+      /* --rtt-dyn: exactly the states in the mask; each one is then set before every draw by dyn_set_all() */
+      VkDynamicState dynm[32];
+      uint32_t ndyn = 0;
+      for (unsigned k = 0; k < sizeof dyn_tab / sizeof dyn_tab[0]; k++)
+         if (rtt_dyn & (1ull << dyn_tab[k].bit)) dynm[ndyn++] = dyn_tab[k].st;
+      VkDynamicState *dyn = ndyn ? dynm : dyn2;
+      const uint32_t dyn_count = ndyn ? ndyn : 2;
+      if (rtt_dyn) printf("rtt-dyn: mask 0x%llx, %u pipeline dynamic states\n", rtt_dyn, (unsigned)dyn_count);
       VkFormat dfmt = VK_FORMAT_D32_SFLOAT;
       VkGraphicsPipelineCreateInfo gpci = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
          .stageCount = 2, .pStages = st,
@@ -842,7 +961,7 @@ main(int argc, char **argv)
          .pColorBlendState = &(VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                                     .attachmentCount = 1, .pAttachments = &cba},
          .pDynamicState = &(VkPipelineDynamicStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                                              .dynamicStateCount = 2, .pDynamicStates = dyn},
+                                                              .dynamicStateCount = dyn_count, .pDynamicStates = dyn},
          .layout = play,
          .pNext = &(VkPipelineRenderingCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
                                                    .colorAttachmentCount = 1,
@@ -948,6 +1067,7 @@ main(int argc, char **argv)
                VkRect2D rsr = {{0, 0}, {ext.width, ext.height}};
                CmdSetViewport(cb, 0, 1, &rvp);
                CmdSetScissor(cb, 0, 1, &rsr);
+               if (rtt_dyn) dyn_set_all(dev, GetDeviceProcAddr, cb, rtt_dyn, depth ? VK_TRUE : VK_FALSE, &rvp, &rsr);
                CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
                CmdDraw(cb, 6, 1, 0, 0);
             }
@@ -991,6 +1111,7 @@ main(int argc, char **argv)
          VkRect2D wsr = {{0, 0}, {ext.width, ext.height}};
          CmdSetViewport(pcb, 0, 1, &wvp);
          CmdSetScissor(pcb, 0, 1, &wsr);
+         if (rtt_dyn) dyn_set_all(dev, GetDeviceProcAddr, pcb, rtt_dyn, depth ? VK_TRUE : VK_FALSE, &wvp, &wsr);
          CmdPushConstants(pcb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
          CmdDraw(pcb, 6, 1, 0, 0);
          CmdEndRendering(pcb);
