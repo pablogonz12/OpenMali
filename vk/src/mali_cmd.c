@@ -657,6 +657,14 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
    cmd->cur.ndraws++;
    /* THROWAWAY TEXDBG: what the sampled image holds now, read through the GPU's own mapping */
    mali_dbg_tex_draw(container_of(cmd->vk.base.device, struct mali_device, vk), "draw");
+   {   /* THROWAWAY: per-draw identity vs the ladder's step (ordinal, frame draw count, first frame, shader VAs) */
+      static unsigned frames;
+      mali_dbg_line("cmd", "STEPDRAW step=%s ordinal=%u ndraws=%u first_frame=%d count=%u inst=%u vs_va=0x%llx fs_va=0x%llx",
+                    getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", cmd->cur.ndraws, cmd->cur.ndraws + 1,
+                    (int)(frames == 0), vcount, icount, (unsigned long long)cmd->gfx.vs_va,
+                    (unsigned long long)cmd->gfx.fs_va);
+      if (cmd->cur.ndraws == 0) frames++;
+   }
    if (getenv("MALI_RT_DBG")) {   /* THROWAWAY RTDBG: pre_submit mean of this frame's draw target */
       struct mali_device *dv = container_of(cmd->vk.base.device, struct mali_device, vk);
       uint64_t tv = 0;

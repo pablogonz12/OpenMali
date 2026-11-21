@@ -793,10 +793,13 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    /* MALI_DRAW_DBG: the draw's own words, and the addresses they resolve to. The emitter is called per frame, so the
     * first three printed packets are the first three frames (homogeneous sessions: the first blit's readback is also
     * the one the ladder reports as 0.0). */
-   mali_dbg_words("emit", "DRAWPKT", c->v + dbg_n0, c->n - dbg_n0);
-   mali_dbg_line("emit", "DCD09 dcd0=%x extra=%x pk=%u zsu=%u fpk=%d fpkk=%d ccw=%d samples=%u blend=%llx prim=%u wmask=0x%x",
-                 (unsigned)(kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14)), dcd_extra, dop.pixel_kill,
-                 dop.zs_update, (int)dop.allow_fpk, (int)dop.allow_fpk_killed, (int)dop.front_ccw, g->samples,
+   { char tg[48]; snprintf(tg, sizeof tg, "DRAWPKT[%s]", getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?"); mali_dbg_words("emit", tg, c->v + dbg_n0, c->n - dbg_n0); }
+   mali_dbg_line("emit", "DCD09 step=%s dcd0=%x dcd1=%x dcd2=%x extra=%x pk=%u zsu=%u fpk=%d fpkk=%d ccw=%d samples=%u blend=%llx prim=%u wmask=0x%x",
+                 getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?",
+                 (unsigned)(kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14)),
+                 kb_draw_dcd1(0xffff, nort ? 0 : 1), kb_draw_dcd2(0, nort ? 0 : 1, 1, 1),
+                 dcd_extra, dop.pixel_kill, dop.zs_update, (int)dop.allow_fpk, (int)dop.allow_fpk_killed, (int)dop.front_ccw,
+                 g->samples,
                  (unsigned long long)g->blend_va, g->prim, (unsigned)(d->fx.set ? d->fx.wmask : 0xf));
    mali_dbg_line("emit", "DRAWVA arch=%u draws=%u w=%u h=%u count=%u inst=%u sets=%u/%u/%u/%u "
                          "setva=%llx/%llx/%llx/%llx vb0=%llx index=%llx colour=%llx vs=%llx fs=%llx tsd=%llx tctx=%llx",

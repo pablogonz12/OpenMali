@@ -84,7 +84,7 @@ mali_dbg_words(const char *unit, const char *tag, const uint64_t *w, unsigned n)
    static unsigned seen;
    if (!getenv("MALI_DRAW_DBG"))
       return;
-   if (seen++ >= 3)
+   if (seen++ >= 8)
       return;
    fprintf(stderr, "mali_draw %s: %s %u words:", unit, tag, n);
    for (unsigned i = 0; i < n && i < 64; i++)
