@@ -294,7 +294,8 @@ else
    for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done
    # #248: the MSAA resolve destination is its own GPU-written memory: t_cmd --extra asserts it lands in the command
    # buffer's write list (miss it and the M15 CSYNC skips its BO, so the CPU reads pre-resolve pixels).
-   for g in v11 v13; do run "t_cmd msaa resolve writes $g" 0 "$OUT/tcmd/t_cmd${g#v}" --scene 1 --extra; done
+   # build-t_cmd.sh links into out/native/tcmd for every mode, so the binaries are NOT under $OUT (out/native-cov with MALI_COV=1)
+   for g in v11 v13; do run "t_cmd msaa resolve writes $g" 0 "$V/out/native/tcmd/t_cmd${g#v}" --scene 1 --extra; done
 fi
 
 # v10 (Mali-G610, Poco X4 GT): every fake-backend case above, once more on MALI_FAKE_GPU=v10.

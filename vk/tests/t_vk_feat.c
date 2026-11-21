@@ -34,6 +34,8 @@ static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
 static PFN_vkResetCommandBuffer g_rcb;
 static PFN_vkEnumerateDeviceExtensionProperties g_edep;
+static PFN_vkGetPhysicalDeviceProperties2 g_gp2;
+static PFN_vkGetPhysicalDeviceFeatures2 g_gpf2;
 static VkBool32 g_mirror, g_bda, g_didx;
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
@@ -193,7 +195,9 @@ tgt_create(struct tgt *t)
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->rp, .attachmentCount = 1,
                                   .pAttachments = &t->view, .width = W, .height = H, .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &t->fb) == VK_SUCCESS, "framebuffer");
-   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   /* RESET_COMMAND_BUFFER: tf_reset resets a buffer from this pool while it is recording (CodeRabbit #329) */
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                 .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT};
    CHECK(CreateCommandPool(dev, &pci, NULL, &t->pool) == VK_SUCCESS, "pool");
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &t->fence) == VK_SUCCESS, "fence");
@@ -1116,7 +1120,7 @@ test_tf_record(void)
    /* the draw: still refused, and the message must name the lowering, not a missing entrypoint */
    printf("{\"test\":\"tf_record\",\"record\":\"ok\",\"pipeline\":\"%s\",\"pending\":\"nir_load_xfb_address lowering + streamout job\",\"ok\":true}\n",
           pipe ? "created" : "refused (named)");
-   DestroyBuffer(dev, xfb, NULL);
+   hbuf_destroy(&hb);   /* buffer AND its memory: main destroys the device next (CodeRabbit #329) */
    return 1;
 }
 
@@ -1139,9 +1143,12 @@ test_tf_write(void)
    if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
    memcpy(vb.p, pos, sizeof pos);
    for (int i = 0; i < 2; i++) {
-      if (!hbuf_create(&xb[i], xsz[i], VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+      /* the bind window is [xoff, xoff + xsz), and every byte of it must exist (VUID-vkCmdBindTransformFeedbackBuffersEXT-
+       * pBuffers-02363): buffer 1 is 40 B with the range starting at 16, not a 24 B buffer (CodeRabbit #329) */
+      const VkDeviceSize alloc = xoff[i] + xsz[i];
+      if (!hbuf_create(&xb[i], alloc, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
          return 0;
-      memset(xb[i].p, 0xcc, xsz[i]);   /* a word the XFB stores must not touch */
+      memset(xb[i].p, 0xcc, alloc);   /* a word the XFB stores must not touch */
    }
    struct tgt t;
    if (!tgt_create(&t)) return 0;
@@ -1220,8 +1227,23 @@ test_tf_default(void)
    free(e);
    CHECK(have == want, "VK_EXT_transform_feedback %s by default (MALI_EXPERIMENTAL_TF=0 opts out), gate %d",
          have ? "advertised" : "absent", want);
-   printf("{\"test\":\"tf_default\",\"extension\":\"%s\",\"default\":%s,\"ok\":true}\n", have ? "advertised" : "absent",
-          want ? "on" : "off");
+   /* the name alone proves nothing: the feature bit and the properties must follow the same switch, or a capture case
+    * runs against a driver that advertises the extension and silently does not capture (CodeRabbit #329) */
+   VkPhysicalDeviceTransformFeedbackFeaturesEXT ftf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ftf};
+   g_gpf2(g_pd, &f2);
+   CHECK((ftf.transformFeedback != VK_FALSE) == want, "transformFeedback feature %d must follow the gate %d", ftf.transformFeedback != VK_FALSE, want);
+   CHECK((ftf.geometryStreams != VK_FALSE) == 0, "geometryStreams stays false");
+   VkPhysicalDeviceTransformFeedbackPropertiesEXT ptf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
+   VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &ptf};
+   g_gp2(g_pd, &p2);
+   CHECK(ptf.maxTransformFeedbackStreams == (want ? 1u : 0u) && ptf.maxTransformFeedbackBuffers == (want ? 4u : 0u),
+         "TF streams/buffers %u/%u must follow the gate %d (mali_physical_device.c)", ptf.maxTransformFeedbackStreams,
+         ptf.maxTransformFeedbackBuffers, want);
+   CHECK(!ptf.transformFeedbackQueries && !ptf.transformFeedbackDraw && !ptf.transformFeedbackStreamsLinesTriangles &&
+         !ptf.transformFeedbackRasterizationStreamSelect, "queries/draw/geometry streams stay false");
+   printf("{\"test\":\"tf_default\",\"extension\":\"%s\",\"default\":%s,\"feature\":%s,\"ok\":true}\n", have ? "advertised" : "absent",
+          want ? "on" : "off", ftf.transformFeedback ? "on" : "off");
    return 1;
 }
 
@@ -3196,7 +3218,6 @@ test_memmodel(void)
 
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
-static PFN_vkGetPhysicalDeviceProperties2 g_gp2;
 static int
 test_subgroup_one(void)
 {
@@ -3593,6 +3614,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
+   g_gpf2 = GetPhysicalDeviceFeatures2;
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;

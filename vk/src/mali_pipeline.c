@@ -50,6 +50,7 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   mali_compiled_free(&p->vs_plain);   /* the XFB pipeline's range-inactive variant owns bin/imm too (also on cache hits) */
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -206,14 +207,18 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       /* The same vertex shader without the XFB lowering: every draw outside a Begin/End range runs this one
        * (mali_cmd.c), so a shader with XFB outputs stores nothing while capture is not active. Compiled once per
        * pipeline with the same push layout (only the lowering differs), so the pipeline cache key does not change. */
+      /* xfb_plain says "same SPIR-V, lowering off, on purpose": without it do_compile refuses a VS that declares XFB
+       * outputs but has no address area (CodeRabbit #329), which is exactly this variant. */
       o.xfb = 0;
       o.xfb_pc = 0;
+      o.xfb_plain = 1;
       if (mali_compile(&o, &p->vs_plain, err, sizeof err)) {
          fprintf(stderr, "mali_vk: VS compile (non-XFB variant) failed: %s\n", err);
          res = VK_ERROR_INVALID_SHADER_NV;
          goto fail;
       }
       o.xfb = 1;
+      o.xfb_plain = 0;
       o.xfb_pc = app_push;
    }
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */

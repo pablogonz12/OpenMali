@@ -41,6 +41,8 @@ struct mali_compile_opts {
    const char *entry;             /* NULL = "main" */
    unsigned xfb_pc;               /* VS only: push-constant offset of the 4 XFB buffer addresses (app push size) */
    unsigned xfb;                  /* VS only: the pipeline layout reserves 32 B at xfb_pc for them (0 = no XFB) */
+   unsigned xfb_plain;            /* VS only: compile that same SPIR-V WITHOUT the lowering (the range-inactive variant,
+                                   * mali_pipeline.c): declared XFB outputs are then ordinary outputs, no store is emitted */
    unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 24, FS 8, CS 8) */
    unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */

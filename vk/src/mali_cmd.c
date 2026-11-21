@@ -473,8 +473,12 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       return false;
    /* Both the push block and the pipeline block are republished for every XFB draw: which of the two vertex programs
     * runs changes with the range, so inheriting the previous draw's blocks would run the wrong one. */
-   if (xfb)
+   if (xfb) {
+      /* The record must carry the forced bits too, or a following draw with no other state change reuses the previous
+       * XFB/plain pipeline instead of the one this record selected (CodeRabbit #329). */
       m |= MALI_D_PIPE | MALI_D_PUSH;
+      d->dirty = m;
+   }
    if (m & MALI_D_PUSH) {
       struct mali_bpush *bu = mali_frame_blk(fr, sizeof *bu);
       if (!bu)
