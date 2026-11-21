@@ -1095,18 +1095,25 @@ test_tf_record(void)
    xfb = hb.b;
    struct tgt t;
    if (!tgt_create(&t)) return 0;
-   VkCommandBuffer cb = cb_begin(&t);
-   CHECK(cb, "cb");
-   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xfb, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){sz});
-   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
-   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
-   VkResult r = EndCommandBuffer(cb);
-   CHECK(r == VK_SUCCESS, "begin/end/bind must record cleanly (%d)", (int)r);
-   /* the draw: still refused, and the message must name the lowering, not a missing entrypoint */
    VkPipelineLayout lay = VK_NULL_HANDLE;
    VkPipeline pipe = VK_NULL_HANDLE;
    int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
    if (!ok) return 0;
+   /* The range needs an active render pass and, for Begin, a bound graphics pipeline (VUID-vkCmdBeginTransformFeedbackEXT-
+    * renderpass / -pipelineBindPoint, CodeRabbit #329 T16), so bind inside the pass begin_pass opens. Without a pipeline
+    * (refused, named) only the bind is recorded: an invalid Begin/End would not prove anything. */
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cb");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xfb, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){sz});
+   if (pipe) {
+      begin_pass(cb, &t, pipe);
+      CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+      CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+      CmdEndRenderPass(cb);
+   }
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "begin/end/bind must record cleanly (%d)", (int)r);
+   /* the draw: still refused, and the message must name the lowering, not a missing entrypoint */
    printf("{\"test\":\"tf_record\",\"record\":\"ok\",\"pipeline\":\"%s\",\"pending\":\"nir_load_xfb_address lowering + streamout job\",\"ok\":true}\n",
           pipe ? "created" : "refused (named)");
    DestroyBuffer(dev, xfb, NULL);
@@ -1149,17 +1156,19 @@ test_tf_write(void)
    int ok = make_pipe(&t, "xfb2.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
    g_vi = NULL;
    if (!ok) return 0;
-   /* begin/end outside the render pass, like the spec requires */
+   /* vkCmdBegin/EndTransformFeedbackEXT are render-pass commands, and Begin also needs a bound graphics pipeline
+    * (VUID-vkCmdBeginTransformFeedbackEXT-renderpass / -pipelineBindPoint, CodeRabbit #329 T16): the range is opened
+    * and closed inside the pass, after begin_pass bound the pipeline. */
    VkCommandBuffer cb = cb_begin(&t);
    CHECK(cb, "cmdbuf");
    CmdBindTransformFeedbackBuffersEXT(cb, 0, 2, (VkBuffer[2]){xb[0].b, xb[1].b}, xoff, xsz);
-   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
    begin_pass(cb, &t, pipe);
    VkDeviceSize voff = 0;
    CmdBindVertexBuffers(cb, 0, 1, &vb.b, &voff);
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
    CmdDraw(cb, NV, 1, 0, 0);
-   CmdEndRenderPass(cb);
    CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   CmdEndRenderPass(cb);
    if (!cb_submit(&t, cb)) return 0;
    /* the buffers are GPU-written, so invalidate the host mapping before reading it */
    VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE};

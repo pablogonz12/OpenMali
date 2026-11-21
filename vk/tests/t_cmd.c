@@ -73,6 +73,16 @@ test_resolve_region(void)
          "resolve offsets %d,%d -> %d,%d, expected the render area origin 8,4", r.srcOffset.x, r.srcOffset.y, r.dstOffset.x, r.dstOffset.y);
    CHECK(r.extent.width == 16 && r.extent.height == 16 && r.extent.depth == 1,
          "resolve extent %ux%u: covers the whole attachment instead of the 16x16 render area", r.extent.width, r.extent.height);
+   /* a 3D resolve image has no array layers: the view's slice travels as dstOffset.z with baseArrayLayer 0, or the
+    * resolve writes slice 0 (CodeRabbit #329 T9) */
+   f.resolve_dst_z = 2;
+   f.resolve_dst_layer = 0;
+   mali_resolve_region(&f, &r);
+   CHECK(r.dstOffset.z == 2 && r.dstSubresource.baseArrayLayer == 0,
+         "3D resolve: dstOffset.z %d / layer %u, expected slice 2 in the offset and layer 0", r.dstOffset.z, r.dstSubresource.baseArrayLayer);
+   CHECK(r.srcOffset.z == 0, "3D resolve: srcOffset.z %d, expected 0 (a 4x attachment cannot be 3D)", r.srcOffset.z);
+   f.resolve_dst_z = 0;
+   f.resolve_dst_layer = 3;
    /* no render area: BeginRendering leaves area[] zero, which means the whole attachment */
    memset(f.area, 0, sizeof f.area);
    mali_resolve_region(&f, &r);

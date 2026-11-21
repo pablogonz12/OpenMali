@@ -118,6 +118,18 @@ cd "$R/vk"
 ./cross/build-cross.sh glibc-wsi >/tmp/build-artefact.log 2>&1 || { tail -20 /tmp/build-artefact.log; exit 1; }
 grep -E 'warning:|error:' /tmp/build-artefact.log | grep -v 'tools/shaderdb' || true
 
+# The cross-build takes minutes: an edit to a tracked driver file (or a new HEAD) while it runs leaves the .so
+# describing neither the pre-build state counted above nor the state on disk now, and build.sh stamps driverInfo
+# from the tree as it compiles. Re-read the state and refuse before anything is recorded as deployable
+# (CodeRabbit #329 T1).
+commit2=$(git -C "$WT" rev-parse HEAD)
+dirty_vk2=$(git -C "$WT" status --porcelain --untracked-files=no -- vk | wc -l)
+dirty_kb2=$(git -C "$WT" status --porcelain --untracked-files=no -- libkbase | wc -l)
+if [ "$commit2" != "$commit" ] || [ "$dirty_vk2" != "$dirty_vk" ] || [ "$dirty_kb2" != "$dirty_kb" ]; then
+   echo "FAIL: the driver tree changed during the build (HEAD ${commit:0:7} -> ${commit2:0:7}, dirty vk/libkbase $dirty_vk/$dirty_kb -> $dirty_vk2/$dirty_kb2): this .so matches neither state, rebuild"
+   exit 1
+fi
+
 sum=$(sha256sum "$OUT" | cut -d' ' -f1)
 f=$(file -b "$OUT")
 built=$(date -u +%Y-%m-%dT%H:%M:%SZ)

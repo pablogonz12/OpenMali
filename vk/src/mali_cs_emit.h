@@ -247,6 +247,7 @@ struct mali_frame {
    uint64_t resolve_src, resolve_dst;     /* MSAA storeOp STORE + resolve: images for the separate resolve pass (0 = none) */
    unsigned resolve_level, resolve_layer;         /* source: the attachment view's mip level / base array layer */
    unsigned resolve_dst_level, resolve_dst_layer; /* destination: the RESOLVE view's own mip level / base array layer */
+   unsigned resolve_dst_z;                        /* 3D resolve image: the view's slice, carried as dstOffset.z (baseArrayLayer stays 0) */
    struct mali_att colour, zs, st;
    unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
    struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */

@@ -917,10 +917,10 @@ mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buff
                                   const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets)
 {
    CMD(h);
-   if (cmd->in_render) {
-      unsupported(cmd, "vkCmdBeginTransformFeedbackEXT inside a render pass");
-      return;
-   }
+   /* Scope: vkCmdBeginTransformFeedbackEXT is a render-pass command and also needs a bound graphics pipeline
+    * (VUID-...-renderpass / -pipelineBindPoint), so the in-pass order is the one that must work (t_vk_feat tf_write /
+    * tf_record; CodeRabbit #329 T16). Recording it outside a pass is accepted too: the state only takes effect at
+    * draw time (snapshot_draw patches the four bases), and refusing it would reject the legal order for no gain. */
    if (cmd->tf.active) {
       unsupported(cmd, "vkCmdBeginTransformFeedbackEXT while transform feedback is active");
       return;
@@ -1160,6 +1160,16 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             f->resolve_layer = cv->vk.base_array_layer;
             f->resolve_dst_level = rv->vk.base_mip_level;   /* the resolve image is its own view: mip/layer may differ */
             f->resolve_dst_layer = rv->vk.base_array_layer;
+            /* A 3D image has no array layers: the view's base layer selects the slice, and the resolve region must
+             * carry it as dstOffset.z with baseArrayLayer 0 (mali_meta_vk.c ignores the layer for a 3D image, so
+             * recording only the layer would resolve slice 0) (CodeRabbit #329 T9). */
+            {
+               const struct mali_image *dimg = mali_image_from_handle((VkImage)(uintptr_t)rv->vk.image);
+               if (dimg && dimg->lay.d.type == VK_IMAGE_TYPE_3D) {
+                  f->resolve_dst_z = rv->vk.base_array_layer;
+                  f->resolve_dst_layer = 0;
+               }
+            }
          } else {
             f->colour.resolve_va = rt.va;
             f->colour.resolve_row_stride = rt.row_stride;
@@ -1303,6 +1313,7 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
    r->dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_dst_level, f->resolve_dst_layer, 1};
    r->srcOffset = (VkOffset3D){(int32_t)x, (int32_t)y, 0};
    r->dstOffset = r->srcOffset;
+   r->dstOffset.z = (int32_t)f->resolve_dst_z;   /* 3D resolve image: the slice is the offset, not the layer (T9) */
    r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
@@ -1317,15 +1328,19 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   const unsigned nframes = cmd->nframes;
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
-   if (resolve_src && resolve_dst) {
+   /* The render area and the resolve subresources live in the pass frame that was just pushed, and cmd->cur is zero
+    * now: a region built from it would be 0x0 at offset 0 (CodeRabbit #329 T8/T9). */
+   const struct mali_frame *pass = cmd->nframes > nframes ? &cmd->frames[nframes] : NULL;
+   if (resolve_src && resolve_dst && pass) {
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
       VkImageResolve2 rr;
-      mali_resolve_region(&cmd->cur, &rr);
+      mali_resolve_region(pass, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
                                 .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

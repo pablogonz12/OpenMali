@@ -12,6 +12,9 @@ layout(location = 0) out vec4 v_col;
 const vec2 p[3] = vec2[3](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0));
 void main(){
   vec2 q = p[gl_VertexIndex].xy * vec2(0.5, 1.0) + vec2(gl_InstanceIndex == 0u ? -0.5 : 0.5, 0.0);
-  gl_Position = vec4(q, 0.5, 1.0);
+  // negate y: begin_pass uses a positive-height viewport (NDC y=-1 is framebuffer row 0, like the software
+  // rasteriser: mali_soft.c), and the test's probes expect vertex 2's blue at the TOP rows and vertex 0's at the
+  // bottom (t_vk_feat.c test_inst_divisor). Without the negation every probe sits outside its triangle.
+  gl_Position = vec4(q.x, -q.y, 0.5, 1.0);
   v_col = vec4(instv.r, zero_el, vtx_el, 1.0);
 }
