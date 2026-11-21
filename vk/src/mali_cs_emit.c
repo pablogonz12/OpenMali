@@ -684,6 +684,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    uint32_t minz, maxz;
    memcpy(&minz, &d->vp[4], 4);
    memcpy(&maxz, &d->vp[5], 4);
+   const uint64_t dbg_vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), dbg_vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
 
    /* The registers derived from the static state (shader programs, blend, depth-stencil, the frame's tiler/FBD pointers) are re-emitted
     * only when this draw's record says the previous draw of the frame did not already write the identical values: MALI_D_PIPE/FX/BIND
@@ -724,6 +725,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
              * INDEX_BUFFER_SIZE = indexed ? index_bytes : 0, INDEX_BUFFER = indexed ? index_va : 0.
              * gl_VertexID itself is the hardware's index stream (index + first_vertex): no register of ours carries
              * the per-vertex value, so these five words and the sysval inputs are what can be read. */
+            mali_dbg_line("emit", "RTFIELDS3 scissor_words=%08x %08x viewport_high=%08x %08x viewport_low=%08x %08x "
+                                  "app_vp=%.0f,%.0f,%.0fx%.0f depth=%.2f..%.2f app_sc=%d,%d %dx%d",
+                          (unsigned)(uint32_t)scis, (unsigned)(uint32_t)(scis >> 32), (unsigned)(uint32_t)dbg_vh,
+                          (unsigned)(uint32_t)(dbg_vh >> 32), (unsigned)(uint32_t)dbg_vl, (unsigned)(uint32_t)(dbg_vl >> 32),
+                          d->vp[0], d->vp[1], d->vp[2], d->vp[3], d->vp[4], d->vp[5], d->sc[0], d->sc[1], d->sc[2], d->sc[3]);
             mali_dbg_line("emit", "RTFIELDS2 count_reg=%u inst_reg=%u offset_reg=%u bufsize_reg=%u buf_reg=0x%llx indexed=%d "
                                   "index_size=%u first_vertex=%d first_instance=%u draw_id=%u sysval_fau=0x%llx",
                           d->count, d->instance_count, d->first_index, d->indexed ? d->index_bytes : 0,
