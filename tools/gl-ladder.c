@@ -418,12 +418,22 @@ static int open_window(struct win *out, const char *title, GLXContext share, int
     swa.background_pixmap = None;
     swa.background_pixel = 0;
     swa.border_pixel = 0;
-    swa.event_mask = StructureNotifyMask | ExposureMask;
+    swa.event_mask = StructureNotifyMask | ExposureMask | KeyPressMask;
     w = XCreateWindow(dpy, RootWindow(dpy, vi->screen), 0, 0, WIDTH, HEIGHT, 0,
                       vi->depth, InputOutput, vi->visual,
                       CWBorderPixel | CWColormap | CWEventMask, &swa);
     if (!w) { fprintf(stderr, "gl-ladder: XCreateWindow failed\n"); return 0; }
     XStoreName(dpy, w, title);
+    /* glxgears (Mesa demos/glxgears.c) names its window and sets a class: XStoreName alone leaves WM_CLASS
+     * unset, and a window manager (gamescope's xwm included) that keys on WM_CLASS puts such a window in
+     * no class at all. Same for WM_COMMAND (XSetStandardProperties sets name, class, command and hints). */
+    {
+        XClassHint ch;
+        ch.res_name = (char *)"gl-ladder";
+        ch.res_class = (char *)"GL-Ladder";
+        XSetClassHint(dpy, w, &ch);
+        XSetStandardProperties(dpy, w, title, "GL-Ladder", None, NULL, 0, NULL);
+    }
     {
         XSizeHints *h = XAllocSizeHints();
         if (h) {
@@ -435,7 +445,7 @@ static int open_window(struct win *out, const char *title, GLXContext share, int
         }
     }
     XMapWindow(dpy, w);
-    XFlush(dpy);
+    XSync(dpy, False);   /* the map is on the server before the first frame is drawn into it */
 
     /* 3.3 compatibility profile if we can, then core 3.3, then whatever GLX
      * gives us. Xwayland under gamescope answers an unsupported profile with a
@@ -676,6 +686,56 @@ static void readback_fbo(GLuint fbo, const char *label)
            px[((FBO_H / 5) * FBO_W + FBO_W / 2) * 3 + 2], err);
 }
 
+/* ---- what stays on screen: a redraw and a swap every frame ---------------- */
+/* glxgears redraws and swaps for as long as it runs. The ladder used to swap once and then sit in an event
+ * loop that read and dropped every Expose: a window that never redraws is not what a game does, and a
+ * compositor that asks for an Expose answer (or that only keeps presenting windows in its scene) never gets
+ * one. So "the ladder window is invisible while glxgears is visible" (PROVEN on the CMF, same build and
+ * session) said nothing about the driver until the window behaved like glxgears. The hold below re-issues
+ * the step's own commands without readbacks or prints, and swaps, exactly like glxgears' main loop. */
+static int g_step, g_srgb;
+static struct fbo *g_fbo;
+static struct win *g_win, *g_win1;
+
+static void
+redraw_frame(void)
+{
+    glXMakeCurrent(dpy, g_win->w, g_win->ctx);
+    if (g_step == 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+        glClearColor(0.90f, 0.10f, 0.60f, 1.0f);   /* the step 0 magenta */
+        glClear(GL_COLOR_BUFFER_BIT);
+        glXSwapBuffers(dpy, g_win->w);
+        return;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_fbo->fbo);
+    if (g_step == 1) {
+        glClearColor(0.10f, 0.45f, 0.90f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    } else {
+        if (g_srgb) glEnable(GL_FRAMEBUFFER_SRGB);
+        glClearColor(0.10f, 0.20f, 0.10f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        draw_triangle();
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo->fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDrawBuffer(GL_BACK);
+    glBlitFramebuffer(0, 0, FBO_W, FBO_H, 0, 0, g_win->w_px, g_win->h_px,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glXSwapBuffers(dpy, g_win->w);
+    if (g_win1) {   /* step 4: the first window keeps its own grey, swapped too */
+        glXMakeCurrent(dpy, g_win1->w, g_win1->ctx);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+        glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glXSwapBuffers(dpy, g_win1->w);
+    }
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -860,14 +920,28 @@ int main(int argc, char **argv)
         }
     }
 
-    /* keep the window on screen long enough for a screenshot */
+    /* keep the window on screen long enough for a screenshot, redrawing and swapping every frame the way
+     * glxgears' main loop does; a key press (or the end of the hold) stops it */
     {
         const char *hold = getenv("LADDER_HOLD");
         int ms = hold && *hold ? atoi(hold) : 4000;
-        int i;
+        int i, stop = 0;
         XEvent ev;
-        for (i = 0; i < ms / 20; i++) {
-            while (XPending(dpy)) XNextEvent(dpy, &ev);
+        g_step = step;
+        g_srgb = use_srgb_fbo;
+        g_fbo = step >= 1 ? &f : NULL;
+        g_win = use_second_window ? &w2 : &w1;
+        g_win1 = use_second_window ? &w1 : NULL;
+        for (i = 0; i < ms / 20 && !stop; i++) {
+            while (XPending(dpy)) {
+                XNextEvent(dpy, &ev);
+                if (ev.type == KeyPress)
+                    stop = 1;
+                /* Expose needs no answer here: the frame is redrawn below anyway */
+            }
+            if (stop)
+                break;
+            redraw_frame();
             usleep(20000);
         }
     }

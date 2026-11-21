@@ -301,6 +301,10 @@ run "vk_draw sets8 v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --only s
 run "vk_draw reset v10" 0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 1000 --loop-reset
 run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
+# The GL ladder (tools/gl-ladder.sh: FBO -> glBlitFramebuffer -> swap, the wined3d present path) through zink on our ICD, with
+# our own present dump on: asserts the X11 swapchain (SRGB format, UNORM view) and the MIT-SHM present path for steps 0/1/3.
+# Not a colour test: the fake backend executes nothing, so every dump is 0 by construction (tests/gl-ladder-host.sh says why).
+run "gl ladder host v13" 0 "$V/tests/gl-ladder-host.sh" "$OUT" v13
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
 # WSI contract (maintenance1 create structs + per-present switch + release, DRM modifiers for NV12/BGRA): same headless gamescope X server
