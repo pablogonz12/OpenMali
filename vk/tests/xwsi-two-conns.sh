@@ -49,4 +49,7 @@ echo "modes: $sw decisions: $dec"
 [ "$dec" = "dri3=1 dri3=0 " ] || { echo "FAIL: expected A decided dma-buf (dri3=1) and B software (dri3=0), got: $dec"; exit 1; }
 [ "$sw" = "sw=1 sw=1 " ] || { echo "FAIL: expected both to end on software (A after #328's retry), got: $sw"; exit 1; }
 [ "$(grep -c "retrying on the software" "$W/xcb.log")" -ge 1 ] || { echo "FAIL: A did not report the #328 retry"; exit 1; }
+# sw=1 alone is not a pass: B's swapchain must really exist on the software path (CR #323 T14). A's dma-buf import
+# failure on the fake backend is expected and stays allowed.
+grep -q "connB: swapchain created" "$W/xcb.log" || { echo "FAIL: connB logged sw=1 but its swapchain was not created"; exit 1; }
 echo "ok    two conns ($GPU): the no-DRI3 connection took the software path, the DRI3 one stayed dma-buf"

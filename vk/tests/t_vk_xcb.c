@@ -22,6 +22,7 @@
 #endif
 #include <dlfcn.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -496,9 +497,21 @@ caps2_check(void)
           r2 == VK_SUCCESS ? c2.surfaceCapabilities.supportedUsageFlags : 0,
           r2 == VK_SUCCESS ? c2.surfaceCapabilities.supportedCompositeAlpha : 0);
    REQ(r2 == VK_SUCCESS, "vkGetPhysicalDeviceSurfaceCapabilities2KHR failed where the 1-form succeeded");
-   REQ(c2.surfaceCapabilities.supportedUsageFlags == c1.supportedUsageFlags, "caps2 supportedUsageFlags differ");
-   REQ(c2.surfaceCapabilities.supportedCompositeAlpha == c1.supportedCompositeAlpha, "caps2 compositeAlpha differ");
-   REQ(c2.surfaceCapabilities.minImageCount == c1.minImageCount, "caps2 minImageCount differs");
+   /* Every field, not a sample: a difference in any of them changes what a swapchain may ask for (CR #323 T13). */
+   const VkSurfaceCapabilitiesKHR *ca = &c1, *cb2 = &c2.surfaceCapabilities;
+   REQ(cb2->minImageCount == ca->minImageCount, "caps2 minImageCount differs");
+   REQ(cb2->maxImageCount == ca->maxImageCount, "caps2 maxImageCount differs");
+   REQ(cb2->currentExtent.width == ca->currentExtent.width, "caps2 currentExtent.width differs");
+   REQ(cb2->currentExtent.height == ca->currentExtent.height, "caps2 currentExtent.height differs");
+   REQ(cb2->minImageExtent.width == ca->minImageExtent.width, "caps2 minImageExtent.width differs");
+   REQ(cb2->minImageExtent.height == ca->minImageExtent.height, "caps2 minImageExtent.height differs");
+   REQ(cb2->maxImageExtent.width == ca->maxImageExtent.width, "caps2 maxImageExtent.width differs");
+   REQ(cb2->maxImageExtent.height == ca->maxImageExtent.height, "caps2 maxImageExtent.height differs");
+   REQ(cb2->maxImageArrayLayers == ca->maxImageArrayLayers, "caps2 maxImageArrayLayers differs");
+   REQ(cb2->supportedTransforms == ca->supportedTransforms, "caps2 supportedTransforms differ");
+   REQ(cb2->currentTransform == ca->currentTransform, "caps2 currentTransform differs");
+   REQ(cb2->supportedCompositeAlpha == ca->supportedCompositeAlpha, "caps2 compositeAlpha differ");
+   REQ(cb2->supportedUsageFlags == ca->supportedUsageFlags, "caps2 supportedUsageFlags differ");
 
    uint32_t n1 = 0;
    CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &n1, NULL));
@@ -527,9 +540,11 @@ caps2_check(void)
  * (CR #323 N2). $TVK_DISPLAY_A and $TVK_DISPLAY_B name them (one with DRI3, one without); each gets a window, a
  * surface, a support/caps/formats query and a swapchain attempt. The harness reads the driver's own
  * "platform=xcb ... sw=N" lines: A must stay dma-buf (sw=0, MALI_WSI=hw) while B takes the software path (sw=1). */
+/* require_ok: a failed swapchain creation is a test failure, not a diagnostic (CR #323 T14). A's dma-buf import
+ * failure on the fake backend is expected, so only B sets it. */
 static int
 one_conn(const char *name, xcb_connection_t *c, VkInstance inst, VkPhysicalDevice pd, uint32_t fam,
-         int make_swapchain)
+         int make_swapchain, int require_ok)
 {
    IPFN(inst, CreateXcbSurfaceKHR);
    IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
@@ -592,6 +607,10 @@ one_conn(const char *name, xcb_connection_t *c, VkInstance inst, VkPhysicalDevic
    printf("%s: swapchain %s\n", name, r == VK_SUCCESS ? "created" : "failed");
    PFN_vkDestroyDevice dd = (PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice");
    if (dd) dd(dev, NULL);
+   if (require_ok && r != VK_SUCCESS) {
+      fprintf(stderr, "FAIL %s: swapchain creation failed (%d): sw=1 in the log alone is not a pass\n", name, (int)r);
+      return 1;
+   }
    return 0;
 }
 
@@ -645,11 +664,11 @@ two_conns(void)
    if (!cb || xcb_connection_has_error(cb)) { printf("skipped: no server on %s\n", db); return 77; }
    /* B is probed FIRST, without a swapchain: on the device-wide decision this query alone already forced every later
     * XCB surface of the process onto the software path, which is the defect (CR #323 N2). */
-   int rb0 = one_conn("connB-probe", cb, inst, pd, fam, 0);
+   int rb0 = one_conn("connB-probe", cb, inst, pd, fam, 0, 0);
    if (rb0) return rb0;
-   int ra = one_conn("connA", ca, inst, pd, fam, 1);
+   int ra = one_conn("connA", ca, inst, pd, fam, 1, 0);   /* A's dma-buf import may fail on the fake backend */
    if (ra) return ra;
-   int rb = one_conn("connB", cb, inst, pd, fam, 1);
+   int rb = one_conn("connB", cb, inst, pd, fam, 1, 1);   /* B must really be created on the software path */
    if (rb) return rb;
    xcb_disconnect(ca);
    xcb_disconnect(cb);
@@ -886,6 +905,7 @@ main(int argc, char **argv)
    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
    VkDescriptorPool dpool = VK_NULL_HANDLE;
    VkImage tex = VK_NULL_HANDLE, dimg = VK_NULL_HANDLE;
+   bool tex_ready = false;   /* tex has been transitioned out of PREINITIALIZED once */
    VkImageView texview = VK_NULL_HANDLE, dview = VK_NULL_HANDLE;
    VkSampler samp = VK_NULL_HANDLE;
    VkDeviceMemory texmem = VK_NULL_HANDLE, dmem = VK_NULL_HANDLE;
@@ -901,7 +921,9 @@ main(int argc, char **argv)
                                                   .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                                                   .tiling = VK_IMAGE_TILING_LINEAR, .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED}, NULL, &tex));
+                                                  /* written from the host below: PREINITIALIZED is the layout that
+                                                   * promises the contents survive the first transition (CR #323 T5) */
+                                                  .initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED}, NULL, &tex));
          VkMemoryRequirements mr;
          GetImageMemoryRequirements(dev, tex, &mr);
          const int mt = mem_type(pd, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, GetPhysicalDeviceMemoryProperties);
@@ -1044,10 +1066,14 @@ main(int argc, char **argv)
    CK(AllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                                                  .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                                                  .commandBufferCount = 1}, &cb));
-   VkSemaphore acq, done;
+   /* One presentation semaphore per image: reusing one while the previous present still waits on it is not ordered
+    * by the submit fence. The next acquire of *that* image orders its reuse (CR #323 T7). */
+   VkSemaphore acq, done[16] = {0};
    VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
    CK(CreateSemaphore(dev, &sci, NULL, &acq));
-   CK(CreateSemaphore(dev, &sci, NULL, &done));
+   REQ(ni <= 16, "more swapchain images than the test tracks");
+   for (uint32_t i = 0; i < ni; i++)
+      CK(CreateSemaphore(dev, &sci, NULL, &done[i]));
    VkFence fence;
    CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &fence));
 
@@ -1067,6 +1093,39 @@ main(int argc, char **argv)
                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                    .image = imgs[idx], .subresourceRange = rng};
          CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+         if (textured && !tex_ready) {
+            /* HOST -> FRAGMENT_SHADER: the host wrote the texels, the sampler reads them (the descriptor's layout is
+             * SHADER_READ_ONLY_OPTIMAL, so the image must already be in it; CR #323 T5). */
+            VkImageMemoryBarrier tb = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                       .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+                                       .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                       .oldLayout = VK_IMAGE_LAYOUT_PREINITIALIZED,
+                                       .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                       .image = tex,
+                                       .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                               NULL, 1, &tb);
+            tex_ready = true;
+         }
+         if (depth) {
+            /* CmdBeginRendering requires the attachment to already be in the declared layout. Every frame clears it
+             * (loadOp CLEAR, storeOp DONT_CARE), so the contents may be discarded: UNDEFINED is legal on frame 1 and
+             * on every reuse, and the EARLY_FRAGMENT_TESTS dependency orders them (CR #323 T6). */
+            VkImageMemoryBarrier db = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                       .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                       .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                       /* DEPTH_ATTACHMENT_OPTIMAL needs separateDepthStencilLayouts, which this device
+                                        * does not enable; the combined layout is legal without it (CR #323 body). */
+                                       .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                       .image = dimg,
+                                       .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
+            CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1, &db);
+         }
          /* blend: a blue field the half-alpha red quad is blended onto; every other mode: black, so a lost draw
           * reads back as 0,0,0 rather than as the clear. */
          VkClearValue clearv = {.color = {.float32 = {0.0f, 0.0f, blend ? 1.0f : 0.0f, 1.0f}}};
@@ -1075,7 +1134,7 @@ main(int argc, char **argv)
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                         .clearValue = clearv};
          VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dview,
-                                        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                         .clearValue = {.depthStencil = {1.0f, 0}}};
          VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -1116,7 +1175,7 @@ main(int argc, char **argv)
       VkPipelineStageFlags ws = draw_like ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
       CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
                                            .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
-                                           .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
+                                           .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done[idx]},
                      fence));
       VkResult pres = VK_SUCCESS;
       const uint64_t pid = (uint64_t)f + 1;
@@ -1125,7 +1184,7 @@ main(int argc, char **argv)
       r = QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                                  .pNext = present_ids ? (void *)&pids : NULL,
                                                  .waitSemaphoreCount = 1,
-                                                 .pWaitSemaphores = &done, .swapchainCount = 1, .pSwapchains = &sc,
+                                                 .pWaitSemaphores = &done[idx], .swapchainCount = 1, .pSwapchains = &sc,
                                                  .pImageIndices = &idx, .pResults = &pres});
       if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { fprintf(stderr, "FAIL present frame %d = %d\n", f, (int)r); return 1; }
       REQ(pres == VK_SUCCESS || pres == VK_SUBOPTIMAL_KHR, "per-swapchain present result");
@@ -1203,7 +1262,8 @@ main(int argc, char **argv)
    }
    DestroyFence(dev, fence, NULL);
    DestroySemaphore(dev, acq, NULL);
-   DestroySemaphore(dev, done, NULL);
+   for (uint32_t i = 0; i < ni; i++)
+      DestroySemaphore(dev, done[i], NULL);
    DestroyCommandPool(dev, pool, NULL);
    DestroySwapchainKHR(dev, sc, NULL);
    DestroyDevice(dev, NULL);
