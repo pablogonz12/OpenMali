@@ -18,6 +18,8 @@
  *      (fixed-function fallback if GLSL fails), blit, swap
  *   3  step 2 + glEnable(GL_FRAMEBUFFER_SRGB) with an SRGB8_ALPHA8 FBO
  *   4  step 3, but the blit goes into the back buffer of a SECOND window
+ *   5  step 1, but the FBO texture is drawn into the back buffer as a textured
+ *      quad instead of glBlitFramebuffer (splits "blit" from "swapchain")
  *      (a shared context, like a second back buffer)
  *
  * Each stage prints one line: FBO completeness, GL error, what the window shows.
@@ -115,6 +117,8 @@ typedef XID GLXDrawable;
 #define GL_PROJECTION                          0x1701
 #define GL_MODELVIEW                           0x1700
 #define GL_VERTEX_ARRAY                        0x8074
+#define GL_TEXTURE_COORD_ARRAY                 0x8078
+#define GL_TEXTURE_2D_ENABLE_                 0x0DE1
 
 #define GLX_USE_GL                             1
 #define GLX_RGBA                               4
@@ -197,7 +201,10 @@ typedef XID GLXDrawable;
     X(void,          glColor4f,             (GLfloat, GLfloat, GLfloat, GLfloat))     \
     X(void,          glEnableClientState,   (GLenum))                                 \
     X(void,          glDisableClientState,  (GLenum))                                 \
-    X(void,          glVertexPointer,       (GLint, GLenum, GLsizei, const void *))
+    X(void,          glVertexPointer,       (GLint, GLenum, GLsizei, const void *))   \
+    X(void,          glTexCoordPointer,     (GLint, GLenum, GLsizei, const void *))    \
+    X(void,          glUniform1i,           (GLint, GLint))                            \
+    X(GLint,         glGetUniformLocation,  (GLuint, const GLchar *))
 
 #define GLX_FUNCS(X)                                                                  \
     X(GLXFBConfig *, glXChooseFBConfig,     (Display *, int, const int *, int *))     \
@@ -586,6 +593,81 @@ static void draw_triangle(void)
     }
 }
 
+/* ---- step 5: the same FBO, but sampled into the back buffer as a quad --
+ * No glBlitFramebuffer anywhere: if this paints and step 1 does not, the loss
+ * is in the blit and not in how the FBO/swapchain images are allocated. */
+static GLuint qprog, qtex_uniform;
+static int qshader_ok;
+
+static int build_quad(void)
+{
+    static const char *vs =
+        "#version 120\n"
+        "attribute vec2 pos;\n"
+        "attribute vec2 uv;\n"
+        "varying vec2 v_uv;\n"
+        "void main() { v_uv = uv; gl_Position = vec4(pos, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 120\n"
+        "uniform sampler2D tex;\n"
+        "varying vec2 v_uv;\n"
+        "void main() { gl_FragColor = texture2D(tex, v_uv); }\n";
+    GLuint v = mk_shader(GL_VERTEX_SHADER, vs);
+    GLuint f = v ? mk_shader(GL_FRAGMENT_SHADER, fs) : 0;
+    GLint ok = 0;
+    if (!v || !f) { if (v) glDeleteShader(v); if (f) glDeleteShader(f); return 0; }
+    qprog = glCreateProgram();
+    glAttachShader(qprog, v);
+    glAttachShader(qprog, f);
+    glBindAttribLocation(qprog, 0, "pos");
+    glBindAttribLocation(qprog, 1, "uv");
+    glLinkProgram(qprog);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    glGetProgramiv(qprog, GL_LINK_STATUS, &ok);
+    if (!ok) { glDeleteProgram(qprog); qprog = 0; return 0; }
+    qtex_uniform = glGetUniformLocation(qprog, "tex");
+    return 1;
+}
+
+static void draw_quad(GLuint tex, int wpix, int hpix)
+{
+    /* two triangles in clip space, uv 0..1 (texture origin bottom-left) */
+    static const GLfloat verts[] = {
+        -1.f, -1.f, 0.f, 0.f,   1.f, -1.f, 1.f, 0.f,   1.f, 1.f, 1.f, 1.f,
+        -1.f, -1.f, 0.f, 0.f,   1.f,  1.f, 1.f, 1.f,  -1.f, 1.f, 0.f, 1.f
+    };
+    glViewport(0, 0, wpix, hpix);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    if (qshader_ok) {
+        glUseProgram(qprog);
+        glUniform1i(qtex_uniform, 0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), verts);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+                              verts + 2);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glUseProgram(0);
+    } else {
+        glEnable(GL_TEXTURE_2D);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        glColor4f(1.f, 1.f, 1.f, 1.f);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glVertexPointer(2, GL_FLOAT, 4 * sizeof(GLfloat), verts);
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glTexCoordPointer(2, GL_FLOAT, 4 * sizeof(GLfloat), verts + 2);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisableClientState(GL_VERTEX_ARRAY);
+        glDisable(GL_TEXTURE_2D);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 /* ---- FBO -------------------------------------------------------------- */
 
 struct fbo {
@@ -710,7 +792,7 @@ redraw_frame(void)
         return;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, g_fbo->fbo);
-    if (g_step == 1) {
+    if (g_step == 1 || g_step == 5) {
         glClearColor(0.10f, 0.45f, 0.90f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
     } else {
@@ -753,11 +835,11 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     if (s && *s) step = atoi(s);
-    if (step < 0 || step > 4) {
-        fprintf(stderr, "gl-ladder: LADDER_STEP must be 0..4 (got %s)\n", s ? s : "");
+    if (step < 0 || step > 5) {
+        fprintf(stderr, "gl-ladder: LADDER_STEP must be 0..5 (got %s)\n", s ? s : "");
         return 2;
     }
-    use_srgb_fbo = step >= 3;
+    use_srgb_fbo = (step >= 3 && step <= 4);   /* step 5 is step 1 with a quad */
     use_second_window = step == 4;
     memset(&f, 0, sizeof f);
 
@@ -813,7 +895,7 @@ int main(int argc, char **argv)
         }
 
         /* --- 1: render offscreen --------------------------------------- */
-        if (step == 1) {
+        if (step == 1 || step == 5) {
             glClearColor(0.10f, 0.45f, 0.90f, 1.0f);       /* blue */
             glClear(GL_COLOR_BUFFER_BIT);
         } else {
@@ -825,7 +907,7 @@ int main(int argc, char **argv)
         printf("step=%d fbo=%s complete=%s srgb=%s draw=%s err=%s\n",
                step, use_srgb_fbo ? "SRGB8_ALPHA8" : "RGBA8", completeness(),
                glIsEnabled(GL_FRAMEBUFFER_SRGB) ? "on" : "off",
-               step == 1 ? "clear" : "triangle", err);
+               (step == 1 || step == 5) ? "clear" : "triangle", err);
 
         if (step >= 3) {
             glEnable(GL_FRAMEBUFFER_SRGB);
@@ -876,6 +958,16 @@ int main(int argc, char **argv)
         glReadBuffer(GL_COLOR_ATTACHMENT0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
+        if (step == 5) {
+            /* no blit at all: sample the FBO texture into the back buffer */
+            qshader_ok = build_quad();
+            draw_quad(f.tex, target->w_px, target->h_px);
+            glFinish();
+            drain_errors(err, sizeof err);
+            printf("step=%d quad=textured full-window quad from the FBO texture "
+                   "shader=%s err=%s\n", step, qshader_ok ? "glsl" : "fixed-function", err);
+            readback(target, dump, GL_BACK, "quad");
+        } else {
         glBlitFramebuffer(0, 0, FBO_W, FBO_H, 0, 0, target->w_px, target->h_px,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
         glFinish();
@@ -884,6 +976,7 @@ int main(int argc, char **argv)
                "err=%s\n", step, FBO_W, FBO_H, target->w_px, target->h_px, err);
 
         readback(target, dump, GL_BACK, "blit");
+        }
 
         glXSwapBuffers(dpy, target->w);
         glFinish();
