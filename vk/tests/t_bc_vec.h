@@ -3,6 +3,7 @@
 #ifndef T_BC_VEC_H
 #define T_BC_VEC_H
 #include <stddef.h>
+#include <string.h>
 #include <stdint.h>
 #include <vulkan/vulkan_core.h>
 
@@ -27,6 +28,13 @@ static inline void bcv_fill(VkFormat f, uint64_t seed, uint8_t *b, size_t n, uns
       if (f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK) {
          unsigned m = (unsigned)(k % 8);
          p[0] = (uint8_t)((p[0] & ~((2u << m) - 1u)) | (1u << m));
+      } else if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+         /* random 128 bits are mostly invalid ASTC (error colour on both sides): make every 2nd block a void-extent block (low 12 bits 0xdfc = LDR,
+          * coordinates either all ones = "no extent" or random), the others stay random */
+         if (k % 2 == 0) {
+            p[0] = 0xfc; p[1] = (uint8_t)((p[1] & 0xf0) | 0x0d);
+            if (bcv_rng(&s) & 1) { p[1] |= 0xf0; memset(p + 2, 0xff, 6); }
+         }
       } else if (f == VK_FORMAT_BC6H_UFLOAT_BLOCK || f == VK_FORMAT_BC6H_SFLOAT_BLOCK) {
          uint8_t c = bc6[k % 14];
          unsigned nb = c < 2 ? 2 : 5;
