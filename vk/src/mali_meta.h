@@ -93,6 +93,7 @@ struct mali_meta_dev {
    void (*free)(void *user, void *cpu, uint64_t va, size_t size);
    int (*upload_shader)(void *user, const uint8_t *bin, uint32_t size, uint64_t *va);   /* executable memory, never freed */
 };
+void mali_meta_prewarm(void);   /* async-compile the built-in meta shaders for the installed device (no-op without one) */
 void mali_meta_set_dev(const struct mali_meta_dev *dev);   /* copied; NULL clears (and drops the compiled shader cache) */
 
 /* Long-lived zeroed GPU memory from the installed device seam (query pools, events). NULL when no device is set. */

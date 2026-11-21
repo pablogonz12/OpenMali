@@ -10,7 +10,7 @@ struct mali_flat_layout {
    struct mali_compile_layout c;
 };
 
-/* VK_SUCCESS or VK_ERROR_FEATURE_NOT_PRESENT when the layout exceeds the hardware model (sets > MALI_MAX_SETS, push > 128 B). */
+/* VK_SUCCESS or VK_ERROR_FEATURE_NOT_PRESENT when the layout exceeds the hardware model (sets > MALI_MAX_SETS, push > MALI_MAX_PUSH_BYTES (256 B)). */
 VkResult mali_pipeline_layout_flatten(const struct vk_pipeline_layout *l, struct mali_flat_layout *out);
 
 /* Resource table index (1-based, table 0 is the driver table) a set is bound to. */
