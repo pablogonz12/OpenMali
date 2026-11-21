@@ -12,6 +12,7 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -1220,11 +1221,16 @@ test_tf_default(void)
    uint32_t en = 0;
    int have = 0;
    CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
-   VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
-   if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+   VkExtensionProperties *e = en ? calloc(en, sizeof *e) : NULL;
+   /* an allocation or enumeration failure must fail the case: with have left at 0 it would pass as "the gate is
+    * off" and the whole default-on check would silently mean nothing (CodeRabbit #329) */
+   CHECK(e, "allocate %u extension entries", en);
+   if (e) {
+      CHECK(g_edep(g_pd, NULL, &en, e) == VK_SUCCESS, "enumerate device extensions");
       for (uint32_t i = 0; i < en; i++)
          if (!strcmp(e[i].extensionName, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME)) have = 1;
-   free(e);
+      free(e);
+   }
    CHECK(have == want, "VK_EXT_transform_feedback %s by default (MALI_EXPERIMENTAL_TF=0 opts out), gate %d",
          have ? "advertised" : "absent", want);
    /* the name alone proves nothing: the feature bit and the properties must follow the same switch, or a capture case
@@ -1252,15 +1258,33 @@ test_tf_default(void)
 static int g_dbgsave = -1;
 static char g_dbgfile[128];
 
-static void
+/* mkstemp: O_EXCL on a name nobody can predict, so the /tmp log cannot be won by a symlink race (CWE-59) and never
+ * overwrites an existing file; fd 2 is redirected with dup2, so the stderr stream itself stays valid and no freopen
+ * can leave it closed. Returns 0 when the case may look for log lines (CodeRabbit #329). */
+static int
 tf_dbg_begin(void)
 {
-   snprintf(g_dbgfile, sizeof g_dbgfile, "/tmp/mali-tf-dbg.%ld.log", (long)getpid());
+   g_dbgfile[0] = 0;
+   snprintf(g_dbgfile, sizeof g_dbgfile, "/tmp/mali-tf-dbg.XXXXXX");
+   int fd = mkstemp(g_dbgfile);
+   if (fd < 0) {
+      fprintf(stderr, "tf debug: cannot create a log in /tmp: %s\n", strerror(errno));
+      return 0;
+   }
    setenv("MALI_TF_DBG", "1", 1);
    fflush(stderr);
    g_dbgsave = dup(2);
-   if (!freopen(g_dbgfile, "w", stderr))   /* glibc marks freopen warn_unused_result; CI builds with -Werror */
-      fprintf(stderr, "tf debug: cannot open %s\n", g_dbgfile);
+   if (g_dbgsave < 0 || dup2(fd, 2) < 0) {
+      fprintf(stderr, "tf debug: cannot redirect stderr: %s\n", strerror(errno));
+      if (g_dbgsave >= 0) { close(g_dbgsave); g_dbgsave = -1; }
+      close(fd);
+      unlink(g_dbgfile);
+      g_dbgfile[0] = 0;
+      unsetenv("MALI_TF_DBG");
+      return 0;
+   }
+   close(fd);
+   return 1;
 }
 
 static int
@@ -1331,7 +1355,7 @@ test_tf_inactive(void)
    CHECK(cb, "cmdbuf");
    CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
    /* draw 1: no bind, no Begin -> the non-XFB program, nothing may be stored */
-   tf_dbg_begin();
+   if (!tf_dbg_begin()) return 0;   /* the case asserts on the driver's log lines */
    begin_pass(cb, &t, pipe);
    CmdDraw(cb, NV, 1, 0, 0);
    CmdEndRenderPass(cb);
@@ -1410,7 +1434,7 @@ test_tf_reset(void)
    CHECK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}) == VK_SUCCESS, "re-begin");
    hbuf_destroy(&xb);   /* the handle a stale tf record would still point at */
    CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
-   tf_dbg_begin();
+   if (!tf_dbg_begin()) return 0;   /* the case asserts on the driver's log lines */
    begin_pass(cb, &t, pipe);
    CmdDraw(cb, 3, 1, 0, 0);
    CmdEndRenderPass(cb);
