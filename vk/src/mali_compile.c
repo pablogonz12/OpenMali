@@ -373,6 +373,22 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (stage != MESA_SHADER_COMPUTE)
       NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
    NIR_PASS(_, nir, nir_split_var_copies);
+   unsigned XP = getenv("XP") ? strtoul(getenv("XP"), 0, 0) : 0;
+   if (XP & 1) {
+      NIR_PASS(_, nir, nir_opt_copy_prop_vars);
+      NIR_PASS(_, nir, nir_opt_dead_write_vars);
+      NIR_PASS(_, nir, nir_opt_combine_stores, nir_var_all);
+      NIR_PASS(_, nir, nir_opt_loop);
+   }
+   if (XP & 16) {
+      bool pr = true;
+      while (pr) { pr = false;
+         NIR_PASS(pr, nir, nir_opt_copy_prop); NIR_PASS(pr, nir, nir_opt_remove_phis); NIR_PASS(pr, nir, nir_opt_dce);
+         NIR_PASS(pr, nir, nir_opt_dead_cf); NIR_PASS(pr, nir, nir_opt_cse);
+         NIR_PASS(pr, nir, nir_opt_algebraic); NIR_PASS(pr, nir, nir_opt_constant_folding); }
+   }
+   if (XP & 2) NIR_PASS(_, nir, nir_opt_large_constants, NULL, 32);
+   if (XP & 128) nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    NIR_PASS(_, nir, nir_lower_system_values);
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
@@ -466,6 +482,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
 
    struct pan_shader_info info = {0};
+   if (XP & 4) { const nir_opt_access_options ao = {.is_vulkan = true}; NIR_PASS(_, nir, nir_opt_access, &ao); }
+   if (XP & 32) { bool pr = true; while (pr) { pr = false;
+         NIR_PASS(pr, nir, nir_opt_copy_prop); NIR_PASS(pr, nir, nir_opt_dce); NIR_PASS(pr, nir, nir_opt_cse);
+         NIR_PASS(pr, nir, nir_opt_algebraic); NIR_PASS(pr, nir, nir_opt_constant_folding); } }
+   if (XP & 64) { NIR_PASS(_, nir, nir_opt_gcm, true); NIR_PASS(_, nir, nir_opt_dce); }
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
