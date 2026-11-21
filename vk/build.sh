@@ -54,6 +54,14 @@ if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit
 if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
 
 # 3. Compile (cwd = Mesa build dir: its -I paths are relative).
+# Shared ccache for every worktree (one cache dir, size-capped) when ccache is installed; MALI_NO_CCACHE=1 turns it off.
+# BASEDIR rewrites absolute paths under this checkout to relative ones so identical sources in different worktrees hit the same entry.
+CCACHE=""
+if [ -z "${MALI_NO_CCACHE:-}" ] && command -v ccache >/dev/null 2>&1; then
+   CCACHE=ccache
+   export CCACHE_DIR=${CCACHE_DIR:-$HOME/.cache/mali-ccache} CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-10G} CCACHE_BASEDIR=$D CCACHE_COMPILERCHECK=content
+   mkdir -p "$CCACHE_DIR"
+fi
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c $V/src/mali_fprof.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
@@ -67,9 +75,15 @@ KB=$D/libkbase
 KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
         $KB/src/draw.c $KB/src/draw_v13.c $KB/src/fb.c"
 OBJS=""
+# Compile in parallel (MALI_JOBS, default nproc); any failed compile fails the build.
+JOBS=${MALI_JOBS:-$(nproc 2>/dev/null || echo 4)}
+if ! [[ $JOBS =~ ^0*[1-9][0-9]*$ ]]; then echo "MALI_JOBS must be a positive integer (got '$JOBS')"; exit 1; fi   # 007 ok, 0 / 00 rejected
+cfail=0; running=0
+reap() { wait -n || cfail=1; running=$((running - 1)); }
 for s in $KBSRCS; do
    o=$OBJ/kb_$(basename "$s" .c).o
-   eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s"
+   [ $running -ge "$JOBS" ] && reap
+   eval "$CCACHE $CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $o -c $s" & running=$((running + 1))
    OBJS="$OBJS $o"
 done
 # Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
@@ -85,9 +99,12 @@ else
 fi
 for s in $SRCS; do
    o=$OBJ/$(basename "$s" .c).o
-   eval "$CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s"
+   [ $running -ge "$JOBS" ] && reap
+   eval "$CCACHE $CC -DMALI_GIT_SHA=\\\"$MALI_SHA\\\" -I$GEN -I$V/src -I$KB/include -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $o -c $s" & running=$((running + 1))
    OBJS="$OBJS $o"
 done
+while [ $running -gt 0 ]; do reap; done
+[ $cfail = 0 ] || { echo "compile failed"; exit 1; }
 
 # 4. Link. Runtime libs need --whole-archive (weak entry point overloads), as Mesa does it.
 WHOLE="src/vulkan/runtime/libvulkan_lite_runtime.a src/vulkan/runtime/libvulkan_runtime.a
@@ -161,10 +178,12 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_vram" "$V/tests/t_vk_vram.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_qerr" "$V/tests/t_vk_qerr.c" -ldl
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_dxvk_wsi" "$V/tests/t_vk_dxvk_wsi.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_api" "$V/tests/t_dxvk_api.c" -I"$V/tests" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_drm" "$V/tests/t_vk_drm.c" -ldl
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_headless" "$V/tests/t_vk_headless.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_trace" "$V/tests/t_vk_trace.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_angle_seq" "$V/tests/t_angle_seq.c" -ldl
 # X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)

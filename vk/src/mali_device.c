@@ -67,8 +67,13 @@ mali_check_device_features(const struct mali_physical_device *pdev, const VkDevi
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = (void *)pCreateInfo->pNext,
    };
    vk_set_physical_device_features(&chain, &features2);
+   /* The chain carries core 1.1+ groups and extensions alike: check the extension table, then the core 1.0 name
+    * table, so a group requested only through pNext is still refused by its field name. */
    missing = mali_first_unsupported_feature(&chain, supported, mali_ext_feature_names,
                                             ARRAY_SIZE(mali_ext_feature_names));
+   if (!missing)
+      missing = mali_first_unsupported_feature(&chain, supported, mali_1_0_feature_names,
+                                               ARRAY_SIZE(mali_1_0_feature_names));
    if (missing) {
       fprintf(stderr, "mali_vk: vkCreateDevice: unsupported feature %s (requested through the "
               "VkPhysicalDeviceFeatures2 chain)\n", missing);

@@ -200,7 +200,7 @@ kbase_device_destroy(struct mali_kdev *k)
    free(k);
 }
 
-static void
+static bool
 track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
 {
    pthread_mutex_lock(&k->bo_lock);
@@ -210,7 +210,7 @@ track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
          struct kb_bo **nb = realloc(k->bos, nc * sizeof *nb);
          if (!nb) {
             pthread_mutex_unlock(&k->bo_lock);
-            return;
+            return false;    /* the caller must not keep a BO the sync sweep cannot see */
          }
          k->bos = nb;
          k->capbos = nc;
@@ -224,6 +224,7 @@ track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
          }
    }
    pthread_mutex_unlock(&k->bo_lock);
+   return true;
 }
 
 /* Only VkDeviceMemory: Vulkan does not promise zeroed memory, driver-internal BOs may rely on it. */
@@ -342,7 +343,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
          hit->gpu_writes = hit->synced_writes = 0;   /* a pooled BO starts with no pending write marks */
          *out = (struct mali_bo){.gpu_va = hit->gpu_va, .cpu = hit->cpu, .size = size, .flags = flags,
                                  .dmabuf_fd = hit->dmabuf_fd, .priv = hit};
-         track_bo(k, hit, true);
+         (void)track_bo(k, hit, true);
          return 0;
       }
    }
@@ -396,7 +397,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
     * until vkMapMemory (bo_host_touch). Before this, 4 swapchain dma-bufs were MEM_SYNCed (a real cache op on an imported dma-buf) at every submit. */
    bo->host_lazy = (flags & MALI_BO_HOSTLAZY) || ((flags & MALI_BO_EXPORT) && !(flags & MALI_BO_CACHED));
    bo->hot = (flags & MALI_BO_HOT) != 0;
-   track_bo(k, bo, true);
+   (void)track_bo(k, bo, true);
    return 0;
 }
 
@@ -440,8 +441,13 @@ kbase_bo_import(struct mali_kdev *k, int dmabuf_fd, size_t size, uint32_t flags,
     * COHERENT_LOCAL too (bo.c: kb_bo_extra_flags), so after a GPU write its CPU mapping needs the CSYNC before
     * the CPU reads it. Marked as foreign so mem_sync_bos does not push our CPU copy at the GPU before a submit
     * (that direction stays for BOs this driver allocated; an exported one is still ours to push). */
+   if (!track_bo(k, bo, true)) {
+      /* Without a registry slot the import would never be part of the device->CPU sweep: give it back. */
+      kb_bo_free(bo);
+      free(bo);
+      return -ENOMEM;
+   }
    bo->imported = true;
-   track_bo(k, bo, true);
    return 0;
 }
 
@@ -450,7 +456,7 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
 {
    if (!bo->priv)
       return;
-   track_bo(k, bo->priv, false);
+   (void)track_bo(k, bo->priv, false);
    /* A pooled CPU-cached BO keeps its mapping and is handed out again without the zero+flush of a fresh one: write back any CPU-dirty lines now, or they could
     * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
    if (pool_eligible(bo->flags) && pool_fits(k, bo->size) && (bo->flags & MALI_BO_CACHED) && !((struct kb_bo *)bo->priv)->host_lazy)

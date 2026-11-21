@@ -184,6 +184,11 @@ PY
       if [ "$class" = app ] && [ "${APP_HEADLESS:-0}" != 1 ]; then present=unknown; else present=none; fi
    fi
    [ -n "${seconds:-}" ] && window_s=$seconds
+   # A missing duration is derived from the measured interval the fps refers to, never left empty: window_s and
+   # frames/fps must describe the same measurement.
+   if [ -z "$window_s" ] && [ -n "${frames:-}" ] && [ -n "${render_fps:-}" ]; then
+      window_s=$(python3 -c 'import sys; f=float(sys.argv[1]); r=float(sys.argv[2]); print("%.3f" % (f/r) if r > 0 and f > 0 else "")' "$frames" "$render_fps")
+   fi
    [ -n "$window_s" ] || window_s=$(kv seconds)
    [ -n "$resolution" ] || resolution=$(kv resolution)
 
