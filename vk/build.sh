@@ -50,6 +50,9 @@ CC=$(sed -E 's#^([^ ]*/)?ccache +##' <<<"$CC"); CXX=$(sed -E 's#^([^ ]*/)?ccache
 # MALI_SAN=1: ASAN+UBSAN driver objects (use with LD_PRELOAD=$(gcc -print-file-name=libasan.so) and MALI_TARGET=native-san)
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
 
+# MALI_PROF=1 (with MALI_TARGET=native-prof): debug info + frame pointers for the host sampling profiler (tools/prof-sample.c).
+if [ "${MALI_PROF:-0}" = 1 ]; then CC="$CC -g -fno-omit-frame-pointer"; fi
+
 # MALI_COV=1: gcov instrumented driver objects (MALI_TARGET=native-cov; see tools/coverage.sh). -O0 so line counts map to source.
 if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
 
@@ -69,7 +72,7 @@ SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c
       $V/src/mali_compile.c $V/src/mali_resources.c
       $V/src/mali_wsi.c $V/src/mali_meta.c $V/src/mali_bc.c $V/src/mali_meta_vk.c $V/src/mali_query.c $V/src/mali_query_core.c
-      $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $GEN/mali_entrypoints.c"
+      $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $GEN/mali_entrypoints.c"
 # libkbase (own, MIT, libc only) is compiled in with the same flags as the rest, warnings not fatal.
 KB=$D/libkbase
 KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
@@ -179,6 +182,9 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_vk_leak" "$V/tests/t_vk_leak.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -DMALI_EXPECT_SHA=\"$MALI_SHA\" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl
+# The dma-buf fd check on its own (mali_dmabuf.c): a real dma-buf from /dev/udmabuf or the system dma-heap must pass,
+# memfd/pipe/regular file//dev/kvm must not, and the ioctl fallback must accept the dma-buf with the statfs arm forced off.
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$V/src" -o "$OUT/t_dmabuf" "$V/tests/t_dmabuf.c" "$V/src/mali_dmabuf.c"
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_vram" "$V/tests/t_vk_vram.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_qerr" "$V/tests/t_vk_qerr.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_dxvk_wsi" "$V/tests/t_vk_dxvk_wsi.c" -ldl
