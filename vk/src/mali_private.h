@@ -38,6 +38,11 @@ struct mali_physical_device {
    /* M14 (mali_wsi.c): Mesa wsi_common, Wayland platform, linear dma-buf swapchain images. */
    struct wsi_device wsi;
    PFN_vkDestroyQueryPool wsi_real_destroy_query_pool;   /* what wsi.DestroyQueryPool pointed to before the NULL-tolerant guard */
+   /* The X11 server has no DRI3+Present: X11 surfaces take the software (MIT-SHM/PutImage) path. Kept here, not in
+    * wsi.sw, because wsi.sw is device-wide and Mesa's Wayland driver builds every Wayland swapchain as a wl_shm/CPU
+    * one while it is set (wsi_common_wayland.c:3940, :1506) - a Steam client asks about its X11 window first and
+    * would lose the dma-buf path for the gamescope WSI layer's Wayland swapchain (X8). */
+   bool wsi_x11_sw;
 };
 
 struct mali_queue {
@@ -89,6 +94,12 @@ VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, V
 VkResult mali_wsi_get_surface_support(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32*);
 VkResult mali_wsi_get_surface_capabilities(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR*);
 VkResult mali_wsi_get_surface_formats(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkSurfaceFormatKHR*);
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+VkBool32 mali_wsi_xcb_presentation_support(VkPhysicalDevice, uint32_t, xcb_connection_t*, xcb_visualid_t);
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+VkBool32 mali_wsi_xlib_presentation_support(VkPhysicalDevice, uint32_t, Display*, VisualID);
+#endif
 void mali_wsi_destroy_swapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
 
