@@ -62,6 +62,8 @@ for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g
 for g in v10 v13; do run "threads $g" 0 "$V/tests/xwsi-threads.sh" "$OUT" $g; done
 for g in v10 v13; do run "caps2 $g" 0 "$V/tests/xwsi-caps2.sh" "$OUT" $g; done
 for g in v10 v13; do run "debug sw on dri3 $g" 0 "$V/tests/xwsi-debug-sw.sh" "$OUT" $g; done
+# heap 0 is the commit cap: with a cap below the fixed 1 GiB default, maxMemoryAllocationSize must be clamped to
+# the heap we report (VkPhysicalDeviceLimits), and the whole heap must still be allocatable.
 for g in v10 v13; do run "vk_mem cap 256 MiB $g" 0 MALI_VRAM_CAP_MB=256 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
 # The dma-buf fd check (mali_dmabuf.c) both ways: statfs magic, the ioctl fallback with the magic arm forced off, and
 # the refusals (memfd, pipe, regular file, /dev/kvm). SKIPs the accept cases on a host with no dma-buf provider.

@@ -10,6 +10,7 @@
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
+#include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below (#325) */
 
 #include <pthread.h>   /* the per-call wsi mode and the X11 chain table are process-wide (CR #323 T4/T5) */
 
