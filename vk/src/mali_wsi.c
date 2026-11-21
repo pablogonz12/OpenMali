@@ -2035,7 +2035,7 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    /* The chain is created on the instance its surface's path needs, and wsi_CreateSwapchainKHR stores that pointer in
     * chain->base.wsi: from here on the chain's mode is immutable, for the async present queue manager
     * (wsi_common_x11.c:2235 -> :2101) and for destroy (:2807) alike (CR #323 T7). */
-   const struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface, sw_now);
+   struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface, sw_now);
 
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
