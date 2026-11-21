@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|inst_divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -12,6 +12,7 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,12 +25,15 @@
 static int g_fail, g_fake;
 static const char *g_only, *g_spv = "shader";
 static int g_ycbcr, g_imageless;
+static int g_tf;   /* VK_EXT_transform_feedback advertised (default on; MALI_EXPERIMENTAL_TF=0 opts out) */
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
+static PFN_vkResetCommandBuffer g_rcb;
+static PFN_vkEnumerateDeviceExtensionProperties g_edep;
 static VkBool32 g_mirror, g_bda, g_didx;
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
@@ -1083,10 +1087,12 @@ test_tf_record(void)
    }
    VkBuffer xfb = VK_NULL_HANDLE;
    VkDeviceSize sz = 4 * 4 * 4;   /* 4 vertices x vec4 */
-   CHECK(CreateBuffer(dev, &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
-                                                 .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT |
-                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE}, NULL, &xfb) == VK_SUCCESS, "xfb buffer");
+   /* Memory-backed through the harness helper: vkCmdBindTransformFeedbackBuffersEXT requires every buffer to be
+    * completely and contiguously bound (CodeRabbit on #313, t_vk_feat.c:1026). */
+   struct hbuf hb = {0};
+   if (!hbuf_create(&hb, sz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+      return 0;
+   xfb = hb.b;
    struct tgt t;
    if (!tgt_create(&t)) return 0;
    VkCommandBuffer cb = cb_begin(&t);
@@ -1121,7 +1127,8 @@ test_tf_write(void)
    enum { NV = 3 };
    static const float pos[NV][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
    struct hbuf vb, xb[2];
-   const VkDeviceSize xsz[2] = {NV * 16, 16 + NV * 8}, xoff[2] = {0, 16};
+   /* Buffer 1 is 40 B and the bind starts at 16, so its capture size is 24, not 16 + NV*8 (VUID-02363). */
+   const VkDeviceSize xsz[2] = {NV * 16, 24}, xoff[2] = {0, 16};
    if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
    memcpy(vb.p, pos, sizeof pos);
    for (int i = 0; i < 2; i++) {
@@ -1182,6 +1189,338 @@ test_tf_write(void)
    tgt_destroy(&t);
    hbuf_destroy(&vb);
    for (int i = 0; i < 2; i++) hbuf_destroy(&xb[i]);
+   return 1;
+}
+
+/* VK_EXT_transform_feedback is on by default and MALI_EXPERIMENTAL_TF=0 is the opt-out (mali_tf.h). This case pins the
+ * advertised surface of both states: the extension, the feature bit and the properties must follow one switch (an
+ * extension advertised without its feature, or the reverse, is what makes zink think it can capture).
+ * Before the flip the default run had no extension at all, so the first CHECK failed. */
+static int
+test_tf_default(void)
+{
+   const char *g = getenv("MALI_EXPERIMENTAL_TF");
+   const int want = !(g && g[0] == '0');
+   uint32_t en = 0;
+   int have = 0;
+   CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
+   VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+   if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+      for (uint32_t i = 0; i < en; i++)
+         if (!strcmp(e[i].extensionName, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME)) have = 1;
+   free(e);
+   CHECK(have == want, "VK_EXT_transform_feedback %s by default (MALI_EXPERIMENTAL_TF=0 opts out), gate %d",
+         have ? "advertised" : "absent", want);
+   printf("{\"test\":\"tf_default\",\"extension\":\"%s\",\"default\":%s,\"ok\":true}\n", have ? "advertised" : "absent",
+          want ? "on" : "off");
+   return 1;
+}
+
+/* The driver names the vertex program it selected for a draw (MALI_TF_DBG): capture fd 2 around one case, so "the
+ * inactive draw ran the non-XFB program" is an assertion here and not a line someone has to read. */
+static int g_dbgsave = -1;
+static char g_dbgfile[128];
+
+static void
+tf_dbg_begin(void)
+{
+   snprintf(g_dbgfile, sizeof g_dbgfile, "/tmp/mali-tf-dbg.%ld.log", (long)getpid());
+   setenv("MALI_TF_DBG", "1", 1);
+   fflush(stderr);
+   g_dbgsave = dup(2);
+   if (!freopen(g_dbgfile, "w", stderr))   /* glibc marks freopen warn_unused_result; CI builds with -Werror */
+      fprintf(stderr, "tf debug: cannot open %s\n", g_dbgfile);
+}
+
+static int
+tf_dbg_count(const char *needle, uint64_t *va)
+{
+   fflush(stderr);
+   FILE *f = fopen(g_dbgfile, "r");
+   if (!f) return 0;
+   char line[256];
+   int n = 0;
+   while (fgets(line, sizeof line, f)) {
+      if (!strstr(line, needle)) continue;
+      const char *at = strstr(line, " at 0x");
+      if (va && at) sscanf(at + 4, "%" SCNx64, va);
+      n++;
+   }
+   fclose(f);
+   return n;
+}
+
+static void
+tf_dbg_end(void)
+{
+   fflush(stderr);
+   if (g_dbgsave >= 0) {
+      dup2(g_dbgsave, 2);
+      close(g_dbgsave);
+      g_dbgsave = -1;
+   }
+   unlink(g_dbgfile);
+   unsetenv("MALI_TF_DBG");
+}
+
+/* The mandatory guard of the default-on flip: an XFB program drawn with NO BeginTransformFeedback and NOTHING bound
+ * must not store anywhere. The lowering used to run unconditionally while the buffer bases were patched only while TF
+ * was active, so such a draw stored to GPU VA 0. The driver now compiles a second, non-XFB vertex program and runs it
+ * for every draw outside Begin/End; this case checks that choice (both directions, through MALI_TF_DBG), that the draw
+ * still renders, and (on hardware) that the bound buffers stay untouched. */
+static int
+test_tf_inactive(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_inactive\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 3 };
+   static const float pos[NV][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
+   struct hbuf vb, xb;
+   const VkDeviceSize xsz = NV * 16;
+   if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memcpy(vb.p, pos, sizeof pos);
+   if (!hbuf_create(&xb, xsz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, xsz);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   /* draw 1: no bind, no Begin -> the non-XFB program, nothing may be stored */
+   tf_dbg_begin();
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   /* draw 2: inside Begin/End with the buffer bound -> the XFB program (the flip must not disable capture) */
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){xsz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) { tf_dbg_end(); return 0; }
+   uint64_t plva = 0, xfva = 0;
+   int plain = tf_dbg_count("tf: draw uses the plain vertex program at 0x", &plva);
+   int xf = tf_dbg_count("tf: draw uses the XFB vertex program at 0x", &xfva);
+   tf_dbg_end();
+   CHECK(plain == 1, "the draw outside Begin/End must run the non-XFB vertex program (%d of the driver's lines)", plain);
+   CHECK(xf == 1, "the draw inside Begin/End must run the XFB vertex program (%d)", xf);
+   CHECK(plva && xfva && plva != xfva, "the two vertex programs must be different binaries (0x%" PRIx64 " vs 0x%" PRIx64 ")",
+         plva, xfva);
+   if (!g_fake) {
+      VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE, .memory = xb.m};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb");
+      /* draw 2 captured the three vertices: slot i holds pos[i] */
+      for (int i = 0; i < NV; i++)
+         for (int c = 0; c < 4; c++)
+            CHECK(((const float *)xb.p)[i * 4 + c] == pos[i][c], "xfb buffer vertex %d comp %d: got %g want %g", i, c,
+                  ((const float *)xb.p)[i * 4 + c], pos[i][c]);
+      const uint8_t *p = pix(&t, W / 2, H / 2);   /* the last pass painted the red triangle: the inactive draw rendered too */
+      CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0, "centre %u,%u,%u want 255,0,0 (the XFB draw still renders)", p[0], p[1], p[2]);
+      printf("{\"test\":\"tf_inactive\",\"plain\":1,\"xfb\":1,\"ok\":true}\n");
+   } else {
+      printf("{\"test\":\"tf_inactive\",\"skipped\":\"buffer and pixel contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   hbuf_destroy(&xb);
+   return 1;
+}
+
+/* vkResetCommandBuffer must drop the recorded TF state (mali_cmd.c reset_state): the buffers are destroyed right after
+ * the bind, so a draw that still believed the range was open would dereference a freed handle. Before the fix the stale
+ * active flag survived the reset. */
+static int
+test_tf_reset(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_reset\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   struct hbuf vb;
+   if (!hbuf_create(&vb, 3 * 16, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   for (int i = 0; i < 12; i++) ((float *)vb.p)[i] = (float)(i + 1);
+   struct hbuf xb;
+   if (!hbuf_create(&xb, 3 * 16, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, 3 * 16);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){48});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);   /* range left open: the reset has to forget it */
+   CHECK(g_rcb && g_rcb(cb, 0) == VK_SUCCESS, "reset");
+   CHECK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}) == VK_SUCCESS, "re-begin");
+   hbuf_destroy(&xb);   /* the handle a stale tf record would still point at */
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   tf_dbg_begin();
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) { tf_dbg_end(); return 0; }
+   int plain = tf_dbg_count("tf: draw uses the plain vertex program at 0x", NULL);
+   tf_dbg_end();
+   CHECK(plain == 1, "the draw after the reset must not see the old range (%d plain lines)", plain);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   return 1;
+}
+
+/* Two captures in one Begin/End. KNOWN-LIMIT: the counter buffers are not implemented (mali_cmd.c only marks them
+ * written), so the second draw restarts at the bound offset instead of appending: the last draw wins and the slots
+ * after it are left alone. The case asserts that behaviour so a silent change cannot pass unnoticed. */
+static int
+test_tf_multi(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_multi\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 3 };
+   static const float a[NV][4] = {{1, 0, 0, 0}, {2, 0, 0, 0}, {3, 0, 0, 0}};
+   static const float b[NV][4] = {{7, 0, 0, 0}, {8, 0, 0, 0}, {9, 0, 0, 0}};
+   struct hbuf vb;
+   if (!hbuf_create(&vb, sizeof a + sizeof b, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memcpy(vb.p, a, sizeof a);
+   memcpy(vb.p + sizeof a, b, sizeof b);
+   struct hbuf xb;
+   const VkDeviceSize xsz = 2 * NV * 16;   /* room for the append that is not implemented, plus a guard word */
+   if (!hbuf_create(&xb, xsz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, xsz);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){xsz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){sizeof a});
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE, .memory = xb.m};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb");
+      int first_is_b = 1, rest_untouched = 1;
+      for (int i = 0; i < NV; i++)
+         first_is_b &= ((const float *)xb.p)[i * 4] == b[i][0];
+      for (int i = NV; i < 2 * NV; i++)
+         rest_untouched &= ((const uint32_t *)xb.p)[i * 4] == 0xccccccccu;
+      CHECK(first_is_b, "KNOWN-LIMIT: without counter buffers the second draw restarts at the bind offset (it must overwrite)");
+      CHECK(rest_untouched, "KNOWN-LIMIT: nothing is appended past the bind offset");
+      printf("{\"test\":\"tf_multi\",\"append\":\"not implemented (counters ignored)\",\"known_limit\":true,\"ok\":true}\n");
+   } else {
+      printf("{\"test\":\"tf_multi\",\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   hbuf_destroy(&xb);
+   return 1;
+}
+
+/* Output larger than the bound range. KNOWN-LIMIT: the per-buffer sizes are recorded and never read (mali_cmd.c), so
+ * the stores run past the declared size instead of stopping at it. The case asserts that documented gap: the buffer is
+ * big enough that the overrun stays inside the allocation, so it is a correctness bug here, not a fault. */
+static int
+test_tf_overflow(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_overflow\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 6, NIN = 12 };   /* 6 vertices' worth of room, only 16 bytes declared */
+   struct hbuf vb;
+   if (!hbuf_create(&vb, NV * 16, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   for (int i = 0; i < NV * 4; i++) ((float *)vb.p)[i] = (float)(i + 1);
+   struct hbuf xb;
+   const VkDeviceSize xsz = NV * 16;
+   if (!hbuf_create(&xb, xsz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, xsz);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   /* the declared size is one vertex; the draw has NV */
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){16});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      CHECK(coverage(&t) > 0, "the overflowing draw must still complete and render");
+      VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE, .memory = xb.m};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb");
+      int past = 0;
+      for (int i = NIN; i < NV * 4; i++)
+         past += ((const uint32_t *)xb.p)[i] != 0xccccccccu;
+      CHECK(past > 0, "KNOWN-LIMIT: writes are not clamped to the bound size (no word past 16 B written)");
+      printf("{\"test\":\"tf_overflow\",\"declared\":16,\"written_past\":%d,\"ok\":true}\n", past);
+   } else {
+      printf("{\"test\":\"tf_overflow\",\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   hbuf_destroy(&xb);
    return 1;
 }
 
@@ -1946,7 +2285,6 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
  * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
  * rejects unadvertised features at vkCreateDevice), so the lowering can be verified on hardware before the bits are advertised. */
 static int g_dbuf, g_dbuf_force;
-static int g_tf;   /* VK_EXT_transform_feedback advertised (MALI_EXPERIMENTAL_TF=1) */
 static int
 test_didxbuf(void)
 {
@@ -3198,6 +3536,7 @@ main(int argc, char **argv)
    if (CreateInstance(&ici, NULL, &inst) != VK_SUCCESS) { printf("{\"fail\":\"CreateInstance\"}\n"); return 1; }
 #define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceMemoryProperties); I(GetPhysicalDeviceProperties);
+   g_edep = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
    I(GetPhysicalDeviceFeatures2); I(CreateDevice); I(GetDeviceProcAddr); I(DestroyInstance);
    VkPhysicalDevice pd;
    uint32_t cnt = 1;
@@ -3296,8 +3635,8 @@ main(int argc, char **argv)
      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
      GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
    if (g_pv_last) e2.pNext = &epv;
-   /* VK_EXT_transform_feedback: enabled only when the driver advertises it (MALI_EXPERIMENTAL_TF=1 on the driver),
-    * so --only tf_record can reach the three commands. */
+   /* VK_EXT_transform_feedback: enabled only when the driver advertises it (default on since the flip; the loader
+    * runs with MALI_EXPERIMENTAL_TF=0 only in the opt-out case), so --only tf_record can reach the three commands. */
    VkPhysicalDeviceTransformFeedbackFeaturesEXT ftf = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT, .pNext = e2.pNext};
    {
@@ -3328,8 +3667,15 @@ main(int argc, char **argv)
    CmdBindTransformFeedbackBuffersEXT = (PFN_vkCmdBindTransformFeedbackBuffersEXT)GetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
    CmdBeginTransformFeedbackEXT = (PFN_vkCmdBeginTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
    CmdEndTransformFeedbackEXT = (PFN_vkCmdEndTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
+   /* When the device has the extension enabled, all three commands must be exposed: a missing one must not turn into
+    * a "not advertised" skip (CodeRabbit on #313, t_vk_feat.c:3594). */
+   if (g_tf && (!CmdBindTransformFeedbackBuffersEXT || !CmdBeginTransformFeedbackEXT || !CmdEndTransformFeedbackEXT)) {
+      printf("{\"fail\":\"VK_EXT_transform_feedback advertised without all three commands\"}\n");
+      return 1;
+   }
    g_gsl = (PFN_vkGetImageSubresourceLayout)GetDeviceProcAddr(dev, "vkGetImageSubresourceLayout");
    g_rf = (PFN_vkResetFences)GetDeviceProcAddr(dev, "vkResetFences");
+   g_rcb = (PFN_vkResetCommandBuffer)GetDeviceProcAddr(dev, "vkResetCommandBuffer");
    g_pd_cr = (PFN_vkCreatePrivateDataSlot)GetDeviceProcAddr(dev, "vkCreatePrivateDataSlotEXT");
    g_pd_set = (PFN_vkSetPrivateData)GetDeviceProcAddr(dev, "vkSetPrivateDataEXT");
    g_pd_get = (PFN_vkGetPrivateData)GetDeviceProcAddr(dev, "vkGetPrivateDataEXT");
@@ -3354,6 +3700,13 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("tf_reject")) ok &= test_tf_reject();   /* explicit only: keeps the golden BO/address sequence */
    if (ok && g_only && CASE_ON("tf_record")) ok &= test_tf_record();
    if (ok && g_only && CASE_ON("tf_write")) ok &= test_tf_write();   /* stage 4: the data must land in the bound buffers */   /* stage 2: the commands record; the draw still refuses */
+   /* VK_EXT_transform_feedback on by default (MALI_EXPERIMENTAL_TF=0 opts out): the guard that keeps a non-capturing draw
+    * safe, the reset path, and the two documented limits. Explicit only, like the cases above. */
+   if (ok && g_only && CASE_ON("tf_inactive")) ok &= test_tf_inactive();
+   if (ok && g_only && CASE_ON("tf_reset")) ok &= test_tf_reset();
+   if (ok && g_only && CASE_ON("tf_multi")) ok &= test_tf_multi();
+   if (ok && g_only && CASE_ON("tf_overflow")) ok &= test_tf_overflow();
+   if (ok && CASE_ON("tf_default")) ok &= test_tf_default();   /* default-on: the extension must be there with no env */
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();

@@ -6,6 +6,7 @@
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -110,6 +111,9 @@ reset_state(struct mali_cmd_buffer *cmd)
    memset(cmd->vb_size, 0, sizeof cmd->vb_size);
    memset(cmd->vb_stride, 0, sizeof cmd->vb_stride);
    memset(cmd->push, 0, sizeof cmd->push);
+   /* the TF range is recording state like the bindings above: a reset buffer that kept the old handles would patch a
+    * freed buffer's address into the next draw (mali_cmd.c: the XFB patch below), so it goes with the push block. */
+   memset(&cmd->tf, 0, sizeof cmd->tf);
    cmd->nsets = 0;
    cmd->ndyn = 0;
    cmd->occ_va = 0;
@@ -236,6 +240,8 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
       if (stages[i] == MESA_SHADER_VERTEX) {
          cmd->gfx.vs = c;
          cmd->gfx.vs_va = va;
+         cmd->gfx.vs_plain = NULL;   /* a dynamically bound shader has no compiled non-XFB variant */
+         cmd->gfx.vs_plain_va = 0;
       } else if (stages[i] == MESA_SHADER_FRAGMENT) {
          cmd->gfx.fs = c;
          cmd->gfx.fs_va = va;
@@ -459,11 +465,16 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
     * push block. */
    const bool xfb = cmd->have_gfx && cmd->gfx.xfb;
    const unsigned xfb_pc = xfb ? cmd->gfx.xfb_pc : 0;
-   if (xfb && cmd->tf.active) {
-      m |= MALI_D_PUSH;
-      if (xfb_pc + 32 > MALI_PUSH_MAX)
-         return false;
-   }
+   /* No range open: run the pipeline's second, non-XFB vertex program instead of lowering the stores with zero bases.
+    * The push block is still republished, so a draw that reuses the previous record cannot inherit a live range's
+    * addresses (the block itself is zero there: mali_CmdPushConstants cannot reach past the application's range). */
+   const bool xfb_off = xfb && !cmd->tf.active && cmd->gfx.vs_plain;
+   if (xfb && !xfb_off && xfb_pc + 32 > MALI_PUSH_MAX)
+      return false;
+   /* Both the push block and the pipeline block are republished for every XFB draw: which of the two vertex programs
+    * runs changes with the range, so inheriting the previous draw's blocks would run the wrong one. */
+   if (xfb)
+      m |= MALI_D_PIPE | MALI_D_PUSH;
    if (m & MALI_D_PUSH) {
       struct mali_bpush *bu = mali_frame_blk(fr, sizeof *bu);
       if (!bu)
@@ -491,6 +502,12 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          return false;
       d->pipe = bp;
       bp->gfx = cmd->gfx;
+      if (xfb_off) {   /* no range open: the non-XFB program (mali_pipeline.c), so nothing is stored */
+         bp->gfx.vs = bp->gfx.vs_plain;
+         bp->gfx.vs_va = bp->gfx.vs_plain_va;
+      }
+      if (xfb && getenv("MALI_TF_DBG"))
+         fprintf(stderr, "mali_tf: draw uses the %s vertex program at 0x%" PRIx64 "\n", xfb_off ? "plain" : "XFB", bp->gfx.vs_va);
       if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS) && dyn->vp.viewport_count) {
          const VkViewport *v = &dyn->vp.viewports[0];
          bp->vp[0] = v->x; bp->vp[1] = v->y; bp->vp[2] = v->width; bp->vp[3] = v->height; bp->vp[4] = v->minDepth; bp->vp[5] = v->maxDepth;
@@ -634,6 +651,12 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       return;
    if (!icount || !inst)
       return;
+   /* Same restriction as mali_CmdDraw: num_vertices is not wired (mali_compile.c replaces it with 0), so instanced
+    * XFB would write every instance to the same slots (CodeRabbit on #313, vk/src/mali_cmd.c:633). */
+   if (cmd->tf.active && inst > 1) {
+      unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
    if (!sl || !snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -861,8 +884,10 @@ mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint3
                                         const VkDeviceSize *offsets, const VkDeviceSize *sizes)
 {
    CMD(h);
-   if (cmd->in_render) {
-      unsupported(cmd, "vkCmdBindTransformFeedbackBuffersEXT inside a render pass");
+   /* The command is valid in both scopes (in and out of a render pass; VUID-vkCmdBindTransformFeedbackBuffersEXT-
+    * renderpass does not exist), and only a rebind while capture is active is refused (CodeRabbit, #313). */
+   if (cmd->tf.active) {
+      unsupported(cmd, "vkCmdBindTransformFeedbackBuffersEXT while transform feedback is active");
       return;
    }
    if (!buffers || first + count > 4) {
@@ -904,9 +929,13 @@ mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buff
       unsupported(cmd, "VK_EXT_transform_feedback: more than 4 counter buffers");
       return;
    }
-   if (counter_buffers)   /* the streamout job increments these; mark them written for the same reason */
-      for (uint32_t i = 0; i < counter_buffer_count; i++)
-         mali_cmd_mark_buffer_written(cmd, counter_buffers[i]);
+   if (counter_buffers && counter_buffer_count) {
+      /* The captured byte position is not saved (mali_compile.c has no counter write), so a counter would stay
+       * stale and a pause/resume would overwrite records. Refuse loudly instead of marking it written
+       * (CodeRabbit on #313, vk/src/mali_cmd.c:915/:941). */
+      unsupported(cmd, "VK_EXT_transform_feedback: counter buffers are not implemented");
+      return;
+   }
    cmd->tf.active = true;
 }
 
@@ -919,9 +948,10 @@ mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer
       unsupported(cmd, "vkCmdEndTransformFeedbackEXT without a matching Begin");
       return;
    }
-   if (counter_buffers)
-      for (uint32_t i = 0; i < counter_buffer_count; i++)
-         mali_cmd_mark_buffer_written(cmd, counter_buffers[i]);
+   if (counter_buffers && counter_buffer_count) {
+      unsupported(cmd, "VK_EXT_transform_feedback: counter buffers are not implemented");
+      return;
+   }
    cmd->tf.active = false;
 }
 
