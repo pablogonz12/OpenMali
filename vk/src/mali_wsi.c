@@ -30,6 +30,8 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice device, VkSwapch
 VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo);
 VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                   const VkAllocationCallbacks *pAllocator);
+VKAPI_ATTR VkResult VKAPI_CALL wsi_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId,
+                                                    uint64_t timeout);
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice, uint32_t,
                                                                              xcb_connection_t *, xcb_visualid_t);
@@ -42,8 +44,6 @@ VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceWaylandPresentationSupportKH
 VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice, uint32_t,
                                                                               Display *, VisualID);
 #endif
-VKAPI_ATTR VkResult VKAPI_CALL wsi_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId,
-                                                    uint64_t timeout);
 
 #include "vk_alloc.h"
 #include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
