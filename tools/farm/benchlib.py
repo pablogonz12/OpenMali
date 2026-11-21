@@ -142,6 +142,39 @@ def digest_lines(rows):
     return out
 
 
+REGRESS_PCT = 10.0                                # a newest-vs-previous move worse than this is flagged
+
+
+def regressions(rows, pct=REGRESS_PCT):
+    """newest bench row of each (phone, driver, variant) vs the previous row of a different commit -> list of text lines.
+    Flags offscreen fps dropping, or offscreen cpu_ms rising, by more than pct percent. Rows lacking a number are skipped."""
+    hist = {}                                              # (phone, driver, variant, metric) -> [(commit_full, value)]
+    for r in rows:                                         # file order = time order
+        if r.get("commit_full") is None or not isinstance(r.get("offscreen"), dict):
+            continue
+        for key in ("fps", "cpu_ms"):
+            v = r["offscreen"].get(key)
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue                                   # an unusable measurement never replaces usable history
+            h = hist.setdefault((r.get("phone"), r.get("driver"), r.get("variant"), key), [])
+            if h and h[-1][0] == r["commit_full"]:
+                h[-1] = (r["commit_full"], v)              # re-run of the same commit replaces it
+            else:
+                h.append((r["commit_full"], v))
+    out = []
+    for (ph, drv, var, key), h in sorted(hist.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        if len(h) < 2:
+            continue
+        (ca, a), (cb, b) = h[-2], h[-1]
+        if a <= 0:
+            continue
+        d = (b - a) / a * 100.0
+        eps = 1e-9                                         # exactly pct% (e.g. 2.0 -> 2.2) must not trip on float rounding
+        if (d > pct + eps) if key == "cpu_ms" else (d < -pct - eps):
+            out.append(f"REGRESSION {ph} {drv} {var} offscreen {key} {a:g} -> {b:g} ({d:+.0f}%) {ca[:7]}..{cb[:7]}")
+    return out
+
+
 def menu_digest_lines(state):
     return M.digest_lines(M.load_rows(M.menu_path(state)))
 
@@ -155,12 +188,16 @@ def row_key(r):
     return (r.get("phone"), r.get("driver"), r.get("version"), r.get("variant"), r.get("commit_full") or r.get("commit"))
 
 
+def row_shape_ok(r):
+    return not (r.get("version") == "fake" or "presented" not in r or "offscreen" not in r)
+
+
 def publishable(r, peers=()):
     """fake rows and implausible ones (the invalid-winner symptom: ours cube with no real work) are never published.
     "Implausible" = ours cube offscreen GPU time below half of the bridge's for the same phone, variant and commit (`peers` = rows to look the
     bridge up in); with no bridge row to compare with, below 2 ms. The fixed 2 ms alone dropped every valid ours cube row of the Poco X8
     (G925: bridge 1.32 ms, ours 1.40-1.53 ms), so RESULTS.md never had one."""
-    if r.get("version") == "fake" or "presented" not in r or "offscreen" not in r:
+    if not row_shape_ok(r):
         return False
     if r.get("bench") == "cube" and r.get("driver") == "ours":
         g = (r["offscreen"] or {}).get("gpu_ms")
@@ -176,7 +213,11 @@ def publishable(r, peers=()):
 def merge_rows(existing, new):
     """-> merged list: later rows replace earlier ones with the same key (and move to the end = newest); relative order otherwise kept"""
     d = {}
-    for r in existing + [x for x in new if publishable(x, new)]:
+    # the bridge row of a commit may already be published (ours-only job): without it the absolute 2 ms floor dropped valid X8 rows.
+    # An existing row that a new same-key row replaces is not a peer (its value is gone after the merge); a new row only replaces it when it passes.
+    repl = {row_key(x) for x in new if row_shape_ok(x) and not (x.get("bench") == "cube" and x.get("driver") == "ours")}
+    peers = [e for e in existing if row_key(e) not in repl] + list(new)
+    for r in existing + [x for x in new if publishable(x, peers)]:
         k = row_key(r)
         d.pop(k, None)
         d[k] = r
@@ -193,7 +234,7 @@ def publish(state, remote, clone=None, log=print, retries=PUB_RETRIES, report_cm
     "bench: <phones> rows for <short commit>" and push to `remote` <branch>. Never touches any other checkout. A rejected push
     (somebody ff-merged meanwhile) is retried from a fresh fetch. -> {"status": "pushed|nothing|error", "n": rows changed, "msg": ...}"""
     allrows = load_rows(state)
-    rows = [r for r in allrows if publishable(r, allrows)]
+    rows = [r for r in allrows if row_shape_ok(r)]          # the plausibility check runs in merge_rows, where the already published bridge rows are peers
     mrows = [r for r in M.load_rows(M.menu_path(state)) if M.publishable(r)]
     if not rows and not mrows:
         return {"status": "nothing", "n": 0, "msg": "no publishable rows in the farm state"}

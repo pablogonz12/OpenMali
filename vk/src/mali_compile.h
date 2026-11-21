@@ -39,6 +39,8 @@ struct mali_compile_opts {
    const uint32_t *spirv;
    size_t spirv_words;
    const char *entry;             /* NULL = "main" */
+   unsigned xfb_pc;               /* VS only: push-constant offset of the 4 XFB buffer addresses (app push size) */
+   unsigned xfb;                  /* VS only: the pipeline layout reserves 32 B at xfb_pc for them (0 = no XFB) */
    unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 24, FS 8, CS 8) */
    unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */
@@ -51,6 +53,8 @@ struct mali_compile_opts {
    const struct mali_spec_entry *spec;     /* pMapEntries */
    const void *spec_data;                  /* pData; every entry must lie inside it (caller checks dataSize) */
    const char *cache_dir;         /* NULL = $MALI_SHADER_CACHE or $XDG_CACHE_HOME/mali-gaming/shaders; "" = no disk cache */
+   unsigned subgroup_size;        /* CS: VkPipelineShaderStageRequiredSubgroupSizeCreateInfo::requiredSubgroupSize; 0 = the arch's warp width.
+                                   * Any other value than mali_subgroup_size_for_arch(arch) is refused: the hardware has one width. */
 };
 
 struct mali_imm { uint32_t word, value; };   /* promoted immediate: FAU word index (32-bit), value */
@@ -80,6 +84,7 @@ struct mali_compiled {
    struct mali_varying_blob layout;        /* VS: pass to the FS compile (link_vs) */
    uint32_t local_size[3];        /* CS: workgroup size */
    uint32_t allow_merge;          /* CS: COMPUTE_SIZE_WORKGROUP bit 31 (no shared memory, workgroup barrier or subgroup op: HW may merge workgroups) */
+   uint32_t subgroup_size;        /* CS: the warp width the code was compiled for (mali_subgroup_size_for_arch) */
    uint32_t cache_hit;            /* 1 if this result came from the disk cache */
    uint32_t fs_sample_shading;   /* FS runs per sample (info.fs.sample_shading): DCD0 "Evaluate per-sample" */
    uint32_t fs_blend0_type, fs_blend_src1_type;   /* FS: nir_alu_type of colour output 0 / dual-source output (0 = none) */
@@ -96,12 +101,28 @@ struct mali_blend_opts {
    unsigned rgb_src, rgb_dst, alpha_src, alpha_dst;   /* VkBlendFactor */
    unsigned color_mask;           /* VkColorComponentFlags */
    unsigned src0_type, src1_type;
+   unsigned logic_op_enable, logic_op;   /* VkLogicOp: replaces the equation (colour logic op on the destination) */
 };
 int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
-/* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
+/* mali_compile: 0 on success (out filled, release with mali_compiled_free); negative on error, message in err.
+ * MALI_COMPILE_UNSUPPORTED means the shader is valid but this driver has no path for it yet (callers map it to
+ * VK_ERROR_FEATURE_NOT_PRESENT rather than VK_ERROR_INVALID_SHADER_NV). */
+#define MALI_COMPILE_UNSUPPORTED (-2)
+
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
+
+/* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the
+ * pipeline layout must reserve the driver's 32 B of XFB buffer addresses after the application's push constants.
+ * Checked before compiling because the layout is fixed at pipeline creation. */
+int mali_spirv_has_xfb(const uint32_t *words, uint32_t nwords);
 void mali_compiled_free(struct mali_compiled *c);
+
+/* Threads per warp (subgroup width) of a Mali architecture. Mirrors Mesa's pan_subgroup_size() for the arches we support:
+ * Valhall and later (arch >= 9) execute 16 lanes, Bifrost 8, Midgard 4 (no subgroups: 1). The G925 shader_present mask
+ * (0xee0057) is non-contiguous in a way that only makes sense at 16. This is the single source for the reported
+ * VkPhysicalDeviceSubgroupProperties::subgroupSize and for the compiler's lower_subgroups width. */
+unsigned mali_subgroup_size_for_arch(unsigned arch);
 
 /* Cache statistics of this process. */
 struct mali_compile_stats { uint64_t hits, misses, stores; };

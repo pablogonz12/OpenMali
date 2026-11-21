@@ -307,6 +307,9 @@ mali_meta_plan_qcopy(struct mali_meta_list *l, const struct mali_meta_surf *pool
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mali_meta_dev g_dev;
 static bool g_dev_set;
+static unsigned g_gen;   /* bumped by mali_meta_set_dev: a compile that finished for an older device is dropped */
+static pthread_t g_pw;
+static bool g_pw_run;
 static struct {
    bool ok;
    struct mali_compiled c;
@@ -317,6 +320,18 @@ void
 mali_meta_set_dev(const struct mali_meta_dev *dev)
 {
    pthread_mutex_lock(&g_lock);
+   bool join = g_pw_run;
+   g_pw_run = false;
+   pthread_t pw = g_pw;
+   pthread_mutex_unlock(&g_lock);
+   if (join)
+      pthread_join(pw, NULL);   /* the worker sees the new generation and drops its result; never held under g_lock */
+   pthread_mutex_lock(&g_lock);
+   /* Bump the generation in the same critical section that installs the device. Bumping it in the earlier
+    * section left a window where g_gen was new but g_dev still described the old device: a compile there
+    * captured the new generation with the old arch, and the install did not change g_gen again, so its
+    * publication check passed and an old-arch binary was uploaded to the new device. */
+   g_gen++;
    for (int i = 0; i < MALI_META_NSHADERS; i++)
       if (g_sh[i].ok) {
          mali_compiled_free(&g_sh[i].c);
@@ -391,59 +406,114 @@ meta_layout(struct mali_compile_layout *lay, struct mali_lbinding b[2], unsigned
 {
    memset(lay, 0, sizeof *lay);
    for (unsigned i = 0; i < 2; i++)
-      b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER };
+      b[i] = (struct mali_lbinding){ MALI_DT_STORAGE_BUFFER, 1, i, 1, 0, MALI_NO_IMM_SAMPLER, 0, 0, 0 };
    lay->nsets = 1;
-   lay->set[0] = (struct mali_lset){ 2, 2, 0, b };
+   lay->set[0] = (struct mali_lset){ 2, 2, 0, b, NULL };
    lay->push_size = push;
 }
 
+/* Compiles outside g_lock (a first-use compile is tens to hundreds of ms and g_lock also guards every meta/query/event allocation),
+ * publishes under it. Two racing first uses may both compile; the loser's result is freed. */
 static int
-shader_get_locked(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
+shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
 {
-   if (!g_dev_set)
+   /* A generation change does not mean "no device": set(A) after set(B) is legal while A is still recording. Retry a
+    * small number of times against the device that is installed now; only a cleared device is -ENODEV. */
+   for (unsigned attempt = 0;; attempt++) {
+   pthread_mutex_lock(&g_lock);
+   if (!g_dev_set) {
+      pthread_mutex_unlock(&g_lock);
       return -ENODEV;
-   if (!g_sh[sh].ok) {
-      struct mali_compile_layout lay;
-      struct mali_lbinding b[2];
-      char err[256] = "";
-      const uint32_t *spv = g_src[sh].spv;
-      size_t words = g_src[sh].words, push = g_src[sh].push;
-      if (sh >= MALI_META_BC_FIRST) {
-         spv = mali_bc_spirv((enum mali_bc_shader)(sh - MALI_META_BC_FIRST), &words);
-         push = MALI_BC_PUSH_WORDS * 4;
-         if (!spv)
-            return -EINVAL;
-      }
-      meta_layout(&lay, b, push);
-      struct mali_compile_opts o = { 0 };
-      o.arch = g_dev.arch;
-      o.stage = MALI_STAGE_COMPUTE;
-      o.spirv = spv;
-      o.spirv_words = words;
-      o.layout = &lay;
-      o.fau_reserved = (push + 3) / 4;   /* compute: the push block is copied to FAU word 0 on, immediates go after it */
-      if (mali_compile(&o, &g_sh[sh].c, err, sizeof err) < 0) {
-         fprintf(stderr, "mali_meta: compile of shader %d failed: %s\n", sh, err);
+   }
+   if (g_sh[sh].ok) {
+      *c = &g_sh[sh].c;
+      *va = g_sh[sh].va;
+      pthread_mutex_unlock(&g_lock);
+      return 0;
+   }
+   const unsigned gen = g_gen, arch = g_dev.arch;
+   pthread_mutex_unlock(&g_lock);
+
+   struct mali_compile_layout lay;
+   struct mali_lbinding b[2];
+   char err[256] = "";
+   struct mali_compiled comp;
+   const uint32_t *spv = g_src[sh].spv;
+   size_t words = g_src[sh].words, push = g_src[sh].push;
+   if (sh >= MALI_META_BC_FIRST) {
+      spv = mali_bc_spirv((enum mali_bc_shader)(sh - MALI_META_BC_FIRST), &words);
+      push = MALI_BC_PUSH_WORDS * 4;
+      if (!spv)
          return -EINVAL;
+   }
+   meta_layout(&lay, b, push);
+   struct mali_compile_opts o = { 0 };
+   o.arch = arch;
+   o.stage = MALI_STAGE_COMPUTE;
+   o.spirv = spv;
+   o.spirv_words = words;
+   o.layout = &lay;
+   o.fau_reserved = (push + 3) / 4;   /* compute: the push block is copied to FAU word 0 on, immediates go after it */
+   if (mali_compile(&o, &comp, err, sizeof err) < 0) {
+      fprintf(stderr, "mali_meta: compile of shader %d failed: %s\n", sh, err);
+      return -EINVAL;
+   }
+
+   pthread_mutex_lock(&g_lock);
+   int r = 0;
+   if (!g_dev_set || g_gen != gen) {
+      mali_compiled_free(&comp);
+      if (g_dev_set && attempt < 3) {   /* device swapped underneath: recompile for the installed one */
+         pthread_mutex_unlock(&g_lock);
+         continue;
       }
-      if (g_dev.upload_shader(g_dev.user, g_sh[sh].c.bin, g_sh[sh].c.bin_size, &g_sh[sh].va) < 0) {
-         mali_compiled_free(&g_sh[sh].c);
-         return -ENOMEM;
-      }
+      r = -ENODEV;
+   } else if (g_sh[sh].ok) {
+      mali_compiled_free(&comp);
+   } else if (g_dev.upload_shader(g_dev.user, comp.bin, comp.bin_size, &g_sh[sh].va) < 0) {
+      mali_compiled_free(&comp);
+      r = -ENOMEM;
+   } else {
+      g_sh[sh].c = comp;
       g_sh[sh].ok = true;
    }
-   *c = &g_sh[sh].c;
-   *va = g_sh[sh].va;
-   return 0;
+   if (!r) {
+      *c = &g_sh[sh].c;
+      *va = g_sh[sh].va;
+   }
+   pthread_mutex_unlock(&g_lock);
+   return r;
+   }
 }
 
 int
 mali_meta_shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va)
 {
+   return shader_get(sh, c, va);
+}
+
+/* Compile the built-in meta shaders (copy, blit, qcopy) on a background thread so the first blit/copy of a frame does not hitch.
+ * Opt-in (the queue calls it after mali_meta_set_dev); MALI_META_PREWARM=0 disables. mali_meta_set_dev joins it. */
+static void *
+prewarm_main(void *unused)
+{
+   const struct mali_compiled *c;
+   uint64_t va;
+   for (int i = 0; i <= MALI_META_QCOPY; i++)
+      shader_get(i, &c, &va);
+   return NULL;
+}
+
+void
+mali_meta_prewarm(void)
+{
+   const char *e = getenv("MALI_META_PREWARM");
+   if (e && e[0] == '0')
+      return;
    pthread_mutex_lock(&g_lock);
-   int r = shader_get_locked(sh, c, va);
+   if (g_dev_set && !g_pw_run && pthread_create(&g_pw, NULL, prewarm_main, NULL) == 0)
+      g_pw_run = true;
    pthread_mutex_unlock(&g_lock);
-   return r;
 }
 
 /* Hardware Buffer descriptor (same bytes as mali_pack_buffer(): w0 = type 9 | 1<<4, w1 = size, w2/w3 = va; tests compare them). */
@@ -465,12 +535,22 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    struct mali_meta_bind bind[2] = { j->bind[0], j->bind[1] };
    int r;
 
-   pthread_mutex_lock(&g_lock);
-   r = shader_get_locked(j->sh, &c, &cs_va);
-   if (r) {
-      pthread_mutex_unlock(&g_lock);
+   /* shader_get releases g_lock before it returns, so mali_meta_set_dev can free the cached shader and install another
+    * device in between. Revalidate under g_lock before allocating anything: a shader/VA from an older device must not
+    * be paired with descriptor memory from the one installed now (a foreign VA, and a freed mali_compiled). Retry, and
+    * take the VA from the live cache entry rather than from the copy shader_get returned. */
+   for (unsigned attempt = 0;; attempt++) {
+   r = shader_get(j->sh, &c, &cs_va);
+   if (r)
       return r;
+   pthread_mutex_lock(&g_lock);
+   if (!g_sh[j->sh].ok || c != &g_sh[j->sh].c) {
+      pthread_mutex_unlock(&g_lock);
+      if (attempt < 3)
+         continue;
+      return -ENODEV;   /* the device keeps changing under us: no stable shader to record with */
    }
+   cs_va = g_sh[j->sh].va;
    if (j->inline_data) {
       uint64_t va;
       void *p = mem_alloc(mem, (j->inline_len + 63) & ~63u, 64, &va);
@@ -497,24 +577,25 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
    out->set_bytes[0] = j->nbind * 32;
    memcpy(out->groups, j->groups, sizeof out->groups);
    return 0;
+   }
 }
 
 /* R4: loadOp LOAD. A graphics "preload" draw (full-viewport triangle) re-emits the old contents of the (linear) attachment(s), read as storage
  * buffers, into the tile before the application's draws: colour through a colour output, depth/stencil through gl_FragDepth /
  * gl_FragStencilRefARB (force-late ZS, see mali_cs_emit.c). One compiled FS per kind, compiled once per process (arch of the installed device). */
-static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[MALI_PRELOAD_KINDS + 2];   /* + colour with an unsigned / signed integer colour output (arg bits 16..17 = 1 / 2) */
+static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[MALI_PRELOAD_KINDS + 3];   /* + colour with an unsigned / signed integer colour output (arg bits 16..17 = 1 / 2), + the multisampled colour variant */
 static struct { bool ok; struct mali_compiled vs; uint64_t vs_va; } g_pre_vs;
 
 static int
 preload_compile(unsigned kind)   /* kind < MALI_PRELOAD_KINDS: enum mali_preload_kind; MALI_PRELOAD_KINDS + 0/1: integer-output colour variants (U / S) */
 {
    char err[256] = "";
-   struct mali_lbinding b[2] = { { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER, 0 }, { MALI_DT_STORAGE_BUFFER, 1, 1, 1, 0, MALI_NO_IMM_SAMPLER, 0 } };
+   struct mali_lbinding b[2] = { { MALI_DT_STORAGE_BUFFER, 1, 0, 1, 0, MALI_NO_IMM_SAMPLER, 0, 0, 0 }, { MALI_DT_STORAGE_BUFFER, 1, 1, 1, 0, MALI_NO_IMM_SAMPLER, 0, 0, 0 } };
    struct mali_compile_layout lay;
    memset(&lay, 0, sizeof lay);
    lay.nsets = 1;
    unsigned nb = kind == MALI_PRELOAD_ZS ? 2 : 1;
-   lay.set[0] = (struct mali_lset){ nb, nb, 0, b };
+   lay.set[0] = (struct mali_lset){ nb, nb, 0, b, NULL };
    lay.push_size = 16;
    struct mali_compile_opts o = { 0 };
    o.arch = g_dev.arch;
@@ -531,9 +612,11 @@ preload_compile(unsigned kind)   /* kind < MALI_PRELOAD_KINDS: enum mali_preload
          return -ENOMEM;
       g_pre_vs.ok = true;
    }
-   const uint32_t *spv = kind == MALI_PRELOAD_KINDS ? preload_uint_frag_spv : kind == MALI_PRELOAD_KINDS + 1 ? preload_sint_frag_spv : kind == MALI_PRELOAD_COLOUR ? preload_frag_spv : kind == MALI_PRELOAD_Z ? preload_z_frag_spv :
+   const uint32_t *spv = kind == MALI_PRELOAD_KINDS ? preload_uint_frag_spv : kind == MALI_PRELOAD_KINDS + 1 ? preload_sint_frag_spv : kind == MALI_PRELOAD_KINDS + 2 ? preload_msaa_frag_spv :
+                         kind == MALI_PRELOAD_COLOUR ? preload_frag_spv : kind == MALI_PRELOAD_Z ? preload_z_frag_spv :
                          kind == MALI_PRELOAD_S ? preload_s_frag_spv : preload_zs_frag_spv;
-   size_t words = kind == MALI_PRELOAD_KINDS ? sizeof preload_uint_frag_spv : kind == MALI_PRELOAD_KINDS + 1 ? sizeof preload_sint_frag_spv : kind == MALI_PRELOAD_COLOUR ? sizeof preload_frag_spv : kind == MALI_PRELOAD_Z ? sizeof preload_z_frag_spv :
+   size_t words = kind == MALI_PRELOAD_KINDS ? sizeof preload_uint_frag_spv : kind == MALI_PRELOAD_KINDS + 1 ? sizeof preload_sint_frag_spv : kind == MALI_PRELOAD_KINDS + 2 ? sizeof preload_msaa_frag_spv :
+                  kind == MALI_PRELOAD_COLOUR ? sizeof preload_frag_spv : kind == MALI_PRELOAD_Z ? sizeof preload_z_frag_spv :
                   kind == MALI_PRELOAD_S ? sizeof preload_s_frag_spv : sizeof preload_zs_frag_spv;
    memset(&o, 0, sizeof o);
    o.arch = g_dev.arch;
@@ -542,6 +625,7 @@ preload_compile(unsigned kind)   /* kind < MALI_PRELOAD_KINDS: enum mali_preload
    o.spirv_words = words / 4;
    o.layout = &lay;
    o.link_vs = &g_pre_vs.vs.layout;
+   o.sample_shading = kind == MALI_PRELOAD_KINDS + 2;   /* multisampled preload: the FS runs once per sample (gl_SampleID) */
    if (mali_compile(&o, &g_pre[kind].fs, err, sizeof err) < 0) {
       fprintf(stderr, "mali_meta: preload FS (kind %u) compile failed: %s\n", kind, err);
       return -EINVAL;
@@ -562,7 +646,9 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
       pthread_mutex_unlock(&g_lock);
       return -ENODEV;
    }
-   unsigned slot = kind == MALI_PRELOAD_COLOUR && ((src->arg >> 16) & 3) ? MALI_PRELOAD_KINDS - 1 + ((src->arg >> 16) & 3) : (unsigned)kind;
+   const bool msaa = kind == MALI_PRELOAD_COLOUR && src->samples > 1;
+   unsigned slot = msaa ? MALI_PRELOAD_KINDS + 2 :
+                   kind == MALI_PRELOAD_COLOUR && ((src->arg >> 16) & 3) ? MALI_PRELOAD_KINDS - 1 + ((src->arg >> 16) & 3) : (unsigned)kind;
    if (!g_pre[slot].ok) {
       int r = preload_compile(slot);
       if (r) {
@@ -596,7 +682,11 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
       pc[0] = src->row[0];
       pc[1] = src->arg;
       pc[2] = src->bpp;
-      pc[3] = 0;
+      pc[3] = msaa ? src->sample_stride : 0;   /* pad: bytes per sample plane for the per-sample variant */
+      if (msaa) {
+         d->gfx.samples = src->samples;   /* the draw runs in the 4x pass... */
+         d->gfx.per_sample = true;        /* ...with the FS evaluated per sample (DCD0 evaluate-per-sample) */
+      }
    } else if (kind == MALI_PRELOAD_S) {
       pc[1] = src->row[0];   /* stencil-only variant reads its row from the srow word */
    }

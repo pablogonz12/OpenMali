@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer C: CSF queue group (one group, one queue) and notification decoding. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -114,6 +116,15 @@ fail:
 	ctx->live_queues++; /* kb_queue_destroy decrements */
 	kb_queue_destroy(q);
 	return r;
+}
+
+unsigned
+kb_queue_piece_instrs(uint32_t ring_size)
+{
+	if (ring_size < 4096)
+		ring_size = 4096;
+	unsigned n = (ring_size / 4) / 8; /* a quarter of the ring, padded 8-byte instruction words */
+	return n ? n : 1;
 }
 
 uint64_t kb_queue_extract(const struct kb_queue *q) { DMB(); return *q->cs_extract; }
