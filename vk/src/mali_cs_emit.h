@@ -252,6 +252,7 @@ struct mali_frame {
 struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
 int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* full draw (preload): new blocks, dirty ALL. 0 or -ENOMEM */
 int mali_frame_add_rec(struct mali_frame *f, const struct mali_rec *r);     /* 0 or -ENOMEM */
+unsigned mali_frame_pool_cached(void);                                      /* test hook: recycled pool chunks parked */
 void *mali_frame_blk(struct mali_frame *f, size_t n);                       /* zeroed block from the frame pool, NULL on ENOMEM */
 /* Updates the running full draw `x` (zero-initialised before the first rec of a frame) with the groups rec `r` renewed. */
 void mali_draw_expand(struct mali_draw *x, const struct mali_rec *r);
