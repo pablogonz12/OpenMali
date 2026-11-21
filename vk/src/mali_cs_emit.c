@@ -26,6 +26,7 @@
 #include "kbase_fb.h"
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
+#include "mali_descriptor.h"   /* THROWAWAY restbl: mali_restbl_words */
 #include "mali_event.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
@@ -406,6 +407,29 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       if (d->ndyn) {
          memcpy(dyn, d->dyn_desc, d->ndyn * KB_DESC_SET_STRIDE);
          kb_draw_resource(vst + MALI_DYN_TABLE * (KB_RES_SIZE / 4), va_dyn, d->ndyn * KB_DESC_SET_STRIDE, 1);
+      }
+      if (getenv("MALI_RESTBL_DBG")) {   /* THROWAWAY restbl: the resource-table entry the shader's handles index, beside the set's own words */
+         static unsigned rn;
+         if (rn++ < 60) {
+            fprintf(stderr, "mali_restbl: DRAW n=%u step=%s draw_id=%u prim=%u count=%u inst=%u indexed=%d nsets=%u ndyn=%u vst=0x%llx",
+                    rn, getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", d->draw_id, g->prim, d->count,
+                    d->instance_count, (int)d->indexed, d->nsets, d->ndyn, (unsigned long long)o->vst);
+            for (unsigned s = 0; s < d->nsets && s < MALI_CMD_SETS; s++) {
+               const uint32_t *e = vst + (1 + s) * (KB_RES_SIZE / 4);
+               uint32_t w[8] = { 0 };
+               bool have = mali_restbl_words(d->set_va[s], w);
+               fprintf(stderr, " | set%u entry3=%08x %08x %08x %08x va=0x%llx bytes=%u words=", s,
+                       e[0], e[1], e[2], e[3], (unsigned long long)d->set_va[s], d->set_bytes[s]);
+               if (have)
+                  fprintf(stderr, "%08x %08x %08x %08x %08x %08x %08x %08x",
+                          w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+               else
+                  fprintf(stderr, "(no cpu view)");
+            }
+            fprintf(stderr, "\n");
+         } else if (rn == 61) {
+            fprintf(stderr, "mali_restbl: ... (MALI_RESTBL_DBG limit, 60 draws)\n");
+         }
       }
    }
    if (s1)

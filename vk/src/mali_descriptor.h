@@ -105,3 +105,8 @@ VkResult mali_free_descriptor_sets(struct vk_device *dev, VkDescriptorPool pool,
 void mali_update_descriptor_sets(struct vk_device *dev, uint32_t nw, const VkWriteDescriptorSet *w, uint32_t nc,
                                  const VkCopyDescriptorSet *c);
 void mali_update_descriptor_set_with_template(struct vk_device *dev, VkDescriptorSet set, VkDescriptorUpdateTemplate t, const void *data);
+
+/* THROWAWAY restbl instrument (MALI_RESTBL_DBG=1, see mali_descriptor.c): the CPU view of a bound set's VA, ringed at
+ * bind so the emitter can print the first 8 words of the set it writes a resource-table entry for. No other user. */
+void mali_restbl_note(uint64_t va, const uint8_t *cpu);
+bool mali_restbl_words(uint64_t va, uint32_t out[8]);

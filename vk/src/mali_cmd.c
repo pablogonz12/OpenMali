@@ -270,6 +270,8 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          return;
       }
       struct mali_dset *ds = mali_dset_from_handle(sets[i]);
+      if (ds && getenv("MALI_RESTBL_DBG"))
+         mali_restbl_note(ds->va, ds->cpu);   /* THROWAWAY restbl: the set's words, printed at the emit of the draws that use it */
       /* M15: storage descriptors of a bound set can write their memory */
       for (unsigned k = 0; ds && k < ds->nwrote; k++)
          mali_cmd_mark_written(cmd, ds->wrote[k]);

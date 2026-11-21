@@ -615,3 +615,29 @@ mali_dyn_buf_pack(unsigned arch, struct mali_hw_desc *d, const struct mali_dyn_b
    if (!b->va) { memset(d, 0, sizeof *d); return; }   /* null dynamic buffer stays a Null Descriptor */
    mali_pack_buffer(arch, d, b->va + dyn_offset, (uint32_t)(b->size));
 }
+
+/* THROWAWAY restbl instrument: see mali_descriptor.h. Last 64 sets bound (va + CPU view), newest first on lookup. */
+struct mali_restbl_ent { uint64_t va; const uint8_t *cpu; };
+static struct mali_restbl_ent restbl_ring[64];
+static unsigned restbl_n;
+
+void
+mali_restbl_note(uint64_t va, const uint8_t *cpu)
+{
+   restbl_ring[restbl_n & 63u] = (struct mali_restbl_ent){ va, cpu };
+   restbl_n++;
+}
+
+bool
+mali_restbl_words(uint64_t va, uint32_t out[8])
+{
+   for (unsigned i = 0; i < 64 && i < restbl_n; i++) {
+      const struct mali_restbl_ent *e = &restbl_ring[(restbl_n - 1u - i) & 63u];
+      if (e->va == va) {
+         if (!e->cpu) return false;
+         memcpy(out, e->cpu, 8 * sizeof out[0]);
+         return true;
+      }
+   }
+   return false;
+}
