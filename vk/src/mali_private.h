@@ -30,6 +30,13 @@ struct mali_physical_device {
    VkPhysicalDeviceMemoryProperties memory;
    uint64_t mem_used;   /* bytes of live VkDeviceMemory over all devices (atomic; VK_EXT_memory_budget) */
    uint64_t mem_cap;    /* device-wide commit budget == heap 0 size: min(backend heap/2, RAM/4), MALI_VRAM_CAP_MB overrides */
+   /* DR-1: the budget is charged by every VkDevice of this physical device, but the free-BO pool (and the charge it
+    * keeps for a BO it retains) lives on the per-device mali_kdev. Reclaiming a pooled charge therefore means asking
+    * every device, not only the one that is allocating. mali_memory.c owns the list; lock order is pool_lock -> the
+    * kdev's own bo_lock, and destroy unregisters here before it tears the pool down. */
+   pthread_mutex_t pool_lock;
+   struct mali_kdev *pools[8];
+   unsigned npools;
 
    /* M4: binary fences/semaphores on kbase fences + the runtime's emulated timeline on top. */
    struct vk_sync_timeline_type timeline_type;
@@ -75,6 +82,10 @@ VkResult mali_enumerate_physical_devices(struct vk_instance *vk_instance);
 void mali_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* mali_memory.c: a backend pool really freed `size` bytes of BOs it had kept (see mali_backend_ops.bo_pool_watch). */
 void mali_memory_pool_release(void *pdev, size_t size);
+/* mali_memory.c: which device pools a reclaim at this budget must ask (DR-1). Register at device create, unregister
+ * before the backend destroys the pool. */
+void mali_memory_pool_register(struct mali_physical_device *pdev, struct mali_kdev *kdev);
+void mali_memory_pool_unregister(struct mali_physical_device *pdev, struct mali_kdev *kdev);
 /* M5/M7 seams (mali_resources.c): installs the descriptor/image resolvers and the BO-backed GPU pools. Idempotent. */
 void mali_resources_init(void);
 /* M14 */

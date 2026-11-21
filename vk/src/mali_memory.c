@@ -70,6 +70,27 @@ mem_try_reserve(struct mali_physical_device *pdev, uint64_t size)
    }
 }
 
+/* DR-1: a pooled BO is charged to the physical-device budget but retained by the pool of one VkDevice, so reclaim
+ * has to ask every device charged to this budget. The allocating device's pool goes first (warm pages); the rest of
+ * the list is walked under pool_lock so a device that is being destroyed cannot slip out of it mid-purge. The purge
+ * itself takes the kdev's bo_lock; the only thing that runs without it is the pool's release callback (an atomic
+ * subtract), so there is no lock inversion with pool_lock -> bo_lock anywhere. */
+static size_t
+mem_purge_pools(struct mali_physical_device *pdev, size_t want, struct mali_kdev *self)
+{
+   if (want == 0)
+      return 0;
+   size_t freed = pdev->backend->bo_pool_purge(self, want);
+   if (freed >= want)
+      return freed;
+   pthread_mutex_lock(&pdev->pool_lock);
+   for (unsigned i = 0; i < pdev->npools && freed < want; i++)
+      if (pdev->pools[i] != self)
+         freed += pdev->backend->bo_pool_purge(pdev->pools[i], want - freed);
+   pthread_mutex_unlock(&pdev->pool_lock);
+   return freed;
+}
+
 /* A pooled BO is committed in kbase but used by nobody: before refusing, really free enough of them to make room
  * (a steady alloc/free loop of one size would otherwise have to fail at the cap for the pool's own memory). */
 static bool
@@ -82,7 +103,7 @@ mem_reserve(struct mali_device *dev, uint64_t size)
       uint64_t cur = p_atomic_read(&pdev->mem_used);
       uint64_t room = cur < pdev->mem_cap ? pdev->mem_cap - cur : 0;
       if (size > room) {
-         pdev->backend->bo_pool_purge(dev->kdev, size - room);
+         mem_purge_pools(pdev, size - room, dev->kdev);
          if (mem_try_reserve(pdev, size))
             return true;
       }
@@ -109,6 +130,29 @@ void
 mali_memory_pool_release(void *pdev, size_t size)
 {
    mem_release(pdev, size);
+}
+
+/* mali_device.c: this device's pool is charged to `pdev`'s budget, so a reclaim there may purge it (DR-1). */
+void
+mali_memory_pool_register(struct mali_physical_device *pdev, struct mali_kdev *kdev)
+{
+   pthread_mutex_lock(&pdev->pool_lock);
+   if (pdev->npools < ARRAY_SIZE(pdev->pools))
+      pdev->pools[pdev->npools++] = kdev;
+   /* full: this device keeps today's behaviour (only its own pool is purged for its allocations) */
+   pthread_mutex_unlock(&pdev->pool_lock);
+}
+
+void
+mali_memory_pool_unregister(struct mali_physical_device *pdev, struct mali_kdev *kdev)
+{
+   pthread_mutex_lock(&pdev->pool_lock);
+   for (unsigned i = 0; i < pdev->npools; i++)
+      if (pdev->pools[i] == kdev) {
+         pdev->pools[i] = pdev->pools[--pdev->npools];
+         break;
+      }
+   pthread_mutex_unlock(&pdev->pool_lock);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

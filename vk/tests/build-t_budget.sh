@@ -1,0 +1,68 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Host test for the VRAM commit budget vs the kbase BO pool (t_budget.c): the ICD is linked statically, like t_cmd, so
+# mali_AllocateMemory runs against libkbase on its FAKE backend (real pool, real MEM_ALLOC/MEM_FREE accounting, no phone).
+# No Mesa build of its own: the archives are the ones build-t_cmd.sh uses (third_party/build-vk).
+set -euo pipefail
+D=$(cd "$(dirname "$0")/../.." && pwd); V=$D/vk; KB=$D/libkbase
+MESA=${MESA_SRC:-$D/third_party/mesa}
+B=${MESA_BUILD:-$D/third_party/build-vk}; OUT=$V/out/native/tbudget; GEN=$OUT/gen; mkdir -p "$OUT" "$GEN"
+export PATH=$D/third_party/venv/bin:$PATH
+PY=$D/third_party/venv/bin/python
+GENARGS="--proto --weak --prefix mali --device-prefix mali_v10 --device-prefix mali_v11 --device-prefix mali_v13 --beta false"
+if [ ! -f "$GEN/mali_entrypoints.c" ] || [ "$(cat "$GEN/.args" 2>/dev/null)" != "$GENARGS" ] \
+   || [ "$MESA/src/vulkan/util/vk_entrypoints_gen.py" -nt "$GEN/mali_entrypoints.c" ] \
+   || [ "$MESA/src/vulkan/registry/vk.xml" -nt "$GEN/mali_entrypoints.c" ]; then
+   "$PY" "$MESA/src/vulkan/util/vk_entrypoints_gen.py" --xml "$MESA/src/vulkan/registry/vk.xml" \
+      --out-h "$GEN/mali_entrypoints.h" --out-c "$GEN/mali_entrypoints.c" $GENARGS
+   echo "$GENARGS" > "$GEN/.args"
+fi
+cd "$B"
+CMDS=$(ninja -t commands src/panfrost/vulkan/libvulkan_panfrost.so)
+CCLINE=$(grep -m1 -- 'panvk_instance\.c$' <<<"$CMDS")
+LDLINE=$(tail -1 <<<"$CMDS")
+CC=$(sed -E 's# -MD -MQ [^ ]+ -MF [^ ]+##; s# -o [^ ]+ -c [^ ]+$##; s# -I[^ ]*src/panfrost/vulkan[^ ]*##g' <<<"$CCLINE")
+LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[A-Za-z0-9_+.-]+|-pthread)$' | tr '\n' ' ')
+CXX=$(cut -d' ' -f1 <<<"$LDLINE")
+
+ICD="mali_instance mali_physical_device mali_device mali_memory mali_dmabuf mali_sync mali_queue mali_fprof mali_backend_fake mali_backend_kbase
+ mali_format mali_image mali_buffer mali_sampler mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_compile mali_resources mali_soft"
+M8="mali_cs_emit mali_render mali_cmd mali_pipeline mali_wsi mali_meta mali_bc mali_meta_vk mali_query mali_query_core mali_event mali_event_vk"
+W="-Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -I$GEN -I$V/src -I$KB/include"
+newer() { [ ! -f "$1" ] || [ -n "$(find "$2" "$V"/src/*.h -newer "$1" -print -quit)" ]; }
+pids=()
+for f in $ICD $M8; do
+   if newer "$OUT/$f.o" "$V/src/$f.c"; then eval "$CC $W -o $OUT/$f.o -c $V/src/$f.c" & pids+=($!); fi
+done
+for f in ctx bo queue sync heap fb draw draw_v13 backend_fake; do
+   if newer "$OUT/kb_$f.o" "$KB/src/$f.c"; then eval "$CC -D_GNU_SOURCE -I$KB/include -I$KB/src -w -o $OUT/kb_$f.o -c $KB/src/$f.c" & pids+=($!); fi
+done
+if newer "$OUT/mali_entrypoints.o" "$GEN/mali_entrypoints.c"; then eval "$CC -D_GNU_SOURCE $W -o $OUT/mali_entrypoints.o -c $GEN/mali_entrypoints.c" & pids+=($!); fi
+eval "$CC $W -o $OUT/t_budget.o -c $V/tests/t_budget.c" & pids+=($!)
+for p in "${pids[@]}"; do wait "$p"; done
+
+WHOLE="src/vulkan/runtime/libvulkan_lite_runtime.a src/vulkan/runtime/libvulkan_runtime.a
+       src/vulkan/runtime/libvulkan_instance.a src/vulkan/wsi/libvulkan_wsi.a"
+PANLIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midgard/libpanfrost_midgard.a
+      src/panfrost/compiler/midgard/libpanfrost_midgard_disasm.a src/panfrost/compiler/bifrost/libpanfrost_bifrost.a
+      src/panfrost/compiler/bifrost/libpanfrost_bifrost_disasm.a src/panfrost/compiler/bifrost/valhall/libpanfrost_valhall_disasm.a
+      src/panfrost/model/libpanfrost_model_lib.a src/panfrost/lib/libpanfrost_lib.a
+      src/panfrost/lib/libpan-format-v10.a src/panfrost/lib/libpan-format-v11.a src/panfrost/lib/libpan-format-v13.a src/panfrost/lib/libpan-arch-v10.a src/panfrost/lib/libpan-arch-v11.a
+      src/panfrost/lib/libpan-arch-v13.a src/panfrost/lib/kmod/libpankmod_lib.a src/panfrost/genxml/libpanfrost_decode.a
+      src/panfrost/genxml/libpandecode-arch-v10.a src/panfrost/genxml/libpandecode-arch-v11.a src/panfrost/genxml/libpandecode-arch-v13.a"
+LIBS="$PANLIBS src/vulkan/util/libvulkan_util.a src/compiler/nir/libnir.a src/compiler/libcompiler.a
+      src/compiler/spirv/libvtn.a src/util/libmesa_util.a src/util/libmesa_util_simd.a
+      src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/util/libxmlconfig.a"
+for l in src/loader/libloader_wayland_helper.a src/x11/libloader_x11.a src/loader/libloader.a; do [ -f "$l" ] && LIBS="$LIBS $l"; done
+for l in src/util/libmesa_util_clflush.a src/util/libmesa_util_clflushopt.a; do [ -f "$l" ] && LIBS="$LIBS $l"; done
+OBJS=""; for f in $ICD $M8; do OBJS="$OBJS $OUT/$f.o"; done
+for f in ctx bo queue sync heap fb draw draw_v13 backend_fake; do OBJS="$OBJS $OUT/kb_$f.o"; done
+if [ ! -x "$OUT/t_budget" ] || [ -n "$(find "$OUT" -maxdepth 1 -name '*.o' -newer "$OUT/t_budget" -print -quit)" ]; then
+   # shellcheck disable=SC2086
+   $CXX -o "$OUT/t_budget" "$OUT/t_budget.o" "$OUT/mali_entrypoints.o" $OBJS -Wl,--start-group -Wl,--whole-archive $WHOLE \
+      -Wl,--no-whole-archive $LIBS -Wl,--end-group $LDSYS -lm
+fi
+cd "$D"
+# The fake backend's counter is what MALI_FAULT_INJECT counts: no fault here, but keep the environment explicit.
+unset MALI_BACKEND
+timeout 120 "$OUT/t_budget"
