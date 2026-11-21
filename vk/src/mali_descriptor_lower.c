@@ -89,9 +89,26 @@ lower_tex(nir_builder *b, nir_tex_instr *tex, struct ctx *c)
       }
       plane = nir_src_as_uint(tex->src[pi].src);
    }
-   nir_def *th = deref_handle(b, c, nir_src_as_deref(tex->src[ti].src), false, plane);
-   nir_def *sh = si >= 0 ? deref_handle(b, c, nir_src_as_deref(tex->src[si].src), true, 0)
-                         : nir_imm_int(b, pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX));
+   nir_deref_instr *tderef = nir_src_as_deref(tex->src[ti].src);
+   nir_def *th = deref_handle(b, c, tderef, false, plane);
+   nir_def *sh;
+   if (si >= 0) {
+      sh = deref_handle(b, c, nir_src_as_deref(tex->src[si].src), true, 0);
+   } else {
+      /* A texelFetch (txf/txf_ms) of a combined image sampler has a texture deref and no sampler deref. Fetching
+       * through the all-zero dummy sampler entry (table 0) returns 0 on the phone for every texel; the combined
+       * image sampler already owns a real sampler at slot + stride - 1, so use that instead. */
+      unsigned tset, tbinding;
+      uint32_t timm;
+      nir_def *tssa;
+      const struct mali_lbinding *tbd = NULL;
+      if (deref_binding(tderef, &tset, &tbinding, &timm, &tssa))
+         tbd = find(c, tset, tbinding);
+      if (tbd && tbd->type == MALI_DT_COMBINED_IMAGE_SAMPLER)
+         sh = deref_handle(b, c, tderef, true, 0);
+      else
+         sh = nir_imm_int(b, pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX));
+   }
    if (si >= 0) nir_tex_instr_remove_src(tex, si);
    if (pi >= 0) nir_tex_instr_remove_src(tex, nir_tex_instr_src_index(tex, nir_tex_src_plane));
    nir_tex_instr_remove_src(tex, nir_tex_instr_src_index(tex, nir_tex_src_texture_deref));
