@@ -947,7 +947,9 @@ mali_wsi_surface_of(VkIcdSurfaceBase *surface)
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
    case VK_ICD_WSI_PLATFORM_XLIB:    return (uint64_t)((VkIcdSurfaceXlib *)surface)->window;
 #endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
    case VK_ICD_WSI_PLATFORM_WAYLAND: return (uint64_t)(uintptr_t)((VkIcdSurfaceWayland *)surface)->surface;
+#endif
    default:                          return 0;
    }
 }
