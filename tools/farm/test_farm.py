@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Dry-run tests of queue, pending/resume, comparison and JSON logic (no phone, no build). Run: python3 tools/farm/test_farm.py"""
-import hashlib, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import hashlib, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -94,11 +94,31 @@ elif op == "shell":
         print("\n".join(os.listdir(P(c[3:].strip()))))
     elif c == "echo alive":
         print("alive")
+    elif "/proc/sys/kernel/random/boot_id" in c:                    # boot identity: FAKE_ADB_REBOOT_ON_READ=N -> the Nth read sees a new boot
+        n = int(open(R + "/bootreads").read()) if os.path.exists(R + "/bootreads") else 0
+        n += 1
+        open(R + "/bootreads", "w").write(str(n))
+        base = int(open(R + "/uptime").read()) if os.path.exists(R + "/uptime") else 5000
+        if os.environ.get("FAKE_ADB_REBOOT_ON_READ") == str(n):
+            print("2b2b2b2b-0000-4000-8000-000000000002"); print("7.00 3.00")
+        else:
+            print("1a1a1a1a-0000-4000-8000-000000000001"); print("%d.00 1.00" % (base + n))
+    elif "tail -c" in c:
+        m = re.search(r"tail -c \d+ (\S+)", c)
+        if m and os.path.exists(P(m.group(1))):
+            print(open(P(m.group(1))).read())
     elif "dumpsys battery" in c:
         print("  AC powered: true\n  level: 80\n  temperature: 300\nThermal Status: 0")
     elif "deqp-vk" in c:
         cf = re.search(r"--deqp-caselist-file=(\S+)", c).group(1)
         qf = re.search(r"--deqp-log-filename=(\S+)", c).group(1)
+        open(R + "/deqp-runs.log", "a").write(str(len(open(P(cf)).read().split())) + "\n")     # one line per launch: the case count of that shard
+        out = re.search(r">(\S+\.out)", c)
+        if os.environ.get("FAKE_ADB_OOM") == "1":                    # the memory bound killed the run before it wrote a result
+            if out:                                                  # the command cd's into /data/local/tmp/g first: the .out lives there
+                open(P("/data/local/tmp/g/" + out.group(1)), "w").write("terminate called after throwing an instance of 'std::bad_alloc'\n  what():  std::bad_alloc\n")
+            print("rc=134")
+            raise SystemExit(0)
         crash = [x for x in os.environ.get("FAKE_ADB_CRASH", "").split(",") if x]       # these cases die mid-case (no result), FAKE_ADB_CRASH_TIMES times each
         times, rc = int(os.environ.get("FAKE_ADB_CRASH_TIMES", "1")), 0
         with open(P(qf), "w") as f:
@@ -113,7 +133,7 @@ elif op == "shell":
                 f.write("#beginTestCaseResult %s\n<Result StatusCode=\"Pass\"/>\n#endTestCaseResult\n" % case)
         print("rc=%d" % rc)
     elif "./t_vk_" in c:
-        d = re.match(r"cd (\S+)", c).group(1)
+        d = re.split(r";|&&", c[len("cd "):])[0].strip()
         n = re.search(r"\./(t_vk_\w+)", c).group(1)
         open(P(d) + "/" + n + ".log", "w").write('{"pass":true}\n{"pass":true}\n')
         print("rc=0")
@@ -290,6 +310,104 @@ class ShellRoute(unittest.TestCase):
         self.assertIn('"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":2', o)
         rc, o = self.run_sr("smoke", "a64-bionic", env={"FAKE_ADB_CORRUPT": "1"})
         self.assertEqual(rc, 77)
+
+
+    # ---- resource guards: the 2026-11-19 kernel panic (oom_score_adj=-1000 inherited from adbd, unbounded deqp, blind retry after the reboot)
+    def test_oom_protection_is_cleared_memory_capped_and_work_sharded(self):
+        sys.path.insert(0, HERE)
+        import shellroute
+        pre = shellroute.limit_preamble("r1")
+        self.assertIn("echo 0 > /proc/self/oom_score_adj", pre)
+        self.assertIn("ulimit -v 3145728", pre)                       # 3 GiB default cap
+        self.assertNotIn("-1000", pre)
+        self.assertNotIn("'", pre)                                    # embedded in the device command as-is
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(90)) + "\n")
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", self.d + "/s.tsv", "--chunk", "100"],
+                            {"SHELLROUTE_CHUNK_MAX": "40"})
+        self.assertEqual(rc, 0, o)
+        cmds = open(self.root + "/adb-shell.log").read()
+        self.assertIn("echo 0 > /proc/self/oom_score_adj", cmds)      # every launch, not just the first
+        self.assertIn("ulimit -v 3145728", cmds)
+        self.assertNotIn("oom_score_adj=-1000", cmds)
+        self.assertIn("CHUNK 100 capped to 40", o)
+        self.assertEqual([int(x) for x in open(self.root + "/deqp-runs.log").read().split()], [40, 40, 10])
+
+    def test_device_reboot_mid_run_gives_verdict_device_reboot_and_no_retry(self):
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(12)) + "\n")
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", self.d + "/rb.tsv", "--chunk", "3"],
+                            {"FAKE_ADB_REBOOT_ON_READ": "3"})
+        self.assertEqual(rc, 82, o)
+        self.assertIn("verdict: device_reboot", o)
+        self.assertIn("boot id changed", o)
+        self.assertEqual(len(open(self.root + "/deqp-runs.log").read().split()), 1)     # chunk 1 ran; the run is not restarted
+        self.assertEqual(len(open(self.d + "/rb.tsv").read().splitlines()), 3)          # what passed before the reboot is kept
+
+    def test_memory_cap_breach_aborts_cleanly_with_no_retry(self):
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(6)) + "\n")
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", self.d + "/oom.tsv", "--chunk", "3"],
+                            {"FAKE_ADB_OOM": "1"})
+        self.assertEqual(rc, 83, o)
+        self.assertIn("verdict: memory_cap", o)
+        self.assertEqual(len(open(self.root + "/deqp-runs.log").read().split()), 1)     # one aborted launch, no blind retry
+        self.assertFalse(os.path.exists(self.d + "/oom.tsv") and "Pass" in open(self.d + "/oom.tsv").read())
+
+
+class DeviceStopGuard(unittest.TestCase):
+    """a reboot mid-run or the memory bound ends the job: verdict device_reboot|memory_cap, other parts cancelled, no retry.
+    2026-11-19: the farm resubmitted a sweep after every reboot of a phone whose kernel had panicked, the phone looped for hours."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.old = os.environ.get("MALI_FARM_STATE")
+        os.environ["MALI_FARM_STATE"] = self.d
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_guard", HERE + "/farmd")
+        spec = importlib.util.spec_from_loader("farmd_guard", ld)
+        self.fd = importlib.util.module_from_spec(spec)
+        ld.exec_module(self.fd)
+        self.f = object.__new__(self.fd.Farm)
+        self.f.jl = threading.Lock()          # __init__ is bypassed; abort_job() takes the job-file lock
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("MALI_FARM_STATE", None)
+        else:
+            os.environ["MALI_FARM_STATE"] = self.old
+
+    def job(self):
+        L.new_job("HEAD", "0" * 40, False, "daily", ["v11", "v13"], "", "mali-open")
+        return L.list_jobs()[0]["id"]
+
+    def alerts(self):
+        return open(os.path.join(L.state_dir(), "ALERTS")).read()
+
+    def test_shell_rc_maps_reboot_and_memory_cap(self):
+        self.assertEqual(self.f.shell_rc(82, "verdict: device_reboot uptime went backwards", "shellroute")["verdict"], "device_reboot")
+        self.assertEqual(self.f.shell_rc(83, "verdict: memory_cap bad_alloc", "shellroute")["verdict"], "memory_cap")
+        self.assertIsNone(self.f.shell_rc(0, "rc=0", "shellroute"))
+
+    def test_reboot_aborts_the_whole_job_and_is_never_retried(self):
+        jid = self.job()
+        self.f.abort_job(jid, "v11", "dev-a", {"verdict": "device_reboot", "notes": "boot id changed"})
+        j = L.read_json(L.job_path(jid))
+        self.assertEqual((j["parts"]["v11"]["state"], j["parts"]["v11"]["verdict"]), ("done", "device_reboot"))
+        self.assertEqual(j["parts"]["v13"]["state"], "cancelled")            # the other phone is not fed the same job
+        self.assertEqual(j["parts"]["v11"]["attempts"], 0)                   # no retry is even counted
+        self.assertEqual(L.job_verdict(j), "device_reboot")                  # never pending, never pass
+        self.assertEqual([c for c, p in j["parts"].items() if p["state"] == "pending"], [])
+        self.assertIn("DEVICE_REBOOT", self.alerts())
+        self.assertTrue(os.path.exists(L.run_path(jid, "v11").replace(".json", ".terminal.json")))
+
+    def test_two_reboots_in_30_min_are_a_loud_reboot_loop(self):
+        jid = self.job()
+        for _ in range(2):
+            self.f.abort_job(jid, "v11", "dev-a", {"verdict": "device_reboot", "notes": "uptime went backwards"})
+        self.assertIn("REBOOT-LOOP dev-a: 2 reboots in 30 min", self.alerts())
+
+    def test_memory_cap_is_terminal_too(self):
+        jid = self.job()
+        self.f.abort_job(jid, "v11", "dev-a", {"verdict": "memory_cap", "notes": "std::bad_alloc"})
+        self.assertEqual(L.job_verdict(L.read_json(L.job_path(jid))), "memory_cap")
+        self.assertIn("MEMORY_CAP", self.alerts())
 
 
 class T(unittest.TestCase):
