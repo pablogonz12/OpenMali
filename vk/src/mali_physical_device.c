@@ -311,7 +311,26 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
+   /* WSI queries that must decide the X11 present path before wsi_common answers (see mali_wsi_x11_maybe_sw):
+    * zink asks surface support first and stops on FALSE (zink_kopper.c:130-132), so the no-DRI3 -> SHM switch
+    * cannot wait for vkCreateSwapchainKHR. */
+   dispatch_table.GetPhysicalDeviceSurfaceSupportKHR = mali_wsi_get_surface_support;
+   dispatch_table.GetPhysicalDeviceSurfaceCapabilitiesKHR = mali_wsi_get_surface_capabilities;
+   dispatch_table.GetPhysicalDeviceSurfaceFormatsKHR = mali_wsi_get_surface_formats;
    dispatch_table.GetPhysicalDeviceSurfacePresentModesKHR = mali_wsi_get_present_modes;   /* + IMMEDIATE on the software path */
+   /* The *2 forms read wsi_device directly (wsi_common.c:1149/1244), so they need the same per-surface switch or they
+    * answer the dma-buf story on the software path (CR #323 N5). */
+   dispatch_table.GetPhysicalDeviceSurfaceCapabilities2KHR = mali_wsi_get_surface_capabilities2;
+   dispatch_table.GetPhysicalDeviceSurfaceFormats2KHR = mali_wsi_get_surface_formats2;
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   dispatch_table.GetPhysicalDeviceXcbPresentationSupportKHR = mali_wsi_xcb_presentation_support;
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+   dispatch_table.GetPhysicalDeviceXlibPresentationSupportKHR = mali_wsi_xlib_presentation_support;
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+   dispatch_table.GetPhysicalDeviceWaylandPresentationSupportKHR = mali_wsi_wayland_presentation_support;
+#endif
 
    struct mali_drm_node drm;
    bool has_drm = mali_drm_find_node(gpu, &drm);
