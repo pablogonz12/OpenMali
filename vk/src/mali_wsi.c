@@ -25,6 +25,14 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice device, VkSwapch
 VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo);
 VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                   const VkAllocationCallbacks *pAllocator);
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice, uint32_t,
+                                                                             xcb_connection_t *, xcb_visualid_t);
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice, uint32_t,
+                                                                              Display *, VisualID);
+#endif
 
 #include "vk_alloc.h"
 #include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
@@ -229,7 +237,7 @@ static void
 mali_wsi_x11_maybe_sw(struct mali_physical_device *pdev, int platform, const struct mali_wsi_x11_probe *probe)
 {
    struct wsi_device *wsi_dev = &pdev->wsi;
-   if (wsi_dev->sw)
+   if (pdev->wsi_x11_sw || wsi_dev->sw)
       return;
    if (platform != VK_ICD_WSI_PLATFORM_XCB && platform != VK_ICD_WSI_PLATFORM_XLIB)
       return;
@@ -238,7 +246,11 @@ mali_wsi_x11_maybe_sw(struct mali_physical_device *pdev, int platform, const str
    const bool forced_shm = mali_wsi_x11_forced_shm();
    if (!forced_shm && probe->dri3 && probe->present)
       return;
-   wsi_dev->sw = true;
+   /* The decision stays in the pdev: wsi.sw is device-wide, and Mesa's Wayland driver turns every Wayland swapchain
+    * into a wl_shm/CPU one while it is set (wsi_common_wayland.c:3940/:1506). A Steam client asks about its X11
+    * window first (zink_kopper.c:130) and would lose the dma-buf path for the gamescope WSI layer's Wayland
+    * swapchain, which is how #322 broke X8. It is applied by mali_wsi_sw_enter() for X11 calls only. */
+   pdev->wsi_x11_sw = true;
    wsi_dev->supports_modifiers = false;
    mali_wsi_disable_dmabuf_sync(wsi_dev);
    fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (%s) (MALI_WSI=dmabuf for dma-buf)\n",
@@ -293,6 +305,11 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
    }
 }
 
+static bool mali_wsi_sw_enter(struct mali_physical_device *pdev, int platform);
+static void mali_wsi_sw_leave(struct mali_physical_device *pdev, bool saved);
+static void mali_wsi_x11_chain_remove(VkSwapchainKHR sc);
+static bool mali_wsi_chain_is_x11(VkSwapchainKHR sc);
+
 /* wsi_common_x11 advertises all four present modes, but a software (PutImage) swapchain is only useful to a
  * measurement when IMMEDIATE is really offered: with FIFO/MAILBOX the producer rate equals the displayed rate by
  * construction, which is what hid the GPU headroom (1600x720 and 2400x1080 both 118 fps). IMMEDIATE is additive,
@@ -301,6 +318,7 @@ VKAPI_ATTR void VKAPI_CALL
 mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *alloc)
 {
    mali_x11_shm_destroy(swapchain);
+   mali_wsi_x11_chain_remove(swapchain);
    wsi_DestroySwapchainKHR(device, swapchain, alloc);
 }
 
@@ -315,8 +333,10 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    if (!iface)
       return VK_ERROR_SURFACE_LOST_KHR;
    mali_wsi_x11_maybe_sw_surface(pdev, surface);   /* before the list is built: IMMEDIATE goes with the software path */
+   const bool saved = mali_wsi_sw_enter(pdev, ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform);
    if (!modes) {
       VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, count, NULL);
+      mali_wsi_sw_leave(pdev, saved);
       if (r == VK_SUCCESS && pdev->wsi.sw && *count < UINT32_MAX)
          (*count)++;   /* upper bound: the enumeration below decides whether IMMEDIATE is really missing */
       return r;
@@ -325,6 +345,7 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    VkPresentModeKHR all[8];
    uint32_t n = 8;
    VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, &n, all);
+   mali_wsi_sw_leave(pdev, saved);
    if (r != VK_SUCCESS && r != VK_INCOMPLETE)
       return r;
    const bool x11 = ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XCB ||
@@ -342,6 +363,56 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    return out < n ? VK_INCOMPLETE : VK_SUCCESS;
 }
 
+/* Mesa's wsi_device->sw is device-wide, but the no-DRI3 fallback is an X11 decision (see the long note in
+ * mali_wsi_create_swapchain): wsi_common_wayland binds wl_shm instead of zwp_linux_dmabuf_v1 and builds every
+ * swapchain as a CPU/shm one while it is set (wsi_common_wayland.c:3940, :1506). Run one wsi call for a surface of
+ * `platform` on the path that platform uses: X11 keeps the device-wide decision (mali_wsi_x11_maybe_sw), everything
+ * else gets the path the device was built with (mali_wsi_use_sw: MALI_WSI, the fake backend). */
+/* Is an X11 chain? X11 acquire/present read chain->base.wsi->sw too (wsi_common_x11.c:2101/2654/2807), so those
+ * need the same switch. Small fixed table: one chain per X11 surface in practice, and an unregistered chain is
+ * simply not X11 (it then gets the non-X11 path). */
+static VkSwapchainKHR mali_wsi_x11_chains[8];
+
+static void
+mali_wsi_x11_chain_add(VkSwapchainKHR sc)
+{
+   for (unsigned i = 0; i < sizeof(mali_wsi_x11_chains) / sizeof(mali_wsi_x11_chains[0]); i++)
+      if (!mali_wsi_x11_chains[i]) { mali_wsi_x11_chains[i] = sc; return; }
+}
+
+static void
+mali_wsi_x11_chain_remove(VkSwapchainKHR sc)
+{
+   for (unsigned i = 0; i < sizeof(mali_wsi_x11_chains) / sizeof(mali_wsi_x11_chains[0]); i++)
+      if (mali_wsi_x11_chains[i] == sc) mali_wsi_x11_chains[i] = VK_NULL_HANDLE;
+}
+
+static bool
+mali_wsi_chain_is_x11(VkSwapchainKHR sc)
+{
+   for (unsigned i = 0; i < sizeof(mali_wsi_x11_chains) / sizeof(mali_wsi_x11_chains[0]); i++)
+      if (mali_wsi_x11_chains[i] == sc) return true;
+   return false;
+}
+
+/* The present path one wsi call runs on: the X11 (no-DRI3) decision for X11 platforms, else what the device was
+ * built with. The saved value restores wsi.sw, so nothing leaks to the next platform in the same process. */
+static bool
+mali_wsi_sw_enter(struct mali_physical_device *pdev, int platform)
+{
+   struct wsi_device *wsi_dev = &pdev->wsi;
+   const bool saved = wsi_dev->sw;
+   const bool x11 = platform == VK_ICD_WSI_PLATFORM_XCB || platform == VK_ICD_WSI_PLATFORM_XLIB;
+   wsi_dev->sw = mali_wsi_use_sw(pdev) || (x11 && pdev->wsi_x11_sw);
+   return saved;
+}
+
+static void
+mali_wsi_sw_leave(struct mali_physical_device *pdev, bool saved)
+{
+   pdev->wsi.sw = saved;
+}
+
 /* Surface queries in front of wsi_common. The first one decides the present path (mali_wsi_x11_maybe_sw above), so
  * wsi_common_x11's own DRI3 gate (wsi_common_x11.c:713-719 for support, :646 for the presentation-support queries)
  * sees the software device and answers "supported" where MIT-SHM can serve the surface, before zink gives up on the
@@ -351,8 +422,12 @@ mali_wsi_get_surface_support(VkPhysicalDevice physicalDevice, uint32_t queueFami
                              VkBool32 *supported)
 {
    VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
-   mali_wsi_x11_maybe_sw_surface(container_of(vk_pdev, struct mali_physical_device, vk), surface);
-   return wsi_GetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamilyIndex, surface, supported);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   mali_wsi_x11_maybe_sw_surface(pdev, surface);
+   const bool saved = mali_wsi_sw_enter(pdev, ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform);
+   VkResult r = wsi_GetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamilyIndex, surface, supported);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -360,8 +435,12 @@ mali_wsi_get_surface_capabilities(VkPhysicalDevice physicalDevice, VkSurfaceKHR 
                                   VkSurfaceCapabilitiesKHR *caps)
 {
    VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
-   mali_wsi_x11_maybe_sw_surface(container_of(vk_pdev, struct mali_physical_device, vk), surface);
-   return wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, caps);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   mali_wsi_x11_maybe_sw_surface(pdev, surface);
+   const bool saved = mali_wsi_sw_enter(pdev, ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform);
+   VkResult r = wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, caps);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -369,12 +448,43 @@ mali_wsi_get_surface_formats(VkPhysicalDevice physicalDevice, VkSurfaceKHR surfa
                              VkSurfaceFormatKHR *formats)
 {
    VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
-   mali_wsi_x11_maybe_sw_surface(container_of(vk_pdev, struct mali_physical_device, vk), surface);
-   return wsi_GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, count, formats);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   mali_wsi_x11_maybe_sw_surface(pdev, surface);
+   const bool saved = mali_wsi_sw_enter(pdev, ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform);
+   VkResult r = wsi_GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, count, formats);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
 }
-/* vkGetPhysicalDeviceXcb/XlibPresentationSupportKHR are not overridden: wsi_common_x11 gates them on the same
- * wsi_device->sw (wsi_common_x11.c:646) and every WSI client we serve asks surface support first (zink:
- * zink_kopper.c:130), which has already taken the decision by then. */
+/* wsi_common_x11 gates these on wsi_device->sw too (wsi_common_x11.c:646), and a client may ask them before any
+ * surface query, so they take the same per-call switch as the queries. Without it, a zink client on the no-DRI3
+ * server asked "presentation support" while wsi.sw was at rest (false, the dma-buf answer) and got FALSE. */
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+VKAPI_ATTR VkBool32 VKAPI_CALL
+mali_wsi_xcb_presentation_support(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex,
+                                  xcb_connection_t *connection, xcb_visualid_t visual_id)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   const bool saved = mali_wsi_sw_enter(pdev, VK_ICD_WSI_PLATFORM_XCB);
+   VkBool32 r = wsi_GetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice, queueFamilyIndex, connection, visual_id);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
+}
+#endif
+
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+VKAPI_ATTR VkBool32 VKAPI_CALL
+mali_wsi_xlib_presentation_support(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex,
+                                   Display *dpy, VisualID visual_id)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   const bool saved = mali_wsi_sw_enter(pdev, VK_ICD_WSI_PLATFORM_XLIB);
+   VkBool32 r = wsi_GetPhysicalDeviceXlibPresentationSupportKHR(physicalDevice, queueFamilyIndex, dpy, visual_id);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
+}
+#endif
 
 /* Software present over MIT-SHM, our own segment: the frame leaves the driver as a memcpy into shared pages plus
  * XShmPutImage on the socket, instead of a ~w*h*4 byte PutImage request per frame (which capped the CMF at ~113 fps
@@ -595,7 +705,10 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
       fprintf(stderr, "mali_vk: wsi acquire #%llu: timeout=%llu sem=%d fence=%d sw=%d\n", (unsigned long long)n,
               (unsigned long long)timeout, semaphore != VK_NULL_HANDLE, fence != VK_NULL_HANDLE,
               (int)pdev->wsi.sw);
+   const bool saved = mali_wsi_sw_enter(pdev, mali_wsi_chain_is_x11(swapchain) ? VK_ICD_WSI_PLATFORM_XCB
+                                                                             : VK_ICD_WSI_PLATFORM_WAYLAND);
    VkResult r = wsi_AcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, image_index);
+   mali_wsi_sw_leave(pdev, saved);
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: wsi acquire #%llu -> %s image=%u\n", (unsigned long long)n,
               vk_Result_to_str(r), r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR ? *image_index : 0);
@@ -806,7 +919,15 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
          }
       }
    }
+   /* Same per-platform switch as acquire: an X11 chain is presented by wsi_common_x11, which reads
+    * chain->base.wsi->sw, and a Wayland chain of the same process must not see the X11 decision. */
+   struct mali_physical_device *ppdev = mali_device_pdev(dev);
+   bool any_x11 = false;
+   for (uint32_t i = 0; i < info->swapchainCount; i++)
+      any_x11 |= mali_wsi_chain_is_x11(info->pSwapchains[i]);
+   const bool saved_sw = mali_wsi_sw_enter(ppdev, any_x11 ? VK_ICD_WSI_PLATFORM_XCB : VK_ICD_WSI_PLATFORM_WAYLAND);
    VkResult r = wsi_QueuePresentKHR(queue, info);
+   mali_wsi_sw_leave(ppdev, saved_sw);
    /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at
     * the next present or inside vkWaitForPresentKHR. An app that presents its last frame and destroys the
     * swapchain never gets that pump, so the frame callback/presentation feedback of that commit is still
@@ -853,6 +974,10 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
     * fails loudly instead of silently dropping presents (the hang in wsi_common_x11.c:2202). */
    mali_wsi_x11_maybe_sw(pdev, surface->platform, &probe);
 
+   /* wsi.sw is set for this one call by mali_wsi_sw_enter(): the no-DRI3 decision is X11's and must not reach a
+    * Wayland swapchain of the same process (mali_wsi_x11_maybe_sw). */
+   const bool saved_sw = mali_wsi_sw_enter(pdev, surface->platform);
+
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
               wsi_dev->GetSemaphoreFdKHR ? "set" : "NULL", wsi_dev->GetMemoryFdKHR ? "set" : "NULL",
@@ -864,6 +989,10 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
               wsi_dev->sw ? " (software)" : " (dma-buf)");
 
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
+   const bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
+                            surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
+   if (r == VK_SUCCESS && x11_surface)
+      mali_wsi_x11_chain_add(*out);   /* acquire/present of this chain need the X11 path again */
    if (r == VK_SUCCESS && wsi_dev->sw) {
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       mali_x11_shm_create(*out, surface, chain, ci);
@@ -887,6 +1016,7 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       mali_wsi_x11_log_surface(pdev, surface);
    }
 
+   mali_wsi_sw_leave(pdev, saved_sw);
    return r;
 }
 
