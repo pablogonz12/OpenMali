@@ -925,10 +925,12 @@ test_dxvk_frame(void)
     * the previous frame has completed (fence) before its sets are written again */
    VkDescriptorPool dxpool = VK_NULL_HANDLE;
    VkDescriptorSet *dxsets = calloc((size_t)n, sizeof *dxsets);
+   if (!dxsets) { printf("out of memory for %d descriptor sets\n", n); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
    {
       VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (uint32_t)n};
       VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = (uint32_t)n, .poolSizeCount = 1, .pPoolSizes = &ps};
       VkDescriptorSetLayout *ls = malloc((size_t)n * sizeof *ls);
+      if (!ls) { printf("out of memory for %d set layouts\n", n); free(dxsets); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
       for (int i = 0; i < n; i++) ls[i] = s.dsl;
       VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = (uint32_t)n, .pSetLayouts = ls};
       CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dxpool) == VK_SUCCESS, "dx pool");
