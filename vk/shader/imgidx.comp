@@ -1,0 +1,8 @@
+#version 450
+// t_compile dyn_index: a storage-image array indexed with a runtime value (push constant). The descriptor lowering replaces the image
+// deref with a handle: first element handle + index (stride 1), so the lowered NIR must show the index folded into an iadd and no
+// image deref left. Like the UBO/SSBO pair this is the shape Unity 2023.2 emits for its UAV arrays.
+layout(local_size_x = 1) in;
+layout(push_constant) uniform P { uint i; } pc;
+layout(set = 0, binding = 0, r32ui) uniform uimage2D img[4];
+void main() { imageStore(img[pc.i], ivec2(0), uvec4(pc.i)); }

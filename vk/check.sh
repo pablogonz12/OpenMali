@@ -29,6 +29,7 @@ fi
 # fail on a clean cache (vk_draw FS FAU 0x40 vs the fresh 0x09000000). Every check run starts from an empty private cache.
 # MALI_OPT_GCM=1 bypasses the cache (mali_compile.c use_cache), which the cold/warm and damaged-entry checks below need active: do not inherit it.
 unset MALI_OPT_GCM
+unset MALI_NIR_DUMP   # debug dump of the lowered NIR (t_compile dyn_index); must never be inherited by a test
 export MALI_SHADER_CACHE=$OUT/shader-cache; rm -rf "$MALI_SHADER_CACHE"; mkdir -p "$MALI_SHADER_CACHE"
 if [ $build = 1 ]; then env -u LD_PRELOAD "$V/build.sh" >/dev/null || { echo "FAILED: build"; exit 1; }; fi
 
