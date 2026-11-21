@@ -67,6 +67,9 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
    GetPhysicalDeviceProperties2(pd, &pr);
    CHECK(pr.properties.apiVersion >= VK_API_VERSION_1_3, "DXVK needs 1.3 (info.cpp:115)");
+   /* DXVK 3.1.x checks limits.maxPushConstantsSize >= 256 and refuses the device otherwise (dxvk_limits.h). */
+   CHECK(pr.properties.limits.maxPushConstantsSize >= 256, "maxPushConstantsSize %u < 256 (DXVK dxvk_limits.h requirement)",
+         pr.properties.limits.maxPushConstantsSize);
 
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
