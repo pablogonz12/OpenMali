@@ -26,6 +26,8 @@
  *               TRANSFER_DST|COLOR_ATTACHMENT, flags 0, minImageCount caps.minImageCount+1): zink's window swapchain is
  *               usage=0x97 flags=MUTABLE_FORMAT with 3 images, so a black window can be bisected on these three knobs.
  *               A refused combination is printed as the driver's VkResult.
+ *   --rtt-usage <hex>  with --rtt: the source image's usage (default 0x14 = COLOR_ATTACHMENT|SAMPLED); zink's RTT
+ *               texture is 0x97, so the ladder's image can be matched too.
  *   --rtt-split  with --rtt: the offscreen write and the sampling draw go into TWO vkQueueSubmits, joined by a
  *               semaphore (rules out "one submission is what makes it work").
  *   --rtt-blit <clear|draw>  an offscreen R8G8B8A8_UNORM image (COLOR_ATTACHMENT|TRANSFER_SRC|SAMPLED) is written by a
@@ -513,7 +515,7 @@ main(int argc, char **argv)
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
    int rtt = 0, rtt_split = 0, hold = 0, rttblit = 0, rttblit_split = 0;
-   unsigned long long swap_usage = 0;
+   unsigned long long swap_usage = 0, rtt_usage = 0;
    unsigned swap_flags = 0, swap_images = 0;
    unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
@@ -552,6 +554,7 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--swap-usage") && i + 1 < argc) swap_usage = strtoull(argv[++i], NULL, 16);
       else if (!strcmp(argv[i], "--swap-flags") && i + 1 < argc) swap_flags = (unsigned)strtoul(argv[++i], NULL, 0);
       else if (!strcmp(argv[i], "--swap-images") && i + 1 < argc) swap_images = (unsigned)strtoul(argv[++i], NULL, 0);
+      else if (!strcmp(argv[i], "--rtt-usage") && i + 1 < argc) rtt_usage = strtoull(argv[++i], NULL, 16);
       else if (!strcmp(argv[i], "--rtt-dyn") && i + 1 < argc) {
          /* --rtt-dyn <mask>: the pipeline's dynamic states, bit i = the i-th entry of Mesa's MESA_VK_DYNAMIC_*
           * list (third_party/mesa/src/vulkan/runtime/vk_graphics_state.h). That is the numbering our driver prints
@@ -809,7 +812,8 @@ main(int argc, char **argv)
          /* --rtt: an offscreen R8G8B8A8_UNORM colour attachment the GPU writes on its own, then a draw samples it
           * into the swapchain image. Optimal tiling at the window's size, i.e. the shape of a game's render texture.
           * --rtt-blit: the same image, but written by a render pass and copied with vkCmdBlitImage (TRANSFER_SRC). */
-         VkImageUsageFlags uu = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+         VkImageUsageFlags uu = rtt_usage ? (VkImageUsageFlags)rtt_usage
+                                          : (VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
          if (rttblit) uu |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          if (rtt && !strcmp(rtt_how, "cmdclear")) uu |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
          CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
