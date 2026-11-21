@@ -12,12 +12,6 @@
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
 #include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below */
 
-/* wsi_common.c's surface entrypoints. Mesa declares them in no header (only wsi_physical_device_entrypoints
- * references them), so the wrappers below carry their own prototypes. */
-VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32 *);
-VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR *);
-VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkSurfaceFormatKHR *);
-
 #include <pthread.h>   /* the per-call wsi mode and the X11 chain table are process-wide (CR #323 T4/T5) */
 
 /* wsi_common.c's surface entrypoints. Mesa declares them in no header (only wsi_physical_device_entrypoints
