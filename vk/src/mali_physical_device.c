@@ -356,12 +356,6 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
-   /* WSI queries that must decide the X11 present path before wsi_common answers (see mali_wsi_x11_maybe_sw):
-    * zink asks surface support first and stops on FALSE (zink_kopper.c:130-132), so the no-DRI3 -> SHM switch
-    * cannot wait for vkCreateSwapchainKHR. */
-   dispatch_table.GetPhysicalDeviceSurfaceSupportKHR = mali_wsi_get_surface_support;
-   dispatch_table.GetPhysicalDeviceSurfaceCapabilitiesKHR = mali_wsi_get_surface_capabilities;
-   dispatch_table.GetPhysicalDeviceSurfaceFormatsKHR = mali_wsi_get_surface_formats;
    dispatch_table.GetPhysicalDeviceSurfacePresentModesKHR = mali_wsi_get_present_modes;   /* + IMMEDIATE on the software path */
 
    struct mali_drm_node drm;

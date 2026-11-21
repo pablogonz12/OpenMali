@@ -86,9 +86,6 @@ VkResult mali_wsi_create_swapchain(VkDevice, const VkSwapchainCreateInfoKHR*, co
 VkResult mali_wsi_acquire_next_image(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t*);
 VkResult mali_wsi_queue_present(VkQueue, const VkPresentInfoKHR*);
 VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkPresentModeKHR*);
-VkResult mali_wsi_get_surface_support(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32*);
-VkResult mali_wsi_get_surface_capabilities(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR*);
-VkResult mali_wsi_get_surface_formats(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkSurfaceFormatKHR*);
 void mali_wsi_destroy_swapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*);
 void mali_destroy_physical_device(struct vk_physical_device *vk_pdev);
 

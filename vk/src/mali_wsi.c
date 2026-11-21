@@ -12,12 +12,6 @@
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
 #include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below */
 
-/* wsi_common.c's surface entrypoints. Mesa declares them in no header (only wsi_physical_device_entrypoints
- * references them), so the wrappers below carry their own prototypes. */
-VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32 *);
-VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR *);
-VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkSurfaceFormatKHR *);
-
 /* wsi_common.c: what the device dispatch would have called; not in wsi_common.h in this tree. */
 VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
                                                      const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain);
@@ -108,13 +102,7 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
       return true;
    if (e && !strcmp(e, "dmabuf"))
       return false;
-   /* MALI_WSI=hw: pretend to be hardware on the fake backend - start on the dma-buf path and let the per-surface
-    * decision (mali_wsi_x11_maybe_sw) fall back where the server cannot serve it. Host test hook for
-    * tests/xwsi-nodri3.sh; the BO fds of the fake backend are not dma-bufs, so a server that does have DRI3 then
-    * fails at import exactly like MALI_WSI=dmabuf. */
-   if (e && !strcmp(e, "hw"))
-      return false;
-   /* No X probe here (see above): the software path is chosen per surface, on the first surface query. */
+   /* No X probe here (see above): the software path is chosen per surface in mali_wsi_create_swapchain(). */
    return pdev->gpu.fake;
 }
 
@@ -172,23 +160,6 @@ struct mali_wsi_x11_probe {
 /* Reads the client's own X connection (the one the surface was made on). Extension presence comes from the
  * connection's prefetched setup reply (xcb_get_extension_data never sends a request), so this cannot block on an
  * unresponsive server. XLIB surfaces are not probed (that would need libX11 in the ICD) and take software. */
-#if defined(VK_USE_PLATFORM_XCB_KHR)
-static void
-mali_wsi_x11_probe_conn(xcb_connection_t *conn, struct mali_wsi_x11_probe *p)
-{
-   memset(p, 0, sizeof(*p));
-   if (!conn)
-      return;
-   const struct xcb_query_extension_reply_t *dri3 = xcb_get_extension_data(conn, &xcb_dri3_id);
-   const struct xcb_query_extension_reply_t *present = xcb_get_extension_data(conn, &xcb_present_id);
-   const struct xcb_query_extension_reply_t *shm = xcb_get_extension_data(conn, &xcb_shm_id);
-   p->have_conn = true;
-   p->dri3 = dri3 && dri3->present && !mali_wsi_force_no_dri3();
-   p->present = present && present->present;
-   p->mit_shm = shm && shm->present;
-}
-#endif
-
 static void
 mali_wsi_x11_probe(VkIcdSurfaceBase *surface, struct mali_wsi_x11_probe *p)
 {
@@ -196,66 +167,19 @@ mali_wsi_x11_probe(VkIcdSurfaceBase *surface, struct mali_wsi_x11_probe *p)
 #if defined(VK_USE_PLATFORM_XCB_KHR)
    if (surface->platform != VK_ICD_WSI_PLATFORM_XCB)
       return;
-   mali_wsi_x11_probe_conn(((VkIcdSurfaceXcb *)surface)->connection, p);
+   VkIcdSurfaceXcb *s = (VkIcdSurfaceXcb *)surface;
+   if (!s->connection)
+      return;
+   const struct xcb_query_extension_reply_t *dri3 = xcb_get_extension_data(s->connection, &xcb_dri3_id);
+   const struct xcb_query_extension_reply_t *present = xcb_get_extension_data(s->connection, &xcb_present_id);
+   const struct xcb_query_extension_reply_t *shm = xcb_get_extension_data(s->connection, &xcb_shm_id);
+   p->have_conn = true;
+   p->dri3 = dri3 && dri3->present && !mali_wsi_force_no_dri3();
+   p->present = present && present->present;
+   p->mit_shm = shm && shm->present;
 #else
    (void)surface;
 #endif
-}
-
-static bool
-mali_wsi_x11_forced_shm(void)
-{
-   const char *e = getenv("MALI_WSI");
-   return e && (!strcmp(e, "shm") || !strcmp(e, "xput") || !strcmp(e, "sw"));
-}
-
-static bool
-mali_wsi_x11_forced_dmabuf(void)
-{
-   const char *e = getenv("MALI_WSI");
-   return e && !strcmp(e, "dmabuf");
-}
-
-/* The X11 present path is a device-wide decision (wsi_device->sw), and it has to be taken at the *first* surface
- * query, not in vkCreateSwapchainKHR. zink (kopper) asks vkGetPhysicalDeviceSurfaceSupportKHR before it builds
- * anything and gives up when the answer is FALSE (zink_kopper.c:130-132); wsi_common_x11 answers FALSE on a server
- * without DRI3 while wsi_device->sw is false (wsi_common_x11.c:713-719, after "No DRI3 support detected" at
- * :411-420), so zink prints "could not create swapchain" (zink_resource.c:1974) and the GL client never gets a
- * window - it never reaches vkCreateSwapchainKHR, where this switch used to be made. Every query we override
- * (support, caps, formats, present modes, Xcb/Xlib presentation support) and the swapchain now take the same
- * decision, so they all describe the path the swapchain will really use.
- * Untouched when the server has DRI3 *and* Present (the dma-buf path, which the CMF and X8 use), and
- * MALI_WSI=dmabuf still forces dma-buf everywhere. */
-static void
-mali_wsi_x11_maybe_sw(struct mali_physical_device *pdev, int platform, const struct mali_wsi_x11_probe *probe)
-{
-   struct wsi_device *wsi_dev = &pdev->wsi;
-   if (wsi_dev->sw)
-      return;
-   if (platform != VK_ICD_WSI_PLATFORM_XCB && platform != VK_ICD_WSI_PLATFORM_XLIB)
-      return;
-   if (mali_wsi_x11_forced_dmabuf())
-      return;
-   const bool forced_shm = mali_wsi_x11_forced_shm();
-   if (!forced_shm && probe->dri3 && probe->present)
-      return;
-   wsi_dev->sw = true;
-   wsi_dev->supports_modifiers = false;
-   mali_wsi_disable_dmabuf_sync(wsi_dev);
-   fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (%s) (MALI_WSI=dmabuf for dma-buf)\n",
-           mali_wsi_platform_name(platform),
-           forced_shm ? "forced" : !probe->present ? "server has no Present" : "server has no DRI3");
-}
-
-static void
-mali_wsi_x11_maybe_sw_surface(struct mali_physical_device *pdev, VkSurfaceKHR surface)
-{
-   VkIcdSurfaceBase *base = (VkIcdSurfaceBase *)(uintptr_t)surface;
-   struct mali_wsi_x11_probe probe;
-   if (!base)
-      return;
-   mali_wsi_x11_probe(base, &probe);
-   mali_wsi_x11_maybe_sw(pdev, base->platform, &probe);
 }
 
 /* What the surface offers, as wsi_common_x11 answers it, so a failed creation can be read without a second
@@ -315,7 +239,6 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
 
    if (!iface)
       return VK_ERROR_SURFACE_LOST_KHR;
-   mali_wsi_x11_maybe_sw_surface(pdev, surface);   /* before the list is built: IMMEDIATE goes with the software path */
    if (!modes) {
       VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, &pdev->wsi, count, NULL);
       if (r == VK_SUCCESS && pdev->wsi.sw && *count < UINT32_MAX)
@@ -342,40 +265,6 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    *count = out;
    return out < n ? VK_INCOMPLETE : VK_SUCCESS;
 }
-
-/* Surface queries in front of wsi_common. The first one decides the present path (mali_wsi_x11_maybe_sw above), so
- * wsi_common_x11's own DRI3 gate (wsi_common_x11.c:713-719 for support, :646 for the presentation-support queries)
- * sees the software device and answers "supported" where MIT-SHM can serve the surface, before zink gives up on the
- * answer (zink_kopper.c:130-132). The answers themselves are wsi's, unchanged. */
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_wsi_get_surface_support(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface,
-                             VkBool32 *supported)
-{
-   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
-   mali_wsi_x11_maybe_sw_surface(container_of(vk_pdev, struct mali_physical_device, vk), surface);
-   return wsi_GetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamilyIndex, surface, supported);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_wsi_get_surface_capabilities(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
-                                  VkSurfaceCapabilitiesKHR *caps)
-{
-   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
-   mali_wsi_x11_maybe_sw_surface(container_of(vk_pdev, struct mali_physical_device, vk), surface);
-   return wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, caps);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_wsi_get_surface_formats(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, uint32_t *count,
-                             VkSurfaceFormatKHR *formats)
-{
-   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
-   mali_wsi_x11_maybe_sw_surface(container_of(vk_pdev, struct mali_physical_device, vk), surface);
-   return wsi_GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, count, formats);
-}
-/* vkGetPhysicalDeviceXcb/XlibPresentationSupportKHR are not overridden: wsi_common_x11 gates them on the same
- * wsi_device->sw (wsi_common_x11.c:646) and every WSI client we serve asks surface support first (zink:
- * zink_kopper.c:130), which has already taken the decision by then. */
 
 /* Software present over MIT-SHM, our own segment: the frame leaves the driver as a memcpy into shared pages plus
  * XShmPutImage on the socket, instead of a ~w*h*4 byte PutImage request per frame (which capped the CMF at ~113 fps
@@ -864,12 +753,30 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
 
    mali_wsi_x11_probe(surface, &probe);
 
-   /* X11 surfaces on a server without DRI3+Present take the software (PutImage) path. The decision is made by
-    * mali_wsi_x11_maybe_sw(), which the surface queries already took for a zink client (it asks surface support
-    * first and would never get here), and is repeated here for a client that went straight to vkCreateSwapchainKHR;
-    * the same function, so the two can never disagree. MALI_WSI=dmabuf opts back into dma-buf, where a broken import
-    * fails loudly instead of silently dropping presents (the hang in wsi_common_x11.c:2202). */
-   mali_wsi_x11_maybe_sw(pdev, surface->platform, &probe);
+   /* X11 surfaces default to the software (PutImage) path, decided here, per surface, so Wayland clients never
+    * touch the X server: the old unconditional probe ran inside vkEnumeratePhysicalDevices and its xcb_connect()
+    * hung them before their first log line. MALI_WSI=dmabuf opts back into dma-buf, where a broken import fails
+    * loudly instead of silently dropping presents (the hang in wsi_common_x11.c:2202). The fake backend stays
+    * software from init and its tests use MALI_WSI=dmabuf to see the dma-buf path fail on purpose. */
+   const char *forced = getenv("MALI_WSI");
+   const bool forced_dmabuf = forced && !strcmp(forced, "dmabuf");
+   const bool forced_shm = forced && (!strcmp(forced, "shm") || !strcmp(forced, "xput") || !strcmp(forced, "sw"));
+   bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
+                      surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
+   /* wsi_common_x11's dma-buf path needs DRI3 (x11_image_init -> xcb_dri3_pixmap_from_buffer) and Present
+    * (x11_present_image -> xcb_present_pixmap); mali_wsi_x11_probe answers both (mali_wsi.c:169-176). Prefer it
+    * whenever the server has them: it hands the compositor the frame's own fence, while the shared-memory path
+    * has to wait for the GPU from the CPU on every present and was losing 20 % of frames to stale copies.
+    * MALI_WSI=shm/xput/sw forces the fallback, MALI_WSI=dmabuf is now the default where the server allows it. */
+   const bool server_dmabuf = probe.dri3 && probe.present;
+   if (!wsi_dev->sw && !forced_dmabuf && x11_surface && (forced_shm || !server_dmabuf)) {
+      wsi_dev->sw = true;
+      wsi_dev->supports_modifiers = false;
+      mali_wsi_disable_dmabuf_sync(wsi_dev);
+      fprintf(stderr, "mali_vk: wsi: %s surface: software (PutImage) present path (%s) (MALI_WSI=dmabuf for dma-buf)\n",
+              mali_wsi_platform_name(surface->platform),
+              forced_shm ? "forced" : !probe.present ? "server has no Present" : "server has no DRI3");
+   }
 
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
