@@ -39,6 +39,8 @@ struct mali_compile_opts {
    const uint32_t *spirv;
    size_t spirv_words;
    const char *entry;             /* NULL = "main" */
+   unsigned xfb_pc;               /* VS only: push-constant offset of the 4 XFB buffer addresses (app push size) */
+   unsigned xfb;                  /* VS only: the pipeline layout reserves 32 B at xfb_pc for them (0 = no XFB) */
    unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 24, FS 8, CS 8) */
    unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */
@@ -103,8 +105,17 @@ struct mali_blend_opts {
 };
 int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
-/* 0 on success (out filled, release with mali_compiled_free); negative on error, message in err (may be NULL). */
+/* mali_compile: 0 on success (out filled, release with mali_compiled_free); negative on error, message in err.
+ * MALI_COMPILE_UNSUPPORTED means the shader is valid but this driver has no path for it yet (callers map it to
+ * VK_ERROR_FEATURE_NOT_PRESENT rather than VK_ERROR_INVALID_SHADER_NV). */
+#define MALI_COMPILE_UNSUPPORTED (-2)
+
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
+
+/* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the
+ * pipeline layout must reserve the driver's 32 B of XFB buffer addresses after the application's push constants.
+ * Checked before compiling because the layout is fixed at pipeline creation. */
+int mali_spirv_has_xfb(const uint32_t *words, uint32_t nwords);
 void mali_compiled_free(struct mali_compiled *c);
 
 /* Threads per warp (subgroup width) of a Mali architecture. Mirrors Mesa's pan_subgroup_size() for the arches we support:

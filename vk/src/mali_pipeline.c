@@ -23,6 +23,7 @@
 #include "vk_util.h"
 #include <pthread.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 #include <stdlib.h>
 
 struct mali_pipeline {
@@ -31,6 +32,7 @@ struct mali_pipeline {
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
    struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_compiled vs_plain;            /* XFB programs: the same VS without the XFB lowering (mali_tf.h) */
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -171,17 +173,48 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
     * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
 
+   /* VK_EXT_transform_feedback: four u64 buffer addresses go after the application's push constants, so an XFB
+    * program's push range grows by 32 B (the app never sees it; the shader's range check and the FAU reservation
+    * both need the grown size). Only for programs that declare XFB, so other pipelines keep their FAU layout. */
+   const unsigned app_push = layout ? flat.c.push_size : 0;
+   const int xfb = mali_spirv_has_xfb(vcode, vwords);
+   if (xfb) {
+      if (app_push + 32 > MALI_PUSH_MAX) {   /* the app already uses the whole block: no room for the addresses */
+         fprintf(stderr, "mali_vk: transform feedback needs 32 B of push constants after the application's %u\n", app_push);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
+      if (layout)
+         flat.c.push_size = app_push + 32;
+   }
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
+   o.xfb_pc = app_push;
+   o.xfb = xfb;
    o.stage = MALI_STAGE_VERTEX;
    o.strip_psiz = ci->pInputAssemblyState && ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
    o.spirv = vcode;
    o.spirv_words = vwords;
    o.entry = vss->pName;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   if (mali_compile(&o, &p->vs, err, sizeof err)) {
+   int vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   if (vcr) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
-      res = VK_ERROR_INVALID_SHADER_NV;
+      res = vcr == MALI_COMPILE_UNSUPPORTED ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV;
       goto fail;
+   }
+   if (xfb) {
+      /* The same vertex shader without the XFB lowering: every draw outside a Begin/End range runs this one
+       * (mali_cmd.c), so a shader with XFB outputs stores nothing while capture is not active. Compiled once per
+       * pipeline with the same push layout (only the lowering differs), so the pipeline cache key does not change. */
+      o.xfb = 0;
+      o.xfb_pc = 0;
+      if (mali_compile(&o, &p->vs_plain, err, sizeof err)) {
+         fprintf(stderr, "mali_vk: VS compile (non-XFB variant) failed: %s\n", err);
+         res = VK_ERROR_INVALID_SHADER_NV;
+         goto fail;
+      }
+      o.xfb = 1;
+      o.xfb_pc = app_push;
    }
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
    o.stage = MALI_STAGE_FRAGMENT;
@@ -266,8 +299,9 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
 
    /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned; blend shader after it, 16-aligned */
    size_t fs_off = (p->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
-   size_t bl_off = (fs_off + p->fs.bin_size + 15) & ~(size_t)15;
-   size_t code_sz = has_blend ? bl_off + p->blend.bin_size : fs_off + p->fs.bin_size;
+   size_t pl_off = (fs_off + p->fs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);   /* non-XFB VS variant of an XFB program */
+   size_t bl_off = (pl_off + p->vs_plain.bin_size + 15) & ~(size_t)15;
+   size_t code_sz = has_blend ? bl_off + p->blend.bin_size : pl_off + p->vs_plain.bin_size;
    if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
@@ -276,6 +310,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
    if (p->fs.bin_size)
       memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
+   if (p->vs_plain.bin_size)
+      memcpy((char *)p->code.cpu + pl_off, p->vs_plain.bin, p->vs_plain.bin_size);
    if (has_blend)
       memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
@@ -290,6 +326,15 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
+   g->xfb_pc = app_push;   /* where mali_cmd.c stores the XFB buffer addresses in the push block */
+   g->xfb = xfb;           /* xfb_pc == 0 is a valid offset, so the flag is what says the area exists */
+   if (p->vs_plain.bin_size) {
+      g->vs_plain = &p->vs_plain;          /* drawn whenever no Begin/End range is open (mali_cmd.c) */
+      g->vs_plain_va = p->code.gpu_va + pl_off;
+      if (getenv("MALI_TF_DBG"))
+         fprintf(stderr, "mali_tf: pipeline has a second, non-XFB vertex program at 0x%" PRIx64 " (XFB one at 0x%" PRIx64 ")\n",
+                 g->vs_plain_va, g->vs_va);
+   }
    g->push_base[0] = 40;
    g->push_base[1] = arch == 13 ? 24 : 0;   /* v13: FAU words 4,5 hold the blend descriptor */
    g->depth_func = VK_COMPARE_OP_ALWAYS;
