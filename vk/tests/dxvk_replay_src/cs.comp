@@ -1,0 +1,5 @@
+#version 450
+layout(constant_id = 0) const uint kLocal = 8;
+layout(local_size_x_id = 0) in;
+layout(set = 0, binding = 0, std430) buffer B { uint v[]; } b;
+void main() { b.v[gl_GlobalInvocationID.x] += kLocal; }
