@@ -20,6 +20,8 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_AcquireNextImageKHR(VkDevice device, VkSwapch
 VKAPI_ATTR VkResult VKAPI_CALL wsi_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo);
 VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                   const VkAllocationCallbacks *pAllocator);
+VKAPI_ATTR VkResult VKAPI_CALL wsi_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId,
+                                                    uint64_t timeout);
 
 #include "vk_alloc.h"
 #include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
@@ -222,6 +224,27 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
  * measurement when IMMEDIATE is really offered: with FIFO/MAILBOX the producer rate equals the displayed rate by
  * construction, which is what hid the GPU headroom (1600x720 and 2400x1080 both 118 fps). IMMEDIATE is additive,
  * FIFO/MAILBOX stay first and unchanged for real apps. */
+/* An X11 software (MIT-SHM or PutImage) chain cannot ever complete a present id in wsi_common_x11: the software
+ * present sends xcb_put_image/xcb_shm_put_image and no Present request, so there is no PresentCompleteNotify event to
+ * run x11_present_complete() (wsi_common_x11.c:1702), the only place chain->present_id advances
+ * (wsi_common_x11.c:1444), and x11_wait_for_present() loops on present_progress_cond until its timeout
+ * (wsi_common_x11.c:3075). An app that enables VK_KHR_present_wait - DXVK's frame limiter, gamescope - would pay its
+ * whole wait timeout on every frame presented on this path and never see a completed present. The frame is already on
+ * the server when our present returns (copy + xcb_flush), so report it as presented: a false VK_TIMEOUT blocks the
+ * client on every frame. Every other chain keeps Mesa's own wait. */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t present_id, uint64_t timeout)
+{
+   /* chain->wsi is the instance the chain was created with (wsi_CreateSwapchainKHR stores it in chain->base.wsi), and
+    * only an X11 surface ever switches the device to the software path (mali_wsi_create_swapchain above), so a
+    * software chain here is an X11 software chain. #323's per-chain table (mali_wsi_x11_chain_mode) replaces this
+    * check when it lands. */
+   VK_FROM_HANDLE(wsi_swapchain, chain, swapchain);
+   if (chain && chain->wsi && chain->wsi->sw)
+      return VK_SUCCESS;
+   return wsi_WaitForPresentKHR(device, swapchain, present_id, timeout);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *alloc)
 {

@@ -81,7 +81,7 @@ int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
-   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0;
+   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, present_ids = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
@@ -91,8 +91,9 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--blend")) blend = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
+      else if (!strcmp(argv[i], "--present-ids")) present_ids = 1;
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
-                            "[--spv-dir d] [--expect-name s]\n"); return 2; }
+                            "[--spv-dir d] [--expect-name s] [--present-ids]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -207,21 +208,29 @@ main(int argc, char **argv)
    REQ(fifo, "FIFO present mode missing");
    printf("format %d, %u present modes\n", (int)fmt.format, nm);
 
-   const char *dexts[] = {"VK_KHR_swapchain"};
+   const char *dexts[] = {"VK_KHR_swapchain", "VK_KHR_present_id", "VK_KHR_present_wait"};
    float prio = 1.0f;
    /* --draw: the dynamic-rendering path (core 1.3 here, same as the zink/HL2 command streams). */
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                            .dynamicRendering = (draw || textured || depth || blend) ? VK_TRUE : VK_FALSE};
+   /* --present-ids: what DXVK's frame limiter and gamescope do (VK_KHR_present_id + VK_KHR_present_wait, then
+    * vkWaitForPresentKHR on the id that was presented). */
+   VkPhysicalDevicePresentWaitFeaturesKHR pwf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+                                                 .presentWait = present_ids ? VK_TRUE : VK_FALSE};
+   VkPhysicalDevicePresentIdFeaturesKHR pif = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
+                                               .pNext = &pwf, .presentId = present_ids ? VK_TRUE : VK_FALSE};
+   if (present_ids) f13.pNext = &pif;
    VkDevice dev;
    CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13,
                                              .queueCreateInfoCount = 1,
                                              .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
                                                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                                                 .queueFamilyIndex = fam, .queueCount = 1, .pQueuePriorities = &prio},
-                                             .enabledExtensionCount = 1, .ppEnabledExtensionNames = dexts}, NULL, &dev));
+                                             .enabledExtensionCount = present_ids ? 3 : 1,
+                                             .ppEnabledExtensionNames = dexts}, NULL, &dev));
 #define DPFN(n) PFN_vk##n n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n)
    DPFN(GetDeviceQueue); DPFN(CreateSwapchainKHR); DPFN(GetSwapchainImagesKHR); DPFN(AcquireNextImageKHR);
-   DPFN(QueuePresentKHR); DPFN(DestroySwapchainKHR); DPFN(CreateCommandPool); DPFN(AllocateCommandBuffers);
+   DPFN(QueuePresentKHR); DPFN(WaitForPresentKHR); DPFN(DestroySwapchainKHR); DPFN(CreateCommandPool); DPFN(AllocateCommandBuffers);
    DPFN(BeginCommandBuffer); DPFN(EndCommandBuffer); DPFN(CmdPipelineBarrier); DPFN(CmdClearColorImage);
    DPFN(CreateSemaphore); DPFN(CreateFence); DPFN(WaitForFences); DPFN(ResetFences); DPFN(QueueSubmit);
    DPFN(QueueWaitIdle); DPFN(DeviceWaitIdle); DPFN(DestroyDevice); DPFN(ResetCommandBuffer);
@@ -505,11 +514,27 @@ main(int argc, char **argv)
                                            .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &done},
                      fence));
       VkResult pres = VK_SUCCESS;
-      r = QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
+      const uint64_t pid = (uint64_t)f + 1;
+      VkPresentIdKHR pids = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR, .pNext = NULL, .swapchainCount = 1,
+                             .pPresentIds = &pid};
+      r = QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                                                 .pNext = present_ids ? (void *)&pids : NULL,
+                                                 .waitSemaphoreCount = 1,
                                                  .pWaitSemaphores = &done, .swapchainCount = 1, .pSwapchains = &sc,
                                                  .pImageIndices = &idx, .pResults = &pres});
       if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { fprintf(stderr, "FAIL present frame %d = %d\n", f, (int)r); return 1; }
       REQ(pres == VK_SUCCESS || pres == VK_SUBOPTIMAL_KHR, "per-swapchain present result");
+      if (present_ids) {
+         /* The id above has to be tracked by whatever presented the frame. A shortcut that copies the image and
+          * returns without telling wsi leaves this wait on the app's own timeout - a blocked frame on every present
+          * (CR #289/#288 "Record present IDs on the shared-memory present path"). */
+         VkResult wr = WaitForPresentKHR(dev, sc, pid, 1000000000ull);   /* 1 s */
+         if (wr != VK_SUCCESS) {
+            fprintf(stderr, "FAIL vkWaitForPresentKHR(frame %d, id %llu) = %d: the present id was not tracked by "
+                    "the path that presented the frame\n", f, (unsigned long long)pid, (int)wr);
+            return 1;
+         }
+      }
       CK(WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
       CK(ResetFences(dev, 1, &fence));
       printf("frame %d: image %u acquired, cleared, presented\n", f, idx);
