@@ -26,6 +26,7 @@
 #include "kbase_fb.h"
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
+#include "mali_dbg.h"
 #include "mali_event.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
@@ -645,6 +646,7 @@ static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
                const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx)
 {
+   const unsigned dbg_n0 = c->n;   /* MALI_DRAW_DBG: the words this draw adds to the command stream */
    const struct mali_gfx_state *g = &d->gfx;
    bool v13 = env->arch == 13;
    unsigned pk = ((g->depth_test && f->has_zs) || (f->has_st && d->fx.set && d->fx.st_test)) ? 0 : 2;
@@ -760,6 +762,19 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       }
    }
+   /* MALI_DRAW_DBG: the draw's own words, and the addresses they resolve to. The emitter is called per frame, so the
+    * first three printed packets are the first three frames (homogeneous sessions: the first blit's readback is also
+    * the one the ladder reports as 0.0). */
+   mali_dbg_words("emit", "DRAWPKT", c->v + dbg_n0, c->n - dbg_n0);
+   mali_dbg_line("emit", "DRAWVA arch=%u draws=%u w=%u h=%u count=%u inst=%u sets=%u/%u/%u/%u "
+                         "setva=%llx/%llx/%llx/%llx vb0=%llx index=%llx colour=%llx vs=%llx fs=%llx tsd=%llx tctx=%llx",
+                 env->arch, f->ndraws, f->width, f->height, d->count, d->instance_count, d->nsets,
+                 d->set_bytes[0], d->set_bytes[1], d->set_bytes[2], d->set_bytes[3],
+                 (unsigned long long)d->set_va[0], (unsigned long long)d->set_va[1],
+                 (unsigned long long)d->set_va[2], (unsigned long long)d->set_va[3],
+                 (unsigned long long)d->vb_va[0], (unsigned long long)d->index_va,
+                 (unsigned long long)f->colour.va, (unsigned long long)g->vs_va, (unsigned long long)g->fs_va,
+                 (unsigned long long)va_tsd, (unsigned long long)va_tctx);
 }
 
 static void

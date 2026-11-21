@@ -77,4 +77,21 @@ mali_dbg_line(const char *unit, const char *fmt, ...)
    fputc('\n', stderr);
 }
 
+/* up to 64 words on one line: "DRAWPKT <n> words: w0 w1 …" */
+static inline void
+mali_dbg_words(const char *unit, const char *tag, const uint64_t *w, unsigned n)
+{
+   static unsigned seen;
+   if (!getenv("MALI_DRAW_DBG"))
+      return;
+   if (seen++ >= 3)
+      return;
+   fprintf(stderr, "mali_draw %s: %s %u words:", unit, tag, n);
+   for (unsigned i = 0; i < n && i < 64; i++)
+      fprintf(stderr, " %llx", (unsigned long long)w[i]);
+   if (n > 64)
+      fprintf(stderr, " ...(%u more)", n - 64u);
+   fputc('\n', stderr);
+}
+
 #endif
