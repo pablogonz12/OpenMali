@@ -240,6 +240,8 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
       if (stages[i] == MESA_SHADER_VERTEX) {
          cmd->gfx.vs = c;
          cmd->gfx.vs_va = va;
+         cmd->gfx.vs_plain = NULL;   /* a dynamically bound shader has no compiled non-XFB variant */
+         cmd->gfx.vs_plain_va = 0;
       } else if (stages[i] == MESA_SHADER_FRAGMENT) {
          cmd->gfx.fs = c;
          cmd->gfx.fs_va = va;
