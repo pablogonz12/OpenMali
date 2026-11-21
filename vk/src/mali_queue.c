@@ -11,6 +11,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "kbase_cs.h"
@@ -513,6 +514,17 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       return vk_error(vq, VK_ERROR_FEATURE_NOT_PRESENT); /* sparse: not supported */
 
    double p0 = prof_now();
+   if (mali_trace_on()) {
+      char wb[160] = "", sb[160] = "";
+      size_t wo = 0, so = 0;
+      for (uint32_t i = 0; i < submit->wait_count && wo < sizeof wb - 40; i++)
+         wo += snprintf(wb + wo, sizeof wb - wo, " %x%s@%llu", (unsigned)submit->waits[i].sync->type->features,
+                        (submit->waits[i].sync->flags & VK_SYNC_IS_TIMELINE) ? "(tl)" : "", (unsigned long long)submit->waits[i].wait_value);
+      for (uint32_t i = 0; i < submit->signal_count && so < sizeof sb - 40; i++)
+         so += snprintf(sb + so, sizeof sb - so, " %x%s@%llu", (unsigned)submit->signals[i].sync->type->features,
+                        (submit->signals[i].sync->flags & VK_SYNC_IS_TIMELINE) ? "(tl)" : "", (unsigned long long)submit->signals[i].signal_value);
+      mali_trace("submit tid=%d cmds=%u waits=[%s ] signals=[%s ]", (int)syscall(SYS_gettid), submit->command_buffer_count, wb, sb);
+   }
    /* Every wait is a CPU wait for now (this queue is the only producer, external sync_files are the
     * rare case); the GPU-side wait is M8 work. */
    for (uint32_t i = 0; i < submit->wait_count; i++) {
@@ -529,7 +541,10 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          if (own)
             continue;
       }
+      double tw = mali_trace_on() ? prof_now() : 0;
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+      if (mali_trace_on())
+         mali_trace("  wait[%u] f%x@%llu -> %d after %.2f ms", i, (unsigned)w->sync->type->features, (unsigned long long)w->wait_value, (int)r, prof_now() - tw);
       if (r != VK_SUCCESS)
          return r;
    }
@@ -566,6 +581,8 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
       }
    }
    close(fd);
+   if (mali_trace_on())
+      mali_trace("  submit done tid=%d -> %d", (int)syscall(SYS_gettid), (int)res);
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
