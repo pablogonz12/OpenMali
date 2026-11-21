@@ -158,4 +158,115 @@ mali_afbc_bw_estimate(double ratio_payload, const struct mali_afbc_layout *l)
    return (double)l->header_size + ratio_payload * (double)(l->nblocks * l->payload_per_sb);
 }
 
+/* ---- Stage 1: eligibility (which images may be AFBC). Pure function over plain integers (Vulkan enum values are
+ * written as numbers so this header stays standalone). Mirrors panvk_image.c:176-235 for COLOUR images. Nothing calls
+ * this yet; the result is advisory until the later stages land. Returns the reason an image must stay linear, or 0. */
+enum mali_afbc_reject {
+   MALI_AFBC_OK = 0,
+   MALI_AFBC_REJ_DISABLED,        /* MALI_AFBC not 1 */
+   MALI_AFBC_REJ_ARCH,            /* arch < 7 (v10/v11/v13 only targeted) */
+   MALI_AFBC_REJ_TILING,          /* not VK_IMAGE_TILING_OPTIMAL */
+   MALI_AFBC_REJ_TYPE,            /* not 2D */
+   MALI_AFBC_REJ_SAMPLES,         /* MSAA */
+   MALI_AFBC_REJ_USAGE,           /* STORAGE / HOST_TRANSFER (compute and CPU cannot touch AFBC) */
+   MALI_AFBC_REJ_FLAGS,           /* DISJOINT, ALIAS, SPARSE_*, PROTECTED-less combos we do not handle */
+   MALI_AFBC_REJ_FORMAT,          /* not in the colour table (float, integer, compressed, multiplanar, depth) */
+   MALI_AFBC_REJ_EXTENT,          /* tiny images: not worth it / header overhead */
+};
+
+struct mali_afbc_image_info {
+   unsigned arch;
+   unsigned tiling;        /* VkImageTiling: 0 optimal, 1 linear, 1000158000 drm modifier */
+   unsigned image_type;    /* VkImageType: 0=1D 1=2D 2=3D */
+   unsigned samples;       /* sample count, 1 = single */
+   uint32_t usage;         /* VkImageUsageFlags */
+   uint32_t flags;         /* VkImageCreateFlags */
+   unsigned format;        /* VkFormat */
+   uint32_t width, height;
+   bool afbc_env;          /* mali_afbc_enabled() (injected so tests do not depend on the environment) */
+};
+
+#define MALI_AFBC_USAGE_STORAGE        0x08u
+#define MALI_AFBC_USAGE_HOST_TRANSFER  0x400000u   /* VK_IMAGE_USAGE_HOST_TRANSFER_BIT (EXT/1.4) */
+#define MALI_AFBC_FLAG_SPARSE_BINDING  0x1u
+#define MALI_AFBC_FLAG_SPARSE_RESIDENT 0x2u
+#define MALI_AFBC_FLAG_SPARSE_ALIASED  0x4u
+#define MALI_AFBC_FLAG_ALIAS           0x400u
+#define MALI_AFBC_FLAG_DISJOINT        0x200u
+
+/* Colour format table: bits per pixel for AFBC-capable formats, 0 if not supported. Float/integer-only, depth and
+ * compressed formats are absent on purpose (pan_afbc_supports_format). */
+static inline unsigned
+mali_afbc_format_bpp(unsigned fmt)
+{
+   switch (fmt) {
+   case 4: case 5:              return 16;   /* R5G6B5 UNORM/ B5G6R5 (pack16) */
+   case 9: case 15:             return 8;    /* R8_UNORM, R8_SRGB */
+   case 16: case 22:            return 16;   /* R8G8_UNORM, R8G8_SRGB */
+   case 37: case 43:            return 32;   /* R8G8B8A8_UNORM / SRGB */
+   case 44: case 50:            return 32;   /* B8G8R8A8_UNORM / SRGB */
+   case 58: case 64:            return 32;   /* A2R10G10B10 / A2B10G10R10 UNORM */
+   case 70:                     return 16;   /* R16_UNORM */
+   default:                     return 0;
+   }
+}
+
+static inline enum mali_afbc_reject
+mali_afbc_image_eligible(const struct mali_afbc_image_info *i, unsigned *bpp_out)
+{
+   if (!i->afbc_env) return MALI_AFBC_REJ_DISABLED;
+   if (i->arch < 7) return MALI_AFBC_REJ_ARCH;
+   if (i->tiling != 0) return MALI_AFBC_REJ_TILING;
+   if (i->image_type != 1) return MALI_AFBC_REJ_TYPE;
+   if (i->samples != 1) return MALI_AFBC_REJ_SAMPLES;
+   if (i->usage & (MALI_AFBC_USAGE_STORAGE | MALI_AFBC_USAGE_HOST_TRANSFER)) return MALI_AFBC_REJ_USAGE;
+   if (i->flags & (MALI_AFBC_FLAG_DISJOINT | MALI_AFBC_FLAG_ALIAS | MALI_AFBC_FLAG_SPARSE_BINDING |
+                   MALI_AFBC_FLAG_SPARSE_RESIDENT | MALI_AFBC_FLAG_SPARSE_ALIASED))
+      return MALI_AFBC_REJ_FLAGS;
+   unsigned bpp = mali_afbc_format_bpp(i->format);
+   if (!bpp) return MALI_AFBC_REJ_FORMAT;
+   if (i->format == 70 && i->arch < 10) return MALI_AFBC_REJ_FORMAT;   /* R16_UNORM AFBC exists from v10 on only (Mesa pan_afbc rejects it below arch 10; arch 7/8/9 are not targeted) */
+   if (i->width < 16 || i->height < 16) return MALI_AFBC_REJ_EXTENT;
+   if (bpp_out) *bpp_out = bpp;
+   return MALI_AFBC_OK;
+}
+
+
+/* ---- Stage 2 (host part): whole-image layout, mip chain + array layers. Within one array layer the mip levels are
+ * packed back to back, each level start aligned to its offset_align; layers repeat at array_stride (aligned to the
+ * largest level alignment). Level extent = max(1, dim >> level). Unused until mali_image.c is wired (default off). */
+#define MALI_AFBC_MAX_LEVELS 16
+
+struct mali_afbc_image_layout {
+   uint32_t levels, layers;
+   uint64_t level_offset[MALI_AFBC_MAX_LEVELS];  /* from layer start */
+   struct mali_afbc_layout level[MALI_AFBC_MAX_LEVELS];
+   uint64_t array_stride;
+   uint64_t size;
+   uint32_t base_align;    /* required alignment of the image base address */
+};
+
+static inline int
+mali_afbc_image_layout(unsigned arch, uint64_t modifier, unsigned bpp_bits, uint32_t width, uint32_t height,
+                       uint32_t levels, uint32_t layers, struct mali_afbc_image_layout *o)
+{
+   *o = (struct mali_afbc_image_layout){0};
+   if (!levels || levels > MALI_AFBC_MAX_LEVELS || !layers || !width || !height) return -1;
+   o->levels = levels; o->layers = layers;
+   uint64_t off = 0;
+   for (uint32_t l = 0; l < levels; l++) {
+      struct mali_afbc_params p = {arch, modifier, bpp_bits, width >> l ? width >> l : 1, height >> l ? height >> l : 1, 1};
+      if (mali_afbc_layout(&p, &o->level[l])) return -1;
+      if (o->level[l].offset_align > o->base_align) o->base_align = o->level[l].offset_align;
+      off = mali_afbc_align(off, o->level[l].offset_align);
+      o->level_offset[l] = off;
+      if (o->level[l].size > UINT64_MAX - off) return -1;
+      off += o->level[l].size;
+   }
+   o->array_stride = mali_afbc_align(off, o->base_align);
+   if (o->array_stride > UINT64_MAX / layers) return -1;
+   o->size = o->array_stride * layers;
+   return 0;
+}
+
 #endif

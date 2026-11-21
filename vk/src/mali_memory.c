@@ -6,12 +6,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/magic.h>
-#include <sys/vfs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "mali_dmabuf.h"
 #include "mali_entrypoints.h"
 #include "util/u_atomic.h"
 #include "vk_alloc.h"
@@ -40,9 +39,10 @@ errno_to_vk(struct mali_device *dev, int e)
    return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
 }
 
-/* True when fd is an open dma-buf: every dma-buf lives on the dmabuf pseudo filesystem (statfs magic DMA_BUF_MAGIC), so
- * no other descriptor (e.g. /dev/kvm, which also answers EINVAL to unknown ioctls) can pass. The fake backend's
- * "dma-bufs" are memfds: only check the fd is open. */
+/* True when fd is an open dma-buf. mali_dmabuf_probe accepts on the statfs magic and otherwise falls back to a
+ * side-effect-free DMA_BUF_IOCTL_SYNC probe, because the phone's guest fails the statfs arm on real dma-bufs (see
+ * mali_dmabuf.c for the evidence and why the fallback still refuses /dev/kvm). The fake backend's "dma-bufs" are
+ * memfds: only check the fd is open. */
 static bool
 mali_fd_is_dmabuf(struct mali_device *dev, int fd)
 {
@@ -50,8 +50,7 @@ mali_fd_is_dmabuf(struct mali_device *dev, int fd)
       return false;
    if (mali_device_pdev(dev)->gpu.fake)
       return true;
-   struct statfs sf;
-   return fstatfs(fd, &sf) == 0 && (unsigned long)sf.f_type == DMA_BUF_MAGIC;
+   return mali_dmabuf_probe(fd);
 }
 
 /* Reserve `size` against the device-wide commit budget before anything is allocated, so an over-budget
