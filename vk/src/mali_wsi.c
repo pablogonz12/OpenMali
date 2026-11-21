@@ -1142,16 +1142,32 @@ mali_wsi_surface_of(VkIcdSurfaceBase *surface)
 }
 
 static struct mali_wsi_chain_info *
-mali_wsi_info_find(VkSwapchainKHR sc)
+mali_wsi_info_find_locked(VkSwapchainKHR sc)   /* caller holds mali_wsi_infos_lock */
 {
    if (!sc)
       return NULL;
-   /* Read-only: an entry is added and removed around the chain's own lifetime, and a present of that chain cannot
-    * race its destroy (Vulkan's external synchronisation of vkDestroySwapchainKHR). */
    for (unsigned i = 0; i < MALI_WSI_INFO_SLOTS; i++)
       if (mali_wsi_infos[i].active && mali_wsi_infos[i].swapchain == sc)
          return &mali_wsi_infos[i];
    return NULL;
+}
+
+/* The present path's view of a chain: bump its frame counter and copy the record while the registry lock is held, so
+ * a present of one chain cannot scan the table while another chain is added or removed (CR body finding,
+ * vk/src/mali_wsi.c:597-599). The copy is what the dump and the summary line read afterwards, outside the lock. */
+static bool
+mali_wsi_info_present(VkSwapchainKHR sc, struct mali_wsi_chain_info *out)
+{
+   bool found = false;
+   pthread_mutex_lock(&mali_wsi_infos_lock);
+   struct mali_wsi_chain_info *e = mali_wsi_info_find_locked(sc);
+   if (e) {
+      *out = *e;
+      out->presents = __atomic_add_fetch(&e->presents, 1, __ATOMIC_RELAXED);
+      found = true;
+   }
+   pthread_mutex_unlock(&mali_wsi_infos_lock);
+   return found;
 }
 
 static void
@@ -1198,7 +1214,7 @@ static void
 mali_wsi_info_remove(VkSwapchainKHR sc)
 {
    pthread_mutex_lock(&mali_wsi_infos_lock);
-   struct mali_wsi_chain_info *e = mali_wsi_info_find(sc);
+   struct mali_wsi_chain_info *e = mali_wsi_info_find_locked(sc);
    if (e) {
       memset(e, 0, sizeof *e);   /* clears `active` and frees the slot */
       e->swapchain = VK_NULL_HANDLE;
@@ -1453,11 +1469,12 @@ mali_wsi_dump_present(struct mali_device *dev, struct wsi_swapchain *chain, uint
 static void
 mali_wsi_present_trace(struct mali_device *dev, VkSwapchainKHR handle, struct wsi_swapchain *chain, uint32_t image_index)
 {
-   struct mali_wsi_chain_info *info = mali_wsi_info_find(handle);
-   if (!info)
+   struct mali_wsi_chain_info info_copy;
+   if (!mali_wsi_info_present(handle, &info_copy))
       return;
+   struct mali_wsi_chain_info *info = &info_copy;
    struct mali_image *mi = present_image(chain, image_index, NULL);
-   const uint64_t frame = __atomic_add_fetch(&info->presents, 1, __ATOMIC_RELAXED);
+   const uint64_t frame = info->presents;
    if (mali_wsi_dump_prefix())
       mali_wsi_dump_present(dev, chain, image_index, info, frame);
    if (mali_wsi_debug()) {
