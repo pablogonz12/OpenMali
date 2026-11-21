@@ -1439,22 +1439,32 @@ mali_wsi_dump_present(struct mali_device *dev, struct wsi_swapchain *chain, uint
    }
    free(row);
 
+   /* The record is half of the contract ("a picture and a line naming it"): an unwritable, partially written or
+    * unclosable sidecar is reported as an incomplete dump on stderr, never as a clean one (CR thread, :1443). The
+    * picture is kept - it is still the pixels that were presented. */
    snprintf(txt, sizeof txt, "%s.txt", prefix);
    FILE *t = fopen(txt, "a");
-   if (t) {
-      fprintf(t, "dump frame=%llu sc=%d chain=%u comm=%s pid=%d platform=%s surface=0x%llx %ux%u format=%d(%s) "
-                 "layout=%s samples=%u images=%u usage=0x%x",
-              (unsigned long long)frame, info ? info->slot : 0, info ? info->chain_id : 0u, mali_wsi_comm(), (int)getpid(),
-              info ? mali_wsi_platform_name(info->platform) : "unknown", (unsigned long long)(info ? info->surface : 0),
-              w, h, (int)(mi ? mi->vk.format : VK_FORMAT_UNDEFINED), mi ? vk_Format_to_str(mi->vk.format) : "no image",
-              layout, mi ? mi->lay.d.samples : 0u, info ? info->images : 0u, info ? (unsigned)info->usage : 0u);
-      if (file[0] != 'n' || strcmp(file, "none"))
-         fprintf(t, " mean=%.1f,%.1f,%.1f file=%s\n", sum[0] / ((double)w * h), sum[1] / ((double)w * h),
-                 sum[2] / ((double)w * h), file);
-      else
-         fprintf(t, " file=none reason=\"%s\"\n", why);
-      fclose(t);
-   }
+   bool rec_ok = t && fprintf(t, "dump frame=%llu sc=%d chain=%u comm=%s pid=%d platform=%s surface=0x%llx %ux%u "
+                                 "format=%d(%s) layout=%s samples=%u images=%u usage=0x%x",
+                              (unsigned long long)frame, info ? info->slot : 0, info ? info->chain_id : 0u,
+                              mali_wsi_comm(), (int)getpid(),
+                              info ? mali_wsi_platform_name(info->platform) : "unknown",
+                              (unsigned long long)(info ? info->surface : 0), w, h,
+                              (int)(mi ? mi->vk.format : VK_FORMAT_UNDEFINED),
+                              mi ? vk_Format_to_str(mi->vk.format) : "no image",
+                              layout, mi ? mi->lay.d.samples : 0u, info ? info->images : 0u,
+                              info ? (unsigned)info->usage : 0u) > 0;
+   if (rec_ok)
+      rec_ok = (strcmp(file, "none")
+                   ? fprintf(t, " mean=%.1f,%.1f,%.1f file=%s\n", sum[0] / ((double)w * h),
+                             sum[1] / ((double)w * h), sum[2] / ((double)w * h), file)
+                   : fprintf(t, " file=none reason=\"%s\"\n", why)) > 0;
+   if (t && fclose(t) != 0)
+      rec_ok = false;
+   if (!rec_ok)
+      fprintf(stderr, "mali_vk: wsi dump #%llu: sc%d image %u: the record in %s failed (%s) - this dump is "
+                      "incomplete\n", (unsigned long long)frame, info ? info->slot : 0, image_index, txt,
+              t ? "write or close" : strerror(errno));
    if (!strcmp(file, "none"))
       fprintf(stderr, "mali_vk: wsi dump #%llu: sc%d image %u %ux%u %s (%s): no picture, %s\n",
               (unsigned long long)frame, info ? info->slot : 0, image_index, w, h,
