@@ -111,6 +111,7 @@ px_size(int fmt)
 {
    switch (fmt) {
    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_A8B8G8R8_UNORM_PACK32: case VK_FORMAT_A8B8G8R8_SRGB_PACK32:   /* same bytes as R8G8B8A8 (R in byte 0) */
    case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return 4;
    case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
@@ -144,9 +145,11 @@ px_read(const struct surf *s, unsigned x, unsigned y, float c[4])
    c[3] = 1.0f;
    switch (s->fmt) {
    case VK_FORMAT_R8G8B8A8_UNORM:
+   case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
       for (unsigned i = 0; i < 4; i++) c[i] = q[i] / 255.0f;
       break;
    case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
       for (unsigned i = 0; i < 3; i++) c[i] = srgb_to_lin(q[i] / 255.0f);
       c[3] = q[3] / 255.0f;
       break;
@@ -212,9 +215,11 @@ px_write(const struct surf *s, unsigned x, unsigned y, const float c[4])
    uint8_t *q = s->p + (size_t)y * s->stride + (size_t)x * px_size(s->fmt);
    switch (s->fmt) {
    case VK_FORMAT_R8G8B8A8_UNORM:
+   case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
       for (unsigned i = 0; i < 4; i++) q[i] = u8(c[i]);
       break;
    case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
       for (unsigned i = 0; i < 3; i++) q[i] = u8(lin_to_srgb(c[i]));
       q[3] = u8(c[3]);
       break;

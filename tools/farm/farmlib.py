@@ -288,7 +288,7 @@ def job_verdict(job):
     if any(p["state"] in ("pending", "running") for p in parts):
         return "pending"
     vs = {p.get("verdict", "error") for p in parts}
-    for v in ("error", "invalid", "fail"):
+    for v in ("device_reboot", "memory_cap", "error", "invalid", "fail"):    # device-level stops never read as pass
         if v in vs:
             return v
     return "pass"

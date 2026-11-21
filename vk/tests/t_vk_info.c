@@ -166,9 +166,9 @@ main(int argc, char **argv)
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
-   {  /* 4x is advertised iff pipeline creation accepts it: on by default, MALI_EXPERIMENTAL_MSAA=0 opts out */
+   {  /* 4x is advertised iff pipeline creation accepts it: opt-in via MALI_EXPERIMENTAL_MSAA=1 (LOAD/resolve incomplete) */
       const char *g = getenv("MALI_EXPERIMENTAL_MSAA");
-      VkSampleCountFlags want = (g && g[0] == '0') ? 0 : VK_SAMPLE_COUNT_4_BIT;
+      VkSampleCountFlags want = (g && g[0] == '1') ? VK_SAMPLE_COUNT_4_BIT : 0;
       VkImageFormatProperties ifp;
       VkResult r = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &ifp);
@@ -349,6 +349,18 @@ main(int argc, char **argv)
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_R8G8B8A8_UNORM, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "RGBA8 sampled");
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "RGBA8 color");
+      /* HL2's swapchain/zink render targets: the packed A8B8G8R8 aliases must be renderable and sampled like RGBA8. */
+      static const VkFormat argb8[] = {VK_FORMAT_A8B8G8R8_UNORM_PACK32, VK_FORMAT_A8B8G8R8_SRGB_PACK32};
+      for (unsigned i = 0; i < 2; i++) {
+         VkFormatProperties2 afp = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+         GetPhysicalDeviceFormatProperties2(pd, argb8[i], &afp);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT,
+               "A8B8G8R8 variant %d: colour attachment", (int)argb8[i]);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
+               "A8B8G8R8 variant %d: sampled", (int)argb8[i]);
+         CHECK(afp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
+               "A8B8G8R8 variant %d: transfer src", (int)argb8[i]);
+      }
       GetPhysicalDeviceFormatProperties2(pd, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
       CHECK(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "BC7 sampled (textureCompressionBC)");
       CHECK(!(fp.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT), "BC7 not renderable");
@@ -412,7 +424,8 @@ main(int argc, char **argv)
       fflush(stderr);
       int saved = dup(2);
       FILE *cap = tmpfile();
-      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture");
+      CHECK(saved >= 0 && cap, "stderr capture: dup/tmpfile failed");   /* no dup2 before the file exists */
+      CHECK(dup2(fileno(cap), 2) >= 0, "stderr capture: dup2 failed");
       VkResult rr = CreateDevice(pd, &d2, NULL, &d);
       fflush(stderr);
       dup2(saved, 2);
