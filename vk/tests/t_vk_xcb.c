@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>   /* _exit for --shm-leak-exit */
 #include <vulkan/vulkan.h>
 #include <xcb/xcb.h>
 #if defined(HAVE_WAYLAND_CLIENT)
@@ -662,7 +663,7 @@ main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, wlfirst = 0, pressup = 0, caps2 = 0, twoconn = 0;
-   int present_ids = 0;
+   int present_ids = 0, shm_leak_exit = 0, shm_alive_ms = 0, shm_gate_hold = 0;
    unsigned win_w = W, win_h = H;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--size") && i + 1 < argc) {
@@ -684,9 +685,12 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else if (!strcmp(argv[i], "--present-ids")) present_ids = 1;
+      else if (!strcmp(argv[i], "--shm-leak-exit")) shm_leak_exit = 1;   /* xwsi-shm-leak.sh: no destroy, _exit(0) */
+      else if (!strcmp(argv[i], "--shm-alive-ms") && i + 1 < argc) shm_alive_ms = atoi(argv[++i]);   /* hold the chain open */
+      else if (!strcmp(argv[i], "--shm-gate-hold") && i + 1 < argc) shm_gate_hold = atoi(argv[++i]);   /* xwsi-shm-gate.sh */
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
                             "[--size WxH] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s] "
-                            "[--present-ids]\n"); return 2; }
+                            "[--present-ids] [--shm-leak-exit] [--shm-alive-ms N] [--shm-gate-hold N]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -1051,6 +1055,13 @@ main(int argc, char **argv)
    VkFence fence;
    CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &fence));
 
+   if (shm_gate_hold > 0) {
+      /* Hold the newest N GetGeometry replies open, i.e. pretend the server has not read those regions yet. The driver
+       * drains only what has arrived, so these images must not come back to us (design-shm.md A). */
+      char v[16];
+      snprintf(v, sizeof v, "%d", shm_gate_hold);
+      setenv("MALI_WSI_SHM_HOLD", v, 1);
+   }
    const VkClearColorValue clr = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}};   /* BGRA8: 51,102,204 */
    for (int f = 0; f < FRAMES; f++) {
       uint32_t idx;
@@ -1146,6 +1157,46 @@ main(int argc, char **argv)
    }
    CK(QueueWaitIdle(q));
    xcb_flush(c);
+   if (shm_alive_ms > 0) {
+      /* xwsi-shm-leak.sh: stay alive with the segment attached (no destroy) so the harness can read
+       * /proc/sysvipc/shm while the chain exists - RMID-at-attach means it must not be listed. */
+      xcb_flush(c);
+      usleep((useconds_t)shm_alive_ms * 1000);
+   }
+   if (shm_gate_hold > 0) {
+      /* The old code released every image as soon as the PutImage was queued, so a second acquire with timeout 0
+       * hands out a segment the server may still be reading. The gate must refuse it without blocking. */
+      uint32_t hidx = ~0u;
+      VkResult h1 = AcquireNextImageKHR(dev, sc, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, &hidx);
+      printf("gate held (%d): first acquire(timeout 0) -> %d image %u\n", shm_gate_hold, (int)h1, hidx);
+      REQ(h1 == VK_SUCCESS || h1 == VK_SUBOPTIMAL_KHR, "the never-presented image must still come back");
+      hidx = ~0u;
+      VkResult h2 = AcquireNextImageKHR(dev, sc, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, &hidx);
+      printf("gate held (%d): second acquire(timeout 0) -> %d\n", shm_gate_hold, (int)h2);
+      if (h2 == VK_SUCCESS || h2 == VK_SUBOPTIMAL_KHR) {
+         fprintf(stderr, "FAIL: acquire returned image %u while %d GetGeometry reply/replies were still outstanding: "
+                 "the driver let the app rewrite a segment the server may still be reading\n", hidx, shm_gate_hold);
+         return 1;
+      }
+      REQ(h2 == VK_NOT_READY || h2 == VK_TIMEOUT, "acquire with every image still being read must refuse, not fail");
+      /* ... and once the server has caught up (hold lifted) an image comes back and the wait is what returned it. */
+      setenv("MALI_WSI_SHM_HOLD", "0", 1);
+      hidx = ~0u;
+      VkResult h3 = AcquireNextImageKHR(dev, sc, 1000000000ull, VK_NULL_HANDLE, VK_NULL_HANDLE, &hidx);
+      printf("gate lifted: acquire -> %d image %u\n", (int)h3, hidx);
+      if (h3 != VK_SUCCESS && h3 != VK_SUBOPTIMAL_KHR) {
+         fprintf(stderr, "FAIL: acquire after the gate was lifted returned %d: the wait did not release an image\n",
+                 (int)h3);
+         return 1;
+      }
+   }
+   if (shm_leak_exit) {
+      /* The segment must already be unlinked (design-shm.md B): exit without destroying the swapchain, so nothing but
+       * the kernel's own accounting can reclaim it. The harness compares /proc/sysvipc/shm before and after. */
+      printf("PASS\n");
+      fflush(NULL);
+      _exit(0);
+   }
 
    int rc = 0;
    if (pixels) {
