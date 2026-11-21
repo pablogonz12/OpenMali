@@ -324,6 +324,19 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
          cmd->vb_size[b] = nsz;   /* the dynamic stride (BindVertexBuffers2) is kept: a plain bind does not set it */
          cmd->dirty |= MALI_D_BIND;
       }
+      {   /* THROWAWAY VBO: the bytes the GPU will read for this binding, at bind time, through our BO mapping */
+         static unsigned vrows;
+         struct mali_buffer *mb = bufs[i] ? mali_buffer_from_handle(bufs[i]) : NULL;
+         if (vrows < 6 && mb && mb->mem && mb->mem->bo.cpu) {
+            vrows++;
+            const uint8_t *p = (const uint8_t *)mb->mem->bo.cpu + mb->mem_off + (size_t)offs[i];
+            fprintf(stderr, "mali_vbo: VBO step=%s bind=%u va=0x%llx size=%u off=%llu bo_flags=0x%x dmabuf=%d bytes=",
+                    getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", b, (unsigned long long)nva,
+                    nsz, (unsigned long long)offs[i], mb->mem->bo.flags, mb->mem->bo.dmabuf_fd);
+            for (unsigned k = 0; k < 64; k++) fprintf(stderr, "%02x", p[k]);
+            fprintf(stderr, "\n");
+         }
+      }
    }
 }
 
