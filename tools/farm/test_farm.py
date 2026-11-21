@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Dry-run tests of queue, pending/resume, comparison and JSON logic (no phone, no build). Run: python3 tools/farm/test_farm.py"""
-import hashlib, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import hashlib, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -94,11 +94,31 @@ elif op == "shell":
         print("\n".join(os.listdir(P(c[3:].strip()))))
     elif c == "echo alive":
         print("alive")
+    elif "/proc/sys/kernel/random/boot_id" in c:                    # boot identity: FAKE_ADB_REBOOT_ON_READ=N -> the Nth read sees a new boot
+        n = int(open(R + "/bootreads").read()) if os.path.exists(R + "/bootreads") else 0
+        n += 1
+        open(R + "/bootreads", "w").write(str(n))
+        base = int(open(R + "/uptime").read()) if os.path.exists(R + "/uptime") else 5000
+        if os.environ.get("FAKE_ADB_REBOOT_ON_READ") == str(n):
+            print("2b2b2b2b-0000-4000-8000-000000000002"); print("7.00 3.00")
+        else:
+            print("1a1a1a1a-0000-4000-8000-000000000001"); print("%d.00 1.00" % (base + n))
+    elif "tail -c" in c:
+        m = re.search(r"tail -c \d+ (\S+)", c)
+        if m and os.path.exists(P(m.group(1))):
+            print(open(P(m.group(1))).read())
     elif "dumpsys battery" in c:
         print("  AC powered: true\n  level: 80\n  temperature: 300\nThermal Status: 0")
     elif "deqp-vk" in c:
         cf = re.search(r"--deqp-caselist-file=(\S+)", c).group(1)
         qf = re.search(r"--deqp-log-filename=(\S+)", c).group(1)
+        open(R + "/deqp-runs.log", "a").write(str(len(open(P(cf)).read().split())) + "\n")     # one line per launch: the case count of that shard
+        out = re.search(r">(\S+\.out)", c)
+        if os.environ.get("FAKE_ADB_OOM") == "1":                    # the memory bound killed the run before it wrote a result
+            if out:                                                  # the command cd's into /data/local/tmp/g first: the .out lives there
+                open(P("/data/local/tmp/g/" + out.group(1)), "w").write("terminate called after throwing an instance of 'std::bad_alloc'\n  what():  std::bad_alloc\n")
+            print("rc=134")
+            raise SystemExit(0)
         crash = [x for x in os.environ.get("FAKE_ADB_CRASH", "").split(",") if x]       # these cases die mid-case (no result), FAKE_ADB_CRASH_TIMES times each
         times, rc = int(os.environ.get("FAKE_ADB_CRASH_TIMES", "1")), 0
         with open(P(qf), "w") as f:
@@ -113,7 +133,7 @@ elif op == "shell":
                 f.write("#beginTestCaseResult %s\n<Result StatusCode=\"Pass\"/>\n#endTestCaseResult\n" % case)
         print("rc=%d" % rc)
     elif "./t_vk_" in c:
-        d = re.match(r"cd (\S+)", c).group(1)
+        d = re.split(r";|&&", c[len("cd "):])[0].strip()
         n = re.search(r"\./(t_vk_\w+)", c).group(1)
         open(P(d) + "/" + n + ".log", "w").write('{"pass":true}\n{"pass":true}\n')
         print("rc=0")
@@ -292,9 +312,108 @@ class ShellRoute(unittest.TestCase):
         self.assertEqual(rc, 77)
 
 
+    # ---- resource guards: the 2026-11-19 kernel panic (oom_score_adj=-1000 inherited from adbd, unbounded deqp, blind retry after the reboot)
+    def test_oom_protection_is_cleared_memory_capped_and_work_sharded(self):
+        sys.path.insert(0, HERE)
+        import shellroute
+        pre = shellroute.limit_preamble("r1")
+        self.assertIn("echo 0 > /proc/self/oom_score_adj", pre)
+        self.assertIn("ulimit -v 3145728", pre)                       # 3 GiB default cap
+        self.assertNotIn("-1000", pre)
+        self.assertNotIn("'", pre)                                    # embedded in the device command as-is
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(90)) + "\n")
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", self.d + "/s.tsv", "--chunk", "100"],
+                            {"SHELLROUTE_CHUNK_MAX": "40"})
+        self.assertEqual(rc, 0, o)
+        cmds = open(self.root + "/adb-shell.log").read()
+        self.assertIn("echo 0 > /proc/self/oom_score_adj", cmds)      # every launch, not just the first
+        self.assertIn("ulimit -v 3145728", cmds)
+        self.assertNotIn("oom_score_adj=-1000", cmds)
+        self.assertIn("CHUNK 100 capped to 40", o)
+        self.assertEqual([int(x) for x in open(self.root + "/deqp-runs.log").read().split()], [40, 40, 10])
+
+    def test_device_reboot_mid_run_gives_verdict_device_reboot_and_no_retry(self):
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(12)) + "\n")
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", self.d + "/rb.tsv", "--chunk", "3"],
+                            {"FAKE_ADB_REBOOT_ON_READ": "3"})
+        self.assertEqual(rc, 82, o)
+        self.assertIn("verdict: device_reboot", o)
+        self.assertIn("boot id changed", o)
+        self.assertEqual(len(open(self.root + "/deqp-runs.log").read().split()), 1)     # chunk 1 ran; the run is not restarted
+        self.assertEqual(len(open(self.d + "/rb.tsv").read().splitlines()), 3)          # what passed before the reboot is kept
+
+    def test_memory_cap_breach_aborts_cleanly_with_no_retry(self):
+        open(self.d + "/many.txt", "w").write("\n".join(f"dEQP-VK.t.c{i}" for i in range(6)) + "\n")
+        rc, o = self.run_sr("daily", "a64-glibc", ["--list", self.d + "/many.txt", "--out", self.d + "/oom.tsv", "--chunk", "3"],
+                            {"FAKE_ADB_OOM": "1"})
+        self.assertEqual(rc, 83, o)
+        self.assertIn("verdict: memory_cap", o)
+        self.assertEqual(len(open(self.root + "/deqp-runs.log").read().split()), 1)     # one aborted launch, no blind retry
+        self.assertFalse(os.path.exists(self.d + "/oom.tsv") and "Pass" in open(self.d + "/oom.tsv").read())
+
+
+class DeviceStopGuard(unittest.TestCase):
+    """a reboot mid-run or the memory bound ends the job: verdict device_reboot|memory_cap, other parts cancelled, no retry.
+    2026-11-19: the farm resubmitted a sweep after every reboot of a phone whose kernel had panicked, the phone looped for hours."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.old = os.environ.get("MALI_FARM_STATE")
+        os.environ["MALI_FARM_STATE"] = self.d
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_guard", HERE + "/farmd")
+        spec = importlib.util.spec_from_loader("farmd_guard", ld)
+        self.fd = importlib.util.module_from_spec(spec)
+        ld.exec_module(self.fd)
+        self.f = object.__new__(self.fd.Farm)
+        self.f.jl = threading.Lock()          # __init__ is bypassed; abort_job() takes the job-file lock
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("MALI_FARM_STATE", None)
+        else:
+            os.environ["MALI_FARM_STATE"] = self.old
+
+    def job(self):
+        L.new_job("HEAD", "0" * 40, False, "daily", ["v11", "v13"], "", "mali-open")
+        return L.list_jobs()[0]["id"]
+
+    def alerts(self):
+        return open(os.path.join(L.state_dir(), "ALERTS")).read()
+
+    def test_shell_rc_maps_reboot_and_memory_cap(self):
+        self.assertEqual(self.f.shell_rc(82, "verdict: device_reboot uptime went backwards", "shellroute")["verdict"], "device_reboot")
+        self.assertEqual(self.f.shell_rc(83, "verdict: memory_cap bad_alloc", "shellroute")["verdict"], "memory_cap")
+        self.assertIsNone(self.f.shell_rc(0, "rc=0", "shellroute"))
+
+    def test_reboot_aborts_the_whole_job_and_is_never_retried(self):
+        jid = self.job()
+        self.f.abort_job(jid, "v11", "dev-a", {"verdict": "device_reboot", "notes": "boot id changed"})
+        j = L.read_json(L.job_path(jid))
+        self.assertEqual((j["parts"]["v11"]["state"], j["parts"]["v11"]["verdict"]), ("done", "device_reboot"))
+        self.assertEqual(j["parts"]["v13"]["state"], "cancelled")            # the other phone is not fed the same job
+        self.assertEqual(j["parts"]["v11"]["attempts"], 0)                   # no retry is even counted
+        self.assertEqual(L.job_verdict(j), "device_reboot")                  # never pending, never pass
+        self.assertEqual([c for c, p in j["parts"].items() if p["state"] == "pending"], [])
+        self.assertIn("DEVICE_REBOOT", self.alerts())
+        self.assertTrue(os.path.exists(L.run_path(jid, "v11").replace(".json", ".terminal.json")))
+
+    def test_two_reboots_in_30_min_are_a_loud_reboot_loop(self):
+        jid = self.job()
+        for _ in range(2):
+            self.f.abort_job(jid, "v11", "dev-a", {"verdict": "device_reboot", "notes": "uptime went backwards"})
+        self.assertIn("REBOOT-LOOP dev-a: 2 reboots in 30 min", self.alerts())
+
+    def test_memory_cap_is_terminal_too(self):
+        jid = self.job()
+        self.f.abort_job(jid, "v11", "dev-a", {"verdict": "memory_cap", "notes": "std::bad_alloc"})
+        self.assertEqual(L.job_verdict(L.read_json(L.job_path(jid))), "memory_cap")
+        self.assertIn("MEMORY_CAP", self.alerts())
+
+
 class T(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        os.environ.pop("MALI_FARM_SWEEP_LIST", None)                          # sweep_env() leaks it into os.environ: later tests would idle-sweep a stale list until farmd times out
         open(os.path.join(self.d, "devices.toml"), "w").write(TOML)
         self.env = dict(os.environ, MALI_FARM_STATE=self.d + "/state", MALI_FARM_DEVICES=self.d + "/devices.toml",
                         MALI_FARM_DOWN_AFTER="1")
@@ -306,11 +425,30 @@ class T(unittest.TestCase):
             f.write("\n".join(names))
 
     def farm(self, *a):
-        r = subprocess.run([sys.executable, HERE + "/farm", *a], capture_output=True, text=True, env=self.env)
+        r = subprocess.run([sys.executable, getattr(self, "root", HERE) + "/farm", *a], capture_output=True, text=True, env=self.env)
         return r.returncode, r.stdout.strip(), r.stderr
 
+    def fixture_repo(self, n=1, origin_at=None):
+        """a clean throwaway git checkout holding a copy of the farm tools, n commits deep; origin/main -> commit origin_at (default HEAD).
+        self.root then points at it, so submit/farmd never depend on the developer's checkout, its refs or its tracked edits"""
+        import shutil
+        root = os.path.join(self.d, "fx")
+        shutil.copytree(HERE, root, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+        g = lambda *c: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false", *c], capture_output=True, text=True, check=True).stdout.strip()
+        g("init", "-q", "-b", "main")
+        for dev in ("cmf", "x8", "poco"):                       # minimal passing daily baselines, so a daily job can reach `pass` in fake mode
+            os.makedirs(os.path.join(root, "vk/deqp"), exist_ok=True)
+            with open(os.path.join(root, "vk/deqp/ours-daily-sample-%s.tsv" % dev), "w") as f:
+                f.write("".join("dEQP-VK.api.smoke.t%d\tPass\t\n" % i for i in range(20)))
+        g("add", "-A")
+        for i in range(n):
+            g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        g("update-ref", "refs/remotes/origin/main", origin_at or "HEAD")
+        self.root = root
+        return g
+
     def farmd(self):
-        r = subprocess.run([sys.executable, HERE + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=60)
+        r = subprocess.run([sys.executable, getattr(self, "root", HERE) + "/farmd", "--fake", "--once"], capture_output=True, text=True, env=self.env, timeout=240)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -722,12 +860,42 @@ class T(unittest.TestCase):
         f = m.Farm(True, True, 1)
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), [])
         self.assertEqual(f.phone_env(f.devs["dev-a"])["QSAFE_HELD"], "cmf")
+        e = f.phone_env(f.devs["dev-a"])                          # quick.py resolves the lock name through <LOCK>_SERIAL
+        self.assertEqual(e["CMF_SERIAL"], e["ANDROID_SERIAL"])
+        self.assertTrue(e["CMF_SERIAL"])
         p = self.d + "/devices.toml"
         txt = open(p).read()
         open(p, "w").write(txt.replace('baseline = "poco"\n', 'baseline = "poco"\nwireless = ["198.51.100.5:5555"]\n') + "\n")
         os.utime(p, (f.cfg_mtime + 5, f.cfg_mtime + 5))
         f.reload_devices()
         self.assertEqual(L.wireless_routes(f.devs["dev-b"]), ["198.51.100.5:5555"])
+
+    def test_missing_so_is_an_error_not_an_invalid_driver(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod3", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod3", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        r = f.so_gone_result(job, None, 1, "FAIL session not READY")
+        self.assertEqual(r["verdict"], "error")
+        self.assertIn("session not READY", r["notes"])
+        self.assertEqual(f.so_gone_result(job, "b" * 64, 1, "")["verdict"], "invalid")       # a foreign .so is still invalid
+        self.assertEqual(f.so_gone_result(job, None, 76, "")["verdict"], "invalid")          # changed mid-run: unchanged
+
+    def test_transient_adb_read_failure_is_invalid_not_error(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        job = {"so_sha256": "6afe5234e9c5" + "0" * 52}
+        for rc in (0, 1):
+            self.assertEqual(f.so_gone_result(job, m.ADB_READ_FAILED, rc, "")["verdict"], "invalid")
+        f.fake = False
+        for rc_o, want in (((1, "error: device offline"), m.ADB_READ_FAILED), ((255, ""), m.ADB_READ_FAILED), ((0, "NOFILE\n"), None), ((0, "b" * 64 + "  x\n"), "b" * 64)):
+            f.adb = lambda *a, _r=rc_o, **k: _r
+            self.assertEqual(f.verify_so(job, {"alias": "x"}, "/p")[1], want)
 
     def test_bench_cube_ours_plausibility_follows_the_bridge(self):
         def row(drv, gpu, ph="poco-x8"):
@@ -807,6 +975,38 @@ class T(unittest.TestCase):
             res = f.suite_bench(job, dev)
             self.assertEqual((res["verdict"], res["max_attempts"]), ("invalid", 2), out)
             self.assertIn("UI-BLOCKED", res["notes"])
+
+    def test_bench_empty_log_reports_pending_json_error(self):
+        """rc=0, 0 rows, empty log but pending.json has bench2's error (guest session did not start): the alert shows it, not UI-BLOCKED?"""
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("farmd_mod4", HERE + "/farmd")
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("farmd_mod4", ld))
+        ld.exec_module(m)
+        f = m.Farm(True, True, 1)
+        f.fake = False
+        f.bench_prepare = lambda job: "/nonexistent/mdbench"
+        f.tree = lambda jid: self.d + "/tree"
+        f.best_file = lambda job: self.d + "/best.json"
+        f.keep_log = lambda *a: None
+        f.shell_route = lambda dev: False
+        f.alive = lambda dev: True
+        f.phone_env = lambda dev, ex=None: {}
+        f.verify_so = lambda job, dev, path, key="so_sha256": (True, "x")
+        job = {"id": "j2", "ref": "main", "commit": "0" * 40, "so_sha256": "d4c7f0ef46f2", "env": "", "suite": "bench"}
+        dev = {"alias": "dev-b", "class": "v10", "lock": "x4"}
+        orig = m.L.run_watched
+        self.addCleanup(setattr, m.L, "run_watched", orig)
+        for printed in ("", "bench2: guest session failed, see pending.json"):          # bench2 may print a diagnostic and still exit 0 with no rows
+            def rw2(cmd, tmo, alive, env=None, printed=printed, **k):
+                out = cmd[cmd.index("--out") + 1]
+                os.makedirs(out, exist_ok=True)
+                json.dump({"dev-b": "guest session did not start: rc=1: boom"}, open(out + "/pending.json", "w"))
+                return 0, printed
+            m.L.run_watched = rw2
+            res = f.suite_bench(job, dev)
+            self.assertEqual((res["verdict"], res.get("max_attempts")), ("invalid", 2), printed)
+            self.assertIn("guest session did not start: rc=1: boom", res["notes"])
+            self.assertNotIn("UI-BLOCKED", res["notes"])
 
     def test_sweep_power_rule_pure(self):
         pb = S.power_blocked
@@ -1269,15 +1469,15 @@ class T(unittest.TestCase):
         j = L.find_job(old)
         j["parts"]["v13"]["state"] = "running"                                                          # a running part is never touched
         L.write_json(L.job_path(old), j)
-        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13")
+        rc, new, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11,v13", "--allow-stale")
         self.assertEqual(rc, 0)
         self.assertIn("supersede", err)
         self.assertEqual({c: p["state"] for c, p in L.find_job(old)["parts"].items()}, {"v11": "cancelled", "v13": "running"})
         self.assertEqual(L.find_job(other)["parts"]["v11"]["state"], "pending")
         self.assertEqual(L.find_job(keep)["parts"]["v11"]["state"], "cancelled")                        # older and pending: superseded too (kept only from being cancelled BY ITS OWN submit)
         self.assertIn(old, open(self.d + "/state/logs/farm-queue.log").read())
-        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old")
-        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old")   # --keep-old on the NEW job: cancels nothing
+        _, k2, _ = self.farm("submit", "HEAD~1", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")
+        _, new2, err2 = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", "--keep-old", "--allow-stale")   # --keep-old on the NEW job: cancels nothing
         self.assertNotIn("supersede", err2)
         self.assertEqual(L.find_job(k2)["parts"]["v11"]["state"], "pending")
 
@@ -1288,11 +1488,51 @@ class T(unittest.TestCase):
                                                          mk("n", "a", only="draw"), mk("r", "a", repo="r2"), mk("w", "a", seq=9))
         L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
         new = dict(mk("new", "z", seq=5), parts={"v11": {"state": "pending"}})
-        got = L.supersede_old_gates(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
+        got = self._sup(new, [old, bench, cases, env, only, other_repo, newer], lambda o, n: True)
         self.assertEqual(got, [("o", "a", ["v11"])])                                                    # only the class the new job covers
         self.assertEqual(old["parts"]["v13"]["state"], "pending")
-        self.assertEqual(L.supersede_old_gates(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
-        self.assertEqual(L.supersede_old_gates(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+        self.assertEqual(self._sup(dict(new, suite="cases"), [mk("o2", "a", suite="cases")], lambda o, n: True), [])
+        self.assertEqual(self._sup(new, [mk("o3", "a")], lambda o, n: False), [])           # not an ancestor: another branch
+
+    def test_supersede_all_suites_same_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        new = mk("new", commit="z", seq=5)
+        cases, bench, daily, other_ref, head, sweep, auto = (mk("c", suite="cases"), mk("b", suite="bench"), mk("d", suite="daily"),
+            mk("o", suite="cases", ref="lane/y"), mk("h", suite="cases", ref="HEAD"), mk("s", suite="sweep"), mk("a", suite="bench", auto=True))
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        got = self._sup(new, [cases, bench, daily, other_ref, head, sweep, auto], lambda o, n: True)
+        self.assertEqual(sorted(g[0] for g in got), ["b", "c", "d"])
+        self.assertEqual(other_ref["parts"]["v13"]["state"], "pending")
+        self.assertEqual(self._sup(dict(new, ref="HEAD"), [mk("c2", suite="cases", ref="HEAD")], lambda o, n: True), [])
+
+    def test_supersede_sibling_needs_other_suite_and_stable_ref(self):
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1, ref="lane/x")
+        mk = lambda i, **kw: dict(dict(base, id=i, commit="a", parts={"v13": {"state": "pending"}}), **kw)
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        new = mk("new", commit="z", seq=5)
+        run = lambda n, js: self._sup(n, js, lambda o, m: True)
+        self.assertEqual(run(new, [mk("o1", only="draw"), mk("o2", env={"X": "1"})]), [])               # same suite, other only/env: kept
+        for r in ("HEAD~1", "main^", "@{u}", "abc1234", "HEAD^2", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD"):
+            self.assertEqual(run(mk("n2", commit="z", seq=5, ref=r), [mk("c", suite="cases", ref=r)]), [], r)
+        self.assertEqual([g[0] for g in run(new, [mk("c3", suite="cases")])], ["c3"])
+
+    def test_supersede_skips_job_it_cannot_refresh(self):
+        """the re-read before the write fails (job file gone or corrupt): skip the job, never write the stale snapshot back"""
+        base = dict(suite="smoke", repo="r", env={}, only="", seq=1)
+        mk = lambda i: dict(base, id=i, commit="a", parts={"v11": {"state": "pending"}})
+        L.os.makedirs(L.state_dir() + "/jobs", exist_ok=True)
+        gone, bad = mk("gone"), mk("bad")
+        open(L.job_path("bad"), "w").write("{not json")
+        new = dict(mk("new"), commit="z", seq=5)
+        self.assertEqual(L.supersede_old_gates(new, [gone, bad], lambda o, n: True), [])
+        self.assertFalse(L.os.path.exists(L.job_path("gone")))                                          # nothing written back
+        self.assertEqual(open(L.job_path("bad")).read(), "{not json")
+
+    def _sup(self, new, jobs, anc):
+        for j in jobs:                                                                                  # supersede re-reads each job from disk
+            L.write_json(L.job_path(j["id"]), j)
+        return L.supersede_old_gates(new, jobs, anc)
 
     def test_digest_queue_positions(self):
         a = L.new_job("b", "1" * 40, False, "cases", ["v11", "v13"], {}, "t", cases=["x"])
@@ -1678,10 +1918,11 @@ class T(unittest.TestCase):
         self.assertEqual(gate.next_state("ok", dict(ok, temp_c=50.0), th)[0], "cooling")
 
     def test_submit_idempotent_and_rerun(self):
-        if subprocess.run(["git", "-C", HERE, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=False).stdout.strip():
-            self.skipTest("tracked edits: a dirty HEAD is never reused")
+        self.fixture_repo()                                     # clean checkout: a dirty developer tree would never be reused
         self.attach("dev-a")
-        _, jid, _ = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        rc, jid, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(jid, err)
         self.farmd()
         self.assertEqual(L.job_verdict(L.find_job(jid)), "pass")
         rc, again, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11")
@@ -1690,17 +1931,22 @@ class T(unittest.TestCase):
         for extra in (["--env", "FOO=1"], ["--rerun"]):                                  # other inputs / forced: a new job
             rc, other, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", "v11", *extra)
             self.assertEqual(rc, 0, err)
-            self.assertTrue(other)
+            self.assertTrue(other, err)
             self.assertNotEqual(other, jid)
         rc, _, err = self.farm("submit", "HEAD", "--suite", "smoke", "--need", ",")
         self.assertNotEqual(rc, 0)
         self.assertIn("selects no class", err)
         self.attach("dev-a")
-        _, d1, _ = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
+        rc, d1, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")        # daily is never reused (judged against main's moving baseline)
         for _ in range(3):                                      # earlier jobs of this test run first
             self.farmd()
+        self.assertEqual((rc, bool(d1)), (0, True), err)
         self.assertEqual(L.find_job(d1)["parts"]["v11"]["state"], "done")
-        self.assertNotEqual(self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")[1], d1)
+        self.assertEqual(L.job_verdict(L.find_job(d1)), "pass")     # a real passed daily job, so reuse would be possible
+        rc, d2, err = self.farm("submit", "HEAD", "--suite", "daily", "--need", "v11")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(d2, err)
+        self.assertNotEqual(d2, d1)
 
     def test_find_passed_unit(self):
         j = {"id": "a", "commit": "c1", "suite": "daily", "env": "", "dirty": False, "parts": {"v11": {"state": "done", "verdict": "pass"}, "v13": {"state": "done", "verdict": "fail"}}}
@@ -1713,20 +1959,21 @@ class T(unittest.TestCase):
         self.assertIsNone(L.find_passed([dict(j, dirty=True)], "c1", "daily", ["v11"], ""))
 
     def test_submit_stale_base_and_merge_with_main(self):
-        r = subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
-        if r.returncode or subprocess.run(["git", "-C", HERE, "rev-parse", "--verify", "-q", "origin/main~8"], capture_output=True, check=False).returncode:
-            self.skipTest("no origin/main with 8 ancestors in this checkout")
-        n = int(subprocess.run(["git", "-C", HERE, "rev-list", "--count", "HEAD"], capture_output=True, text=True).stdout)
-        if n > 12:
-            rc, _, err = self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11")
-            self.assertNotEqual(rc, 0)
-            self.assertIn("behind origin/main", err)
-            self.assertEqual(self.farm("submit", "origin/main~8", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
-        rc, jid, err = self.farm("submit", "origin/main~1", "--suite", "smoke", "--need", "v11", "--merge-with-main")
+        g = self.fixture_repo(12)                               # known ancestry: c0..c11, origin/main at the tip
+        g("update-ref", "refs/remotes/origin/main", g("rev-parse", "HEAD"))
+        for i in range(12, 22):
+            g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        g("update-ref", "refs/remotes/origin/main", "HEAD")
+        g("checkout", "-q", "-b", "old", "HEAD~9")              # REF 9 commits behind origin/main (limit L.STALE_COMMITS)
+        rc, _, err = self.farm("submit", "old", "--suite", "smoke", "--need", "v11")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("behind origin/main", err)
+        self.assertEqual(self.farm("submit", "old", "--suite", "smoke", "--need", "v11", "--allow-stale")[0], 0)
+        rc, jid, err = self.farm("submit", "old", "--suite", "smoke", "--need", "v11", "--merge-with-main")
         self.assertEqual(rc, 0, err)
         j = L.find_job(jid)
         self.assertTrue(j["ref"].endswith("+main"))
-        parents = subprocess.run(["git", "-C", HERE, "rev-list", "--parents", "-n1", j["commit"]], capture_output=True, text=True).stdout.split()
+        parents = g("rev-list", "--parents", "-n1", j["commit"]).split()
         self.assertEqual(len(parents), 3)                                               # a merge commit of REF and origin/main
 
 
@@ -2367,6 +2614,73 @@ class Bench2Rank(unittest.TestCase):
 
 SMOKE_OUT = "\n".join(['{"test":"t_vk_draw","rc":0,"fail_lines":0,"pass_lines":3}', '{"test":"t_vk_compute","rc":0,"fail_lines":0,"pass_lines":1}',
                       '{"test":"t_vk_meta","rc":0,"fail_lines":0,"pass_lines":1}', '{"test":"summary","ok":true}'])
+
+
+class ReadyTests(unittest.TestCase):
+    """farm ready: decision logic with fixtures (no gh, no git)"""
+    HEAD, MERGE, OLD = "h" * 40, "m" * 40, "o" * 40
+    ANC = {(HEAD, MERGE), (OLD, HEAD)}                       # pairs (ancestor, descendant)
+    anc = staticmethod(lambda a, b: (a, b) in ReadyTests.ANC)
+
+    def job(self, commit, verdict, state="done", jid="20261119-000000-abcd1234"):
+        return {"id": jid, "suite": "smoke", "commit": commit, "parts": {"v13": {"state": state, "verdict": verdict}}}
+
+    def pr(self, **kw):
+        d = {"number": 7, "headRefOid": self.HEAD, "mergeable": "MERGEABLE", "isDraft": False,
+             "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]}
+        d.update(kw)
+        return d
+
+    def row(self, jobs, threads=0, links=(), **kw):
+        import ready as R
+        return R.make_row(self.pr(**kw), jobs, self.anc, L.job_verdict, threads, list(links))
+
+    def test_ready_exact_and_merge_commit(self):
+        self.assertEqual(self.row([self.job(self.HEAD, "pass")])["verdict"], "READY")
+        self.assertEqual(self.row([self.job(self.MERGE, "pass")])["verdict"], "READY")      # --merge-with-main job: head is its parent
+
+    def test_stale_none_fail_pending(self):
+        self.assertEqual(self.row([self.job(self.OLD, "pass")])["verdict"], "smoke is for an older head")
+        self.assertEqual(self.row([])["verdict"], "no smoke for head")
+        self.assertEqual(self.row([self.job(self.HEAD, "fail")])["verdict"], "smoke FAIL")
+        self.assertEqual(self.row([self.job(self.HEAD, None, state="running")])["verdict"], "smoke pending")
+
+    def test_newest_covering_job_wins(self):
+        jobs = [self.job(self.HEAD, "fail", jid="20261119-000001-a"), self.job(self.HEAD, "pass", jid="20261119-000002-b")]
+        self.assertEqual(self.row(jobs)["smoke"], "pass")
+        self.assertEqual(self.row(list(reversed(jobs)))["smoke"], "FAIL")
+
+    def test_other_columns_block(self):
+        ok = [self.job(self.HEAD, "pass")]
+        self.assertIn("checks FAIL", self.row(ok, statusCheckRollup=[{"status": "COMPLETED", "conclusion": "FAILURE"}])["verdict"])
+        self.assertIn("checks pending", self.row(ok, statusCheckRollup=[{"status": "IN_PROGRESS", "conclusion": ""}])["verdict"])
+        self.assertIn("2 unresolved", self.row(ok, threads=2)["verdict"])
+        self.assertIn("symlink", self.row(ok, links=["third_party"])["verdict"])
+        self.assertIn("CONFLICTING", self.row(ok, mergeable="CONFLICTING")["verdict"])
+        self.assertEqual(self.row(ok, isDraft=True)["verdict"], "draft")
+
+    def test_partial_only_unknown_and_cancelled(self):
+        import ready as R
+        only = dict(self.job(self.HEAD, "pass"), only=["t_vk_draw"])
+        self.assertEqual(self.row([only])["verdict"], "no smoke for head")                  # --only job is not the full gate
+        canc = self.job(self.HEAD, "pass")
+        canc["parts"]["v11"] = {"state": "cancelled"}
+        self.assertEqual(self.row([canc])["verdict"], "smoke job has cancelled part(s)")
+        unk = lambda a, b: None                                                              # git could not tell (pruned commit)
+        r = R.make_row(self.pr(), [self.job(self.MERGE, "pass")], unk, L.job_verdict, 0, [])
+        self.assertEqual(r["verdict"], "smoke ancestry unknown (commit not resolvable)")
+        self.assertEqual(R.make_row(self.pr(), [self.job(self.HEAD, "pass")], unk, L.job_verdict, 0, [])["verdict"], "READY")   # exact head needs no git
+
+    def test_symlink_by_tree_mode(self):
+        import ready as R
+        trees = {"vk/tests": {"a.c": "100644", "lnk": "120000"}, "": {"x": "120000"}}
+        self.assertEqual(R.symlink_paths(trees, ["vk/tests/a.c", "vk/tests/lnk", "x"]), ["vk/tests/lnk", "x"])
+
+    def test_bad_files_and_render(self):
+        import ready as R
+        self.assertEqual(R.bad_files(["vk/deqp/out/x", "vk/src/a.c", "third_party"]), ["vk/deqp/out/x", "third_party"])
+        out = R.render([self.row([self.job(self.HEAD, "pass")]), self.row([], links=[])])
+        self.assertIn("1 READY of 2", out)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_integer_dot_product : require
+// shaderIntegerDotProduct (VK_KHR_shader_integer_dot_product): packed 4x8 unsigned/signed/mixed, accumulate-saturate and 8-bit/16-bit vector forms.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer A { uint a[]; };   // a[i], a[64+i]: packed operands; a[128+i]: accumulator
+layout(set = 0, binding = 1, std430) buffer O { uint o[]; };
+void main() {
+   uint i = gl_LocalInvocationIndex;
+   uint x = a[i], y = a[i + 64u], c = a[i + 128u];
+   int sx = int(x), sy = int(y), sc = int(c);
+   o[i * 9u + 0u] = dotPacked4x8EXT(x, y);                        // u8 . u8
+   o[i * 9u + 1u] = uint(dotPacked4x8EXT(sx, sy));                // s8 . s8
+   o[i * 9u + 2u] = uint(dotPacked4x8EXT(x, sy));                 // u8 . s8 (mixed)
+   o[i * 9u + 3u] = dotPacked4x8AccSatEXT(x, y, c);               // saturating unsigned accumulate
+   o[i * 9u + 4u] = uint(dotPacked4x8AccSatEXT(sx, sy, sc));      // saturating signed accumulate
+   o[i * 9u + 5u] = uint(dotEXT(unpack8(x), unpack8(y)));            // u8vec4 . u8vec4
+   o[i * 9u + 6u] = uint(dotEXT(i8vec4(unpack8(x)), i8vec4(unpack8(y))));   // i8vec4 . i8vec4
+   o[i * 9u + 7u] = uint(dotEXT(unpack16(x), unpack16(y)));          // u16vec2 . u16vec2
+   o[i * 9u + 8u] = uint(dotEXT(i16vec2(unpack16(x)), i16vec2(unpack16(y))));   // i16vec2 . i16vec2
+}
