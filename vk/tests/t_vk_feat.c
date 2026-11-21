@@ -1225,7 +1225,10 @@ tf_dbg_begin(void)
    setenv("MALI_TF_DBG", "1", 1);
    fflush(stderr);
    g_dbgsave = dup(2);
-   freopen(g_dbgfile, "w", stderr);
+   if (!freopen(g_dbgfile, "w", stderr)) {
+      fprintf(stdout, "SKIP: cannot capture stderr to %s\n", g_dbgfile);
+      exit(0);
+   }
 }
 
 static int
