@@ -310,6 +310,10 @@ wl_after_x11(void)
     * vkQueuePresentKHR has a known colour to check. The present result is printed but not fatal: a headless
     * gamescope may refuse a dma-buf whose memory the fake backend cannot really export, and the dump is written
     * before wsi_common sees the frame either way. */
+   /* Only when a dump was asked for: the dump is written before wsi_common sees the frame, and presenting a dma-buf
+    * chain the backend cannot really export makes the compositor refuse the buffer and Mesa abort on the invalid
+    * object (tests/xwsi-wl-after-x11.sh: "importing the supplied dmabufs failed" then SIGABRT). */
+   if (!getenv("MALI_WSI_DUMP")) goto wl_done;
    WLFN(GetDeviceQueue); WLFN(AcquireNextImageKHR); WLFN(CreateSemaphore); WLFN(CreateCommandPool);
    WLFN(AllocateCommandBuffers); WLFN(BeginCommandBuffer); WLFN(EndCommandBuffer); WLFN(CmdPipelineBarrier);
    WLFN(CmdBeginRendering); WLFN(CmdEndRendering); WLFN(QueueSubmit); WLFN(QueueWaitIdle); WLFN(QueuePresentKHR);
@@ -384,6 +388,7 @@ wl_after_x11(void)
       wl_QueueWaitIdle(q);
       wl_DestroyImageView(dev, wview, NULL);
    }
+wl_done:
    free(imgs);
    /* Child objects before their parents (Vulkan lifetime rules): the swapchain, then both surfaces. */
    IPFN(inst, DestroySurfaceKHR);

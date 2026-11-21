@@ -122,7 +122,7 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
    const char *e = getenv("MALI_WSI");
    if (e && !strcmp(e, "sw"))
       return true;
-   if (e && !strcmp(e, "dmabuf"))
+   if (e && (!strcmp(e, "dmabuf") || !strcmp(e, "dmabuf-strict")))
       return false;
    /* MALI_WSI=hw: pretend to be hardware on the fake backend - start on the dma-buf path and let the per-surface
     * decision (mali_wsi_x11_maybe_sw) fall back where the server cannot serve it. Host test hook for
@@ -229,7 +229,7 @@ static bool
 mali_wsi_x11_forced_dmabuf(void)
 {
    const char *e = getenv("MALI_WSI");
-   return e && !strcmp(e, "dmabuf");
+   return e && (!strcmp(e, "dmabuf") || !strcmp(e, "dmabuf-strict"));
 }
 
 /* The X11 present path is a device-wide decision (wsi_device->sw), and it has to be taken at the *first* surface
@@ -1574,13 +1574,15 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
    const bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
                             surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
-   if (r != VK_SUCCESS && !pdev->vk.wsi_device->sw && x11_surface && !mali_wsi_x11_forced_dmabuf() &&
-       !mali_wsi_x11_forced_shm() && !(getenv("MALI_WSI") && !strcmp(getenv("MALI_WSI"), "dmabuf-strict"))) {
+   const char *wsi_env = getenv("MALI_WSI");
+   const bool strict_dmabuf = wsi_env && !strcmp(wsi_env, "dmabuf-strict");   /* same run without the retry (A/B) */
+   if (r != VK_SUCCESS && !pdev->vk.wsi_device->sw && x11_surface && !mali_wsi_x11_forced_shm() && !strict_dmabuf) {
       /* #328: the server advertised DRI3 and Present and still refused every image (xcb_dri3_pixmap_from_buffer of
        * our dma-buf fails), so the whole vkCreateSwapchainKHR returns VK_ERROR_INITIALIZATION_FAILED and zink reports
-       * "could not create swapchain". Retry the same chain once on the software device through #323's switch - the
-       * connection is recorded as software, so every later call of this connection takes the same path, and the chain
-       * keeps that instance for its life. MALI_WSI=dmabuf-strict keeps the loud failure for diagnostics. */
+       * "could not create swapchain". Retry the same chain once on the software device through #323's switch. This is
+       * a per-chain fact, not a per-connection one: the connection's decision is NOT recorded as software, so another
+       * chain on the same connection still starts on dma-buf (CR #323 N2). MALI_WSI=dmabuf (dma-buf first) retries;
+       * MALI_WSI=dmabuf-strict keeps the loud failure for diagnostics. */
       fprintf(stderr, "mali_vk: wsi: %s surface: dma-buf swapchain failed (%s), retrying on the software "
                       "(MIT-SHM/PutImage) present path\n",
               mali_wsi_platform_name(surface->platform), vk_Result_to_str(r));
