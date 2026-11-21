@@ -625,6 +625,82 @@ static void mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, st
                                 const VkSwapchainCreateInfoKHR *ci) { (void)sc; (void)surface; (void)chain; (void)ci; }
 #endif
 
+static struct mali_image *present_image(struct wsi_swapchain *chain, uint32_t image_index, struct wsi_image **wsi_out);
+
+/* ---- THROWAWAY RTDBG (MALI_RT_DBG=2) ---------------------------------------------------------------------
+ * One line per presented frame (max 6), printed after the submit-fence wait in the X11 SHM present, i.e. with the
+ * GPU's writes retired: (a) the frame's draw target, image + plane VA taken from the attachment the draw's job was
+ * built from, (b) the image + plane VA the presenter hands to the window for this image_index, (c) the mean of the
+ * first 4096 pixels read back at BOTH VAs through our BO mapping, (d) dma-buf-backed or our own allocation. */
+static bool
+mali_rt_dbg_mean(struct mali_device *dev, struct mali_image *mi, const char *who, unsigned out[3], const char **layout,
+                 unsigned *stride_out, unsigned *w_out, unsigned *h_out)
+{
+   out[0] = out[1] = out[2] = 0;
+   *layout = "?";
+   *stride_out = *w_out = *h_out = 0;
+   if (!mi || !mi->mem || !mi->mem->bo.cpu || !mi->va) {
+      *layout = mi ? "no-cpu-map" : "no-image";
+      return false;
+   }
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   if (be->bo_host_touch) be->bo_host_touch(dev->kdev, &mi->mem->bo);
+   if (be->bo_cache) be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&mi->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+   if (!pl || !pl->slice[0].row_stride) { *layout = "no-plane"; return false; }
+   const unsigned w = mi->lay.d.extent.width, h = mi->lay.d.extent.height;
+   const unsigned stride = pl->slice[0].row_stride, bpp = pl->bs ? pl->bs : 4;
+   *layout = mi->lay.d.tiled ? "tiled" : "linear";
+   *stride_out = stride; *w_out = w; *h_out = h;
+   if (mi->lay.d.tiled || (pl->bw > 1 || pl->bh > 1)) { *layout = mi->lay.d.tiled ? "tiled-unreadable" : "block-format"; return false; }
+   const bool bgra = mi->vk.format == VK_FORMAT_B8G8R8A8_UNORM || mi->vk.format == VK_FORMAT_B8G8R8A8_SRGB;
+   const uint8_t *base = (const uint8_t *)mi->mem->bo.cpu + mi->mem_off + pl->offset;
+   unsigned npix = 4096, n = 0;
+   uint64_t sum[3] = {0, 0, 0};
+   for (unsigned y = 0; y < h && n < npix; y++) {
+      const uint8_t *rowp = base + (size_t)y * stride;
+      for (unsigned x = 0; x < w && n < npix; x++, n++) {
+         const uint8_t *p = rowp + (size_t)x * bpp;
+         const unsigned c0 = bgra ? p[2] : p[0], c1 = p[1], c2 = bgra ? p[0] : (bpp > 2 ? p[2] : 0);
+         sum[0] += c0; sum[1] += c1; sum[2] += c2;
+      }
+   }
+   if (!n) return false;
+   out[0] = (unsigned)(sum[0] / n); out[1] = (unsigned)(sum[1] / n); out[2] = (unsigned)(sum[2] / n);
+   (void)who;
+   return true;
+}
+
+static void
+mali_rt_dbg_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+{
+   if (!getenv("MALI_RT_DBG"))
+      return;
+   static unsigned lines;
+   if (lines >= 6)
+      return;
+   lines++;
+   struct wsi_image *wi = NULL;
+   struct mali_image *pres = present_image(chain, image_index, &wi);
+   uint64_t draw_va = 0;
+   struct mali_image *draw = mali_dbg_rt_target(&draw_va);
+   unsigned pm[3], dm[3];
+   const char *pl = "?", *dl = "?";
+   unsigned ps = 0, pw = 0, ph = 0, ds = 0, dw = 0, dh = 0;
+   const bool pok = mali_rt_dbg_mean(dev, pres, "present", pm, &pl, &ps, &pw, &ph);
+   const bool dok = mali_rt_dbg_mean(dev, draw, "draw", dm, &dl, &ds, &dw, &dh);
+   const unsigned pcount = chain ? chain->image_count : 0;
+   fprintf(stderr, "mali_rt: RTDBG present_idx=%u/%u present_img=%p present_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
+                   "present_mean=%u,%u,%u present_ok=%d | draw_img=%p draw_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
+                   "draw_mean=%u,%u,%u draw_ok=%d | same_img=%d same_va=%d\n",
+           image_index, pcount, (void *)pres, (unsigned long long)(pres ? pres->va : 0), pl, pw, ph, ps,
+           pres && pres->mem ? pres->mem->bo.dmabuf_fd : -1, pres && pres->mem ? pres->mem->bo.flags : 0,
+           pm[0], pm[1], pm[2], (int)pok,
+           (void *)draw, (unsigned long long)draw_va, dl, dw, dh, ds,
+           draw && draw->mem ? draw->mem->bo.dmabuf_fd : -1, draw && draw->mem ? draw->mem->bo.flags : 0,
+           dm[0], dm[1], dm[2], (int)dok, (int)(pres && draw && pres == draw), (int)(pres && draw && pres->va == draw_va));
+}
+
 /* The CPU is about to read the presented image: wait for the GPU's writes (DMA_BUF_IOCTL_SYNC START|READ on the
  * image's dma-buf, kbase_bo_cache in mali_backend_kbase.c) and drop any stale cache lines. Without this the copy
  * below can read memory the GPU has not written yet: the client only waits its fence after presenting, and a
@@ -687,6 +763,7 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
          fprintf(stderr, "mali_vk: wsi present: image %u waited %ld ms for the submit fence\n", image_index, ms);
    }
    present_image_cpu_sync(dev, mali_image_from_handle(img->image), image_index);
+   mali_rt_dbg_present(dev, chain, image_index);   /* THROWAWAY RTDBG: after the fence, before the copy */
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
    /* total_width is the *segment* pitch (the server reads rows of that width); src width/height are the image. */
    const uint16_t total_w = (uint16_t)(st->stride / 4);

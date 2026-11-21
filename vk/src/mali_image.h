@@ -62,6 +62,8 @@ struct mali_device;
 struct mali_image;
 void mali_dbg_tex_bind(struct mali_image *img, uint64_t plane_va);
 void mali_dbg_tex_draw(struct mali_device *dev, const char *where);
+/* THROWAWAY RTDBG (MALI_RT_DBG=2): the image the last begun frame's draw targets, and the VA its job uses. */
+struct mali_image *mali_dbg_rt_target(uint64_t *va);
 
 /* MALI_IMAGE_TILED=1 selects u-interleaved for OPTIMAL images (single sampled, not 1D). Default: linear everywhere (tiled is not
  * hardware-verified yet, see R3-PLAN M5). */

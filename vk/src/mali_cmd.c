@@ -399,6 +399,20 @@ mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
    mali_CmdPushConstants(h, info->layout, info->stageFlags, info->offset, info->size, info->pValues);
 }
 
+/* ---- THROWAWAY RTDBG (MALI_RT_DBG=2) ---------------------------------------------------------------------
+ * The colour attachment image of the last frame begun and the VA its draw job targets (f->colour.va), recorded
+ * where the attachment is resolved (mali_CmdBeginRendering) so the present path can read the same memory back. */
+static struct mali_image *g_rt_dbg_img;
+static uint64_t g_rt_dbg_va;
+
+struct mali_image *
+mali_dbg_rt_target(uint64_t *va)
+{
+   if (!getenv("MALI_RT_DBG")) return NULL;
+   if (va) *va = g_rt_dbg_va;
+   return g_rt_dbg_img;
+}
+
 /* ---- draws ---- */
 static bool
 snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
@@ -1107,6 +1121,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
     * to a1_63 and 64 edge pixels at 0. */
    psrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
    f->colour.va = t.va;
+   if (getenv("MALI_RT_DBG") && ca->imageView) {   /* THROWAWAY RTDBG */
+      struct mali_image_view *mv = mali_image_view_from_handle(ca->imageView);
+      g_rt_dbg_img = mv && mv->vk.image ? mali_image_from_handle((VkImage)mv->vk.image) : NULL;
+      g_rt_dbg_va = t.va;
+   }
    f->samples = t.samples > 1 ? t.samples : 1;
    f->colour.surface_stride = t.surface_stride;
    f->colour.rt = t.rt;
