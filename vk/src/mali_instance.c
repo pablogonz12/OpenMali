@@ -46,6 +46,12 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
  * (what was asked, what came back) and fatal signals (with a backtrace on glibc). Unset = nothing is opened, no handler installed. */
 static int mali_trace_fd = -1;
 
+bool
+mali_trace_on(void)
+{
+   return mali_trace_fd >= 0;
+}
+
 void
 mali_trace(const char *fmt, ...)
 {
