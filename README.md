@@ -192,11 +192,30 @@ immediately before any driver-mode measurement.
 
 `vk/src/mali_cmd.c`, `mali_cs_emit.c` and `mali_pipeline.c` are hot files: one worker at a time. Work that needs them without owning them is delivered as `patches/<name>.patch` plus the non-hot parts and a test that skips until the feature is advertised (examples in `vk/patches/` and `vk/STEAM-GAPS.md`). Merge gate and lanes: `.opencode/skills/mali-open/SKILL.md`. The device farm (`tools/farm/farm`, guide `tools/farm/GUIDE.md`; `farm status`, `farm submit`, `farm hold <phone> --max N -- <cmd>`, `farm wait`, `farm bless`) serialises phone access; a bench run that finds a foreground dialog prints `UI-BLOCKED` and is requeued once as invalid. Before opening a PR, go through `docs/REVIEW-CHECKLIST.md`.
 
+## Release builds for phones
+
+Every build that goes to a phone comes from the release pipeline, never from a hand-built zip:
+
+```
+tools/release/build-release.sh          # clean worktree of origin/main -> a64-glibc-wsi zip + manifest
+tools/release/verify-guest.sh <serial>  # prove which build a running phone guest uses
+```
+
+`build-release.sh` builds from a clean detached worktree of `origin/main` (or a merged `--ref`), runs the full host gate
+(`vk/check.sh`), verifies the packaging (four surface extensions including headless, `libxcb.so.1` in `NEEDED`), prints the
+sha256 and writes a manifest with the commit, date, feature flags, checks and the `t_dxvk_caps` missing list.
+`verify-guest.sh` compares the installed guest against that manifest by library sha256, `driverInfo` hash, advertised
+extensions and feature list.
+
+Never bundle an unmerged branch, lane or local patch into a phone build; only `origin/main` or a merged ref is packaged.
+Details and the manifest fields: `tools/release/README.md`.
+
 ## Shipping in MediaDeck
 
 `vk/package/build-zip.sh` builds an importable zip (`libvulkan_panfrost.so` is our library under the name the importer accepts,
 plus `meta.json`, `icd.json`, `LICENSE`, `NOTICE-MESA.txt`). Variants: `a64-glibc`, `a64-glibc-wl` (Wayland WSI). `--bundle` also writes a
-driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/package/README.md`. Note: on a phone that has a vkBridge, the app uses the bridge and ignores the imported driver.
+driver-pair zip. `verify-zip.sh` checks a zip. Import and selection steps: `vk/package/README.md`. The release pipeline above wraps
+`build-zip.sh` for `a64-glibc-wsi`; use it for every phone build. Note: on a phone that has a vkBridge, the app uses the bridge and ignores the imported driver.
 
 ## Limitations
 
