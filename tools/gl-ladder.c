@@ -972,8 +972,25 @@ int main(int argc, char **argv)
         if (step == 5) {
             /* no blit at all: sample the FBO texture into the back buffer */
             qshader_ok = build_quad();
-            draw_quad(f.tex, target->w_px, target->h_px);
-            glFinish();
+            {   /* FRAGSCTRL: the same query around the step that PAINTS (the control) */
+                GLuint q = 0;
+                int have_q = glGenQueries && glBeginQuery && glEndQuery && glGetQueryObjectuiv;
+                if (have_q) { glGenQueries(1, &q); glBeginQuery(GL_SAMPLES_PASSED, q); }
+                draw_quad(f.tex, target->w_px, target->h_px);
+                glFinish();
+                if (have_q) {
+                    GLuint nf = 0xffffffffu;
+                    unsigned char px[8 * 8 * 4] = {0};
+                    unsigned m[3] = {0, 0, 0};
+                    glEndQuery(GL_SAMPLES_PASSED);
+                    glGetQueryObjectuiv(q, GL_QUERY_RESULT, &nf);
+                    glReadPixels(target->w_px / 2 - 4, target->h_px / 2 - 4, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                    for (int i = 0; i < 64; i++) { m[0] += px[i * 4]; m[1] += px[i * 4 + 1]; m[2] += px[i * 4 + 2]; }
+                    printf("FRAGSCTRL step=5 n=%u mean=%u,%u,%u\n", nf, m[0] / 64, m[1] / 64, m[2] / 64);
+                } else {
+                    printf("FRAGSCTRL step=5 n=no-query\n");
+                }
+            }
             drain_errors(err, sizeof err);
             printf("step=%d quad=textured full-window quad from the FBO texture "
                    "shader=%s err=%s\n", step, qshader_ok ? "glsl" : "fixed-function", err);
