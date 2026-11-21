@@ -821,6 +821,19 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    /* MALI_DRAW_DBG: the draw's own words, and the addresses they resolve to. The emitter is called per frame, so the
     * first three printed packets are the first three frames (homogeneous sessions: the first blit's readback is also
     * the one the ladder reports as 0.0). */
+   {   /* THROWAWAY: the index path this draw will use: the emitted type bits, the VA and the bytes there */
+      static unsigned ixr;
+      if (ixr++ < 24) {
+         fprintf(stderr, "mali_dbg: IDX step=%s n=%u indexed=%d size=%u bits=0x%x va=0x%llx first=%u voff=%d data=",
+                 getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", ixr, (int)d->indexed, d->index_size,
+                 idx_type_bits(d), (unsigned long long)d->index_va, d->first_index, (int)d->first_vertex);
+         if (d->index_cpu) {
+            unsigned nbytes = d->indexed ? (d->count < 16 ? d->count : 16) * (d->index_size ? d->index_size : 1) : 16;
+            for (unsigned k = 0; k < nbytes && k < 64; k++) fprintf(stderr, "%02x", d->index_cpu[k]);
+         } else fprintf(stderr, "(no cpu view)");
+         fprintf(stderr, "\n");
+      }
+   }
    { static unsigned pkn; char tg[96];
      snprintf(tg, sizeof tg, "DRAWPKT step=%s n=%u target_va=0x%llx count=%u prim=%u vs=0x%llx fs=0x%llx words",
               getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", ++pkn, (unsigned long long)f->colour.va,
