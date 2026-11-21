@@ -433,8 +433,8 @@ mali_hw_init(struct mali_device *dev)
 
    struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain};
    hw.env = (struct mali_env){.arch = arch,
-                              .hmask = arch == 13 ? 0 : 0xfe,
-                              .tile_log2 = 12,
+                              .hmask = getenv("MALI_HMASK") ? (uint32_t)strtoul(getenv("MALI_HMASK"), NULL, 0) : arch == 13 ? 0 : 0xfe,
+                              .tile_log2 = getenv("MALI_TILE_LOG2") ? (unsigned)atoi(getenv("MALI_TILE_LOG2")) : 12,
                               .slot = 3,
                               .tf_or = arch == 13 ? 0x40000 : 0,
                               .heap_ctx_va = h->heap.ctx_va,
