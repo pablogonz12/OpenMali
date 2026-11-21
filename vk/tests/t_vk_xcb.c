@@ -530,6 +530,7 @@ main(int argc, char **argv)
     * topology changes and the coverage stays identical. */
    VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
    int verts = 6;   /* --verts: how many vertices the quad draws (4 = the ladder's blit fan) */
+   int indexed = 0, itype = 0;   /* --indexed --itype u8|u16|u32: the quad as an indexed draw, indices 0..verts-1 */
    unsigned swap_flags = 0, swap_images = 0;
    unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
@@ -579,6 +580,14 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--verts") && i + 1 < argc) {
          verts = atoi(argv[++i]);
          if (verts < 3 || verts > 6) { fprintf(stderr, "usage: --verts 3..6\n"); return 2; }
+      }
+      else if (!strcmp(argv[i], "--indexed")) indexed = 1;
+      else if (!strcmp(argv[i], "--itype") && i + 1 < argc) {
+         const char *t = argv[++i];
+         if (!strcmp(t, "u8")) itype = 1;
+         else if (!strcmp(t, "u16")) itype = 2;
+         else if (!strcmp(t, "u32")) itype = 4;
+         else { fprintf(stderr, "usage: --itype u8|u16|u32\n"); return 2; }
       }
       else if (!strcmp(argv[i], "--topology") && i + 1 < argc) {
          const char *t = argv[++i];
@@ -777,7 +786,9 @@ main(int argc, char **argv)
    DPFN(CreateImage); DPFN(DestroyImage); DPFN(BindImageMemory); DPFN(GetImageMemoryRequirements);
    DPFN(GetImageSubresourceLayout); DPFN(AllocateMemory); DPFN(FreeMemory); DPFN(MapMemory); DPFN(UnmapMemory);
    DPFN(CreateSampler); DPFN(DestroySampler);
-   DPFN(CreateDescriptorSetLayout); DPFN(DestroyDescriptorSetLayout); DPFN(CreateDescriptorPool);
+   DPFN(CreateBuffer); DPFN(GetBufferMemoryRequirements); DPFN(BindBufferMemory);
+  DPFN(CmdBindIndexBuffer); DPFN(CmdDrawIndexed);
+  DPFN(CreateDescriptorSetLayout); DPFN(DestroyDescriptorSetLayout); DPFN(CreateDescriptorPool);
    DPFN(DestroyDescriptorPool); DPFN(AllocateDescriptorSets); DPFN(UpdateDescriptorSets);
    VkQueue q;
    GetDeviceQueue(dev, fam, 0, &q);
@@ -1248,7 +1259,40 @@ main(int argc, char **argv)
                CmdSetScissor(cb, 0, 1, &rsr);
                if (rtt_dyn) dyn_set_all(dev, GetDeviceProcAddr, cb, rtt_dyn, depth ? VK_TRUE : VK_FALSE, &rvp, &rsr);
                CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
-               CmdDraw(cb, (uint32_t)verts, 1, 0, 0);
+               if (indexed) {
+                  /* IDXTEST: indices 0..verts-1 in the requested width, host-visible, so the driver's index type
+                   * word and the bytes behind it can be compared against what this test wrote. */
+                  const unsigned esz = itype ? (unsigned)itype : 2u;
+                  VkBuffer ib;
+                  CK(CreateBuffer(dev, &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                                            .size = 64, .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE}, NULL, &ib));
+                  VkMemoryRequirements bmr;
+                  GetBufferMemoryRequirements(dev, ib, &bmr);
+                  const int bt = mem_type(pd, bmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, GetPhysicalDeviceMemoryProperties);
+                  REQ(bt >= 0, "no host-visible memory type for the index buffer");
+                  VkDeviceMemory ibm;
+                  CK(AllocateMemory(dev, &(VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                                                 .allocationSize = bmr.size, .memoryTypeIndex = (uint32_t)bt},
+                                    NULL, &ibm));
+                  void *ip = NULL;
+                  CK(MapMemory(dev, ibm, 0, VK_WHOLE_SIZE, 0, &ip));
+                  memset(ip, 0xff, 64);
+                  for (int v = 0; v < verts; v++) {
+                     if (esz == 1) ((uint8_t *)ip)[v] = (uint8_t)v;
+                     else if (esz == 2) ((uint16_t *)ip)[v] = (uint16_t)v;
+                     else ((uint32_t *)ip)[v] = (uint32_t)v;
+                  }
+                  UnmapMemory(dev, ibm);
+                  CK(BindBufferMemory(dev, ib, ibm, 0));
+                  CmdBindIndexBuffer(cb, ib, 0, esz == 1 ? VK_INDEX_TYPE_UINT8_EXT : esz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+                  CmdDrawIndexed(cb, (uint32_t)verts, 1, 0, 0, 0);
+                  printf("IDXTEST itype=u%u verts=%d indices=", esz * 8, verts);
+                  for (int v = 0; v < verts; v++) printf("%s%d", v ? "," : "", v);
+                  printf("\n");
+               } else {
+                  CmdDraw(cb, (uint32_t)verts, 1, 0, 0);
+               }
             }
             CmdEndRendering(cb);
          }
