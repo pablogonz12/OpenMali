@@ -312,6 +312,21 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
             }
          }
       }
+      {   /* THROWAWAY: the descriptor words this set resolves to, per slot, for the blit's set 2/binding 128 */
+         static unsigned dsn;
+         if (ds && ds->cpu && dsn++ < 16) {
+            const unsigned slots = ds->bytes / 32u < 8u ? ds->bytes / 32u : 8u;
+            fprintf(stderr, "mali_dbg: DSET step=%s n=%u set=%u va=0x%llx bytes=%u slots=%u\n",
+                    getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", dsn, s,
+                    (unsigned long long)ds->va, ds->bytes, ds->bytes / 32u);
+            for (unsigned k = 0; k < slots; k++) {
+               const uint32_t *w = (const uint32_t *)(ds->cpu + k * 32u);
+               fprintf(stderr, "mali_dbg: DSETW step=%s set=%u slot=%u words: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                       getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", s, k,
+                       w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            }
+         }
+      }
       if (cmd->set_va[s] != ds->va || cmd->set_bytes[s] != ds->bytes) {
          cmd->set_va[s] = ds->va;
          cmd->set_bytes[s] = ds->bytes;
@@ -706,6 +721,17 @@ fd_note(struct mali_cmd_buffer *cmd, const char *api, uint32_t count, uint32_t i
    }
    if (k < g_fd_n)
       g_fd[k].draws++;
+   {   /* THROWAWAY: the push blocks the draw's shaders read (bindless image addresses live here) */
+      static unsigned pcr;
+      if (pcr++ < 10) {
+         const uint32_t *v = (const uint32_t *)cmd->push[0], *fr = (const uint32_t *)cmd->push[1];
+         fprintf(stderr, "mali_dbg: PUSH step=%s n=%u vs:", getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", pcr);
+         for (unsigned k = 0; k < 12; k++) fprintf(stderr, " %08x", v[k]);
+         fprintf(stderr, " fs:");
+         for (unsigned k = 0; k < 12; k++) fprintf(stderr, " %08x", fr[k]);
+         fprintf(stderr, "\n");
+      }
+   }
    fprintf(stderr, "mali_dbg: FRAMEDRAW step=%s pass=%u ord=%u/%u api=%s target=0x%llx count=%u inst=%u prim=%u vs=0x%llx fs=0x%llx\n",
            getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", g_fd_pass, cmd->cur.ndraws,
            cmd->cur.ndraws + 1, api, (unsigned long long)tva, count, inst, cmd->gfx.prim,

@@ -723,6 +723,36 @@ mali_rt_dbg_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32
               pres && pres->mem ? pres->mem->bo.dmabuf_fd : -1, pres && pres->mem ? pres->mem->bo.flags : 0);
    }
    mali_dbg_frame_targets(dev, pres ? pres->va : 0);
+   {   /* THROWAWAY: MALI_RT_PPM=<prefix> writes the presented image as a PPM (what the window really shows) */
+      static unsigned ppm;
+      const char *pf = getenv("MALI_RT_PPM");
+      if (pf && *pf && ppm < 2 && pres && pres->mem && pres->mem->bo.cpu) {
+         const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&pres->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+         if (pl && pl->slice[0].row_stride && !pres->lay.d.tiled) {
+            const unsigned w = pres->lay.d.extent.width, h = pres->lay.d.extent.height;
+            const unsigned stride = pl->slice[0].row_stride, bpp = pl->bs ? pl->bs : 4;
+            const uint8_t *base = (const uint8_t *)pres->mem->bo.cpu + pres->mem_off + pl->offset;
+            const bool bgra = pres->vk.format == VK_FORMAT_B8G8R8A8_UNORM || pres->vk.format == VK_FORMAT_B8G8R8A8_SRGB;
+            char path[320];
+            snprintf(path, sizeof path, "%s-%u.ppm", pf, ppm);
+            FILE *o = fopen(path, "wb");
+            if (o) {
+               fprintf(o, "P6\n%u %u\n255\n", w, h);
+               for (unsigned y = 0; y < h; y++) {
+                  const uint8_t *rowp = base + (size_t)y * stride;
+                  for (unsigned x = 0; x < w; x++) {
+                     const uint8_t *px = rowp + (size_t)x * bpp;
+                     uint8_t rgb[3] = { bgra ? px[2] : px[0], px[1], bgra ? px[0] : px[2] };
+                     fwrite(rgb, 1, 3, o);
+                  }
+               }
+               fclose(o);
+               fprintf(stderr, "mali_rt: PPM %s %ux%u bpp=%u stride=%u bgra=%d\n", path, w, h, bpp, stride, (int)bgra);
+            }
+         }
+         ppm++;
+      }
+   }
    const unsigned pcount = chain ? chain->image_count : 0;
    fprintf(stderr, "mali_rt: RTDBG present_idx=%u/%u present_img=%p present_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
                    "present_mean=%u,%u,%u present_ok=%d | draw_img=%p draw_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
