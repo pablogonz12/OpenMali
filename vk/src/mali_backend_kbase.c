@@ -570,8 +570,10 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
                fprintf(stderr, "mali_vk: %sevent: %s\n", ev.fatal ? "FATAL " : "", ev.text);
          pthread_mutex_unlock(&k->wait_lock);
       }
-      if (kb_queue_faulted(&k->queue))
+      if (kb_queue_faulted(&k->queue)) {
+         hwstat_report(k, "ring-fault");
          return -EIO;
+      }
       if (k->queue.insert - kb_queue_extract(&k->queue) + bytes + 64 <= k->queue.ring_size)
          return 0;
       usleep(50);
@@ -667,6 +669,7 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
       }
       if (pf.revents & POLLERR) {
          k->lost = true;
+         hwstat_report(k, "pollerr");
          return -EIO;
       }
       /* A timeout-0 poll is a query, not a wait: sync the native BOs the GPU wrote (as before) but leave foreign
@@ -695,6 +698,7 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
       }
       if (r == -EIO) {
          k->lost = true;
+         hwstat_report(k, "wait-eio");
          return -EIO;
       }
       if (r == -ETIMEDOUT && kb_queue_faulted(&k->queue)) {

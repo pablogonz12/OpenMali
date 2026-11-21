@@ -221,6 +221,12 @@ int kb_open(struct kb_ctx **out, const struct kb_open_opts *opts)
 	}
 	c->uapi_major = v.major;
 	c->uapi_minor = v.minor;
+	if (getenv("MALI_CS_FAULT_REPORT")) {   /* THROWAWAY csfault: what the kernel answers when asked for 1.25 */
+		struct kbase_ioctl_version_check v25 = { 1, 25 };
+		int r25 = ioctl(c->fd, KBASE_IOCTL_VERSION_CHECK_CSF, &v25);
+		fprintf(stderr, "libkbase: csfault version check: kernel reports %u.%u; probe {1,25} -> rc=%d (%s) answers %u.%u\n",
+			v.major, v.minor, r25, r25 < 0 ? strerror(errno) : "ok", v25.major, v25.minor);
+	}
 	const struct kb_caps *cp = kb_caps_lookup(v.major, v.minor);
 	if (!cp) {
 		if (opts && opts->allow_unknown_uapi) {

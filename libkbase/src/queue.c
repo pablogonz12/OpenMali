@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -56,13 +57,25 @@ int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct
 	gc.in.tiler_max = (uint8_t)popcnt64(p->tiler_present);
 	gc.in.fragment_max = (uint8_t)popcnt64(p->shader_present);   /* popcount: Poco shader_present 0xee0057 = 11 cores, non-contiguous */
 	gc.in.compute_max = (uint8_t)popcnt64(p->shader_present);
+	/* THROWAWAY csfault (notes/hwstat.md): MALI_CS_FAULT_REPORT=1 asks for CS_FAULT notifications
+	 * (cs_fault_report_enable, uAPI 1.25+). On an older uAPI the 112-byte create is simply not there; the
+	 * ioctl then fails and we fall back, printing what the kernel said. */
+	int csfault = getenv("MALI_CS_FAULT_REPORT") ? 1 : 0;
 	r = -ENOTTY;
-	if (ctx->caps.group_create_112b) {
+	if (csfault)
+		fprintf(stderr, "libkbase: csfault uapi=%u.%u caps{112b=%d 40b=%d 1_6=%d} attempt=112b cs_fault_report_enable=1\n",
+			ctx->uapi_major, ctx->uapi_minor, (int)ctx->caps.group_create_112b, (int)ctx->caps.group_create_40b,
+			(int)ctx->caps.group_create_1_6);
+	if (ctx->caps.group_create_112b || csfault) {
 		/* same fields as the 40 B layout; neural/comp_pri/cs_fault_report_enable stay 0 */
 		gc112.in.tiler_mask = gc.in.tiler_mask; gc112.in.fragment_mask = gc.in.fragment_mask;
 		gc112.in.compute_mask = gc.in.compute_mask; gc112.in.cs_min = gc.in.cs_min; gc112.in.priority = gc.in.priority;
 		gc112.in.tiler_max = gc.in.tiler_max; gc112.in.fragment_max = gc.in.fragment_max; gc112.in.compute_max = gc.in.compute_max;
+		gc112.in.cs_fault_report_enable = (uint8_t)(csfault ? 1 : 0);
 		r = kb_ioctl(ctx, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_112, &gc112);
+		if (csfault)
+			fprintf(stderr, "libkbase: csfault create112 rc=%d (%s) group_handle=%u\n", r,
+				r ? strerror(-r) : "ok", (unsigned)gc112.out.group_handle);
 		if (r == 0) { gc.out.group_handle = gc112.out.group_handle; gc.out.group_uid = gc112.out.group_uid; }
 	}
 	if (!ctx->caps.group_create_1_6 && (r == -ENOTTY || !ctx->caps.group_create_112b))
@@ -78,8 +91,14 @@ int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct
 	}
 	if (r) {
 		kb_set_error("CS_QUEUE_GROUP_CREATE: %s", strerror(-r));
+		if (csfault)
+			fprintf(stderr, "libkbase: csfault queue group create failed rc=%d (%s): no cs_fault_report_enable on this uAPI\n",
+				r, strerror(-r));
 		goto fail;
 	}
+	if (csfault)
+		fprintf(stderr, "libkbase: csfault group created handle=%u uid=%u (layout=%s)\n", (unsigned)gc.out.group_handle,
+			gc.out.group_uid, ctx->caps.group_create_112b ? "112b" : ctx->caps.group_create_1_6 ? "1_6/32b" : "40b");
 	q->group_handle = gc.out.group_handle;
 	q->group_uid = gc.out.group_uid;
 	q->group_live = true;
