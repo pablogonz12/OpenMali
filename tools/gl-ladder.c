@@ -144,6 +144,13 @@ typedef XID GLXDrawable;
 #define GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB 0x00000002
 
 /* ---- the entry points we need, resolved at runtime --------------------- */
+#ifndef GL_SAMPLES_PASSED
+#define GL_SAMPLES_PASSED 0x8914
+#endif
+#ifndef GL_QUERY_RESULT
+#define GL_QUERY_RESULT 0x8866
+#endif
+
 #define GL_FUNCS(X)                                                                   \
     X(GLenum,        glGetError,            (void))                                   \
     X(const GLubyte *, glGetString,         (GLenum))                                 \
@@ -174,6 +181,10 @@ typedef XID GLXDrawable;
     X(void,          glDeleteFramebuffers,  (GLsizei, const GLuint *))                \
     X(void,          glBlitFramebuffer,     (GLint, GLint, GLint, GLint, GLint,       \
                                              GLint, GLint, GLint, GLbitfield, GLenum))\
+    X(void,          glGenQueries,          (GLsizei, GLuint *))                       \
+    X(void,          glBeginQuery,          (GLenum, GLuint))                          \
+    X(void,          glEndQuery,            (GLenum))                                  \
+    X(void,          glGetQueryObjectuiv,   (GLuint, GLenum, GLuint *))                \
     X(GLuint,        glCreateShader,        (GLenum))                                 \
     X(void,          glShaderSource,        (GLuint, GLsizei, const GLchar *const *,  \
                                              const GLint *))                          \
@@ -968,9 +979,28 @@ int main(int argc, char **argv)
                    "shader=%s err=%s\n", step, qshader_ok ? "glsl" : "fixed-function", err);
             readback(target, dump, GL_BACK, "quad");
         } else {
-        glBlitFramebuffer(0, 0, FBO_W, FBO_H, 0, 0, target->w_px, target->h_px,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        glFinish();
+        /* RTDBG: how many fragments does the blit actually produce? GL_SAMPLES_PASSED (our occlusion query) is
+         * the decisive number: a sampling FS over a 100 %-nonzero source cannot write 0,0,0 if it runs. */
+        {
+            GLuint q = 0;
+            int have_q = glGenQueries && glBeginQuery && glEndQuery && glGetQueryObjectuiv;
+            if (have_q) { glGenQueries(1, &q); glBeginQuery(GL_SAMPLES_PASSED, q); }
+            glBlitFramebuffer(0, 0, FBO_W, FBO_H, 0, 0, target->w_px, target->h_px,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glFinish();
+            if (have_q) {
+                GLuint nf = 0xffffffffu;
+                glEndQuery(GL_SAMPLES_PASSED);
+                glGetQueryObjectuiv(q, GL_QUERY_RESULT, &nf);
+                unsigned char px[8 * 8 * 4] = {0};
+                unsigned m[3] = {0, 0, 0};
+                glReadPixels(target->w_px / 2 - 4, target->h_px / 2 - 4, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                for (int i = 0; i < 64; i++) { m[0] += px[i * 4]; m[1] += px[i * 4 + 1]; m[2] += px[i * 4 + 2]; }
+                printf("BLITFRAGS n=%u mean=%u,%u,%u\n", nf, m[0] / 64, m[1] / 64, m[2] / 64);
+            } else {
+                printf("BLITFRAGS n=no-query mean=no-query\n");
+            }
+        }
         drain_errors(err, sizeof err);
         printf("step=%d blit=glBlitFramebuffer(0,0,%d,%d -> 0,0,%d,%d,COLOR,NEAREST) "
                "err=%s\n", step, FBO_W, FBO_H, target->w_px, target->h_px, err);
