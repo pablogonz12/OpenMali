@@ -274,14 +274,17 @@ mali_wsi_id_remove(VkSwapchainKHR sc)
 }
 
 static bool
-mali_wsi_id_get(VkSwapchainKHR sc, bool *sw, uint64_t *done)
+mali_wsi_id_get(VkSwapchainKHR sc, bool *sw, uint64_t *done, bool *failed)
 {
    bool found = false;
+   /* Completion and failure come out of the same locked snapshot: read separately, a present that completes id 1
+    * and then rejects id 2 between the two reads made a wait for id 1 return OUT_OF_DATE (CR #335, :366). */
    pthread_mutex_lock(&mali_wsi_id_lock);
    for (unsigned i = 0; i < sizeof(mali_wsi_id_chains) / sizeof(mali_wsi_id_chains[0]); i++)
       if (mali_wsi_id_chains[i].sc == sc) {
          if (sw) *sw = mali_wsi_id_chains[i].sw;
          if (done) *done = mali_wsi_id_chains[i].done;
+         if (failed) *failed = mali_wsi_id_chains[i].failed;
          found = true;
          break;
       }
@@ -311,18 +314,6 @@ mali_wsi_id_ok(VkSwapchainKHR sc)
    pthread_mutex_unlock(&mali_wsi_id_lock);
 }
 
-static bool
-mali_wsi_id_failed(VkSwapchainKHR sc)
-{
-   bool failed = false;
-   pthread_mutex_lock(&mali_wsi_id_lock);
-   for (unsigned i = 0; i < sizeof(mali_wsi_id_chains) / sizeof(mali_wsi_id_chains[0]); i++)
-      if (mali_wsi_id_chains[i].sc == sc)
-         failed = mali_wsi_id_chains[i].failed;
-   pthread_mutex_unlock(&mali_wsi_id_lock);
-   return failed;
-}
-
 static void
 mali_wsi_id_done(VkSwapchainKHR sc, uint64_t id)
 {
@@ -340,15 +331,15 @@ mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t pr
     * only an X11 surface ever switches the device to the software path (mali_wsi_create_swapchain above), so a
     * software chain here is an X11 software chain. #323's per-chain table (mali_wsi_x11_chain_mode) replaces this
     * check when it lands. */
-   bool sw = false;
+   bool sw = false, failed = false;
    uint64_t done = 0;
-   if (mali_wsi_id_get(swapchain, &sw, &done) && sw) {
+   if (mali_wsi_id_get(swapchain, &sw, &done, &failed) && sw) {
       if (present_id <= done)
          return VK_SUCCESS;   /* already on the server: the copy and the xcb_flush finished in vkQueuePresentKHR */
       /* A present of this chain was rejected as unpresentable: an unbounded waiter must not poll forever
        * (vkWaitForPresentKHR returns VK_ERROR_OUT_OF_DATE_KHR in that case). After the completed-id check, so a
        * later rejection cannot make an id that did complete fail (CR #335, :872). */
-      if (mali_wsi_id_failed(swapchain))
+      if (failed)
          return VK_ERROR_OUT_OF_DATE_KHR;
       /* Not presented yet: block like wsi_WaitForPresentKHR would, and honour the timeout (0 = poll once).
        * Elapsed time is measured, not assumed: nanosleep returns early on EINTR (CodeRabbit #335, :315), and
@@ -360,9 +351,11 @@ mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t pr
          nanosleep(&ts, NULL);
          /* Completion and failure are re-read every iteration: another thread may reject a present while this one
           * waits (CR #335, vk/src/mali_wsi.c:337). */
-         if (mali_wsi_id_get(swapchain, &sw, &done) && present_id <= done)
+         if (!mali_wsi_id_get(swapchain, &sw, &done, &failed) || !sw)
+            return VK_ERROR_OUT_OF_DATE_KHR;   /* the chain was destroyed while waiting */
+         if (present_id <= done)
             return VK_SUCCESS;
-         if (mali_wsi_id_failed(swapchain))
+         if (failed)
             return VK_ERROR_OUT_OF_DATE_KHR;
          if (timeout == UINT64_MAX)
             continue;
@@ -887,8 +880,8 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    /* Only OUT_OF_DATE is terminal for the chain (the image can never be presented); OOM and friends can be retried,
     * so they must not poison a later wait, and a present that went through clears any earlier flag (CR #335, :872). */
    for (uint32_t i = 0; i < info->swapchainCount; i++) {
-      if (r == VK_ERROR_OUT_OF_DATE_KHR)
-         mali_wsi_id_fail(info->pSwapchains[i]);   /* a waiter on a rejected chain gets OUT_OF_DATE, not a hang */
+      if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR)
+         mali_wsi_id_fail(info->pSwapchains[i]);   /* terminal: a waiter gets OUT_OF_DATE, not a hang (CR #335, :890) */
       else if (r == VK_SUCCESS)
          mali_wsi_id_ok(info->pSwapchains[i]);
    }
