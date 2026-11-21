@@ -57,6 +57,9 @@ run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
+# heap 0 is the commit cap: with a cap below the fixed 1 GiB default, maxMemoryAllocationSize must be clamped to
+# the heap we report (VkPhysicalDeviceLimits), and the whole heap must still be allocatable.
+run "vk_mem cap 256 MiB v11" 0 MALI_VRAM_CAP_MB=256 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"
 for g in v11 v13; do run "vk_vram $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_vram" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_qerr $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_qerr" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "dxvk_wsi $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_dxvk_wsi" --direct "$OUT/libvulkan_mali.so"; done
