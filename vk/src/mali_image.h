@@ -69,6 +69,8 @@ struct mali_image *mali_dbg_rt_target(uint64_t *va);
 bool mali_dbg_rt_mean(struct mali_device *dev, struct mali_image *mi, unsigned out[3]);
 void mali_dbg_rt_set_pre(const unsigned m[3]);
 int mali_dbg_rt_get_pre(unsigned out[3]);
+/* THROWAWAY FRAMEDRAW: print every distinct target of the frame that just presented, with its mean. */
+void mali_dbg_frame_targets(struct mali_device *dev, uint64_t window_va);
 
 /* MALI_IMAGE_TILED=1 selects u-interleaved for OPTIMAL images (single sampled, not 1D). Default: linear everywhere (tiled is not
  * hardware-verified yet, see R3-PLAN M5). */

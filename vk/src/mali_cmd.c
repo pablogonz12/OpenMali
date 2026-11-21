@@ -456,6 +456,31 @@ mali_dbg_rt_target(uint64_t *va)
    return g_rt_dbg_img;
 }
 
+/* THROWAWAY FRAMEDRAW: every draw of a swap frame with its target VA, plus every distinct target's state. */
+#define FD_MAX 16
+static struct { struct mali_image *img; uint64_t va; unsigned draws; } g_fd[FD_MAX];
+static unsigned g_fd_n, g_fd_pass, g_fd_frame_draws, g_fd_prints;
+
+void
+mali_dbg_frame_targets(struct mali_device *dev, uint64_t window_va)
+{
+   if (g_fd_prints >= 4 || getenv("MALI_LADDER_STEP") == NULL) {
+      g_fd_n = 0; g_fd_frame_draws = 0;
+      return;
+   }
+   g_fd_prints++;
+   fprintf(stderr, "mali_dbg: FRAMESUM step=%s draws_recorded=%u distinct_targets=%u\n",
+           getenv("MALI_LADDER_STEP"), g_fd_frame_draws, g_fd_n);
+   for (unsigned i = 0; i < g_fd_n; i++) {
+      unsigned m[3] = {0, 0, 0};
+      const bool ok = mali_dbg_rt_mean(dev, g_fd[i].img, m);
+      fprintf(stderr, "mali_dbg: FRAMETGT step=%s target=0x%llx window=%d draws=%u mean=%u,%u,%u ok=%d\n",
+              getenv("MALI_LADDER_STEP"), (unsigned long long)g_fd[i].va,
+              (int)(g_fd[i].va == window_va), g_fd[i].draws, m[0], m[1], m[2], (int)ok);
+   }
+   g_fd_n = 0; g_fd_frame_draws = 0;
+}
+
 /* ---- draws ---- */
 static bool
 snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
@@ -661,6 +686,33 @@ discarded(const struct mali_cmd_buffer *cmd)
    return cmd->gfx.discard || cmd->vk.dynamic_graphics_state.rs.rasterizer_discard_enable;
 }
 
+
+static void
+fd_note(struct mali_cmd_buffer *cmd, const char *api, uint32_t count, uint32_t inst)
+{
+   struct mali_device *dv = container_of(cmd->vk.base.device, struct mali_device, vk);
+   const uint64_t tva = g_rt_dbg_va;
+   if (cmd->cur.ndraws == 0)
+      g_fd_pass++;
+   g_fd_frame_draws++;
+   unsigned k = 0;
+   for (; k < g_fd_n; k++)
+      if (g_fd[k].va == tva) break;
+   if (k == g_fd_n && g_fd_n < FD_MAX) {
+      g_fd[g_fd_n].img = g_rt_dbg_img;
+      g_fd[g_fd_n].va = tva;
+      g_fd[g_fd_n].draws = 0;
+      g_fd_n++;
+   }
+   if (k < g_fd_n)
+      g_fd[k].draws++;
+   fprintf(stderr, "mali_dbg: FRAMEDRAW step=%s pass=%u ord=%u/%u api=%s target=0x%llx count=%u inst=%u prim=%u vs=0x%llx fs=0x%llx\n",
+           getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", g_fd_pass, cmd->cur.ndraws,
+           cmd->cur.ndraws + 1, api, (unsigned long long)tva, count, inst, cmd->gfx.prim,
+           (unsigned long long)cmd->gfx.vs_va, (unsigned long long)cmd->gfx.fs_va);
+   (void)dv;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
@@ -696,6 +748,7 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
                     (unsigned long long)cmd->gfx.fs_va);
       if (cmd->cur.ndraws == 0) frames++;
    }
+   fd_note(cmd, "draw", vcount, icount);
    if (getenv("MALI_RT_DBG")) {   /* THROWAWAY RTDBG: pre_submit mean of this frame's draw target */
       struct mali_device *dv = container_of(cmd->vk.base.device, struct mali_device, vk);
       uint64_t tv = 0;
@@ -730,6 +783,7 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    sl->first_index = first;
    cmd->cur.ndraws++;
    mali_dbg_tex_draw(container_of(cmd->vk.base.device, struct mali_device, vk), "drawidx");
+   fd_note(cmd, "drawidx", icount, inst);
 }
 
 /* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
@@ -1352,6 +1406,13 @@ mali_CmdEndRendering(VkCommandBuffer h)
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
    const unsigned resolve_level = cmd->cur.resolve_level, resolve_layer = cmd->cur.resolve_layer;
    const unsigned resolve_w = cmd->cur.width, resolve_h = cmd->cur.height;
+   {   /* THROWAWAY: what this pass submits, beside what it recorded */
+      static unsigned pj;
+      if (getenv("MALI_LADDER_STEP") && pj++ < 12)
+         fprintf(stderr, "mali_dbg: FRAMEJOB step=%s draws=%u nops=%u colour_va=0x%llx w=%u h=%u\n",
+                 getenv("MALI_LADDER_STEP"), cmd->cur.ndraws, cmd->cur.nops,
+                 (unsigned long long)cmd->cur.colour.va, cmd->cur.width, cmd->cur.height);
+   }
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;

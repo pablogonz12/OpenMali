@@ -722,6 +722,7 @@ mali_rt_dbg_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32
               pm[0], pm[1], pm[2], (int)(pres && draw && pres == draw), (int)(pres && draw && pres->va == draw_va),
               pres && pres->mem ? pres->mem->bo.dmabuf_fd : -1, pres && pres->mem ? pres->mem->bo.flags : 0);
    }
+   mali_dbg_frame_targets(dev, pres ? pres->va : 0);
    const unsigned pcount = chain ? chain->image_count : 0;
    fprintf(stderr, "mali_rt: RTDBG present_idx=%u/%u present_img=%p present_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
                    "present_mean=%u,%u,%u present_ok=%d | draw_img=%p draw_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
