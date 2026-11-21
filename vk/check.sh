@@ -101,16 +101,27 @@ rm -rf "$DRMR" "$DRMB" "$DRMX"
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
-# VK_EXT_transform_feedback is WIP plumbing: the extension/features/properties only appear with MALI_EXPERIMENTAL_TF=1,
-# and a pipeline whose vertex shader declares XFB decorations is refused with a message naming the reason.
-for g in v11 v13; do run "vk_info $g tf gate" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
-for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
-for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_EXPERIMENTAL_TF=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
+# VK_EXT_transform_feedback is ON by default (MALI_EXPERIMENTAL_TF=0 is the legacy opt-out, which also drops the UBO
+# counts back to 12/72: the two must never be mixed, see mali_physical_device.c). The extension, the feature bit, the
+# properties and the XFB lowering follow that one switch.
+for g in v11 v13; do run "vk_feat tf_default $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+for g in v11 v13; do run "vk_info $g tf opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_feat tf_default $g opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
+for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
-# gate off (default): the extension must not be advertised, so the case must skip and say why (a silent skip would hide a gate that leaks)
-out=$(env -u MALI_EXPERIMENTAL_TF MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write 2>&1)
-if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"'; then echo "ok    vk_feat tf_write gate off v11"
-else echo "FAIL  vk_feat tf_write gate off v11"; echo "$out" | sed 's/^/        /'; fail=1; fi
+# tf_inactive is the guard that makes default-on safe: an XFB program drawn outside Begin/End runs the pipeline's second,
+# non-XFB vertex program. The case asserts the driver's own accounting (MALI_TF_DBG names the program and its address, and
+# the two draws must pick different binaries); tf_reset asserts the same after a vkResetCommandBuffer.
+for g in v11 v13; do run "vk_feat tf_inactive $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_inactive; done
+for g in v11 v13; do run "vk_feat tf_reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reset; done
+# documented limits, asserted rather than hidden: no counter/append support, no size clamp
+for g in v11 v13; do run "vk_feat tf_multi $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_multi; done
+for g in v11 v13; do run "vk_feat tf_overflow $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_overflow; done
+# opt-out: the extension must not be advertised, so the capture cases must skip and say why (a silent skip would hide a gate that leaks)
+out=$(MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write 2>&1)
+if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"'; then echo "ok    vk_feat tf_write opt-out v11"
+else echo "FAIL  vk_feat tf_write opt-out v11"; echo "$out" | sed 's/^/        /'; fail=1; fi
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
