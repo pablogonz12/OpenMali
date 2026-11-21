@@ -433,6 +433,16 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          m |= MALI_D_FX;
       vk_dynamic_graphics_state_clear_dirty((struct vk_dynamic_graphics_state *)dyn);
    }
+   if (getenv("MALI_FACEDBG")) {   /* THROWAWAY facedbg (notes/facedbg.md): cull/front-face as the runtime holds them */
+      static unsigned fn2;
+      if (fn2++ < 400)
+         fprintf(stderr, "mali_facedbg: REC n=%u step=%s cull_mode=0x%x front_face=%d depth_test=%d depth_write=%d depth_func=%d depth_clamp_en=%d stencil_test=%d cull_bit=%u front_ccw_bit=%u\n",
+                 fn2, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", dyn->rs.cull_mode, dyn->rs.front_face,
+                 dyn->ds.depth.test_enable, dyn->ds.depth.write_enable, dyn->ds.depth.compare_op, dyn->rs.depth_clamp_enable,
+                 dyn->ds.stencil.test_enable,
+                 (unsigned)((dyn->rs.cull_mode & VK_CULL_MODE_FRONT_BIT ? 1u : 0u) | (dyn->rs.cull_mode & VK_CULL_MODE_BACK_BIT ? 2u : 0u)),
+                 (unsigned)(dyn->rs.front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE));
+   }
    if (getenv("MALI_SCISDBG")) {   /* THROWAWAY scisdbg (notes/faudbg.md): the dynamic-state source of this draw's vp/sc */
       static unsigned cn;
       if (cn++ < 400)
@@ -532,6 +542,10 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS) && dyn->vp.viewport_count) {
          const VkViewport *v = &dyn->vp.viewports[0];
          bp->vp[0] = v->x; bp->vp[1] = v->y; bp->vp[2] = v->width; bp->vp[3] = v->height; bp->vp[4] = v->minDepth; bp->vp[5] = v->maxDepth;
+         if (getenv("MALI_FLIP_VP")) {   /* THROWAWAY facedbg A/B (notes/facedbg.md): reverse the winding the rasteriser sees */
+            bp->vp[1] = v->y + v->height;
+            bp->vp[3] = -v->height;
+         }
       } else {
          bp->vp[0] = (float)a[0]; bp->vp[1] = (float)a[1]; bp->vp[2] = (float)a[2]; bp->vp[3] = (float)a[3];
          bp->vp[4] = 0.0f; bp->vp[5] = 1.0f;

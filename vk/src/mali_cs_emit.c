@@ -520,6 +520,15 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       memcpy(&zsd[7], &d->fx.bias_clamp, 4);
    }
 
+   if (getenv("MALI_FACEDBG")) {   /* THROWAWAY facedbg: the full depth/stencil descriptor (front AND back halves) */
+      static unsigned zn;
+      if (zn++ < 400)
+         fprintf(stderr, "mali_facedbg: ZSD n=%u step=%s draw_id=%u fx_set=%d cull=%u front_ccw=%d depth_clip=%d depth_clamp=%d words=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+                 zn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, (int)d->fx.set, d->fx.cull,
+                 (int)d->fx.front_ccw, (int)d->fx.depth_clip, (int)d->fx.depth_clamp,
+                 zsd[0], zsd[1], zsd[2], zsd[3], zsd[4], zsd[5], zsd[6], zsd[7]);
+   }
+
 fau:;
    if (s3)
       return 0;   /* FAUs are independent of the dynamic offsets: shared with the previous draw even when its driver sets are not */
@@ -782,8 +791,20 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB_IDVS_LOW_DEPTH_CLAMP, minz);
       M32(c, KB_IDVS_HIGH_DEPTH_CLAMP, maxz);
       M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
-      M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
-      M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
+      uint32_t tflags = (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d);
+      uint32_t dcd0w = kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14);
+      if (getenv("MALI_FLIP_FF"))   /* THROWAWAY facedbg A/B (notes/facedbg.md): emit the other front-face bit, nothing else */
+         dcd0w ^= 1u << 16;
+      if (getenv("MALI_FACEDBG")) {   /* THROWAWAY facedbg: the cull/front-face bits actually emitted */
+         static unsigned dn;
+         if (dn++ < 400)
+            fprintf(stderr, "mali_facedbg: DCD n=%u step=%s draw_id=%u prim=%u dcd0=0x%08x front_bit=%u cull_bits=%u tiler_flags=0x%08x depth_test=%d has_zs=%d flip_ff=%d\n",
+                    dn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, dcd0w,
+                    (dcd0w >> 16) & 1u, (dcd0w >> 17) & 3u, tflags, (int)g->depth_test, (int)f->has_zs,
+                    getenv("MALI_FLIP_FF") ? 1 : 0);
+      }
+      M32(c, KB_IDVS_TILER_FLAGS, tflags);
+      M32(c, KB_IDVS_DCD0, dcd0w);
       if (!o->static_same) {
          M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
          M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);
