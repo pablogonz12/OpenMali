@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <math.h>
 #include <string.h>
+#include "mali_dbg.h"
 
 #include "kbase_fb.h"
 #include "mali_cs_emit.h"
@@ -202,6 +203,10 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    p.width = f->width;
    p.height = f->height;
    p.rt_gpu_va = f->colour.va;
+   mali_dbg_line("fbd", "FBDRT colour_va=0x%llx rt=%p fmt=%d stride=%u w=%u h=%u has_colour=%d clear=%d store=%d samples=%u ncolour=%u",
+                 (unsigned long long)p.rt_gpu_va, (void *)f->colour.rt,
+                 (int)(f->colour.rt ? f->colour.rt->vk_format : VK_FORMAT_UNDEFINED), p.row_stride, f->width, f->height,
+                 (int)f->has_colour, (int)f->colour.clear, (int)f->colour.store, f->samples, f->ncolour);
    p.row_stride = f->colour.row_stride ? f->colour.row_stride : f->width * 4;
    if (f->colour.rt) {
       const struct mali_rtfmt *rt = f->colour.rt;

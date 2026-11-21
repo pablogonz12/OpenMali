@@ -766,6 +766,10 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
     * first three printed packets are the first three frames (homogeneous sessions: the first blit's readback is also
     * the one the ladder reports as 0.0). */
    mali_dbg_words("emit", "DRAWPKT", c->v + dbg_n0, c->n - dbg_n0);
+   mali_dbg_line("emit", "DCD09 dcd0=%x extra=%x pk=%u zsu=%u fpk=%d fpkk=%d ccw=%d samples=%u blend=%llx prim=%u wmask=0x%x",
+                 (unsigned)(kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14)), dcd_extra, dop.pixel_kill,
+                 dop.zs_update, (int)dop.allow_fpk, (int)dop.allow_fpk_killed, (int)dop.front_ccw, g->samples,
+                 (unsigned long long)g->blend_va, g->prim, (unsigned)(d->fx.set ? d->fx.wmask : 0xf));
    mali_dbg_line("emit", "DRAWVA arch=%u draws=%u w=%u h=%u count=%u inst=%u sets=%u/%u/%u/%u "
                          "setva=%llx/%llx/%llx/%llx vb0=%llx index=%llx colour=%llx vs=%llx fs=%llx tsd=%llx tctx=%llx",
                  env->arch, f->ndraws, f->width, f->height, d->count, d->instance_count, d->nsets,
