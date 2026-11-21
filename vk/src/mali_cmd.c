@@ -405,6 +405,18 @@ mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
 static struct mali_image *g_rt_dbg_img;
 static uint64_t g_rt_dbg_va;
 
+static unsigned g_rt_pre[3];
+static int g_rt_pre_ok;
+
+void
+mali_dbg_rt_set_pre(const unsigned m[3]) { g_rt_pre[0] = m[0]; g_rt_pre[1] = m[1]; g_rt_pre[2] = m[2]; g_rt_pre_ok = 1; }
+int
+mali_dbg_rt_get_pre(unsigned out[3])
+{
+   out[0] = g_rt_pre[0]; out[1] = g_rt_pre[1]; out[2] = g_rt_pre[2];
+   return g_rt_pre_ok;
+}
+
 struct mali_image *
 mali_dbg_rt_target(uint64_t *va)
 {
@@ -645,6 +657,13 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
    cmd->cur.ndraws++;
    /* THROWAWAY TEXDBG: what the sampled image holds now, read through the GPU's own mapping */
    mali_dbg_tex_draw(container_of(cmd->vk.base.device, struct mali_device, vk), "draw");
+   if (getenv("MALI_RT_DBG")) {   /* THROWAWAY RTDBG: pre_submit mean of this frame's draw target */
+      struct mali_device *dv = container_of(cmd->vk.base.device, struct mali_device, vk);
+      uint64_t tv = 0;
+      struct mali_image *ti = mali_dbg_rt_target(&tv);
+      unsigned pm[3] = {0, 0, 0};
+      if (ti && mali_dbg_rt_mean(dv, ti, pm)) mali_dbg_rt_set_pre(pm);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

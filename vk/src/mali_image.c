@@ -591,6 +591,38 @@ mali_dbg_tex_draw(struct mali_device *dev, const char *where)
            bpp > 2 ? c[2] : 0, bpp > 3 ? c[3] : 0);
 }
 
+/* THROWAWAY RTDBG: mean of the first 4096 pixels of the colour plane, through the GPU's own BO mapping, after the
+ * same cache invalidate the WSI dump uses. */
+bool
+mali_dbg_rt_mean(struct mali_device *dev, struct mali_image *mi, unsigned out[3])
+{
+   out[0] = out[1] = out[2] = 0;
+   if (!dev || !mi || !mi->mem || !mi->mem->bo.cpu || !mi->va) return false;
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   if (be->bo_host_touch) be->bo_host_touch(dev->kdev, &mi->mem->bo);
+   if (be->bo_cache) be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&mi->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+   if (!pl || !pl->slice[0].row_stride || mi->lay.d.tiled || pl->bw > 1 || pl->bh > 1) return false;
+   const unsigned w = mi->lay.d.extent.width, h = mi->lay.d.extent.height;
+   const unsigned stride = pl->slice[0].row_stride, bpp = pl->bs ? pl->bs : 4;
+   const bool bgra = mi->vk.format == VK_FORMAT_B8G8R8A8_UNORM || mi->vk.format == VK_FORMAT_B8G8R8A8_SRGB;
+   const uint8_t *base = (const uint8_t *)mi->mem->bo.cpu + mi->mem_off + pl->offset;
+   uint64_t sum[3] = {0, 0, 0};
+   unsigned n = 0;
+   for (unsigned y = 0; y < h && n < 4096; y++) {
+      const uint8_t *rowp = base + (size_t)y * stride;
+      for (unsigned x = 0; x < w && n < 4096; x++, n++) {
+         const uint8_t *p = rowp + (size_t)x * bpp;
+         sum[0] += bgra ? p[2] : p[0];
+         sum[1] += p[1];
+         sum[2] += bgra ? p[0] : (bpp > 2 ? p[2] : 0);
+      }
+   }
+   if (!n) return false;
+   out[0] = (unsigned)(sum[0] / n); out[1] = (unsigned)(sum[1] / n); out[2] = (unsigned)(sum[2] / n);
+   return true;
+}
+
 /* ---- VkImageView ---- */
 
 static void

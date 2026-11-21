@@ -709,6 +709,18 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
       M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
       M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
+      if (getenv("MALI_RT_DBG")) {   /* THROWAWAY RTDBG: the fields the packet print leaves out, once per draw (cap 4) */
+         static unsigned rows;
+         if (rows < 4) {
+            rows++;
+            mali_dbg_line("emit", "RTFIELDS rows=%u count=%u inst=%u nort=%d ncolour=%u prim=%u DCD1=0x%x DCD2=0x%x bl=0x%llx "
+                                  "vary=%u samples=%u wmask=0x%x blend_en=%d store=%d",
+                          rows, d->count, d->instance_count, (int)nort, f->ncolour, g->prim,
+                          kb_draw_dcd1(0xffff, nort ? 0 : 1), kb_draw_dcd2(0, nort ? 0 : 1, 1, 1),
+                          (unsigned long long)(nort ? 0 : (o->bl | 1)), g->vs->generic_size_B, g->samples,
+                          (unsigned)(d->fx.set ? d->fx.wmask : 0xf), (int)d->fx.blend_en, (int)f->colour.store);
+         }
+      }
       if (!o->static_same) {
          M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
          M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);

@@ -64,6 +64,11 @@ void mali_dbg_tex_bind(struct mali_image *img, uint64_t plane_va);
 void mali_dbg_tex_draw(struct mali_device *dev, const char *where);
 /* THROWAWAY RTDBG (MALI_RT_DBG=2): the image the last begun frame's draw targets, and the VA its job uses. */
 struct mali_image *mali_dbg_rt_target(uint64_t *va);
+/* THROWAWAY RTDBG: mean of the first 4096 pixels of an image's colour plane through our BO mapping; false when
+ * the plane is not CPU-readable. */
+bool mali_dbg_rt_mean(struct mali_device *dev, struct mali_image *mi, unsigned out[3]);
+void mali_dbg_rt_set_pre(const unsigned m[3]);
+int mali_dbg_rt_get_pre(unsigned out[3]);
 
 /* MALI_IMAGE_TILED=1 selects u-interleaved for OPTIMAL images (single sampled, not 1D). Default: linear everywhere (tiled is not
  * hardware-verified yet, see R3-PLAN M5). */

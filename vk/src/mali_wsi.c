@@ -627,6 +627,28 @@ static void mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, st
 
 static struct mali_image *present_image(struct wsi_swapchain *chain, uint32_t image_index, struct wsi_image **wsi_out);
 
+/* THROWAWAY RTDBG: post_draw = the draw target's mean read at the FIRST instruction of the present entry point,
+ * i.e. after the app's own fence wait and before any present-path code touched the image. A last-submit fence that
+ * is not signalled yet is reported, so a stale read cannot pass as "the draw wrote nothing". */
+static unsigned g_rt_post_draw[3];
+static int g_rt_post_draw_ok, g_rt_post_draw_signaled = -1;
+
+static void
+mali_rt_dbg_at_present_entry(struct mali_device *dev)
+{
+   if (!getenv("MALI_RT_DBG")) return;
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   int fd = mali_queue_last_fence_dup(dev);
+   g_rt_post_draw_signaled = -1;
+   if (fd >= 0) {
+      if (be->fence_wait) g_rt_post_draw_signaled = be->fence_wait(dev->kdev, fd, 0) == 0;
+      close(fd);
+   }
+   uint64_t tv = 0;
+   struct mali_image *ti = mali_dbg_rt_target(&tv);
+   g_rt_post_draw_ok = ti && mali_dbg_rt_mean(dev, ti, g_rt_post_draw);
+}
+
 /* ---- THROWAWAY RTDBG (MALI_RT_DBG=2) ---------------------------------------------------------------------
  * One line per presented frame (max 6), printed after the submit-fence wait in the X11 SHM present, i.e. with the
  * GPU's writes retired: (a) the frame's draw target, image + plane VA taken from the attachment the draw's job was
@@ -689,6 +711,17 @@ mali_rt_dbg_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32
    unsigned ps = 0, pw = 0, ph = 0, ds = 0, dw = 0, dh = 0;
    const bool pok = mali_rt_dbg_mean(dev, pres, "present", pm, &pl, &ps, &pw, &ph);
    const bool dok = mali_rt_dbg_mean(dev, draw, "draw", dm, &dl, &ds, &dw, &dh);
+   {   /* THROWAWAY RTDBG: the three instants of the SAME VA */
+      unsigned pre[3] = {0, 0, 0};
+      const unsigned pcount = chain ? chain->image_count : 0;
+      mali_dbg_rt_get_pre(pre);
+      fprintf(stderr, "mali_rt: RTDBG3 idx=%u/%u va=0x%llx pre_submit=%u,%u,%u post_draw=%u,%u,%u(fence_sig=%d ok=%d) "
+                      "post_present=%u,%u,%u | same_img=%d same_va=%d dmabuf_fd=%d flags=0x%x\n",
+              image_index, pcount, (unsigned long long)(pres ? pres->va : 0), pre[0], pre[1], pre[2],
+              g_rt_post_draw[0], g_rt_post_draw[1], g_rt_post_draw[2], g_rt_post_draw_signaled, g_rt_post_draw_ok,
+              pm[0], pm[1], pm[2], (int)(pres && draw && pres == draw), (int)(pres && draw && pres->va == draw_va),
+              pres && pres->mem ? pres->mem->bo.dmabuf_fd : -1, pres && pres->mem ? pres->mem->bo.flags : 0);
+   }
    const unsigned pcount = chain ? chain->image_count : 0;
    fprintf(stderr, "mali_rt: RTDBG present_idx=%u/%u present_img=%p present_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
                    "present_mean=%u,%u,%u present_ok=%d | draw_img=%p draw_va=0x%llx(%s %ux%u stride=%u dmabuf_fd=%d flags=0x%x) "
@@ -920,6 +953,7 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    uint64_t n = p_atomic_inc_return(&seq);
    VK_FROM_HANDLE(vk_queue, vq, queue);
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   mali_rt_dbg_at_present_entry(dev);   /* THROWAWAY RTDBG: post_draw, before anything below touches the image */
    if (mali_wsi_debug()) {
       const struct mali_physical_device *qpdev = mali_device_pdev(dev);
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u dma_buf_sync=%d sw=%d\n",
