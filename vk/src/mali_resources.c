@@ -69,14 +69,14 @@ VKAPI_ATTR VkResult VKAPI_CALL
 mali_CreateDescriptorPool(VkDevice d, const VkDescriptorPoolCreateInfo *ci, const VkAllocationCallbacks *a, VkDescriptorPool *out)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
-   return mali_create_descriptor_pool(&dev->vk, arch_of(d), ci, out);
+   return mali_create_descriptor_pool(&dev->vk, arch_of(d), ci, a, out);
 }
 
 VKAPI_ATTR void VKAPI_CALL
 mali_DestroyDescriptorPool(VkDevice d, VkDescriptorPool p, const VkAllocationCallbacks *a)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
-   if (p) mali_destroy_descriptor_pool(&dev->vk, p);
+   if (p) mali_destroy_descriptor_pool(&dev->vk, p, a);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -100,10 +100,50 @@ mali_FreeDescriptorSets(VkDevice d, VkDescriptorPool p, uint32_t n, const VkDesc
    return mali_free_descriptor_sets(&dev->vk, p, n, sets);
 }
 
+/* M15: remember which memory a storage descriptor lets the GPU write, so the fence wait for a later submit only
+ * CSYNCs BOs that changed (vk/MEMORY.md). Done here, in the entrypoint, and not in mali_dset_write: the core
+ * helper is also driven by the unit tests with handles that are not real objects. Over-marking is harmless. */
+static void
+mark_storage_writes(uint32_t nw, const VkWriteDescriptorSet *w)
+{
+   for (uint32_t i = 0; i < nw; i++) {
+      struct mali_dset *ds = mali_dset_from_handle(w[i].dstSet);
+      if (!ds)
+         continue;
+      for (uint32_t e = 0; e < w[i].descriptorCount; e++) {
+         switch (w[i].descriptorType) {
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+            if (w[i].pBufferInfo && w[i].pBufferInfo[e].buffer) {
+               struct mali_buffer *mb = mali_buffer_from_handle(w[i].pBufferInfo[e].buffer);
+               if (mb) mali_dset_mark_write(ds, mb->mem);
+            }
+            break;
+         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            if (w[i].pImageInfo && w[i].pImageInfo[e].imageView) {
+               struct mali_image_view *iv = mali_image_view_from_handle(w[i].pImageInfo[e].imageView);
+               if (iv && iv->vk.image)
+                  mali_dset_mark_write(ds, container_of(iv->vk.image, struct mali_image, vk)->mem);
+            }
+            break;
+         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            if (w[i].pTexelBufferView && w[i].pTexelBufferView[e]) {
+               struct mali_buffer_view *vb = mali_buffer_view_from_handle(w[i].pTexelBufferView[e]);
+               if (vb && vb->vk.buffer)
+                  mali_dset_mark_write(ds, container_of(vb->vk.buffer, struct mali_buffer, vk)->mem);
+            }
+            break;
+         default: break;
+         }
+      }
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_UpdateDescriptorSets(VkDevice d, uint32_t nw, const VkWriteDescriptorSet *w, uint32_t nc, const VkCopyDescriptorSet *c)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
+   mark_storage_writes(nw, w);
    mali_update_descriptor_sets(&dev->vk, nw, w, nc, c);
 }
 
@@ -111,5 +151,10 @@ VKAPI_ATTR void VKAPI_CALL
 mali_UpdateDescriptorSetWithTemplate(VkDevice d, VkDescriptorSet set, VkDescriptorUpdateTemplate t, const void *data)
 {
    VK_FROM_HANDLE(mali_device, dev, d);
+   /* M15: a template entry can hide any descriptor type, so fall back to a full sweep for this set rather than
+    * guess (one full CSYNC at the next wait; correctness first). */
+   struct mali_dset *ds = mali_dset_from_handle(set);
+   if (ds)
+      ds->wrote_full = true;
    mali_update_descriptor_set_with_template(&dev->vk, set, t, data);
 }

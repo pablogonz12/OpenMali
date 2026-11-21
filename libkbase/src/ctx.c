@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Layer A: context, handshake, GPU properties, capability table. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -306,12 +308,24 @@ void kb_leaks(const struct kb_ctx *c, struct kb_leaks *o)
 
 int kb_gpu_timestamp(struct kb_ctx *ctx, uint64_t *ticks)
 {
+	struct kb_timeinfo ti;
+	int r = kb_timeinfo(ctx, &ti);
+	if (r)
+		return r;
+	*ticks = ti.ts_ticks;
+	return 0;
+}
+
+int kb_timeinfo(struct kb_ctx *ctx, struct kb_timeinfo *out)
+{
 	union kbase_ioctl_get_cpu_gpu_timeinfo a;
 	memset(&a, 0, sizeof a);
-	a.in.request_flags = KBASE_TIMEINFO_TIMESTAMP_FLAG;
+	a.in.request_flags = KBASE_TIMEINFO_MONOTONIC_FLAG | KBASE_TIMEINFO_TIMESTAMP_FLAG;
 	if (kb_ioctl(ctx, KBASE_IOCTL_GET_CPU_GPU_TIMEINFO, &a))
 		return -errno;
-	*ticks = a.out.timestamp;
+	out->cpu_ns = a.out.sec * 1000000000ull + a.out.nsec;
+	out->ts_ticks = a.out.timestamp;
+	out->cycle_ticks = 0;   /* not requested: no cycle-count flag in this uapi (kbase_uapi.h) */
 	return 0;
 }
 

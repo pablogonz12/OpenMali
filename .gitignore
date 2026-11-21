@@ -1,4 +1,7 @@
 third_party/
+third_party
+vk/deqp/lists
+vk/deqp/out
 runs/
 vk/out/
 vk/deqp/*/
@@ -14,3 +17,11 @@ __pycache__/
 *.pyc
 bench/raw/
 bench/mdbench/out/
+*.bak-*
+*.sync-conflict-*
+node_modules/
+.venv/
+venv/
+*.p12
+*.pem
+*.key

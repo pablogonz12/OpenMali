@@ -1,0 +1,69 @@
+# angle-vk-probe
+
+RUNG 3 of the CEF-on-ANGLE-Vulkan route (`/tmp/opencode/menu-gpu-route.md`): the one question — **can ANGLE's Vulkan
+backend create a display, a config, a pbuffer, an ES2 context and make it current on our panvk driver?** One line
+answers it.
+
+```
+PASS renderer=<GL_RENDERER> version=<GL_VERSION> backend=<angle-vulkan|angle-gl|egl-x11-khr|mesa-surfaceless>
+FAIL stage=<eglGetPlatformDisplay|eglInitialize|eglChooseConfig|eglCreatePbufferSurface|eglCreateContext|eglMakeCurrent|dlopen> error=0x<hex>
+```
+
+stdout is that one line (`backend=` is appended because spec 3 asks which backend answered; the prefix
+`PASS renderer=… version=…` is unchanged). Everything else — the per-attempt log, `EGL_DIR`/`DISPLAY`/ICD env, the EGL
+vendor+extensions and `glGetString(GL_VENDOR)` — goes to stderr. Exit 0 on PASS, 1 on FAIL, 2 when the EGL itself could
+not be loaded.
+
+## Build (aarch64, one line, from `mali-open/`)
+
+```
+../droidtest/tools/cc-aarch64-glibc -std=gnu11 -O2 -Wall -Wextra -Werror -o /tmp/angle-vk-probe tools/angle-vk-probe/angle-vk-probe.c -ldl
+```
+
+Same cross compiler `vk/build.sh` uses for `t_vk_xcb` (`$CC_A64`, `../droidtest/tools/cc-aarch64-glibc` → clang +
+`~/Projects/mali-gaming/panvk-build/sysroot`). Result is a 15 KB aarch64 PIE whose only `NEEDED` entries are `libc.so.6`
+and `ld-linux-aarch64.so.1`: no libEGL, libGLESv2, libX11 or libxcb at link time — all four are `dlopen`ed, so the same
+binary runs against any ICD. A native self-test build is the same command with `cc` instead of the cross compiler.
+
+## Constants
+
+ANGLE's SDK headers are not on this host (the sysroot has no `EGL/` at all), so the probe defines what it needs itself:
+the four ANGLE platform constants (`EGL_PLATFORM_ANGLE_ANGLE` 0x3202, `EGL_PLATFORM_ANGLE_TYPE_ANGLE` 0x3203,
+`EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE` 0x3450, `EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE` 0x3209,
+`EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE` 0x320A, plus `EGL_PLATFORM_ANGLE_TYPE_GL_ANGLE` 0x3205) with their
+documented `EGL_ANGLE_platform_angle` values, and the EGL/GLES entry-point types. This is a probe, not a library.
+
+## Order of attempts (first PASS wins; the deepest failure is what FAIL reports)
+
+1. `EGL_PLATFORM_ANGLE_ANGLE` + `TYPE_VULKAN` + `DEVICE_TYPE_HARDWARE` with the `XOpenDisplay($DISPLAY)` handle
+2. the same with a raw `xcb_connect()` handle (ANGLE's X11 backend takes either)
+3. the same with `EGL_DEFAULT_DISPLAY` (NULL) — headless, no X
+4. `TYPE_GL` (same three display handles) — only to say whether GL answered instead of Vulkan
+5. `EGL_PLATFORM_X11_KHR` — not ANGLE; only to say what else the EGL in `EGL_DIR` offers
+6. `EGL_PLATFORM_SURFACELESS_MESA` — **opt-in only**, `PROBE_EXTRA=surfaceless`; it proves the EGL/GLES plumbing
+   (config/pbuffer/context/`glGetString`) independently of ANGLE, so it is never mixed into the default answer.
+
+Every attempt is logged to stderr as `attempt backend=… dpy=… -> ok|FAIL stage=… error=0x…`.
+
+## What the phone run must set
+
+```
+EGL_DIR=<the Steam runtime dir with libEGL.so.1 + libGLESv2.so.2>   # default /root/.local/share/Steam/steamrtarm64
+DISPLAY=:0  (or the gamescope/Xwayland display in use; unset is fine, attempt 3 is headless)
+VK_ICD_FILENAMES=<panvk icd json>   # or VK_DRIVER_FILES; the Vulkan loader accepts either
+```
+
+Note: `/root/.local/share/Steam` looks absent over plain `adb shell` because that shell is uid `shell`; the probe must
+run as root (the `ddc <phone> run …` path does). Check with `ddc x8 guest -- sh -c 'ls -d /root/.local/share/Steam/*'`
+before the run and set `EGL_DIR` to whatever actually holds `libEGL.so.1`.
+
+Also note: if the ICD/json is not visible to the Vulkan loader, ANGLE fails at `eglInitialize` (its Vulkan instance is
+created there), not at `eglGetPlatformDisplay` — that pair of stages is the fastest way to tell "driver missing" from
+"ANGLE cannot use this display".
+
+## Self-test (host, Mesa, no X)
+
+`EGL_DIR=/usr/lib PROBE_EXTRA=surfaceless ./angle-vk-probe` → PASS via `mesa-surfaceless` (config, 16×16 pbuffer,
+ES2 context, `glGetString` all real). Without `PROBE_EXTRA` the same run is
+`FAIL stage=eglGetPlatformDisplay error=0x300c`: Mesa rejects `EGL_PLATFORM_ANGLE_ANGLE` with `EGL_BAD_PARAMETER`,
+which is exactly the message an EGL without ANGLE produces.

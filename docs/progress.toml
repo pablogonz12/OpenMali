@@ -229,6 +229,10 @@ ev = ["branch:feat/msaa"]
 status = "partial"
 ev = ["vk/tests/t_vk_feat.c#test_didx"]   # the sampled-image subset is on and tested; the rest of the feature is not
 
+[override."ext.VK_EXT_extended_dynamic_state3"]
+status = "partial"
+ev = ["vk/src/mali_physical_device.c#extendedDynamicState3PolygonMode"]   # polygonMode only; every other extendedDynamicState3* feature bit is false
+
 [override."ext.VK_EXT_robustness2"]
 status = "partial"
 ev = ["vk/src/mali_physical_device.c#nullDescriptor"]   # nullDescriptor only

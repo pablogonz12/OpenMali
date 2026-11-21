@@ -114,6 +114,30 @@ test_rgba8(unsigned arch)
 }
 
 static void
+test_view_min_lod(unsigned arch)
+{
+   /* VK_EXT_image_view_min_lod: minLod counts from image level 0; the descriptor's minimum-LOD field (word 3, 8.8 fixed) from the view's first level. */
+   struct mali_image_desc d = { VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, { 8, 8, 1 }, 4, 1, 1, false };
+   struct mali_image_layout l;
+   CHECK(mali_image_layout_init(arch, &d, &l) == 0, "min_lod layout");
+   const struct { unsigned base, levels; float min_lod; bool storage; unsigned want; } c[] = {
+      { 0, 4, 0.0f, false, 0 }, { 0, 4, 2.5f, false, 640 }, { 1, 3, 2.5f, false, 384 },
+      { 2, 2, 2.0f, false, 0 }, { 1, 3, 0.0f, false, 0 }, { 0, 4, 2.5f, true, 0 },
+   };
+   for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+      struct mali_view_desc v = { .format = d.format, .type = VK_IMAGE_VIEW_TYPE_2D, .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .base_level = c[i].base, .levels = c[i].levels, .base_layer = 0, .layers = 1, .min_lod = c[i].min_lod,
+                                  .storage = c[i].storage,
+                                  .swizzle = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A } };
+      uint32_t payload[64] = { 0 };
+      struct mali_hw_desc tex;
+      CHECK(mali_view_payload_entries(&l, &v) <= 16, "min_lod case %u payload", i);
+      CHECK(mali_view_emit(arch, &l, 0x7f0000100000ull, &v, payload, 0x7f0000300000ull, &tex) == 0, "min_lod case %u emit", i);
+      CHECK((tex.w[3] & 0x1fff) == c[i].want, "min_lod case %u (base %u, minLod %.1f, storage %d): field %u want %u", i, c[i].base, c[i].min_lod, c[i].storage, tex.w[3] & 0x1fff, c[i].want);
+   }
+}
+
+static void
 test_attr(unsigned arch)
 {
    struct mali_fmt f;
@@ -238,6 +262,19 @@ test_sampler(unsigned arch)
    CHECK((o.w[0] >> 30) == 3, "mipmap mode");
    CHECK(((o.w[1] >> 13) & 7) == 1, "compare func %u", (o.w[1] >> 13) & 7);
    CHECK(((o.w[1] >> 16) & 0x1fff) == 1024, "max lod %u", (o.w[1] >> 16) & 0x1fff);
+
+   /* border colour swizzle: unset mapping is identity; BGRA view mapping swaps R/B in the descriptor; ONE/ZERO channels do not move data */
+   s.border_color_value.uint32[0] = 1; s.border_color_value.uint32[1] = 2; s.border_color_value.uint32[2] = 3; s.border_color_value.uint32[3] = 4;
+   VkSamplerBorderColorComponentMappingCreateInfoEXT bcm = { .sType = VK_STRUCTURE_TYPE_SAMPLER_BORDER_COLOR_COMPONENT_MAPPING_CREATE_INFO_EXT };
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(o.w[4] == 1 && o.w[5] == 2 && o.w[6] == 3 && o.w[7] == 4, "identity border");
+   ci.pNext = &bcm;
+   bcm.components = (VkComponentMapping){ VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A };
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(o.w[4] == 3 && o.w[5] == 2 && o.w[6] == 1 && o.w[7] == 4, "bgra border %u %u %u %u", o.w[4], o.w[5], o.w[6], o.w[7]);
+   bcm.components = (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_R };
+   mali_sampler_pack(arch, &ci, &s, &o);
+   CHECK(o.w[4] == 4 && o.w[5] == 2 && o.w[6] == 3 && o.w[7] == 4, "one/a->r border %u %u %u %u", o.w[4], o.w[5], o.w[6], o.w[7]);
 }
 
 static void
@@ -298,6 +335,39 @@ test_format_table(unsigned arch)
    if (g_verbose) printf("  arch %u: %u formats\n", arch, n);
 }
 
+/* MALI_AFBC wiring: off = byte-identical to the plain layout; on = eligible colour images get the AFBC size/alignment. */
+static void
+test_afbc_wiring(unsigned arch)
+{
+   VkImageCreateInfo ci = { .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = { 64, 64, 1 }, .mipLevels = 3,
+                            .arrayLayers = 1, .samples = 1, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT };
+   struct mali_image_desc d = { ci.format, ci.imageType, ci.extent, 3, 1, 1, false };
+   struct mali_image_layout plain, off, on;
+   CHECK(mali_image_layout_init(arch, &d, &plain) == 0, "afbc plain");
+   CHECK(mali_image_plain_layout(arch, &ci, &d, false, &off) == 0, "afbc off");
+   CHECK(!off.afbc && off.size == plain.size && off.alignment == plain.alignment, "flag off changed layout");
+   CHECK(!memcmp(&off, &plain, sizeof plain), "flag off not byte-identical");
+   CHECK(mali_image_plain_layout(arch, &ci, &d, true, &on) == 0, "afbc on");
+   /* 64x64 RGBA8 3 mips, hand-derived in t_afbc: 16640 + 4224 + 1152 = 22016 B per layer */
+   CHECK(on.afbc && on.size == 22016, "afbc size %llu want 22016", (unsigned long long)on.size);
+   CHECK(on.size > plain.size && on.alignment == 128, "afbc align %u", on.alignment);
+   CHECK(on.afbc_lay.level_offset[1] == 16640, "afbc level1 off");
+   CHECK(on.plane[0].slice[0].row_stride == plain.plane[0].slice[0].row_stride, "linear planes must stay untouched");
+   /* ineligible stays plain even with the flag on */
+   VkImageCreateInfo c2 = ci; c2.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc && on.size == plain.size, "storage image AFBC");
+   c2 = ci; c2.tiling = VK_IMAGE_TILING_LINEAR;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "linear image AFBC");
+   c2 = ci; c2.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+   CHECK(mali_image_plain_layout(arch, &c2, &d, true, &on) == 0 && !on.afbc, "modifier image AFBC");
+   c2 = ci; c2.format = VK_FORMAT_R16G16B16A16_SFLOAT; struct mali_image_desc d2 = d; d2.format = c2.format;
+   CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && !on.afbc, "float image AFBC");
+   /* layers multiply */
+   c2 = ci; c2.arrayLayers = 4; d2 = d; d2.layers = 4;
+   CHECK(mali_image_plain_layout(arch, &c2, &d2, true, &on) == 0 && on.afbc && on.size == 4 * on.afbc_lay.array_stride, "afbc layers");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -310,9 +380,11 @@ main(int argc, char **argv)
       unsigned a = archs[i];
       printf("arch v%u\n", a);
       test_format_table(a);
+      test_afbc_wiring(a);
       test_rgba8(a);
       test_rtfmt(a);
       test_attr(a);
+      test_view_min_lod(a);
       test_depth(a);
       test_layout(a);
       test_sampler(a);
