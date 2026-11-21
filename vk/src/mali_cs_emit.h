@@ -25,9 +25,9 @@ extern "C" {
 
 #define MALI_MAX_VB 8
 #define MALI_MAX_ATTR 16
-#define MALI_CMD_SETS 4
+#define MALI_CMD_SETS 8
 #define MALI_MAX_DYN 16        /* dynamic UBO/SSBO descriptors per draw (graphics) */
-#define MALI_PUSH_MAX 128
+#define MALI_PUSH_MAX 256      /* == MALI_MAX_PUSH_BYTES (VkPhysicalDeviceLimits::maxPushConstantsSize) */
 
 /* Per-queue resources the CS refers to (created by the backend once per device). */
 struct mali_env {
@@ -43,8 +43,12 @@ struct mali_env {
    void *geo_cpu;                 /* geometry BO: 4 KiB heap descriptor page, then a 64 KiB geometry buffer */
    uint64_t geo_va;
    uint64_t sync_va;              /* CQS word the frame increments (SYNC_ADD64) when it retires */
+   int *light_pending;            /* per-device flag: a light ops frame was built, the next submit_signal of this device must not be skipped */
    unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
 };
+
+struct mali_bo;   /* M15: bo_wrote only stores the pointer */
+struct mali_frame;
 
 struct mali_hw {
    void *user;
@@ -55,11 +59,16 @@ struct mali_hw {
    void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
    int (*submit_multi)(void *user, const uint64_t *cs, unsigned ninstr, unsigned nframes);   /* nframes concatenated frame streams, one kick */
    void (*drain)(void *user);   /* wait until every submitted frame has retired */
+   void (*bo_wrote)(void *user, struct mali_bo *bo);   /* M15: per-BO GPU-write mark (NULL bo = sweep everything next sync) */
+   /* Desktop software rasteriser (mali_soft.c, MALI_SOFT=1): when `soft` is set, a frame is rendered on the CPU from its
+    * record instead of being encoded into a command stream, and `va_cpu` resolves the record's GPU VAs to CPU memory. */
+   bool (*soft)(void *user, const struct mali_frame *f);
+   void *(*va_cpu)(void *user, uint64_t va, size_t size);
    struct mali_env env;
 };
 
 /* One vertex attribute: 1D attribute fetch from vertex binding `binding`. pixfmt = Mali Pixel Format word (KB_PIXFMT_*). */
-struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ uint32_t divisor; /* instance rate: hardware divisor (>= 1) */ };
+struct mali_attr { uint32_t pixfmt, binding, offset, stride; bool instance; /* per-instance (divisor 1, or 0 with stride 0) */ bool zero_div; /* instance divisor 0: stride 0 whatever the binding says */ uint32_t divisor; /* instance rate: hardware divisor (>= 1) */ int vk_format; /* VkFormat, for the software rasteriser's vertex fetch */ };
 
 /* Pipeline state the draw needs (filled by the pipeline resolver seam in mali_cmd.c, M6 owns the real objects). */
 struct mali_gfx_state {
@@ -68,17 +77,25 @@ struct mali_gfx_state {
    bool dyn_stride;                       /* VERTEX_INPUT_BINDING_STRIDE is dynamic: attribute strides come from the bind call (draw.vb_stride) */
    bool discard;                          /* no fragment stage / rasterizerDiscardEnable: draws are skipped */
    bool per_sample;                       /* sampleRateShading: the fragment shader runs per sample (DCD0 evaluate-per-sample) */
+   bool logic_inert;                      /* static logicOp enabled but it cannot change the output (no colour output 0 / attachment 0 unwritable): no blend shader needed */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
+   /* VK_EXT_transform_feedback: a pipeline whose vertex shader declares XFB has a second vertex binary compiled WITHOUT
+    * the XFB lowering. A draw that is not inside a Begin/End range runs that one (mali_cmd.c), so the stores exist only
+    * while capture is active - the reason the extension can be on by default. NULL for every other pipeline. */
+   const struct mali_compiled *vs_plain;
+   uint64_t vs_plain_va;
    unsigned nattr;
    struct mali_attr attr[MALI_MAX_ATTR];
    bool depth_test, depth_write;
    unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
    unsigned prim;                         /* Mali draw mode: 1 points, 2 lines, 4 line strip, 8 triangles (default 0 = 8), 10 strip, 12 fan */
    bool prim_restart;
-   unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 */
-   unsigned poly_prim;                    /* LINE: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
+   unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 and the draw is likewise rewritten to an indexed point list */
+   unsigned poly_prim;                    /* LINE/POINT: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
+   unsigned xfb_pc;                       /* VK_EXT_transform_feedback: push offset of the 4 u64 XFB buffer addresses */
+   bool xfb;                              /* the pipeline reserves that area (xfb_pc may legitimately be 0) */
 };
 
 /* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply
@@ -129,6 +146,7 @@ struct mali_draw {
    uint8_t push[2][MALI_PUSH_MAX];        /* [0] vertex stage view, [1] fragment stage view of the push constants */
    float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
    int32_t sc[4];                         /* scissor x, y, w, h */
+   bool sc_set;                           /* a scissor was set: an empty one clips everything, unset means render area */
    unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
@@ -210,6 +228,8 @@ struct mali_att {
    int zs_format;                         /* depth only: 1 D32F, 2 D24X8, 3 D16 (enum kb_zs_format); colour is RGBA8 */
    bool clear;                            /* loadOp CLEAR (false = DONT_CARE, handled as clear to 0; LOAD is rejected by the caller) */
    bool store;                            /* storeOp STORE; colour: always stored (no FBD knob yet); depth: false = Z write enable off */
+   bool dont_care;                        /* software rasteriser only: loadOp DONT_CARE (!clear && !dont_care = LOAD, memory kept); modelled as clear to 0 */
+   bool no_store;                         /* software rasteriser only, colour: storeOp DONT_CARE, the pass's result never reaches memory */
    float clear_color[4];
    float clear_depth;
    uint8_t clear_stencil;                 /* stencil attachment (struct mali_frame.st): S Clear value */
@@ -222,8 +242,14 @@ struct mali_frame {
    unsigned width, height;                /* framebuffer size (attachment extent) */
    int32_t area[4];                       /* render area x, y, w, h */
    bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
+   bool provoking_last;                   /* VK_EXT_provoking_vertex LAST_VERTEX for this render pass: clears 'First provoking vertex' in the FBD (word 11 bit 14) and tiler ctx (word 2 bit 18) */
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
+   uint64_t resolve_src, resolve_dst;     /* MSAA storeOp STORE + resolve: images for the separate resolve pass (0 = none) */
+   unsigned resolve_level, resolve_layer;         /* source: the attachment view's mip level / base array layer */
+   unsigned resolve_dst_level, resolve_dst_layer; /* destination: the RESOLVE view's own mip level / base array layer */
    struct mali_att colour, zs, st;
+   unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
+   struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
@@ -236,6 +262,7 @@ struct mali_frame {
 struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
 int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* full draw (preload): new blocks, dirty ALL. 0 or -ENOMEM */
 int mali_frame_add_rec(struct mali_frame *f, const struct mali_rec *r);     /* 0 or -ENOMEM */
+unsigned mali_frame_pool_cached(void);                                      /* test hook: recycled pool chunks parked */
 void *mali_frame_blk(struct mali_frame *f, size_t n);                       /* zeroed block from the frame pool, NULL on ENOMEM */
 /* Updates the running full draw `x` (zero-initialised before the first rec of a frame) with the groups rec `r` renewed. */
 void mali_draw_expand(struct mali_draw *x, const struct mali_rec *r);
@@ -246,6 +273,9 @@ void mali_frame_finish(struct mali_frame *f);                               /* f
 int mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **cs, unsigned *ninstr);
 /* job_begin + build + write barrier + hw->submit. */
 int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
+
+/* polygonMode LINE (mode 1: 6 indices per triangle) / POINT (mode 2: 3) from the assembled triangles of a list (8) / strip (10) / fan (12); see mali_cs_emit.c. out: 6 * n entries. */
+size_t mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const uint32_t *v, uint32_t n, uint32_t *out);
 
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,

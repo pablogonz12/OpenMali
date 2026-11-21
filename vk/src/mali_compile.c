@@ -9,6 +9,7 @@
 #include "panfrost/compiler/pan_nir.h"
 #include "panfrost/model/pan_model.h"
 #include "util/blake3/blake3.h"
+#include "nir_xfb_info.h"
 #include "nir.h"
 #include "nir_builder.h"
 
@@ -25,6 +26,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,12 +34,27 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 20   /* 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 32 /* 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
 
 static atomic_ullong g_hits, g_misses, g_stores;
+static atomic_uint g_tmp_seq;   /* makes cache_store's temporary name unique between threads of one process */
+
+unsigned
+mali_subgroup_size_for_arch(unsigned arch)
+{
+   /* Mesa panfrost/compiler/pan_compiler.h pan_subgroup_size(): the lane count of a warp is a property of the architecture,
+    * not of the number of cores (shader_present is non-contiguous: 0xee0057 on G925 still has 16-wide warps). */
+   if (arch >= 9)
+      return 16;
+   if (arch >= 7)
+      return 8;
+   if (arch >= 6)
+      return 4;
+   return 1;   /* Midgard: no subgroups */
+}
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static const struct pan_model *g_model[3];   /* [0] v10 (G610), [1] v11 (G615), [2] v13 (G925 class) */
 
@@ -146,6 +163,7 @@ type_size(const struct glsl_type *t, bool bindless)
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
    uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
+   uint32_t subgroup_size;   /* required subgroup size (0 = arch default): a requested 8/32 must not reuse a 16-wide binary */
    /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
    uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
    char mesa[24];
@@ -164,6 +182,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
    k.sample_shading = o->sample_shading != 0;
+   k.subgroup_size = o->subgroup_size;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
    k.sizeof_compiled = sizeof(struct mali_compiled);
    k.max_sets = MALI_MAX_SETS;
@@ -182,6 +201,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
       blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
       blake3_hasher_update(&h, L->dyn_start, sizeof L->dyn_start);
       blake3_hasher_update(&h, &L->push_size, sizeof L->push_size);
+      blake3_hasher_update(&h, &L->robust_access, sizeof L->robust_access);
       for (unsigned i = 0; i < L->nsets && i < MALI_MAX_SETS; i++) {
          blake3_hasher_update(&h, &L->set[i].nbindings, sizeof(uint32_t));
          blake3_hasher_update(&h, L->set[i].b, L->set[i].nbindings * sizeof *L->set[i].b);
@@ -245,18 +265,28 @@ cache_store(const char *dir, const char *hex, const struct mali_compiled *c)
    snprintf(d2, sizeof d2, "%s", dir);
    mkdirs(d2);
    snprintf(path, sizeof path, "%s/%s.bin", dir, hex);
-   snprintf(tmp, sizeof tmp, "%s.tmp%d", path, (int)getpid());
-   FILE *f = fopen(tmp, "wb");
-   if (!f) return;
-   struct mali_compiled h = *c;
-   uint32_t magic = CACHE_MAGIC;
-   h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
-   int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
-            fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
-            (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
-   ok = (fclose(f) == 0) && ok;
-   if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
-   else unlink(tmp);
+   /* pid + a per-process sequence. Two workers storing the same key at the same time used to share "<path>.tmp<pid>":
+    * one could truncate the file the other was writing and then rename half-written data into the cache (cache_load
+    * rejects it, so it cost a recompile rather than a wrong shader). "x" makes the create exclusive: a collision is an
+    * error we retry, never a silent truncation. The temporary is unlinked on every failure path below. */
+   for (unsigned try_ = 0; try_ < 8; try_++) {
+      snprintf(tmp, sizeof tmp, "%s.tmp%d.%u", path, (int)getpid(), atomic_fetch_add(&g_tmp_seq, 1));
+      FILE *f = fopen(tmp, "wbx");
+      if (f) {
+         struct mali_compiled h = *c;
+         uint32_t magic = CACHE_MAGIC;
+         h.bin = NULL; h.imm = NULL; h.cache_hit = 0;
+         int ok = fwrite(&magic, 4, 1, f) == 1 && fwrite(&h, sizeof h, 1, f) == 1 &&
+                  fwrite(c->bin, 1, c->bin_size, f) == c->bin_size &&
+                  (!c->nimm || fwrite(c->imm, sizeof *c->imm, c->nimm, f) == c->nimm);
+         ok = (fclose(f) == 0) && ok;
+         if (ok && rename(tmp, path) == 0) atomic_fetch_add(&g_stores, 1);
+         else unlink(tmp);
+         return;
+      }
+      if (errno != EEXIST) return;
+   }
+   return;
 }
 
 static int
@@ -294,6 +324,34 @@ fail(char *err, size_t n, const char *m)
    return -1;
 }
 
+/* spirv_to_nir debug sink: keep the last ERROR message (e.g. "Unimplemented SPIR-V capability: X") so the caller sees why. */
+struct vtn_diag {
+   char msg[200];
+};
+
+static void
+vtn_diag_cb(void *priv, enum nir_spirv_debug_level level, size_t offset, const char *message)
+{
+   struct vtn_diag *d = priv;
+   if (level != NIR_SPIRV_DEBUG_LEVEL_ERROR)
+      return;
+   /* The message is multi-line ("SPIR-V parsing FAILED:", "In file ...", the reason, "N bytes into ..."): keep the reason lines. */
+   size_t n = 0;
+   d->msg[0] = 0;
+   for (const char *p = message; *p;) {
+      while (*p == ' ' || *p == '\n')
+         p++;
+      const char *e = strchr(p, '\n');
+      size_t len = e ? (size_t)(e - p) : strlen(p);
+      if (len && strncmp(p, "SPIR-V parsing", 14) && strncmp(p, "In file", 7) && n + 1 < sizeof d->msg)
+         n += snprintf(d->msg + n, sizeof d->msg - n, "%s%.*s", n ? "; " : "", (int)len, p);
+      p += len;
+   }
+   if (n >= sizeof d->msg)
+      n = sizeof d->msg - 1;
+   (void)offset;
+}
+
 static const struct vk_ycbcr_conversion_state *
 ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_index)
 {
@@ -302,6 +360,32 @@ ycbcr_lookup(const void *data, uint32_t set, uint32_t binding, uint32_t array_in
    const struct mali_lbinding *b = &l->set[set].b[binding];
    if (!b->ycbcr_planes || array_index >= b->count) return NULL;
    return (const struct vk_ycbcr_conversion_state *)l->set[set].ycbcr + b->ycbcr_off + array_index;
+}
+
+/* MALI_OPT_GCM gate. nir_opt_gcm pins ddx/ddy intrinsics and lets implicit-derivative tex only move earlier; belt and braces: only compute
+ * shaders without any derivative are touched (the whole measured gain; demote.frag changed bytes in the host corpus). */
+static bool
+gcm_enabled(nir_shader *nir)
+{
+   if (!getenv("MALI_OPT_GCM") || nir->info.stage != MESA_SHADER_COMPUTE)
+      return false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex && nir_tex_instr_has_implicit_derivative(nir_instr_as_tex(instr)))
+               return false;
+            if (instr->type == nir_instr_type_intrinsic) {
+               switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+               case nir_intrinsic_ddx: case nir_intrinsic_ddy: case nir_intrinsic_ddx_fine: case nir_intrinsic_ddy_fine:
+               case nir_intrinsic_ddx_coarse: case nir_intrinsic_ddy_coarse:
+                  return false;
+               default: break;
+               }
+            }
+         }
+      }
+   }
+   return true;
 }
 
 static int
@@ -313,12 +397,28 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    const struct pan_model *model = g_model[arch == 13 ? 2 : arch == 10 ? 0 : 1];
    if (!model)
       return fail(err, errsz, "no GPU model");
+   /* One warp width per architecture: only the hardware's own size is a legal request (VUID-requiredSubgroupSize-02414 range is
+    * [minSubgroupSize,maxSubgroupSize], and both are this value). Refusing here means a pipeline that asks for 32 can never get
+    * 16-wide code, which is what silently corrupts ballot/shuffle/quad lowerings. */
+   const unsigned subgroup_size = o->subgroup_size ? o->subgroup_size : mali_subgroup_size_for_arch(arch);
+   if (subgroup_size != mali_subgroup_size_for_arch(arch)) {
+      char msg[128];
+      snprintf(msg, sizeof msg, "subgroup size %u is not supported on arch %u (warp is %u)",
+               subgroup_size, arch, mali_subgroup_size_for_arch(arch));
+      return fail(err, errsz, msg);
+   }
+   /* The Bifrost/Valhall backend lowers every subgroup op with pan_subgroup_size(arch) (bifrost_nir.c); a driver table that
+    * disagrees would validate one width and emit another. Tie the two together so the mismatch is loud. */
+   assert(subgroup_size == pan_subgroup_size(arch));
    mesa_shader_stage stage = o->stage == MALI_STAGE_VERTEX ? MESA_SHADER_VERTEX :
                              o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
    const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
 
+   struct vtn_diag diag = {{0}};
    struct spirv_to_nir_options so = {
       .environment = NIR_SPIRV_VULKAN,
+      .debug = {.func = vtn_diag_cb, .private_data = &diag},
+      .skip_os_break_in_debug_build = true,   /* a bad shader must fail the compile, not trap a debug build */
       .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
       .ssbo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_64bit_global_32bit_offset,
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
@@ -340,11 +440,26 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    }
    nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
    free(se);
-   if (!nir)
-      return fail(err, errsz, "spirv_to_nir failed");
+   if (!nir) {
+      if (diag.msg[0] && err && errsz)
+         snprintf(err, errsz, "spirv_to_nir failed: %s", diag.msg);
+      else
+         return fail(err, errsz, "spirv_to_nir failed");
+      return -1;
+   }
 
+   /* VK_EXT_transform_feedback: the SPIR-V sets has_transform_feedback_varyings and the xfb_* decorations; the stores
+    * are created later, once IO is lowered to store_output intrinsics (below, where panfrost does the same:
+    * src/gallium/drivers/panfrost/pan_shader.c:124-136 runs nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores). */
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
+   if (stage == MESA_SHADER_COMPUTE) {
+      /* Explicit, so no pass can assume the 32-wide SPIR-V default. The bifrost backend reads pan_subgroup_size(arch) too;
+       * keeping both in sync here is what makes a wrong request visible instead of silently changing the mask width. */
+      nir->info.api_subgroup_size = subgroup_size;
+      nir->info.min_subgroup_size = subgroup_size;
+      nir->info.max_subgroup_size = subgroup_size;
+   }
    if (stage == MESA_SHADER_VERTEX) {
       bool has_clip = false;
       nir_foreach_shader_out_variable(var, nir) {
@@ -363,7 +478,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
          }
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_out);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
    nir_remove_non_entrypoints(nir);
@@ -374,6 +489,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(nir), nir_var_shader_out);
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_lower_system_values);
+   /* Vulkan: FragCoord.xy is x + 0.5 (sample position when sample shading); the hardware reports the integer corner. Before IO lowering. */
+   if (stage == MESA_SHADER_FRAGMENT)
+      NIR_PASS(_, nir, nir_lower_wpos_center);
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_base_inst, nir_metadata_control_flow, NULL);
    pan_preprocess_nir(nir, arch);
@@ -400,7 +518,6 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       }
       /* load_local_invocation_index (and the id generated by the zero-init pass) must be lowered after IO lowering */
       NIR_PASS(_, nir, nir_lower_compute_system_values, NULL);
-      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global, nir_address_format_64bit_global);
    } else {
       if (stage == MESA_SHADER_VERTEX) {
          /* gl_ClipDistance: written as ordinary varyings (VARYING_SLOT_CLIP_DIST0/1); the FS kills where it is < 0 (nir_lower_clip_fs) */
@@ -423,6 +540,75 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size,
                nir_lower_io_use_interpolated_input_intrinsics);
       NIR_PASS(_, nir, nir_opt_constant_folding);
+      if (stage == MESA_SHADER_VERTEX && !o->xfb && nir->info.has_transform_feedback_varyings) {
+         /* The layout was built without the 32 B address area, so the stores would read bases that were never
+          * written. Refuse with a name instead of compiling the XFB semantics away silently (the #296 trap). */
+         free(out->bin); free(out->imm);
+         ralloc_free(nir);
+         return fail(err, errsz, "transform feedback varyings without a reserved push-constant area");
+      }
+      if (stage == MESA_SHADER_VERTEX && o->xfb && nir->info.has_transform_feedback_varyings) {
+         /* The lowered stores index their buffer with instance_id * num_vertices + raw_vertex_id
+          * (nir_lower_xfb_to_stores.c:44-46) and read the base with load_xfb_address. Panfrost answers those from
+          * driver sysvals (pan_cmdstream.c PAN_SYSVAL_NUM_VERTICES / PAN_SYSVAL_XFB); this driver has no sysval for
+          * either, so raw_vertex_id becomes the ordinary vertex ID and num_vertices 0, and the per-buffer base is
+          * the push-constant slot the draw fills (mali_cmd.c: the bound buffer address + offset). That is exact for
+          * instance_count == 1, and instanced XFB is refused at draw time (mali_cmd.c) rather than overlapping. */
+         /* Transform feedback: turn the declared outputs into global stores (nir_lower_xfb_to_stores.c:53 loads the
+          * per-buffer base with nir_intrinsic_load_xfb_address). No streamout job is needed: the stores go through the
+          * ordinary memory path, exactly like an SSBO store. */
+         static const nir_lower_xfb_to_stores_options xfb_opts = {.address_format = nir_address_format_64bit_global,
+                                                           /* the same vertex shader still rasterizes: a captured output the
+                                                            * rasterizer or the fragment shader reads must stay written */
+                                                           .keep_outputs = true};
+         nir_shader_gather_xfb_info(nir);
+         NIR_PASS(_, nir, nir_opt_constant_folding);
+         NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
+         NIR_PASS(_, nir, nir_lower_xfb_to_stores, &xfb_opts);
+         /* the two sysvals the lowering introduced, replaced before the backend sees them */
+         nir_foreach_block(blk, nir_shader_get_entrypoint(nir)) {
+            nir_foreach_instr_safe(ins, blk) {
+               if (ins->type != nir_instr_type_intrinsic)
+                  continue;
+               nir_intrinsic_instr *it = nir_instr_as_intrinsic(ins);
+               nir_builder b = nir_builder_at(nir_before_instr(ins));
+               nir_def *repl = NULL;
+               if (it->intrinsic == nir_intrinsic_load_raw_vertex_id)
+                  repl = nir_load_vertex_id(&b);
+               else if (it->intrinsic == nir_intrinsic_load_num_vertices)
+                  repl = nir_imm_int(&b, 0);
+               else if (it->intrinsic == nir_intrinsic_load_xfb_address) {
+                  /* The four buffer addresses sit in the push block right after the application's constants
+                   * (o->xfb_pc + k*8); mali_cmd.c fills them at draw time from the bound
+                   * VkBindTransformFeedbackBuffersEXT buffers. */
+                  const unsigned k = nir_intrinsic_base(it);
+                  /* The builder helper, like the sysval lowering above (mali_compile.c:93); the offset is src[0]
+                   * and must already include push_base, because add_push_base() has run: the emitter copies the
+                   * application's block to FAU byte push_base and this API-only area follows it. */
+                  repl = nir_load_push_constant(&b, 1, 64, nir_imm_int(&b, push_base + o->xfb_pc + k * 8));
+               }
+               if (repl)
+                  nir_def_replace(&it->def, repl);
+            }
+         }
+         /* add_push_base() already ran, so it did not see these loads: the block the emitter copies must reach the
+          * last address word, or the XFB bases never leave the draw record. */
+         pc.max_end = MAX2(pc.max_end, o->xfb_pc + 32);
+         if (getenv("MALI_TF_DBG")) {
+            unsigned nst = 0, nld = 0, nraw = 0;
+            nir_foreach_block(blk2, nir_shader_get_entrypoint(nir))
+               nir_foreach_instr(ins2, blk2) {
+                  if (ins2->type != nir_instr_type_intrinsic)
+                     continue;
+                  nir_intrinsic_instr *i2 = nir_instr_as_intrinsic(ins2);
+                  if (i2->intrinsic == nir_intrinsic_store_global) nst++;
+                  else if (i2->intrinsic == nir_intrinsic_load_push_constant) nld++;
+                  else if (i2->intrinsic == nir_intrinsic_load_xfb_address) nraw++;
+               }
+            fprintf(stderr, "mali_tf: compiled xfb %d xfb_pc %u push_base %u push_bytes %u stores %u push_loads %u raw_xfb %u\n",
+                    (int)nir->info.has_transform_feedback_varyings, o->xfb_pc, push_base, pc.max_end, nst, nld, nraw);
+         }
+      }
       pan_nir_lower_mediump_io(nir);
 
       if (stage == MESA_SHADER_VERTEX) {
@@ -451,6 +637,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       }
    }
 
+   /* bufferDeviceAddress (PhysicalStorageBuffer derefs) in every stage, not only compute */
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global, nir_address_format_64bit_global);
+
    if (o->layout) {
       /* YCbCr (NV12): before the descriptors are lowered, while the texture derefs still name set/binding/array index. It turns each
        * sample of a converted combined image sampler into per-plane samples (nir_tex_src_plane) plus the model/range/siting maths. */
@@ -466,6 +655,11 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    nir_remove_dead_variables(nir, nir_var_uniform | nir_var_image, NULL);
 
    struct pan_shader_info info = {0};
+   /* Experimental, off by default: global code motion + value numbering (-5.2% instructions on the Steam/gamescope/bench corpus, all in compute). The disk cache is bypassed while set. */
+   if (gcm_enabled(nir)) {
+      NIR_PASS(_, nir, nir_opt_gcm, true);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
    pan_postprocess_nir(nir, &in, &info);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
@@ -492,6 +686,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (stage == MESA_SHADER_COMPUTE)
       for (int i = 0; i < 3; i++) out->local_size[i] = nir->info.workgroup_size[i];
    out->allow_merge = can_merge;
+   out->subgroup_size = subgroup_size;
    out->work_reg_count = info.work_reg_count;
    out->tls_size = info.tls_size;
    out->wls_size = info.wls_size;
@@ -569,6 +764,25 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
 }
 
 int
+mali_spirv_has_xfb(const uint32_t *w, uint32_t nwords)
+{
+   /* OpExecutionMode (16) <id> Xfb (11): the mode the SPIR-V spec requires on any module with XFB decorations,
+    * and the exact word spirv_to_nir.c:6110 turns into info.has_transform_feedback_varyings, so this scan and the
+    * lowering always agree. The instruction stream starts after the five header words (magic, version, generator,
+    * bound, schema); scanning from word 0 reads the magic as a 1827-word instruction and finds nothing (which is
+    * what silently disabled the whole path in 29). */
+   for (uint32_t i = 5; i + 2 < nwords;) {
+      const uint32_t wc = w[i] >> 16;
+      if (!wc)
+         break;
+      if ((w[i] & 0xffff) == 16 && w[i + 2] == 11)
+         return 1;
+      i += wc;
+   }
+   return 0;
+}
+
+int
 mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
 {
    if (!o || !out || !o->spirv || !o->spirv_words)
@@ -582,9 +796,19 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       return fail(err, errsz, "bad stage");
    unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
+   /* The API push block is driver-owned FAU space, so the reservation must cover it: the compiler places promoted immediates from
+    * `fau_reserved` up, and the draw/dispatch emitter writes the immediates and then the push block into the same table
+    * (mali_cs_emit.c kb_draw_fau_imm + memcpy). With only the default reservation, an immediate lands in the push block for a
+    * block above 56 B in the VS (words 10..) or 32 B in the CS/FS-v11 (word 0), and one of the two is silently corrupted. */
+   if (!o->fau_reserved && o->layout && o->layout->push_size) {
+      unsigned push_end = (push_base + o->layout->push_size + 3) / 4;
+      fau_reserved = MAX2(fau_reserved, push_end);
+   }
+   if (fau_reserved > PAN_MAX_PUSH)   /* 64 FAU slots of 64 bits: the Bifrost/Valhall implementation limit (pan_compiler.h) */
+      return fail(err, errsz, "push constants leave no FAU space for immediates");
 
    char dir[900], hex[65];
-   int use_cache = cache_dir(o, dir, sizeof dir);
+   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
    if (use_cache) {
       mkey(o, fau_reserved, push_base, hex);
       if (cache_load(dir, hex, out)) {
@@ -661,6 +885,9 @@ mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *out, c
    rt->equation.alpha_src_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->alpha_src);
    rt->equation.alpha_dst_factor = vk_blend_factor_to_pipe((VkBlendFactor)o->alpha_dst);
    rt->equation.color_mask = o->color_mask & 0xf;
+   st.logicop_enable = o->logic_op_enable != 0;
+   if (st.logicop_enable)   /* an unused logicOp may hold any value (spec): convert only when it applies */
+      st.logicop_func = vk_logic_op_to_pipe((VkLogicOp)o->logic_op);
 
    nir_shader *nir = arch == 13   ? pan_blend_create_shader_v13(&st, o->src0_type, o->src1_type, 0)
                      : arch == 10 ? pan_blend_create_shader_v10(&st, o->src0_type, o->src1_type, 0)

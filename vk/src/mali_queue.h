@@ -23,6 +23,9 @@ void mali_sync_init_physical(struct mali_physical_device *pdev);
  * mali_cmd.c as the (process-wide, one device at a time) hardware seam. */
 VkResult mali_hw_init(struct mali_device *dev);
 void mali_hw_finish(struct mali_device *dev);
+/* Metadata BOs (events, query pools): allocated/freed through the NAMED device, independent of the global binding. */
+void *mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va);
+void mali_hw_meta_free(struct mali_device *dev, void *cpu);
 struct mali_cmd_res_ops;
 extern const struct mali_cmd_res_ops mali_cmd_res;
 
@@ -30,6 +33,11 @@ extern const struct mali_cmd_res_ops mali_cmd_res;
 VkResult mali_queue_device_init(struct mali_device *dev);
 void mali_queue_device_finish(struct mali_device *dev);
 void mali_queue_setup(struct mali_device *dev); /* after vk_queue_init */
+
+/* A dup of the last submission's sync_file (-1 if there is none): the X11 shared-memory present has no CPU-visible
+ * semaphore to wait (binary semaphores are not observable through vk_sync_wait in this driver), so it waits this
+ * fence before reading the image that submission wrote. The caller closes it. */
+int mali_queue_last_fence_dup(struct mali_device *dev);
 
 static inline struct mali_physical_device *
 mali_device_pdev(struct mali_device *dev)

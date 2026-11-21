@@ -1,0 +1,22 @@
+#version 450
+/* Compute: 256-byte push block, the word at offset 252 (last 4 bytes) is copied out through the SSBO. Repeated constants force
+ * FAU immediates above the push block (compute push block starts at FAU word 0). */
+layout(local_size_x = 1) in;
+layout(push_constant) uniform PC { vec4 a[16]; } pc;
+layout(std430, set = 0, binding = 0) buffer Out { uint v[]; };
+void main()
+{
+   float w = pc.a[15].w;            /* offset 252 */
+   float s = w;
+   s = s * 1.5 + 0.375;
+   s = s * 1.5 + 0.375;
+   s = s * 1.5 + 0.375;
+   s = s * 0.25 + 0.125;
+   s = s * 0.25 + 0.125;
+   s = s * 0.25 + 0.125;
+   s = s * 2.0 + 0.5;
+   s = s * 2.0 + 0.5;
+   s = s * 2.0 + 0.5;
+   v[gl_GlobalInvocationID.x] = floatBitsToUint(w);
+   v[gl_GlobalInvocationID.x + 1] = floatBitsToUint(s - w);
+}

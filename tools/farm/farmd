@@ -60,6 +60,9 @@ def git(*a, cwd=HERE, timeout=120):
     return L.sh(["git", "-C", cwd, *a], timeout)
 
 
+ADB_READ_FAILED = "adb-read-failed"
+
+
 class Farm:
     def __init__(self, fake, once, poll):
         self.fake, self.once, self.poll = fake, once, poll
@@ -132,6 +135,9 @@ class Farm:
         t = self.tid.get(dev["alias"]) or dev["serial"]
         e = dict(os.environ, ANDROID_SERIAL=t, ADB_SERIAL=t, QSAFE_HELD=dev["lock"])      # farmd holds the phone lock: children run under it
         e["ADB_SERIAL_" + dev["lock"].upper()] = t
+        # quick.py (qrestore, qpreflight ...) maps the lock name to a serial only through <LOCK>_SERIAL (CMF_SERIAL, POCO_SERIAL): without it
+        # it ran `adb -s  get-state` with an empty serial and every hold ended with "RESTORE PROBLEM adb missing"
+        e[re.sub(r"\W", "_", dev["lock"]).upper() + "_SERIAL"] = t
         e.update(extra or {})
         return e
 
@@ -349,6 +355,18 @@ class Farm:
         return att
 
     # ---------- job updates
+    def part_set(self, jid, cls, **kw):
+        """update one part unless the job was already aborted: abort_job() gives a part a terminal verdict and cancels
+        the others, and a worker that was still running must not flip any of them back to pending or overwrite the
+        verdict with its own `done`."""
+        def fn(x):
+            p = x["parts"][cls]
+            if p.get("state") == "cancelled" or p.get("verdict") in ("device_reboot", "memory_cap"):
+                log(f"{cls}: {jid} is aborted ({p.get('verdict') or p.get('state')}); leaving it alone (not {kw.get('state')})")
+                return
+            p.update(**kw)
+        return self.upd(jid, fn)
+
     def upd(self, jid, fn):
         with self.jl:
             j = L.read_json(L.job_path(jid))
@@ -646,10 +664,24 @@ class Farm:
         """sha256 of the driver .so ON THE PHONE == the job's so_sha256 (key: so_sha256_bionic for the shell smoke)? -> (ok, got)"""
         if self.fake:
             return True, job.get(key)
-        rc, o = self.adb(dev, "shell", f"sha256sum {path} 2>/dev/null", timeout=30)
+        rc, o = self.adb(dev, "shell", f"if [ -f {path} ]; then sha256sum {path}; else echo NOFILE; fi", timeout=30)
         f = o.split()
-        got = f[0] if f else None
+        if rc != 0 or not f:
+            got = ADB_READ_FAILED                      # transport trouble: says nothing about the driver on the phone
+        elif f[0] == "NOFILE":
+            got = None
+        else:
+            got = f[0]
         return got == job.get(key), got
+
+    def so_gone_result(self, job, got, rc, out):
+        """guest-route daily, the on-phone sha check failed -> result dict. No .so at all (got None) after a normal exit: qdeqp stopped before
+        it staged the driver (session not READY, adb/focus trouble), a plain error with qdeqp's own message, not a swapped driver"""
+        if got == ADB_READ_FAILED:
+            return {"verdict": "invalid", "notes": f"could not read the driver sha256 from the phone (adb read failed, rc={rc}); transient, not judged: retry. {out.strip()[-200:]}"}
+        if got is None and rc in (0, 1):
+            return {"verdict": "error", "notes": f"qdeqp left no driver on the phone (rc={rc}, stopped before the push); not a sha mismatch: {out.strip()[-200:]}"}
+        return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
 
     def shell_route(self, dev):
         return dev.get("route") == "shell"
@@ -679,6 +711,14 @@ class Farm:
             ex["SHELLROUTE_NODIM"] = "1"
         return L.run_watched(cmd, tmo, lambda: self.alive(dev), env=self.phone_env(dev, ex))
 
+    @staticmethod
+    def unstaged(out):
+        """qdeqp bailed out BEFORE pushing the .so (adb missing / focus / app session not READY): nothing to verify on the phone -> reason or None"""
+        for m in ("FAIL session not READY", "PROBLEM adb missing", "FAIL focus not"):
+            if m in (out or ""):
+                return m
+        return None
+
     def shell_rc(self, rc, out, what):
         """common handling of shellroute exit codes -> result dict or None (= carry on)"""
         if rc == 125:
@@ -689,9 +729,51 @@ class Farm:
             return {"verdict": "invalid", "notes": f"driver on the phone was not this job's build ({what} sha256 check): " + out.strip()[-160:]}
         if rc == 81:
             return {"verdict": "invalid", "notes": "device unstable: crash bursts kept coming back after pauses and device re-checks; result discarded: " + out.strip()[-160:]}
+        if rc == 82:                                            # the phone rebooted mid-run: a new boot, not this job's device state any more
+            return {"verdict": "device_reboot", "notes": "device rebooted during the run (boot id/uptime changed); job aborted, never retried blindly: " + out.strip()[-160:]}
+        if rc == 83:                                            # the run hit its memory bound (ulimit -v / cgroup memory.max): a smaller shard is the fix
+            return {"verdict": "memory_cap", "notes": "run hit its memory bound on the device; aborting instead of retrying: " + out.strip()[-160:]}
         if rc in (78, 79):
             return {"verdict": "error", "notes": f"shell route: {out.strip()[-200:]}"} if rc == 78 else {"lost": True}
         return None
+
+    TERMINAL_VERDICTS = ("device_reboot", "memory_cap")
+
+    def abort_job(self, jid, cls, alias, res):
+        """device-level stop (the phone rebooted mid-run, or the run hit its memory bound): end the WHOLE job at once instead of retrying it.
+        The part is done with that verdict and its remaining parts are cancelled, so another phone is not fed the same job and the queue does
+        not come back to this one. A human is told: 2026-11-19 the farm resubmitted a sweep after every reboot of a phone whose kernel had
+        panicked with `Out of memory and no killable processes`; the phone looped for hours. That must never come from the farm again."""
+        v, notes = res["verdict"], (res.get("notes") or "")[:300]
+
+        def fn(x):
+            for c, p in x["parts"].items():
+                if c == cls:
+                    p.update(state="done", verdict=v, device=alias)
+                elif p["state"] in ("pending", "running"):
+                    p.update(state="cancelled")
+        j = self.upd(jid, fn)                                  # same self.jl lock as every other job update
+        # A cancelled *state* does not reach a worker that is already running that part: alive() only looks at the
+        # cancel marker, and farmd would otherwise let it run to the end (the retry loop this PR exists to stop).
+        cdir = os.path.join(L.state_dir(), "cancel")
+        os.makedirs(cdir, exist_ok=True)
+        open(os.path.join(cdir, jid), "w").close()
+        L.write_json(L.run_path(jid, cls).replace(".json", ".terminal.json"),
+                     {"job": jid, "class": cls, "device": alias, "verdict": v, "notes": notes, "at": L.now()})
+        log(f"{alias}: verdict: {v} {jid}/{cls} -> job aborted, never retried")
+        alert(f"{v.upper()} {jid}/{cls}: {notes}")
+        user_alert(f"{v.upper()} {jid}/{cls} on {alias}: {notes} -- the job was aborted and will NOT be retried. Check the phone before it takes jobs again.")
+        if v == "device_reboot":                              # reboots in a row: stop feeding that phone, say so loudly
+            d = os.path.join(L.state_dir(), "reboots")
+            os.makedirs(d, exist_ok=True)
+            hp = os.path.join(d, alias + ".json")
+            hist = L.read_json(hp) if os.path.exists(hp) else []
+            hist = [t for t in hist if time.time() - t < 1800] + [time.time()]
+            L.write_json(hp, hist)
+            if len(hist) >= 2:
+                alert(f"REBOOT-LOOP {alias}: {len(hist)} reboots in 30 min")
+                user_alert(f"REBOOT-LOOP {alias}: {len(hist)} reboots in 30 min and every job on it was aborted; `farm disable {alias}` until it is looked at.")
+        return j
 
     def fake_swap(self, job):
         """test hook FAKE_SO_SWAP=1: the first run of the job finds a foreign .so on the phone"""
@@ -862,7 +944,7 @@ class Farm:
             rc, out = self.run_shellroute(job, dev, "daily", run_id, ["--list", listf, "--out", out_tsv, "--chunk", "100"],
                                           int(os.environ.get("MALI_FARM_DAILY_TIMEOUT", "5400")))
             so_phone = f"/data/local/tmp/g/icd.{run_id}.so"
-            if rc not in (75, 124, 125, 73, 76, 81):
+            if rc not in (75, 124, 125, 73, 76, 81, 82, 83):
                 ok_s, got = self.verify_so(job, dev, so_phone)
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s and rc in (0, 1):
@@ -904,11 +986,16 @@ class Farm:
                 return {"lost": True}
             if rc == 73:
                 return {"gated": True}
+            why = self.unstaged(out) if rc not in (75, 124, 76, 82, 83) else None
+            if why:                                                      # never staged: not a foreign driver (cmf: locked screen = session SUSPENDED)
+                self.adb(dev, "shell", f"rm -f {so_phone}")
+                self.cool[dev["alias"]] = time.time() + 300
+                return {"verdict": "error", "notes": f"qdeqp did not start ({why}); .so never pushed: " + out.strip()[-160:]}
             if rc != 75 and rc != 124:                                   # driver on the phone must still be this job's build
                 ok_s, got = (rc != 76) and self.verify_so(job, dev, so_phone) or (False, "changed mid-run")
                 self.adb(dev, "shell", f"rm -f {so_phone}")
                 if not ok_s:
-                    return {"verdict": "invalid", "notes": f"driver on the phone is not this job's build (sha256 {str(got)[:12]} != job {str(job.get('so_sha256'))[:12]}); result discarded"}
+                    return self.so_gone_result(job, got, rc, out)
             note = out.strip()[-200:]
             if rc == 75:
                 return {"gated": True}
@@ -1048,6 +1135,9 @@ class Farm:
             if tsv and os.path.exists(tsv[:-4] + ".dbg"):       # MALI_*_DBG jobs: the driver's stderr per test case (qdeqp.py QDEQP_DBG_PATH) -> logs/<run>.dbg
                 shutil.copy(tsv[:-4] + ".dbg", os.path.join(L.state_dir(), "logs", f"{rid}.dbg"))
         sok, sgot = None, None
+        if self.unstaged(out):                                   # qdeqp never pushed the .so: nothing to judge (not an INVALID-RUN)
+            self.adb(dev, "shell", f"rm -f {so_phone}")
+            return rc, out, {}, None, None
         if rc in (0, 1) or verify_always:
             sok, sgot = self.verify_so(job, dev, so_phone)
             if rc in (76, 77) or sgot is None and rc not in (0, 1):
@@ -1197,8 +1287,16 @@ class Farm:
         jl = os.path.join(wd, "results.jsonl")
         rows = [json.loads(l) for l in open(jl)] if os.path.exists(jl) else []
         rows = [r for r in rows if r.get("commit") == job["commit"][:9] and "bench" in r]
-        if rc == 0 and not rows and not out.strip():                         # exit 0, no rows, empty log: nothing ran (a dialog on top of the app); not a driver error
-            return {"verdict": "invalid", "max_attempts": 2, "notes": "UI-BLOCKED?: bench2 rc=0, 0 rows, empty log (foreground dialog?)"}
+        if rc == 0 and not rows:                                              # exit 0, no rows: nothing ran (a dialog on top of the app) or the guest session failed (pending.json has bench2's error, even when bench2 also printed a diagnostic)
+            pj = os.path.join(wd, "pending.json")
+            try:
+                perr = "; ".join(f"{k}: {v}" for k, v in json.load(open(pj)).items())[:300]
+            except (OSError, ValueError, AttributeError):
+                perr = ""
+            if perr:
+                return {"verdict": "invalid", "max_attempts": 2, "notes": "bench2 error: " + perr + (" | log tail: " + out.strip()[-120:] if out.strip() else "")}
+            if not out.strip():
+                return {"verdict": "invalid", "max_attempts": 2, "notes": "UI-BLOCKED?: bench2 rc=0, 0 rows, empty log (foreground dialog?)"}
         ok_s, got = self.verify_so(job, dev, "/storage/emulated/0/Download/mdb_icd.so")
         if not ok_s:
             shutil.rmtree(wd, ignore_errors=True)
@@ -1480,10 +1578,13 @@ class Farm:
             finally:
                 lock.release()
         job = L.read_json(L.job_path(jid))
+        if res and res.get("verdict") in self.TERMINAL_VERDICTS:        # reboot / memory bound: abort the job, never retry it
+            self.abort_job(jid, cls, alias, res)
+            return
         if res is not None and res.get("gated"):
             if self.is_disabled(dev) or self.thresholds(dev).get("require_charging") and self.health(dev).get("powered") is not True:
                 self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "on_battery", "disabled by owner" if self.is_disabled(dev) else "on battery: paused")
-            self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))      # partial results kept: qdeqp resumes from its TSV
+            self.part_set(jid, cls, state="pending")      # partial results kept: qdeqp resumes from its TSV
             log(f"{alias}: {jid}/{cls} paused by the health gate; back to pending")
             return
         why_stop = self.stop_reason.pop(alias, None)
@@ -1492,7 +1593,7 @@ class Farm:
             log(f"{alias}: {jid}/{cls} cancelled by the owner; lock released")
             return
         if res is None and why_stop:                            # owner policy (charger removed / disabled): clean stop, no blame, no retry count
-            self.upd(jid, lambda x: x["parts"][cls].update(state="pending"))
+            self.part_set(jid, cls, state="pending")
             self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "cooling" if why_stop.startswith("cooling") else "on_battery", why_stop)
             log(f"{alias}: {jid}/{cls} stopped ({why_stop}); back to pending, lock released")
             return
@@ -1530,7 +1631,7 @@ class Farm:
                "ns_to_fail": res.get("ns_to_fail", []), "case_counts": res.get("case_counts"), "flaky_ignored": res.get("flaky_ignored", []), "flaky": res.get("flaky", []),
                "verdict": res["verdict"], "notes": res.get("notes", ""), "started": started, "wall_s": round(time.time() - t0, 1)}
         L.write_json(L.run_path(jid, cls), run)
-        j = self.upd(jid, lambda x: x["parts"][cls].update(state="done", verdict=run["verdict"], device=alias))
+        j = self.part_set(jid, cls, state="done", verdict=run["verdict"], device=alias)
         log(f"{alias}: {jid}/{cls} {run['verdict']} in {run['wall_s']}s")
         if L.job_verdict(j) != "pending":
             self.cleanup_tree(jid)
@@ -1539,8 +1640,13 @@ class Farm:
     def real_pending(self, cls):
         return any(c == cls and p["state"] == "pending" for j in L.list_jobs() for c, p in j["parts"].items())
 
+    def sweep_stop_path(self, cls):
+        return os.path.join(L.state_dir(), "sweep-stop", f"{cls}.json")
+
     def sweep_on(self, dev):
         if self.once and not os.environ.get("MALI_FARM_SWEEP_LIST"):       # --once (tests): only sweeps a test list, never the real mustpass
+            return False
+        if os.path.exists(self.sweep_stop_path(dev["class"])):              # a persisted stop beats watch_devices() marking the phone up
             return False
         return not os.path.exists(os.path.join(L.state_dir(), "sweep", "off")) and dev.get("sweep", True) is not False
 
@@ -1644,6 +1750,13 @@ class Farm:
             self.cool[alias] = time.time() + 600
             log(f"{alias}: sweep: no dEQP-VK mustpass list under the main checkout; not sweeping")
             return None
+        sp = self.sweep_stop_path(cls)
+        if os.path.exists(sp):                              # this sweep workload was stopped (reboot/memory bound); only `farm sweep-resume` clears it
+            if self.sweep_why.get(alias) != "stopped":
+                self.sweep_why[alias] = "stopped"
+                log(f"{alias}: sweep {cls} is stopped by {sp}; `farm sweep-resume {cls}` clears it")
+            self.cool[alias] = time.time() + 600
+            return False
         why = self.sweep_blocked(dev)
         if why:                                             # read-only probe, before anything is built or locked
             self.cool[alias] = time.time() + 300
@@ -1701,6 +1814,19 @@ class Farm:
         if why_stop and why_stop != "preempted":
             self.set_dstate(alias, "disabled" if self.is_disabled(dev) else "cooling" if why_stop.startswith("cooling") else "on_battery", why_stop)
             log(f"{alias}: sweep stopped ({why_stop})")
+        if rc in (82, 83):                                    # reboot / memory bound under the sweep: back off hard, do not keep walking the list
+            term = self.shell_rc(rc, out, "run")
+            self.set_dstate(alias, "down", f"{term['verdict']}: {term['notes'][:120]}")
+            self.cool[alias] = time.time() + 1800
+            stop = self.sweep_stop_path(cls)                # persist it: a cooldown alone lets the next tick walk the list again
+            os.makedirs(os.path.dirname(stop), exist_ok=True)
+            L.write_json(stop, {"class": cls, "job": job.get("id"), "device": alias, "verdict": term["verdict"],
+                                "notes": term["notes"][:300], "at": L.now()})
+            log(f"{alias}: sweep stopped: verdict: {term['verdict']} (no retry)")
+            alert(f"{term['verdict'].upper()} {alias} sweep {job['id']}: {term['notes']}")
+            user_alert(f"{term['verdict'].upper()} {alias} sweep: {term['notes']} -- the {cls} sweep stays STOPPED until "
+                       f"`farm sweep-resume {cls}` after the phone has been looked at (30 min cooldown too)")
+            return False
         if sok is False or rc in (76, 77):
             alert(f"INVALID-RUN {alias} sweep {job['id']}: driver on the phone is not the sweep build (sha256 {str(sgot)[:12]}); chunk discarded")
             self.cool[alias] = time.time() + 60
@@ -1889,7 +2015,7 @@ class Farm:
         for j in B.order_jobs(jobs):                                             # explicit jobs first, auto bench after them (sweep is last: real_pending)
             for cls, p in j["parts"].items():
                 if p["state"] == "running" and not any(t.name.startswith(j["id"] + "/" + cls) for t in self.threads.values()):
-                    self.upd(j["id"], lambda x, c=cls: x["parts"][c].update(state="pending"))   # farmd restarted mid-run
+                    self.part_set(j["id"], cls, state="pending")   # farmd restarted mid-run
                     p["state"] = "pending"
                 if p["state"] != "pending":
                     continue
