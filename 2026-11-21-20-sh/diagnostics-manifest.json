@@ -1,0 +1,332 @@
+{
+  "schema": 1,
+  "sessionId": "2026-11-21-20-sh",
+  "category": "all",
+  "generatedAtMillis": 1795221125532,
+  "redactionLearning": "complete",
+  "limits": {
+    "maxFilesPerArchive": 512,
+    "maxDiscoveredFiles": 768,
+    "maxBytesPerFile": 8388608,
+    "budgetBasis": "raw-input-snapshot-bytes",
+    "maxRawInputBytesTotal": 67108864,
+    "categoryRawInputBudgetBytes": 67108864
+  },
+  "entries": [
+    {
+      "entry": "2026-11-21-20-sh\/session.log",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 7912,
+      "capturedBytes": 7912
+    },
+    {
+      "entry": "2026-11-21-20-sh\/app.log",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 14329,
+      "capturedBytes": 14329
+    },
+    {
+      "entry": "2026-11-21-20-sh\/audio.log",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 3417,
+      "capturedBytes": 3417
+    },
+    {
+      "entry": "2026-11-21-20-sh\/device.txt",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 4907,
+      "capturedBytes": 4907
+    },
+    {
+      "entry": "2026-11-21-20-sh\/network.txt",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 1310,
+      "capturedBytes": 1310
+    },
+    {
+      "entry": "2026-11-21-20-sh\/events.jsonl",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 1498,
+      "capturedBytes": 1498
+    },
+    {
+      "entry": "2026-11-21-20-sh\/crash.log",
+      "origin": "session-critical",
+      "status": "captured",
+      "sourceBytes": 11398,
+      "capturedBytes": 11398
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-ffb619571a69624f.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 9957,
+      "capturedBytes": 9957
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-41d40c9c37bb2b0a.log",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 1259,
+      "capturedBytes": 1259
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-5507c6fab0ce7c6b.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 51,
+      "capturedBytes": 51
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-27bc4d06409fd11a.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 5955,
+      "capturedBytes": 5955
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-ff523e0f686c9146.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 41506,
+      "capturedBytes": 41506
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-4d71bc0594791d02.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 52584,
+      "capturedBytes": 52584
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-6fca53f8acea77ca.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 31998,
+      "capturedBytes": 31998
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-8cbfe1a07c399fb9.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 62036,
+      "capturedBytes": 62036
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-9aac5087aeb4eaf9.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 4144,
+      "capturedBytes": 4144
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-b94fac34e0729b03.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 116408,
+      "capturedBytes": 116408
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-0fe643f0dc056dad.log",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 4729,
+      "capturedBytes": 4729
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-880d0f6f9c9efbb6.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 925090,
+      "capturedBytes": 925090
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/cef_log.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 755176,
+      "capturedBytes": 755176
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-049831cf80b35cdc.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 2944,
+      "capturedBytes": 2944
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-cddaaae641ba6ad0.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 4432,
+      "capturedBytes": 4432
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-c30e0d126eb80ebc.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 71593,
+      "capturedBytes": 71593
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-82744f2ff1478344.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 7225,
+      "capturedBytes": 7225
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/systemperfmanager.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 21480,
+      "capturedBytes": 21480
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-5913e5ae2d741e5a.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 6496,
+      "capturedBytes": 6496
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-85a0e02a27222338.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 920,
+      "capturedBytes": 920
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-4f75ce6cdf9409b3.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 21520,
+      "capturedBytes": 21520
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-eba76dbd826647bb.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 920,
+      "capturedBytes": 920
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-7d649d3c9344409d.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 25408,
+      "capturedBytes": 25408
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-1b8934d748ba4891.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 8256,
+      "capturedBytes": 8256
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-cff594a955946afd.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 37244,
+      "capturedBytes": 37244
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-fa66028fbbde2db8.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 3264,
+      "capturedBytes": 3264
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-c63d34ea8de6f47d.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 880,
+      "capturedBytes": 880
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-e945a3b2bbbfb451.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 1392,
+      "capturedBytes": 1392
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-737f2739cb564917.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 23132,
+      "capturedBytes": 23132
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/console_log.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 301304,
+      "capturedBytes": 301304
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-2d9915d21e48d956.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 15392,
+      "capturedBytes": 15392
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-ebc74ca20aec6c10.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 3528,
+      "capturedBytes": 3528
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/webhelper_js.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 865477,
+      "capturedBytes": 865477
+    },
+    {
+      "entry": "2026-11-21-20-sh\/steam\/entry-da08ab4e30b9247c.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 36920,
+      "capturedBytes": 36920
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-1c77e3e1458e634d.txt",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 831,
+      "capturedBytes": 831
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-b49d4ef3c3d7e33a",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 29,
+      "capturedBytes": 29
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-a6eb105c53429390",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 1705,
+      "capturedBytes": 1705
+    },
+    {
+      "entry": "2026-11-21-20-sh\/entry-349f2d4ed34a4acb.complete",
+      "origin": "session",
+      "status": "captured",
+      "sourceBytes": 50,
+      "capturedBytes": 50
+    }
+  ]
+}

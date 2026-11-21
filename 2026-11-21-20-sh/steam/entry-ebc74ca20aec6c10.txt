@@ -1,0 +1,88 @@
+
+
+[2026-11-20 23:05:22] Client version: 1793740892
+[2026-11-20 23:05:22] Controller 15 connected, configuring it now...
+[2026-11-20 23:05:22] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-20 23:05:22] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-20 23:51:02] Client version: 1793740892
+[2026-11-20 23:51:02] Controller 15 connected, configuring it now...
+[2026-11-20 23:51:02] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-20 23:51:02] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-21 00:10:03] Client version: 1793740892
+[2026-11-21 00:10:03] Controller 15 connected, configuring it now...
+[2026-11-21 00:10:03] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-21 00:10:03] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-21 00:17:14] Client version: 1793740892
+[2026-11-21 00:17:14] Controller 15 connected, configuring it now...
+[2026-11-21 00:17:14] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-21 00:17:14] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-21 00:31:30] Client version: 1792618285
+[2026-11-21 00:31:30] Controller 15 connected, configuring it now...
+[2026-11-21 00:31:30] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-21 00:31:30] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-21 00:36:30] Client version: 1792618285
+[2026-11-21 00:36:30] Controller 15 connected, configuring it now...
+[2026-11-21 00:36:30] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-21 00:36:30] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-21 00:42:22] Client version: 1792618285
+[2026-11-21 00:42:22] Controller 15 connected, configuring it now...
+[2026-11-21 00:42:22] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-21 00:42:22] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf
+
+
+[2026-11-21 00:57:41] Client version: 1792618285
+[2026-11-21 00:57:41] Controller 15 connected, configuring it now...
+[2026-11-21 00:57:41] !! Controller 15 attributes:
+  Type: 4
+  ProductID: 4613
+  Serial: <redacted:serial>
+  Capabilities: 000000000168bfff
+  Firmware Version: 1709502893
+[2026-11-21 00:57:41] Loaded Config for Last Resort Path for App ID 769, Controller 15: /root/.local/share/Steam//controller_base/basicui_neptune.vdf

@@ -1,0 +1,376 @@
+
+
+[2026-11-20 23:05:22] Client version: 1793740892
+[2026-11-20 23:05:22] Using mangoapp: 1
+[2026-11-20 23:05:22] Using mangoapp presets: 1
+[2026-11-20 23:05:22] Using mangoapp horizontal: 1
+[2026-11-20 23:05:22] Using mangoapp atom workaround: 0
+[2026-11-20 23:05:22] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-20 23:05:22] Dynamic FPS limiter: 1
+[2026-11-20 23:05:22] Manual refresh rate control: 0 0 0
+[2026-11-20 23:05:22] NIS support: 1
+[2026-11-20 23:05:22] VRR support: 1
+[2026-11-20 23:05:22] Dynamic refresh in steam support: 0
+[2026-11-20 23:05:22] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-20 23:05:22] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-20 23:05:22] UpdateCurrentGame: setting current gameid: 769
+[2026-11-20 23:05:22] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-20 23:05:22] Initialized system perf manager
+[2026-11-20 23:05:22] UpdateSettings: gameid: 769
+[2026-11-20 23:05:22] Set graphics profiling enabled: 0
+[2026-11-20 23:05:22] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-20 23:05:22] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-20 23:05:22] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-20 23:05:22] Set show perf overlay over steam: 0
+[2026-11-20 23:05:22] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-20 23:05:22] Set HDR on SDR tonemap operator: 1
+[2026-11-20 23:05:22] Set SDR to HDR brightness: 0.292000
+[2026-11-20 23:05:22] Set VRR enabled: 0
+[2026-11-20 23:05:22] Set use dynamic refresh in steam: 0
+[2026-11-20 23:05:22] Display manual refresh rate external: 0 Hz: 60
+[2026-11-20 23:05:22] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-20 23:05:22] Display manual refresh rate external: 1 Hz: 60
+[2026-11-20 23:05:22] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-20 23:05:22] Set FPS limit enabled: 0
+[2026-11-20 23:05:22] Set FPS limit: 60 external: 1 index: 2
+[2026-11-20 23:05:22] Set FPS limit: 60 external: 0 index: 2
+[2026-11-20 23:05:22] Set TDP limit enabled: 0 - restore 15
+[2026-11-20 23:05:22] Skipping TDP setting as it is externally managed
+[2026-11-20 23:05:22] Set TDP limit: 15
+[2026-11-20 23:05:22] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-20 23:05:22] Set CPU Governor: 1
+[2026-11-20 23:05:22] Set CPU Governor manual MHz: 1500
+[2026-11-20 23:05:22] Set scaling filter: 1
+[2026-11-20 23:05:22] Set scaling mode: 1
+[2026-11-20 23:05:22] Set FSR sharpness: 5
+[2026-11-20 23:05:22] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-20 23:05:22] Set low latency mode: 0
+
+
+[2026-11-20 23:51:01] Client version: 1793740892
+[2026-11-20 23:51:01] Using mangoapp: 1
+[2026-11-20 23:51:01] Using mangoapp presets: 1
+[2026-11-20 23:51:01] Using mangoapp horizontal: 1
+[2026-11-20 23:51:01] Using mangoapp atom workaround: 0
+[2026-11-20 23:51:01] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-20 23:51:01] Dynamic FPS limiter: 1
+[2026-11-20 23:51:01] Manual refresh rate control: 0 0 0
+[2026-11-20 23:51:01] NIS support: 1
+[2026-11-20 23:51:01] VRR support: 1
+[2026-11-20 23:51:01] Dynamic refresh in steam support: 0
+[2026-11-20 23:51:01] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-20 23:51:01] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-20 23:51:01] UpdateCurrentGame: setting current gameid: 769
+[2026-11-20 23:51:01] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-20 23:51:01] Initialized system perf manager
+[2026-11-20 23:51:01] UpdateSettings: gameid: 769
+[2026-11-20 23:51:01] Set graphics profiling enabled: 0
+[2026-11-20 23:51:01] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-20 23:51:01] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-20 23:51:01] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-20 23:51:02] Set show perf overlay over steam: 0
+[2026-11-20 23:51:02] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-20 23:51:02] Set HDR on SDR tonemap operator: 1
+[2026-11-20 23:51:02] Set SDR to HDR brightness: 0.292000
+[2026-11-20 23:51:02] Set VRR enabled: 0
+[2026-11-20 23:51:02] Set use dynamic refresh in steam: 0
+[2026-11-20 23:51:02] Display manual refresh rate external: 0 Hz: 60
+[2026-11-20 23:51:02] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-20 23:51:02] Display manual refresh rate external: 1 Hz: 60
+[2026-11-20 23:51:02] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-20 23:51:02] Set FPS limit enabled: 0
+[2026-11-20 23:51:02] Set FPS limit: 60 external: 1 index: 2
+[2026-11-20 23:51:02] Set FPS limit: 60 external: 0 index: 2
+[2026-11-20 23:51:02] Set TDP limit enabled: 0 - restore 15
+[2026-11-20 23:51:02] Skipping TDP setting as it is externally managed
+[2026-11-20 23:51:02] Set TDP limit: 15
+[2026-11-20 23:51:02] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-20 23:51:02] Set CPU Governor: 1
+[2026-11-20 23:51:02] Set CPU Governor manual MHz: 1500
+[2026-11-20 23:51:02] Set scaling filter: 1
+[2026-11-20 23:51:02] Set scaling mode: 1
+[2026-11-20 23:51:02] Set FSR sharpness: 5
+[2026-11-20 23:51:02] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-20 23:51:02] Set low latency mode: 0
+
+
+[2026-11-21 00:10:02] Client version: 1793740892
+[2026-11-21 00:10:02] Using mangoapp: 1
+[2026-11-21 00:10:02] Using mangoapp presets: 1
+[2026-11-21 00:10:02] Using mangoapp horizontal: 1
+[2026-11-21 00:10:02] Using mangoapp atom workaround: 0
+[2026-11-21 00:10:02] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-21 00:10:02] Dynamic FPS limiter: 1
+[2026-11-21 00:10:02] Manual refresh rate control: 0 0 0
+[2026-11-21 00:10:02] NIS support: 1
+[2026-11-21 00:10:02] VRR support: 1
+[2026-11-21 00:10:02] Dynamic refresh in steam support: 0
+[2026-11-21 00:10:02] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-21 00:10:02] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-21 00:10:02] UpdateCurrentGame: setting current gameid: 769
+[2026-11-21 00:10:02] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-21 00:10:02] Initialized system perf manager
+[2026-11-21 00:10:02] UpdateSettings: gameid: 769
+[2026-11-21 00:10:02] Set graphics profiling enabled: 0
+[2026-11-21 00:10:02] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:10:02] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:10:02] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:10:02] Set show perf overlay over steam: 0
+[2026-11-21 00:10:02] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:10:02] Set HDR on SDR tonemap operator: 1
+[2026-11-21 00:10:02] Set SDR to HDR brightness: 0.292000
+[2026-11-21 00:10:02] Set VRR enabled: 0
+[2026-11-21 00:10:02] Set use dynamic refresh in steam: 0
+[2026-11-21 00:10:02] Display manual refresh rate external: 0 Hz: 60
+[2026-11-21 00:10:02] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:10:02] Display manual refresh rate external: 1 Hz: 60
+[2026-11-21 00:10:02] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:10:02] Set FPS limit enabled: 0
+[2026-11-21 00:10:02] Set FPS limit: 60 external: 1 index: 2
+[2026-11-21 00:10:02] Set FPS limit: 60 external: 0 index: 2
+[2026-11-21 00:10:02] Set TDP limit enabled: 0 - restore 15
+[2026-11-21 00:10:02] Skipping TDP setting as it is externally managed
+[2026-11-21 00:10:02] Set TDP limit: 15
+[2026-11-21 00:10:02] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-21 00:10:02] Set CPU Governor: 1
+[2026-11-21 00:10:02] Set CPU Governor manual MHz: 1500
+[2026-11-21 00:10:02] Set scaling filter: 1
+[2026-11-21 00:10:02] Set scaling mode: 1
+[2026-11-21 00:10:02] Set FSR sharpness: 5
+[2026-11-21 00:10:02] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-21 00:10:02] Set low latency mode: 0
+
+
+[2026-11-21 00:17:13] Client version: 1793740892
+[2026-11-21 00:17:13] Using mangoapp: 1
+[2026-11-21 00:17:13] Using mangoapp presets: 1
+[2026-11-21 00:17:13] Using mangoapp horizontal: 1
+[2026-11-21 00:17:13] Using mangoapp atom workaround: 0
+[2026-11-21 00:17:13] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-21 00:17:13] Dynamic FPS limiter: 1
+[2026-11-21 00:17:13] Manual refresh rate control: 0 0 0
+[2026-11-21 00:17:13] NIS support: 1
+[2026-11-21 00:17:13] VRR support: 1
+[2026-11-21 00:17:13] Dynamic refresh in steam support: 0
+[2026-11-21 00:17:13] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-21 00:17:13] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-21 00:17:13] UpdateCurrentGame: setting current gameid: 769
+[2026-11-21 00:17:13] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-21 00:17:13] Initialized system perf manager
+[2026-11-21 00:17:13] UpdateSettings: gameid: 769
+[2026-11-21 00:17:13] Set graphics profiling enabled: 0
+[2026-11-21 00:17:13] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:17:13] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:17:13] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:17:13] Set show perf overlay over steam: 0
+[2026-11-21 00:17:13] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:17:13] Set HDR on SDR tonemap operator: 1
+[2026-11-21 00:17:13] Set SDR to HDR brightness: 0.292000
+[2026-11-21 00:17:13] Set VRR enabled: 0
+[2026-11-21 00:17:13] Set use dynamic refresh in steam: 0
+[2026-11-21 00:17:13] Display manual refresh rate external: 0 Hz: 60
+[2026-11-21 00:17:13] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:17:13] Display manual refresh rate external: 1 Hz: 60
+[2026-11-21 00:17:13] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:17:13] Set FPS limit enabled: 0
+[2026-11-21 00:17:13] Set FPS limit: 60 external: 1 index: 2
+[2026-11-21 00:17:13] Set FPS limit: 60 external: 0 index: 2
+[2026-11-21 00:17:13] Set TDP limit enabled: 0 - restore 15
+[2026-11-21 00:17:13] Skipping TDP setting as it is externally managed
+[2026-11-21 00:17:13] Set TDP limit: 15
+[2026-11-21 00:17:13] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-21 00:17:13] Set CPU Governor: 1
+[2026-11-21 00:17:13] Set CPU Governor manual MHz: 1500
+[2026-11-21 00:17:13] Set scaling filter: 1
+[2026-11-21 00:17:13] Set scaling mode: 1
+[2026-11-21 00:17:13] Set FSR sharpness: 5
+[2026-11-21 00:17:13] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-21 00:17:13] Set low latency mode: 0
+
+
+[2026-11-21 00:31:30] Client version: 1792618285
+[2026-11-21 00:31:30] Using mangoapp: 1
+[2026-11-21 00:31:30] Using mangoapp presets: 1
+[2026-11-21 00:31:30] Using mangoapp horizontal: 1
+[2026-11-21 00:31:30] Using mangoapp atom workaround: 0
+[2026-11-21 00:31:30] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-21 00:31:30] Dynamic FPS limiter: 1
+[2026-11-21 00:31:30] Manual refresh rate control: 0 0 0
+[2026-11-21 00:31:30] NIS support: 1
+[2026-11-21 00:31:30] VRR support: 1
+[2026-11-21 00:31:30] Dynamic refresh in steam support: 0
+[2026-11-21 00:31:30] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-21 00:31:30] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-21 00:31:30] UpdateCurrentGame: setting current gameid: 769
+[2026-11-21 00:31:30] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-21 00:31:30] Initialized system perf manager
+[2026-11-21 00:31:30] UpdateSettings: gameid: 769
+[2026-11-21 00:31:30] Set graphics profiling enabled: 0
+[2026-11-21 00:31:30] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:31:30] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:31:30] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:31:30] Set show perf overlay over steam: 0
+[2026-11-21 00:31:30] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:31:30] Set HDR on SDR tonemap operator: 1
+[2026-11-21 00:31:30] Set SDR to HDR brightness: 0.292000
+[2026-11-21 00:31:30] Set VRR enabled: 0
+[2026-11-21 00:31:30] Set use dynamic refresh in steam: 0
+[2026-11-21 00:31:30] Display manual refresh rate external: 0 Hz: 60
+[2026-11-21 00:31:30] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:31:30] Display manual refresh rate external: 1 Hz: 60
+[2026-11-21 00:31:30] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:31:30] Set FPS limit enabled: 0
+[2026-11-21 00:31:30] Set FPS limit: 60 external: 1 index: 2
+[2026-11-21 00:31:30] Set FPS limit: 60 external: 0 index: 2
+[2026-11-21 00:31:30] Set TDP limit enabled: 0 - restore 15
+[2026-11-21 00:31:30] Skipping TDP setting as it is externally managed
+[2026-11-21 00:31:30] Set TDP limit: 15
+[2026-11-21 00:31:30] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-21 00:31:30] Set CPU Governor: 1
+[2026-11-21 00:31:30] Set CPU Governor manual MHz: 1500
+[2026-11-21 00:31:30] Set scaling filter: 1
+[2026-11-21 00:31:30] Set scaling mode: 1
+[2026-11-21 00:31:30] Set FSR sharpness: 5
+[2026-11-21 00:31:30] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-21 00:31:30] Set low latency mode: 0
+
+
+[2026-11-21 00:36:30] Client version: 1792618285
+[2026-11-21 00:36:30] Using mangoapp: 1
+[2026-11-21 00:36:30] Using mangoapp presets: 1
+[2026-11-21 00:36:30] Using mangoapp horizontal: 1
+[2026-11-21 00:36:30] Using mangoapp atom workaround: 0
+[2026-11-21 00:36:30] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-21 00:36:30] Dynamic FPS limiter: 1
+[2026-11-21 00:36:30] Manual refresh rate control: 0 0 0
+[2026-11-21 00:36:30] NIS support: 1
+[2026-11-21 00:36:30] VRR support: 1
+[2026-11-21 00:36:30] Dynamic refresh in steam support: 0
+[2026-11-21 00:36:30] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-21 00:36:30] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-21 00:36:30] UpdateCurrentGame: setting current gameid: 769
+[2026-11-21 00:36:30] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-21 00:36:30] Initialized system perf manager
+[2026-11-21 00:36:30] UpdateSettings: gameid: 769
+[2026-11-21 00:36:30] Set graphics profiling enabled: 0
+[2026-11-21 00:36:30] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:36:30] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:36:30] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:36:30] Set show perf overlay over steam: 0
+[2026-11-21 00:36:30] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:36:30] Set HDR on SDR tonemap operator: 1
+[2026-11-21 00:36:30] Set SDR to HDR brightness: 0.292000
+[2026-11-21 00:36:30] Set VRR enabled: 0
+[2026-11-21 00:36:30] Set use dynamic refresh in steam: 0
+[2026-11-21 00:36:30] Display manual refresh rate external: 0 Hz: 60
+[2026-11-21 00:36:30] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:36:30] Display manual refresh rate external: 1 Hz: 60
+[2026-11-21 00:36:30] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:36:30] Set FPS limit enabled: 0
+[2026-11-21 00:36:30] Set FPS limit: 60 external: 1 index: 2
+[2026-11-21 00:36:30] Set FPS limit: 60 external: 0 index: 2
+[2026-11-21 00:36:30] Set TDP limit enabled: 0 - restore 15
+[2026-11-21 00:36:30] Skipping TDP setting as it is externally managed
+[2026-11-21 00:36:30] Set TDP limit: 15
+[2026-11-21 00:36:30] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-21 00:36:30] Set CPU Governor: 1
+[2026-11-21 00:36:30] Set CPU Governor manual MHz: 1500
+[2026-11-21 00:36:30] Set scaling filter: 1
+[2026-11-21 00:36:30] Set scaling mode: 1
+[2026-11-21 00:36:30] Set FSR sharpness: 5
+[2026-11-21 00:36:30] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-21 00:36:30] Set low latency mode: 0
+
+
+[2026-11-21 00:42:22] Client version: 1792618285
+[2026-11-21 00:42:22] Using mangoapp: 1
+[2026-11-21 00:42:22] Using mangoapp presets: 1
+[2026-11-21 00:42:22] Using mangoapp horizontal: 1
+[2026-11-21 00:42:22] Using mangoapp atom workaround: 0
+[2026-11-21 00:42:22] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-21 00:42:22] Dynamic FPS limiter: 1
+[2026-11-21 00:42:22] Manual refresh rate control: 0 0 0
+[2026-11-21 00:42:22] NIS support: 1
+[2026-11-21 00:42:22] VRR support: 1
+[2026-11-21 00:42:22] Dynamic refresh in steam support: 0
+[2026-11-21 00:42:22] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-21 00:42:22] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-21 00:42:22] UpdateCurrentGame: setting current gameid: 769
+[2026-11-21 00:42:22] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-21 00:42:22] Initialized system perf manager
+[2026-11-21 00:42:22] UpdateSettings: gameid: 769
+[2026-11-21 00:42:22] Set graphics profiling enabled: 0
+[2026-11-21 00:42:22] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:42:22] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:42:22] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:42:22] Set show perf overlay over steam: 0
+[2026-11-21 00:42:22] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:42:22] Set HDR on SDR tonemap operator: 1
+[2026-11-21 00:42:22] Set SDR to HDR brightness: 0.292000
+[2026-11-21 00:42:22] Set VRR enabled: 0
+[2026-11-21 00:42:22] Set use dynamic refresh in steam: 0
+[2026-11-21 00:42:22] Display manual refresh rate external: 0 Hz: 60
+[2026-11-21 00:42:22] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:42:22] Display manual refresh rate external: 1 Hz: 60
+[2026-11-21 00:42:22] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:42:22] Set FPS limit enabled: 0
+[2026-11-21 00:42:22] Set FPS limit: 60 external: 1 index: 2
+[2026-11-21 00:42:22] Set FPS limit: 60 external: 0 index: 2
+[2026-11-21 00:42:22] Set TDP limit enabled: 0 - restore 15
+[2026-11-21 00:42:22] Skipping TDP setting as it is externally managed
+[2026-11-21 00:42:22] Set TDP limit: 15
+[2026-11-21 00:42:22] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-21 00:42:22] Set CPU Governor: 1
+[2026-11-21 00:42:22] Set CPU Governor manual MHz: 1500
+[2026-11-21 00:42:22] Set scaling filter: 1
+[2026-11-21 00:42:22] Set scaling mode: 1
+[2026-11-21 00:42:22] Set FSR sharpness: 5
+[2026-11-21 00:42:22] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-21 00:42:22] Set low latency mode: 0
+
+
+[2026-11-21 00:57:40] Client version: 1792618285
+[2026-11-21 00:57:40] Using mangoapp: 1
+[2026-11-21 00:57:40] Using mangoapp presets: 1
+[2026-11-21 00:57:40] Using mangoapp horizontal: 1
+[2026-11-21 00:57:40] Using mangoapp atom workaround: 0
+[2026-11-21 00:57:40] Using config: /tmp/droiddeck-mangohud.conf
+[2026-11-21 00:57:40] Dynamic FPS limiter: 1
+[2026-11-21 00:57:40] Manual refresh rate control: 0 0 0
+[2026-11-21 00:57:40] NIS support: 1
+[2026-11-21 00:57:40] VRR support: 1
+[2026-11-21 00:57:40] Dynamic refresh in steam support: 0
+[2026-11-21 00:57:40] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 0
+[2026-11-21 00:57:40] PopulateFPSLimitOptionsForRefreshRate: hz: 60 external: 1
+[2026-11-21 00:57:40] UpdateCurrentGame: setting current gameid: 769
+[2026-11-21 00:57:40] MaybeUpdateActiveGame: loading profile for gameid: 769
+[2026-11-21 00:57:40] Initialized system perf manager
+[2026-11-21 00:57:40] UpdateSettings: gameid: 769
+[2026-11-21 00:57:40] Set graphics profiling enabled: 0
+[2026-11-21 00:57:40] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:57:40] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:57:40] Error: OnSystemDisplayStateChanged: no primary display
+[2026-11-21 00:57:40] Set show perf overlay over steam: 0
+[2026-11-21 00:57:40] YieldingWritePerfOverlayConfig: switch perf overlay level: 0
+[2026-11-21 00:57:40] Set HDR on SDR tonemap operator: 1
+[2026-11-21 00:57:40] Set SDR to HDR brightness: 0.292000
+[2026-11-21 00:57:40] Set VRR enabled: 0
+[2026-11-21 00:57:40] Set use dynamic refresh in steam: 0
+[2026-11-21 00:57:40] Display manual refresh rate external: 0 Hz: 60
+[2026-11-21 00:57:40] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:57:40] Display manual refresh rate external: 1 Hz: 60
+[2026-11-21 00:57:40] Error: YieldingUpdateRefreshRateManualHz: unavailable
+[2026-11-21 00:57:40] Set FPS limit enabled: 0
+[2026-11-21 00:57:40] Set FPS limit: 60 external: 1 index: 2
+[2026-11-21 00:57:40] Set FPS limit: 60 external: 0 index: 2
+[2026-11-21 00:57:40] Set TDP limit enabled: 0 - restore 15
+[2026-11-21 00:57:40] Skipping TDP setting as it is externally managed
+[2026-11-21 00:57:40] Set TDP limit: 15
+[2026-11-21 00:57:40] Error: YieldingUpdateTDPLimit: TDP limiting is disabled
+[2026-11-21 00:57:40] Set CPU Governor: 1
+[2026-11-21 00:57:40] Set CPU Governor manual MHz: 1500
+[2026-11-21 00:57:40] Set scaling filter: 1
+[2026-11-21 00:57:40] Set scaling mode: 1
+[2026-11-21 00:57:40] Set FSR sharpness: 5
+[2026-11-21 00:57:40] Skipping FSR sharpness change as the current filter is 1, updating config only
+[2026-11-21 00:57:40] Set low latency mode: 0

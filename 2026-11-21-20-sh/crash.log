@@ -1,0 +1,95 @@
+Android's crash buffer, as it stood when this session ended.
+Not only this app: anything on the device that crashed is in here, which is the
+point - a session killed by the system leaves its trace here and nowhere else.
+
+--------- beginning of crash
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: FATAL EXCEPTION: session-start
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: Process: com.droiddeck.launcher, PID: 17789
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at android.app.SharedPreferencesImpl.getBoolean(SharedPreferencesImpl.java:345)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionPrefs.vkBridge(SessionPrefs.kt:820)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.core.DeviceSupport.openDriverActive(DeviceSupport.kt:36)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionPrefs.ensurePowerVrAutoDrivers(SessionPrefs.kt:542)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionService.runSession(SessionService.kt:455)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionService.onStartCommand$lambda$16(SessionService.kt:401)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionService.$r8$lambda$nEm2I8Nn-dFT5o528xi25DY0NRM(Unknown Source:0)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionService$$ExternalSyntheticLambda25.run(D8$$SyntheticClass:0)
+11-20 20:45:29.639 17789  3903 E AndroidRuntime: 	at java.lang.Thread.run(Thread.java:1012)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: FATAL EXCEPTION: main
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: Process: com.droiddeck.launcher, PID: 18271
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: java.lang.RuntimeException: Unable to resume activity {com.droiddeck.launcher/com.droiddeck.launcher.MainActivity}: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:5277)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.ActivityThread.handleResumeActivity(ActivityThread.java:5310)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.servertransaction.ResumeActivityItem.execute(ResumeActivityItem.java:57)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.servertransaction.ActivityTransactionItem.execute(ActivityTransactionItem.java:45)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.servertransaction.TransactionExecutor.executeLifecycleState(TransactionExecutor.java:190)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:101)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2630)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.os.Looper.loopOnce(Looper.java:222)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.os.Looper.loop(Looper.java:314)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.ActivityThread.main(ActivityThread.java:8788)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at java.lang.reflect.Method.invoke(Native Method)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:569)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1090)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: Caused by: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.SharedPreferencesImpl.getBoolean(SharedPreferencesImpl.java:345)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionPrefs.vkBridge(SessionPrefs.kt:820)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at com.droiddeck.launcher.FrontEndActivity.refresh(FrontEndActivity.kt:2851)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at com.droiddeck.launcher.FrontEndActivity.onResume(FrontEndActivity.kt:1941)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.Instrumentation.callActivityOnResume(Instrumentation.java:1617)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.Activity.performResume(Activity.java:9056)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:5264)
+11-20 20:45:30.200 18271 18271 E AndroidRuntime: 	... 13 more
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: FATAL EXCEPTION: main
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: Process: com.droiddeck.launcher, PID: 22783
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: java.lang.RuntimeException: Unable to resume activity {com.droiddeck.launcher/com.droiddeck.launcher.MainActivity}: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:5277)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.ActivityThread.handleResumeActivity(ActivityThread.java:5310)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.servertransaction.ResumeActivityItem.execute(ResumeActivityItem.java:57)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.servertransaction.ActivityTransactionItem.execute(ActivityTransactionItem.java:45)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.servertransaction.TransactionExecutor.executeLifecycleState(TransactionExecutor.java:190)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:101)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2630)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.os.Looper.loopOnce(Looper.java:222)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.os.Looper.loop(Looper.java:314)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.ActivityThread.main(ActivityThread.java:8788)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at java.lang.reflect.Method.invoke(Native Method)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:569)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1090)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: Caused by: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.SharedPreferencesImpl.getBoolean(SharedPreferencesImpl.java:345)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionPrefs.vkBridge(SessionPrefs.kt:820)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at com.droiddeck.launcher.FrontEndActivity.refresh(FrontEndActivity.kt:2851)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at com.droiddeck.launcher.FrontEndActivity.onResume(FrontEndActivity.kt:1941)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.Instrumentation.callActivityOnResume(Instrumentation.java:1617)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.Activity.performResume(Activity.java:9056)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:5264)
+11-20 20:50:30.716 22783 22783 E AndroidRuntime: 	... 13 more
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: FATAL EXCEPTION: main
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: Process: com.droiddeck.launcher, PID: 23411
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: java.lang.RuntimeException: Unable to resume activity {com.droiddeck.launcher/com.droiddeck.launcher.MainActivity}: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:5277)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.ActivityThread.handleResumeActivity(ActivityThread.java:5310)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.servertransaction.ResumeActivityItem.execute(ResumeActivityItem.java:57)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.servertransaction.ActivityTransactionItem.execute(ActivityTransactionItem.java:45)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.servertransaction.TransactionExecutor.executeLifecycleState(TransactionExecutor.java:190)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:101)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2630)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.os.Looper.loopOnce(Looper.java:222)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.os.Looper.loop(Looper.java:314)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.ActivityThread.main(ActivityThread.java:8788)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at java.lang.reflect.Method.invoke(Native Method)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:569)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:1090)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: Caused by: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Boolean
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.SharedPreferencesImpl.getBoolean(SharedPreferencesImpl.java:345)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at com.droiddeck.launcher.session.SessionPrefs.vkBridge(SessionPrefs.kt:820)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at com.droiddeck.launcher.FrontEndActivity.refresh(FrontEndActivity.kt:2851)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at com.droiddeck.launcher.FrontEndActivity.onResume(FrontEndActivity.kt:1941)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.Instrumentation.callActivityOnResume(Instrumentation.java:1617)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.Activity.performResume(Activity.java:9056)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:5264)
+11-20 20:50:31.186 23411 23411 E AndroidRuntime: 	... 13 more

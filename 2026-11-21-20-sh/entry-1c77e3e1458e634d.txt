@@ -1,0 +1,19 @@
+VAC diagnostics - 2026-11-21 01:32:00
+Read from the game's own console (-condebug) and the Steam client's logs.
+
+== Client
+  Client this session: arm64
+  Files in its folder (/root/.local/share/Steam):
+    arm64 Linux client: present (linuxarm64/steamclient.so)
+    x86-64 Linux client: present (linux64/steamclient.so)
+    x86-64 Linux client (ubuntu12_64): absent (ubuntu12_64/steamclient.so)
+    x86-64 Linux client (steamrt64): present (steamrt64/steamclient.so)
+
+== Game launches this session (from the launch wrapper)
+  none - no Windows game was launched through the client
+
+== Game consoles
+  No console.log was written this session. Only Source-engine games write one,
+  and only when started with -condebug (this setting adds it).
+== VAC in the Steam client's logs
+  none - the client logged no VAC activity this session

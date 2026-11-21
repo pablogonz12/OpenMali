@@ -1,0 +1,682 @@
+
+
+[2026-11-20 23:05:22] Client version: 1793740892
+[2026-11-20 23:05:22] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-20 23:05:22] udev: context initialized
+[2026-11-20 23:05:22] Initializing System Manager
+[2026-11-20 23:05:22] [display] display type: 0
+[2026-11-20 23:05:22] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-20 23:05:22] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-20 23:05:22] [display] OverdriveHDRSplit 0.544
+[2026-11-20 23:05:22] [display] ALS: 0, brightness: 1
+[2026-11-20 23:05:22] [display] adaptive brightness available: 0
+[2026-11-20 23:05:22] Night mode active on resume 0
+[2026-11-20 23:05:22] [display] Fade from BIOS (first start)
+[2026-11-20 23:05:22] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-20 23:05:22] Fan control available: 0 current: 0
+[2026-11-20 23:05:25] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:05:25] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:05:32] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:05:32] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:05:43] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:05:43] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:05:53] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:05:53] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:06:03] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:06:03] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:06:13] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:06:13] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:06:23] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:06:23] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:06:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:06:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:06:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:06:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:06:54] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:06:54] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:07:04] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:07:04] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:07:14] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:07:14] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:07:22] PeriodicUpdateCheck: starting periodic update check
+[2026-11-20 23:07:22] CSystemManagerCheckForUpdateJob: starting
+[2026-11-20 23:07:22] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-20 23:07:22] YldCheckForClientUpdate: requesting update check
+[2026-11-20 23:07:23] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-20 23:07:23] YieldingCheckForUpdateOS: starting check
+[2026-11-20 23:07:23] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-20 23:07:23] YieldingCheckForUpdateOS: up to date
+[2026-11-20 23:07:23] YieldingCheckForUpdateBIOS: starting check
+[2026-11-20 23:07:23] No bios auto-message present
+[2026-11-20 23:07:23] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-20 23:07:23] YieldingCheckForUpdateBIOS: up to date
+[2026-11-20 23:07:23] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-20 23:07:23] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-20 23:07:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:07:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:07:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:07:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:07:45] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:07:45] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:07:55] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:07:55] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:08:05] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:08:05] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:08:15] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:08:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:08:25] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:08:25] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:08:36] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:08:36] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:08:46] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:08:46] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:08:56] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:08:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:09:06] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:09:06] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:09:16] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:09:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:09:27] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:09:27] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:09:37] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:09:37] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:09:47] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:09:47] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:09:57] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:09:57] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:10:07] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:10:07] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:10:17] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:10:17] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:10:28] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:10:28] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:10:38] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:10:38] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:10:48] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:10:48] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:10:58] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:10:58] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:11:08] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:11:08] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:11:18] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:11:18] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:11:29] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:11:29] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:11:39] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:11:39] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:11:49] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:11:49] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:11:59] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:11:59] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:12:09] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:12:09] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:12:19] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:12:19] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:12:29] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:12:29] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:12:40] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:12:40] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:12:50] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:12:50] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:00] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:13:00] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:10] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:13:10] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:20] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:13:20] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:31] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:13:31] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:41] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:13:41] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:51] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:13:51] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:13:56] udev: shutting down
+[2026-11-20 23:13:56] udev: shut down complete
+
+
+[2026-11-20 23:51:01] Client version: 1793740892
+[2026-11-20 23:51:01] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-20 23:51:01] udev: context initialized
+[2026-11-20 23:51:01] Initializing System Manager
+[2026-11-20 23:51:01] [display] display type: 0
+[2026-11-20 23:51:01] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-20 23:51:01] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-20 23:51:01] [display] OverdriveHDRSplit 0.544
+[2026-11-20 23:51:01] [display] ALS: 0, brightness: 1
+[2026-11-20 23:51:01] [display] adaptive brightness available: 0
+[2026-11-20 23:51:01] Night mode active on resume 0
+[2026-11-20 23:51:01] [display] Fade from queried backlight
+[2026-11-20 23:51:01] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-20 23:51:01] Fan control available: 0 current: 0
+[2026-11-20 23:51:03] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:51:03] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:51:13] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:51:13] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:51:23] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:51:23] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:51:33] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:51:33] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:51:43] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:51:43] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:51:53] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:51:53] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:52:03] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:52:03] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:52:14] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:52:14] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:52:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:52:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:52:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:52:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:52:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:52:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:52:54] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:52:54] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:53:02] PeriodicUpdateCheck: starting periodic update check
+[2026-11-20 23:53:02] CSystemManagerCheckForUpdateJob: starting
+[2026-11-20 23:53:02] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-20 23:53:02] YldCheckForClientUpdate: requesting update check
+[2026-11-20 23:53:02] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-20 23:53:02] YieldingCheckForUpdateOS: starting check
+[2026-11-20 23:53:02] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-20 23:53:02] YieldingCheckForUpdateOS: up to date
+[2026-11-20 23:53:02] YieldingCheckForUpdateBIOS: starting check
+[2026-11-20 23:53:02] No bios auto-message present
+[2026-11-20 23:53:02] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-20 23:53:02] YieldingCheckForUpdateBIOS: up to date
+[2026-11-20 23:53:02] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-20 23:53:02] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-20 23:53:05] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:53:05] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:53:15] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:53:15] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:53:25] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:53:25] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:53:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:53:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:53:45] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:53:45] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:53:56] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:53:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:54:06] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:54:06] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:54:16] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:54:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:54:26] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:54:26] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:54:36] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:54:36] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:54:46] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:54:46] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:54:56] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:54:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:55:07] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:55:07] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:55:17] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:55:17] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:55:27] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:55:27] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:55:37] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:55:37] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:55:47] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:55:47] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:55:58] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-20 23:55:58] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-20 23:56:01] udev: shutting down
+[2026-11-20 23:56:01] udev: shut down complete
+
+
+[2026-11-21 00:10:02] Client version: 1793740892
+[2026-11-21 00:10:02] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-21 00:10:02] udev: context initialized
+[2026-11-21 00:10:02] Initializing System Manager
+[2026-11-21 00:10:02] [display] display type: 0
+[2026-11-21 00:10:02] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-21 00:10:02] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-21 00:10:02] [display] OverdriveHDRSplit 0.544
+[2026-11-21 00:10:02] [display] ALS: 0, brightness: 1
+[2026-11-21 00:10:02] [display] adaptive brightness available: 0
+[2026-11-21 00:10:02] Night mode active on resume 0
+[2026-11-21 00:10:02] [display] Fade from queried backlight
+[2026-11-21 00:10:02] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-21 00:10:02] Fan control available: 0 current: 0
+[2026-11-21 00:10:03] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:10:03] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:10:13] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:10:13] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:10:23] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:10:23] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:10:33] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:10:33] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:10:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:10:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:10:54] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:10:54] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:11:04] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:11:04] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:11:14] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:11:14] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:11:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:11:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:11:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:11:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:11:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:11:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:11:55] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:11:55] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:12:02] PeriodicUpdateCheck: starting periodic update check
+[2026-11-21 00:12:02] CSystemManagerCheckForUpdateJob: starting
+[2026-11-21 00:12:02] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-21 00:12:02] YldCheckForClientUpdate: requesting update check
+[2026-11-21 00:12:03] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-21 00:12:03] YieldingCheckForUpdateOS: starting check
+[2026-11-21 00:12:03] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-21 00:12:03] YieldingCheckForUpdateOS: up to date
+[2026-11-21 00:12:03] YieldingCheckForUpdateBIOS: starting check
+[2026-11-21 00:12:03] No bios auto-message present
+[2026-11-21 00:12:03] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-21 00:12:03] YieldingCheckForUpdateBIOS: up to date
+[2026-11-21 00:12:03] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-21 00:12:03] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-21 00:12:05] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:12:05] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:12:15] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:12:15] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:12:26] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:12:26] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:12:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:12:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:12:46] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:12:46] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:12:56] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:12:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:13:06] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:13:06] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:13:16] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:13:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:13:26] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:13:26] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:13:36] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:13:36] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:13:39] udev: shutting down
+[2026-11-21 00:13:39] udev: shut down complete
+
+
+[2026-11-21 00:17:13] Client version: 1793740892
+[2026-11-21 00:17:13] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-21 00:17:13] udev: context initialized
+[2026-11-21 00:17:13] Initializing System Manager
+[2026-11-21 00:17:13] [display] display type: 0
+[2026-11-21 00:17:13] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-21 00:17:13] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-21 00:17:13] [display] OverdriveHDRSplit 0.544
+[2026-11-21 00:17:13] [display] ALS: 0, brightness: 1
+[2026-11-21 00:17:13] [display] adaptive brightness available: 0
+[2026-11-21 00:17:13] Night mode active on resume 0
+[2026-11-21 00:17:13] [display] Fade from queried backlight
+[2026-11-21 00:17:13] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-21 00:17:13] Fan control available: 0 current: 0
+[2026-11-21 00:17:14] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:17:14] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:17:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:17:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:17:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:17:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:17:45] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:17:45] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:17:55] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:17:55] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:18:05] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:18:05] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:18:15] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:18:15] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:18:25] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:18:25] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:18:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:18:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:18:46] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:18:46] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:18:56] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:18:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:19:06] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:19:06] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:19:13] PeriodicUpdateCheck: starting periodic update check
+[2026-11-21 00:19:13] CSystemManagerCheckForUpdateJob: starting
+[2026-11-21 00:19:13] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-21 00:19:13] YldCheckForClientUpdate: requesting update check
+[2026-11-21 00:19:14] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-21 00:19:14] YieldingCheckForUpdateOS: starting check
+[2026-11-21 00:19:14] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-21 00:19:14] YieldingCheckForUpdateOS: up to date
+[2026-11-21 00:19:14] YieldingCheckForUpdateBIOS: starting check
+[2026-11-21 00:19:14] No bios auto-message present
+[2026-11-21 00:19:14] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-21 00:19:14] YieldingCheckForUpdateBIOS: up to date
+[2026-11-21 00:19:14] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-21 00:19:14] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-21 00:19:16] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:19:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:19:26] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:19:26] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:19:36] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:19:36] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:19:47] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:19:47] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:19:57] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:19:57] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:20:07] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:20:07] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:20:17] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:20:17] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:20:27] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:20:28] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:20:38] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:20:38] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:20:48] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:20:48] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:20:58] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:20:58] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:21:08] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:21:08] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:21:18] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:21:18] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:21:28] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:21:28] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:21:39] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:21:39] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:21:49] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:21:49] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:21:59] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:21:59] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:22:09] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:22:09] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:22:12] udev: shutting down
+[2026-11-21 00:22:12] udev: shut down complete
+
+
+[2026-11-21 00:31:30] Client version: 1792618285
+[2026-11-21 00:31:30] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-21 00:31:30] udev: context initialized
+[2026-11-21 00:31:30] Initializing System Manager
+[2026-11-21 00:31:30] [display] display type: 0
+[2026-11-21 00:31:30] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-21 00:31:30] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-21 00:31:30] [display] OverdriveHDRSplit 0.544
+[2026-11-21 00:31:30] [display] ALS: 0, brightness: 1
+[2026-11-21 00:31:30] [display] adaptive brightness available: 0
+[2026-11-21 00:31:30] Night mode active on resume 0
+[2026-11-21 00:31:30] [display] Fade from queried backlight
+[2026-11-21 00:31:30] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-21 00:31:30] Fan control available: 0 current: 0
+[2026-11-21 00:31:32] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:31:32] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:31:41] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:31:41] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:31:52] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:31:52] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:32:02] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:32:02] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:32:12] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:32:12] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:32:22] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:32:22] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:32:33] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:32:33] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:32:43] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:32:43] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:32:53] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:32:53] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:33:03] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:33:03] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:33:13] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:33:13] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:33:23] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:33:23] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:33:30] PeriodicUpdateCheck: starting periodic update check
+[2026-11-21 00:33:30] CSystemManagerCheckForUpdateJob: starting
+[2026-11-21 00:33:30] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-21 00:33:30] YldCheckForClientUpdate: requesting update check
+[2026-11-21 00:33:31] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-21 00:33:31] YieldingCheckForUpdateOS: starting check
+[2026-11-21 00:33:31] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-21 00:33:31] YieldingCheckForUpdateOS: up to date
+[2026-11-21 00:33:31] YieldingCheckForUpdateBIOS: starting check
+[2026-11-21 00:33:31] No bios auto-message present
+[2026-11-21 00:33:31] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-21 00:33:31] YieldingCheckForUpdateBIOS: up to date
+[2026-11-21 00:33:31] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-21 00:33:31] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-21 00:33:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:33:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:33:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:33:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:33:54] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:33:54] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:34:04] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:34:04] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:34:14] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:34:14] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:34:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:34:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:34:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:34:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:34:43] udev: shutting down
+[2026-11-21 00:34:43] udev: shut down complete
+
+
+[2026-11-21 00:36:30] Client version: 1792618285
+[2026-11-21 00:36:30] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-21 00:36:30] udev: context initialized
+[2026-11-21 00:36:30] Initializing System Manager
+[2026-11-21 00:36:30] [display] display type: 0
+[2026-11-21 00:36:30] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-21 00:36:30] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-21 00:36:30] [display] OverdriveHDRSplit 0.544
+[2026-11-21 00:36:30] [display] ALS: 0, brightness: 1
+[2026-11-21 00:36:30] [display] adaptive brightness available: 0
+[2026-11-21 00:36:30] Night mode active on resume 0
+[2026-11-21 00:36:30] [display] Fade from queried backlight
+[2026-11-21 00:36:30] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-21 00:36:30] Fan control available: 0 current: 0
+[2026-11-21 00:36:32] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:36:32] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:36:42] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:36:42] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:36:52] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:36:52] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:37:02] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:37:02] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:37:12] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:37:12] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:37:22] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:37:22] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:37:33] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:37:33] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:37:43] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:37:43] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:37:53] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:37:53] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:38:03] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:38:03] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:38:13] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:38:13] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:38:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:38:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:38:30] PeriodicUpdateCheck: starting periodic update check
+[2026-11-21 00:38:30] CSystemManagerCheckForUpdateJob: starting
+[2026-11-21 00:38:30] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-21 00:38:30] YldCheckForClientUpdate: requesting update check
+[2026-11-21 00:38:31] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-21 00:38:31] YieldingCheckForUpdateOS: starting check
+[2026-11-21 00:38:31] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-21 00:38:31] YieldingCheckForUpdateOS: up to date
+[2026-11-21 00:38:31] YieldingCheckForUpdateBIOS: starting check
+[2026-11-21 00:38:31] No bios auto-message present
+[2026-11-21 00:38:31] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-21 00:38:31] YieldingCheckForUpdateBIOS: up to date
+[2026-11-21 00:38:31] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-21 00:38:31] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-21 00:38:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:38:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:38:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:38:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:38:54] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:38:54] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:39:04] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:39:04] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:39:15] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:39:15] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:39:25] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:39:25] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:39:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:39:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:39:45] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:39:45] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:39:55] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:39:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:40:06] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:40:06] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:40:16] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:40:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:40:26] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:40:26] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:40:36] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:40:36] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:40:46] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:40:46] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:40:57] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:40:57] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:41:07] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:41:07] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:41:17] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:41:17] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:41:27] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:41:27] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:41:29] udev: shutting down
+[2026-11-21 00:41:29] udev: shut down complete
+
+
+[2026-11-21 00:42:22] Client version: 1792618285
+[2026-11-21 00:42:22] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-21 00:42:22] udev: context initialized
+[2026-11-21 00:42:22] Initializing System Manager
+[2026-11-21 00:42:22] [display] display type: 0
+[2026-11-21 00:42:22] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-21 00:42:22] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-21 00:42:22] [display] OverdriveHDRSplit 0.544
+[2026-11-21 00:42:22] [display] ALS: 0, brightness: 1
+[2026-11-21 00:42:22] [display] adaptive brightness available: 0
+[2026-11-21 00:42:22] Night mode active on resume 0
+[2026-11-21 00:42:22] [display] Fade from queried backlight
+[2026-11-21 00:42:22] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-21 00:42:22] Fan control available: 0 current: 0
+[2026-11-21 00:42:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:42:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:42:34] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:42:34] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:42:44] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:42:44] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:42:54] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:42:54] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:43:04] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:43:04] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:43:14] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:43:14] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:43:24] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:43:24] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:43:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:43:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:43:45] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:43:45] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:43:55] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:43:55] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:44:05] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:44:05] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:44:15] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:44:15] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:44:22] PeriodicUpdateCheck: starting periodic update check
+[2026-11-21 00:44:22] CSystemManagerCheckForUpdateJob: starting
+[2026-11-21 00:44:22] YieldingCheckForUpdateSteamClient: starting check
+[2026-11-21 00:44:22] YldCheckForClientUpdate: requesting update check
+[2026-11-21 00:44:23] YieldingCheckForUpdateSteamClient: update check success: available:0
+[2026-11-21 00:44:23] YieldingCheckForUpdateOS: starting check
+[2026-11-21 00:44:23] YieldingCheckForUpdateOS: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/steamos-update --enable-duplicate-detection check 2>&1' returned: 7
+[2026-11-21 00:44:23] YieldingCheckForUpdateOS: up to date
+[2026-11-21 00:44:23] YieldingCheckForUpdateBIOS: starting check
+[2026-11-21 00:44:23] No bios auto-message present
+[2026-11-21 00:44:23] Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-biosupdate check' returned: 0
+[2026-11-21 00:44:23] YieldingCheckForUpdateBIOS: up to date
+[2026-11-21 00:44:23] CSystemManagerCheckForUpdateJob: up to date
+[2026-11-21 00:44:23] CSystemManagerCheckForUpdateJob: nAvailable=0 nRestartPendingCount=0
+[2026-11-21 00:44:25] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:44:25] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:44:35] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:44:35] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:44:46] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:44:46] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:44:56] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:44:56] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:45:06] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:45:06] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:45:16] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:45:16] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:45:26] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:45:26] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:45:37] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:45:37] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:45:47] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:45:47] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:45:57] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:45:57] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:46:07] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:46:07] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:46:17] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:46:17] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:46:27] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:46:27] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:46:37] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:46:37] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:46:47] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:46:47] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:46:58] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:46:58] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:47:08] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:47:08] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:47:18] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:47:18] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:47:21] udev: shutting down
+[2026-11-21 00:47:21] udev: shut down complete
+
+
+[2026-11-21 00:57:40] Client version: 1792618285
+[2026-11-21 00:57:40] udev: context initialized
+[2026-11-21 00:57:40] Initializing System Manager
+[2026-11-21 00:57:40] [display] display type: 0
+[2026-11-21 00:57:40] [display] ERROR detecting internal display type. Unidentified EDID
+[2026-11-21 00:57:40] [display] backlight contrast ratio 100.0 (-6.64386)
+[2026-11-21 00:57:40] [display] OverdriveHDRSplit 0.544
+[2026-11-21 00:57:40] [display] ALS: 0, brightness: 1
+[2026-11-21 00:57:40] [display] adaptive brightness available: 0
+[2026-11-21 00:57:40] Night mode active on resume 0
+[2026-11-21 00:57:40] [display] Fade from queried backlight
+[2026-11-21 00:57:40] Initialized battery manager with query mode: 3 interval: 2000000
+[2026-11-21 00:57:40] Fan control available: 0 current: 0
+[2026-11-21 00:57:40] [screensaver dbus] now owning org.freedesktop.ScreenSaver
+[2026-11-21 00:57:42] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:57:42] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:57:52] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:57:52] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:58:02] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:58:02] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:58:12] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:58:12] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:58:23] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:58:23] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:58:33] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:58:33] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:58:43] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:58:43] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:58:53] CSystemManagerGetCurrentOSBranchJob: starting
+[2026-11-21 00:58:53] BYieldingRunAPIJob: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" steamos-select-branch -c' returned: 0
+[2026-11-21 00:59:03] udev: shutting down
+[2026-11-21 00:59:03] udev: shut down complete

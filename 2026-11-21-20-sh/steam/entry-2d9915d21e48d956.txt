@@ -1,0 +1,368 @@
+
+
+[2026-11-20 23:05:22] Client version: 1793740892
+[2026-11-20 23:05:22] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-20 23:05:22]   Manufacturer: Valve Software
+[2026-11-20 23:05:22]   Product:      Steam Deck Controller
+[2026-11-20 23:05:22]   Release:      100
+[2026-11-20 23:05:22]   Interface:    2
+
+[2026-11-20 23:05:22] Controller uses V1 HID protocol
+ 
+[2026-11-20 23:05:22] !! Steam controller device opened for index 15.
+[2026-11-20 23:05:22] Steam Controller reserving XInput slot 0
+[2026-11-20 23:05:22] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-20 23:05:22]   Manufacturer: Valve Software
+[2026-11-20 23:05:22]   Product:      Mobile Touch Control
+[2026-11-20 23:05:22]   Release:      0
+[2026-11-20 23:05:22]   Interface:    0
+
+[2026-11-20 23:05:22] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-20 23:05:22] Unable to open local device: /dev/hidraw17
+[2026-11-20 23:05:22] Controller 15 mapping uses xinput : false
+[2026-11-20 23:05:22] Add to Config Cache Request 15 769
+[2026-11-20 23:05:22] Controller 15 mapping uses xinput : false
+[2026-11-20 23:05:22] Controller 15 mapping uses xinput : false
+[2026-11-20 23:05:22] Queueing activation for controller: 15 app: 769
+[2026-11-20 23:05:23] Controller PollState Changed from 0 to 1
+[2026-11-20 23:05:23] Controller PollState Changed from 1 to 2
+[2026-11-20 23:05:23] Touchscreen DefaultMode 4
+[2026-11-20 23:05:23] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-20 23:05:23]   Manufacturer: Valve Software
+[2026-11-20 23:05:23]   Product:      Mobile Touch Control
+[2026-11-20 23:05:23]   Release:      0
+[2026-11-20 23:05:23]   Interface:    0
+
+[2026-11-20 23:05:23] Unable to open local device: /dev/hidraw17
+[2026-11-20 23:13:56] Exiting workitem thread
+
+
+[2026-11-20 23:51:02] Client version: 1793740892
+[2026-11-20 23:51:02] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-20 23:51:02]   Manufacturer: Valve Software
+[2026-11-20 23:51:02]   Product:      Steam Deck Controller
+[2026-11-20 23:51:02]   Release:      100
+[2026-11-20 23:51:02]   Interface:    2
+
+[2026-11-20 23:51:02] Controller uses V1 HID protocol
+ 
+[2026-11-20 23:51:02] !! Steam controller device opened for index 15.
+[2026-11-20 23:51:02] Steam Controller reserving XInput slot 0
+[2026-11-20 23:51:02] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-20 23:51:02]   Manufacturer: Valve Software
+[2026-11-20 23:51:02]   Product:      Mobile Touch Control
+[2026-11-20 23:51:02]   Release:      0
+[2026-11-20 23:51:02]   Interface:    0
+
+[2026-11-20 23:51:02] Unable to open local device: /dev/hidraw17
+[2026-11-20 23:51:02] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-20 23:51:02] Controller 15 mapping uses xinput : false
+[2026-11-20 23:51:02] Add to Config Cache Request 15 769
+[2026-11-20 23:51:02] Controller 15 mapping uses xinput : false
+[2026-11-20 23:51:02] Controller 15 mapping uses xinput : false
+[2026-11-20 23:51:02] Queueing activation for controller: 15 app: 769
+[2026-11-20 23:51:03] Controller PollState Changed from 0 to 1
+[2026-11-20 23:51:03] Controller PollState Changed from 1 to 2
+[2026-11-20 23:51:03] Touchscreen DefaultMode 4
+[2026-11-20 23:51:03] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-20 23:51:03]   Manufacturer: Valve Software
+[2026-11-20 23:51:03]   Product:      Mobile Touch Control
+[2026-11-20 23:51:03]   Release:      0
+[2026-11-20 23:51:03]   Interface:    0
+
+[2026-11-20 23:51:03] Unable to open local device: /dev/hidraw17
+[2026-11-20 23:56:01] Exiting workitem thread
+
+
+[2026-11-21 00:10:03] Client version: 1793740892
+[2026-11-21 00:10:03] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:10:03]   Manufacturer: Valve Software
+[2026-11-21 00:10:03]   Product:      Steam Deck Controller
+[2026-11-21 00:10:03]   Release:      100
+[2026-11-21 00:10:03]   Interface:    2
+
+[2026-11-21 00:10:03] Controller uses V1 HID protocol
+ 
+[2026-11-21 00:10:03] !! Steam controller device opened for index 15.
+[2026-11-21 00:10:03] Steam Controller reserving XInput slot 0
+[2026-11-21 00:10:03] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:10:03]   Manufacturer: Valve Software
+[2026-11-21 00:10:03]   Product:      Mobile Touch Control
+[2026-11-21 00:10:03]   Release:      0
+[2026-11-21 00:10:03]   Interface:    0
+
+[2026-11-21 00:10:03] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:10:03] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-21 00:10:03] Controller PollState Changed from 0 to 1
+[2026-11-21 00:10:03] Controller 15 mapping uses xinput : false
+[2026-11-21 00:10:03] Add to Config Cache Request 15 769
+[2026-11-21 00:10:03] Controller 15 mapping uses xinput : false
+[2026-11-21 00:10:03] Controller 15 mapping uses xinput : false
+[2026-11-21 00:10:03] Queueing activation for controller: 15 app: 769
+[2026-11-21 00:10:03] Controller PollState Changed from 1 to 2
+[2026-11-21 00:10:03] Touchscreen DefaultMode 4
+[2026-11-21 00:10:03] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:10:03]   Manufacturer: Valve Software
+[2026-11-21 00:10:03]   Product:      Mobile Touch Control
+[2026-11-21 00:10:03]   Release:      0
+[2026-11-21 00:10:03]   Interface:    0
+
+[2026-11-21 00:10:03] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:13:39] Exiting workitem thread
+
+
+[2026-11-21 00:17:14] Client version: 1793740892
+[2026-11-21 00:17:14] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:17:14]   Manufacturer: Valve Software
+[2026-11-21 00:17:14]   Product:      Steam Deck Controller
+[2026-11-21 00:17:14]   Release:      100
+[2026-11-21 00:17:14]   Interface:    2
+
+[2026-11-21 00:17:14] Controller uses V1 HID protocol
+ 
+[2026-11-21 00:17:14] !! Steam controller device opened for index 15.
+[2026-11-21 00:17:14] Steam Controller reserving XInput slot 0
+[2026-11-21 00:17:14] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:17:14]   Manufacturer: Valve Software
+[2026-11-21 00:17:14]   Product:      Mobile Touch Control
+[2026-11-21 00:17:14]   Release:      0
+[2026-11-21 00:17:14]   Interface:    0
+
+[2026-11-21 00:17:14] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-21 00:17:14] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:17:14] Controller 15 mapping uses xinput : false
+[2026-11-21 00:17:14] Add to Config Cache Request 15 769
+[2026-11-21 00:17:14] Controller 15 mapping uses xinput : false
+[2026-11-21 00:17:14] Controller 15 mapping uses xinput : false
+[2026-11-21 00:17:14] Queueing activation for controller: 15 app: 769
+[2026-11-21 00:17:14] Controller PollState Changed from 0 to 1
+[2026-11-21 00:17:14] Controller PollState Changed from 1 to 2
+[2026-11-21 00:17:14] Touchscreen DefaultMode 4
+[2026-11-21 00:17:14] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:17:14]   Manufacturer: Valve Software
+[2026-11-21 00:17:14]   Product:      Mobile Touch Control
+[2026-11-21 00:17:14]   Release:      0
+[2026-11-21 00:17:14]   Interface:    0
+
+[2026-11-21 00:17:14] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:22:12] Exiting workitem thread
+
+
+[2026-11-21 00:31:30] Client version: 1792618285
+[2026-11-21 00:31:30] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:31:30]   Manufacturer: Valve Software
+[2026-11-21 00:31:30]   Product:      Steam Deck Controller
+[2026-11-21 00:31:30]   Release:      100
+[2026-11-21 00:31:30]   Interface:    2
+
+[2026-11-21 00:31:30] Controller uses V1 HID protocol
+ 
+[2026-11-21 00:31:30] !! Steam controller device opened for index 15.
+[2026-11-21 00:31:30] Steam Controller reserving XInput slot 0
+[2026-11-21 00:31:30] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:31:30]   Manufacturer: Valve Software
+[2026-11-21 00:31:30]   Product:      Mobile Touch Control
+[2026-11-21 00:31:30]   Release:      0
+[2026-11-21 00:31:30]   Interface:    0
+
+[2026-11-21 00:31:30] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:31:30] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-21 00:31:30] Controller 15 mapping uses xinput : false
+[2026-11-21 00:31:30] Add to Config Cache Request 15 769
+[2026-11-21 00:31:30] Controller 15 mapping uses xinput : false
+[2026-11-21 00:31:30] Controller 15 mapping uses xinput : false
+[2026-11-21 00:31:30] Queueing activation for controller: 15 app: 769
+[2026-11-21 00:31:31] Controller PollState Changed from 0 to 1
+[2026-11-21 00:31:31] Controller PollState Changed from 1 to 2
+[2026-11-21 00:31:31] Touchscreen DefaultMode 4
+[2026-11-21 00:31:31] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:31:31]   Manufacturer: Valve Software
+[2026-11-21 00:31:31]   Product:      Mobile Touch Control
+[2026-11-21 00:31:31]   Release:      0
+[2026-11-21 00:31:31]   Interface:    0
+
+[2026-11-21 00:31:31] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:34:43] Exiting workitem thread
+
+
+[2026-11-21 00:36:30] Client version: 1792618285
+[2026-11-21 00:36:30] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:36:30]   Manufacturer: Valve Software
+[2026-11-21 00:36:30]   Product:      Steam Deck Controller
+[2026-11-21 00:36:30]   Release:      100
+[2026-11-21 00:36:30]   Interface:    2
+
+[2026-11-21 00:36:30] Controller uses V1 HID protocol
+ 
+[2026-11-21 00:36:30] !! Steam controller device opened for index 15.
+[2026-11-21 00:36:30] Steam Controller reserving XInput slot 0
+[2026-11-21 00:36:30] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:36:30]   Manufacturer: Valve Software
+[2026-11-21 00:36:30]   Product:      Mobile Touch Control
+[2026-11-21 00:36:30]   Release:      0
+[2026-11-21 00:36:30]   Interface:    0
+
+[2026-11-21 00:36:30] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:36:30] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-21 00:36:30] Controller 15 mapping uses xinput : false
+[2026-11-21 00:36:30] Add to Config Cache Request 15 769
+[2026-11-21 00:36:30] Controller 15 mapping uses xinput : false
+[2026-11-21 00:36:30] Controller 15 mapping uses xinput : false
+[2026-11-21 00:36:30] Queueing activation for controller: 15 app: 769
+[2026-11-21 00:36:31] Controller PollState Changed from 0 to 1
+[2026-11-21 00:36:31] Controller PollState Changed from 1 to 2
+[2026-11-21 00:36:31] Touchscreen DefaultMode 4
+[2026-11-21 00:36:31] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:36:31]   Manufacturer: Valve Software
+[2026-11-21 00:36:31]   Product:      Mobile Touch Control
+[2026-11-21 00:36:31]   Release:      0
+[2026-11-21 00:36:31]   Interface:    0
+
+[2026-11-21 00:36:31] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:41:29] Exiting workitem thread
+
+
+[2026-11-21 00:42:22] Client version: 1792618285
+[2026-11-21 00:42:22] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:42:22]   Manufacturer: Valve Software
+[2026-11-21 00:42:22]   Product:      Steam Deck Controller
+[2026-11-21 00:42:22]   Release:      100
+[2026-11-21 00:42:22]   Interface:    2
+
+[2026-11-21 00:42:22] Controller uses V1 HID protocol
+ 
+[2026-11-21 00:42:22] !! Steam controller device opened for index 15.
+[2026-11-21 00:42:22] Steam Controller reserving XInput slot 0
+[2026-11-21 00:42:22] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-21 00:42:22] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:42:22]   Manufacturer: Valve Software
+[2026-11-21 00:42:22]   Product:      Mobile Touch Control
+[2026-11-21 00:42:22]   Release:      0
+[2026-11-21 00:42:22]   Interface:    0
+
+[2026-11-21 00:42:22] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:42:22] Controller 15 mapping uses xinput : false
+[2026-11-21 00:42:22] Add to Config Cache Request 15 769
+[2026-11-21 00:42:22] Controller 15 mapping uses xinput : false
+[2026-11-21 00:42:22] Controller 15 mapping uses xinput : false
+[2026-11-21 00:42:22] Queueing activation for controller: 15 app: 769
+[2026-11-21 00:42:23] Controller PollState Changed from 0 to 1
+[2026-11-21 00:42:23] Controller PollState Changed from 1 to 2
+[2026-11-21 00:42:23] Touchscreen DefaultMode 4
+[2026-11-21 00:42:23] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:42:23]   Manufacturer: Valve Software
+[2026-11-21 00:42:23]   Product:      Mobile Touch Control
+[2026-11-21 00:42:23]   Release:      0
+[2026-11-21 00:42:23]   Interface:    0
+
+[2026-11-21 00:42:23] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:47:21] Exiting workitem thread
+
+
+[2026-11-21 00:57:41] Client version: 1792618285
+[2026-11-21 00:57:41] Local Device Found
+  type: 28de 1205
+  path: /dev/hidraw16
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:57:41]   Manufacturer: Valve Software
+[2026-11-21 00:57:41]   Product:      Steam Deck Controller
+[2026-11-21 00:57:41]   Release:      100
+[2026-11-21 00:57:41]   Interface:    2
+
+[2026-11-21 00:57:41] Controller uses V1 HID protocol
+ 
+[2026-11-21 00:57:41] !! Steam controller device opened for index 15.
+[2026-11-21 00:57:41] Steam Controller reserving XInput slot 0
+[2026-11-21 00:57:41] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:57:41]   Manufacturer: Valve Software
+[2026-11-21 00:57:41] Controller Info: HWID: 46, FWTimestamp: 0x65E4F1AD
+[2026-11-21 00:57:41]   Product:      Mobile Touch Control
+[2026-11-21 00:57:41]   Release:      0
+[2026-11-21 00:57:41]   Interface:    0
+
+[2026-11-21 00:57:41] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:57:41] Controller 15 mapping uses xinput : false
+[2026-11-21 00:57:41] Add to Config Cache Request 15 769
+[2026-11-21 00:57:41] Controller 15 mapping uses xinput : false
+[2026-11-21 00:57:41] Controller 15 mapping uses xinput : false
+[2026-11-21 00:57:41] Queueing activation for controller: 15 app: 769
+[2026-11-21 00:57:41] Controller PollState Changed from 0 to 1
+[2026-11-21 00:57:41] Controller PollState Changed from 1 to 2
+[2026-11-21 00:57:41] Touchscreen DefaultMode 4
+[2026-11-21 00:57:41] Local Device Found
+  type: 0000 11fb
+  path: /dev/hidraw17
+  serial_number: <redacted:serial> - 0
+[2026-11-21 00:57:41]   Manufacturer: Valve Software
+[2026-11-21 00:57:41]   Product:      Mobile Touch Control
+[2026-11-21 00:57:41]   Release:      0
+[2026-11-21 00:57:41]   Interface:    0
+
+[2026-11-21 00:57:41] Unable to open local device: /dev/hidraw17
+[2026-11-21 00:59:03] Exiting workitem thread

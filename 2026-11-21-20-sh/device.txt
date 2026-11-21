@@ -1,0 +1,131 @@
+DroidDeck session report
+========================
+Written                 2026-11-21 01:31:33 GMT+01:00
+Session mode            a program under gamescope
+
+App
+---
+Version                 0.7.1 (19)
+App build               remote clean · main at 2aeff3b (source 2aeff3bd9be4ad2b989ccdd49d17fff4403fb0a2)
+Package                 com.droiddeck.launcher
+targetSdk               28
+Native lib dir          /data/app/~~BtTo24anZMLo5gVhMLlGyA==/com.droiddeck.launcher-uUmLjSzdIITEalBicIuKSA==/lib/arm64
+
+Device
+------
+Model                   Xiaomi 22041216G
+Device / product        xaga / xaga_eea
+Board / hardware        xaga / mt6895
+SoC                     Mediatek MT6895Z/TCZA
+Android                 14 (API 34)
+Security patch          2025-04-01
+Build                   UP1A.231005.007
+Fingerprint             POCO/xaga_eea/xaga:14/UP1A.231005.007/OS2.0.3.0.ULOEUXM:user/release-keys
+Kernel                  5.10.209-android12-9-00019-g4ea09a298bb4-ab12292661
+ABIs                    arm64-v8a, armeabi-v7a, armeabi
+Memory page size        4096 bytes
+
+Recent process exits
+--------------------
+2026-11-20 20:55:31     com.droiddeck.launcher  USER_REQUESTED  status=0  [FORCE STOP] stop com.droiddeck.launcher due to from process:17426
+2026-11-20 20:50:31     com.droiddeck.launcher  CRASH  status=0  crash
+2026-11-20 20:50:30     com.droiddeck.launcher  CRASH  status=0  crash
+2026-11-20 20:50:30     com.droiddeck.launcher  CRASH  status=0  crash
+2026-11-20 20:45:29     com.droiddeck.launcher  CRASH  status=0  crash
+
+CPU and memory
+--------------
+Cores                   8
+CPU features            fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+Core ceilings          cpu0 2.00 GHz, cpu1 2.00 GHz, cpu2 2.00 GHz, cpu3 2.00 GHz, cpu4 2.85 GHz, cpu5 2.85 GHz, cpu6 2.85 GHz, cpu7 2.85 GHz
+RAM total               7.3 GB
+RAM available           3.8 GB
+Thermal status          NONE
+Thermal headroom (10 s) 0.45
+Power saver             false
+ADPF hint sessions      not supported
+Game Mode               STANDARD
+App storage free        80.0 GB
+Shared storage free     80.0 GB
+
+GPU
+---
+KGSL gpu_model          unknown
+KGSL chip id            unknown
+System Vulkan ICD       not at the usual path
+
+Display
+-------
+Session output          1638x720
+Session refresh         144.00 Hz
+Panel refresh now       144.00 Hz
+Panel refresh modes     144 Hz, 120 Hz, 90 Hz, 60 Hz, 50 Hz, 48 Hz, 30 Hz
+peak_refresh_rate       144
+refresh_rate_mode       not set
+Resolution (Steam)      720p (1638x720)
+Resolution (Desktop)    720p (1638x720)
+Foldable                false
+
+Drivers
+-------
+GPU                     Mali-G610 MC6 · Mali-G610/G710 · Experimental: open Mali driver (test builds)
+Driver mode             auto (recommended pair: nad:panvk-mali-g710)
+Display driver (chosen) Auto -> System Vulkan
+  name / version        System Vulkan
+  imported available    none
+Linux driver            the runtime's own Turnip
+Runtime's own ICD       /data/user/0/com.droiddeck.launcher/files/linuxfs/usr/share/vulkan/icd.d/freedreno_icd.json
+Mali (Venus)            available, off
+
+Runtime
+-------
+Installed version       ubuntu-r1-rc5
+Runtime ready           true
+Desktop installed       true
+Interrupted installs    none
+Broken library links    none
+Runtime root            /data/user/0/com.droiddeck.launcher/files/linuxfs
+
+Settings in effect
+------------------
+Client core override    false
+  client cores          0,1,2,3,4,5,6,7
+  game cores            every core
+Turnip sysmem           true
+Zink lazy descriptors   true
+Threaded GL (glthread)  true
+No GL error checks      true
+Steam controller        deck
+Upscaler                Linear (sharpness 75%)
+FEX preset              PERFORMANCE_TSO
+Skip xalia              true
+Wine sync               ntsync
+droiddeck-esync packs   5 installed, 0 wanted
+Linux x86 (FEX)         not set up
+gamescope realtime      false
+zRAM: compress Steam during gamestrue
+RAM cap                 off
+VRAM cap                driver default
+proot without seccomp   false
+proot fast path         true
+proot binary            add-on pack /data/user/0/com.droiddeck.launcher/files/addons/proot/6d3844bbcdc10d2cd237f35d858a1cf3e3b493bfe17c9466952caa584dc78a96/libproot.so
+proot fast path (eligible)true
+Guest host name         DroidDeck
+DirectAudio for games   true
+Stretch 16:9 to panel   false
+Return to launcher after a gametrue
+Microphone              false
+On-screen controls      auto
+Touch mode              auto
+Performance HUD         false
+Game storage            automatic (no card present)
+
+Android process limits
+----------------------
+Phantom proc monitor    disabled (good - the OS will not kill the session's children)
+
+Device switch files
+-------------------
+
+Nothing identifying is collected here: no serial number, no device or advertising
+id, no account name, no network names. Safe to attach to a bug report as it is.

@@ -1,0 +1,88 @@
+
+
+[2026-11-20 23:05:22] Client version: 1793740892
+[2026-11-20 23:05:22] Initializing system dock manager: linux
+[2026-11-20 23:05:32] YldFirmwareCheckForUpdate: check requested
+[2026-11-20 23:05:32] YldFirmwareCheckForUpdate: starting check
+[2026-11-20 23:05:32] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-20 23:05:32] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-20 23:05:32] Error: FWVersionFromString: failed to parse version
+[2026-11-20 23:05:32] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-20 23:05:32] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-20 23:51:01] Client version: 1793740892
+[2026-11-20 23:51:01] Initializing system dock manager: linux
+[2026-11-20 23:51:12] YldFirmwareCheckForUpdate: check requested
+[2026-11-20 23:51:12] YldFirmwareCheckForUpdate: starting check
+[2026-11-20 23:51:12] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-20 23:51:12] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-20 23:51:12] Error: FWVersionFromString: failed to parse version
+[2026-11-20 23:51:12] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-20 23:51:12] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-21 00:10:02] Client version: 1793740892
+[2026-11-21 00:10:02] Initializing system dock manager: linux
+[2026-11-21 00:10:12] YldFirmwareCheckForUpdate: check requested
+[2026-11-21 00:10:12] YldFirmwareCheckForUpdate: starting check
+[2026-11-21 00:10:12] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-21 00:10:12] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-21 00:10:12] Error: FWVersionFromString: failed to parse version
+[2026-11-21 00:10:12] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-21 00:10:12] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-21 00:17:13] Client version: 1793740892
+[2026-11-21 00:17:13] Initializing system dock manager: linux
+[2026-11-21 00:17:23] YldFirmwareCheckForUpdate: check requested
+[2026-11-21 00:17:23] YldFirmwareCheckForUpdate: starting check
+[2026-11-21 00:17:23] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-21 00:17:23] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-21 00:17:23] Error: FWVersionFromString: failed to parse version
+[2026-11-21 00:17:23] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-21 00:17:23] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-21 00:31:30] Client version: 1792618285
+[2026-11-21 00:31:30] Initializing system dock manager: linux
+[2026-11-21 00:31:40] YldFirmwareCheckForUpdate: check requested
+[2026-11-21 00:31:40] YldFirmwareCheckForUpdate: starting check
+[2026-11-21 00:31:40] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-21 00:31:40] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-21 00:31:40] Error: FWVersionFromString: failed to parse version
+[2026-11-21 00:31:40] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-21 00:31:40] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-21 00:36:30] Client version: 1792618285
+[2026-11-21 00:36:30] Initializing system dock manager: linux
+[2026-11-21 00:36:40] YldFirmwareCheckForUpdate: check requested
+[2026-11-21 00:36:40] YldFirmwareCheckForUpdate: starting check
+[2026-11-21 00:36:40] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-21 00:36:40] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-21 00:36:40] Error: FWVersionFromString: failed to parse version
+[2026-11-21 00:36:40] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-21 00:36:40] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-21 00:42:22] Client version: 1792618285
+[2026-11-21 00:42:22] Initializing system dock manager: linux
+[2026-11-21 00:42:32] YldFirmwareCheckForUpdate: check requested
+[2026-11-21 00:42:32] YldFirmwareCheckForUpdate: starting check
+[2026-11-21 00:42:32] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-21 00:42:32] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-21 00:42:32] Error: FWVersionFromString: failed to parse version
+[2026-11-21 00:42:32] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-21 00:42:32] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes
+
+
+[2026-11-21 00:57:40] Client version: 1792618285
+[2026-11-21 00:57:40] Initializing system dock manager: linux
+[2026-11-21 00:57:50] YldFirmwareCheckForUpdate: check requested
+[2026-11-21 00:57:50] YldFirmwareCheckForUpdate: starting check
+[2026-11-21 00:57:50] YldFirmwareCheckForUpdateInternal: Command 'LD_LIBRARY_PATH="${SYSTEM_LD_LIBRARY_PATH-${LD_LIBRARY_PATH}}" PATH="${SYSTEM_PATH-${PATH}}" /usr/bin/steamos-polkit-helpers/jupiter-dock-updater --check' returned: 7
+[2026-11-21 00:57:50] YldFirmwareCheckForUpdateInternal: state: 2 current:  available: 
+[2026-11-21 00:57:50] Error: FWVersionFromString: failed to parse version
+[2026-11-21 00:57:50] Error: BIsKnownGoodVersion: failed to parse current version
+[2026-11-21 00:57:50] CDockUnsupportedFirmwareWorkaroundManager: current version:  good: yes

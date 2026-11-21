@@ -1,0 +1,94 @@
+== proot: /data/user/0/com.droiddeck.launcher/files/addons/proot/6d3844bbcdc10d2cd237f35d858a1cf3e3b493bfe17c9466952caa584dc78a96/libproot.so (add-on pack)
+== droiddeck-session Sat Nov 21 01:31:33 CET 2026 mode=run sh -c cp /storage/emulated/0/Download/gl-ladder /root/gl-ladder && chmod +x /root/gl-ladder && LADDER_STEP=1 LADDER_HOLD=25000 /root/gl-ladder
+== uid=10316 size=1638x720 icd=/data/user/0/com.droiddeck.launcher/files/linuxfs/usr/share/vulkan/icd.d/freedreno_icd.json
+== gamescope: [gamescope] [[0;34mInfo[0m]  [0;37mconsole:[0m gamescope version 3.16.29+ (gcc 16.1.1) at /usr/local/bin/gamescope
+== rootfs: ubuntu-r1-rc5
+[gamescope] [[0;34mInfo[0m]  [0;37mconsole:[0m gamescope version 3.16.29+ (gcc 16.1.1)
+No CAP_SYS_NICE, falling back to regular-priority compute and threads.
+Performance will be affected.
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Loading scripts from: '/usr/share/gamescope/scripts'
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Loading scripts from: '/usr/share/gamescope/scripts/00-gamescope'
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Loading scripts from: '/usr/share/gamescope/scripts/00-gamescope/common'
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/common/inspect.lua' (id: 0)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/common/modegen.lua' (id: 1)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/common/util.lua' (id: 2)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Loading scripts from: '/usr/share/gamescope/scripts/00-gamescope/displays'
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/asus.rogally.lcd.lua' (id: 3)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/deckhd.steamdeck.deckhd-lcd.lua' (id: 4)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/gpd.win4.lcd.lua' (id: 5)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/lenovo.legiongo.lcd.lua' (id: 6)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/lenovo.legiongos.lcd.lua' (id: 7)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/onexplayer.f1.oled.lua' (id: 8)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/valve.steamdeck.lcd.lua' (id: 9)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/valve.steamdeck.oled.lua' (id: 10)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/zotac.zone.oled.lua' (id: 11)
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Loading scripts from: '/etc/gamescope/scripts'
+[gamescope] [[0;33mWarn[0m]  [0;37mscriptmgr:[0m Directory '/etc/gamescope/scripts' does not exist
+[gamescope] [[0;34mInfo[0m]  [0;37mscriptmgr:[0m Loading scripts from: '/root/.config/gamescope/scripts'
+[gamescope] [[0;33mWarn[0m]  [0;37mscriptmgr:[0m Directory '/root/.config/gamescope/scripts' does not exist
+Couldn't open plugin directory: No such file or directory
+No plugins found, falling back on no decorations
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m selecting physical device 'Mali-G610 MC6 (mali-own)': queue family 0 (general queue family 0)
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m physical device supports DRM format modifiers
+[gamescope] [[0;33mWarn[0m]  [0;37mvulkan:[0m physical device doesn't support VK_EXT_physical_device_drm
+[gamescope] [[0;34mInfo[0m]  [0;37mwlserver:[0m [backend/headless/backend.c:60] Creating headless backend
+[gamescope] [[0;34mInfo[0m]  [0;37mxdg_backend:[0m Seat name: droiddeck-seat
+[gamescope] [[0;34mInfo[0m]  [0;37mxdg_backend:[0m Initted Wayland backend
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m supported DRM formats for sampling usage:
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m   AR24 (0x34325241)
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m   XR24 (0x34325258)
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m   AB24 (0x34324241)
+[gamescope] [[0;34mInfo[0m]  [0;37mvulkan:[0m   XB24 (0x34324258)
+[gamescope] [[0;31mError[0m] [0;37mwlserver:[0m [types/wlr_drm.c:211] Failed to get DRM FD from renderer
+[gamescope] [[0;34mInfo[0m]  [0;37mwlserver:[0m Running compositor on wayland display 'gamescope-0'
+[gamescope] [[0;34mInfo[0m]  [0;37mwlserver:[0m [backend/headless/backend.c:17] Starting headless backend
+[gamescope] [[0;34mInfo[0m]  [0;37mwlserver:[0m Successfully initialized libei for input emulation!
+[gamescope] [[0;34mInfo[0m]  [0;37mwlserver:[0m [xwayland/server.c:108] Starting Xwayland on :0
+Xwayland glamor: GBM Wayland interfaces not available
+Failed to initialize glamor, falling back to sw
+[gamescope] [[0;31mError[0m] [0;37mpipewire:[0m pw_context_connect failed
+Warning: failed to setup PipeWire, screen capture won't be available
+[gamescope] [[0;34mInfo[0m]  [0;37mxwm:[0m Embedded, no cursor set. Using left_ptr by default.
+[gamescope] [[0;34mInfo[0m]  [0;37medid:[0m Patching res 800x1280 -> 1638x720
+[gamescope] [[0;34mInfo[0m]  [0;37mvblank:[0m Using timerfd.
+[gamescope] [[0;31mError[0m] [0;37mwaitable:[0m Failed to add waitable: Operation not permitted
+[gamescope] [[0;34mInfo[0m]  [0;37mxdg_backend:[0m Post-Initted Wayland backend
+[gamescope] [[0;34mInfo[0m]  [0;37mxwm:[0m DroidDeck HUD frames: /run/droiddeck-hud/frames
+== clipboard: Android text available in Xwayland (0 bytes)
+== agent: Steam keyboard: waiting for the client (The Steam client's DevTools port is not known (no Steam client in this session yet))
+== agent: serving /data/user/0/com.droiddeck.launcher/files/session/agent (focus on)
+step=1 libGL=loaded missing_symbols=0
+[Gamescope WSI] Application info:
+  pApplicationName: gl-ladder
+  applicationVersion: 0
+  pEngineName: mesa zink
+  engineVersion: 0
+  apiVersion: 4211029
+[Gamescope WSI] Executable name: gl-ladder
+[Gamescope WSI] Forcing on VK_EXT_swapchain_maintenance1.
+fbconfig[rgba8+depth24] ok n=8 x_error=0
+fbconfig=chosen visual_id=0x1d6 srgb=0 have=1
+context=compat3.3 FAILED x_error=165
+context=core3.3 FAILED x_error=165
+ATTENTION: default value of option mesa_glthread overridden by environment.
+context=legacy ok x_error=0
+[Gamescope WSI] Creating Gamescope surface: xid: 0x800002
+[Gamescope WSI] Atom of T was wrong type. Expected XCB_ATOM_CARDINAL.
+[Gamescope WSI] Made gamescope surface for xid: 0x800002
+[Gamescope WSI] Surface state:
+  steam app id:                  0
+  window xid:                    0x800002
+  wayland surface res id:        6
+  layer client flags:            0x0
+  server hdr output enabled:     false
+  hdr formats exposed to client: false
+MESA: error: zink: could not create swapchain
+step=1 vendor="Mesa" renderer="zink Vulkan 1.3(Mali-G610 MC6 (mali-own) (MESA_PANVK))" gl=0.0 version="2.1 Mesa 26.0.8-1ubuntu0.3+droiddeck1" fbconfig_srgb=0 glx_exts_srgb=1
+step=1 fbo=RGBA8 complete=COMPLETE srgb=off draw=clear err=0
+step=1 target=window1
+step=1 blit=glBlitFramebuffer(0,0,800,600 -> 0,0,800,600,COLOR,NEAREST) err=0
+blit readback=back  mean=123.7/255 pixel_mid=(26,115,230) pixel_low=(26,115,230)
+step=1 swap=ok err=0 window_shows=blue (0.10,0.45,0.90)
+step=1 done
+[gamescope] [[0;34mInfo[0m]  [0;37mlaunch:[0m Primary child shut down!
+(EE) failed to read Wayland events: Broken pipe

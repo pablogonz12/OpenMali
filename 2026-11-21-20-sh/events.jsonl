@@ -1,0 +1,15 @@
+{"t":1795221093047,"event":"session.created","sessionId":"<redacted:token>","mode":"run"}
+{"t":1795221093047,"event":"agent.start_requested","sessionId":"<redacted:token>","mode":"run"}
+{"t":1795221093113,"event":"compositor.starting","sessionId":"<redacted:token>"}
+{"t":1795221093117,"event":"compositor.started","sessionId":"<redacted:token>"}
+{"t":1795221093117,"event":"guest.starting","sessionId":"<redacted:token>"}
+{"t":1795221093146,"event":"service.started","sessionId":"<redacted:token>","mode":"run"}
+{"t":1795221093214,"event":"session.logs_ready","sessionId":"<redacted:token>","logDir":"\/data\/user\/0\/com.droiddeck.launcher\/files\/logs\/2026-11-21-20-sh"}
+{"t":1795221093383,"event":"guest.started","sessionId":"<redacted:token>","pid":29201}
+{"t":1795221094250,"event":"agent.ready","sessionId":"<redacted:token>","pid":29359,"focus":true}
+{"t":1795221094250,"event":"keyboard.changed","sessionId":"<redacted:token>","steamKeyboard":false,"seq":1}
+{"t":1795221094461,"event":"focus.changed","sessionId":"<redacted:token>","focusedApp":null,"focusableApps":"[8388610]","baselayerAppIds":"[]","seq":1}
+{"t":1795221119960,"event":"guest.exited","sessionId":"<redacted:token>","status":0}
+{"t":1795221119960,"event":"session.stopping","sessionId":"<redacted:token>","status":0}
+{"t":1795221120017,"event":"session.stopped","sessionId":"<redacted:token>","status":0}
+{"t":1795221120813,"event":"session.artifacts_collected","sessionId":"<redacted:token>","reason":"session stopped"}

@@ -112,6 +112,7 @@ typedef XID GLXDrawable;
 #define GL_VERTEX_ARRAY                        0x8074
 
 #define GLX_USE_GL                             1
+#define GLX_RGBA                               4
 #define GLX_RGBA_BIT                           0x00000001
 #define GLX_WINDOW_BIT                         0x00000001
 #define GLX_DOUBLEBUFFER                       5
@@ -296,6 +297,17 @@ static const char *completeness(void)
 static Display *dpy;
 static int scr;
 
+/* GLX failures (a rejected profile, a bad FBConfig) arrive as X protocol errors,
+ * and Xlib's default handler exits the process. Keep them countable instead. */
+static int x_err;
+static int x_error_handler(Display *d, XErrorEvent *e)
+{
+    (void)d;
+    x_err = e->error_code;
+    return 0;
+}
+static int take_x_error(void) { int e = x_err; x_err = 0; return e; }
+
 struct win {
     Window w;
     GLXContext ctx;
@@ -318,9 +330,22 @@ static int has_glx_ext(const char *name)
     return 0;
 }
 
+/* Ask for an FBConfig list and say what happened, including any X protocol
+ * error: Xwayland under gamescope answers an unsupported attribute set with
+ * GLXBadFBConfig instead of an empty list. */
+static GLXFBConfig *try_cfgs(const char *what, int *attrs, int *n_out)
+{
+    int n = 0;
+    GLXFBConfig *c = glXChooseFBConfig(dpy, scr, attrs, &n);
+    XSync(dpy, False);
+    printf("fbconfig[%s] %s n=%d x_error=%d\n", what, c ? "ok" : "NULL", n, take_x_error());
+    *n_out = n;
+    return c;
+}
+
 static int open_window(struct win *out, const char *title, GLXContext share, int want_srgb)
 {
-    static int attrs_base[] = {
+    static int attrs_depth[] = {
         GLX_X_RENDERABLE, True,
         GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
         GLX_RENDER_TYPE, GLX_RGBA_BIT,
@@ -331,30 +356,52 @@ static int open_window(struct win *out, const char *title, GLXContext share, int
         GLX_DOUBLEBUFFER, True,
         0
     };
+    static int attrs_nodepth[] = {
+        GLX_X_RENDERABLE, True,
+        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+        GLX_RENDER_TYPE, GLX_RGBA_BIT,
+        GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
+        GLX_ALPHA_SIZE, 8,
+        GLX_DOUBLEBUFFER, True,
+        0
+    };
     int attrs_srgb[64];
-    GLXFBConfig *cfgs = NULL;
-    int n = 0, i, srgb = 0;
-    XVisualInfo *vi = NULL;
+    GLXFBConfig *cand;
+    int n = 0, i, srgb = 0, have_cfg = 0;
+    XVisualInfo *vi;
     XSetWindowAttributes swa;
     Window w;
     GLXContext ctx;
 
     if (want_srgb && has_glx_ext("GLX_ARB_framebuffer_sRGB")) {
-        for (i = 0; attrs_base[i] != 0; i++) attrs_srgb[i] = attrs_base[i];
+        for (i = 0; attrs_depth[i] != 0; i++) attrs_srgb[i] = attrs_depth[i];
         attrs_srgb[i++] = GLX_FRAMEBUFFER_SRGB_CAPABLE_ARB;
         attrs_srgb[i++] = True;
         attrs_srgb[i++] = 0;
-        cfgs = glXChooseFBConfig(dpy, scr, attrs_srgb, &n);
-        if (cfgs) { XFree(cfgs); cfgs = NULL; }
-        if (n > 0) srgb = 1;
+        cand = try_cfgs("rgba8+depth24+srgb", attrs_srgb, &n);
+        if (cand && n > 0) { out->cfg = cand[0]; srgb = 1; have_cfg = 1; }
+        if (cand) XFree(cand);
     }
-    cfgs = glXChooseFBConfig(dpy, scr, attrs_base, &n);
-    if (!cfgs || n < 1) {
-        fprintf(stderr, "gl-ladder: no double-buffered RGBA8 FBConfig\n");
-        return 0;
+    if (!have_cfg) {
+        cand = try_cfgs("rgba8+depth24", attrs_depth, &n);
+        if (cand && n > 0) { out->cfg = cand[0]; have_cfg = 1; }
+        if (cand) XFree(cand);
     }
-    out->cfg = cfgs[0];
-    XFree(cfgs);
+    if (!have_cfg) {
+        cand = try_cfgs("rgba8", attrs_nodepth, &n);
+        if (cand && n > 0) { out->cfg = cand[0]; have_cfg = 1; }
+        if (cand) XFree(cand);
+    }
+    {
+        int have = 0;
+        int id = 0;
+        if (glXGetFBConfigAttrib && out->cfg) {
+            glXGetFBConfigAttrib(dpy, out->cfg, GLX_VISUAL_ID, &id);
+            have = 1;
+        }
+        printf("fbconfig=chosen visual_id=0x%x srgb=%d have=%d\n", id, srgb, have);
+    }
+    if (!out->cfg) { fprintf(stderr, "gl-ladder: no usable FBConfig\n"); return 0; }
 
     vi = glXGetVisualFromFBConfig(dpy, out->cfg);
     if (!vi) { fprintf(stderr, "gl-ladder: no XVisualInfo\n"); return 0; }
@@ -385,26 +432,42 @@ static int open_window(struct win *out, const char *title, GLXContext share, int
     XMapWindow(dpy, w);
     XFlush(dpy);
 
-    /* 3.3 compatibility profile if we can, else whatever GLX gives us */
+    /* 3.3 compatibility profile if we can, then core 3.3, then whatever GLX
+     * gives us. Xwayland under gamescope answers an unsupported profile with a
+     * GLXBadFBConfig protocol error, which Xlib's default handler turns into
+     * exit(); x_error_handler() above keeps it a return value we can fall back
+     * from, which is exactly what a screenshot on a phone has to distinguish
+     * from a black frame. */
     ctx = NULL;
     if (has_glx_ext("GLX_ARB_create_context")) {
         void *p = glXGetProcAddressARB((const GLubyte *)"glXCreateContextAttribsARB");
         if (p) {
-            GLXContext (*create)(Display *, GLXFBConfig, GLXContext, Bool, const int *) = p;
-            int cattrs[] = {
-                GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-                GLX_CONTEXT_MINOR_VERSION_ARB, 3,
-                GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
-                0
+            static const int profiles[] = {
+                GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
+                GLX_CONTEXT_CORE_PROFILE_BIT_ARB
             };
-            ctx = create(dpy, out->cfg, share, True, cattrs);
-            if (!ctx) {
-                cattrs[5] = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;   /* second attempt */
+            GLXContext (*create)(Display *, GLXFBConfig, GLXContext, Bool, const int *) = p;
+            int pi;
+            for (pi = 0; pi < 2 && !ctx; pi++) {
+                int cattrs[] = {
+                    GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+                    GLX_CONTEXT_MINOR_VERSION_ARB, 3,
+                    GLX_CONTEXT_PROFILE_MASK_ARB, profiles[pi],
+                    0
+                };
                 ctx = create(dpy, out->cfg, share, True, cattrs);
+                XSync(dpy, False);
+                printf("context=%s3.3 %s x_error=%d\n",
+                       pi == 0 ? "compat" : "core", ctx ? "ok" : "FAILED",
+                       take_x_error());
             }
         }
     }
-    if (!ctx) ctx = glXCreateContext(dpy, vi, share, True);
+    if (!ctx) {
+        ctx = glXCreateContext(dpy, vi, share, True);
+        XSync(dpy, False);
+        printf("context=legacy %s x_error=%d\n", ctx ? "ok" : "FAILED", take_x_error());
+    }
     if (!ctx) { fprintf(stderr, "gl-ladder: no GLX context\n"); return 0; }
 
     out->w = w;
@@ -593,6 +656,8 @@ int main(int argc, char **argv)
     GLint major = 0, minor = 0;
 
     (void)argc; (void)argv;
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
     if (s && *s) step = atoi(s);
     if (step < 1 || step > 4) {
         fprintf(stderr, "gl-ladder: LADDER_STEP must be 1..4 (got %s)\n", s ? s : "");
@@ -609,6 +674,7 @@ int main(int argc, char **argv)
         return 2;
     }
     scr = DefaultScreen(dpy);
+    XSetErrorHandler(x_error_handler);
     if (!load_gl()) return 2;
     if (!glGenFramebuffers || !glBlitFramebuffer) {
         fprintf(stderr, "gl-ladder: no glGenFramebuffers/glBlitFramebuffer in libGL\n");
@@ -722,6 +788,17 @@ int main(int argc, char **argv)
         drain_errors(err, sizeof err);
         printf("step=%d window1_shows=grey 0.5 (second buffer untouched by the blit) err=%s\n",
                step, err);
+    }
+
+    /* handshake for the screenshot: the window is up and swapped, so a watcher
+     * on the host can stop guessing how long the guest takes to boot */
+    {
+        const char *rf = getenv("LADDER_READY");
+        if (rf && *rf) {
+            FILE *fp = fopen(rf, "w");
+            if (fp) { fprintf(fp, "step=%d\n", step); fclose(fp); }
+            printf("ready=%s\n", rf);
+        }
     }
 
     /* keep the window on screen long enough for a screenshot */

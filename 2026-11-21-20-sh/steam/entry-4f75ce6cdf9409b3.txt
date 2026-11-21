@@ -1,0 +1,264 @@
+
+
+[2026-11-20 23:05:22] Client version: 1793740892
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-20 23:05:22] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-20 23:05:22] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-20 23:05:22] Initialized system display manager: wayland: modeset:0
+[2026-11-20 23:05:22] RegisterOutput: 19
+[2026-11-20 23:05:22] OnOutputGeometry: 0x74982e8760: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-20 23:05:22] OnOutputMode: 0x74982e8760: 1638 x 720 @ 144000 - 1
+[2026-11-20 23:05:22] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-20 23:05:22] RematchCurrentMode: forcing matching mode: 6342
+[2026-11-20 23:05:22] OnOutputScale: 0x74982e8760: factor: 1
+[2026-11-20 23:05:22] OnOutputName: 0x74982e8760: name: 'gamescope'
+[2026-11-20 23:05:22] OnOutputDescription: 0x74982e8760: description: 'Virtual gamescope output'
+[2026-11-20 23:05:22] OnOutputDone: 0x74982e8760: done
+
+
+[2026-11-20 23:51:01] Client version: 1793740892
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-20 23:51:01] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-20 23:51:01] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-20 23:51:01] Initialized system display manager: wayland: modeset:0
+[2026-11-20 23:51:02] RegisterOutput: 19
+[2026-11-20 23:51:02] OnOutputGeometry: 0x70d0022aa0: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-20 23:51:02] OnOutputMode: 0x70d0022aa0: 1638 x 720 @ 144000 - 1
+[2026-11-20 23:51:02] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-20 23:51:02] RematchCurrentMode: forcing matching mode: 1696
+[2026-11-20 23:51:02] OnOutputScale: 0x70d0022aa0: factor: 1
+[2026-11-20 23:51:02] OnOutputName: 0x70d0022aa0: name: 'gamescope'
+[2026-11-20 23:51:02] OnOutputDescription: 0x70d0022aa0: description: 'Virtual gamescope output'
+[2026-11-20 23:51:02] OnOutputDone: 0x70d0022aa0: done
+
+
+[2026-11-21 00:10:02] Client version: 1793740892
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-21 00:10:02] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-21 00:10:02] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-21 00:10:02] Initialized system display manager: wayland: modeset:0
+[2026-11-21 00:10:02] RegisterOutput: 19
+[2026-11-21 00:10:02] OnOutputGeometry: 0x7510003990: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-21 00:10:02] OnOutputMode: 0x7510003990: 1638 x 720 @ 144000 - 1
+[2026-11-21 00:10:02] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-21 00:10:02] RematchCurrentMode: forcing matching mode: 1703
+[2026-11-21 00:10:02] OnOutputScale: 0x7510003990: factor: 1
+[2026-11-21 00:10:02] OnOutputName: 0x7510003990: name: 'gamescope'
+[2026-11-21 00:10:02] OnOutputDescription: 0x7510003990: description: 'Virtual gamescope output'
+[2026-11-21 00:10:02] OnOutputDone: 0x7510003990: done
+
+
+[2026-11-21 00:17:13] Client version: 1793740892
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-21 00:17:13] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-21 00:17:13] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-21 00:17:13] Initialized system display manager: wayland: modeset:0
+[2026-11-21 00:17:14] RegisterOutput: 19
+[2026-11-21 00:17:14] OnOutputGeometry: 0x70e4063200: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-21 00:17:14] OnOutputMode: 0x70e4063200: 1638 x 720 @ 144000 - 1
+[2026-11-21 00:17:14] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-21 00:17:14] RematchCurrentMode: forcing matching mode: 2724
+[2026-11-21 00:17:14] OnOutputScale: 0x70e4063200: factor: 1
+[2026-11-21 00:17:14] OnOutputName: 0x70e4063200: name: 'gamescope'
+[2026-11-21 00:17:14] OnOutputDescription: 0x70e4063200: description: 'Virtual gamescope output'
+[2026-11-21 00:17:14] OnOutputDone: 0x70e4063200: done
+
+
+[2026-11-21 00:31:30] Client version: 1792618285
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-21 00:31:30] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-21 00:31:30] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-21 00:31:30] Initialized system display manager: wayland: modeset:0
+[2026-11-21 00:31:30] RegisterOutput: 19
+[2026-11-21 00:31:30] OnOutputGeometry: 0x74f42e6ca0: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-21 00:31:30] OnOutputMode: 0x74f42e6ca0: 1638 x 720 @ 144000 - 1
+[2026-11-21 00:31:30] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-21 00:31:30] RematchCurrentMode: forcing matching mode: 8888
+[2026-11-21 00:31:30] OnOutputScale: 0x74f42e6ca0: factor: 1
+[2026-11-21 00:31:30] OnOutputName: 0x74f42e6ca0: name: 'gamescope'
+[2026-11-21 00:31:30] OnOutputDescription: 0x74f42e6ca0: description: 'Virtual gamescope output'
+[2026-11-21 00:31:30] OnOutputDone: 0x74f42e6ca0: done
+
+
+[2026-11-21 00:36:30] Client version: 1792618285
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-21 00:36:30] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-21 00:36:30] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-21 00:36:30] Initialized system display manager: wayland: modeset:0
+[2026-11-21 00:36:30] RegisterOutput: 19
+[2026-11-21 00:36:30] OnOutputGeometry: 0x7b342e5e20: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-21 00:36:30] OnOutputMode: 0x7b342e5e20: 1638 x 720 @ 144000 - 1
+[2026-11-21 00:36:30] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-21 00:36:30] RematchCurrentMode: forcing matching mode: 4174
+[2026-11-21 00:36:30] OnOutputScale: 0x7b342e5e20: factor: 1
+[2026-11-21 00:36:30] OnOutputName: 0x7b342e5e20: name: 'gamescope'
+[2026-11-21 00:36:30] OnOutputDescription: 0x7b342e5e20: description: 'Virtual gamescope output'
+[2026-11-21 00:36:30] OnOutputDone: 0x7b342e5e20: done
+
+
+[2026-11-21 00:42:22] Client version: 1792618285
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-21 00:42:22] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-21 00:42:22] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-21 00:42:22] Initialized system display manager: wayland: modeset:0
+[2026-11-21 00:42:22] RegisterOutput: 19
+[2026-11-21 00:42:22] OnOutputGeometry: 0x76082e5520: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-21 00:42:22] OnOutputMode: 0x76082e5520: 1638 x 720 @ 144000 - 1
+[2026-11-21 00:42:22] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-21 00:42:22] RematchCurrentMode: forcing matching mode: 7498
+[2026-11-21 00:42:22] OnOutputScale: 0x76082e5520: factor: 1
+[2026-11-21 00:42:22] OnOutputName: 0x76082e5520: name: 'gamescope'
+[2026-11-21 00:42:22] OnOutputDescription: 0x76082e5520: description: 'Virtual gamescope output'
+[2026-11-21 00:42:22] OnOutputDone: 0x76082e5520: done
+
+
+[2026-11-21 00:57:40] Client version: 1792618285
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'wl_shm', version: 2, name: 1
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'wl_compositor', version: 5, name: 2
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_input_method_manager', version: 3, name: 3
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_reshade', version: 1, name: 4
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_action_binding_manager', version: 1, name: 5
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_xwayland', version: 1, name: 6
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_swapchain_factory_v2', version: 1, name: 7
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_limiter', version: 1, name: 8
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_pipewire', version: 1, name: 9
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_control', version: 7, name: 10
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'gamescope_private', version: 1, name: 11
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'wp_presentation', version: 1, name: 12
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'zwp_relative_pointer_manager_v1', version: 1, name: 13
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'zwp_pointer_constraints_v1', version: 1, name: 14
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'wl_data_device_manager', version: 3, name: 15
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'xdg_wm_base', version: 3, name: 16
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'zwlr_layer_shell_v1', version: 4, name: 17
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'wl_seat', version: 9, name: 18
+[2026-11-21 00:57:40] OnRegistryGlobal: interface: 'wl_output', version: 4, name: 19
+[2026-11-21 00:57:40] OnScreenChanged: gamescope event external: 0 modes: 0
+[2026-11-21 00:57:40] Initialized system display manager: wayland: modeset:0
+[2026-11-21 00:57:41] RegisterOutput: 19
+[2026-11-21 00:57:41] OnOutputGeometry: 0x75a82e65b0: px: 0 x 0 phys: 0 x 0 subpix: 0 make: 'Unknown' model: 'Unknown' transform: 0
+[2026-11-21 00:57:41] OnOutputMode: 0x75a82e65b0: 1638 x 720 @ 144000 - 1
+[2026-11-21 00:57:41] RematchCurrentMode: trying to find modeid that matches: 1638x720@144.000000
+[2026-11-21 00:57:41] RematchCurrentMode: forcing matching mode: 3882
+[2026-11-21 00:57:41] OnOutputScale: 0x75a82e65b0: factor: 1
+[2026-11-21 00:57:41] OnOutputName: 0x75a82e65b0: name: 'gamescope'
+[2026-11-21 00:57:41] OnOutputDescription: 0x75a82e65b0: description: 'Virtual gamescope output'
+[2026-11-21 00:57:41] OnOutputDone: 0x75a82e65b0: done
