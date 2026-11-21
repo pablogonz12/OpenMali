@@ -297,6 +297,9 @@ run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
+# MALI_WSI_DUMP names the process and the chain (<prefix>-<comm>-<pid>-sc<N>-<frame>.ppm) so two processes cannot
+# overwrite each other, and MALI_WSI_DEBUG prints one summary line per chain every N frames (not per frame).
+for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
