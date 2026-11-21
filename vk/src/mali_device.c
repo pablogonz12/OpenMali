@@ -116,6 +116,7 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);
    dispatch_table.CreateSwapchainKHR = mali_wsi_create_swapchain;   /* mali_wsi.c: X11 diagnostics + no-DRI3 fallback */
    dispatch_table.AcquireNextImageKHR = mali_wsi_acquire_next_image;   /* mali_wsi.c: stage trace around the swapchain wait */
+   dispatch_table.AcquireNextImage2KHR = mali_wsi_acquire_next_image2; /* same, on the chain's wsi_device (CR #323 T3) */
    dispatch_table.QueuePresentKHR = mali_wsi_queue_present;           /* mali_wsi.c: stage trace around present */
    dispatch_table.DestroySwapchainKHR = mali_wsi_destroy_swapchain;   /* mali_wsi.c: release the MIT-SHM segment */
    dispatch_table.WaitForPresentKHR = mali_wsi_wait_for_present;      /* mali_wsi.c: software X11 chains never complete an id */

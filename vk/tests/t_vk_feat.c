@@ -1087,10 +1087,12 @@ test_tf_record(void)
    }
    VkBuffer xfb = VK_NULL_HANDLE;
    VkDeviceSize sz = 4 * 4 * 4;   /* 4 vertices x vec4 */
-   CHECK(CreateBuffer(dev, &(VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
-                                                 .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT |
-                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE}, NULL, &xfb) == VK_SUCCESS, "xfb buffer");
+   /* Memory-backed through the harness helper: vkCmdBindTransformFeedbackBuffersEXT requires every buffer to be
+    * completely and contiguously bound (CodeRabbit on #313, t_vk_feat.c:1026). */
+   struct hbuf hb = {0};
+   if (!hbuf_create(&hb, sz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+      return 0;
+   xfb = hb.b;
    struct tgt t;
    if (!tgt_create(&t)) return 0;
    VkCommandBuffer cb = cb_begin(&t);
@@ -1125,7 +1127,8 @@ test_tf_write(void)
    enum { NV = 3 };
    static const float pos[NV][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
    struct hbuf vb, xb[2];
-   const VkDeviceSize xsz[2] = {NV * 16, 16 + NV * 8}, xoff[2] = {0, 16};
+   /* Buffer 1 is 40 B and the bind starts at 16, so its capture size is 24, not 16 + NV*8 (VUID-02363). */
+   const VkDeviceSize xsz[2] = {NV * 16, 24}, xoff[2] = {0, 16};
    if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
    memcpy(vb.p, pos, sizeof pos);
    for (int i = 0; i < 2; i++) {
@@ -3664,6 +3667,12 @@ main(int argc, char **argv)
    CmdBindTransformFeedbackBuffersEXT = (PFN_vkCmdBindTransformFeedbackBuffersEXT)GetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
    CmdBeginTransformFeedbackEXT = (PFN_vkCmdBeginTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
    CmdEndTransformFeedbackEXT = (PFN_vkCmdEndTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
+   /* When the device has the extension enabled, all three commands must be exposed: a missing one must not turn into
+    * a "not advertised" skip (CodeRabbit on #313, t_vk_feat.c:3594). */
+   if (g_tf && (!CmdBindTransformFeedbackBuffersEXT || !CmdBeginTransformFeedbackEXT || !CmdEndTransformFeedbackEXT)) {
+      printf("{\"fail\":\"VK_EXT_transform_feedback advertised without all three commands\"}\n");
+      return 1;
+   }
    g_gsl = (PFN_vkGetImageSubresourceLayout)GetDeviceProcAddr(dev, "vkGetImageSubresourceLayout");
    g_rf = (PFN_vkResetFences)GetDeviceProcAddr(dev, "vkResetFences");
    g_rcb = (PFN_vkResetCommandBuffer)GetDeviceProcAddr(dev, "vkResetCommandBuffer");

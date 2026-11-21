@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 31 /* 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 32 /* 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -557,7 +557,10 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          /* Transform feedback: turn the declared outputs into global stores (nir_lower_xfb_to_stores.c:53 loads the
           * per-buffer base with nir_intrinsic_load_xfb_address). No streamout job is needed: the stores go through the
           * ordinary memory path, exactly like an SSBO store. */
-         static const nir_lower_xfb_to_stores_options xfb_opts = {.address_format = nir_address_format_64bit_global};
+         static const nir_lower_xfb_to_stores_options xfb_opts = {.address_format = nir_address_format_64bit_global,
+                                                           /* the same vertex shader still rasterizes: a captured output the
+                                                            * rasterizer or the fragment shader reads must stay written */
+                                                           .keep_outputs = true};
          nir_shader_gather_xfb_info(nir);
          NIR_PASS(_, nir, nir_opt_constant_folding);
          NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
