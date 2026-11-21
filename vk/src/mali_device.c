@@ -148,8 +148,10 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    dev->cmd_dispatch.QueuePresentKHR = mali_wsi_queue_present;
    dev->cmd_dispatch.AcquireNextImageKHR = mali_wsi_acquire_next_image;
    /* A backend pool keeps freed BOs committed: its releases go back to this physical device's VRAM budget. */
-   if (pdev->backend->bo_pool_watch)
+   if (pdev->backend->bo_pool_watch) {
       pdev->backend->bo_pool_watch(dev->kdev, mali_memory_pool_release, pdev);
+      mali_memory_pool_register(pdev, dev->kdev);   /* DR-1: a reclaim at this budget may purge this pool */
+   }
    dev->vk.command_buffer_ops = &mali_cmd_ops;
    dev->vk.get_timestamp = mali_get_timestamp;                       /* VK_KHR_calibrated_timestamps: runtime does the rest */
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
@@ -220,6 +222,8 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       vk_queue_finish(&dev->queue.vk);
    struct mali_physical_device *pdev = container_of(dev->vk.physical, struct mali_physical_device, vk);
    mali_hw_finish(dev);
+   /* Leave the budget's pool list before the pool dies: a reclaim on another device must never purge a dying pool. */
+   mali_memory_pool_unregister(pdev, dev->kdev);
    pdev->backend->device_destroy(dev->kdev);
    mali_queue_device_finish(dev);
    vk_device_finish(&dev->vk);
