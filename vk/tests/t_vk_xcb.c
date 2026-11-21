@@ -8,12 +8,6 @@
  *   --textured  sample a 2x2 magenta texture in the fragment shader        -> magenta (BGR 255,0,255)
  *   --depth     D32 attachment cleared to 1.0, depth test+write, quad z=0.5 -> red   (BGR 0,0,255)
  *   --blend     red 50% alpha over a blue clear (srcAlpha/1-srcAlpha)      -> purple (BGR 128,0,128)
- *   --blit      render the quad into an offscreen 1600x720 R8G8B8A8 image, then vkCmdBlitImage into the swapchain:
- *               frame 0 a 1:1 WxH sub-rect, frame 1 a half-size blit (2Wx2H -> WxH), frame 2 the whole 1600x720
- *               scaled to the window (LINEAR). On a B8G8R8A8 swapchain this is also a format conversion (RGBA->BGRA).
- *                                                                              -> red   (BGR 0,0,255) each frame
- *   --copy      render into an offscreen image of the swapchain's own format and vkCmdCopyImage a WxH region
- *               into the swapchain image (1:1, no filter, no conversion)     -> red   (BGR 0,0,255)
  *   SPIR-V comes from --spv-dir (default "shader"): quad.vert.spv + solid.frag.spv, wsitex.frag.spv (--textured),
  *   wsiblend.frag.spv (--blend).
  * Needs an X server ($DISPLAY). Exit 0 = pass, 77 = skipped (no X, or the ICD does not advertise VK_KHR_xcb_surface: Mesa configured
@@ -307,6 +301,11 @@ wl_after_x11(void)
    CK(wl_GetSwapchainImagesKHR(dev, sc, &ni, NULL));
    REQ(ni >= 1, "wayland swapchain has no images");
    printf("wayland swapchain: %u images %ux%u\n", ni, ext.width, ext.height);
+   /* Child objects before their parents (Vulkan lifetime rules): the swapchain, then both surfaces. */
+   IPFN(inst, DestroySurfaceKHR);
+   wl_DestroySwapchainKHR(dev, sc, NULL);
+   DestroySurfaceKHR(inst, ws, NULL);
+   DestroySurfaceKHR(inst, xs, NULL);
    VkImage *imgs = calloc(ni, sizeof *imgs);
    REQ(imgs != NULL, "out of memory");
    CK(wl_GetSwapchainImagesKHR(dev, sc, &ni, imgs));
@@ -319,7 +318,7 @@ wl_after_x11(void)
    WLFN(GetDeviceQueue); WLFN(AcquireNextImageKHR); WLFN(CreateSemaphore); WLFN(CreateCommandPool);
    WLFN(AllocateCommandBuffers); WLFN(BeginCommandBuffer); WLFN(EndCommandBuffer); WLFN(CmdPipelineBarrier);
    WLFN(CmdBeginRendering); WLFN(CmdEndRendering); WLFN(QueueSubmit); WLFN(QueueWaitIdle); WLFN(QueuePresentKHR);
-   WLFN(CreateImageView); WLFN(DestroyImageView); WLFN(DestroyCommandPool); WLFN(DestroySemaphore);
+   WLFN(CreateImageView); WLFN(DestroyImageView);
    VkQueue q;
    wl_GetDeviceQueue(dev, fam, 0, &q);
    VkSemaphore sa = VK_NULL_HANDLE, sd = VK_NULL_HANDLE;
@@ -391,14 +390,6 @@ wl_after_x11(void)
       wl_DestroyImageView(dev, wview, NULL);
    }
    free(imgs);
-   /* Child objects before their parents (Vulkan lifetime rules): the swapchain, then both surfaces. */
-   IPFN(inst, DestroySurfaceKHR);
-   wl_DestroySwapchainKHR(dev, sc, NULL);
-   wl_DestroyCommandPool(dev, wpool, NULL);
-   wl_DestroySemaphore(dev, sa, NULL);
-   wl_DestroySemaphore(dev, sd, NULL);
-   DestroySurfaceKHR(inst, ws, NULL);
-   DestroySurfaceKHR(inst, xs, NULL);
    wl_DestroyDevice(dev, NULL);
    DestroyInstance(inst, NULL);
    wl_display_disconnect(wd);
@@ -408,34 +399,278 @@ wl_after_x11(void)
 
 #endif /* HAVE_WAYLAND_CLIENT */
 
+
+/* --caps2: the *2KHR surface queries must answer what the non-2 forms answer (STEAM-GAPS.md "X11 WSI";
+ * CR #323 N5). wsi_common.c:1149/1244 resolve the wsi_device themselves, so without a wrapper they ran with the
+ * device's own mode (dma-buf) while vkGetPhysicalDeviceSurface*KHR ran with the per-surface one: on a server without
+ * DRI3 the 1-form says "supported" and the 2-form describes the DRI3/modifier path (or fails). Exit 0 = agree,
+ * 77 = skipped, 1 = disagree. */
+static int
+caps2_check(void)
+{
+   int scr;
+   xcb_connection_t *c = xcb_connect(NULL, &scr);
+   if (xcb_connection_has_error(c)) { printf("skipped: no X server ($DISPLAY)\n"); return 77; }
+
+   IPFN(NULL, EnumerateInstanceExtensionProperties);
+   uint32_t n = 0;
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, NULL));
+   VkExtensionProperties *ep = calloc(n + 1, sizeof *ep);
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, ep));
+   int has_surf = 0, has_xcb = 0, has_cap2 = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      has_surf |= !strcmp(ep[i].extensionName, "VK_KHR_surface");
+      has_xcb |= !strcmp(ep[i].extensionName, "VK_KHR_xcb_surface");
+      has_cap2 |= !strcmp(ep[i].extensionName, "VK_KHR_get_surface_capabilities2");
+   }
+   free(ep);
+   if (!has_surf || !has_xcb) { printf("skipped: ICD without VK_KHR_xcb_surface\n"); return 77; }
+   if (!has_cap2) { printf("skipped: ICD without VK_KHR_get_surface_capabilities2\n"); return 77; }
+
+   /* The *2 forms are instance level only with the extension enabled (a NULL entry point otherwise). */
+   const char *iexts[] = {"VK_KHR_surface", "VK_KHR_xcb_surface", "VK_KHR_get_surface_capabilities2"};
+   VkInstance inst;
+   CK(((PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance"))(
+      &(VkInstanceCreateInfo){.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                              .pApplicationInfo = &(VkApplicationInfo){.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                                                       .pApplicationName = "t_vk_xcb --caps2",
+                                                                       .apiVersion = VK_API_VERSION_1_3},
+                              .enabledExtensionCount = 3, .ppEnabledExtensionNames = iexts}, NULL, &inst));
+   IPFN(inst, EnumeratePhysicalDevices);
+   IPFN(inst, GetPhysicalDeviceQueueFamilyProperties);
+   IPFN(inst, CreateXcbSurfaceKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilitiesKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilities2KHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormatsKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormats2KHR);
+   IPFN(inst, DestroyInstance);
+
+   uint32_t np = 1;
+   VkPhysicalDevice pd;
+   VkResult r = EnumeratePhysicalDevices(inst, &np, &pd);
+   REQ((r == VK_SUCCESS || r == VK_INCOMPLETE) && np >= 1, "no physical device");
+   uint32_t nq = 0;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+   VkQueueFamilyProperties *qf = calloc(nq, sizeof *qf);
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+   uint32_t fam = ~0u;
+   for (uint32_t i = 0; i < nq; i++)
+      if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { fam = i; break; }
+   free(qf);
+   REQ(fam != ~0u, "no graphics queue");
+
+   const xcb_setup_t *setup = xcb_get_setup(c);
+   xcb_screen_iterator_t sit = xcb_setup_roots_iterator(setup);
+   for (int i = 0; i < scr; i++) xcb_screen_next(&sit);
+   xcb_screen_t *s = sit.data;
+   xcb_window_t win = xcb_generate_id(c);
+   uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE};
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
+                     XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
+   xcb_map_window(c, win);
+   xcb_flush(c);
+   VkSurfaceKHR surf;
+   CK(CreateXcbSurfaceKHR(inst, &(VkXcbSurfaceCreateInfoKHR){.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+                                                             .connection = c, .window = win}, NULL, &surf));
+   VkBool32 sup = VK_FALSE;
+   CK(GetPhysicalDeviceSurfaceSupportKHR(pd, fam, surf, &sup));
+   printf("surface support %s\n", sup ? "TRUE" : "FALSE");
+
+   VkSurfaceCapabilitiesKHR c1;
+   CK(GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &c1));
+   const VkPhysicalDeviceSurfaceInfo2KHR s2 =
+      {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR, .surface = surf};
+   VkSurfaceCapabilities2KHR c2 = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+   const VkResult r2 = GetPhysicalDeviceSurfaceCapabilities2KHR(pd, &s2, &c2);
+   printf("caps:   1-form images %u..%u usage 0x%x alpha 0x%x\n", c1.minImageCount, c1.maxImageCount,
+          c1.supportedUsageFlags, c1.supportedCompositeAlpha);
+   printf("caps2:  result %d images %u..%u usage 0x%x alpha 0x%x\n", (int)r2,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.minImageCount : 0,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.maxImageCount : 0,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.supportedUsageFlags : 0,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.supportedCompositeAlpha : 0);
+   REQ(r2 == VK_SUCCESS, "vkGetPhysicalDeviceSurfaceCapabilities2KHR failed where the 1-form succeeded");
+   REQ(c2.surfaceCapabilities.supportedUsageFlags == c1.supportedUsageFlags, "caps2 supportedUsageFlags differ");
+   REQ(c2.surfaceCapabilities.supportedCompositeAlpha == c1.supportedCompositeAlpha, "caps2 compositeAlpha differ");
+   REQ(c2.surfaceCapabilities.minImageCount == c1.minImageCount, "caps2 minImageCount differs");
+
+   uint32_t n1 = 0;
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &n1, NULL));
+   VkSurfaceFormatKHR *f1 = calloc(n1 + 1, sizeof *f1);
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &n1, f1));
+   uint32_t n2 = 0;
+   CK(GetPhysicalDeviceSurfaceFormats2KHR(pd, &s2, &n2, NULL));
+   VkSurfaceFormat2KHR *f2 = calloc(n2 + 1, sizeof *f2);
+   for (uint32_t i = 0; i < n2; i++)
+      f2[i].sType = VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR;
+   CK(GetPhysicalDeviceSurfaceFormats2KHR(pd, &s2, &n2, f2));
+   printf("formats: 1-form %u, 2-form %u\n", n1, n2);
+   REQ(n1 == n2, "formats2 count differs from formats");
+   for (uint32_t i = 0; i < n1; i++) {
+      REQ(f2[i].surfaceFormat.format == f1[i].format && f2[i].surfaceFormat.colorSpace == f1[i].colorSpace,
+          "formats2 entries differ from formats");
+   }
+   printf("caps2/formats2 agree with the 1-forms\n");
+   DestroyInstance(inst, NULL);
+   xcb_disconnect(c);
+   return 0;
+}
+
+
+/* --two-conns: two X connections in one process are two servers, so the X11 software decision must be per connection
+ * (CR #323 N2). $TVK_DISPLAY_A and $TVK_DISPLAY_B name them (one with DRI3, one without); each gets a window, a
+ * surface, a support/caps/formats query and a swapchain attempt. The harness reads the driver's own
+ * "platform=xcb ... sw=N" lines: A must stay dma-buf (sw=0, MALI_WSI=hw) while B takes the software path (sw=1). */
+static int
+one_conn(const char *name, xcb_connection_t *c, VkInstance inst, VkPhysicalDevice pd, uint32_t fam,
+         int make_swapchain)
+{
+   IPFN(inst, CreateXcbSurfaceKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilitiesKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormatsKHR);
+   IPFN(inst, CreateDevice);
+   IPFN(inst, GetDeviceProcAddr);
+
+   int scr = 0;
+   if (!c || xcb_connection_has_error(c)) { printf("%s: skipped (no server)\n", name); return 77; }
+   const xcb_setup_t *setup = xcb_get_setup(c);
+   xcb_screen_iterator_t sit = xcb_setup_roots_iterator(setup);
+   for (int i = 0; i < scr; i++) xcb_screen_next(&sit);
+   xcb_screen_t *s = sit.data;
+   xcb_window_t win = xcb_generate_id(c);
+   uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE};
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
+                     XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
+   xcb_map_window(c, win);
+   xcb_flush(c);
+
+   VkSurfaceKHR surf;
+   REQ(CreateXcbSurfaceKHR(inst, &(VkXcbSurfaceCreateInfoKHR){.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+                                                              .connection = c, .window = win}, NULL, &surf) == VK_SUCCESS,
+       "create surface");
+   VkBool32 sup = VK_FALSE;
+   CK(GetPhysicalDeviceSurfaceSupportKHR(pd, fam, surf, &sup));
+   VkSurfaceCapabilitiesKHR caps;
+   CK(GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &caps));
+   uint32_t nf = 0;
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &nf, NULL));
+   VkSurfaceFormatKHR *fm = calloc(nf + 1, sizeof *fm);
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &nf, fm));
+   printf("%s: support %s, %u formats, extent %ux%u\n", name, sup ? "TRUE" : "FALSE", nf,
+          caps.currentExtent.width, caps.currentExtent.height);
+   if (!make_swapchain) return 0;
+
+   const char *dexts[] = {"VK_KHR_swapchain"};
+   float prio = 1.0f;
+   VkDevice dev;
+   CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                                            .queueCreateInfoCount = 1,
+                                            .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+                                               .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                               .queueFamilyIndex = fam, .queueCount = 1, .pQueuePriorities = &prio},
+                                            .enabledExtensionCount = 1, .ppEnabledExtensionNames = dexts}, NULL, &dev));
+   PFN_vkCreateSwapchainKHR csc = (PFN_vkCreateSwapchainKHR)GetDeviceProcAddr(dev, "vkCreateSwapchainKHR");
+   REQ(csc, "no vkCreateSwapchainKHR");
+   VkExtent2D ext = caps.currentExtent.width == 0xFFFFFFFFu ? (VkExtent2D){W, H} : caps.currentExtent;
+   VkSwapchainKHR sc = VK_NULL_HANDLE;
+   VkResult r = csc(dev, &(VkSwapchainCreateInfoKHR){
+                             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = surf,
+                             .minImageCount = 3, .imageFormat = fm[0].format, .imageColorSpace = fm[0].colorSpace,
+                             .imageExtent = ext, .imageArrayLayers = 1,
+                             .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                             .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                             .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                             .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE}, NULL, &sc);
+   printf("%s: swapchain %s\n", name, r == VK_SUCCESS ? "created" : "failed");
+   PFN_vkDestroyDevice dd = (PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice");
+   if (dd) dd(dev, NULL);
+   return 0;
+}
+
+static int
+two_conns(void)
+{
+   const char *da = getenv("TVK_DISPLAY_A"), *db = getenv("TVK_DISPLAY_B");
+   REQ(da && db, "TVK_DISPLAY_A/TVK_DISPLAY_B must name two X displays");
+
+   IPFN(NULL, EnumerateInstanceExtensionProperties);
+   uint32_t n = 0;
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, NULL));
+   VkExtensionProperties *ep = calloc(n + 1, sizeof *ep);
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, ep));
+   int has_surf = 0, has_xcb = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      has_surf |= !strcmp(ep[i].extensionName, "VK_KHR_surface");
+      has_xcb |= !strcmp(ep[i].extensionName, "VK_KHR_xcb_surface");
+   }
+   free(ep);
+   if (!has_surf || !has_xcb) { printf("skipped: ICD without VK_KHR_xcb_surface\n"); return 77; }
+   const char *iexts[] = {"VK_KHR_surface", "VK_KHR_xcb_surface"};
+   VkInstance inst;
+   CK(((PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance"))(
+      &(VkInstanceCreateInfo){.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                              .pApplicationInfo = &(VkApplicationInfo){.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                                                       .pApplicationName = "t_vk_xcb --two-conns",
+                                                                       .apiVersion = VK_API_VERSION_1_3},
+                              .enabledExtensionCount = 2, .ppEnabledExtensionNames = iexts}, NULL, &inst));
+   IPFN(inst, EnumeratePhysicalDevices);
+   IPFN(inst, GetPhysicalDeviceQueueFamilyProperties);
+   IPFN(inst, DestroyInstance);
+   uint32_t np = 1;
+   VkPhysicalDevice pd;
+   VkResult r = EnumeratePhysicalDevices(inst, &np, &pd);
+   REQ((r == VK_SUCCESS || r == VK_INCOMPLETE) && np >= 1, "no physical device");
+   uint32_t nq = 0;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+   VkQueueFamilyProperties *qf = calloc(nq, sizeof *qf);
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+   uint32_t fam = ~0u;
+   for (uint32_t i = 0; i < nq; i++) if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { fam = i; break; }
+   free(qf);
+   REQ(fam != ~0u, "no graphics queue");
+
+   /* Both connections are opened here and kept open: a disconnected xcb_connection_t can be handed out again at the
+    * same address by a later xcb_connect(), which would make a pointer-keyed decision ambiguous. */
+   int scr = 0;
+   xcb_connection_t *ca = xcb_connect(da, &scr), *cb = xcb_connect(db, &scr);
+   if (!ca || xcb_connection_has_error(ca)) { printf("skipped: no server on %s\n", da); return 77; }
+   if (!cb || xcb_connection_has_error(cb)) { printf("skipped: no server on %s\n", db); return 77; }
+   /* B is probed FIRST, without a swapchain: on the device-wide decision this query alone already forced every later
+    * XCB surface of the process onto the software path, which is the defect (CR #323 N2). */
+   int rb0 = one_conn("connB-probe", cb, inst, pd, fam, 0);
+   if (rb0) return rb0;
+   int ra = one_conn("connA", ca, inst, pd, fam, 1);
+   if (ra) return ra;
+   int rb = one_conn("connB", cb, inst, pd, fam, 1);
+   if (rb) return rb;
+   xcb_disconnect(ca);
+   xcb_disconnect(cb);
+   DestroyInstance(inst, NULL);
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
-   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
-   unsigned win_w = W, win_h = H;
+   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, wlfirst = 0, pressup = 0, caps2 = 0, twoconn = 0;
    for (int i = 1; i < argc; i++) {
-      if (!strcmp(argv[i], "--size") && i + 1 < argc) {
-         /* The window size is the swapchain size on X11 (caps.currentExtent is the window). Small windows are what
-          * Steam creates (32x32); 800x600 and 33x17 cover an ordinary and an odd size. */
-         if (sscanf(argv[++i], "%ux%u", &win_w, &win_h) != 2 || !win_w || !win_h) {
-            fprintf(stderr, "usage: --size WxH\n");
-            return 2;
-         }
-      } else if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
+      if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
       else if (!strcmp(argv[i], "--draw")) draw = 1;
       else if (!strcmp(argv[i], "--textured")) textured = 1;
       else if (!strcmp(argv[i], "--depth")) depth = 1;
       else if (!strcmp(argv[i], "--blend")) blend = 1;
-      else if (!strcmp(argv[i], "--blit")) blit = 1;
-      else if (!strcmp(argv[i], "--copy")) copyimg = 1;
       else if (!strcmp(argv[i], "--wl-after-x11")) wlfirst = 1;
+      else if (!strcmp(argv[i], "--caps2")) caps2 = 1;
+      else if (!strcmp(argv[i], "--two-conns")) twoconn = 1;
       else if (!strcmp(argv[i], "--pres-support")) pressup = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
-      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
-                            "[--draw|--textured|--depth|--blend|--blit|--copy] "
+      else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
                             "[--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
@@ -445,6 +680,10 @@ main(int argc, char **argv)
    REQ(gipa, "no GetInstanceProcAddr");
    if (pressup)
       return pres_support_first();
+   if (caps2)
+      return caps2_check();
+   if (twoconn)
+      return two_conns();
 #if defined(HAVE_WAYLAND_CLIENT)
    if (wlfirst)
       return wl_after_x11();
@@ -475,8 +714,7 @@ main(int argc, char **argv)
    xcb_screen_t *s = sit.data;
    xcb_window_t win = xcb_generate_id(c);
    uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY};
-   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, win_w, win_h, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-                     s->root_visual,
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
                      XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
    xcb_map_window(c, win);
    xcb_flush(c);
@@ -564,7 +802,7 @@ main(int argc, char **argv)
    float prio = 1.0f;
    /* --draw: the dynamic-rendering path (core 1.3 here, same as the zink/HL2 command streams). */
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                           .dynamicRendering = (draw || textured || depth || blend || blit || copyimg) ? VK_TRUE : VK_FALSE};
+                                           .dynamicRendering = (draw || textured || depth || blend) ? VK_TRUE : VK_FALSE};
    VkDevice dev;
    CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13,
                                              .queueCreateInfoCount = 1,
@@ -582,7 +820,7 @@ main(int argc, char **argv)
    DPFN(CreateShaderModule); DPFN(DestroyShaderModule); DPFN(CreatePipelineLayout); DPFN(DestroyPipelineLayout);
    DPFN(CreateGraphicsPipelines); DPFN(DestroyPipeline); DPFN(CreateImageView); DPFN(DestroyImageView);
    DPFN(CmdBeginRendering); DPFN(CmdEndRendering); DPFN(CmdBindPipeline); DPFN(CmdSetViewport); DPFN(CmdSetScissor);
-   DPFN(CmdPushConstants); DPFN(CmdDraw); DPFN(CmdBindDescriptorSets); DPFN(CmdBlitImage); DPFN(CmdCopyImage);
+   DPFN(CmdPushConstants); DPFN(CmdDraw); DPFN(CmdBindDescriptorSets);
    DPFN(CreateImage); DPFN(DestroyImage); DPFN(BindImageMemory); DPFN(GetImageMemoryRequirements);
    DPFN(GetImageSubresourceLayout); DPFN(AllocateMemory); DPFN(FreeMemory); DPFN(MapMemory); DPFN(UnmapMemory);
    DPFN(CreateSampler); DPFN(DestroySampler);
@@ -592,7 +830,7 @@ main(int argc, char **argv)
    GetDeviceQueue(dev, fam, 0, &q);
 
    VkExtent2D ext = caps.currentExtent;
-   if (ext.width == 0xFFFFFFFFu) ext = (VkExtent2D){win_w, win_h};
+   if (ext.width == 0xFFFFFFFFu) ext = (VkExtent2D){W, H};
    uint32_t want = caps.minImageCount + 1;
    if (caps.maxImageCount && want > caps.maxImageCount) want = caps.maxImageCount;
    VkSwapchainKHR sc;
@@ -617,18 +855,14 @@ main(int argc, char **argv)
    /* Draw modes: one 2D colour view per swapchain image + quad.vert (full-screen quad from gl_VertexIndex, push constant
     * s = (1,1,0,0) so uv = q) with a per-mode fragment shader. --textured adds a 2x2 magenta texture + sampler,
     * --depth a D32 attachment, --blend a srcAlpha/1-srcAlpha blend over a blue clear. */
-   const int draw_like = draw || textured || depth || blend || blit || copyimg;
+   const int draw_like = draw || textured || depth || blend;
    VkImageView views[16] = {0};
    VkPipeline pipe = VK_NULL_HANDLE;
    VkPipelineLayout play = VK_NULL_HANDLE;
    VkDescriptorSet dset = VK_NULL_HANDLE;
    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
    VkDescriptorPool dpool = VK_NULL_HANDLE;
-   VkImage tex = VK_NULL_HANDLE, dimg = VK_NULL_HANDLE, off = VK_NULL_HANDLE;
-   VkImageView offview = VK_NULL_HANDLE;
-   VkDeviceMemory offmem = VK_NULL_HANDLE;
-   uint32_t offw = 0, offh = 0;          /* --blit/--copy offscreen extent */
-   VkFormat ofmt = VK_FORMAT_UNDEFINED;  /* its format (the pipeline's colour attachment while blitting/copying) */
+   VkImage tex = VK_NULL_HANDLE, dimg = VK_NULL_HANDLE;
    VkImageView texview = VK_NULL_HANDLE, dview = VK_NULL_HANDLE;
    VkSampler samp = VK_NULL_HANDLE;
    VkDeviceMemory texmem = VK_NULL_HANDLE, dmem = VK_NULL_HANDLE;
@@ -689,34 +923,6 @@ main(int argc, char **argv)
                                  .pImageInfo = &(VkDescriptorImageInfo){
                                     .sampler = samp, .imageView = texview,
                                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}, 0, NULL);
-      }
-      /* --blit/--copy: the quad is rendered into this image first, then blitted/copied into the swapchain image.
-       * --blit uses R8G8B8A8_UNORM (so a B8G8R8A8 swapchain also exercises the channel swizzle); --copy needs the
-       * swapchain's own format (Vulkan copy has no conversion). */
-      offw = blit ? 1600 : ext.width;
-      offh = blit ? 720 : ext.height;
-      ofmt = copyimg ? fmt.format : VK_FORMAT_R8G8B8A8_UNORM;
-      if (blit || copyimg) {
-         CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                                                  .format = ofmt, .extent = {offw, offh, 1}, .mipLevels = 1,
-                                                  .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                                  .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                                  .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED}, NULL, &off));
-         VkMemoryRequirements mr;
-         GetImageMemoryRequirements(dev, off, &mr);
-         const int mt = mem_type(pd, mr.memoryTypeBits, 0, GetPhysicalDeviceMemoryProperties);
-         REQ(mt >= 0, "no memory type for the offscreen image");
-         CK(AllocateMemory(dev, &(VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                                        .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)mt},
-                          NULL, &offmem));
-         CK(BindImageMemory(dev, off, offmem, 0));
-         CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = off,
-                                                          .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = ofmt,
-                                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &offview));
-         printf("offscreen: %ux%u %s, blit=%d copy=%d\n", offw, offh,
-                ofmt == VK_FORMAT_B8G8R8A8_UNORM ? "B8G8R8A8_UNORM" : "R8G8B8A8_UNORM", blit, copyimg);
       }
       if (depth) {
          CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
@@ -796,16 +1002,13 @@ main(int argc, char **argv)
                                                               .dynamicStateCount = 2, .pDynamicStates = dyn},
          .layout = play,
          .pNext = &(VkPipelineRenderingCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                                                   .colorAttachmentCount = 1,
-                                                   .pColorAttachmentFormats = (blit || copyimg) ? &ofmt : &fmt.format,
+                                                   .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt.format,
                                                    .depthAttachmentFormat = depth ? dfmt : VK_FORMAT_UNDEFINED},
          .renderPass = VK_NULL_HANDLE};
       CK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe));
       DestroyShaderModule(dev, vm, NULL);
       DestroyShaderModule(dev, fm, NULL);
-      printf("mode: %s (full-screen quad, dynamic rendering, loadOp CLEAR, STORE)\n",
-             blit ? "offscreen render + vkCmdBlitImage into the swapchain image" :
-             copyimg ? "offscreen render + vkCmdCopyImage into the swapchain image" :
+      printf("mode: %s (full-screen quad into the swapchain image, dynamic rendering, loadOp CLEAR, STORE)\n",
              textured ? "textured 2x2 magenta" : depth ? "depth-tested, D32 clear 1.0" :
              blend ? "alpha blend over a blue clear" : "solid red");
    }
@@ -826,7 +1029,6 @@ main(int argc, char **argv)
    CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &fence));
 
    const VkClearColorValue clr = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}};   /* BGRA8: 51,102,204 */
-   int blitrc = 0;
    for (int f = 0; f < FRAMES; f++) {
       uint32_t idx;
       CK(AcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx));
@@ -835,63 +1037,7 @@ main(int argc, char **argv)
       CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
       VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      if (blit || copyimg) {
-         /* 1. the quad, into the offscreen image */
-         VkImageMemoryBarrier ob = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                    .image = off, .subresourceRange = rng};
-         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &ob);
-         VkClearValue black = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};
-         VkRenderingAttachmentInfo ora = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = offview,
-                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                         .clearValue = black};
-         VkRenderingInfo ori = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                                .renderArea = {{0, 0}, {offw, offh}}, .layerCount = 1,
-                                .colorAttachmentCount = 1, .pColorAttachments = &ora};
-         CmdBeginRendering(cb, &ori);
-         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-         VkViewport ovp = {0.0f, 0.0f, (float)offw, (float)offh, 0.0f, 1.0f};
-         VkRect2D osr = {{0, 0}, {offw, offh}};
-         CmdSetViewport(cb, 0, 1, &ovp);
-         CmdSetScissor(cb, 0, 1, &osr);
-         CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
-         CmdDraw(cb, 6, 1, 0, 0);
-         CmdEndRendering(cb);
-         /* 2. offscreen -> TRANSFER_SRC, swapchain image -> TRANSFER_DST */
-         ob.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-         ob.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-         ob.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-         ob.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ob);
-         VkImageMemoryBarrier sb = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                    .image = imgs[idx], .subresourceRange = rng};
-         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &sb);
-         VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-         if (copyimg) {
-            VkImageCopy cpy = {.srcSubresource = sl, .dstSubresource = sl, .extent = {ext.width, ext.height, 1}};
-            CmdCopyImage(cb, off, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
-         } else {
-            /* frame 0: a 1:1 WxH sub-rect; frame 1: half size (2W x 2H -> W x H); frame 2: the whole 1600x720 scaled */
-            VkOffset3D s0 = {0, 0, 0}, d0 = {0, 0, 0}, d1 = {(int32_t)ext.width, (int32_t)ext.height, 1}, s1;
-            if (f == 0)      s1 = (VkOffset3D){(int32_t)ext.width, (int32_t)ext.height, 1};
-            else if (f == 1) s1 = (VkOffset3D){(int32_t)ext.width * 2, (int32_t)ext.height * 2, 1};
-            else             s1 = (VkOffset3D){(int32_t)offw, (int32_t)offh, 1};
-            VkImageBlit bl = {.srcSubresource = sl, .dstSubresource = sl, .srcOffsets = {s0, s1}, .dstOffsets = {d0, d1}};
-            CmdBlitImage(cb, off, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         1, &bl, VK_FILTER_LINEAR);
-         }
-         sb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-         sb.dstAccessMask = 0;
-         sb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-         sb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &sb);
-      } else if (draw_like) {
+      if (draw_like) {
          VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -958,35 +1104,12 @@ main(int argc, char **argv)
       CK(WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
       CK(ResetFences(dev, 1, &fence));
       printf("frame %d: image %u acquired, cleared, presented\n", f, idx);
-      if (pixels && (blit || copyimg)) {
-         /* each frame is a different blit/copy case, so read the window back per frame instead of once at the end */
-         uint8_t px[3] = {0};
-         int ok = 0;
-         for (int t = 0; t < 50 && !ok; t++) {
-            xcb_get_image_reply_t *im = xcb_get_image_reply(
-               c, xcb_get_image(c, XCB_IMAGE_FORMAT_Z_PIXMAP, win, ext.width / 2, ext.height / 2, 1, 1, ~0u), NULL);
-            if (im && xcb_get_image_data_length(im) >= 3) {
-               memcpy(px, xcb_get_image_data(im), 3);
-               ok = px[0] <= 2 && px[1] <= 2 && px[2] >= 253;   /* opaque red */
-            }
-            free(im);
-            if (!ok) {
-               struct timespec ts = {0, 20 * 1000 * 1000};
-               nanosleep(&ts, NULL);
-            }
-         }
-         printf("frame %d (%s): pixel BGR = %u,%u,%u (want 0,0,255): %s\n", f,
-                copyimg ? "copy 1:1" : f == 0 ? "blit 1:1" : f == 1 ? "blit half size" : "blit full scaled",
-                px[0], px[1], px[2], ok ? "ok" : "MISMATCH");
-         if (!ok)
-            blitrc = 1;
-      }
    }
    CK(QueueWaitIdle(q));
    xcb_flush(c);
 
-   int rc = blitrc;
-   if (pixels && !(blit || copyimg)) {
+   int rc = 0;
+   if (pixels) {
       /* the present may complete asynchronously (Present extension / the copy of the software path): give it a few round trips */
       uint8_t px[4] = {0};
       int ok = 0;
@@ -1032,11 +1155,6 @@ main(int argc, char **argv)
          DestroyImageView(dev, texview, NULL);
          DestroyImage(dev, tex, NULL);
          FreeMemory(dev, texmem, NULL);
-      }
-      if (blit || copyimg) {
-         DestroyImageView(dev, offview, NULL);
-         DestroyImage(dev, off, NULL);
-         FreeMemory(dev, offmem, NULL);
       }
       if (depth) {
          DestroyImageView(dev, dview, NULL);
