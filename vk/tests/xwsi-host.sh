@@ -45,9 +45,6 @@ chmod +x "$W/inner.sh"
 timeout 150 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.log" 2>&1
 [ -f "$W/xcb.rc" ] || { echo "FAIL: the test did not run inside gamescope"; tail -20 "$W/gs.log"; exit 1; }
 grep -v alvr "$W/xcb.log"
-[ "$(cat "$W/pids.rc")" = 0 ] && grep -q '^PASS' "$W/pids.log" \
-   || { echo "FAIL: --present-ids: vkWaitForPresentKHR on the software chain"; grep -E "FAIL|WaitForPresent" "$W/pids.log" | head -3; exit 1; }
-echo "present ids: vkWaitForPresentKHR completes on the software path (was VK_TIMEOUT on every frame)"
 grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
 # 77 = the ICD has no X11 WSI: nothing to test. Any other 77 (a dead X connection, a missing extension the test
 # needs but could not report) is a failure, not a skip.
@@ -56,6 +53,9 @@ if [ "$(cat "$W/nodri3.rc")" = 77 ]; then
       && { echo "skip: ICD without X11 WSI"; exit 0; }   # the harness' own skip: 77 stays the fixture's verdict
    echo "FAIL: exit 77 without a 'no X11 WSI' diagnostic"; tail -5 "$W/nodri3.log"; exit 1
 fi
+[ "$(cat "$W/pids.rc")" = 0 ] && grep -q '^PASS' "$W/pids.log" \
+   || { echo "FAIL: --present-ids: vkWaitForPresentKHR on the software chain"; grep -E "FAIL|WaitForPresent" "$W/pids.log" | head -3; exit 1; }
+echo "present ids: vkWaitForPresentKHR completes on the software path (was VK_TIMEOUT on every frame)"
 [ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && ! grep -q 'SUBOPTIMAL' "$W/nodri3.log" \
    && grep -qE "present path: shm=[01] dri3=0 \(software\)" "$W/nodri3.log" \
    || { echo "FAIL: X11 software present default"; tail -5 "$W/nodri3.log"; exit 1; }
