@@ -807,6 +807,17 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
 {
    if (!o || !out || !o->spirv || !o->spirv_words)
       return fail(err, errsz, "bad arguments");
+   {   /* THROWAWAY: write the SPIR-V this stage was given, so a zink module can be pulled and read */
+      static unsigned dumps;
+      const char *dd = getenv("MALI_SPV_DUMP");
+      if (dd && *dd && dumps < 8) {
+         char path[400];
+         snprintf(path, sizeof path, "%s/spv-%s-%u.spv", dd, o->stage == MALI_STAGE_VERTEX ? "vert" : "frag", dumps++);
+         FILE *df = fopen(path, "wb");
+         if (df) { fwrite(o->spirv, 4, o->spirv_words, df); fclose(df);
+                   fprintf(stderr, "mali_ov: SPVDUMP %s stage=%d words=%u\n", path, (int)o->stage, (unsigned)o->spirv_words); }
+      }
+   }
    int ov_applied = 0;
    {
       const char *ov = o->stage == MALI_STAGE_VERTEX ? getenv("MALI_VS_OVERRIDE")
