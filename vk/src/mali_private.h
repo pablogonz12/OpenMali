@@ -99,6 +99,8 @@ extern const uint64_t mali_wsi_modifier; /* DRM_FORMAT_MOD_LINEAR, the only one 
 /* mali_wsi.c: vkCreateSwapchainKHR with the X11 diagnostics and the no-DRI3 software fallback (mali_device.c). */
 VkResult mali_wsi_create_swapchain(VkDevice, const VkSwapchainCreateInfoKHR*, const VkAllocationCallbacks*, VkSwapchainKHR*);
 VkResult mali_wsi_acquire_next_image(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t*);
+/* vkAcquireNextImage2KHR: same, on the swapchain's own wsi_device (CR #323 T3). */
+VkResult mali_wsi_acquire_next_image2(VkDevice, const VkAcquireNextImageInfoKHR*, uint32_t*);
 VkResult mali_wsi_queue_present(VkQueue, const VkPresentInfoKHR*);
 VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkPresentModeKHR*);
 VkResult mali_wsi_get_surface_support(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32*);

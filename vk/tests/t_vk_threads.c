@@ -20,6 +20,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 #include <vulkan/vulkan.h>
@@ -71,17 +72,21 @@ struct blocked {
    PFN_vkAcquireNextImageKHR acquire;
    VkDevice dev;
    VkSwapchainKHR sc;
+   VkFence fence;           /* a valid sync object for the acquire (VUID-vkAcquireNextImageKHR-semaphore-01780) */
    VkResult result;
-   double started, finished;
+   atomic_int started, running;   /* written by the worker, read by the main thread (CR #323 T10) */
+   double started_ms, finished_ms;
 };
 
 static void *
 acquire_thread(void *arg)
 {
    struct blocked *b = arg;
-   b->started = now_ms();
-   b->result = b->acquire(b->dev, b->sc, ACQUIRE_TIMEOUT_NS, VK_NULL_HANDLE, VK_NULL_HANDLE, &(uint32_t){0});
-   b->finished = now_ms();
+   b->started_ms = now_ms();
+   atomic_store(&b->started, 1);
+   b->result = b->acquire(b->dev, b->sc, ACQUIRE_TIMEOUT_NS, VK_NULL_HANDLE, b->fence, &(uint32_t){0});
+   b->finished_ms = now_ms();
+   atomic_store(&b->running, 0);
    return NULL;
 }
 
@@ -193,6 +198,9 @@ main(int argc, char **argv)
 #define DPFN(n) PFN_vk##n n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n)
    DPFN(GetDeviceQueue); DPFN(CreateSwapchainKHR); DPFN(GetSwapchainImagesKHR); DPFN(AcquireNextImageKHR);
    DPFN(QueuePresentKHR); DPFN(DeviceWaitIdle); DPFN(DestroyDevice);
+   DPFN(CreateFence); DPFN(WaitForFences); DPFN(ResetFences); DPFN(DestroyFence); DPFN(QueueSubmit);
+   DPFN(CreateCommandPool); DPFN(AllocateCommandBuffers); DPFN(BeginCommandBuffer); DPFN(EndCommandBuffer);
+   DPFN(CmdPipelineBarrier); DPFN(DestroyCommandPool);
    VkQueue q = VK_NULL_HANDLE;
    GetDeviceQueue(dev, fam, 0, &q);
 
@@ -202,6 +210,20 @@ main(int argc, char **argv)
       .imageExtent = ext, .imageArrayLayers = 1, .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
       .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE};
+   /* af: the exhausting and B acquires, wf: the worker's blocking acquire, sf: the transition submit */
+   VkFence af = VK_NULL_HANDLE, wf = VK_NULL_HANDLE, sf = VK_NULL_HANDLE;
+   const VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CK(CreateFence(dev, &fci, NULL, &af));
+   CK(CreateFence(dev, &fci, NULL, &wf));
+   CK(CreateFence(dev, &fci, NULL, &sf));
+   VkCommandPool cpool;
+   CK(CreateCommandPool(dev, &(VkCommandPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                                        .queueFamilyIndex = fam}, NULL, &cpool));
+   VkCommandBuffer tcb;
+   CK(AllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                                                .commandPool = cpool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                                                .commandBufferCount = 1}, &tcb));
    VkSwapchainKHR a, b;
    CK(CreateSwapchainKHR(dev, &sci, NULL, &a));
    uint32_t na = 0;
@@ -210,21 +232,35 @@ main(int argc, char **argv)
 
    /* Starve A: every image acquired, none released, so the next acquire really waits (timeout 5 s). */
    for (uint32_t i = 0; i < na; i++) {
-      VkResult ar = AcquireNextImageKHR(dev, a, 1000ull * 1000 * 1000, VK_NULL_HANDLE, VK_NULL_HANDLE, &(uint32_t){0});
-      if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) { printf("skipped: cannot exhaust the swapchain (%d)\n", (int)ar); return 77; }
+      VkResult ar = AcquireNextImageKHR(dev, a, 1000ull * 1000 * 1000, VK_NULL_HANDLE, af, &(uint32_t){0});
+      if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) {
+         /* 77 is "no prerequisite", not "the driver broke": a lost device or an out-of-date chain is a failure
+          * (CR #323 T9). */
+         if (ar == VK_ERROR_SURFACE_LOST_KHR || ar == VK_ERROR_OUT_OF_DATE_KHR) {
+            printf("skipped: cannot exhaust the swapchain (%d)\n", (int)ar);
+            return 77;
+         }
+         fprintf(stderr, "FAIL %s:%d exhausting the swapchain: %s\n", __FILE__, __LINE__, res_name(ar));
+         return 1;
+      }
+      CK(WaitForFences(dev, 1, &af, VK_TRUE, UINT64_MAX));
+      CK(ResetFences(dev, 1, &af));
    }
-   struct blocked bl = {.acquire = AcquireNextImageKHR, .dev = dev, .sc = a, .result = VK_SUCCESS};
+   struct blocked bl = {.acquire = AcquireNextImageKHR, .dev = dev, .sc = a, .fence = wf, .result = VK_SUCCESS};
+   atomic_store(&bl.started, 0);
+   atomic_store(&bl.running, 1);
    pthread_t th;
    REQ(!pthread_create(&th, NULL, acquire_thread, &bl), "pthread_create");
    {   /* let the thread reach its wait */
       double t0 = now_ms();
-      while (!bl.started && now_ms() - t0 < watchdog_ms) { struct timespec ts = {0, 2 * 1000 * 1000}; nanosleep(&ts, NULL); }
+      while (!atomic_load(&bl.started) && now_ms() - t0 < watchdog_ms) { struct timespec ts = {0, 2 * 1000 * 1000}; nanosleep(&ts, NULL); }
    }
-   REQ(bl.finished == 0.0, "the acquire did not block (swapchain not starved): nothing is being tested");
+   REQ(atomic_load(&bl.started), "the worker never entered the acquire inside the watchdog: inconclusive, raise --watchdog-ms");
+   REQ(atomic_load(&bl.running), "the acquire did not block (swapchain not starved): nothing is being tested");
    {   /* ...and is still inside it */
       struct timespec ts = {0, 200 * 1000 * 1000}; nanosleep(&ts, NULL);
    }
-   REQ(bl.finished == 0.0, "the acquire returned too early: increase --watchdog-ms or starve more images");
+   REQ(atomic_load(&bl.running), "the acquire returned too early: increase --watchdog-ms or starve more images");
 
    /* Main thread, same device: a surface query, a second swapchain and a present on it. All must be served while
     * the other thread sits in acquire. */
@@ -233,6 +269,8 @@ main(int argc, char **argv)
    VkResult qr = GetPhysicalDeviceSurfaceSupportKHR(pd, fam, surf, &sup2);
    double q_ms = now_ms() - t;
    printf("surface query while acquire blocks: %s in %.1f ms\n", res_name(qr), q_ms);
+   REQ(qr == VK_SUCCESS, "surface query failed behind a blocked acquire (a fast error is not a pass)");
+   REQ(sup2 == VK_TRUE, "surface query returned support FALSE while the acquire blocks");
    REQ(q_ms < watchdog_ms, "a surface query waited behind a blocked acquire");
 
    t = now_ms();
@@ -244,11 +282,38 @@ main(int argc, char **argv)
 
    t = now_ms();
    uint32_t ib = 0;
-   VkResult abr = AcquireNextImageKHR(dev, b, 1000ull * 1000 * 1000, VK_NULL_HANDLE, VK_NULL_HANDLE, &ib);
+   VkResult abr = AcquireNextImageKHR(dev, b, 1000ull * 1000 * 1000, VK_NULL_HANDLE, af, &ib);
    double ab_ms = now_ms() - t;
    printf("acquire on the second swapchain while A blocks: %s in %.1f ms\n", res_name(abr), ab_ms);
    REQ(abr == VK_SUCCESS || abr == VK_SUBOPTIMAL_KHR, "acquire on the second swapchain failed");
    REQ(ab_ms < watchdog_ms, "acquire on another swapchain waited behind the blocked one");
+   /* B's first image arrives in UNDEFINED; QueuePresentKHR requires a presentable layout, and the transition must be
+    * ordered after the acquire (CR #323 T12). The acquire's fence is both the sync object and that ordering. */
+   CK(WaitForFences(dev, 1, &af, VK_TRUE, UINT64_MAX));
+   CK(ResetFences(dev, 1, &af));
+   {
+      uint32_t nb = 0;
+      CK(GetSwapchainImagesKHR(dev, b, &nb, NULL));
+      VkImage bimgs[8];
+      REQ(nb >= 1 && nb <= 8, "unexpected image count on the second swapchain");
+      CK(GetSwapchainImagesKHR(dev, b, &nb, bimgs));
+      const VkImage bim = bimgs[ib];   /* the image this frame acquired */
+      CK(BeginCommandBuffer(tcb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
+      VkImageMemoryBarrier tb = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .image = bim,
+                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      CmdPipelineBarrier(tcb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &tb);
+      CK(EndCommandBuffer(tcb));
+      CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                                           .pCommandBuffers = &tcb}, sf));
+      CK(WaitForFences(dev, 1, &sf, VK_TRUE, UINT64_MAX));
+   }
 
    t = now_ms();
    VkResult pr = QueuePresentKHR(q, &(VkPresentInfoKHR){
@@ -256,12 +321,19 @@ main(int argc, char **argv)
                                    .pSwapchains = &b, .pImageIndices = &ib});
    double p_ms = now_ms() - t;
    printf("present on the second swapchain while A blocks: %s in %.1f ms\n", res_name(pr), p_ms);
+   REQ(pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR, "present on the second swapchain failed (a fast error is not a pass)");
    REQ(p_ms < watchdog_ms, "present waited behind a blocked acquire");
+   /* Every probe above ran while the worker was still inside its acquire (CR #323 T10). */
+   REQ(atomic_load(&bl.running), "the blocked acquire ended during the probes: a probe was not measured inside it");
 
    pthread_join(th, NULL);
    printf("blocked acquire returned %s after %.0f ms (timeout 5000)\n", res_name(bl.result),
-          bl.finished - bl.started);
+          bl.finished_ms - bl.started_ms);
    DeviceWaitIdle(dev);
+   DestroyCommandPool(dev, cpool, NULL);
+   DestroyFence(dev, sf, NULL);
+   DestroyFence(dev, wf, NULL);
+   DestroyFence(dev, af, NULL);
    DestroyDevice(dev, NULL);
    DestroyInstance(inst, NULL);
    xcb_disconnect(c);

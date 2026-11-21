@@ -44,4 +44,7 @@ grep -E "mali_vk: wsi create_swapchain: platform=xcb" "$W/xcb.log" >"$W/modes.tx
 sw=$(grep -o "sw=[01]" "$W/modes.txt" | tr '\n' ' ')
 echo "modes: $sw"
 [ "$sw" = "sw=0 sw=1 " ] || { echo "FAIL: expected A dma-buf (sw=0) and B software (sw=1), got: $sw"; exit 1; }
+# sw=1 alone is not a pass: B's swapchain must really exist on the software path (CR #323 T14). A's dma-buf import
+# failure on the fake backend is expected and stays allowed.
+grep -q "connB: swapchain created" "$W/xcb.log" || { echo "FAIL: connB logged sw=1 but its swapchain was not created"; exit 1; }
 echo "ok    two conns ($GPU): the no-DRI3 connection took the software path, the DRI3 one stayed dma-buf"
