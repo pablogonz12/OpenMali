@@ -56,6 +56,13 @@ struct mali_image_layout {
 
 /* 0, or -EINVAL when the description is out of range (extent, levels, layers, samples) or the format is not advertised. */
 int mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct mali_image_layout *out);
+/* THROWAWAY (MALI_TEX_DBG=1): the last sampled image and the plane address its descriptor resolves to, plus a readback of
+ * an 8x8 window at its centre through the BO VA mapping the GPU uses. Called from the draw path, 3 lines per process. */
+struct mali_device;
+struct mali_image;
+void mali_dbg_tex_bind(struct mali_image *img, uint64_t plane_va);
+void mali_dbg_tex_draw(struct mali_device *dev, const char *where);
+
 /* MALI_IMAGE_TILED=1 selects u-interleaved for OPTIMAL images (single sampled, not 1D). Default: linear everywhere (tiled is not
  * hardware-verified yet, see R3-PLAN M5). */
 bool mali_image_wants_tiled(VkImageTiling tiling, VkImageType type, uint32_t samples);

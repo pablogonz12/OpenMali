@@ -445,6 +445,14 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
       }
       if (ii->imageView && g_res->image_view(ii->imageView, type, &hw) == 0) {
          *slot_at(s, base) = hw;
+         {   /* THROWAWAY TEXDBG: this is the image the draw's sampler reads (combined image sampler), not just any view */
+            struct mali_image_view *mv = mali_image_view_from_handle(ii->imageView);
+            if (mv && mv->vk.image) {
+               struct mali_image *mi = mali_image_from_handle((VkImage)mv->vk.image);
+               const struct mali_plane_layout *p0 = mi ? mali_image_plane_for_aspect(&mi->lay, VK_IMAGE_ASPECT_COLOR_BIT) : NULL;
+               if (mi) mali_dbg_tex_bind(mi, mi->va + (p0 ? p0->offset + p0->slice[0].offset : 0));
+            }
+         }
          mali_dbg_line("desc", "DESC combined view=%p slot=%u tex=%08x %08x %08x %08x %08x %08x %08x %08x",
                        (void *)ii->imageView, base, hw.w[0], hw.w[1], hw.w[2], hw.w[3], hw.w[4], hw.w[5], hw.w[6], hw.w[7]);
       } else if (!ii->imageView)

@@ -629,6 +629,8 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
       return;
    }
    cmd->cur.ndraws++;
+   /* THROWAWAY TEXDBG: what the sampled image holds now, read through the GPU's own mapping */
+   mali_dbg_tex_draw(container_of(cmd->vk.base.device, struct mali_device, vk), "draw");
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -655,6 +657,7 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    sl->index_size = cmd->ib_size;
    sl->first_index = first;
    cmd->cur.ndraws++;
+   mali_dbg_tex_draw(container_of(cmd->vk.base.device, struct mali_device, vk), "drawidx");
 }
 
 /* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every

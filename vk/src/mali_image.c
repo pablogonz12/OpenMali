@@ -502,6 +502,95 @@ mali_GetDeviceImageSubresourceLayout(VkDevice _dev, const VkDeviceImageSubresour
    subres_layout(&lay, &info->pSubresource->imageSubresource, &o->subresourceLayout);
 }
 
+/* ---- THROWAWAY TEXDBG: what the sampled image holds when the draw samples it ------------------------------
+ * MALI_TEX_DBG=1. mali_dbg_tex_bind() records the last sampled view's image and the plane VA its descriptor
+ * resolves to (computed in view_refresh the same way the payload's plane descriptor is). mali_dbg_tex_draw()
+ * is called from vkCmdDraw*, skips the first two draws (frames before anything had been written) and then
+ * prints, 3 times, the plane's nonzero-byte count and an 8x8 window at its centre, read through
+ * img->mem->bo.cpu + mem_off + plane offset — the mapping the GPU writes through, after the same BO cache
+ * invalidate the WSI dump uses. A tiled/AFBC plane is reported as such and only the byte scan is printed. */
+static struct mali_image *g_tex_dbg_img;
+static uint64_t g_tex_dbg_plane_va;
+static unsigned g_tex_dbg_draws, g_tex_dbg_printed;
+
+void
+mali_dbg_tex_bind(struct mali_image *img, uint64_t plane_va)
+{
+   if (!getenv("MALI_TEX_DBG")) return;
+   g_tex_dbg_img = img;
+   g_tex_dbg_plane_va = plane_va;
+}
+
+void
+mali_dbg_tex_draw(struct mali_device *dev, const char *where)
+{
+   if (!getenv("MALI_TEX_DBG")) return;
+   if (++g_tex_dbg_draws < 3 || g_tex_dbg_printed >= 3) return;
+   g_tex_dbg_printed++;
+   struct mali_image *img = g_tex_dbg_img;
+   if (!img) {
+      fprintf(stderr, "mali_tex: TEXDBG %s draw=%u no sampled image bound yet\n", where, g_tex_dbg_draws);
+      return;
+   }
+   const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&img->lay, VK_IMAGE_ASPECT_COLOR_BIT);
+   const char *layout = img->lay.d.tiled ? "tiled" : "linear";
+   unsigned w = img->lay.d.extent.width, h = img->lay.d.extent.height;
+   const uint64_t plane_va = img->va + (pl ? pl->offset + pl->slice[0].offset : 0);
+   if (!pl || !img->mem || !img->mem->bo.cpu || !img->va) {
+      fprintf(stderr, "mali_tex: TEXDBG %s draw=%u img=%p fmt=%d(%s) tiling=%s ext=%ux%u plane_va=0x%llx img_va=0x%llx "
+                      "NO_CPU_MAPPING mem=%p\n",
+              where, g_tex_dbg_draws, (void *)img, (int)img->vk.format, mali_dbg_fmt(img->vk.format), layout, w, h,
+              (unsigned long long)plane_va, (unsigned long long)img->va, (void *)img->mem);
+      return;
+   }
+   /* the GPU wrote this BO: invalidate the CPU's view first (as the WSI dump / the shm copy do) */
+   const struct mali_physical_device *pdev = container_of(dev->vk.physical, struct mali_physical_device, vk);
+   const struct mali_backend_ops *be = pdev->backend;
+   if (be && be->bo_host_touch) be->bo_host_touch(dev->kdev, &img->mem->bo);
+   if (be && be->bo_cache) be->bo_cache(dev->kdev, &img->mem->bo, 0, img->mem->bo.size, true);
+
+   const uint64_t off = img->mem_off + pl->offset + pl->slice[0].offset;
+   const uint8_t *base = (const uint8_t *)img->mem->bo.cpu + off;
+   const unsigned stride = pl->slice[0].row_stride;
+   const unsigned bpp = pl->bs ? pl->bs : 4;
+   uint64_t nbytes = pl->slice[0].size < (4u << 20) ? pl->slice[0].size : (4u << 20);
+   if (off + nbytes > img->mem->bo.size) nbytes = img->mem->bo.size > off ? img->mem->bo.size - off : 0;
+   uint64_t nz = 0;
+   for (uint64_t i = 0; i < nbytes; i++) nz += base[i] != 0;
+
+   const bool decodable = !img->lay.d.tiled && pl->bw <= 1 && pl->bh <= 1 && bpp >= 1 && stride &&
+                          off + (uint64_t)stride * h <= img->mem->bo.size && w >= 8 && h >= 8;
+   if (!decodable) {
+      fprintf(stderr, "mali_tex: TEXDBG %s draw=%u img=%p fmt=%d(%s) tiling=%s ext=%ux%u bpp=%u stride=%u plane_va=0x%llx "
+                      "desc_plane_va=0x%llx equal=%d nonzero=%llu/%llu READBACK=%s\n",
+              where, g_tex_dbg_draws, (void *)img, (int)img->vk.format, mali_dbg_fmt(img->vk.format), layout, w, h, bpp,
+              stride, (unsigned long long)plane_va, (unsigned long long)g_tex_dbg_plane_va,
+              (int)(plane_va == g_tex_dbg_plane_va), (unsigned long long)nz, (unsigned long long)nbytes,
+              img->lay.d.tiled ? "TILED" : "BLOCK_FORMAT");
+      return;
+   }
+   const unsigned x0 = w / 2 - 4, y0 = h / 2 - 4;
+   uint64_t sum[3] = {0, 0, 0};
+   for (unsigned y = 0; y < 8; y++) {
+      for (unsigned x = 0; x < 8; x++) {
+         const uint8_t *px = base + (size_t)(y0 + y) * stride + (size_t)(x0 + x) * bpp;
+         sum[0] += px[0];
+         sum[1] += px[bpp > 1 ? 1 : 0];
+         sum[2] += px[bpp > 2 ? 2 : 0];
+      }
+   }
+   const uint8_t *c = base + (size_t)(h / 2) * stride + (size_t)(w / 2) * bpp;
+   fprintf(stderr, "mali_tex: TEXDBG %s draw=%u img=%p fmt=%d(%s) tiling=%s ext=%ux%u bpp=%u stride=%u plane_va=0x%llx "
+                   "desc_plane_va=0x%llx equal=%d nonzero=%llu/%llu mean=%llu,%llu,%llu centre_bytes=%u,%u,%u,%u "
+                   "centre_raw=%02x%02x%02x%02x READBACK=OK\n",
+           where, g_tex_dbg_draws, (void *)img, (int)img->vk.format, mali_dbg_fmt(img->vk.format), layout, w, h, bpp,
+           stride, (unsigned long long)plane_va, (unsigned long long)g_tex_dbg_plane_va,
+           (int)(plane_va == g_tex_dbg_plane_va), (unsigned long long)nz, (unsigned long long)nbytes,
+           (unsigned long long)(sum[0] / 64), (unsigned long long)(sum[1] / 64), (unsigned long long)(sum[2] / 64),
+           c[0], bpp > 1 ? c[1] : 0, bpp > 2 ? c[2] : 0, bpp > 3 ? c[3] : 0, c[0], bpp > 1 ? c[1] : 0,
+           bpp > 2 ? c[2] : 0, bpp > 3 ? c[3] : 0);
+}
+
 /* ---- VkImageView ---- */
 
 static void
@@ -510,6 +599,10 @@ view_refresh(struct mali_image_view *v)
    struct mali_image *img = container_of(v->vk.image, struct mali_image, vk);
    if (v->emitted && v->emitted_for_va == img->va) return;
    const struct mali_image_layout *vl = img->bc && !img->native_view ? &img->sh_lay : &img->lay;   /* BC: views sample the decoded shadow (ETC2: native) */
+   {   /* THROWAWAY TEXDBG: the plane VA this view's descriptor resolves to, for the draw-time readback */
+      const struct mali_plane_layout *p0 = mali_image_plane_for_aspect(vl, VK_IMAGE_ASPECT_COLOR_BIT);
+      mali_dbg_tex_bind(img, img->va + (p0 ? p0->offset + p0->slice[0].offset : 0));
+   }
    if (v->ycbcr) {   /* NV12: two ordinary textures, luma (R8) and chroma (R8G8); the conversion happens in the shader */
       struct mali_view_desc y = v->vd, c = v->vd;
       y.format = VK_FORMAT_R8_UNORM; y.aspect = VK_IMAGE_ASPECT_PLANE_0_BIT;
