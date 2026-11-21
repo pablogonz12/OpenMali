@@ -256,6 +256,14 @@ same_static(const struct mali_draw *a, const struct mali_draw *b)
    return !memcmp(a->set_va, b->set_va, b->nsets * sizeof b->set_va[0]) && !memcmp(a->set_bytes, b->set_bytes, b->nsets * sizeof b->set_bytes[0]);
 }
 
+/* THROWAWAY blenddbg (notes/blenddbg.md): the nir_alu_type of an FS colour output, in words */
+static const char *
+mali_blend_type_name(uint32_t t)
+{
+   unsigned b = t & 0xc0u;
+   return b == 0x80 ? "float" : b == 0x40 ? "uint" : b == 0x02 ? "int" : b == 0x06 ? "bool" : "none";
+}
+
 static int
 build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const struct mali_draw *d, struct ddesc *o,
                  const struct mali_draw *pd, const struct ddesc *po)
@@ -411,6 +419,32 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       for (unsigned b = 0; b < nvb; b++)
          kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
       memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
+      if (getenv("MALI_BLENDDBG")) {   /* THROWAWAY blenddbg (notes/blenddbg.md): the attribute / attribute-buffer words of the VS driver set */
+         static unsigned an;
+         if (an++ < 80) {
+            fprintf(stderr, "mali_blenddbg: ATTR n=%u step=%s draw_id=%u prim=%u count=%u nattr=%u nvb=%u dyn_stride=%d",
+                    an, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, d->count, g->nattr, nvb,
+                    (int)g->dyn_stride);
+            for (unsigned i = 0; i < g->nattr; i++) {
+               const uint32_t *e = (const uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
+               fprintf(stderr, " | attr%u pixfmt=0x%08x idx=%u binding=%u off=%u stride=%u inst=%d words=",
+                       i, g->attr[i].pixfmt, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].binding, g->attr[i].offset,
+                       g->dyn_stride && !g->attr[i].zero_div ? d->vb_stride[g->attr[i].binding] : g->attr[i].stride,
+                       (int)g->attr[i].instance);
+               for (unsigned k = 0; k < 4; k++)
+                  fprintf(stderr, "%s%08x", k ? " " : "", e[k]);
+            }
+            for (unsigned b = 0; b < nvb; b++) {
+               const uint32_t *e = (const uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE);
+               fprintf(stderr, " | buf%u va=0x%llx size=%u stride=%u words=", b, (unsigned long long)d->vb_va[b],
+                       d->vb_size[b], d->vb_stride[b]);
+               for (unsigned k = 0; k < 4; k++)
+                  fprintf(stderr, "%s%08x", k ? " " : "", e[k]);
+            }
+            fprintf(stderr, "\n");
+         } else if (an == 81)
+            fprintf(stderr, "mali_blenddbg: ... (MALI_BLENDDBG ATTR limit, 80 draws)\n");
+      }
    }
    if (getenv("MALI_VBDBG")) {   /* THROWAWAY vbdbg (notes/jobdump.md): the VBs this draw actually sees, read at the draw */
       static unsigned vn;
@@ -539,6 +573,42 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
                  zn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, (int)d->fx.set, d->fx.cull,
                  (int)d->fx.front_ccw, (int)d->fx.depth_clip, (int)d->fx.depth_clamp,
                  zsd[0], zsd[1], zsd[2], zsd[3], zsd[4], zsd[5], zsd[6], zsd[7]);
+   }
+
+   if (getenv("MALI_BLENDDBG")) {   /* THROWAWAY blenddbg (notes/blenddbg.md): the fragment-side descriptors of this draw, word by word */
+      static unsigned bn;
+      if (bn++ < 80) {
+         /* the CPU pointers this draw built its blocks with: the arena is write-only through the VA, the local pointer is what
+          * kb_draw_spd()/kb_draw_blend_*() wrote (a reused draw keeps no pointer: it prints as shared) */
+         const uint32_t *sf = spd_f, *sp = spd_p, *sv = spd_v, *bw = bl;
+         const struct mali_rtfmt *rt = f->colour.rt;
+         static const char *modes[4] = { "shader", "opaque", "fixed-function", "off" };
+         fprintf(stderr, "mali_blenddbg: DRAW n=%u step=%s draw_id=%u prim=%u count=%u static_same=%d",
+                 bn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, d->count, (int)s1);
+         fprintf(stderr, " | spd_f=%08x %08x %08x %08x", sf ? sf[0] : 0, sf ? sf[1] : 0, sf ? sf[2] : 0, sf ? sf[3] : 0);
+         fprintf(stderr, " spd_p=%08x %08x %08x %08x", sp ? sp[0] : 0, sp ? sp[1] : 0, sp ? sp[2] : 0, sp ? sp[3] : 0);
+         if (sv)
+            fprintf(stderr, " spd_v=%08x %08x %08x %08x", sv[0], sv[1], sv[2], sv[3]);
+         fprintf(stderr, " fs_va=0x%llx vs_va=0x%llx fs_bin=%u fs_fau=%u vs_bin=%u\n",
+                 (unsigned long long)g->fs_va, (unsigned long long)g->vs_va, fs->bin_size, fs->fau_count, vs->bin_size);
+         if (!bw) {
+            fprintf(stderr, "mali_blenddbg:   bl=(shared with the previous draw)\n");
+         } else {
+            unsigned mode = bw[2] & 3u;
+            fprintf(stderr, "mali_blenddbg:   bl=%08x %08x %08x %08x | load_dest=%u a2o=%u enable=%u srgb=%u round=%u bconst=0x%04x"
+                    " | eq_rgb=0x%03x eq_a=0x%03x mask=0x%x | mode=%u(%s) ncomp=%u rt=%u blend_pc=0x%x w3_as_conv_raw=%u\n",
+                    bw[0], bw[1], bw[2], bw[3], bw[0] & 1u, (bw[0] >> 8) & 1u, (bw[0] >> 9) & 1u, (bw[0] >> 10) & 1u,
+                    (bw[0] >> 11) & 1u, (bw[0] >> 16) & 0xffffu, bw[1] & 0xfffu, (bw[1] >> 12) & 0xfffu, (bw[1] >> 28) & 0xfu,
+                    mode, modes[mode & 3], ((bw[2] >> 3) & 3u) + 1u, (bw[2] >> 16) & 0xfu, (mode == 0 ? (bw[2] >> 4) << 4 : 0u),
+                    (bw[3] >> 22) & 1u);
+            fprintf(stderr, "mali_blenddbg:   bl_conv=0x%06x (memfmt_lo=0x%02x idx=%u) rt: pixfmt=0x%06x ncomp=%u int_bits=%u"
+                    " | fs_writes_colour=%u fs_blend0_type=0x%x(%s) fs_blend_src1_type=0x%x(%s) discard=%u early_z=%u\n",
+                    bw[3] & 0x3fffffu, bw[3] & 0xffu, (bw[3] >> 12) & 0x3ffu, rt ? rt->blend_pixfmt : 0, rt ? rt->ncomp : 0,
+                    rt ? rt->int_bits : 0, fs->fs_writes_colour, fs->fs_blend0_type, mali_blend_type_name(fs->fs_blend0_type),
+                    fs->fs_blend_src1_type, mali_blend_type_name(fs->fs_blend_src1_type), fs->fs_can_discard, fs->fs_can_early_z);
+         }
+      } else if (bn == 81)
+         fprintf(stderr, "mali_blenddbg: ... (MALI_BLENDDBG limit, 80 draws)\n");
    }
 
 fau:;
