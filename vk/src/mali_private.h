@@ -29,7 +29,7 @@ struct mali_physical_device {
    struct mali_gpu_info gpu;
    VkPhysicalDeviceMemoryProperties memory;
    uint64_t mem_used;   /* bytes of live VkDeviceMemory over all devices (atomic; VK_EXT_memory_budget) */
-   uint64_t mem_cap;    /* device-wide commit budget: min(heap_bytes/2, RAM/4), MALI_VRAM_CAP_MB overrides (mali_memory.c) */
+   uint64_t mem_cap;    /* device-wide commit budget == heap 0 size: min(backend heap/2, RAM/4), MALI_VRAM_CAP_MB overrides */
 
    /* M4: binary fences/semaphores on kbase fences + the runtime's emulated timeline on top. */
    struct vk_sync_timeline_type timeline_type;

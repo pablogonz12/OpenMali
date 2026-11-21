@@ -121,7 +121,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
 
    if (pAllocateInfo->memoryTypeIndex >= MALI_MEM_TYPE_COUNT)
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-   if (pAllocateInfo->allocationSize > pdev->gpu.heap_bytes)
+   if (pAllocateInfo->allocationSize > pdev->mem_cap)   /* heap 0's size: mem_reserve would refuse it below anyway */
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    /* What kbase commits: the backend rounds every request up to a page (bo_alloc/bo_import), so that is what is
     * charged and what the free path releases (mem_charge of vk.size, stored unrounded). */

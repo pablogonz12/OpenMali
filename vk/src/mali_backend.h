@@ -19,7 +19,7 @@ struct mali_gpu_info {
    uint16_t core_count;
    uint16_t uapi_major;      /* kbase CSF uAPI */
    uint16_t uapi_minor;
-   uint64_t heap_bytes;      /* size advertised for the single memory heap */
+   uint64_t heap_bytes;      /* heap 0 size: the commit budget (mali_physical_device.c), set to the cap at init */
    uint64_t ts_hz;           /* GPU timestamp counter frequency (0 = unknown) */
    bool fake;                /* no hardware behind it */
    uint32_t core_id_range;   /* util_last_bit(shader_present): compute TLS sizing */

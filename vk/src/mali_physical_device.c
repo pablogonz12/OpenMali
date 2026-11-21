@@ -464,8 +464,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
 
    /* Device-wide commit budget. kbase commits and pins every byte of a native BO at allocation time
     * (libkbase/src/bo.c:45, commit_pages = va_pages), so it is not reclaimable under pressure: without a
-    * total, a session can pin half of RAM (the heap we advertise) and take the phone into an OOM panic.
-    * Default: half the advertised heap, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. */
+    * total, a session can pin half of RAM (what the kbase backend offers as a heap) and take the phone into an OOM
+    * panic. Default: half of that, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. This value is
+    * also the heap 0 size we report, so what a client sees is what this driver commits. */
    {
       long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
       uint64_t ram = pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
@@ -493,15 +494,27 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
          }
       }
       pdev->mem_cap = cap;
+      /* The one heap we report is exactly the cap, not the RAM/2 the backend offers. A heap that says 5.5 GiB while
+       * mem_reserve() refuses anything above 2.75 GiB makes a client's "does my allocation fit the heap?" check pass
+       * and then vkAllocateMemory fail: that is zink's "couldn't allocate memory: heap=0 size=..." for a request the
+       * heap claimed to have (zink_bo.c: check against memoryHeaps[], then vkAllocateMemory). Reporting the cap keeps
+       * "fits the heap" and "fits the budget" one predicate, so an allocation the heap can hold is always granted
+       * (the pooled-BO purge in mem_reserve makes room for it). */
       if (getenv("MALI_WSI_DEBUG"))
-         fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
+         fprintf(stderr, "mali_vk: VRAM budget: heap 0 = cap %llu MiB (kbase heap %llu MiB, RAM %llu MiB%s), %s\n",
                  (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
-                 overridden ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 (unsigned long long)(ram >> 20), overridden ? ", overridden by MALI_VRAM_CAP_MB" : "",
                  pdev->gpu.name);
    }
 
+   /* maxMemoryAllocationSize must not exceed the size of the largest heap we report (VkPhysicalDeviceLimits). The
+    * fixed 1 GiB default breaks that as soon as MALI_VRAM_CAP_MB or the RAM clamp puts heap 0 below 1 GiB. */
+   if (pdev->vk.properties.maxMemoryAllocationSize > pdev->mem_cap)
+      pdev->vk.properties.maxMemoryAllocationSize = pdev->mem_cap;
+
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
-    * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
+    * readback. Which kbase allocation flags back them is decided in M3 on hardware.
+    * The size is the commit budget mem_cap, not the RAM/2 the backend offers, so heap 0 is a size this driver commits. */
    pdev->memory = (VkPhysicalDeviceMemoryProperties){
       .memoryTypeCount = 2,
       .memoryTypes = {
@@ -515,7 +528,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
           .heapIndex = 0},
       },
       .memoryHeapCount = 1,
-      .memoryHeaps = {{.size = gpu->heap_bytes, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
+      .memoryHeaps = {{.size = pdev->mem_cap, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
    };
 
    result = mali_wsi_init(pdev);
@@ -600,16 +613,23 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
 
    pMemoryProperties->memoryProperties = pdev->memory;
-   /* VK_EXT_memory_budget: one heap; the budget is the heap, usage what this process still holds allocated */
+   /* VK_EXT_memory_budget: one heap. heapUsage is what this process still holds allocated and heapBudget is the
+    * total this process may use: the extension's contract has the *client* subtract usage from the budget, so
+    * reporting `heap - used` here made budget + usage exceed the heap and made a client double-count usage
+    * (VkPhysicalDeviceMemoryBudgetPropertiesEXT refpage: heapBudget is what the process is allowed to use, and a
+    * full heap still has a nonzero budget). */
    vk_foreach_struct(stype, ext, pMemoryProperties->pNext) {
       if (stype != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
          continue;
       VkPhysicalDeviceMemoryBudgetPropertiesEXT *b = ext;
       memset(b->heapBudget, 0, sizeof b->heapBudget);
       memset(b->heapUsage, 0, sizeof b->heapUsage);
+      const uint64_t heap = pdev->memory.memoryHeaps[0].size;
       uint64_t used = p_atomic_read(&pdev->mem_used);
+      if (used > heap)
+         used = heap;
       b->heapUsage[0] = used;
-      b->heapBudget[0] = pdev->memory.memoryHeaps[0].size > used ? pdev->memory.memoryHeaps[0].size : used;
+      b->heapBudget[0] = heap;   /* total, not remaining: heapBudget - heapUsage is what is left */
    }
 }
 
