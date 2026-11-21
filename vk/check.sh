@@ -310,6 +310,10 @@ fi
 # surface support first and stops on FALSE (zink_kopper.c:130-132), so the switch has to be taken at that query and not in
 # vkCreateSwapchainKHR: this case fails on such a driver with "surface not supported by the graphics queue".
 for g in v10 v13; do run "x11 no-dri3 $g" 0 "$V/tests/xwsi-nodri3.sh" "$OUT" $g; done
+# ...and it must stay an X11 decision: wsi.sw is device-wide, so the same flip used to turn every Wayland swapchain of the
+# process into a wl_shm/CPU one (wsi_common_wayland.c:3940) - on X8 the gamescope WSI layer's swapchain, whose shm (memfd)
+# buffers no dma-buf import can take (298 x vkGetMemoryFdPropertiesKHR -> VK_ERROR_INVALID_EXTERNAL_HANDLE in x8-1121-005438).
+for g in v10 v13; do run "wl after x11 no-dri3 $g" 0 "$V/tests/xwsi-wl-after-x11.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200

@@ -23,6 +23,9 @@
  * Without --direct the Vulkan loader is used (VK_DRIVER_FILES selects the ICD). */
 #define _GNU_SOURCE
 #define VK_USE_PLATFORM_XCB_KHR
+#if defined(HAVE_WAYLAND_CLIENT)
+#define VK_USE_PLATFORM_WAYLAND_KHR 1
+#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdio.h>
@@ -31,6 +34,9 @@
 #include <time.h>
 #include <vulkan/vulkan.h>
 #include <xcb/xcb.h>
+#if defined(HAVE_WAYLAND_CLIENT)
+#include <wayland-client.h>
+#endif
 
 #define W 128
 #define H 96
@@ -83,11 +89,176 @@ read_spv(const char *dir, const char *name, size_t *sz)
 
 #define IPFN(i, n) PFN_vk##n n = (PFN_vk##n)gipa(i, "vk" #n)
 
+#if defined(HAVE_WAYLAND_CLIENT)
+/* --wl-after-x11: an X11 surface query on a server WITHOUT DRI3 must not change the present path of a later
+ * Wayland swapchain of the same device (STEAM-GAPS.md "X11 WSI"). Mesa's wsi_device->sw is device-wide and
+ * wsi_common_wayland.c:3940 turns every Wayland swapchain into a wl_shm/CPU one while it is set, so the
+ * no-DRI3 fallback #322 takes for zink/kopper (a zink client asks surface support first, zink_kopper.c:130)
+ * has to stay an X11 decision: on X8 it otherwise took the dma-buf path away from the gamescope WSI layer's
+ * Wayland swapchain and the compositor was handed shm (memfd) buffers that no dma-buf import can take
+ * (vkGetMemoryFdPropertiesKHR -> VK_ERROR_INVALID_EXTERNAL_HANDLE, 298x in the x8-1121-005438 session).
+ *
+ * Needs $DISPLAY on a server without DRI3 (tests/xwsi-wl-after-x11.sh starts one) and $WAYLAND_DISPLAY on a
+ * compositor with zwp_linux_dmabuf_v1 (gamescope). The harness also asserts the driver's own
+ * "platform=wayland ... sw=0" line (MALI_WSI_DEBUG=1). Exit 0 = pass, 77 = skipped, 1 = fail. */
+static struct wl_compositor *g_comp;
+
+static void
+wl_global(void *data, struct wl_registry *reg, uint32_t name, const char *iface, uint32_t ver)
+{
+   (void)data; (void)ver;
+   if (!strcmp(iface, wl_compositor_interface.name))
+      g_comp = wl_registry_bind(reg, name, &wl_compositor_interface, 1);
+}
+
+static void
+wl_global_remove(void *data, struct wl_registry *reg, uint32_t name)
+{
+   (void)data; (void)reg; (void)name;
+}
+
+static const struct wl_registry_listener wl_reg_listener = {wl_global, wl_global_remove};
+
+static int
+wl_after_x11(void)
+{
+   int scr;
+   xcb_connection_t *c = xcb_connect(NULL, &scr);
+   if (xcb_connection_has_error(c)) { printf("skipped: no X server ($DISPLAY)\n"); return 77; }
+   struct wl_display *wd = wl_display_connect(NULL);
+   REQ(wd, "no Wayland display ($WAYLAND_DISPLAY)");
+
+   IPFN(NULL, EnumerateInstanceExtensionProperties);
+   uint32_t n = 0;
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, NULL));
+   VkExtensionProperties *ep = calloc(n + 1, sizeof *ep);
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, ep));
+   int has_surf = 0, has_xcb = 0, has_wl = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      has_surf |= !strcmp(ep[i].extensionName, "VK_KHR_surface");
+      has_xcb |= !strcmp(ep[i].extensionName, "VK_KHR_xcb_surface");
+      has_wl |= !strcmp(ep[i].extensionName, "VK_KHR_wayland_surface");
+   }
+   free(ep);
+   if (!has_surf || !has_xcb || !has_wl) { printf("skipped: ICD without xcb and wayland surface support\n"); return 77; }
+
+   const char *iexts[] = {"VK_KHR_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"};
+   VkInstance inst;
+   CK(((PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance"))(
+      &(VkInstanceCreateInfo){.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                              .pApplicationInfo = &(VkApplicationInfo){.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                                                       .pApplicationName = "t_vk_xcb --wl-after-x11",
+                                                                       .apiVersion = VK_API_VERSION_1_3},
+                              .enabledExtensionCount = 3,
+                              .ppEnabledExtensionNames = iexts},
+      NULL, &inst));
+   IPFN(inst, EnumeratePhysicalDevices);
+   IPFN(inst, GetPhysicalDeviceQueueFamilyProperties);
+   IPFN(inst, CreateXcbSurfaceKHR);
+   IPFN(inst, CreateWaylandSurfaceKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilitiesKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormatsKHR);
+   IPFN(inst, CreateDevice);
+   IPFN(inst, GetDeviceProcAddr);
+   IPFN(inst, DestroyInstance);
+
+   uint32_t np = 1;
+   VkPhysicalDevice pd;
+   VkResult r = EnumeratePhysicalDevices(inst, &np, &pd);
+   REQ((r == VK_SUCCESS || r == VK_INCOMPLETE) && np >= 1, "no physical device");
+   uint32_t nq = 0;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+   VkQueueFamilyProperties *qf = calloc(nq, sizeof *qf);
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+   uint32_t fam = ~0u;
+   for (uint32_t i = 0; i < nq; i++)
+      if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { fam = i; break; }
+   free(qf);
+   REQ(fam != ~0u, "no graphics queue");
+
+   /* 1. X11 surface on the no-DRI3 server: support must be TRUE (#322's gain for zink/kopper). */
+   const xcb_setup_t *setup = xcb_get_setup(c);
+   xcb_screen_iterator_t sit = xcb_setup_roots_iterator(setup);
+   for (int i = 0; i < scr; i++) xcb_screen_next(&sit);
+   xcb_screen_t *s = sit.data;
+   xcb_window_t win = xcb_generate_id(c);
+   uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE};
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
+                     XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
+   xcb_map_window(c, win);
+   xcb_flush(c);
+   VkSurfaceKHR xs;
+   CK(CreateXcbSurfaceKHR(inst, &(VkXcbSurfaceCreateInfoKHR){.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+                                                             .connection = c, .window = win}, NULL, &xs));
+   VkBool32 xsup = VK_FALSE;
+   CK(GetPhysicalDeviceSurfaceSupportKHR(pd, fam, xs, &xsup));
+   REQ(xsup, "x11 surface not supported (the no-DRI3 answer of #322 is gone)");
+   printf("x11: surface support TRUE\n");
+
+   /* 2. Wayland surface, same device: its swapchain must be the dma-buf one, not wsi's wl_shm fallback. */
+   struct wl_registry *reg = wl_display_get_registry(wd);
+   wl_registry_add_listener(reg, &wl_reg_listener, NULL);
+   wl_display_roundtrip(wd);
+   REQ(g_comp, "the compositor has no wl_compositor");
+   struct wl_surface *wls = wl_compositor_create_surface(g_comp);
+   VkSurfaceKHR ws;
+   CK(CreateWaylandSurfaceKHR(inst, &(VkWaylandSurfaceCreateInfoKHR){
+                                 .sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+                                 .display = wd, .surface = wls}, NULL, &ws));
+   VkBool32 wsup = VK_FALSE;
+   CK(GetPhysicalDeviceSurfaceSupportKHR(pd, fam, ws, &wsup));
+   printf("wayland: surface support %s\n", wsup ? "TRUE" : "FALSE");
+   REQ(wsup, "wayland surface not supported");
+
+   VkSurfaceCapabilitiesKHR caps;
+   CK(GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, ws, &caps));
+   uint32_t nf = 0;
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, ws, &nf, NULL));
+   REQ(nf > 0, "no wayland surface formats");
+   VkSurfaceFormatKHR *fm = calloc(nf, sizeof *fm);
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, ws, &nf, fm));
+   VkExtent2D ext = caps.currentExtent.width == 0xFFFFFFFFu ? (VkExtent2D){W, H} : caps.currentExtent;
+   VkDevice dev;
+   float prio = 1.0f;
+   const char *dexts[] = {"VK_KHR_swapchain"};
+   CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                                            .queueCreateInfoCount = 1,
+                                            .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+                                               .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                               .queueFamilyIndex = fam, .queueCount = 1, .pQueuePriorities = &prio},
+                                            .enabledExtensionCount = 1, .ppEnabledExtensionNames = dexts},
+                   NULL, &dev));
+#define WLFN(n) PFN_vk##n wl_##n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n)
+   WLFN(CreateSwapchainKHR); WLFN(GetSwapchainImagesKHR); WLFN(DestroyDevice);
+   VkSwapchainKHR sc;
+   CK(wl_CreateSwapchainKHR(dev, &(VkSwapchainCreateInfoKHR){
+                                  .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = ws,
+                                  .minImageCount = caps.minImageCount + 1 < 3 ? 3 : caps.minImageCount + 1,
+                                  .imageFormat = fm[0].format, .imageColorSpace = fm[0].colorSpace,
+                                  .imageExtent = ext, .imageArrayLayers = 1,
+                                  .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                  .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                  .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                                  .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                                  .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE}, NULL, &sc));
+   uint32_t ni = 0;
+   CK(wl_GetSwapchainImagesKHR(dev, sc, &ni, NULL));
+   REQ(ni >= 1, "wayland swapchain has no images");
+   printf("wayland swapchain: %u images %ux%u\n", ni, ext.width, ext.height);
+   wl_DestroyDevice(dev, NULL);
+   DestroyInstance(inst, NULL);
+   wl_display_disconnect(wd);
+   xcb_disconnect(c);
+   return 0;
+}
+#endif
+
 int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
-   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0;
+   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
@@ -97,16 +268,23 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--blend")) blend = 1;
       else if (!strcmp(argv[i], "--blit")) blit = 1;
       else if (!strcmp(argv[i], "--copy")) copyimg = 1;
+      else if (!strcmp(argv[i], "--wl-after-x11")) wlfirst = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--pixels] [--draw|--textured|--depth|--blend] "
-                            "[--spv-dir d] [--expect-name s]\n"); return 2; }
+                            "[--wl-after-x11] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
    void *lib = direct ? dlopen(direct, RTLD_NOW | RTLD_LOCAL) : dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
    if (!lib) { fprintf(stderr, "FAIL dlopen: %s\n", dlerror()); return 1; }
    gipa = (PFN_vkGetInstanceProcAddr)dlsym(lib, direct ? "vk_icdGetInstanceProcAddr" : "vkGetInstanceProcAddr");
    REQ(gipa, "no GetInstanceProcAddr");
+#if defined(HAVE_WAYLAND_CLIENT)
+   if (wlfirst)
+      return wl_after_x11();
+#else
+   if (wlfirst) { printf("skipped: t_vk_xcb built without wayland-client\n"); return 77; }
+#endif
 
    int scr;
    xcb_connection_t *c = xcb_connect(NULL, &scr);
