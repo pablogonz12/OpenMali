@@ -1145,6 +1145,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
             f->resolve_level = cv->vk.base_mip_level;
             f->resolve_layer = cv->vk.base_array_layer;
+            f->resolve_dst_level = rv->vk.base_mip_level;   /* the resolve image is its own view: mip/layer may differ */
+            f->resolve_dst_layer = rv->vk.base_array_layer;
          } else {
             f->colour.resolve_va = rt.va;
             f->colour.resolve_row_stride = rt.row_stride;
@@ -1267,6 +1269,25 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    cmd->in_render = true;
 }
 
+/* Region of the deferred MSAA resolve (mali_CmdEndRendering). Both sides keep their own subresource: the source is the
+ * attachment view (level/layer recorded from it), the destination the resolve view, which may be mip 1 / layer 1 of a
+ * larger image. Vulkan resolves the render area only, so the rect is that area — a whole-attachment rect would overwrite
+ * the pixels outside it, which the app expects to keep. area[] zero (no render area recorded) = the whole attachment,
+ * as elsewhere (mali_soft.c, mali_render.c). */
+void
+mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
+{
+   const int32_t *ar = f->area;
+   const uint32_t x = ar[2] ? (uint32_t)ar[0] : 0, y = ar[3] ? (uint32_t)ar[1] : 0;
+   memset(r, 0, sizeof *r);
+   r->sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2;
+   r->srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_level, f->resolve_layer, 1};
+   r->dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_dst_level, f->resolve_dst_layer, 1};
+   r->srcOffset = (VkOffset3D){(int32_t)x, (int32_t)y, 0};
+   r->dstOffset = r->srcOffset;
+   r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1278,8 +1299,6 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
-   const unsigned resolve_level = cmd->cur.resolve_level, resolve_layer = cmd->cur.resolve_layer;
-   const unsigned resolve_w = cmd->cur.width, resolve_h = cmd->cur.height;
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
@@ -1287,10 +1306,8 @@ mali_CmdEndRendering(VkCommandBuffer h)
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      VkImageResolve2 rr = {.sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
-                            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, resolve_level, resolve_layer, 1},
-                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, resolve_level, resolve_layer, 1},
-                            .extent = {resolve_w, resolve_h, 1}};
+      VkImageResolve2 rr;
+      mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
                                 .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
