@@ -37,7 +37,7 @@ NotSupported matches PanVK (copy_and_blit.core: 590 vs 591 of 695/887 seen), i.e
 * Ours: a case that dies while running is recorded Crash immediately (no retry); deqp-wide abort on ResourceError is retried alone.
 * deqp executes in tree order, not caselist order: the crashed case is the QPA's unfinished case (`unf`), earlier code blamed the first list entry and wasted 2 retries/crash (fixed). `calm()` ignores load <40 (phone idles at ~20 with Steam up). ~5 s per crash now; 300 cases ≈ 130 s (fewer when crash-heavy).
 * `scripts/quick/qsafe` bug (not mine): lock path uses `$1` after `shift 2` ⇒ always `PHONE BUSY`; use `$lock=/tmp/qsafe-$P.lock` saved before shift.
-* `driver` is now a symlink to ~/Documents/scripts/mali-open: qdeqp falls back to cwd for ROOT.
+* `driver` is now a symlink to ~/Documents/Scripts/mali-open: qdeqp falls back to cwd for ROOT.
 
 ## Not done
 Remaining 599 sample cases (resume: `qdeqp poco lists/daily-sample.txt --icd ours --chunk 300 --limit N --case-timeout 45`); CMF; stress list.
@@ -49,7 +49,7 @@ Fixes (vk repo): 2b544c1 generic blit shader (any plain colour fmt, 128 B push),
 Before: 38 pass / 3 fail / 108 crash / 632 NS (782 run). After: 194 pass / 119 fail / 1057 NS / 10 crash (before last 3 fixes: ~2 crashes remain).
 copy_and_blit.core: 887 total, 118 pass, 37 fail, 0 crash. image_clearing.core: 113 total, 28 pass, 13 fail.
 Remaining: BC/ETC/EAC blit sources (~25), E5B9G9R9 dst, 3d r4g4b4a4 linear / r8_srgb nearest, image_clearing 13 fails, pipeline.monolithic depth/blend/stencil/sampler fails, vertex_input divisor (FEATURE_NOT_PRESENT), SEGV timestamp.draw_indirect_stage_out_of_render_pass (uninvestigated).
-Notes: adb needs PATH=$PATH:~/Android/Sdk/platform-tools; glibc cross build needs symlink ~/Documents/scripts/droidtest -> ~/Projects/mali-gaming/droidtest; qsafe fixed.
+Notes: adb needs PATH=$PATH:~/Android/Sdk/platform-tools; glibc cross build needs symlink ~/Documents/Scripts/droidtest -> ~/Projects/mali-gaming/droidtest; qsafe fixed.
 
 ## Round 2 (Poco, ours ICD, daily-sample 1381)
 True numbers after round 1 fixes: 195 pass / 126 fail / 1057 NS / 1 crash / 2 other. After round 2: **221 pass / 101 fail / 1057 NS / 0 crash / 2 other**.
