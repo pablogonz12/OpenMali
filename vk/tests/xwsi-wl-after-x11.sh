@@ -67,7 +67,7 @@ echo "$wl" | grep -qE "platform=wayland comm=[^ ]+ pid=[0-9]+ surface=0x[0-9a-f]
    || { echo "FAIL: the wayland create_swapchain line does not name comm/pid/surface/format/images:"; echo "      $wl"; exit 1; }
 # The dump of that Wayland dma-buf swapchain: pixels at vkQueuePresentKHR, the product path the old SHM-only dump
 # could not see at all.
-ls "$W"/wl-t_vk_xcb-*-sc0-*.ppm >/dev/null 2>&1 \
+ls "$W"/wl-t_vk_xcb-*-sc0c*-*.ppm >/dev/null 2>&1 \
    || { echo "FAIL: no MALI_WSI_DUMP frame for the Wayland dma-buf swapchain:"; grep -E "wsi dump|wsi present" "$W/xcb.log" | head -5; exit 1; }
 line=$(grep -m1 "platform=wayland" "$W/wl.txt")
 case "$line" in
@@ -82,5 +82,5 @@ case "$line" in
 esac
 grep -q "wayland present: result 0" "$W/xcb.log" \
    || echo "WARN: the Wayland present did not return VK_SUCCESS (the dump is written before wsi_common, so the checks above still hold)"
-echo "ok    wl dump ($GPU): $want, sc0, comm+pid in the file name"
+echo "ok    wl dump ($GPU): $want, sc0c<id>, comm+pid in the file name"
 echo "ok    wl after x11 no-dri3 ($GPU): x11 support TRUE and the wayland swapchain stayed on the dma-buf path"
