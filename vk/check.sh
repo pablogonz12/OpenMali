@@ -327,6 +327,11 @@ for g in v10 v13; do run "wl after x11 no-dri3 $g" 0 "$V/tests/xwsi-wl-after-x11
 # GetMemoryFdKHR), so the X11 swapchain must stay software too - #323 pushed it onto the dma-buf path and
 # wsi_common_x11 dereferenced the NULL export callback (SIGSEGV, exit 139, CMF + X8 on integration@20bb6c6).
 for g in v10 v13; do run "debug sw on dri3 $g" 0 "$V/tests/xwsi-debug-sw.sh" "$OUT" $g; done
+# MALI_WSI_DUMP names the process and the chain (<prefix>-<comm>-<pid>-sc<N>-<frame>.ppm) so two processes cannot
+# overwrite each other, and MALI_WSI_DEBUG prints one summary line per chain every N frames. The dumps of a Wayland
+# dma-buf swapchain (the product path) are checked in xwsi-wl-after-x11.sh; the pixels on the X11 SHM path in
+# xwsi-debug-sw.sh.
+for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200

@@ -307,9 +307,96 @@ wl_after_x11(void)
    CK(wl_GetSwapchainImagesKHR(dev, sc, &ni, NULL));
    REQ(ni >= 1, "wayland swapchain has no images");
    printf("wayland swapchain: %u images %ux%u\n", ni, ext.width, ext.height);
+   VkImage *imgs = calloc(ni, sizeof *imgs);
+   REQ(imgs != NULL, "out of memory");
+   CK(wl_GetSwapchainImagesKHR(dev, sc, &ni, imgs));
+
+   /* 3. Present one frame through this dma-buf swapchain (the product path: the gamescope WSI layer hands the
+    * compositor a Wayland dma-buf, not X11 shm). The image is cleared, so a MALI_WSI_DUMP written at
+    * vkQueuePresentKHR has a known colour to check. The present result is printed but not fatal: a headless
+    * gamescope may refuse a dma-buf whose memory the fake backend cannot really export, and the dump is written
+    * before wsi_common sees the frame either way. */
+   WLFN(GetDeviceQueue); WLFN(AcquireNextImageKHR); WLFN(CreateSemaphore); WLFN(CreateCommandPool);
+   WLFN(AllocateCommandBuffers); WLFN(BeginCommandBuffer); WLFN(EndCommandBuffer); WLFN(CmdPipelineBarrier);
+   WLFN(CmdBeginRendering); WLFN(CmdEndRendering); WLFN(QueueSubmit); WLFN(QueueWaitIdle); WLFN(QueuePresentKHR);
+   WLFN(CreateImageView); WLFN(DestroyImageView); WLFN(DestroyCommandPool); WLFN(DestroySemaphore);
+   VkQueue q;
+   wl_GetDeviceQueue(dev, fam, 0, &q);
+   VkSemaphore sa = VK_NULL_HANDLE, sd = VK_NULL_HANDLE;
+   CK(wl_CreateSemaphore(dev, &(VkSemaphoreCreateInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}, NULL, &sa));
+   CK(wl_CreateSemaphore(dev, &(VkSemaphoreCreateInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}, NULL, &sd));
+   VkCommandPool wpool;
+   CK(wl_CreateCommandPool(dev, &(VkCommandPoolCreateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                                           .queueFamilyIndex = fam}, NULL, &wpool));
+   VkCommandBuffer wcb;
+   CK(wl_AllocateCommandBuffers(dev, &(VkCommandBufferAllocateInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                                                    .commandPool = wpool,
+                                                                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                                                    .commandBufferCount = 1}, &wcb));
+   uint32_t wi = 0;
+   VkResult acq = wl_AcquireNextImageKHR(dev, sc, UINT64_MAX, sa, VK_NULL_HANDLE, &wi);
+   printf("wayland present: acquire %d image %u\n", (int)acq, wi);
+   if (acq == VK_SUCCESS || acq == VK_SUBOPTIMAL_KHR) {
+      VkImageView wview;
+      CK(wl_CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                                          .image = imgs[wi], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                                          .format = fm[0].format,
+                                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}},
+                            NULL, &wview));
+      CK(wl_BeginCommandBuffer(wcb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
+      VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                 .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .image = imgs[wi],
+                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      wl_CmdPipelineBarrier(wcb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            0, 0, NULL, 0, NULL, 1, &ib);
+      /* Same colour as the X11 path: BGRA8 51,102,204 (R,G,B), so the two dumps are comparable. */
+      VkRenderingAttachmentInfo ra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = wview,
+                                      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                      .clearValue = {.color = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}}}};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                            .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
+                            .colorAttachmentCount = 1, .pColorAttachments = &ra};
+      wl_CmdBeginRendering(wcb, &ri);
+      wl_CmdEndRendering(wcb);
+      ib.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      ib.dstAccessMask = 0;
+      ib.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      ib.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+      wl_CmdPipelineBarrier(wcb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            0, 0, NULL, 0, NULL, 1, &ib);
+      CK(wl_EndCommandBuffer(wcb));
+      VkResult sr = wl_QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                                         .waitSemaphoreCount = 1, .pWaitSemaphores = &sa,
+                                                         .pWaitDstStageMask = (VkPipelineStageFlags[]){VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
+                                                         .commandBufferCount = 1, .pCommandBuffers = &wcb,
+                                                         .signalSemaphoreCount = 1, .pSignalSemaphores = &sd},
+                                   VK_NULL_HANDLE);
+      printf("wayland present: submit %d\n", (int)sr);
+      if (sr == VK_SUCCESS) {
+         VkResult pr = wl_QueuePresentKHR(q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                                                                .waitSemaphoreCount = 1, .pWaitSemaphores = &sd,
+                                                                .swapchainCount = 1, .pSwapchains = &sc,
+                                                                .pImageIndices = &wi});
+         printf("wayland present: result %d%s\n", (int)pr, pr == VK_SUCCESS ? "" : " (not fatal: see the header)");
+      }
+      wl_QueueWaitIdle(q);
+      wl_DestroyImageView(dev, wview, NULL);
+   }
+   free(imgs);
    /* Child objects before their parents (Vulkan lifetime rules): the swapchain, then both surfaces. */
    IPFN(inst, DestroySurfaceKHR);
    wl_DestroySwapchainKHR(dev, sc, NULL);
+   wl_DestroyCommandPool(dev, wpool, NULL);
+   wl_DestroySemaphore(dev, sa, NULL);
+   wl_DestroySemaphore(dev, sd, NULL);
    DestroySurfaceKHR(inst, ws, NULL);
    DestroySurfaceKHR(inst, xs, NULL);
    wl_DestroyDevice(dev, NULL);
