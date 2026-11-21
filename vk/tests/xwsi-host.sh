@@ -32,6 +32,11 @@ for size in 32x32 800x600 33x17 1x1; do
    MALI_WSI=dmabuf timeout 60 "$OUT/t_vk_xcb" --expect-name Mali --size \$size >"$W/size-\$size.log" 2>&1; echo \$? >"$W/size-\$size.rc"
    MALI_WSI=dmabuf-strict timeout 60 "$OUT/t_vk_xcb" --expect-name Mali --size \$size >"$W/strict-\$size.log" 2>&1; echo \$? >"$W/strict-\$size.rc"
 done
+# CR #289/#288: on a software X11 chain no PresentCompleteNotify ever arrives (the present is a put_image), so Mesa's
+# chain->present_id never advances and vkWaitForPresentKHR could only time out - every frame of a present-wait client
+# (DXVK's frame limiter, gamescope) paying its whole timeout. t_vk_xcb --present-ids presents with VkPresentIdKHR and
+# waits the id after every frame; each wait must be VK_SUCCESS, and the present must still take the shm shortcut.
+timeout 60 "$OUT/t_vk_xcb" --expect-name Mali --present-ids >"$W/pids.log" 2>&1; echo \$? >"$W/pids.rc"
 if command -v glxinfo >/dev/null; then
    MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_KOPPER_DRI2=1 timeout 60 glxinfo -B >"$W/glx.log" 2>&1; echo \$? >"$W/glx.rc"
 else echo skipped >"$W/glx.rc"; fi
@@ -40,6 +45,9 @@ chmod +x "$W/inner.sh"
 timeout 150 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.log" 2>&1
 [ -f "$W/xcb.rc" ] || { echo "FAIL: the test did not run inside gamescope"; tail -20 "$W/gs.log"; exit 1; }
 grep -v alvr "$W/xcb.log"
+[ "$(cat "$W/pids.rc")" = 0 ] && grep -q '^PASS' "$W/pids.log" \
+   || { echo "FAIL: --present-ids: vkWaitForPresentKHR on the software chain"; grep -E "FAIL|WaitForPresent" "$W/pids.log" | head -3; exit 1; }
+echo "present ids: vkWaitForPresentKHR completes on the software path (was VK_TIMEOUT on every frame)"
 grep -E "present path|create_swapchain:" "$W/nodri3.log" | head -2
 # 77 = the ICD has no X11 WSI: nothing to test. Any other 77 (a dead X connection, a missing extension the test
 # needs but could not report) is a failure, not a skip.
