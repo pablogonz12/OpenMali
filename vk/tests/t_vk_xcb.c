@@ -24,6 +24,12 @@
  *               fragment shader (the zink glBlitFramebuffer path).
  *   --rtt-split  with --rtt: the offscreen write and the sampling draw go into TWO vkQueueSubmits, joined by a
  *               semaphore (rules out "one submission is what makes it work").
+ *   --rtt-blit <clear|draw>  an offscreen R8G8B8A8_UNORM image (COLOR_ATTACHMENT|TRANSFER_SRC|SAMPLED) is written by a
+ *               RENDER PASS (loadOp CLEAR to (0.1,0.45,0.9,1); how=draw adds the full-screen quad too) and then copied
+ *               with vkCmdBlitImage (NEAREST, same extent) into the swapchain image: the shape of gl-ladder step 1/5
+ *               and of its --hold redraw, which is a glBlitFramebuffer every frame (gl-ladder.c:806).
+ *                                                                              -> blue   (BGR 230,115,26)
+ *   --rtt-blit-split  with --rtt-blit: render pass in submit 1, blit in submit 2, joined by a semaphore.
  *   --hold <s>  keep presenting for <s> seconds instead of 3 frames (a window to screenshot).
  *   SPIR-V comes from --spv-dir (default "shader"): quad.vert.spv + solid.frag.spv, wsitex.frag.spv (--textured,
  *   --rtt), wsiblend.frag.spv (--blend), rtt.frag.spv (--rtt draw).
@@ -502,7 +508,7 @@ main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
-   int rtt = 0, rtt_split = 0, hold = 0;
+   int rtt = 0, rtt_split = 0, hold = 0, rttblit = 0, rttblit_split = 0;
    unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
    unsigned win_w = W, win_h = H;
@@ -530,6 +536,13 @@ main(int argc, char **argv)
          rtt = 1;
       }
       else if (!strcmp(argv[i], "--rtt-split")) rtt_split = 1;
+      else if (!strcmp(argv[i], "--rtt-blit") && i + 1 < argc) {
+         const char *how = argv[++i];
+         if (!strcmp(how, "clear")) rttblit = 1;
+         else if (!strcmp(how, "draw")) rttblit = 2;
+         else { fprintf(stderr, "usage: --rtt-blit clear|draw\n"); return 2; }
+      }
+      else if (!strcmp(argv[i], "--rtt-blit-split")) rttblit_split = 1;
       else if (!strcmp(argv[i], "--rtt-dyn") && i + 1 < argc) {
          /* --rtt-dyn <mask>: the pipeline's dynamic states, bit i = the i-th entry of Mesa's MESA_VK_DYNAMIC_*
           * list (third_party/mesa/src/vulkan/runtime/vk_graphics_state.h). That is the numbering our driver prints
@@ -553,6 +566,7 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
                             "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split] [--rtt-dyn m]] "
+                            "[--rtt-blit clear|draw [--rtt-blit-split]] "
                             "[--hold s] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
@@ -750,7 +764,7 @@ main(int argc, char **argv)
    /* Draw modes: one 2D colour view per swapchain image + quad.vert (full-screen quad from gl_VertexIndex, push constant
     * s = (1,1,0,0) so uv = q) with a per-mode fragment shader. --textured adds a 2x2 magenta texture + sampler,
     * --depth a D32 attachment, --blend a srcAlpha/1-srcAlpha blend over a blue clear. */
-   const int draw_like = draw || textured || depth || blend || blit || copyimg || rtt;
+   const int draw_like = draw || textured || depth || blend || blit || copyimg || rtt || rttblit;
    VkImageView views[16] = {0};
    VkPipeline pipe = VK_NULL_HANDLE, pipe2 = VK_NULL_HANDLE;   /* pipe2: --rtt draw, colour attachment R8G8B8A8 */
    VkPipelineLayout play = VK_NULL_HANDLE;
@@ -770,11 +784,13 @@ main(int argc, char **argv)
          CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = imgs[i],
                                                           .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt.format,
                                                           .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &views[i]));
-      if (rtt) {
+      if (rtt || rttblit) {
          /* --rtt: an offscreen R8G8B8A8_UNORM colour attachment the GPU writes on its own, then a draw samples it
-          * into the swapchain image. Optimal tiling at the window's size, i.e. the shape of a game's render texture. */
+          * into the swapchain image. Optimal tiling at the window's size, i.e. the shape of a game's render texture.
+          * --rtt-blit: the same image, but written by a render pass and copied with vkCmdBlitImage (TRANSFER_SRC). */
          VkImageUsageFlags uu = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-         if (!strcmp(rtt_how, "cmdclear")) uu |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+         if (rttblit) uu |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+         if (rtt && !strcmp(rtt_how, "cmdclear")) uu |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
          CK(CreateImage(dev, &(VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                                   .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {ext.width, ext.height, 1},
                                                   .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -792,8 +808,12 @@ main(int argc, char **argv)
          CK(CreateImageView(dev, &(VkImageViewCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = off,
                                                          .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
                                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}}, NULL, &offview));
-         printf("rtt: %ux%u R8G8B8A8_UNORM optimal usage=0x%x how=%s split=%d\n", ext.width, ext.height, (unsigned)uu,
-                rtt_how, rtt_split);
+         if (rttblit)
+            printf("rtt-blit: %ux%u R8G8B8A8_UNORM optimal usage=0x%x source=render-pass(%s) split=%d\n", ext.width,
+                   ext.height, (unsigned)uu, rttblit == 2 ? "draw" : "clear", rttblit_split);
+         else
+            printf("rtt: %ux%u R8G8B8A8_UNORM optimal usage=0x%x how=%s split=%d\n", ext.width, ext.height, (unsigned)uu,
+                   rtt_how, rtt_split);
       }
       if (textured || rtt) {
          if (textured) {
@@ -969,7 +989,7 @@ main(int argc, char **argv)
                                                    .depthAttachmentFormat = depth ? dfmt : VK_FORMAT_UNDEFINED},
          .renderPass = VK_NULL_HANDLE};
       CK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe));
-      if (rtt && !strcmp(rtt_how, "draw")) {
+      if ((rtt && !strcmp(rtt_how, "draw")) || rttblit == 2) {
          /* the writer: the same full-screen quad, but a fragment colour of its own into the R8G8B8A8 offscreen image */
          size_t f2sz = 0;
          void *f2 = read_spv(spv_dir, "rtt.frag.spv", &f2sz);
@@ -991,6 +1011,7 @@ main(int argc, char **argv)
       DestroyShaderModule(dev, vm, NULL);
       DestroyShaderModule(dev, fm, NULL);
       printf("mode: %s (full-screen quad, dynamic rendering, loadOp CLEAR, STORE)\n",
+             rttblit ? "render-to-texture, then vkCmdBlitImage into the swapchain image" :
              rtt ? "render-to-texture, then a draw sampling it into the swapchain image" :
              blit ? "offscreen render + vkCmdBlitImage into the swapchain image" :
              copyimg ? "offscreen render + vkCmdCopyImage into the swapchain image" :
@@ -1034,7 +1055,72 @@ main(int argc, char **argv)
       CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
       VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      if (rtt) {
+      if (rttblit) {
+         /* --rtt-blit: the source is written by a RENDER PASS (loadOp CLEAR, plus a quad for `draw`) and then copied
+          * with vkCmdBlitImage into the swapchain image: the shape of gl-ladder step 1/5, whose --hold loop blits a
+          * freshly rendered image every frame (gl-ladder.c:806). A black window here means the render pass' write is
+          * not visible to the blit. */
+         const VkClearColorValue rclr = {.float32 = {0.1f, 0.45f, 0.9f, 1.0f}};   /* RGB 26,115,230 */
+         VkImageMemoryBarrier ob = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = off, .subresourceRange = rng};
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            0, 0, NULL, 0, NULL, 1, &ob);
+         VkClearValue cv = {0};
+         memcpy(cv.color.float32, rclr.float32, sizeof cv.color.float32);
+         VkRenderingAttachmentInfo rra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = offview,
+                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                         .clearValue = cv};
+         VkRenderingInfo rri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
+                                .colorAttachmentCount = 1, .pColorAttachments = &rra};
+         CmdBeginRendering(cb, &rri);
+         if (rttblit == 2) {   /* `draw`: the same colour from the quad, so a render pass with a real draw */
+            VkViewport rvp = {0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f};
+            VkRect2D rsr = {{0, 0}, {ext.width, ext.height}};
+            CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe2);
+            CmdSetViewport(cb, 0, 1, &rvp);
+            CmdSetScissor(cb, 0, 1, &rsr);
+            CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
+            CmdDraw(cb, 6, 1, 0, 0);
+         }
+         CmdEndRendering(cb);
+         /* the render-pass write -> a transfer read */
+         ob.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+         ob.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+         ob.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+         ob.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            0, 0, NULL, 0, NULL, 1, &ob);
+         VkCommandBuffer bcb = cb;
+         if (rttblit_split) {   /* the render pass in submit 1, the blit in submit 2 (semaphore `mid`) */
+            CK(EndCommandBuffer(cb));
+            CK(ResetCommandBuffer(cb2, 0));
+            CK(BeginCommandBuffer(cb2, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
+            bcb = cb2;
+         }
+         VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                   .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .image = imgs[idx], .subresourceRange = rng};
+         CmdPipelineBarrier(bcb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+         CmdBlitImage(bcb, off, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                      &(VkImageBlit){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                     .srcOffsets = {{0, 0, 0}, {(int32_t)ext.width, (int32_t)ext.height, 1}},
+                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                     .dstOffsets = {{0, 0, 0}, {(int32_t)ext.width, (int32_t)ext.height, 1}}},
+                      VK_FILTER_NEAREST);
+         b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+         b.dstAccessMask = 0;
+         b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+         b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+         CmdPipelineBarrier(bcb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      } else if (rtt) {
          const int cmdclear = !strcmp(rtt_how, "cmdclear"), howdraw = !strcmp(rtt_how, "draw");
          /* 1. the GPU writes the offscreen image on its own: vkCmdClearColorImage, a render-pass clear, or a quad */
          const VkClearColorValue rclr = {.float32 = {0.1f, 0.45f, 0.9f, 1.0f}};   /* RGB 26,115,230 */
@@ -1229,11 +1315,12 @@ main(int argc, char **argv)
       b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
       CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &b);
       }
-      CK(EndCommandBuffer((rtt && rtt_split) ? cb2 : cb));
+      const int split2 = (rtt && rtt_split) || (rttblit && rttblit_split);
+      CK(EndCommandBuffer(split2 ? cb2 : cb));
       VkPipelineStageFlags ws = draw_like ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
-      if (rtt && rtt_split) {
-         /* two submissions joined by a semaphore: the writer, then the sampling draw */
-         VkPipelineStageFlags ws2 = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      if (split2) {
+         /* two submissions joined by a semaphore: the writer (render pass), then the consumer (draw or blit) */
+         VkPipelineStageFlags ws2 = rttblit ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
          CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
                                               .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1,
                                               .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &mid},
