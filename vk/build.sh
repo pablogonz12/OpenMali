@@ -50,6 +50,9 @@ CC=$(sed -E 's#^([^ ]*/)?ccache +##' <<<"$CC"); CXX=$(sed -E 's#^([^ ]*/)?ccache
 # MALI_SAN=1: ASAN+UBSAN driver objects (use with LD_PRELOAD=$(gcc -print-file-name=libasan.so) and MALI_TARGET=native-san)
 if [ "${MALI_SAN:-0}" = 1 ]; then CC="$CC -fsanitize=address,undefined -fno-omit-frame-pointer -g"; CXX="$CXX -fsanitize=address,undefined"; fi
 
+# MALI_PROF=1 (with MALI_TARGET=native-prof): debug info + frame pointers for the host sampling profiler (tools/prof-sample.c).
+if [ "${MALI_PROF:-0}" = 1 ]; then CC="$CC -g -fno-omit-frame-pointer"; fi
+
 # MALI_COV=1: gcov instrumented driver objects (MALI_TARGET=native-cov; see tools/coverage.sh). -O0 so line counts map to source.
 if [ "${MALI_COV:-0}" = 1 ]; then CC="$CC --coverage -fprofile-update=atomic -O0 -g"; CXX="$CXX --coverage"; fi
 
