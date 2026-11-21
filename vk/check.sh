@@ -98,6 +98,9 @@ run "drm standin is device v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_
 # #291 survives: a stand-in naming an unrelated node is still dropped. The extension is advertised (the app asked
 # for it), but no identity is reported (/dev/full is 1:7, our node 1:3, and no /dev/dri entry matches either).
 run "drm standin unrelated v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMY" MALI_BACKEND=fake MALI_FAKE_GPU=v11 DD_DRM_STANDIN=/dev/full $DRMT --no-identity
+# The no-alias exception needs the app path to be a char device whose rdev is our node: a path stat() cannot use as a
+# device (/etc is a directory) must still be dropped, even though the saved rdev equals our node.
+run "drm standin non-chardev v11" 0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMY" MALI_BACKEND=fake MALI_FAKE_GPU=v11 DD_DRM_STANDIN=/etc $DRMT --no-identity
 # And with no stand-in nothing is reported, even when /dev/dri exists: card0 there is another device.
 run "drm no standin v11"     0 -u BL_DRM_STANDIN -u DD_DRM_STANDIN MALI_DRM_DIR="$DRMY" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --none
 run "drm render+primary"   0 $LOADER_ENV BL_DRM_STANDIN=/dev/null MALI_DRM_DIR="$DRMB" MALI_BACKEND=fake MALI_FAKE_GPU=v11 $DRMT --node "$DRMB/renderD42" --primary "$DRMB/card1"
