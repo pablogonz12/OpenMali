@@ -23,6 +23,11 @@ timeout 60 "$OUT/t_vk_xcb" --expect-name Mali >"$W/xcb.log" 2>&1; echo \$? >"$W/
 export MALI_WSI_FORCE_NO_DRI3=1 MALI_WSI_DEBUG=1
 timeout 60 "$OUT/t_vk_xcb" --expect-name Mali >"$W/nodri3.log" 2>&1; echo \$? >"$W/nodri3.rc"
 unset MALI_WSI_FORCE_NO_DRI3
+# CR #289/#288: on a software X11 chain no PresentCompleteNotify ever arrives (the present is a put_image), so Mesa's
+# chain->present_id never advances and vkWaitForPresentKHR could only time out - every frame of a present-wait client
+# (DXVK's frame limiter, gamescope) paying its whole timeout. t_vk_xcb --present-ids presents with VkPresentIdKHR and
+# waits the id after every frame; each wait must be VK_SUCCESS, and the present must still take the shm shortcut.
+timeout 60 "$OUT/t_vk_xcb" --expect-name Mali --present-ids >"$W/pids.log" 2>&1; echo \$? >"$W/pids.rc"
 if command -v glxinfo >/dev/null; then
    MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_KOPPER_DRI2=1 timeout 60 glxinfo -B >"$W/glx.log" 2>&1; echo \$? >"$W/glx.rc"
 else echo skipped >"$W/glx.rc"; fi
@@ -39,6 +44,9 @@ if [ "$(cat "$W/nodri3.rc")" = 77 ]; then
       && { echo "skip: ICD without X11 WSI"; exit 0; }   # the harness' own skip: 77 stays the fixture's verdict
    echo "FAIL: exit 77 without a 'no X11 WSI' diagnostic"; tail -5 "$W/nodri3.log"; exit 1
 fi
+[ "$(cat "$W/pids.rc")" = 0 ] && grep -q '^PASS' "$W/pids.log" \
+   || { echo "FAIL: --present-ids: vkWaitForPresentKHR on the software chain"; grep -E "FAIL|WaitForPresent" "$W/pids.log" | head -3; exit 1; }
+echo "present ids: vkWaitForPresentKHR completes on the software path (was VK_TIMEOUT on every frame)"
 [ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && ! grep -q 'SUBOPTIMAL' "$W/nodri3.log" \
    && grep -qE "present path: shm=[01] dri3=0 \(software\)" "$W/nodri3.log" \
    || { echo "FAIL: X11 software present default"; tail -5 "$W/nodri3.log"; exit 1; }
