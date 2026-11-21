@@ -11,6 +11,8 @@
  * state (formats, attachments, GL version it picks).
  *
  * Steps (LADDER_STEP, default 1):
+ *   0  no FBO at all: glClearColor + glClear straight into the window's back
+ *      buffer, readback of back, swap, readback of front (the two controls)
  *   1  clear an RGBA8 FBO texture to a known colour, blit it to the window, swap
  *   2  step 1 + draw a triangle into the FBO with a simple GLSL shader
  *      (fixed-function fallback if GLSL fails), blit, swap
@@ -19,6 +21,9 @@
  *      (a shared context, like a second back buffer)
  *
  * Each stage prints one line: FBO completeness, GL error, what the window shows.
+ * Three readbacks per run localise a black window: readback=fbo (the texture
+ * itself, before the blit), readback=back (after the blit, before the swap) and
+ * readback=front (after the swap).
  * After every blit it reads the window's back buffer back with glReadPixels and
  * prints its mean and a few pixels, so "the window is black" is a number and not
  * an opinion. LADDER_DUMP=file.ppm also saves that readback.
@@ -611,21 +616,23 @@ static void readback(struct win *win, const char *dump, GLenum sel, const char *
     double sum = 0.0;
     size_t i;
     int x, y;
+    char err[64];
 
     glFlush();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glReadBuffer(sel);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, win->w_px, win->h_px, GL_RGB, GL_UNSIGNED_BYTE, px);
+    drain_errors(err, sizeof err);   /* GL_FRONT after a swap may be refused; say so, do not fail */
     for (i = 0; i < sz; i++) sum += px[i];
-    printf("%s readback=%-5s mean=%.1f/255 pixel_mid=(%d,%d,%d) pixel_low=(%d,%d,%d)\n",
+    printf("%s readback=%-5s mean=%.1f/255 pixel_mid=(%d,%d,%d) pixel_low=(%d,%d,%d) err=%s\n",
            label, sel == GL_FRONT ? "front" : "back", sum / (double)sz,
            px[((win->h_px / 2) * win->w_px + win->w_px / 2) * 3 + 0],
            px[((win->h_px / 2) * win->w_px + win->w_px / 2) * 3 + 1],
            px[((win->h_px / 2) * win->w_px + win->w_px / 2) * 3 + 2],
            px[((win->h_px / 5) * win->w_px + win->w_px / 2) * 3 + 0],
            px[((win->h_px / 5) * win->w_px + win->w_px / 2) * 3 + 1],
-           px[((win->h_px / 5) * win->w_px + win->w_px / 2) * 3 + 2]);
+           px[((win->h_px / 5) * win->w_px + win->w_px / 2) * 3 + 2], err);
     if (dump && *dump) {
         FILE *fp = fopen(dump, "wb");
         if (!fp) {
@@ -640,6 +647,33 @@ static void readback(struct win *win, const char *dump, GLenum sel, const char *
         }
     }
     (void)rb_w; (void)rb_h;
+}
+
+/* ---- readback of the FBO texture itself (did the draw land at all?) ----- */
+
+static void readback_fbo(GLuint fbo, const char *label)
+{
+    size_t sz = (size_t)FBO_W * FBO_H * 3;
+    unsigned char *px = readbacks[1];
+    double sum = 0.0;
+    size_t i;
+    char err[64];
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glFinish();
+    glReadPixels(0, 0, FBO_W, FBO_H, GL_RGB, GL_UNSIGNED_BYTE, px);
+    drain_errors(err, sizeof err);
+    for (i = 0; i < sz; i++) sum += px[i];
+    printf("%s readback=fbo   mean=%.1f/255 pixel_mid=(%d,%d,%d) pixel_low=(%d,%d,%d) err=%s\n",
+           label, sum / (double)sz,
+           px[((FBO_H / 2) * FBO_W + FBO_W / 2) * 3 + 0],
+           px[((FBO_H / 2) * FBO_W + FBO_W / 2) * 3 + 1],
+           px[((FBO_H / 2) * FBO_W + FBO_W / 2) * 3 + 2],
+           px[((FBO_H / 5) * FBO_W + FBO_W / 2) * 3 + 0],
+           px[((FBO_H / 5) * FBO_W + FBO_W / 2) * 3 + 1],
+           px[((FBO_H / 5) * FBO_W + FBO_W / 2) * 3 + 2], err);
 }
 
 /* ---- main -------------------------------------------------------------- */
@@ -659,8 +693,8 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     if (s && *s) step = atoi(s);
-    if (step < 1 || step > 4) {
-        fprintf(stderr, "gl-ladder: LADDER_STEP must be 1..4 (got %s)\n", s ? s : "");
+    if (step < 0 || step > 4) {
+        fprintf(stderr, "gl-ladder: LADDER_STEP must be 0..4 (got %s)\n", s ? s : "");
         return 2;
     }
     use_srgb_fbo = step >= 3;
@@ -711,40 +745,63 @@ int main(int argc, char **argv)
     readbacks[1] = malloc((size_t)WIDTH * HEIGHT * 3);
     if (!readbacks[0] || !readbacks[1]) { fprintf(stderr, "gl-ladder: no memory\n"); return 2; }
 
-    if (!make_fbo(&f, use_srgb_fbo ? GL_SRGB8_ALPHA8 : GL_RGBA8)) {
-        printf("step=%d fbo=%s complete=%s -> STOP\n", step,
-               use_srgb_fbo ? "SRGB8_ALPHA8" : "RGBA8", completeness());
-        return 1;
+    if (step >= 1) {
+        if (!make_fbo(&f, use_srgb_fbo ? GL_SRGB8_ALPHA8 : GL_RGBA8)) {
+            printf("step=%d fbo=%s complete=%s -> STOP\n", step,
+                   use_srgb_fbo ? "SRGB8_ALPHA8" : "RGBA8", completeness());
+            return 1;
+        }
+
+        /* --- 1: render offscreen --------------------------------------- */
+        if (step == 1) {
+            glClearColor(0.10f, 0.45f, 0.90f, 1.0f);       /* blue */
+            glClear(GL_COLOR_BUFFER_BIT);
+        } else {
+            glClearColor(0.10f, 0.20f, 0.10f, 1.0f);       /* dark green */
+            glClear(GL_COLOR_BUFFER_BIT);
+            draw_triangle();
+        }
+        drain_errors(err, sizeof err);
+        printf("step=%d fbo=%s complete=%s srgb=%s draw=%s err=%s\n",
+               step, use_srgb_fbo ? "SRGB8_ALPHA8" : "RGBA8", completeness(),
+               glIsEnabled(GL_FRAMEBUFFER_SRGB) ? "on" : "off",
+               step == 1 ? "clear" : "triangle", err);
+
+        if (step >= 3) {
+            glEnable(GL_FRAMEBUFFER_SRGB);
+            /* re-render so the sRGB encode is actually applied on the FBO write */
+            glClearColor(0.10f, 0.20f, 0.10f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            draw_triangle();
+            glFinish();
+            drain_errors(err, sizeof err);
+            printf("step=%d framebuffer_srgb=on err=%s\n", step, err);
+        }
+
+        /* H1: did the clear/draw land in the texture? read the FBO itself */
+        readback_fbo(f.fbo, "preblit");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
-    /* --- 1: render offscreen ------------------------------------------- */
-    if (step == 1) {
-        glClearColor(0.10f, 0.45f, 0.90f, 1.0f);       /* blue */
+    /* --- 0: no FBO at all: clear the back buffer directly (control) ----- */
+    if (step == 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+        glClearColor(0.90f, 0.10f, 0.60f, 1.0f);   /* magenta, distinguishable from every step */
         glClear(GL_COLOR_BUFFER_BIT);
-    } else {
-        glClearColor(0.10f, 0.20f, 0.10f, 1.0f);       /* dark green */
-        glClear(GL_COLOR_BUFFER_BIT);
-        draw_triangle();
-    }
-    drain_errors(err, sizeof err);
-    printf("step=%d fbo=%s complete=%s srgb=%s draw=%s err=%s\n",
-           step, use_srgb_fbo ? "SRGB8_ALPHA8" : "RGBA8", completeness(),
-           glIsEnabled(GL_FRAMEBUFFER_SRGB) ? "on" : "off",
-           step == 1 ? "clear" : "triangle", err);
-
-    if (step >= 3) {
-        glEnable(GL_FRAMEBUFFER_SRGB);
-        /* re-render so the sRGB encode is actually applied on the FBO write */
-        glClearColor(0.10f, 0.20f, 0.10f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        draw_triangle();
         glFinish();
         drain_errors(err, sizeof err);
-        printf("step=%d framebuffer_srgb=on err=%s\n", step, err);
+        printf("step=0 fbo=none target=window1 direct_clear=magenta(0.90,0.10,0.60) err=%s\n", err);
+        readback(&w1, dump, GL_BACK, "direct");
+        glXSwapBuffers(dpy, w1.w);
+        glFinish();
+        drain_errors(err, sizeof err);
+        printf("step=0 swap=ok err=%s window_shows=magenta (0.90,0.10,0.60)\n", err);
+        readback(&w1, NULL, GL_FRONT, "after");
     }
 
     /* --- 2: blit into the (last) window's back buffer ------------------- */
-    {
+    if (step >= 1) {
         struct win *target = use_second_window ? &w2 : &w1;
         if (use_second_window) {
             if (!glXMakeCurrent(dpy, w2.w, w2.ctx)) {
@@ -775,6 +832,8 @@ int main(int argc, char **argv)
                step == 1 ? "blue (0.10,0.45,0.90)"
                          : (step == 2 ? "dark green + white triangle"
                                       : "dark green + white triangle, sRGB-encoded"));
+        /* H3: is it only the readback of the window, or the present itself? */
+        readback(target, NULL, GL_FRONT, "after");
     }
 
     if (use_second_window) {
