@@ -3,6 +3,8 @@
  * char device the backend drives (the bridge's /dev/dri/renderD<N> alias of /dev/mali0 in the guest,
  * BL_DRM_STANDIN=/dev/mali0), and its numbers are that node's st_rdev (STEAM-GAPS.md, zink choose_pdev).
  *   t_vk_drm --direct <icd.so> --none                   no node: extension absent, no DRM identity
+ *   t_vk_drm --direct <icd.so> --no-identity             no identity (the extension may be advertised, because
+ *                                                       DD_DRM_STANDIN is set, but the stand-in names another node)
  *   t_vk_drm --direct <icd.so> --node <render path> [--primary <card path>]
  *                                                       extension present; renderMajor/Minor == stat(node);
  *                                                       primary only when --primary is given
@@ -59,14 +61,15 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL, *node = NULL, *primary = NULL;
-   int expect_none = 0;
+   int expect_none = 0, expect_no_identity = 0;
    for (int i = 1; i < argc; i++)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--node") && i + 1 < argc) node = argv[++i];
       else if (!strcmp(argv[i], "--primary") && i + 1 < argc) primary = argv[++i];
       else if (!strcmp(argv[i], "--none")) expect_none = 1;
-   if (!icd || (!expect_none && !node)) {
-      printf("usage: t_vk_drm --direct <icd.so> (--none | --node <path> [--primary <path>])\n");
+      else if (!strcmp(argv[i], "--no-identity")) expect_no_identity = 1;
+   if (!icd || (!expect_none && !expect_no_identity && !node)) {
+      printf("usage: t_vk_drm --direct <icd.so> (--none | --no-identity | --node <path> [--primary <path>])\n");
       return 2;
    }
 
@@ -101,10 +104,11 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drm};
    GetPhysicalDeviceProperties2(pd, &pr);
 
-   if (expect_none) {
-      printf("no node: VK_EXT_physical_device_drm %s, hasRender=%u hasPrimary=%u\n",
-             have ? "advertised" : "absent", drm.hasRender, drm.hasPrimary);
-      CHECK(!have, "extension advertised without a matching DRM node");
+   if (expect_none || expect_no_identity) {
+      printf("%s: VK_EXT_physical_device_drm %s, hasRender=%u hasPrimary=%u\n",
+             expect_none ? "no node" : "no identity", have ? "advertised" : "absent", drm.hasRender, drm.hasPrimary);
+      if (expect_none)
+         CHECK(!have, "extension advertised without a matching DRM node");
       CHECK(!drm.hasRender && !drm.hasPrimary, "DRM identity reported without a matching node");
       printf("%s\n", g_fail ? "FAILED" : "PASS");
       return g_fail;
