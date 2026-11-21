@@ -77,3 +77,54 @@ mali_wsi_finish(struct mali_physical_device *pdev)
    pdev->vk.wsi_device = NULL;
    wsi_device_finish(&pdev->wsi, &pdev->vk.instance->alloc);
 }
+
+/* MALI_TRACE: log every acquire / present with its semaphore, fence, image index and result (the runtime's wsi_* entrypoints do the work; these
+ * wrappers only time and print). Installed on the device dispatch table only when tracing is on. */
+static PFN_vkAcquireNextImageKHR trace_real_acquire;
+static PFN_vkAcquireNextImage2KHR trace_real_acquire2;
+static PFN_vkQueuePresentKHR trace_real_present;
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+trace_acquire(VkDevice d, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence, uint32_t *idx)
+{
+   mali_trace("acquire sc=%p sem=%p fence=%p timeout=%llu", (void *)(uintptr_t)sc, (void *)(uintptr_t)sem, (void *)(uintptr_t)fence, (unsigned long long)timeout);
+   VkResult r = trace_real_acquire(d, sc, timeout, sem, fence, idx);
+   mali_trace("  acquire -> %d idx=%u", (int)r, idx ? *idx : 0);
+   return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+trace_acquire2(VkDevice d, const VkAcquireNextImageInfoKHR *i, uint32_t *idx)
+{
+   mali_trace("acquire2 sc=%p sem=%p fence=%p timeout=%llu", (void *)(uintptr_t)i->swapchain, (void *)(uintptr_t)i->semaphore, (void *)(uintptr_t)i->fence,
+              (unsigned long long)i->timeout);
+   VkResult r = trace_real_acquire2(d, i, idx);
+   mali_trace("  acquire2 -> %d idx=%u", (int)r, idx ? *idx : 0);
+   return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+trace_present(VkQueue q, const VkPresentInfoKHR *p)
+{
+   for (uint32_t i = 0; i < p->swapchainCount; i++)
+      mali_trace("present sc=%p idx=%u waits=%u", (void *)(uintptr_t)p->pSwapchains[i], p->pImageIndices[i], p->waitSemaphoreCount);
+   VkResult r = trace_real_present(q, p);
+   mali_trace("  present -> %d", (int)r);
+   return r;
+}
+
+void
+mali_wsi_trace_hook(struct vk_device_dispatch_table *t)
+{
+   if (!mali_trace_on() || trace_real_present)
+      return;
+   trace_real_acquire = t->AcquireNextImageKHR;
+   trace_real_acquire2 = t->AcquireNextImage2KHR;
+   trace_real_present = t->QueuePresentKHR;
+   if (trace_real_acquire)
+      t->AcquireNextImageKHR = trace_acquire;
+   if (trace_real_acquire2)
+      t->AcquireNextImage2KHR = trace_acquire2;
+   if (trace_real_present)
+      t->QueuePresentKHR = trace_present;
+}

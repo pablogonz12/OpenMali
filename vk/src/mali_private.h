@@ -70,6 +70,8 @@ VK_DEFINE_HANDLE_CASTS(mali_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
 VkResult mali_enumerate_physical_devices(struct vk_instance *vk_instance);
 /* MALI_TRACE=<file> post-mortem trace line (no-op unless set); see mali_instance.c */
 void mali_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+bool mali_trace_on(void);
+void mali_wsi_trace_hook(struct vk_device_dispatch_table *t); /* MALI_TRACE set: guard argument formatting that costs something */
 /* M5/M7 seams (mali_resources.c): installs the descriptor/image resolvers and the BO-backed GPU pools. Idempotent. */
 void mali_resources_init(void);
 /* M14 */
