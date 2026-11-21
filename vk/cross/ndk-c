@@ -1,7 +1,0 @@
-#!/bin/bash
-# SPDX-License-Identifier: MIT
-# NDK clang that force-includes shim/bionic_compat.h for real sources, not for meson's configure probes.
-D=$(cd "$(dirname "$0")" && pwd)
-DT=${MALI_DROIDTEST:-$HOME/Projects/mali-gaming/droidtest}
-for a in "$@"; do case $a in *meson-private*) exec $DT/tools/ndk/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang "$@";; esac; done
-exec $DT/tools/ndk/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang -I$D/shim -include $D/shim/bionic_compat.h "$@"

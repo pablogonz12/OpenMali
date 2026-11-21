@@ -1,6 +1,0 @@
-#!/bin/bash
-# SPDX-License-Identifier: MIT
-# C++ twin of droidtest/tools/cc-aarch64-glibc (clang++ against the arm64 sysroot).
-SYSROOT=${BRIDGE_SYSROOT:-$(cd "$(dirname "$0")/../../../droidtest/tools" && pwd)/sysroot}
-gccdir=$(ls -d "$SYSROOT"/usr/lib/gcc/aarch64-linux-gnu/* | sort -V | tail -1)
-exec clang++ --target=aarch64-linux-gnu --sysroot="$SYSROOT" --gcc-install-dir="$gccdir" -fuse-ld=lld -rtlib=libgcc -Qunused-arguments "$@"

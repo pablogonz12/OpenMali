@@ -1,4 +1,0 @@
-#!/bin/bash
-SR=${MALI_DROIDTEST:-$HOME/Projects/mali-gaming/droidtest}/tools/sysroot
-export PKG_CONFIG_SYSROOT_DIR=$SR PKG_CONFIG_LIBDIR=$SR/usr/lib/aarch64-linux-gnu/pkgconfig:$SR/usr/share/pkgconfig
-exec pkg-config "$@"

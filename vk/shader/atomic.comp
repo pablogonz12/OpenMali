@@ -1,8 +1,0 @@
-#version 450
-// Every invocation increments a counter (SSBO atomic) and adds its id to a sum.
-layout(local_size_x = 64) in;
-layout(set = 0, binding = 0, std430) buffer C { uint count; uint sum; };
-void main() {
-   atomicAdd(count, 1u);
-   atomicAdd(sum, gl_GlobalInvocationID.x);
-}

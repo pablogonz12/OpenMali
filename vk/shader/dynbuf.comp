@@ -1,9 +1,0 @@
-#version 450
-// t_vk_compute dyn: dst[i] = src[i] + 1, src read through a DYNAMIC storage buffer descriptor (offset applied at vkCmdBindDescriptorSets)
-layout(local_size_x = 64) in;
-layout(set = 0, binding = 0, std430) readonly buffer S { uint src[]; };
-layout(set = 0, binding = 1, std430) buffer D { uint dst[]; };
-void main() {
-   uint i = gl_GlobalInvocationID.x;
-   dst[i] = src[i] + 1u;
-}
