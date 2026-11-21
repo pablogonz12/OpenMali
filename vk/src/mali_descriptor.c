@@ -2,6 +2,7 @@
 /* M7 descriptor sets over the Vulkan runtime. See mali_descriptor.h. */
 #include "mali_descriptor.h"
 #include "mali_format.h"
+#include "mali_image.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -333,10 +334,10 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
    s->pool = p;
    s->off = at;
    s->bytes = bytes;
-   s->cpu = p->cpu + at;
+   s->cpu = p->cpu ? p->cpu + at : NULL;
    s->va = p->va + at;
    s->arch = p->arch;
-   memset(s->cpu, 0, bytes);
+   if (bytes) memset(s->cpu, 0, bytes);   /* zero-capacity pool: s->cpu is NULL (memset(NULL, 0, 0) is UB) */
    write_immutable(s);
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
@@ -397,6 +398,22 @@ slot_at(struct mali_dset *s, uint32_t slot)
 }
 
 /* write one element `idx` (already resolved to binding b) */
+/* M15: storage resources are the buffers/images the GPU writes behind the driver's back. Recorded per set and
+ * handed to the command buffer when the set is bound. Over-marking only costs one extra CSYNC at the next wait. */
+void
+mali_dset_mark_write(struct mali_dset *s, struct mali_memory *mem)
+{
+   if (!s || !mem)
+      return;
+   for (unsigned i = 0; i < s->nwrote; i++)
+      if (s->wrote[i] == mem)
+         return;
+   if (s->nwrote < MALI_DSET_WROTE_MAX)
+      s->wrote[s->nwrote++] = mem;
+   else
+      s->wrote_full = true;
+}
+
 static void
 write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDescriptorType type, const VkDescriptorImageInfo *ii,
           const VkDescriptorBufferInfo *bi, const VkBufferView *bv)
@@ -503,6 +520,11 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
 void
 mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src)
 {
+   /* M15: the destination can now write whatever the source could write */
+   for (unsigned i = 0; i < src->nwrote; i++)
+      mali_dset_mark_write(dst, src->wrote[i]);
+   if (src->wrote_full)
+      dst->wrote_full = true;
    const struct mali_lbinding *sb = &src->layout->b[c->srcBinding], *db = &dst->layout->b[c->dstBinding];
    if (sb->inline_bytes || db->inline_bytes) {   /* inline block: dstArrayElement/srcArrayElement are byte offsets, descriptorCount bytes */
       if (!sb->inline_bytes || !db->inline_bytes || c->srcArrayElement > sb->inline_bytes || c->dstArrayElement > db->inline_bytes ||
@@ -512,14 +534,28 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
               src->cpu + (size_t)(sb->slot + 1) * MALI_DESC_SLOT_SIZE + c->srcArrayElement, c->descriptorCount);
       return;
    }
+   /* spec: a copy that runs past the end of a binding continues into the next consecutive binding, on both sides */
+   uint32_t sbi = c->srcBinding, dbi = c->dstBinding, se = c->srcArrayElement, de = c->dstArrayElement;
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
-      uint32_t se = c->srcArrayElement + i, de = c->dstArrayElement + i;
-      if (se >= sb->count || de >= db->count) return;
+      while (sbi < src->layout->nbindings && se >= src->layout->b[sbi].count) {
+         se -= src->layout->b[sbi].count;
+         sbi++;
+      }
+      while (dbi < dst->layout->nbindings && de >= dst->layout->b[dbi].count) {
+         de -= dst->layout->b[dbi].count;
+         dbi++;
+      }
+      if (sbi >= src->layout->nbindings || dbi >= dst->layout->nbindings) return;
+      sb = &src->layout->b[sbi];
+      db = &dst->layout->b[dbi];
+      if (sb->type == MALI_DT_NONE || db->type == MALI_DT_NONE) return;
       if (sb->stride && db->stride)
          memcpy(slot_at(dst, db->slot + de * db->stride), slot_at(src, sb->slot + se * sb->stride),
                 MIN2(sb->stride, db->stride) * MALI_DESC_SLOT_SIZE);
       else if (!sb->stride && !db->stride)
          dst->dyn[db->dyn_idx + de] = src->dyn[sb->dyn_idx + se];
+      se++;
+      de++;
    }
 }
 

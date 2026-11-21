@@ -28,7 +28,7 @@ def main(a):
          "icd": m[0]["device"]["icd"] or m[0]["device"]["loader"], "present_mode": m[0]["present_mode"], "wsi": m[0]["wsi"], "load": m[0]["load"],
          "fps": {"median": med(g(lambda x: x["fps"])), "min": min(g(lambda x: x["fps"])), "max": max(g(lambda x: x["fps"]))},
          "fps_1pct_low_median": med(g(lambda x: x["fps_1pct_low"])), "frame_p50_ms": med(g(lambda x: x["frame_time_ms"]["all"]["p50"])),
-         "frame_p99_ms": med(g(lambda x: x["frame_time_ms"]["all"]["p99"])), "over_25ms_total": sum(g(lambda x: x["over_25ms"])),
+         "frame_p99_ms": med(g(lambda x: x["frame_time_ms"]["all"]["p99"])), "over_25ms_total": sum(g(lambda x: x["over_25ms"])), "over_50ms_total": sum(g(lambda x: x["over_50ms"])),
          "gpu_ms_mean": med(g(lambda x: (x["gpu_ms"] or {}).get("mean"))), "cpu_submit_ms_mean": med(g(lambda x: x["cpu_submit_ms_mean"])),
          "cpu_busy_ms_mean": med(g(lambda x: x["cpu_busy_ms_mean"]))}
     if all("auto_scale" in x for x in m):
@@ -39,7 +39,7 @@ def main(a):
     if out: open(out, "w").write(line + "\n")
     f = lambda v, p=2: "n/a" if v is None else f"{v:.{p}f}"
     print(f"{s['scene']:<10} {s['device']} [{s['icd']}] {s['wsi']}/{s['present_mode']}  runs {s['runs']}/{s['requested']}  fps {f(s['fps']['median'], 1)} (min {f(s['fps']['min'], 1)})  1%low {f(s['fps_1pct_low_median'], 1)}  "
-          f"p99 {f(s['frame_p99_ms'])} ms  >25ms {s['over_25ms_total']}  gpu {f(s['gpu_ms_mean'])} ms  cpu-submit {f(s['cpu_submit_ms_mean'], 3)} ms" +
+          f"p99 {f(s['frame_p99_ms'])} ms  >25ms {s['over_25ms_total']}  >50ms {s['over_50ms_total']}  gpu {f(s['gpu_ms_mean'])} ms  cpu-submit {f(s['cpu_submit_ms_mean'], 3)} ms" +
           (f"  SCORE level {s['score_level']['median']} (x{f(s['score_scale_median'])})" if "score_level" in s else ""))
     return 0
 

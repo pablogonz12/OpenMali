@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# tools/frameprof: summarise the FRAMEPROF lines the driver prints with MALI_FRAME_PROF (see vk/FRAME-PROF.md).
+#
+#   tools/frameprof <log>                 summarise a log of FRAMEPROF lines
+#   tools/frameprof -                      read the lines from stdin
+#   tools/frameprof --run -- <cmd...>     run <cmd> with MALI_FRAME_PROF=<tmpfile>, then summarise it
+#
+# Prints per-frame medians/p99 for frame_ms (wall clock), gpu_ms (GPU busy *estimate*), submit_us (CPU submit cost)
+# and present_ms, plus how many frames were classified GPU-bound vs CPU-bound. Numbers are the driver's estimates:
+# read the accuracy section of vk/FRAME-PROF.md before drawing conclusions from them.
+import os
+import shutil
+import statistics as st
+import subprocess
+import sys
+import tempfile
+
+FIELDS = ("frame_ms", "gpu_ms", "submit_us", "present_ms")
+
+
+def parse(lines):
+    rows = []
+    summary = None
+    for ln in lines:
+        ln = ln.strip()
+        at = ln.find("FRAMEPROF ")
+        if at < 0:
+            continue
+        ln = ln[at + len("FRAMEPROF "):]
+        if ln.startswith("summary "):
+            summary = ln[len("summary "):]
+            continue
+        if not ln.startswith("f="):
+            continue
+        row = {}
+        for tok in ln.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                row[k] = v
+        rows.append(row)
+    return rows, summary
+
+
+def pct(vals, p):
+    if not vals:
+        return 0.0
+    if p == 50:
+        return st.median(vals)
+    s = sorted(vals)
+    i = min(len(s) - 1, max(0, int(round((len(s) - 1) * p / 100.0))))
+    return s[i]
+
+
+def report(rows, summary):
+    if not rows:
+        print("frameprof: no FRAMEPROF frame lines (is MALI_FRAME_PROF set? was the driver the one that ran?)")
+        return 1
+    n = len(rows)
+    gpu = sum(1 for r in rows if r.get("bound") == "gpu")
+    print(f"frames {n}   gpu_bound {gpu} ({100.0 * gpu / n:.0f} %)   cpu_bound {n - gpu} ({100.0 * (n - gpu) / n:.0f} %)")
+    print(f"{'field':<11}{'mean':>9}{'p50':>9}{'p99':>9}{'max':>9}   unit")
+    for f in FIELDS:
+        vals = [float(r[f]) for r in rows if f in r]
+        if not vals:
+            continue
+        unit = "us" if f == "submit_us" else "ms"
+        print(f"{f:<11}{st.mean(vals):>9.2f}{pct(vals, 50):>9.2f}{pct(vals, 99):>9.2f}{max(vals):>9.2f}   {unit}")
+    sat = sum(1 for r in rows if r.get("est") == "sat")
+    if "frame_ms" in rows[0]:
+        f50 = pct([float(r["frame_ms"]) for r in rows], 50)
+        g50 = pct([float(r["gpu_ms"]) for r in rows], 50)
+        print(f"verdict: {gpu}/{n} frames had queued GPU work at the submit (est=sat {sat})"
+              f" -> {'GPU-bound' if gpu * 2 > n else 'CPU-bound'}")
+        print(f"         median GPU estimate {g50:.2f} ms of a {f50:.2f} ms frame ({100.0 * g50 / f50 if f50 else 0:.0f} %);"
+              f" the rest is CPU time and/or idle/vsync")
+    if summary:
+        print(f"driver summary: {summary}")
+    return 0
+
+
+def main(argv):
+    args = argv[1:]
+    if not args:
+        print(__doc__ or "usage: frameprof <log> | - | --run -- cmd...")
+        return 2
+    if args[0] == "--run":
+        cmd = args[1:]
+        if cmd and cmd[0] == "--":
+            cmd = cmd[1:]
+        if not cmd:
+            print("frameprof: --run needs a command", file=sys.stderr)
+            return 2
+        fd, path = tempfile.mkstemp(prefix="frameprof.", suffix=".log")
+        os.close(fd)
+        env = dict(os.environ, MALI_FRAME_PROF=path)
+        rc = subprocess.call(cmd, env=env)
+        with open(path, encoding="utf-8", errors="replace") as f:
+            rows, summary = parse(f)
+        os.unlink(path)
+        print(f"$ {' '.join(cmd)}   (exit {rc})")
+        report(rows, summary)
+        return rc
+    src = sys.stdin if args[0] == "-" else open(args[0], encoding="utf-8", errors="replace")
+    rows, summary = parse(src)
+    return report(rows, summary)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
