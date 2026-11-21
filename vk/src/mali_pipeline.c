@@ -46,10 +46,22 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    vk_object_free(&dev->vk, alloc, p);
 }
 
-static const struct vk_shader_module *
-find_module(const VkPipelineShaderStageCreateInfo *s)
+/* SPIR-V of a stage: a shader module, or (VK_KHR_maintenance5) a VkShaderModuleCreateInfo chained to the stage with module == NULL. */
+static bool
+stage_spirv(const VkPipelineShaderStageCreateInfo *s, const uint32_t **code, uint32_t *words)
 {
-   return vk_shader_module_from_handle(s->module);
+   const struct vk_shader_module *m = vk_shader_module_from_handle(s->module);
+   if (m) {
+      *code = (const uint32_t *)m->data;
+      *words = m->size / 4;
+      return true;
+   }
+   const VkShaderModuleCreateInfo *mci = vk_find_struct_const(s->pNext, SHADER_MODULE_CREATE_INFO);
+   if (!mci || !mci->pCode)
+      return false;
+   *code = mci->pCode;
+   *words = mci->codeSize / 4;
+   return true;
 }
 
 /* VkSpecializationInfo -> mali_compile_opts (entries copied into `buf`, MALI_SPEC_MAX of them). Entries outside dataSize are dropped. */
@@ -103,8 +115,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          goto fail;
       }
    }
-   if (!vss || !fss || !find_module(vss) || !find_module(fss)) {
-      res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) and module-less (maintenance5) stages: later */
+   const uint32_t *vcode = NULL, *fcode = NULL;
+   uint32_t vwords = 0, fwords = 0;
+   if (!vss || !fss || !stage_spirv(vss, &vcode, &vwords) || !stage_spirv(fss, &fcode, &fwords)) {
+      res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) pipelines: later */
       goto fail;
    }
 
@@ -124,11 +138,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       goto fail;
 
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
-   const struct vk_shader_module *m = find_module(vss);
    o.stage = MALI_STAGE_VERTEX;
    o.strip_psiz = ci->pInputAssemblyState && ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-   o.spirv = (const uint32_t *)m->data;
-   o.spirv_words = m->size / 4;
+   o.spirv = vcode;
+   o.spirv_words = vwords;
    o.entry = vss->pName;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
    if (mali_compile(&o, &p->vs, err, sizeof err)) {
@@ -136,11 +149,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
-   m = find_module(fss);
    o.stage = MALI_STAGE_FRAGMENT;
    o.strip_psiz = 0;
-   o.spirv = (const uint32_t *)m->data;
-   o.spirv_words = m->size / 4;
+   o.spirv = fcode;
+   o.spirv_words = fwords;
    o.entry = fss->pName;
    set_spec(&o, specbuf, fss->pSpecializationInfo);
    /* MSAA (MALI_EXPERIMENTAL_MSAA): 1 or 4 samples; sampleRateShading when minSampleShading * samples > 1 */
@@ -319,9 +331,10 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    struct mali_flat_layout flat;
    VkResult res = VK_ERROR_OUT_OF_HOST_MEMORY;
    char err[256];
-   const struct vk_shader_module *m = find_module(&ci->stage);
+   const uint32_t *ccode = NULL;
+   uint32_t cwords = 0;
 
-   if (!m || ci->stage.stage != VK_SHADER_STAGE_COMPUTE_BIT)
+   if (!stage_spirv(&ci->stage, &ccode, &cwords) || ci->stage.stage != VK_SHADER_STAGE_COMPUTE_BIT)
       return VK_ERROR_FEATURE_NOT_PRESENT;
    p = vk_object_zalloc(&dev->vk, alloc, sizeof *p, VK_OBJECT_TYPE_PIPELINE);
    if (!p)
@@ -332,8 +345,8 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
-   o.spirv = (const uint32_t *)m->data;
-   o.spirv_words = m->size / 4;
+   o.spirv = ccode;
+   o.spirv_words = cwords;
    o.entry = ci->stage.pName;
    struct mali_spec_entry specbuf[MALI_SPEC_MAX];
    set_spec(&o, specbuf, ci->stage.pSpecializationInfo);
