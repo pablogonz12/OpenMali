@@ -835,6 +835,14 @@ int main(int argc, char **argv)
 {
     int step = 1;
     const char *s = getenv("LADDER_STEP");
+    int dummy = 0;   /* --dummy: one tiny triangle into the window BEFORE the blit, same frame */
+    for (int ai = 1; ai < argc; ai++) if (!strcmp(argv[ai], "--dummy")) dummy = 1;
+    {   /* tag the driver's per-draw prints with THIS step (the A/B is inside this one process) */
+        char sb[16];
+        int st = s && *s ? atoi(s) : 1;
+        snprintf(sb, sizeof sb, "%d", st);
+        setenv("MALI_LADDER_STEP", sb, 1);
+    }
     const char *dump = getenv("LADDER_DUMP");
     struct win w1, w2;
     int use_srgb_fbo, use_second_window;
@@ -998,6 +1006,16 @@ int main(int argc, char **argv)
         } else {
         /* RTDBG: how many fragments does the blit actually produce? GL_SAMPLES_PASSED (our occlusion query) is
          * the decisive number: a sampling FS over a 100 %-nonzero source cannot write 0,0,0 if it runs. */
+        if (dummy) {   /* one tiny 2x2 px triangle into the window image, before the blit, same frame */
+            glMatrixMode(GL_PROJECTION); glLoadIdentity();
+            glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+            glBegin(GL_TRIANGLES);
+            glColor4f(1.0f, 1.0f, 0.0f, 1.0f);
+            glVertex2f(-1.0f, -1.0f); glVertex2f(-0.99f, -1.0f); glVertex2f(-1.0f, -0.99f);
+            glEnd();
+            glFinish();
+            printf("DUMMY triangle drawn into the window before the blit\n");
+        }
         {
             GLuint q = 0;
             int have_q = glGenQueries && glBeginQuery && glEndQuery && glGetQueryObjectuiv;
