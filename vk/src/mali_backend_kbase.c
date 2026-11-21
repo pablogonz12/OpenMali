@@ -494,6 +494,58 @@ kbase_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t
       kb_bo_cache_flush_inv(bo->priv, off, len); /* dc civac works in both directions */
 }
 
+/* THROWAWAY hwstat (notes/hwstat.md, H12): everything the kernel/hardware says about a submission after its fence.
+ * Sources: read() on the kbase fd (BASE_CSF_NOTIFICATION_*), the CSF_EVENT CQS objects (u64 value at +0, u32 error at +8),
+ * CS_INSERT/CS_EXTRACT/CS_ACTIVE and the doorbell page, and the sticky group-fault flag kb_queue_faulted() sets. */
+static int g_hwstat = -1;
+static bool
+hwstat_on(void)
+{
+   if (g_hwstat < 0)
+      g_hwstat = getenv("MALI_HWSTAT") ? 1 : 0;
+   return g_hwstat;
+}
+
+static void
+hwstat_report(struct mali_kdev *k, const char *where)
+{
+   if (!hwstat_on())
+      return;
+   static unsigned rep;
+   unsigned nev = 0;
+   struct kb_event ev;
+   if (pthread_mutex_trylock(&k->wait_lock) == 0) {   /* the one reader of the kbase fd */
+      while (kb_event_read(k->ctx, &ev, 0) > 0) {
+         nev++;
+         fprintf(stderr, "mali_hwstat: %s rep=%u EVENT type=%d group=%d error_type=%d csi=%d status=0x%08x (%s) "
+                 "sideband=0x%llx fatal=%d text=\"%s\"\n", where, rep, ev.type, ev.group, ev.error_type, ev.csi_index,
+                 ev.status, kb_exception_name(ev.status), (unsigned long long)ev.sideband, (int)ev.fatal, ev.text);
+      }
+      pthread_mutex_unlock(&k->wait_lock);
+   }
+   const volatile uint32_t *w = (const volatile uint32_t *)k->cqs.cpu;
+   unsigned nerr = 0;
+   int first = -1;
+   for (unsigned i = 0; i < 64 && k->cqs_live; i++) {   /* 4096 B / KB_CQS_STRIDE(16): every CQS object in the BO */
+      uint32_t e = w[i * 4 + 2];                        /* +8: the error word */
+      if (e) {
+         if (first < 0) first = (int)i;
+         nerr++;
+         fprintf(stderr, "mali_hwstat: %s rep=%u CQS[%u] value=0x%llx error=0x%08x\n", where, rep, i,
+                 (unsigned long long)*(const volatile uint64_t *)&w[i * 4], e);
+      }
+   }
+   const struct kb_event *lf = kb_last_fatal(k->ctx);
+   fprintf(stderr, "mali_hwstat: %s rep=%u submits=%lu target=%llu cqs{val=0x%llx err=0x%08x nonzero=%u first=%d} "
+           "q{insert=%llu extract=%llu active=%u doorbell=%u ring=%u} faulted=%d lost=%d events_seen=%llu drained=%u "
+           "last_fatal=\"%s\"\n", where, rep++, k->submits, (unsigned long long)k->target,
+           (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, k->cqs_live ? w[2] : 0, nerr, first,
+           (unsigned long long)k->queue.insert, (unsigned long long)kb_queue_extract(&k->queue),
+           k->queue_live ? (unsigned)*k->queue.cs_active : 0, k->queue_live ? (unsigned)*k->queue.doorbell : 0,
+           k->queue.ring_size, (int)(k->queue_live && kb_queue_faulted(&k->queue)), (int)k->lost,
+           kb_events_seen(k->ctx), nev, lf ? lf->text : "-");
+}
+
 static int
 kbase_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
 {
@@ -567,6 +619,7 @@ kbase_submit_signal(struct mali_kdev *k, int *fence_fd)
    k->target = target;
    k->submits++;
    *fence_fd = fd;
+   hwstat_report(k, "submit");
 out:
    if (r) {
       fprintf(stderr, "mali_vk: submit #%llu failed: %d (extract=%llu insert=%llu faulted=%d)\n",
@@ -637,6 +690,7 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
       pthread_mutex_unlock(&k->wait_lock);
       if (r == 0) {
          mem_sync_all(k, 2); /* device -> CPU (CSYNC): CPU caches may hold stale lines of COHERENT_LOCAL BOs */
+         hwstat_report(k, "fence");
          return 0;
       }
       if (r == -EIO) {
