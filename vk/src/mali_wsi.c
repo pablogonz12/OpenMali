@@ -248,8 +248,9 @@ static bool mali_wsi_x11_sw_decided(const struct mali_physical_device *pdev, int
 static void
 mali_wsi_x11_maybe_sw(struct mali_physical_device *pdev, int platform, const struct mali_wsi_x11_probe *probe)
 {
-   struct wsi_device *wsi_dev = &pdev->wsi;
-   if (wsi_dev->sw || mali_wsi_x11_sw_decided(pdev, platform))
+   /* Not wsi_dev->sw: that is the *current call's* mode, so another thread's XLIB software call would make this
+    * XCB query skip its own decision (CR #323 N1). wsi_sw_base is the device's own floor. */
+   if (pdev->wsi_sw_base || mali_wsi_x11_sw_decided(pdev, platform))
       return;
    if (platform != VK_ICD_WSI_PLATFORM_XCB && platform != VK_ICD_WSI_PLATFORM_XLIB)
       return;
@@ -324,6 +325,7 @@ mali_wsi_x11_log_surface(struct mali_physical_device *pdev, VkIcdSurfaceBase *su
 struct mali_wsi_mode {
    bool sw;
    bool supports_modifiers;
+   bool disabled_sync;    /* this call replaced the dma-buf sync cache, so leave() must restore it */
    uint32_t sync_cache;
 };
 static struct mali_wsi_mode mali_wsi_sw_enter(struct mali_physical_device *pdev, int platform);
@@ -349,11 +351,14 @@ mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAl
    struct mali_wsi_mode saved = {0};
    if (is_x11)
       saved = mali_wsi_sw_enter_value(mali_device_pdev(mali_device_from_handle(device)), chain_sw);
+   /* Drop the record first: wsi_DestroySwapchainKHR runs Mesa's cleanup, which frees the chain before it returns, and
+    * another thread creating a chain could be handed that address and register it - a later remove would then clear
+    * the new chain's entry (CR #323 N3). */
+   mali_wsi_x11_chain_remove(swapchain);
    mali_x11_shm_destroy(swapchain);
    wsi_DestroySwapchainKHR(device, swapchain, alloc);
    if (is_x11)
       mali_wsi_sw_leave(mali_device_pdev(mali_device_from_handle(device)), saved);
-   mali_wsi_x11_chain_remove(swapchain);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -411,7 +416,10 @@ struct mali_wsi_x11_chain {
    VkSwapchainKHR sc;
    bool sw;
 };
-static struct mali_wsi_x11_chain mali_wsi_x11_chains[8];
+/* 16, not 8: a swapchain replacement (oldSwapchain = a live chain) needs a second slot for the same surface while
+ * the app still holds the old one, so eight live chains plus eight replacements fit. Beyond that creation still
+ * refuses cleanly (CR #323 T3/N8). */
+static struct mali_wsi_x11_chain mali_wsi_x11_chains[16];
 
 /* One recursive lock for the per-call mode and the chain table: two threads on different surfaces (one X11, one
  * Wayland) would otherwise race on wsi_device's device-wide fields, and add/remove/lookup would race on the table.
@@ -507,7 +515,12 @@ mali_wsi_sw_enter_value(struct mali_physical_device *pdev, bool sw)
    wsi_dev->sw = sw;
    if (sw) {
       wsi_dev->supports_modifiers = false;   /* software images are linear CPU buffers: no modifiers to offer */
-      mali_wsi_disable_dmabuf_sync(wsi_dev); /* and no dma-buf fd to import a sync_file on */
+      /* Only a software call writes the sentinel, so only it restores the cache: resetting a probe result that a
+       * dma-buf acquire stored would make the next acquire repeat its test export/import (CR #323 N6). */
+      if (saved.sync_cache != (uint32_t)(VK_ERROR_FEATURE_NOT_PRESENT - 1)) {
+         mali_wsi_disable_dmabuf_sync(wsi_dev);
+         saved.disabled_sync = true;
+      }
    }
    return saved;
 }
@@ -530,7 +543,8 @@ mali_wsi_sw_leave(struct mali_physical_device *pdev, struct mali_wsi_mode saved)
 {
    pdev->wsi.sw = saved.sw;
    pdev->wsi.supports_modifiers = saved.supports_modifiers;
-   pdev->wsi.cached_sync_file_import_export_result = saved.sync_cache;
+   if (saved.disabled_sync)
+      pdev->wsi.cached_sync_file_import_export_result = saved.sync_cache;
    pthread_mutex_unlock(&mali_wsi_lock);
 }
 
@@ -836,8 +850,12 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
       fprintf(stderr, "mali_vk: wsi acquire #%llu: timeout=%llu sem=%d fence=%d sw=%d\n", (unsigned long long)n,
               (unsigned long long)timeout, semaphore != VK_NULL_HANDLE, fence != VK_NULL_HANDLE,
               (int)pdev->wsi.sw);
-   const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, mali_wsi_chain_is_x11(swapchain) ? VK_ICD_WSI_PLATFORM_XCB
-                                                                             : VK_ICD_WSI_PLATFORM_WAYLAND);
+   /* The mode this chain was created with, not the protocol's current decision: an XLIB software chain would
+    * otherwise run with the XCB flag, which is false when no XCB call has decided yet (CR #323 N7). */
+   bool chain_sw = false;
+   const bool x11_chain = mali_wsi_x11_chain_mode(swapchain, &chain_sw);
+   const struct mali_wsi_mode saved = x11_chain ? mali_wsi_sw_enter_value(pdev, chain_sw)
+                                                : mali_wsi_sw_enter(pdev, VK_ICD_WSI_PLATFORM_WAYLAND);
    VkResult r = wsi_AcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, image_index);
    mali_wsi_sw_leave(pdev, saved);
    if (mali_wsi_debug())
@@ -1070,10 +1088,18 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    /* Same per-platform switch as acquire: an X11 chain is presented by wsi_common_x11, which reads
     * chain->base.wsi->sw, and a Wayland chain of the same process must not see the X11 decision. */
    struct mali_physical_device *ppdev = mali_device_pdev(dev);
-   bool any_x11 = false;
-   for (uint32_t i = 0; i < info->swapchainCount; i++)
-      any_x11 |= mali_wsi_chain_is_x11(info->pSwapchains[i]);
-   const struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(ppdev, any_x11 ? VK_ICD_WSI_PLATFORM_XCB : VK_ICD_WSI_PLATFORM_WAYLAND);
+   bool any_x11 = false, any_sw = false;
+   for (uint32_t i = 0; i < info->swapchainCount; i++) {
+      bool sc_sw = false;
+      if (mali_wsi_x11_chain_mode(info->pSwapchains[i], &sc_sw)) {
+         any_x11 = true;
+         any_sw |= sc_sw;
+      }
+   }
+   /* Recorded creation mode per chain (CR #323 N7/T7): an X11 chain presents in the mode it was built for, and a
+    * batch that mixes an X11 and a Wayland chain takes the X11 one, as before. */
+   const struct mali_wsi_mode saved_sw = any_x11 ? mali_wsi_sw_enter_value(ppdev, any_sw)
+                                                 : mali_wsi_sw_enter(ppdev, VK_ICD_WSI_PLATFORM_WAYLAND);
    VkResult r = wsi_QueuePresentKHR(queue, info);
    mali_wsi_sw_leave(ppdev, saved_sw);
    /* wsi_common_wayland only pumps its per-swapchain present-id queue inside dispatch_present_id_queue(), i.e. at

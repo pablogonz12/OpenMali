@@ -31,7 +31,7 @@ xdpyinfo -display \$DISPLAY >"$W/xdpy.txt" 2>&1 || { echo "FAIL: no X server ins
 grep -qx '[[:space:]]*DRI3' "$W/xdpy.txt" || { echo "skipped: this X server has no DRI3 (xwsi-nodri3 covers it)"; echo 77 >"$W/rc"; exit 0; }
 echo "x11-dri3: server has DRI3"
 export MALI_BACKEND=fake MALI_FAKE_GPU=$GPU
-export VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json
+export VK_DRIVER_FILES="$OUT/mali_icd.json" VK_ICD_FILENAMES="$OUT/mali_icd.json"
 export MALI_WSI=hw MALI_WSI_DEBUG=1 MALI_SOFT=1   # MALI_SOFT: the fake backend clears on the CPU, so --pixels sees the frame
 export MESA_VK_WSI_DEBUG=sw MALI_WSI_DUMP="$W/frame" MALI_WSI_DUMP_EVERY=1
 timeout 120 "$OUT/t_vk_xcb" --direct "$OUT/libvulkan_mali.so" --pixels >"$W/xcb.log" 2>&1
