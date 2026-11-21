@@ -254,6 +254,17 @@ same_static(const struct mali_draw *a, const struct mali_draw *b)
    return !memcmp(a->set_va, b->set_va, b->nsets * sizeof b->set_va[0]) && !memcmp(a->set_bytes, b->set_bytes, b->nsets * sizeof b->set_bytes[0]);
 }
 
+/* The VS driver set (vertex attributes + vertex-buffer descriptors) depends only on the vertex input and the bound vertex buffers: a pipeline
+ * switch that keeps both (DXVK/zink swap pipelines far more often than meshes) reuses the previous draw's set. */
+static bool
+same_vin(const struct mali_draw *a, const struct mali_draw *b)
+{
+   return a->gfx.nattr == b->gfx.nattr && a->gfx.dyn_stride == b->gfx.dyn_stride &&
+          !memcmp(a->gfx.attr, b->gfx.attr, b->gfx.nattr * sizeof b->gfx.attr[0]) &&
+          !memcmp(a->vb_va, b->vb_va, sizeof a->vb_va) && !memcmp(a->vb_size, b->vb_size, sizeof a->vb_size) &&
+          (!b->gfx.dyn_stride || !memcmp(a->vb_stride, b->vb_stride, sizeof a->vb_stride));
+}
+
 static int
 build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const struct mali_draw *d, struct ddesc *o,
                  const struct mali_draw *pd, const struct ddesc *po)
@@ -292,11 +303,16 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    o->static_same = s1;   /* emit_draw_regs skips the registers derived from the static state when the previous draw set them */
    o->dyn_same = s2;
    const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !(d->dirty & (MALI_D_VP | MALI_D_PUSH));   /* FAUs reusable */
+   const bool sv = s1 || (po && pd && (!(d->dirty & (MALI_D_PIPE | MALI_D_BIND)) || same_vin(pd, d)));   /* driver set reusable */
    if (check_dirty()) {   /* trap: whatever the mask lets us reuse must be byte-equal to what the compares would have reused */
       const bool o1 = po && same_static(pd, d);
       const bool o2 = o1 && !memcmp(pd->dyn_desc, d->dyn_desc, d->ndyn * sizeof d->dyn_desc[0]);
       const bool o3 = o1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !memcmp(pd->vp, d->vp, sizeof d->vp) &&
                       !memcmp(pd->push, d->push, sizeof d->push);
+      if (sv && !(po && same_vin(pd, d))) {
+         fprintf(stderr, "MALI_DIRTY_CHECK: mask 0x%x reuses a driver set whose vertex input changed\n", d->dirty);
+         abort();
+      }
       if ((s1 && !o1) || (s2 && !o2) || (s3 && !o3)) {
          fprintf(stderr, "MALI_DIRTY_CHECK: mask 0x%x reuses what changed (s1 %d/%d s2 %d/%d s3 %d/%d)\n", d->dirty, s1, o1, s2, o2, s3, o3);
          abort();
@@ -316,7 +332,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       bl = A(hw, KB_BLEND_SIZE, 64, &o->bl);
       zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
    }
-   if (s1) {
+   if (sv) {
       o->vsset = po->vsset;
       o->vsset_va = po->vsset_va;
       vsset = NULL;
@@ -376,11 +392,13 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_spd(spd_f, 2, g->fs_va, fs->work_reg_count, fs->preload);
    }
 
-   if (!s1) {
+   if (!sv) {
       /* driver set: attributes 0..15 (unused ones filled), dummy sampler at entry 16 (all zero), buffer descriptors from entry 17 (vertex binding b = 17 + b) */
-      memset(vsset, 0, vs_used * KB_DESC_SET_STRIDE);
+      /* built on the stack, stored once (the arena is write-combined: no read-modify-write or double stores there) */
+      uint8_t vtmp[(KB_VS_ATTRS + 1 + MALI_MAX_VB) * KB_DESC_SET_STRIDE];
+      memset(vtmp, 0, vs_used * KB_DESC_SET_STRIDE);
       for (unsigned i = 0; i < KB_VS_ATTRS; i++) {
-         uint32_t *e = (uint32_t *)(vsset + i * KB_DESC_SET_STRIDE);
+         uint32_t *e = (uint32_t *)(vtmp + i * KB_DESC_SET_STRIDE);
          if (i < g->nattr)
          {
             kb_draw_attr_1d(e, g->attr[i].pixfmt, 0, KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset,
@@ -395,8 +413,9 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
             kb_draw_attr_unused(e);
       }
       for (unsigned b = 0; b < nvb; b++)
-         kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
-      memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
+         kb_draw_buffer((uint32_t *)(vtmp + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
+      /* dummy sampler (entry MALI_DUMMY_SAMPLER_IDX) stays all zero from the memset above */
+      memcpy(vsset, vtmp, vs_used * KB_DESC_SET_STRIDE);
    }
    if (!s2) {
       /* resource table: entry 0 = driver set, 1.. = bound user sets, MALI_DYN_TABLE = the dynamic buffers (a table of its own); the entries between are never read */
@@ -1096,6 +1115,14 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          if (check_dirty())
             pv = *dr;
          else {
+            if (x.dirty & (MALI_D_PIPE | MALI_D_BIND)) {   /* the vertex-input snapshot same_vin() compares against: only what a group renewal can change */
+               pv.gfx.nattr = dr->gfx.nattr;
+               pv.gfx.dyn_stride = dr->gfx.dyn_stride;
+               memcpy(pv.gfx.attr, dr->gfx.attr, dr->gfx.nattr * sizeof dr->gfx.attr[0]);
+               memcpy(pv.vb_va, dr->vb_va, sizeof pv.vb_va);
+               memcpy(pv.vb_size, dr->vb_size, sizeof pv.vb_size);
+               memcpy(pv.vb_stride, dr->vb_stride, sizeof pv.vb_stride);
+            }
             pv.first_instance = dr->first_instance;
             pv.first_vertex = dr->first_vertex;
             pv.draw_id = dr->draw_id;
