@@ -192,11 +192,12 @@ main(int argc, char **argv)
                                                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &dip);
       CHECK(dr == VK_SUCCESS && (dip.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x depth image format samples follow the MSAA gate");
    }
-   /* VK_EXT_transform_feedback is WIP plumbing behind MALI_EXPERIMENTAL_TF=1 (mali_tf.h): the extension, the
-    * feature bit and the properties follow the same gate, and geometryStreams/queries/draw stay false. */
+   /* VK_EXT_transform_feedback is ON by default; MALI_EXPERIMENTAL_TF=0 is the full-legacy opt-out (mali_tf.h): the
+    * extension, the feature bit, the properties and the UBO counts (12/72 stay with it off) follow the same switch,
+    * and geometryStreams/queries/draw stay false. */
    {
       const char *g = getenv("MALI_EXPERIMENTAL_TF");
-      const int want = g && g[0] == '1';
+      const int want = !(g && g[0] == '0');
       uint32_t en = 0;
       int have = 0;
       EnumerateDeviceExtensionProperties(pd, NULL, &en, NULL);
@@ -224,6 +225,13 @@ main(int argc, char **argv)
                !tfp.transformFeedbackRasterizationStreamSelect && !tfp.transformFeedbackStreamsLinesTriangles,
                "only implemented transform-feedback properties may be set");
       }
+      /* The UBO counts are one switch with TF: 128/128 is the honest ceiling (maxPerStageResources) and is what st
+       * needs for ARB_uniform_buffer_object, but it must never be advertised on a GL 2.1 context, so the opt-out keeps
+       * the Vulkan 1.0 minimums (mali_physical_device.c header comment). */
+      CHECK(L->maxPerStageDescriptorUniformBuffers == (want ? 128u : 12u),
+            "per-stage UBOs follow the TF switch: %u (want %u)", L->maxPerStageDescriptorUniformBuffers, want ? 128u : 12u);
+      CHECK(L->maxDescriptorSetUniformBuffers == (want ? 128u : 72u),
+            "per-set UBOs follow the TF switch: %u (want %u)", L->maxDescriptorSetUniformBuffers, want ? 128u : 72u);
    }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 

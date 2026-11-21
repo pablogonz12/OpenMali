@@ -27,22 +27,20 @@
  * The milestone that implements a feature raises its limits to what the hardware does.
  * Exception, the UBO counts: 12/72 (the 1.0 minimum) are one short of what st needs to see
  * ARB_uniform_buffer_object, and the hardware is bounded by the 24-bit SRT descriptor index, not
- * by 12. They are 128 because that is this driver's own maxPerStageResources - but only with
- * MALI_EXPERIMENTAL_TF=1 (mali_tf.h). Without transform feedback Mesa keeps the context at
- * GL 2.1 / GLSL 1.20 (version.c: EXT_transform_feedback is required for ver_3_0) and still
- * advertises ARB_uniform_buffer_object from can_ubo alone (st_extensions.c:464), so the
- * extension's own shaders are uncompilable: host probe, zink on this ICD, gate off ->
- * "GL_VERSION=2.1 ... GL_ARB_uniform_buffer_object=yes" and `#version 140` fails with
- * "GLSL 1.40 is not supported". Steam's CEF then never creates its UI window (webhelper
- * restarts every 10 s). Gate off therefore keeps the 1.0 minimums, i.e. the same GL
- * capability set a pre-UBO build had. */
+ * by 12. They are 128 because that is this driver's own maxPerStageResources. They follow the transform-feedback switch
+ * (mali_tf.h, on by default): without transform feedback Mesa keeps the context at GL 2.1 / GLSL 1.20
+ * (version.c: EXT_transform_feedback is required for ver_3_0) and still advertises ARB_uniform_buffer_object from
+ * can_ubo alone (st_extensions.c:464), so the extension's own shaders are uncompilable: host probe, zink on this ICD,
+ * opt-out -> "GL_VERSION=2.1 ... GL_ARB_uniform_buffer_object=yes" and `#version 140` fails with "GLSL 1.40 is not
+ * supported". Steam's CEF then never creates its UI window (webhelper restarts every 10 s). Thus 128 with TF, the 1.0
+ * minimums with MALI_EXPERIMENTAL_TF=0, i.e. the same GL capability set a pre-UBO build had. Once the opt-out is deleted
+ * (next release) both numbers become unconditional. */
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
    /* 4x is advertised only with MALI_EXPERIMENTAL_MSAA=1: without it 4x pipelines are rejected (mali_pipeline.c), so advertising it would lie. */
    const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);
-   /* UBO counts: 128 only with the transform-feedback gate (see the header comment above); 12/72 are the
-    * Vulkan 1.0 required minimums, which st reads as "no ARB_uniform_buffer_object" (st_extensions.c:342). */
+   /* UBO counts: 128 with transform feedback (the default), 12/72 otherwise (see the header comment above) */
    const uint32_t ubo_count = mali_experimental_tf() ? 128 : 12;
    const uint32_t ubo_set_count = mali_experimental_tf() ? 128 : 72;
 
@@ -70,25 +68,23 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .bufferImageGranularity = 1,
       .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
       .maxPerStageDescriptorSamplers = 16,
-      .maxPerStageDescriptorUniformBuffers = ubo_count,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table and the
-                                                     * SRT descriptor index is 24 bits (third_party/mesa compiler/pan_compiler.h:610-636;
+      .maxPerStageDescriptorUniformBuffers = ubo_count,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table
+                                                     * and the SRT descriptor index is 24 bits (third_party/mesa compiler/pan_compiler.h:610-636;
                                                      * PanVK, "Hardware limit is 2^24 each of buffer, texture, and sampler descriptors",
                                                      * panvk_descriptor_set_layout.h:54-57). The cap that binds first is this driver's own
-                                                     * maxPerStageResources = 128 below: a stage cannot reference more descriptors than
-                                                     * that, so 128 is the honest per-stage UBO ceiling (kbase's GPU props carry no
-                                                     * descriptor-count cap, libkbase/include/kbase.h:36-58). 12 was the Vulkan 1.0
-                                                     * textbook minimum and made zink report 11 const buffers: st needs 12 for UBOs - so that is
-                                                     * what stays when the TF gate is off (see the header comment). */
+                                                     * maxPerStageResources = 128: a stage cannot reference more descriptors than that,
+                                                     * so 128 is the honest per-stage UBO ceiling. 12 was the Vulkan 1.0 textbook minimum and
+                                                     * made zink report 11 const buffers, one short of ARB_uniform_buffer_object. */
       .maxPerStageDescriptorStorageBuffers = 4,
       .maxPerStageDescriptorSampledImages = 16,
       .maxPerStageDescriptorStorageImages = 4,
       .maxPerStageDescriptorInputAttachments = 4,
       .maxPerStageResources = 128,
       .maxDescriptorSetSamplers = 96,
-      .maxDescriptorSetUniformBuffers = ubo_set_count,   /* with the gate on it equals maxPerStageDescriptorUniformBuffers: one set may
+      .maxDescriptorSetUniformBuffers = ubo_set_count,   /* with transform feedback it equals maxPerStageDescriptorUniformBuffers: one set may
                                                 * hold every per-stage UBO. 128 * 32 B = 4 KiB of table, far under the per-set slot cap
-                                                * of 2^20 (mali_descriptor.c:219) and maxPerSetDescriptors 1024. With the gate off
-                                                * both are the 1.0 minimums (72 >= 12), which is the spec relation that matters. */
+                                                * of 2^20 (mali_descriptor.c:219) and maxPerSetDescriptors 1024. With the opt-out both are
+                                                * the 1.0 minimums (72 >= 12), which is the spec relation that matters. */
       .maxDescriptorSetUniformBuffersDynamic = 8,
       .maxDescriptorSetStorageBuffers = 24,
       .maxDescriptorSetStorageBuffersDynamic = 4,
@@ -213,7 +209,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxBufferSize = 1u << 30;
    p->provokingVertexModePerPipeline = false;   /* the bit lives in the per-render-pass FBD and tiler context */
    p->transformFeedbackPreservesTriangleFanProvokingVertex = false;
-   /* VK_EXT_transform_feedback (MALI_EXPERIMENTAL_TF=1, default off: mali_tf.h): one stream (no geometry shaders),
+   /* VK_EXT_transform_feedback (on by default, MALI_EXPERIMENTAL_TF=0 opts out: mali_tf.h): one stream (no geometry shaders),
     * four buffers, 16 MiB each, 64-byte per-vertex records. The lowering writes through the ordinary store path, so
     * these are enforced by mali_pipeline.c/mali_cmd.c rather than by a streamout job. */
    if (mali_experimental_tf()) {
@@ -444,8 +440,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
    struct vk_device_extension_table enabled = extensions;
-   /* VK_EXT_transform_feedback: advertised only with the opt-in gate (MALI_EXPERIMENTAL_TF=1, mali_tf.h), which also
-    * drives the limits and features above. geometryStreams stays false (one stream, no geometry stage). */
+   /* VK_EXT_transform_feedback: on by default, MALI_EXPERIMENTAL_TF=0 opts out (mali_tf.h), and the same switch drives the
+    * limits, the features and the UBO counts above. geometryStreams stays false (one stream, no geometry stage). */
    enabled.EXT_transform_feedback = mali_experimental_tf();
    /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
     * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that
@@ -463,7 +459,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
        * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
       .robustBufferAccess = true,
-      .transformFeedback = mali_experimental_tf(),   /* WIP: plumbing only, mali_tf.h */
+      .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
       .textureCompressionBC = true,
       .hostQueryReset = true,

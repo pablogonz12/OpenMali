@@ -80,6 +80,11 @@ struct mali_gfx_state {
    bool logic_inert;                      /* static logicOp enabled but it cannot change the output (no colour output 0 / attachment 0 unwritable): no blend shader needed */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
+   /* VK_EXT_transform_feedback: a pipeline whose vertex shader declares XFB has a second vertex binary compiled WITHOUT
+    * the XFB lowering. A draw that is not inside a Begin/End range runs that one (mali_cmd.c), so the stores exist only
+    * while capture is active - the reason the extension can be on by default. NULL for every other pipeline. */
+   const struct mali_compiled *vs_plain;
+   uint64_t vs_plain_va;
    unsigned nattr;
    struct mali_attr attr[MALI_MAX_ATTR];
    bool depth_test, depth_write;
