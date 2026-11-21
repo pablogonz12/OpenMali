@@ -376,6 +376,18 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       kb_draw_spd_vs_varying(spd_v, g->vs_va + vs->vs_secondary_offset, vs->vs_secondary_work_reg_count,
                              vs->vs_secondary_preload);
       kb_draw_spd(spd_f, 2, g->fs_va, fs->work_reg_count, fs->preload);
+      if (getenv("MALI_VARYDBG")) {   /* THROWAWAY varydbg (notes/vary16.md): VARY_SIZE and the varying SPD words */
+         static unsigned yn;
+         if (yn++ < 400)
+            fprintf(stderr, "mali_varydbg: DRAW n=%u step=%s draw_id=%u prim=%u count=%u varying_B=%u vs_secondary_enable=%u offset=%u work_regs=%u preload=0x%llx spd_v=%08x %08x %08x %08x spd_p=%08x %08x %08x %08x spd_f=%08x %08x %08x %08x\n",
+                    yn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, d->count,
+                    vs->generic_size_B, vs->vs_secondary_enable, vs->vs_secondary_offset,
+                    vs->vs_secondary_work_reg_count, (unsigned long long)vs->vs_secondary_preload,
+                    spd_v[0], spd_v[1], spd_v[2], spd_v[3], spd_p[0], spd_p[1], spd_p[2], spd_p[3],
+                    spd_f[0], spd_f[1], spd_f[2], spd_f[3]);
+         else if (yn == 401)
+            fprintf(stderr, "mali_varydbg: ... (MALI_VARYDBG limit, 400 draws)\n");
+      }
    }
 
    if (!s1) {
