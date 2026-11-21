@@ -299,6 +299,18 @@ mali_wsi_id_fail(VkSwapchainKHR sc)
    pthread_mutex_unlock(&mali_wsi_id_lock);
 }
 
+static void
+mali_wsi_id_ok(VkSwapchainKHR sc)
+{
+   /* A later present that went through proves the chain is presentable again (a retry after OUT_OF_DEVICE_MEMORY
+    * previously poisoned it for good: CR #335, vk/src/mali_wsi.c:872). */
+   pthread_mutex_lock(&mali_wsi_id_lock);
+   for (unsigned i = 0; i < sizeof(mali_wsi_id_chains) / sizeof(mali_wsi_id_chains[0]); i++)
+      if (mali_wsi_id_chains[i].sc == sc)
+         mali_wsi_id_chains[i].failed = false;
+   pthread_mutex_unlock(&mali_wsi_id_lock);
+}
+
 static bool
 mali_wsi_id_failed(VkSwapchainKHR sc)
 {
@@ -331,12 +343,13 @@ mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t pr
    bool sw = false;
    uint64_t done = 0;
    if (mali_wsi_id_get(swapchain, &sw, &done) && sw) {
-      /* A present of this chain was rejected: the image cannot be presented, so an unbounded waiter must not poll
-       * forever (vkWaitForPresentKHR returns VK_ERROR_OUT_OF_DATE_KHR in that case). */
-      if (mali_wsi_id_failed(swapchain))
-         return VK_ERROR_OUT_OF_DATE_KHR;
       if (present_id <= done)
          return VK_SUCCESS;   /* already on the server: the copy and the xcb_flush finished in vkQueuePresentKHR */
+      /* A present of this chain was rejected as unpresentable: an unbounded waiter must not poll forever
+       * (vkWaitForPresentKHR returns VK_ERROR_OUT_OF_DATE_KHR in that case). After the completed-id check, so a
+       * later rejection cannot make an id that did complete fail (CR #335, :872). */
+      if (mali_wsi_id_failed(swapchain))
+         return VK_ERROR_OUT_OF_DATE_KHR;
       /* Not presented yet: block like wsi_WaitForPresentKHR would, and honour the timeout (0 = poll once).
        * Elapsed time is measured, not assumed: nanosleep returns early on EINTR (CodeRabbit #335, :315), and
        * UINT64_MAX means "no timeout" and must keep polling (:318). */
@@ -345,8 +358,12 @@ mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t pr
       for (;;) {
          struct timespec ts = {0, 1000 * 1000};
          nanosleep(&ts, NULL);
+         /* Completion and failure are re-read every iteration: another thread may reject a present while this one
+          * waits (CR #335, vk/src/mali_wsi.c:337). */
          if (mali_wsi_id_get(swapchain, &sw, &done) && present_id <= done)
             return VK_SUCCESS;
+         if (mali_wsi_id_failed(swapchain))
+            return VK_ERROR_OUT_OF_DATE_KHR;
          if (timeout == UINT64_MAX)
             continue;
          clock_gettime(CLOCK_MONOTONIC, &now);
@@ -867,9 +884,14 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
     * compositor costs at most the cap and never blocks the frame. Only when the swapchain asked for present-id
     * waiting: without that, wsi does not queue an id at all and there is nothing to drain. */
    const VkPresentIdKHR *ids = vk_find_struct_const(info->pNext, PRESENT_ID_KHR);
-   if (r != VK_SUCCESS)
-      for (uint32_t i = 0; i < info->swapchainCount; i++)
+   /* Only OUT_OF_DATE is terminal for the chain (the image can never be presented); OOM and friends can be retried,
+    * so they must not poison a later wait, and a present that went through clears any earlier flag (CR #335, :872). */
+   for (uint32_t i = 0; i < info->swapchainCount; i++) {
+      if (r == VK_ERROR_OUT_OF_DATE_KHR)
          mali_wsi_id_fail(info->pSwapchains[i]);   /* a waiter on a rejected chain gets OUT_OF_DATE, not a hang */
+      else if (r == VK_SUCCESS)
+         mali_wsi_id_ok(info->pSwapchains[i]);
+   }
    if (r == VK_SUCCESS && ids && ids->pPresentIds)
       for (uint32_t i = 0; i < info->swapchainCount && i < ids->swapchainCount; i++)
          if (ids->pPresentIds[i])
