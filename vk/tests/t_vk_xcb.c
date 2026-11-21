@@ -22,6 +22,10 @@
  *                                                                              -> blue   (BGR 230,115,26)
  *               A black window means the sampling draw read zeros, i.e. the GPU-written image was not visible to the
  *               fragment shader (the zink glBlitFramebuffer path).
+ *   --swap-usage <hex> --swap-flags <n> --swap-images <n>  exact VkSwapchainCreateInfoKHR fields (defaults: usage
+ *               TRANSFER_DST|COLOR_ATTACHMENT, flags 0, minImageCount caps.minImageCount+1): zink's window swapchain is
+ *               usage=0x97 flags=MUTABLE_FORMAT with 3 images, so a black window can be bisected on these three knobs.
+ *               A refused combination is printed as the driver's VkResult.
  *   --rtt-split  with --rtt: the offscreen write and the sampling draw go into TWO vkQueueSubmits, joined by a
  *               semaphore (rules out "one submission is what makes it work").
  *   --rtt-blit <clear|draw>  an offscreen R8G8B8A8_UNORM image (COLOR_ATTACHMENT|TRANSFER_SRC|SAMPLED) is written by a
@@ -509,6 +513,8 @@ main(int argc, char **argv)
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
    int rtt = 0, rtt_split = 0, hold = 0, rttblit = 0, rttblit_split = 0;
+   unsigned long long swap_usage = 0;
+   unsigned swap_flags = 0, swap_images = 0;
    unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
    unsigned win_w = W, win_h = H;
@@ -543,6 +549,9 @@ main(int argc, char **argv)
          else { fprintf(stderr, "usage: --rtt-blit clear|draw\n"); return 2; }
       }
       else if (!strcmp(argv[i], "--rtt-blit-split")) rttblit_split = 1;
+      else if (!strcmp(argv[i], "--swap-usage") && i + 1 < argc) swap_usage = strtoull(argv[++i], NULL, 16);
+      else if (!strcmp(argv[i], "--swap-flags") && i + 1 < argc) swap_flags = (unsigned)strtoul(argv[++i], NULL, 0);
+      else if (!strcmp(argv[i], "--swap-images") && i + 1 < argc) swap_images = (unsigned)strtoul(argv[++i], NULL, 0);
       else if (!strcmp(argv[i], "--rtt-dyn") && i + 1 < argc) {
          /* --rtt-dyn <mask>: the pipeline's dynamic states, bit i = the i-th entry of Mesa's MESA_VK_DYNAMIC_*
           * list (third_party/mesa/src/vulkan/runtime/vk_graphics_state.h). That is the numbering our driver prints
@@ -566,7 +575,7 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
                             "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split] [--rtt-dyn m]] "
-                            "[--rtt-blit clear|draw [--rtt-blit-split]] "
+                            "[--rtt-blit clear|draw [--rtt-blit-split]] [--swap-usage h] [--swap-flags n] [--swap-images n] "
                             "[--hold s] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
@@ -740,19 +749,31 @@ main(int argc, char **argv)
 
    VkExtent2D ext = caps.currentExtent;
    if (ext.width == 0xFFFFFFFFu) ext = (VkExtent2D){win_w, win_h};
-   uint32_t want = caps.minImageCount + 1;
+   uint32_t want = swap_images ? swap_images : caps.minImageCount + 1;
+   if (want < caps.minImageCount) want = caps.minImageCount;
    if (caps.maxImageCount && want > caps.maxImageCount) want = caps.maxImageCount;
+   /* --swap-usage/--swap-flags/--swap-images: the ladder's (zink's) window swapchain is usage 0x97
+    * (TRANSFER_SRC|TRANSFER_DST|SAMPLED|COLOR_ATTACHMENT|INPUT_ATTACHMENT), flags 0x4 (MUTABLE_FORMAT) and 3 images,
+    * while this test's default is 0x12 flags 0x0 — the one difference left between the black and the painting session. */
+   VkImageFormatListCreateInfoKHR fli = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO_KHR,
+                                        .viewFormatCount = 1, .pViewFormats = &fmt.format};
+   VkSwapchainCreateInfoKHR swci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                                   .pNext = (swap_flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ? &fli : NULL,
+                                   .surface = surf, .minImageCount = want,
+                                   .imageFormat = fmt.format, .imageColorSpace = fmt.colorSpace,
+                                   .imageExtent = ext, .imageArrayLayers = 1,
+                                   .imageUsage = swap_usage ? (VkImageUsageFlags)swap_usage
+                                                            : (VkImageUsageFlags)(VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+                                   .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                   .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                                   .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                                   .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE,
+                                   .flags = swap_flags};
+   printf("swap-request: minImageCount=%u (caps %u..%u, asked %u) usage=0x%x flags=0x%x\n", want, caps.minImageCount,
+          caps.maxImageCount, swap_images, (unsigned)swci.imageUsage, swci.flags);
    VkSwapchainKHR sc;
-   CK(CreateSwapchainKHR(dev, &(VkSwapchainCreateInfoKHR){.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-                                                          .surface = surf, .minImageCount = want,
-                                                          .imageFormat = fmt.format, .imageColorSpace = fmt.colorSpace,
-                                                          .imageExtent = ext, .imageArrayLayers = 1,
-                                                          .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                                                          .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                                                          .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
-                                                          .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                                                          .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE}, NULL, &sc));
+   CK(CreateSwapchainKHR(dev, &swci, NULL, &sc));
    uint32_t ni = 0;
    CK(GetSwapchainImagesKHR(dev, sc, &ni, NULL));
    REQ(ni >= want, "fewer swapchain images than requested");
