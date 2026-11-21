@@ -163,12 +163,12 @@ main(int argc, char **argv)
    CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
    CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
    CHECK(L->maxClipDistances >= 8 && L->maxCombinedClipAndCullDistances >= L->maxClipDistances, "clip distance limits (shaderClipDistance on: min 8)");
-   /* UBO counts follow the transform-feedback gate (mali_physical_device.c header comment): 128 only with
-    * MALI_EXPERIMENTAL_TF=1, otherwise the Vulkan 1.0 minimums (12 per stage / 72 per set). gate off keeps st
-    * from advertising ARB_uniform_buffer_object on a GL 2.1 / GLSL 1.20 context, where its shaders cannot compile. */
+   /* UBO counts follow the transform-feedback gate (mali_physical_device.c header comment): 128 with TF, which is
+    * the default, and the Vulkan 1.0 minimums (12 per stage / 72 per set) with MALI_EXPERIMENTAL_TF=0. gate off keeps
+    * st from advertising ARB_uniform_buffer_object on a GL 2.1 / GLSL 1.20 context, where its shaders cannot compile. */
    {
       const char *g = getenv("MALI_EXPERIMENTAL_TF");
-      const int tf = g && g[0] == '1';
+      const int tf = !(g && g[0] == '0');
       const uint32_t want_stage = tf ? 128 : 12, want_set = tf ? 128 : 72;
       CHECK(L->maxPerStageDescriptorUniformBuffers == want_stage, "per-stage UBOs %u == %u (TF gate %d)", L->maxPerStageDescriptorUniformBuffers, want_stage, tf);
       CHECK(L->maxDescriptorSetUniformBuffers == want_set, "per-set UBOs %u == %u (TF gate %d)", L->maxDescriptorSetUniformBuffers, want_set, tf);
