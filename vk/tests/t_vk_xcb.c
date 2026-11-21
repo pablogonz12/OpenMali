@@ -1225,12 +1225,22 @@ main(int argc, char **argv)
    if (shm_gate_hold > 0) {
       /* The old code released every image as soon as the PutImage was queued, so a second acquire with timeout 0
        * hands out a segment the server may still be reading. The gate must refuse it without blocking. */
+      /* Each probe passes a fresh unsignaled binary semaphore: vkAcquireNextImageKHR with BOTH handles NULL is
+       * illegal (VUID-vkAcquireNextImageKHR-semaphore-01780), even at timeout 0, so it could not prove the gate's
+       * behaviour for a real client. Never waited on, destroyed after the probe: a signaled binary semaphore may be
+       * destroyed, and the next probe gets its own (CR thread, vk/tests/t_vk_xcb.c:1229). */
+      const VkSemaphoreCreateInfo sci_probe = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+      VkSemaphore probe_sem = VK_NULL_HANDLE;
+      CK(CreateSemaphore(dev, &sci_probe, NULL, &probe_sem));
       uint32_t hidx = ~0u;
-      VkResult h1 = AcquireNextImageKHR(dev, sc, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, &hidx);
+      VkResult h1 = AcquireNextImageKHR(dev, sc, 0, probe_sem, VK_NULL_HANDLE, &hidx);
       printf("gate held (%d): first acquire(timeout 0) -> %d image %u\n", shm_gate_hold, (int)h1, hidx);
       REQ(h1 == VK_SUCCESS || h1 == VK_SUBOPTIMAL_KHR, "the never-presented image must still come back");
+      DestroySemaphore(dev, probe_sem, NULL);
+      CK(CreateSemaphore(dev, &sci_probe, NULL, &probe_sem));
       hidx = ~0u;
-      VkResult h2 = AcquireNextImageKHR(dev, sc, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, &hidx);
+      VkResult h2 = AcquireNextImageKHR(dev, sc, 0, probe_sem, VK_NULL_HANDLE, &hidx);
+      DestroySemaphore(dev, probe_sem, NULL);
       printf("gate held (%d): second acquire(timeout 0) -> %d\n", shm_gate_hold, (int)h2);
       if (h2 == VK_SUCCESS || h2 == VK_SUBOPTIMAL_KHR) {
          fprintf(stderr, "FAIL: acquire returned image %u while %d GetGeometry reply/replies were still outstanding: "
@@ -1240,8 +1250,10 @@ main(int argc, char **argv)
       REQ(h2 == VK_NOT_READY || h2 == VK_TIMEOUT, "acquire with every image still being read must refuse, not fail");
       /* ... and once the server has caught up (hold lifted) an image comes back and the wait is what returned it. */
       setenv("MALI_WSI_SHM_HOLD", "0", 1);
+      CK(CreateSemaphore(dev, &sci_probe, NULL, &probe_sem));
       hidx = ~0u;
-      VkResult h3 = AcquireNextImageKHR(dev, sc, 1000000000ull, VK_NULL_HANDLE, VK_NULL_HANDLE, &hidx);
+      VkResult h3 = AcquireNextImageKHR(dev, sc, 1000000000ull, probe_sem, VK_NULL_HANDLE, &hidx);
+      DestroySemaphore(dev, probe_sem, NULL);
       printf("gate lifted: acquire -> %d image %u\n", (int)h3, hidx);
       if (h3 != VK_SUCCESS && h3 != VK_SUBOPTIMAL_KHR) {
          fprintf(stderr, "FAIL: acquire after the gate was lifted returned %d: the wait did not release an image\n",
