@@ -817,8 +817,13 @@ mali_drm_refresh(struct mali_physical_device *pdev)
          standin_rdev = (dev_t)pdev->gpu.node_rdev;
       }
       /* The stand-in must be a node the app can actually see as /dev/dri: take our own rdev only when it has an
-       * alias there, otherwise the identity would name a node no client can open. */
-      if (standin_rdev && !drm_rdev_has_alias(standin_rdev))
+       * alias there, otherwise the identity would name a node no client can open. One exception, and the reason
+       * this path exists: when the app names the GPU char device itself (DD_DRM_STANDIN=/dev/mali0,
+       * SessionService.kt:1044-1053) and its rdev is the node this physical device was opened on, that rdev *is*
+       * our device even with no alias (X4's guest has only /dev/dri/card0 226:0, so mali0 10:113 is all there
+       * is, and gamescope stops at "physical device has no primary node"). An unrelated node still fails the
+       * equality test and is dropped (#291: only a stand-in the app supplies is reported as a node). */
+      if (standin_rdev && !drm_rdev_has_alias(standin_rdev) && standin_rdev != mali_gpu_node_rdev(&pdev->gpu))
          standin_rdev = 0;
       if (standin_rdev && (!node.render || !node.primary)) {
          /* Resolve through /dev/dri by rdev if the path itself is not a /dev/dri node. */
