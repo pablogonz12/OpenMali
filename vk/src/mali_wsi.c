@@ -1071,8 +1071,8 @@ present_image(struct wsi_swapchain *chain, uint32_t image_index, struct wsi_imag
  * vkQueuePresentKHR can read the frame back before wsi_common is handed it. That is where mali_wsi_present_trace()
  * runs.
  *
- * Nothing here costs anything unless the environment is set: one cached getenv for the prefix, one for the debug
- * cadence.
+ * Nothing here costs anything unless the environment is set: the prefix and both cadences are resolved once behind
+ * pthread_once (thread-safe, and never a getenv on the present path).
  */
 #define MALI_WSI_INFO_SLOTS 32
 
@@ -1090,9 +1090,11 @@ struct mali_wsi_chain_info {
    VkImageUsageFlags usage;
    VkPresentModeKHR mode;
    int slot;
+   unsigned chain_id;           /* monotonically increasing, never reused (dropdown/dump names) */
    bool sw;
    uint64_t presents;           /* frames presented through this chain (atomic) */
 };
+static unsigned mali_wsi_chain_seq;
 
 static struct mali_wsi_chain_info mali_wsi_infos[MALI_WSI_INFO_SLOTS];
 static pthread_mutex_t mali_wsi_infos_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1176,6 +1178,9 @@ mali_wsi_info_add(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, const VkSwapchai
       e->mode = ci->presentMode;
       e->sw = sw;
       e->slot = (int)(e - mali_wsi_infos);
+      /* The slot index is a registry index and is reused once a chain is destroyed; the creation id is not, so a
+       * replacement chain's frame 30 cannot open (and truncate) its predecessor's dump (CR thread, :1178). */
+      e->chain_id = __atomic_add_fetch(&mali_wsi_chain_seq, 1, __ATOMIC_RELAXED);
    }
    pthread_mutex_unlock(&mali_wsi_infos_lock);
 }
@@ -1192,33 +1197,49 @@ mali_wsi_info_remove(VkSwapchainKHR sc)
    pthread_mutex_unlock(&mali_wsi_infos_lock);
 }
 
-/* MALI_WSI_DUMP=<prefix>, cached: the present path must not call getenv per frame when the dump is off. */
-static const char *
-mali_wsi_dump_prefix(void)
-{
-   static int on = -1;
-   static const char *prefix;
-   if (on < 0) {
-      prefix = getenv("MALI_WSI_DUMP");
-      on = prefix && prefix[0] ? 1 : 0;
-   }
-   return on ? prefix : NULL;
-}
+/* The diagnostics configuration, resolved once behind pthread_once: the present path must not call getenv per frame
+ * when the dump is off, and concurrent first presents on different queues must not publish `prefix`/`every`
+ * half-written (C data race, not a publication mechanism; CR thread, vk/src/mali_wsi.c:1203). */
+static pthread_once_t mali_wsi_cfg_once = PTHREAD_ONCE_INIT;
+static const char *mali_wsi_cfg_prefix;
+static unsigned mali_wsi_cfg_dump_every = 30, mali_wsi_cfg_debug_every = 60;
 
+/* Every MALI_*_EVERY value is narrowed to unsigned and used as a modulo: a value above UINT_MAX (MALI_WSI_DUMP_EVERY=
+ * 4294967296 on a 64-bit long) used to narrow to 0 and divide by zero at the next present (CR thread,
+ * vk/src/mali_wsi.c:1215). Anything unusable falls back to the default, which is never 0. */
 static unsigned
 mali_wsi_env_every(const char *name, unsigned dflt)
 {
    const char *e = getenv(name);
    if (!e || !e[0])
-      return dflt;
+      return dflt ? dflt : 1;
+   errno = 0;
    const unsigned long v = strtoul(e, NULL, 10);
+   if (errno || v > UINT_MAX)
+      return dflt ? dflt : 1;
    return v ? (unsigned)v : 1;
+}
+
+static void
+mali_wsi_cfg_init(void)
+{
+   const char *p = getenv("MALI_WSI_DUMP");
+   mali_wsi_cfg_prefix = p && p[0] ? p : NULL;
+   mali_wsi_cfg_dump_every = mali_wsi_env_every("MALI_WSI_DUMP_EVERY", 30);
+   mali_wsi_cfg_debug_every = mali_wsi_env_every("MALI_WSI_DEBUG_EVERY", 60);
+}
+
+static const char *
+mali_wsi_dump_prefix(void)
+{
+   pthread_once(&mali_wsi_cfg_once, mali_wsi_cfg_init);
+   return mali_wsi_cfg_prefix;
 }
 
 /* The CPU decode of one texel, as 0..255 rgb. false = no decode for this format (no picture is written, only the
  * .txt line: a PPM built from the raw bytes of a 10:10:10:2 or 16-bit image would be a wrong picture, and a wrong
  * picture is worse than none). */
-enum mali_wsi_px { MALI_WSI_PX_NONE, MALI_WSI_PX_RGBA8, MALI_WSI_PX_PACK32, MALI_WSI_PX_565 };
+enum mali_wsi_px { MALI_WSI_PX_NONE, MALI_WSI_PX_RGBA8, MALI_WSI_PX_PACK32, MALI_WSI_PX_565, MALI_WSI_PX_5551 };
 
 static enum mali_wsi_px
 mali_wsi_px_kind(VkFormat f, bool *bgr)
@@ -1229,14 +1250,22 @@ mali_wsi_px_kind(VkFormat f, bool *bgr)
       *bgr = true; return MALI_WSI_PX_RGBA8;
    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
       return MALI_WSI_PX_RGBA8;
+   /* VK_FORMAT_A2B10G10R10_UNORM_PACK32 stores R in bits 0-9 and B in 20-29, so it needs the *low* channel first:
+    * bgr stays false. A2R10G10B10 is its reciprocal (R high, B low). (CR thread, vk/src/mali_wsi.c:1235) */
    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-      *bgr = true; return MALI_WSI_PX_PACK32;
-   case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
       return MALI_WSI_PX_PACK32;
-   case VK_FORMAT_B5G6R5_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+   case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+      *bgr = true; return MALI_WSI_PX_PACK32;
+   case VK_FORMAT_B5G6R5_UNORM_PACK16:
       *bgr = true; return MALI_WSI_PX_565;
-   case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
+   case VK_FORMAT_R5G6B5_UNORM_PACK16:
       return MALI_WSI_PX_565;
+   /* The 5551 formats are NOT 565: green is 5 bits at 6-10, the low colour at 1-5, alpha in bit 0. Decoding them
+    * with the 565 masks read an opaque black 0x0001 as (0,0,8) (CR thread, vk/src/mali_wsi.c:1239). */
+   case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
+      *bgr = true; return MALI_WSI_PX_5551;
+   case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
+      return MALI_WSI_PX_5551;
    default:
       return MALI_WSI_PX_NONE;
    }
@@ -1256,10 +1285,17 @@ mali_wsi_px_rgb(enum mali_wsi_px kind, bool bgr, const uint8_t *p, uint8_t out[3
       r = (bgr ? c2 : c0) * 255u / 1023u; g = c1 * 255u / 1023u; b = (bgr ? c0 : c2) * 255u / 1023u;
       break;
    }
-   default: {
+   case MALI_WSI_PX_565: {
       const uint16_t v = (uint16_t)((uint32_t)p[0] | (uint32_t)p[1] << 8);
       const unsigned c0 = (v >> 11) & 0x1fu, c1 = (v >> 5) & 0x3fu, c2 = v & 0x1fu;
       r = (bgr ? c2 : c0) * 255u / 31u; g = c1 * 255u / 63u; b = (bgr ? c0 : c2) * 255u / 31u;
+      break;
+   }
+   default: {
+      /* 5551: A in bit 0, low colour in 1-5, green in 6-10, high colour in 11-15. */
+      const uint16_t v = (uint16_t)((uint32_t)p[0] | (uint32_t)p[1] << 8);
+      const unsigned c0 = (v >> 11) & 0x1fu, c1 = (v >> 6) & 0x1fu, c2 = (v >> 1) & 0x1fu;
+      r = (bgr ? c2 : c0) * 255u / 31u; g = c1 * 255u / 31u; b = (bgr ? c0 : c2) * 255u / 31u;
       break;
    }
    }
@@ -1271,7 +1307,8 @@ mali_wsi_px_rgb(enum mali_wsi_px kind, bool bgr, const uint8_t *p, uint8_t out[3
  * plus one line in <prefix>.txt: comm, pid, platform, surface, WxH, VkFormat number and name, layout, mean, file.
  * The pid and comm in the name are what stop Steam's UI and Megabonk (or two runs of one game) from overwriting each
  * other: the old <prefix>-NNNNN.ppm was a per-process counter with nothing identifying the process.
- * Cost: one CPU pass over the presented BO plus a cache invalidate every N frames, on the presenting thread. */
+ * Cost: one CPU pass over the presented BO plus a cache invalidate every N frames, on the presenting thread, after the
+ * frame's submit fence has been waited for (the pixels are not readable before the GPU's writes land). */
 static void
 mali_wsi_dump_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index,
                       struct mali_wsi_chain_info *info, uint64_t frame)
@@ -1279,7 +1316,7 @@ mali_wsi_dump_present(struct mali_device *dev, struct wsi_swapchain *chain, uint
    const char *prefix = mali_wsi_dump_prefix();
    if (!prefix)
       return;
-   if (frame % mali_wsi_env_every("MALI_WSI_DUMP_EVERY", 30))
+   if (frame % mali_wsi_cfg_dump_every)
       return;
 
    struct wsi_image *wi = NULL;
@@ -1326,27 +1363,36 @@ mali_wsi_dump_present(struct mali_device *dev, struct wsi_swapchain *chain, uint
       }
    }
 
-   char path[1200];
+   char ppm[1200], txt[1200];
    uint8_t *row = NULL;
    double sum[3] = {0, 0, 0};
    const char *file = "none";
    if (!why[0]) {
-      /* The GPU wrote this BO: invalidate the CPU's view before reading it, exactly as the shm copy does. */
+      /* The dump reads pixels the GPU wrote, so it waits for the same submit fence the shm copy does before it
+       * invalidates the CPU's view of the BO: bo_host_touch/bo_cache only maintain caches, they do not wait for the
+       * work that produced the frame, so a dump taken earlier could be a stale or half-rendered picture
+       * (CR thread, vk/src/mali_wsi.c:1452). */
+      if (dev && !present_wait_submit_fence(dev, image_index))
+         snprintf(why, sizeof why, "the frame's submit never completed (device lost or a fault): no picture");
+   }
+   if (!why[0]) {
       const struct mali_backend_ops *be = dev ? mali_device_pdev(dev)->backend : NULL;
       if (be && be->bo_host_touch)
          be->bo_host_touch(dev->kdev, &mi->mem->bo);
       if (be && be->bo_cache)
          be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
 
-      snprintf(path, sizeof path, "%s-%s-%d-sc%d-%llu.ppm", prefix, mali_wsi_comm(), (int)getpid(),
-               info ? info->slot : 0, (unsigned long long)frame);
+      snprintf(ppm, sizeof ppm, "%s-%s-%d-sc%dc%u-%llu.ppm", prefix, mali_wsi_comm(), (int)getpid(),
+               info ? info->slot : 0, info ? info->chain_id : 0u, (unsigned long long)frame);
       row = malloc((size_t)w * 3);
-      FILE *f = row ? fopen(path, "wb") : NULL;
+      FILE *f = row ? fopen(ppm, "wb") : NULL;
       if (!f) {
-         snprintf(why, sizeof why, "cannot write %s: %s", path, strerror(errno));
+         snprintf(why, sizeof why, "cannot write %s: %s", ppm, strerror(errno));
       } else {
-         fprintf(f, "P6\n%u %u\n255\n", w, h);
-         for (unsigned y = 0; y < h; y++) {
+         /* A full filesystem can fail the row writes or the buffered flush in fclose() after fopen() succeeded:
+          * the PPM is then truncated, and recording it as a dump would be a lie (CR thread, :1360). */
+         bool ok = fprintf(f, "P6\n%u %u\n255\n", w, h) > 0;
+         for (unsigned y = 0; y < h && ok; y++) {
             const uint8_t *src = base + (size_t)y * stride;
             for (unsigned x = 0; x < w; x++) {
                uint8_t rgb[3];
@@ -1354,20 +1400,26 @@ mali_wsi_dump_present(struct mali_device *dev, struct wsi_swapchain *chain, uint
                row[x * 3 + 0] = rgb[0]; row[x * 3 + 1] = rgb[1]; row[x * 3 + 2] = rgb[2];
                sum[0] += rgb[0]; sum[1] += rgb[1]; sum[2] += rgb[2];
             }
-            fwrite(row, 1, (size_t)w * 3, f);
+            ok = fwrite(row, 1, (size_t)w * 3, f) == (size_t)w * 3;
          }
-         fclose(f);
-         file = path;
+         if (fclose(f) != 0)
+            ok = false;
+         if (ok) {
+            file = ppm;
+         } else {
+            remove(ppm);   /* a truncated picture must not look like a dump */
+            snprintf(why, sizeof why, "cannot write %s: %s", ppm, strerror(errno));
+         }
       }
    }
    free(row);
 
-   snprintf(path, sizeof path, "%s.txt", prefix);
-   FILE *t = fopen(path, "a");
+   snprintf(txt, sizeof txt, "%s.txt", prefix);
+   FILE *t = fopen(txt, "a");
    if (t) {
-      fprintf(t, "dump frame=%llu sc=%d comm=%s pid=%d platform=%s surface=0x%llx %ux%u format=%d(%s) "
+      fprintf(t, "dump frame=%llu sc=%d chain=%u comm=%s pid=%d platform=%s surface=0x%llx %ux%u format=%d(%s) "
                  "layout=%s samples=%u images=%u usage=0x%x",
-              (unsigned long long)frame, info ? info->slot : 0, mali_wsi_comm(), (int)getpid(),
+              (unsigned long long)frame, info ? info->slot : 0, info ? info->chain_id : 0u, mali_wsi_comm(), (int)getpid(),
               info ? mali_wsi_platform_name(info->platform) : "unknown", (unsigned long long)(info ? info->surface : 0),
               w, h, (int)(mi ? mi->vk.format : VK_FORMAT_UNDEFINED), mi ? vk_Format_to_str(mi->vk.format) : "no image",
               layout, mi ? mi->lay.d.samples : 0u, info ? info->images : 0u, info ? (unsigned)info->usage : 0u);
@@ -1400,9 +1452,7 @@ mali_wsi_present_trace(struct mali_device *dev, VkSwapchainKHR handle, struct ws
    if (mali_wsi_dump_prefix())
       mali_wsi_dump_present(dev, chain, image_index, info, frame);
    if (mali_wsi_debug()) {
-      static int every = -1;
-      if (every < 0)
-         every = (int)mali_wsi_env_every("MALI_WSI_DEBUG_EVERY", 60);
+      const int every = (int)mali_wsi_cfg_debug_every;
       if (every && !(frame % (uint64_t)every))
          fprintf(stderr, "mali_vk: wsi present: sc%d %s comm=%s pid=%d surface=0x%llx %ux%u %s images=%u usage=0x%x "
                          "mode=%u sw=%d frames=%llu image=%u\n",
