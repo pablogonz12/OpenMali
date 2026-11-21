@@ -98,7 +98,8 @@ mali_wsi_destroy_query_pool(VkDevice _dev, VkQueryPool pool, const VkAllocationC
  *     gets it by MIT-SHM / PutImage (what lavapipe does, and what the vendor bridge does for X11). Needs no dma-buf at all,
  *     so it also works on the fake backend (whose BO fds are not dma-bufs). The device-wide switch also moves the Wayland
  *     platform to wl_shm: do not use it in a process whose Wayland swapchains must stay zero-copy (the gamescope layer's).
- * MALI_WSI=dmabuf forces the first path on the fake backend (it then fails at swapchain creation; for tests). */
+ * MALI_WSI=dmabuf prefers the first path on the fake backend (it then fails at swapchain creation and falls back to
+ * the software path at mali_wsi_create_swapchain; MALI_WSI=dmabuf-strict fails there instead, for tests). */
 /* Nothing here touches the X server until an X11 surface exists: mali_wsi_init() runs inside
  * vkEnumeratePhysicalDevices for every physical device, whatever the platform, so a blocking xcb_connect() there
  * hung Wayland clients (vkcube said nothing at all) and X11 clients before their first log line. Extension
@@ -122,7 +123,7 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
    const char *e = getenv("MALI_WSI");
    if (e && !strcmp(e, "sw"))
       return true;
-   if (e && !strcmp(e, "dmabuf"))
+   if (e && (!strcmp(e, "dmabuf") || !strcmp(e, "dmabuf-strict")))
       return false;
    /* MALI_WSI=hw: pretend to be hardware on the fake backend - start on the dma-buf path and let the per-surface
     * decision (mali_wsi_x11_maybe_sw) fall back where the server cannot serve it. Host test hook for
@@ -1114,16 +1115,22 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
 
    mali_wsi_x11_probe(surface, &probe);
 
-   /* X11 surfaces on a server without DRI3+Present take the software (PutImage) path. The decision is made by
-    * mali_wsi_x11_maybe_sw(), which the surface queries already took for a zink client (it asks surface support
-    * first and would never get here), and is repeated here for a client that went straight to vkCreateSwapchainKHR;
-    * the same function, so the two can never disagree. MALI_WSI=dmabuf opts back into dma-buf, where a broken import
-    * fails loudly instead of silently dropping presents (the hang in wsi_common_x11.c:2202). */
+   /* X11 surfaces on a server without DRI3+Present take the software (PutImage) path; MALI_WSI=shm/xput/sw forces
+    * it, MALI_WSI=dmabuf keeps dma-buf. The decision is made by mali_wsi_x11_maybe_sw(), which the surface queries
+    * already took for a zink client (it asks surface support first and would never get here), and is repeated here
+    * for a client that went straight to vkCreateSwapchainKHR; the same function, so the two can never disagree. It
+    * records the decision per platform and does not touch wsi.sw (#323). MALI_WSI=dmabuf opts back into dma-buf,
+    * where a broken import fails loudly instead of silently dropping presents (the hang in wsi_common_x11.c:2202).
+    * MALI_WSI=dmabuf-strict keeps that failure even where #328's retry would fall back (#328). */
+   const char *forced = getenv("MALI_WSI");
+   const bool forced_strict = forced && !strcmp(forced, "dmabuf-strict");
+   const bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
+                            surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
    mali_wsi_x11_maybe_sw(pdev, surface->platform, &probe);
 
    /* wsi.sw is set for this one call by mali_wsi_sw_enter(): the no-DRI3 decision is X11's and must not reach a
     * Wayland swapchain of the same process (mali_wsi_x11_maybe_sw). */
-   const struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface->platform);
+   struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface->platform);
 
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
@@ -1136,11 +1143,34 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
               wsi_dev->sw ? " (software)" : " (dma-buf)");
 
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
-   const bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
-                            surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
+   if (r != VK_SUCCESS && !wsi_dev->sw && x11_surface && !forced_strict) {
+      /* The server advertised DRI3 and Present, and still refused every image: x11_image_init's
+       * xcb_dri3_pixmap_from_buffer of our dma-buf fails, so the whole vkCreateSwapchainKHR returns
+       * VK_ERROR_INITIALIZATION_FAILED and zink reports "could not create swapchain" (zink_resource.c:1974) with a
+       * dead GLX drawable behind it. Measured on the X8 (Mali-G925) and the CMF (Mali-G615), build 20bb6c6: 32x32
+       * (Steam's window) and 800x600 (glxgears) both fail with -3, so the size is not the variable - the import is
+       * (DroidDeck's Xwayland on Mali has no DRM node to import through, docs/development/mali-venus.md; the
+       * extension being present in the setup reply does not prove the request works).
+       * MIT-SHM/PutImage needs no import: copy each frame into a CPU-visible linear image (wants_linear, so no
+       * blit) and hand the server that memory. Retry the same chain once on that path, so an X11 client gets a
+       * working swapchain instead of a dead one. MALI_WSI=dmabuf-strict keeps the loud failure for diagnostics. */
+      fprintf(stderr, "mali_vk: wsi: %s surface: dma-buf swapchain failed (%s), retrying on the software "
+                      "(MIT-SHM/PutImage) present path\n",
+              mali_wsi_platform_name(surface->platform), vk_Result_to_str(r));
+      /* Through #323's mechanism, never by writing wsi.sw: record the software decision for this protocol, then
+       * re-enter the call in that mode (supports_modifiers and the dma-buf sync cache are handled the same way). */
+      if (surface->platform == VK_ICD_WSI_PLATFORM_XLIB)
+         pdev->wsi_x11_sw_xlib = true;
+      else
+         pdev->wsi_x11_sw_xcb = true;
+      mali_wsi_sw_leave(pdev, saved_sw);
+      saved_sw = mali_wsi_sw_enter(pdev, surface->platform);
+      r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
+   }
    if (r == VK_SUCCESS && x11_surface && !mali_wsi_x11_chain_add(*out, wsi_dev->sw)) {
       /* The table is full: an untracked X11 chain would be presented as a Wayland one (sw=false, dma-buf) with no
-       * fallback, so refuse the creation and destroy the chain wsi just built (CR #323 T3). */
+       * fallback, so refuse the creation and destroy the chain wsi just built (CR #323 T3). No shm segment exists
+       * yet: chain_add runs before mali_x11_shm_create(). */
       wsi_DestroySwapchainKHR(device, *out, alloc);
       *out = VK_NULL_HANDLE;
       r = VK_ERROR_TOO_MANY_OBJECTS;

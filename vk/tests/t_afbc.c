@@ -99,6 +99,61 @@ int main(void)
    double full = 1280.0 * 720 * 4, afbc = mali_afbc_bw_estimate(0.5, &a);
    CHECK(afbc < 0.55 * full && afbc > 0.5 * full);   /* headers add ~1.6% over 50% */
 
+   /* Stage 1: eligibility. Base: 1280x720 RGBA8_UNORM optimal 2D, colour attachment|sampled, v13, flag on. */
+   struct mali_afbc_image_info e = {13, 0, 1, 1, 0x10 | 0x4 | 0x1 | 0x2, 0, 37, 1280, 720, true};
+   unsigned bpp = 0;
+   EQ(mali_afbc_image_eligible(&e, &bpp), MALI_AFBC_OK); EQ(bpp, 32);
+   struct mali_afbc_image_info e2;
+   e2 = e; e2.afbc_env = false; EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_DISABLED);
+   e2 = e; e2.arch = 6;         EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_ARCH);
+   e2 = e; e2.tiling = 1;       EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_TILING);
+   e2 = e; e2.image_type = 2;   EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_TYPE);
+   e2 = e; e2.samples = 4;      EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_SAMPLES);
+   e2 = e; e2.usage |= MALI_AFBC_USAGE_STORAGE;       EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_USAGE);
+   e2 = e; e2.usage |= MALI_AFBC_USAGE_HOST_TRANSFER; EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_USAGE);
+   e2 = e; e2.flags = MALI_AFBC_FLAG_DISJOINT;        EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FLAGS);
+   e2 = e; e2.flags = MALI_AFBC_FLAG_ALIAS;           EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FLAGS);
+   e2 = e; e2.flags = MALI_AFBC_FLAG_SPARSE_BINDING;  EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FLAGS);
+   e2 = e; e2.flags = 0x8 /* MUTABLE_FORMAT */;       EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_OK); /* allowed here; same-mode check is stage 5 */
+   e2 = e; e2.width = 8;        EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_EXTENT);
+   e2 = e; e2.height = 15;      EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_EXTENT);
+   /* Formats: hits, then float / integer / depth / compressed / undefined / multiplanar misses. */
+   static const struct { unsigned f, bpp; } hit[] = {{4,16},{9,8},{16,16},{37,32},{43,32},{44,32},{50,32},{58,32},{64,32},{70,16}};
+   for (unsigned k = 0; k < sizeof hit / sizeof hit[0]; k++) {
+      e2 = e; e2.format = hit[k].f; bpp = 0;
+      EQ(mali_afbc_image_eligible(&e2, &bpp), MALI_AFBC_OK); EQ(bpp, hit[k].bpp);
+   }
+   static const unsigned miss[] = {0, 41 /*R8G8B8A8_UINT*/, 109 /*R16G16B16A16_SFLOAT*/, 100 /*R32_SFLOAT*/, 126 /*D32_SFLOAT*/,
+                                   129 /*D24S8*/, 131 /*BC1*/, 1000156000 /*G8B8G8R8 multiplanar*/};
+   for (unsigned k = 0; k < sizeof miss / sizeof miss[0]; k++) {
+      e2 = e; e2.format = miss[k]; EQ(mali_afbc_image_eligible(&e2, NULL), MALI_AFBC_REJ_FORMAT);
+   }
+   /* An eligible image's layout is computable with the reported bpp. */
+   a = L(13, MALI_AFBC_SB_16x16, bpp ? bpp : 32, e.width, e.height, 1, &rc); EQ(rc, 0);
+
+
+   /* Stage 2: whole-image layout. 64x64 RGBA8 16x16 v13, 3 levels (64,32,16): per level 16B*blocks header (128-aligned) + 1KiB*blocks.
+    * L0: 4x4=16 sb: hdr 256 B, body 16384 -> 16640. L1: 2x2=4 sb: hdr 64->128, body 4096 -> 4224. L2: 1 sb: hdr 16->128, body 1024 -> 1152. */
+   struct mali_afbc_image_layout il;
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 3, 1, &il), 0);
+   EQ(il.level[0].size, 256 + 16384); EQ(il.level[1].size, 128 + 4096); EQ(il.level[2].size, 128 + 1024);
+   EQ(il.level_offset[0], 0); EQ(il.level_offset[1], 16640); EQ(il.level_offset[2], 16640 + 4224);
+   EQ(il.base_align, 128); EQ(il.array_stride, 16640 + 4224 + 1152); EQ(il.size, il.array_stride);
+   /* Layers repeat at array_stride. */
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 3, 5, &il), 0); EQ(il.size, 5 * il.array_stride);
+   /* Level 1 of a 1x1 chain clamps to 1 pixel -> 1 superblock. Tiled: 4096 alignment propagates to base and array stride. */
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16 | MALI_AFBC_MOD_TILED, 32, 128, 128, 2, 2, &il), 0);
+   EQ(il.base_align, 4096); CHECK(il.level_offset[1] % 4096 == 0); EQ(il.array_stride % 4096, 0);
+   EQ(il.level[1].aligned_w, 128); /* 64 px aligns up to the 128 tile */
+   /* Invalid: zero/too many levels or layers, bad modifier, overflow. */
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 0, 1, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 17, 1, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 1, 0, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, 0, 32, 64, 64, 1, 1, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 65536, 65536, 1, 1u << 30, &il) == -1);
+   /* Single level matches the plain layout. */
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, 1, &il), 0);
+   a = L(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, &rc); EQ(il.size, a.size);
    printf(fails ? "t_afbc: %d FAILED\n" : "t_afbc: all ok\n", fails);
    return fails != 0;
 }
