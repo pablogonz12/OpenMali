@@ -403,7 +403,10 @@ mali_wsi_sw_enter(struct mali_physical_device *pdev, int platform)
    struct wsi_device *wsi_dev = &pdev->wsi;
    const bool saved = wsi_dev->sw;
    const bool x11 = platform == VK_ICD_WSI_PLATFORM_XCB || platform == VK_ICD_WSI_PLATFORM_XLIB;
-   wsi_dev->sw = mali_wsi_use_sw(pdev) || (x11 && pdev->wsi_x11_sw);
+   /* wsi_sw_base is what Mesa/the device was built for (MESA_VK_WSI_DEBUG=sw, the fake backend, MALI_WSI=sw) and a
+    * floor: without it a software device would be pushed onto the dma-buf path, whose callbacks were never fetched.
+    * The GetMemoryFdKHR test is the same invariant stated in the one term that crashes when it is violated. */
+   wsi_dev->sw = pdev->wsi_sw_base || (x11 && pdev->wsi_x11_sw) || wsi_dev->GetMemoryFdKHR == NULL;
    return saved;
 }
 
@@ -997,6 +1000,19 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       mali_x11_shm_create(*out, surface, chain, ci);
    }
+   if (r == VK_SUCCESS && !wsi_dev->sw && !wsi_dev->GetMemoryFdKHR) {
+      /* Refuse cleanly instead of crashing later: this device's wsi callbacks were fetched for the software path
+       * (wsi_common.c:221), so a dma-buf chain cannot present - wsi_common_x11 dereferences the NULL export
+       * callback (the #323 crash on the CMF and X8). mali_wsi_sw_enter() above should already make this
+       * impossible; this is the guard that keeps a future mistake a failed vkCreateSwapchainKHR, not a SIGSEGV. */
+      fprintf(stderr, "mali_vk: wsi: refusing a dma-buf swapchain on a device built for the software path "
+              "(GetMemoryFdKHR is NULL); MALI_WSI=dmabuf cannot work here\n");
+      if (x11_surface)
+         mali_wsi_x11_chain_remove(*out);
+      wsi_DestroySwapchainKHR(device, *out, alloc);
+      *out = VK_NULL_HANDLE;
+      r = VK_ERROR_INITIALIZATION_FAILED;
+   }
 
    if (mali_wsi_debug() || r != VK_SUCCESS) {
       fprintf(stderr, "mali_vk: wsi create_swapchain: platform=%s format=%u colorSpace=%u usage=0x%x mode=%u "
@@ -1029,6 +1045,11 @@ mali_wsi_init(struct mali_physical_device *pdev)
                                 &(struct wsi_device_options){.sw_device = sw});
    if (r != VK_SUCCESS)
       return r;
+   /* What Mesa decided (sw_device or MESA_VK_WSI_DEBUG=sw) is an input, not something mali_wsi_sw_enter() may
+    * lower: wsi_common.c:221 fetches GetMemoryFdKHR only for the dma-buf path, so flipping wsi.sw to false on such
+    * a device makes wsi_common_x11 call a NULL pointer at swapchain create/present (#323 crash, exit 139 on the CMF
+    * and X8). Kept even when our own X11 decision later asks for dma-buf. */
+   pdev->wsi_sw_base = pdev->wsi.sw;
    /* No DRM node behind kbase: wsi sees no render/primary device and assumes the compositor is on our GPU.
     * Modifiers (linear only) exist only on the dma-buf path; the software path copies into CPU-visible buffers. */
    pdev->wsi.supports_modifiers = !sw;
