@@ -78,6 +78,7 @@ static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstIn
 static int g_dxvk;   /* dxvk_frame: second pipeline (cull back + alpha blend) and six dynamic states so the draw loop can churn state like DXVK */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
+static PFN_vkCmdSetDepthClipEnableEXT CmdSetDepthClipEnableEXT_;   /* blitreplay: depthClipEnable via the dynamic state, if the extension is there */
 static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
@@ -125,7 +126,12 @@ case_skipped(const char *n)
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
-   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
+   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)                      \
+   X(CmdBeginRendering) X(CmdEndRendering) X(CmdPipelineBarrier2) X(CmdSetViewportWithCount)      \
+   X(CmdSetScissorWithCount) X(CmdSetLineWidth) X(CmdSetDepthBounds) X(CmdSetPrimitiveTopology)    \
+   X(CmdSetDepthTestEnable) X(CmdSetDepthWriteEnable) X(CmdSetDepthCompareOp)                      \
+   X(CmdSetDepthBoundsTestEnable) X(CmdSetStencilTestEnable) X(CmdSetStencilOp)                    \
+   X(CmdSetRasterizerDiscardEnable) X(CmdSetDepthBiasEnable) X(CmdSetPrimitiveRestartEnable)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -853,6 +859,375 @@ test_vary(void)
       scene_destroy(&s);
    }
    g_vary = 0;
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+/* ------------------------------------------------------------- blitreplay */
+/* notes/blitreplay.md: the black glBlitFramebuffer frame of notes/apilog.md (its "two call sequences", seq 11-19) issued
+ * as literally as that log allows by our own Vulkan test, so the black has a reproduction without zink. One pass, one
+ * submission, dynamic rendering with flags 0, one colour attachment (view fmt 44 on image fmt 44, usage 0x97,
+ * MUTABLE_FORMAT), loadOp DONT_CARE / storeOp STORE, dynamic state through the *WithCount setters, one draw:
+ * TRIANGLE_FAN, 4 vertices, one vertex buffer stride 32 with 2 attributes (position vec4, texcoord vec4 in pixels), FS =
+ * the dumped zink fragment shader read back with OpImageFetch (set 2, binding 128), source = an 800x600 colour image
+ * rendered by an earlier pass in an earlier submission. The vertex data is the frame's, copied from notes/jobdump.md:
+ * v0 pos(-1,-1,0,1) tex(0,600,0,0); v1 pos(1,-1,0,1) tex(800,600,0,0); v2/v3 = the top edge with tex y 0.
+ * BLITREPLAY=x[,y] selects the rows (default "0,6"): 0 = the replay, 1 = our FS with zink's VS, 2 = zink's FS with our
+ * VS, 3 = binding 128 -> 0, 4 = set 2 -> set 0, 5 = fan -> list, 6 = the twin (both shaders ours). Every row is read
+ * back (RGB mean, centre texel, covered pixels), so "black" and "paints" are numbers and not a verdict. */
+static const char *g_brname[7] = {"replay", "our_fs", "our_vs", "bind0", "set0", "list", "twin"};
+#define BR_W 800
+#define BR_H 600
+
+struct br_res {
+   VkImage src, dst;
+   VkDeviceMemory srcm, dstm;
+   VkImageView srcv, dstv;
+   VkSampler smp;
+   VkDescriptorSetLayout dsl[3];
+   VkPipelineLayout pl;
+   VkDescriptorPool dp;
+   VkDescriptorSet dset;
+   VkBuffer vb;
+   VkDeviceMemory vbm;
+   VkCommandPool pool;
+   uint8_t *dpx;
+   uint32_t dpitch;
+};
+
+/* one 800x600 colour image of the frame's shape, LINEAR + host visible so the test can read it back */
+static int
+br_img(VkImage *img, VkDeviceMemory *mem, VkImageView *view, VkFormat fmt, uint8_t **px, uint32_t *pitch)
+{
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+      .format = fmt, .extent = {BR_W, BR_H, 1}, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT,   /* 0x97, the frame's */
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT};
+   CHECK(CreateImage(dev, &ii, NULL, img) == VK_SUCCESS, "br image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, *img, &mr);
+   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(mt >= 0, "br image memory type");
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+   CHECK(AllocateMemory(dev, &ai, NULL, mem) == VK_SUCCESS, "br image memory");
+   CHECK(BindImageMemory(dev, *img, *mem, 0) == VK_SUCCESS, "br bind image");
+   uint8_t *map;
+   CHECK(MapMemory(dev, *mem, 0, VK_WHOLE_SIZE, 0, (void **)&map) == VK_SUCCESS, "br map image");
+   VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+   VkSubresourceLayout sl;
+   GetImageSubresourceLayout(dev, *img, &sr, &sl);
+   *pitch = (uint32_t)sl.rowPitch;
+   *px = map + sl.offset;
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = *img,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CHECK(CreateImageView(dev, &vi, NULL, view) == VK_SUCCESS, "br image view");
+   return 1;
+}
+
+static int
+br_setup(struct br_res *r)
+{
+   memset(r, 0, sizeof *r);
+   /* the sampled source is fmt 37 (R8G8B8A8_UNORM) and the frame's colour target fmt 44 (A8B8G8R8_UNORM_PACK32), as in
+    * notes/blit-instr.md's view line and notes/apilog.md's attachment line */
+   if (!br_img(&r->src, &r->srcm, &r->srcv, VK_FORMAT_R8G8B8A8_UNORM, &r->dpx, &r->dpitch)) return 0;
+   r->dpx = NULL;
+   if (!br_img(&r->dst, &r->dstm, &r->dstv, VK_FORMAT_B8G8R8A8_UNORM, &r->dpx, &r->dpitch)) return 0;
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
+      .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0.0f};   /* notes/blit-instr.md SAMPLER line */
+   CHECK(CreateSampler(dev, &si, NULL, &r->smp) == VK_SUCCESS, "br sampler");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+      .poolSizeCount = 1, .pPoolSizes = &ps};
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &r->dp) == VK_SUCCESS, "br descriptor pool");
+   /* the frame's vertex data, 4 x 32 bytes, and the 6-vertex list form of the same quad after it */
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 512, .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+   CHECK(CreateBuffer(dev, &bi, NULL, &r->vb) == VK_SUCCESS, "br vertex buffer");
+   VkMemoryRequirements mr;
+   GetBufferMemoryRequirements(dev, r->vb, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+      .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+   CHECK(AllocateMemory(dev, &ai, NULL, &r->vbm) == VK_SUCCESS, "br vb memory");
+   CHECK(BindBufferMemory(dev, r->vb, r->vbm, 0) == VK_SUCCESS, "br bind vb");
+   float *vp;
+   CHECK(MapMemory(dev, r->vbm, 0, VK_WHOLE_SIZE, 0, (void **)&vp) == VK_SUCCESS, "br map vb");
+   static const float quad[4][8] = {
+      {-1, -1, 0, 1,    0, 600, 0, 0}, {1, -1, 0, 1,  800, 600, 0, 0},
+      {-1,  1, 0, 1,    0,   0, 0, 0}, {1,  1, 0, 1,  800,   0, 0, 0}};
+   static const int list[6] = {0, 1, 2, 2, 1, 3};
+   memcpy(vp, quad, sizeof quad);
+   for (int i = 0; i < 6; i++) memcpy(vp + 32 * (4 + i), quad[list[i]], 32);
+   UnmapMemory(dev, r->vbm);
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &pci, NULL, &r->pool) == VK_SUCCESS, "br pool");
+   return 1;
+}
+
+static void
+br_destroy(struct br_res *r)
+{
+   DeviceWaitIdle(dev);
+   if (r->pool) DestroyCommandPool(dev, r->pool, NULL);
+   if (r->pl) DestroyPipelineLayout(dev, r->pl, NULL);
+   for (int i = 0; i < 3; i++) if (r->dsl[i]) DestroyDescriptorSetLayout(dev, r->dsl[i], NULL);
+   if (r->dp) DestroyDescriptorPool(dev, r->dp, NULL);
+   if (r->smp) DestroySampler(dev, r->smp, NULL);
+   if (r->vb) DestroyBuffer(dev, r->vb, NULL);
+   if (r->vbm) FreeMemory(dev, r->vbm, NULL);
+   for (int i = 0; i < 2; i++) {
+      VkImageView v = i ? r->dstv : r->srcv;
+      VkImage im = i ? r->dst : r->src;
+      VkDeviceMemory m = i ? r->dstm : r->srcm;
+      if (v) DestroyImageView(dev, v, NULL);
+      if (im) DestroyImage(dev, im, NULL);
+      if (m) FreeMemory(dev, m, NULL);
+   }
+}
+
+/* one pass into an image: CLEAR blue (the earlier submission's source) or the frame's own DONT_CARE pass */
+static int
+br_pass(struct br_res *r, VkCommandBuffer cb, int src, VkPipeline pipe, int variant)
+{
+   const VkFormat fmt = src ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
+   VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .srcStageMask = src ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+      .srcAccessMask = src ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : 0,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .oldLayout = src ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,   /* the frame's own transition: UNDEFINED -> GENERAL, seq 11 */
+      .image = src ? r->src : r->dst, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+      .pImageMemoryBarriers = &ib};
+   CmdPipelineBarrier2(cb, &dep);
+   VkRenderingAttachmentInfo att = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = src ? r->srcv : r->dstv, .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .resolveMode = VK_RESOLVE_MODE_NONE,
+      .loadOp = src ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   att.clearValue.color.float32[0] = 0.0f;
+   att.clearValue.color.float32[1] = 0.0f;
+   att.clearValue.color.float32[2] = 1.0f;
+   att.clearValue.color.float32[3] = 1.0f;
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .flags = 0,   /* the frame's ri.flags = 0 */
+      .renderArea = {{0, 0}, {BR_W, BR_H}}, .layerCount = 1, .viewMask = 0,
+      .colorAttachmentCount = 1, .pColorAttachments = &att};
+   (void)fmt;
+   CmdBeginRendering(cb, &ri);
+   if (!src) {
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkBuffer b = r->vb;
+      VkDeviceSize off = (variant == 5) ? 128 : 0, str = 32;
+      CmdBindVertexBuffers2_(cb, 0, 1, &b, &off, NULL, &str);
+      VkViewport vp = {0, 0, BR_W, BR_H, 0.0f, 1.0f};
+      VkRect2D sc = {{0, 0}, {BR_W, BR_H}};
+      CmdSetViewportWithCount(cb, 1, &vp);
+      CmdSetScissorWithCount(cb, 1, &sc);
+      CmdSetLineWidth(cb, 1.0f);
+      CmdSetDepthBias(cb, 0.0f, 0.0f, 0.0f);
+      float bc[4] = {0, 0, 0, 0};
+      CmdSetBlendConstants(cb, bc);
+      CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+      CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+      CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+      CmdSetCullMode(cb, VK_CULL_MODE_NONE);
+      CmdSetFrontFace(cb, VK_FRONT_FACE_CLOCKWISE);   /* apilog prints the enum: front=1 = VK_FRONT_FACE_CLOCKWISE */
+      CmdSetPrimitiveTopology(cb, variant == 5 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN);
+      CmdSetDepthTestEnable(cb, VK_FALSE);
+      CmdSetDepthWriteEnable(cb, VK_FALSE);
+      CmdSetDepthCompareOp(cb, VK_COMPARE_OP_NEVER);   /* apilog: df=0 */
+      CmdSetDepthBoundsTestEnable(cb, VK_FALSE);
+      CmdSetStencilTestEnable(cb, VK_FALSE);
+      CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+                      VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+      CmdSetRasterizerDiscardEnable(cb, VK_FALSE);
+      CmdSetDepthBiasEnable(cb, VK_FALSE);
+      CmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+      if (CmdSetPolygonModeEXT_) CmdSetPolygonModeEXT_(cb, VK_POLYGON_MODE_FILL);
+      if (CmdSetDepthClipEnableEXT_) CmdSetDepthClipEnableEXT_(cb, VK_TRUE);   /* apilog: clip=1 */
+      VkDescriptorSet ds = r->dset;
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pl, variant == 4 ? 0 : 2, 1, &ds, 0, NULL);
+      char pc[52] = {0};   /* zink's gfx_pushconst block (52 B); the frame's blocks are zero */
+      CmdPushConstants(cb, r->pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+      CmdDraw(cb, variant == 5 ? 6 : 4, 1, 0, 0);
+   }
+   CmdEndRendering(cb);
+   return 1;
+}
+
+static int
+test_blitreplay(void)
+{
+   struct br_res r;
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "br fence");
+   if (!br_setup(&r)) return 0;
+   const char *sel = getenv("BLITREPLAY");
+   int rows[8], nrow = 0;
+   if (!sel || !*sel) sel = "0,6";
+   for (char *p = (char *)sel; *p && nrow < 8;) {
+      char *end;
+      rows[nrow++] = (int)strtol(p, &end, 10);
+      p = end;
+      if (*p == ',') p++;
+   }
+   int ok = 1;
+   for (int i = 0; i < nrow; i++) {
+      const int v = rows[i] < 0 || rows[i] > 6 ? 0 : rows[i];
+      const int vs_ours = v == 2 || v == 6;
+      VkShaderModule vs = load_spv(vs_ours ? "blitv_o.vert.spv" : "blitv_z.vert.spv");
+      VkShaderModule fs = load_spv(v == 0 || v == 2 || v == 5 ? "blitfs_z.frag.spv" :
+                                   v == 1 ? "blitfs_o.frag.spv" : v == 3 ? "blitfs_o_b0.frag.spv" :
+                                   v == 4 ? "blitfs_o_s0.frag.spv" : "blitfs_o.frag.spv");
+      if (!vs || !fs) return 0;
+      /* descriptor layout: the frame has 3 sets and the sampler at set 2 binding 128; rows 3/4 move exactly one of the
+       * two, which is the only way the FS's hard-coded decorations can be compared */
+      const int dsidx = v == 4 ? 0 : 2, dbind = v == 3 ? 0 : 128;
+      for (int k = 0; k < 3; k++) {
+         VkDescriptorSetLayoutBinding lb = {.binding = (uint32_t)dbind, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+         VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = k == dsidx ? 1 : 0, .pBindings = &lb};
+         if (CreateDescriptorSetLayout(dev, &dli, NULL, &r.dsl[k]) != VK_SUCCESS) { g_fail = 1; return 0; }
+      }
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = r.dp,
+         .descriptorSetCount = 1, .pSetLayouts = &r.dsl[dsidx]};
+      if (AllocateDescriptorSets(dev, &dai, &r.dset) != VK_SUCCESS) { g_fail = 1; return 0; }
+      VkDescriptorImageInfo dii = {r.smp, r.srcv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = r.dset,
+         .dstBinding = (uint32_t)dbind, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .pImageInfo = &dii};
+      UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+      VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .size = 52};
+      VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3,
+         .pSetLayouts = r.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+      if (CreatePipelineLayout(dev, &pli, NULL, &r.pl) != VK_SUCCESS) { g_fail = 1; return 0; }
+      VkPipelineShaderStageCreateInfo st[2] = {
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+      VkVertexInputBindingDescription bd = {0, 32, VK_VERTEX_INPUT_RATE_VERTEX};
+      VkVertexInputAttributeDescription ad[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+                                                 {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16}};
+      VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bd,
+         .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = ad};
+      VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+         .topology = v == 5 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN};
+      VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+         .viewportCount = 1, .scissorCount = 1};
+      VkPipelineRasterizationDepthClipStateCreateInfoEXT dce = g_dce;
+      dce.depthClipEnable = VK_TRUE;   /* apilog: clip=1 */
+      VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+         .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_CLOCKWISE,
+         .lineWidth = 1.0f, .rasterizerDiscardEnable = VK_FALSE, .depthClampEnable = VK_FALSE, .depthBiasEnable = VK_FALSE};
+      if (g_have_dclip) { dce.pNext = NULL; rs.pNext = &dce; }
+      VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+      VkPipelineColorBlendAttachmentState cba = {.blendEnable = VK_FALSE, .colorWriteMask = 0xf};
+      VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+         .attachmentCount = 1, .pAttachments = &cba};
+      VkDynamicState dyn[24] = {VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT, VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
+         VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+         VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+         VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
+         VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
+         VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+         VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+         VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
+         VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
+      unsigned ndyn = 21;
+      if (CmdSetPolygonModeEXT_) dyn[ndyn++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+      if (g_have_dclip) dyn[ndyn++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;
+      VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+         .dynamicStateCount = ndyn, .pDynamicStates = dyn};
+      VkFormat cfmt = VK_FORMAT_B8G8R8A8_UNORM;
+      VkPipelineRenderingCreateInfo prc = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+         .colorAttachmentCount = 1, .pColorAttachmentFormats = &cfmt};
+      VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &prc,
+         .stageCount = 2, .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
+         .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = NULL,
+         .pColorBlendState = &cbs, .pDynamicState = &dys, .layout = r.pl};
+      VkPipeline pipe = VK_NULL_HANDLE;
+      VkResult pr = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+      if (pr != VK_SUCCESS) { g_fail = 1; return 0; }
+      /* the earlier submission: the source pass (CLEAR blue), and its layout transition to sampled */
+      for (int sub = 0; sub < 2; sub++) {
+         VkCommandBuffer cb;
+         VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = r.pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+         if (AllocateCommandBuffers(dev, &cbi, &cb) != VK_SUCCESS) { g_fail = 1; return 0; }
+         VkCommandBufferBeginInfo bi2 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+         BeginCommandBuffer(cb, &bi2);
+         if (!br_pass(&r, cb, sub == 0, pipe, v)) return 0;
+         if (sub == 0) {
+            VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+               .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               .image = r.src, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            VkDependencyInfo dp = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+               .pImageMemoryBarriers = &ib};
+            CmdPipelineBarrier2(cb, &dp);
+         }
+         EndCommandBuffer(cb);
+         VkCommandBuffer cbs2[2] = {cb, VK_NULL_HANDLE};
+         unsigned ncb = 1;
+         if (sub == 1) {   /* the frame's submit is ncbs=2: its draw cb plus a sync cb (barriers only) */
+            VkCommandBufferAllocateInfo cbi2 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+               .commandPool = r.pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+            if (AllocateCommandBuffers(dev, &cbi2, &cbs2[1]) == VK_SUCCESS) {
+               VkCommandBufferBeginInfo bi3 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                  .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+               BeginCommandBuffer(cbs2[1], &bi3);
+               EndCommandBuffer(cbs2[1]);
+               ncb = 2;
+            }
+         }
+         VkSubmitInfo si2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = ncb, .pCommandBuffers = cbs2};
+         if (QueueSubmit(queue, 1, &si2, f) != VK_SUCCESS) { g_fail = 1; return 0; }
+         WaitForFences(dev, 1, &f, VK_TRUE, UINT64_MAX);
+         ResetFences(dev, 1, &f);
+      }
+      if (g_fake) {
+         printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n",
+                v, g_brname[v]);
+      } else {
+         double mr = 0, mg = 0, mb = 0;
+         uint32_t cov = 0;
+         for (int y = 0; y < BR_H; y++)
+            for (int x = 0; x < BR_W; x++) {
+               const uint8_t *p = r.dpx + y * r.dpitch + x * 4;
+               mr += p[2], mg += p[1], mb += p[0];   /* fmt 44 = B8G8R8A8_UNORM */
+               cov += p[3] != 0;
+            }
+         mr /= (double)BR_W * BR_H, mg /= (double)BR_W * BR_H, mb /= (double)BR_W * BR_H;
+         const uint8_t *c = r.dpx + (BR_H / 2) * r.dpitch + (BR_W / 2) * 4;
+         printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"mean\":\"%.1f/255\",\"rgb\":\"%.1f,%.1f,%.1f\","
+                "\"centre\":\"%u,%u,%u,%u\",\"coverage\":%u,\"ok\":true}\n",
+                v, g_brname[v], (mr + mg + mb) / 3.0, mr, mg, mb, c[2], c[1], c[0], c[3], cov);
+      }
+      DeviceWaitIdle(dev);
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, r.pl, NULL);
+      r.pl = VK_NULL_HANDLE;
+      for (int k = 0; k < 3; k++) { DestroyDescriptorSetLayout(dev, r.dsl[k], NULL); r.dsl[k] = VK_NULL_HANDLE; }
+      DestroyDescriptorPool(dev, r.dp, NULL);
+      r.dp = VK_NULL_HANDLE;   /* br_destroy guards on the rest */
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+         .poolSizeCount = 1, .pPoolSizes = &ps};
+      CreateDescriptorPool(dev, &dpi, NULL, &r.dp);
+      DestroyShaderModule(dev, vs, NULL);
+      DestroyShaderModule(dev, fs, NULL);
+   }
+   br_destroy(&r);
    DestroyFence(dev, f, NULL);
    return ok;
 }
@@ -2268,12 +2643,15 @@ main(int argc, char **argv)
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
    CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
+   CmdSetDepthClipEnableEXT_ = g_have_dclip ? (PFN_vkCmdSetDepthClipEnableEXT)GDPA(dev, "vkCmdSetDepthClipEnableEXT") : NULL;
    if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
-   if (ok && CASE_ON("vary")) ok &= test_vary();   /* vary16-own: the vec2 twin and the vec4 draw, one process */
+   if (ok && CASE_ON("vary")) ok &= test_vary();
+   if (ok && g_only && CASE_ON("blitreplay")) ok &= test_blitreplay();   /* --only only: it allocates two 800x600 images */   /* notes/blitreplay.md: the black blit frame, replayed by our own test */
+   if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
