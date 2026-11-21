@@ -766,6 +766,24 @@ int main(int argc, char **argv)
       (void)n0;
    }
 
+   {   /* frame pool recycling: finished 64 KiB chunks are parked and reused, and a recycled (dirty) chunk still hands out zeroed blocks */
+      struct mali_frame pf;
+      memset(&pf, 0, sizeof pf);
+      unsigned c0 = mali_frame_pool_cached();
+      uint8_t *a = mali_frame_blk(&pf, 4096);
+      CHECK(a != NULL, "pool blk");
+      memset(a, 0xAB, 4096);
+      mali_frame_finish(&pf);
+      CHECK(mali_frame_pool_cached() == c0 + 1, "pool chunk not recycled: %u -> %u", c0, mali_frame_pool_cached());
+      uint8_t *b = mali_frame_blk(&pf, 4096);
+      CHECK(b == a && mali_frame_pool_cached() == c0, "pool chunk not reused (%p vs %p)", (void *)b, (void *)a);
+      int nz = 0;
+      for (int i = 0; b && i < 4096; i++)
+         nz |= b[i];
+      CHECK(!nz, "recycled block not zeroed");
+      mali_frame_finish(&pf);
+   }
+
    if (m13) {
       /* M13: an occlusion draw (OQ register + DCD occlusion mode), ops deferred out of the render pass, and an ops frame
        * (timestamp + availability, event wait, flush): 3 frames, the stream must pass the decoder's static rules (STORE_STATE waited). */

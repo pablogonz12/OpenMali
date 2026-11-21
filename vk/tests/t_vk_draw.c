@@ -74,6 +74,7 @@ static uint32_t g_share_off[8], g_share_fi[8];
 static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between draws, 3 = the same pipeline rebound before every draw
                         (push constants: the caller passes different rot[] values) */
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
+static int g_dxvk;   /* dxvk_frame: second pipeline (cull back + alpha blend) and six dynamic states so the draw loop can churn state like DXVK */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
 static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
 static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
@@ -177,7 +178,7 @@ struct scene {
    VkPipelineLayout layout;
    VkRenderPass rp, rp2;
    int second;   /* scene_draw uses rp2 (LOAD) */
-   VkPipeline pipe;
+   VkPipeline pipe, pipe2;
    VkImage col, dep;
    VkDeviceMemory colmem, depmem, vbmem;
    VkImageView colv, depv;
@@ -537,7 +538,7 @@ scene_create(struct scene *s, int depth)
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                           .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
+                                           .dynamicStateCount = (g_fx.on && g_fx.dyn) || g_dxvk ? 6 : 2, .pDynamicStates = dyn};
    if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    if (g_fx.dynpoly) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
@@ -553,6 +554,14 @@ scene_create(struct scene *s, int depth)
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe);
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+   if (g_dxvk) {
+      rs.cullMode = VK_CULL_MODE_BACK_BIT;
+      cba.blendEnable = VK_TRUE;
+      cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe2);
+      CHECK(r == VK_SUCCESS, "graphics pipeline 2 = %d", r);
+   }
 
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
@@ -565,6 +574,7 @@ scene_destroy(struct scene *s)
    DeviceWaitIdle(dev);
    if (s->pool) DestroyCommandPool(dev, s->pool, NULL);
    if (s->pipe) DestroyPipeline(dev, s->pipe, NULL);
+   if (s->pipe2) DestroyPipeline(dev, s->pipe2, NULL);
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
    if (s->rp) DestroyRenderPass(dev, s->rp, NULL);
    if (s->rp2) DestroyRenderPass(dev, s->rp2, NULL);
@@ -904,6 +914,128 @@ test_many(void)
    if (ok && !g_dyn) ok = report("many_draws", &s, 8192.0, 1.0, 1);
    g_dyn = 0;
    free(rot);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+/* ---- dxvk_frame: a DXVK-shaped frame, the CPU cost of the driver per draw / per submit (host microbenchmark, fake backend) ----
+ * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of a set of its own (DXVK rewrites
+ * its UBO/texture sets every few draws), per 4 draws a pipeline switch (two pipelines), per 8 draws cull/front-face/depth-bias/
+ * blend-constant/viewport/scissor changes, per 16 draws a vertex-buffer + index-buffer rebind; indexed draws. One QueueSubmit per frame.
+ * MALI_DXVK_DRAWS (3000), MALI_DXVK_REPS (200). Prints ns_per_draw (record+submit), record_ns_per_draw, submit_ns_per_draw, submit_ns. */
+static int
+test_dxvk_frame(void)
+{
+   long n_l = 3000, nrep_l = 200;
+   const char *ev[2] = {getenv("MALI_DXVK_DRAWS"), getenv("MALI_DXVK_REPS")};
+   long *dst[2] = {&n_l, &nrep_l};
+   for (int i = 0; i < 2; i++) {   /* checked conversion: a zero/negative/non-numeric count would divide by zero in the report yet print ok:true */
+      char *end = NULL;
+      if (!ev[i]) continue;
+      long v = strtol(ev[i], &end, 10);
+      if (end == ev[i] || *end || v <= 0 || v > 10000000) { printf("MALI_DXVK_%s must be a positive integer (got '%s')\n", i ? "REPS" : "DRAWS", ev[i]); return 0; }
+      *dst[i] = v;
+   }
+   const int n = (int)n_l, nrep = (int)nrep_l;
+   g_dxvk = 1;
+   struct scene s = {.mode = MODE_UBO};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) { g_dxvk = 0; return 0; }
+   /* one set per draw: each is written once and bound once per command buffer (rewriting a set that the recording cb already bound is invalid);
+    * the previous frame has completed (fence) before its sets are written again */
+   VkDescriptorPool dxpool = VK_NULL_HANDLE;
+   VkDescriptorSet *dxsets = calloc((size_t)n, sizeof *dxsets);
+   if (!dxsets) { printf("out of memory for %d descriptor sets\n", n); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
+   {
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (uint32_t)n};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = (uint32_t)n, .poolSizeCount = 1, .pPoolSizes = &ps};
+      VkDescriptorSetLayout *ls = malloc((size_t)n * sizeof *ls);
+      if (!ls) { printf("out of memory for %d set layouts\n", n); free(dxsets); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
+      for (int i = 0; i < n; i++) ls[i] = s.dsl;
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = (uint32_t)n, .pSetLayouts = ls};
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dxpool) == VK_SUCCESS, "dx pool");
+      dai.descriptorPool = dxpool;
+      CHECK(AllocateDescriptorSets(dev, &dai, dxsets) == VK_SUCCESS, "dx sets");
+      free(ls);
+   }
+   alloc_stats_start();
+   double t_rec = 0, t_sub = 0, t_all = 0;
+   int ok = 1;
+   for (int rep = -5; ok && rep < nrep; rep++) {   /* 5 warm-up frames */
+      double t0 = now_us(), tr;
+      VkCommandBuffer cb;
+      VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+      CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+      VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+      VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+      VkRect2D sc = {{0, 0}, {W, H}};
+      VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+      VkDeviceSize offs[2] = {0, 0};
+      const float bc[4] = {0.1f, 0.2f, 0.3f, 0.4f};
+      int d = 0;
+      static const int split[3] = {60, 30, 10};
+      for (int pass = 0; pass < 3; pass++) {
+         int cnt = pass == 2 ? n - d : n * split[pass] / 100;
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                                     .renderArea = {{0, 0}, {W, H}}, .clearValueCount = s.depth ? 2 : 1, .pClearValues = cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+         CmdSetViewport(cb, 0, 1, &vp);
+         CmdSetScissor(cb, 0, 1, &sc);
+         CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+         CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+         for (int i = 0; i < cnt; i++, d++) {
+            if ((d & 3) == 0) CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (d & 4) ? s.pipe2 : s.pipe);
+            if ((d & 7) == 0) {
+               CmdSetCullMode(cb, (d & 8) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+               CmdSetFrontFace(cb, (d & 16) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+               CmdSetDepthBias(cb, (float)((d >> 3) & 3), 0.0f, 1.0f);   /* d is a multiple of 8 here: the update index d >> 3 is what changes */
+               CmdSetBlendConstants(cb, bc);
+               vp.x = (float)((d >> 3) & 1);
+               sc.offset.x = (d >> 3) & 1;
+               CmdSetViewport(cb, 0, 1, &vp);
+               CmdSetScissor(cb, 0, 1, &sc);
+            }
+            if ((d & 15) == 0) {
+               offs[0] = (d & 16) ? 16 : 0;
+               CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+               CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+            }
+            VkDescriptorBufferInfo bi2 = {s.ubo[d % 3], 0, 16};
+            VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dxsets[d], .dstBinding = 0,
+                                      .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
+            UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &dxsets[d], 0, NULL);
+            float pc[4] = {1, 0, 0, (float)(d & 7)};
+            CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
+            CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
+         }
+         CmdEndRenderPass(cb);
+      }
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      tr = now_us();
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      VkResult r = QueueSubmit(queue, 1, &si, f);
+      double ts = now_us();
+      CHECK(r == VK_SUCCESS, "submit = %d", r);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+      ResetFences(dev, 1, &f);
+      FreeCommandBuffers(dev, s.pool, 1, &cb);
+      if (rep >= 0) { t_rec += tr - t0; t_sub += ts - tr; t_all += ts - t0; }
+   }
+   printf("{\"test\":\"dxvk_frame\",\"draws\":%d,\"passes\":3,\"frames\":%d,\"ns_per_draw\":%.1f,\"record_ns_per_draw\":%.1f,\"submit_ns_per_draw\":%.1f,\"submit_ns\":%.0f,\"alloc_B_per_draw\":%.0f,\"ok\":%s}\n",
+          n, nrep, t_all * 1000.0 / nrep / n, t_rec * 1000.0 / nrep / n, t_sub * 1000.0 / nrep / n, t_sub * 1000.0 / nrep,
+          (double)alloc_bytes() / (nrep + 5) / n, ok ? "true" : "false");
+   g_dxvk = 0;
+   if (dxpool) DestroyDescriptorPool(dev, dxpool, NULL);
+   free(dxsets);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -2194,6 +2326,7 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
+   if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();

@@ -10,6 +10,7 @@
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
+#include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below */
 
 /* wsi_common.c: what the device dispatch would have called; not in wsi_common.h in this tree. */
 VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
@@ -21,6 +22,8 @@ VKAPI_ATTR void VKAPI_CALL wsi_DestroySwapchainKHR(VkDevice device, VkSwapchainK
                                                   const VkAllocationCallbacks *pAllocator);
 
 #include "vk_alloc.h"
+#include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
+#include "vk_semaphore.h"  /* struct vk_semaphore -> &sem->sync */
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -307,6 +310,8 @@ mali_x11_shm_destroy(VkSwapchainKHR sc)
       return;
 #if defined(VK_USE_PLATFORM_XCB_KHR)
    xcb_shm_detach((xcb_connection_t *)st->conn, st->seg);
+   if (st->gc)
+      xcb_free_gc((xcb_connection_t *)st->conn, st->gc);   /* created per swapchain in mali_x11_shm_create */
    xcb_flush((xcb_connection_t *)st->conn);
 #endif
    if (st->addr && st->addr != MALI_SHM_FAILED)
@@ -384,6 +389,7 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
                               .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
                               .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
                               .size = size};
+   assert(stride % 4 == 0);   /* XShmPutImage takes the segment pitch in 4-byte pixels */
    fprintf(stderr, "mali_vk: x11 present: shm=1 putimage=0 (%ux%u, %u images, %zu B segment, stride %u)\n",
            w, h, chain->image_count, size, stride);
 }
@@ -444,14 +450,20 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
       clock_gettime(CLOCK_MONOTONIC, &t1);
       close(ffd);
       const long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
-      if (wr != 0)
-         fprintf(stderr, "mali_vk: wsi present: image %u submit fence wait %d, copying anyway\n", image_index, wr);
+      if (wr != 0) {
+         /* The frame's submit never completed (device lost or a fault): copying its buffer would present a
+          * partial frame as success. Fall back to wsi's own path, which reports the error. */
+         fprintf(stderr, "mali_vk: wsi present: image %u submit fence wait %d, not copying\n", image_index, wr);
+         return false;
+      }
       else if (ms >= 20)
          fprintf(stderr, "mali_vk: wsi present: image %u waited %ld ms for the submit fence\n", image_index, ms);
    }
    present_image_cpu_sync(dev, mali_image_from_handle(img->image), image_index);
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
-   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, st->width, st->height, 0, 0, st->width, st->height,
+   /* total_width is the *segment* pitch (the server reads rows of that width); src width/height are the image. */
+   const uint16_t total_w = (uint16_t)(st->stride / 4);
+   xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, total_w, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
    xcb_flush((xcb_connection_t *)st->conn);
    return true;
@@ -611,7 +623,35 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
       bool all_shm = info->swapchainCount > 0;
-      for (uint32_t i = 0; i < info->swapchainCount; i++) {
+      for (uint32_t i = 0; i < info->swapchainCount; i++)
+         if (!mali_x11_shm_find(info->pSwapchains[i])) {
+            all_shm = false;      /* not all of them are in our segment: let wsi present normally */
+            break;
+         }
+      /* The shortcut copies the image itself and returns before wsi's present, so the app's present semaphores
+       * would never be waited on: do it here, with the same CPU-wait semantics the queue submit uses
+       * (mali_queue.c:618), and only for the shortcut (the dma-buf path hands the semaphores to wsi). */
+      if (all_shm && info->waitSemaphoreCount) {
+         VK_FROM_HANDLE(vk_queue, q, queue);
+         struct mali_device *qdev = container_of(q->base.device, struct mali_device, vk);
+         const VkTimelineSemaphoreSubmitInfo *tl =
+            vk_find_struct_const(info->pNext, TIMELINE_SEMAPHORE_SUBMIT_INFO);
+         for (uint32_t i = 0; i < info->waitSemaphoreCount; i++) {
+            VK_FROM_HANDLE(vk_semaphore, sem, info->pWaitSemaphores[i]);
+            if (!sem)
+               continue;
+            const uint64_t val = (tl && tl->pWaitSemaphoreValues) ? tl->pWaitSemaphoreValues[i] : 0;
+            VkResult wr = vk_sync_wait(&qdev->vk, vk_semaphore_get_active_sync(sem), val,
+                                       VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+            if (wr != VK_SUCCESS)
+               return wr;
+            /* wsi_QueuePresentKHR would have consumed a binary semaphore; this shortcut returns before it, so reset
+             * it here or the next submit that waits on it would see a still-signalled semaphore. */
+            if (sem->type == VK_SEMAPHORE_TYPE_BINARY)
+               vk_semaphore_reset_temporary(&qdev->vk, sem);
+         }
+      }
+      for (uint32_t i = 0; all_shm && i < info->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
          const uint32_t idx = info->pImageIndices[i];
          if (sc)
@@ -630,6 +670,26 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
             sc->release_images(sc, 1, &idx);
       }
       if (all_shm) {
+         if (info->pResults)
+            for (uint32_t i = 0; i < info->swapchainCount; i++)
+               info->pResults[i] = VK_SUCCESS;   /* the caller asked for per-swapchain results */
+         /* VK_EXT_swapchain_maintenance1 present fences: wsi_common signals them at the end of the per-image GPU
+          * work (wsi_common.c:2679), which this shortcut never reaches - the frame is copied and the XShmPutImage
+          * is queued here, so signal them here too. Without it a client that waits a present fence (the pattern
+          * t_wsi_maint.c:453 checks) hangs until its timeout on the X11 shm path. */
+         const VkSwapchainPresentFenceInfoEXT *pf =
+            vk_find_struct_const(info->pNext, SWAPCHAIN_PRESENT_FENCE_INFO_EXT);
+         if (pf && pf->pFences) {
+            for (uint32_t i = 0; i < info->swapchainCount && i < pf->swapchainCount; i++) {
+               if (pf->pFences[i] == VK_NULL_HANDLE)
+                  continue;
+               VK_FROM_HANDLE(vk_fence, f, pf->pFences[i]);
+               if (f) {
+                  VkResult sr = vk_sync_signal(&dev->vk, vk_fence_get_active_sync(f), 0);
+                  (void)sr;   /* a lost device is reported by the next wait, not by present */
+               }
+            }
+         }
          if (mali_wsi_debug()) {
             static int shm_logged;
             if (!shm_logged) {

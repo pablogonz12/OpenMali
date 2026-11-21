@@ -464,8 +464,9 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
 
    /* Device-wide commit budget. kbase commits and pins every byte of a native BO at allocation time
     * (libkbase/src/bo.c:45, commit_pages = va_pages), so it is not reclaimable under pressure: without a
-    * total, a session can pin half of RAM (the heap we advertise) and take the phone into an OOM panic.
-    * Default: half the advertised heap, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. */
+    * total, a session can pin half of RAM (what the kbase backend offers as a heap) and take the phone into an OOM
+    * panic. Default: half of that, clamped to a quarter of physical RAM. MALI_VRAM_CAP_MB overrides. This value is
+    * also the heap 0 size we report, so what a client sees is what this driver commits. */
    {
       long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
       uint64_t ram = pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
@@ -480,8 +481,11 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       if (env && env[0]) {
          char *end = NULL;
          errno = 0;
+         const char *p = env;
+         while (*p == ' ' || *p == '\t')
+            p++;
          unsigned long long mb = strtoull(env, &end, 10);
-         if (end != env && *end == '\0' && errno == 0 && mb > 0 && mb <= (UINT64_MAX >> 20)) {
+         if (*p != '-' && end != env && *end == '\0' && errno == 0 && mb > 0 && mb <= (UINT64_MAX >> 20)) {
             cap = mb << 20;
             overridden = true;
          } else if (getenv("MALI_WSI_DEBUG")) {
@@ -490,15 +494,27 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
          }
       }
       pdev->mem_cap = cap;
+      /* The one heap we report is exactly the cap, not the RAM/2 the backend offers. A heap that says 5.5 GiB while
+       * mem_reserve() refuses anything above 2.75 GiB makes a client's "does my allocation fit the heap?" check pass
+       * and then vkAllocateMemory fail: that is zink's "couldn't allocate memory: heap=0 size=..." for a request the
+       * heap claimed to have (zink_bo.c: check against memoryHeaps[], then vkAllocateMemory). Reporting the cap keeps
+       * "fits the heap" and "fits the budget" one predicate, so an allocation the heap can hold is always granted
+       * (the pooled-BO purge in mem_reserve makes room for it). */
       if (getenv("MALI_WSI_DEBUG"))
-         fprintf(stderr, "mali_vk: VRAM budget: cap %llu MiB (heap %llu MiB%s, RAM %llu MiB), %s\n",
+         fprintf(stderr, "mali_vk: VRAM budget: heap 0 = cap %llu MiB (kbase heap %llu MiB, RAM %llu MiB%s), %s\n",
                  (unsigned long long)(cap >> 20), (unsigned long long)(gpu->heap_bytes >> 20),
-                 overridden ? " overridden by MALI_VRAM_CAP_MB" : "", (unsigned long long)(ram >> 20),
+                 (unsigned long long)(ram >> 20), overridden ? ", overridden by MALI_VRAM_CAP_MB" : "",
                  pdev->gpu.name);
    }
 
+   /* maxMemoryAllocationSize must not exceed the size of the largest heap we report (VkPhysicalDeviceLimits). The
+    * fixed 1 GiB default breaks that as soon as MALI_VRAM_CAP_MB or the RAM clamp puts heap 0 below 1 GiB. */
+   if (pdev->vk.properties.maxMemoryAllocationSize > pdev->mem_cap)
+      pdev->vk.properties.maxMemoryAllocationSize = pdev->mem_cap;
+
    /* One heap. Type 0 is the mandatory HOST_VISIBLE|HOST_COHERENT type; type 1 is CPU-cached for
-    * readback. Which kbase allocation flags back them is decided in M3 on hardware. */
+    * readback. Which kbase allocation flags back them is decided in M3 on hardware.
+    * The size is the commit budget mem_cap, not the RAM/2 the backend offers, so heap 0 is a size this driver commits. */
    pdev->memory = (VkPhysicalDeviceMemoryProperties){
       .memoryTypeCount = 2,
       .memoryTypes = {
@@ -512,7 +528,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
           .heapIndex = 0},
       },
       .memoryHeapCount = 1,
-      .memoryHeaps = {{.size = gpu->heap_bytes, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
+      .memoryHeaps = {{.size = pdev->mem_cap, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT}},
    };
 
    result = mali_wsi_init(pdev);
@@ -597,16 +613,23 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
 
    pMemoryProperties->memoryProperties = pdev->memory;
-   /* VK_EXT_memory_budget: one heap; the budget is the heap, usage what this process still holds allocated */
+   /* VK_EXT_memory_budget: one heap. heapUsage is what this process still holds allocated and heapBudget is the
+    * total this process may use: the extension's contract has the *client* subtract usage from the budget, so
+    * reporting `heap - used` here made budget + usage exceed the heap and made a client double-count usage
+    * (VkPhysicalDeviceMemoryBudgetPropertiesEXT refpage: heapBudget is what the process is allowed to use, and a
+    * full heap still has a nonzero budget). */
    vk_foreach_struct(stype, ext, pMemoryProperties->pNext) {
       if (stype != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
          continue;
       VkPhysicalDeviceMemoryBudgetPropertiesEXT *b = ext;
       memset(b->heapBudget, 0, sizeof b->heapBudget);
       memset(b->heapUsage, 0, sizeof b->heapUsage);
+      const uint64_t heap = pdev->memory.memoryHeaps[0].size;
       uint64_t used = p_atomic_read(&pdev->mem_used);
+      if (used > heap)
+         used = heap;
       b->heapUsage[0] = used;
-      b->heapBudget[0] = pdev->memory.memoryHeaps[0].size > used ? pdev->memory.memoryHeaps[0].size : used;
+      b->heapBudget[0] = heap;   /* total, not remaining: heapBudget - heapUsage is what is left */
    }
 }
 
@@ -635,6 +658,40 @@ mali_GetPhysicalDeviceExternalBufferProperties(
  * stat() (cheap) behind a one second cache, and report each half independently. An explicit node from the app wins:
  * DD_DRM_STANDIN / VKBRIDGE_DRM_RENDER / BL_DRM_STANDIN is reported as the render node, and as primary when no card
  * matched (gamescope refuses a device without a primary when it drives DRM, and a misc alias is all the guest has). */
+/* True when /dev/dri has a node with this rdev: the identity we report must name a node a client can open. */
+static bool
+drm_rdev_has_alias(dev_t rdev)
+{
+   /* The same directory policy as the rest of the node lookup: MALI_DRM_DIR overrides /dev/dri (tests point it at a
+    * temp dir of real chardev nodes), and by-path is only an alias table of that same directory. */
+   const char *base = getenv("MALI_DRM_DIR");
+   if (!base || !*base)
+      base = "/dev/dri";
+   char bypath[PATH_MAX];
+   snprintf(bypath, sizeof bypath, "%s/by-path", base);
+   const char *dirs[] = { base, bypath };
+   for (unsigned d = 0; d < 2; d++) {
+      DIR *dp = opendir(dirs[d]);
+      if (!dp)
+         continue;
+      struct dirent *de;
+      while ((de = readdir(dp))) {
+         if (de->d_name[0] == '.')
+            continue;
+         char path[PATH_MAX];
+         struct stat st;
+         if (snprintf(path, sizeof path, "%s/%s", dirs[d], de->d_name) >= (int)sizeof path)
+            continue;
+         if (stat(path, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == rdev) {
+            closedir(dp);
+            return true;
+         }
+      }
+      closedir(dp);
+   }
+   return false;
+}
+
 static void
 mali_drm_refresh(struct mali_physical_device *pdev)
 {
@@ -695,13 +752,29 @@ mali_drm_refresh(struct mali_physical_device *pdev)
       const char *e = getenv(envs[i]);
       struct stat st;
       dev_t standin_rdev = 0;
-      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode))
+      bool standin_is_chardev = false;   /* the app's own path resolved to a character device (not the saved rdev) */
+      if (e && *e && stat(e, &st) == 0 && S_ISCHR(st.st_mode)) {
          standin_rdev = st.st_rdev;
+         standin_is_chardev = true;
+      }
       else if (e && *e) {
          /* The app names /dev/mali0, which is not a DRM node name: take the node we actually opened instead and
           * find the /dev/dri alias with that rdev (the guest binds it into /dev/dri as renderD<minor>). */
          standin_rdev = (dev_t)pdev->gpu.node_rdev;
       }
+      /* The stand-in must be a node the app can actually see as /dev/dri: take our own rdev only when it has an
+       * alias there, otherwise the identity would name a node no client can open. One exception, and the reason
+       * this path exists: when the app names the GPU char device itself (DD_DRM_STANDIN=/dev/mali0,
+       * SessionService.kt:1044-1053) and its rdev is the node this physical device was opened on, that rdev *is*
+       * our device even with no alias (X4's guest has only /dev/dri/card0 226:0, so mali0 10:113 is all there
+       * is, and gamescope stops at "physical device has no primary node"). An unrelated node still fails the
+       * equality test and is dropped (#291: only a stand-in the app supplies is reported as a node). */
+      /* The exception needs the app's path to resolve to a char device with our node's rdev: the `else` above saved
+       * pdev->gpu.node_rdev for a path stat() cannot use as a device, and that value would otherwise match the
+       * equality test and report an identity for a node the app's named path does not provide. */
+      if (standin_rdev && !drm_rdev_has_alias(standin_rdev) &&
+          !(standin_is_chardev && standin_rdev == mali_gpu_node_rdev(&pdev->gpu)))
+         standin_rdev = 0;
       if (standin_rdev && (!node.render || !node.primary)) {
          /* Resolve through /dev/dri by rdev if the path itself is not a /dev/dri node. */
          if (!node.render)
