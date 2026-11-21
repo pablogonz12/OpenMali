@@ -87,6 +87,27 @@ mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct ma
    return 0;
 }
 
+bool
+mali_image_afbc_apply(unsigned arch, const VkImageCreateInfo *ci, bool enabled, struct mali_image_layout *lay)
+{
+   if (!enabled || lay->nplanes != 1 || lay->d.tiled) return false;
+   const struct mali_afbc_image_info info = {
+      .arch = arch, .tiling = (unsigned)ci->tiling, .image_type = (unsigned)ci->imageType, .samples = (unsigned)ci->samples,
+      .usage = ci->usage, .flags = ci->flags, .format = (unsigned)ci->format, .width = ci->extent.width, .height = ci->extent.height,
+      .afbc_env = true,
+   };
+   unsigned bpp = 0;
+   if (mali_afbc_image_eligible(&info, &bpp) != MALI_AFBC_OK) return false;
+   struct mali_afbc_image_layout al;
+   if (mali_afbc_image_layout(arch, MALI_AFBC_SB_16x16, bpp, ci->extent.width, ci->extent.height, ci->mipLevels, ci->arrayLayers, &al))
+      return false;
+   lay->afbc = true;
+   lay->afbc_lay = al;
+   if (al.size > lay->size) lay->size = al.size;
+   if (al.base_align > lay->alignment) lay->alignment = al.base_align;
+   return true;
+}
+
 const struct mali_plane_layout *
 mali_image_plane_for_aspect(const struct mali_image_layout *l, VkImageAspectFlags aspect)
 {
@@ -263,6 +284,15 @@ desc_from_ci(const VkImageCreateInfo *ci, struct mali_image_desc *d)
    d->tiled = mali_image_wants_tiled(ci->tiling, ci->imageType, ci->samples);
 }
 
+/* Plain (non-BC) layout of a VkImage: linear/tiled planes, plus the MALI_AFBC sizing when `afbc_on`. Host-testable entry. */
+int
+mali_image_plain_layout(unsigned arch, const VkImageCreateInfo *ci, const struct mali_image_desc *d, bool afbc_on, struct mali_image_layout *lay)
+{
+   int r = mali_image_layout_init(arch, d, lay);
+   if (!r) mali_image_afbc_apply(arch, ci, afbc_on, lay);
+   return r;
+}
+
 /* Layout of a VkImage: plain, or for a BC format the compressed region (planes overridden from the BC layout) + shadow layout. */
 static int
 image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layout *lay, struct mali_bc_layout *bc, struct mali_image_layout *sh,
@@ -280,7 +310,7 @@ image_layout(unsigned arch, const VkImageCreateInfo *ci, struct mali_image_layou
       if (ci->samples != 1 || mali_bc_layout_init(ci->format, ci->imageType, ci->extent, ci->mipLevels, ci->arrayLayers, bc) != 0)
          return -EINVAL;
    }
-   int r = mali_image_layout_init(arch, &d, lay);
+   int r = mali_image_plain_layout(arch, ci, &d, mali_afbc_enabled() && !*is_bc && !etc2, lay);
    if (r || !(*is_bc || etc2))
       return r;
    struct mali_plane_layout *p = &lay->plane[0];
