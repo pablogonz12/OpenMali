@@ -32,6 +32,12 @@
  *               texture is 0x97, so the ladder's image can be matched too.
  *   --rtt-split  with --rtt: the offscreen write and the sampling draw go into TWO vkQueueSubmits, joined by a
  *               semaphore (rules out "one submission is what makes it work").
+ *   --rtt-loadop clear|load|dontcare  the loadOp of the pass that writes the SWAPCHAIN image (the one presented and
+ *               dumped), for --rtt and for the plain --draw quad: the ladder's black window pass is loadOp DONT_CARE
+ *               ("clear=0" in the instrumented record) while our painting test used CLEAR, and that is the last
+ *               difference left. The offscreen writer of --rtt keeps CLEAR, so a black picture can only come from the
+ *               swapchain pass. `load` first CLEARs every swapchain image to magenta (0.9,0.1,0.9) in a submit of its
+ *               own, so LOAD has something to keep and a lost draw reads magenta instead of the clear colour.
  *   --rtt-blit <clear|draw>  an offscreen R8G8B8A8_UNORM image (COLOR_ATTACHMENT|TRANSFER_SRC|SAMPLED) is written by a
  *               RENDER PASS (loadOp CLEAR to (0.1,0.45,0.9,1); how=draw adds the full-screen quad too) and then copied
  *               with vkCmdBlitImage (NEAREST, same extent) into the swapchain image: the shape of gl-ladder step 1/5
@@ -518,6 +524,7 @@ main(int argc, char **argv)
    int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, blit = 0, copyimg = 0, wlfirst = 0, pressup = 0;
    int rtt = 0, rtt_split = 0, hold = 0, rttblit = 0, rttblit_split = 0;
    unsigned long long swap_usage = 0, rtt_usage = 0;
+   VkAttachmentLoadOp rtt_loadop = VK_ATTACHMENT_LOAD_OP_CLEAR;   /* --rtt-loadop: the swapchain pass' loadOp */
    /* --topology: the quad's primitive. quad.vert's 6 positions are (0,0),(1,0),(0,1),(0,1),(1,0),(1,1), whose fan and
     * strip interpretations still cover the whole quad (fan: TL,TR,BL + TL,TR,BR; strip: TL,TR,BL + BL,TR,BR), so only the
     * topology changes and the coverage stays identical. */
@@ -561,6 +568,13 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--swap-flags") && i + 1 < argc) swap_flags = (unsigned)strtoul(argv[++i], NULL, 0);
       else if (!strcmp(argv[i], "--swap-images") && i + 1 < argc) swap_images = (unsigned)strtoul(argv[++i], NULL, 0);
       else if (!strcmp(argv[i], "--rtt-usage") && i + 1 < argc) rtt_usage = strtoull(argv[++i], NULL, 16);
+      else if (!strcmp(argv[i], "--rtt-loadop") && i + 1 < argc) {
+         const char *t = argv[++i];
+         if (!strcmp(t, "clear")) rtt_loadop = VK_ATTACHMENT_LOAD_OP_CLEAR;
+         else if (!strcmp(t, "load")) rtt_loadop = VK_ATTACHMENT_LOAD_OP_LOAD;
+         else if (!strcmp(t, "dontcare")) rtt_loadop = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+         else { fprintf(stderr, "usage: --rtt-loadop clear|load|dontcare\n"); return 2; }
+      }
       else if (!strcmp(argv[i], "--topology") && i + 1 < argc) {
          const char *t = argv[++i];
          if (!strcmp(t, "list")) topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -591,7 +605,7 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
                             "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split] [--rtt-dyn m]] "
-                            "[--rtt-blit clear|draw [--rtt-blit-split]] [--swap-usage h] [--swap-flags n] [--swap-images n] "
+                            "[--rtt-blit clear|draw [--rtt-blit-split]] [--swap-usage h] [--swap-flags n] [--swap-images n] [--rtt-loadop clear|load|dontcare] "
                             "[--hold s] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
@@ -1048,13 +1062,15 @@ main(int argc, char **argv)
       }
       DestroyShaderModule(dev, vm, NULL);
       DestroyShaderModule(dev, fm, NULL);
-      printf("mode: %s (full-screen quad, dynamic rendering, loadOp CLEAR, STORE)\n",
+      printf("mode: %s (full-screen quad, dynamic rendering, swapchain loadOp %s, STORE)\n",
              rttblit ? "render-to-texture, then vkCmdBlitImage into the swapchain image" :
              rtt ? "render-to-texture, then a draw sampling it into the swapchain image" :
              blit ? "offscreen render + vkCmdBlitImage into the swapchain image" :
              copyimg ? "offscreen render + vkCmdCopyImage into the swapchain image" :
              textured ? "textured 2x2 magenta" : depth ? "depth-tested, D32 clear 1.0" :
-             blend ? "alpha blend over a blue clear" : "solid red");
+             blend ? "alpha blend over a blue clear" : "solid red",
+             rtt_loadop == VK_ATTACHMENT_LOAD_OP_LOAD ? "LOAD" :
+             rtt_loadop == VK_ATTACHMENT_LOAD_OP_DONT_CARE ? "DONT_CARE" : "CLEAR");
    }
 
    VkCommandPool pool;
@@ -1075,6 +1091,40 @@ main(int argc, char **argv)
    CK(CreateFence(dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &fence));
 
    const VkClearColorValue clr = {.float32 = {0.2f, 0.4f, 0.8f, 1.0f}};   /* BGRA8: 51,102,204 */
+   /* --rtt-loadop load: give the frame's LOAD something to keep. Every swapchain image is CLEARed to magenta in a submit
+    * of its own that completes before the loop, so a draw that LOADs and then paints shows its own colour everywhere while
+    * a lost draw shows magenta (not the "lost sample reads 0" black). ONE_TIME_SUBMIT: the loop resets cb itself. */
+   if (rtt_loadop == VK_ATTACHMENT_LOAD_OP_LOAD) {
+      const VkClearValue mag = {.color = {.float32 = {0.9f, 0.1f, 0.9f, 1.0f}}};
+      CK(ResetCommandBuffer(cb, 0));
+      CK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}));
+      for (uint32_t i = 0; i < ni; i++) {
+         VkImageMemoryBarrier pb = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = imgs[i], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            0, 0, NULL, 0, NULL, 1, &pb);
+         VkRenderingAttachmentInfo pra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = views[i],
+                                          .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                          .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                          .clearValue = mag};
+         VkRenderingInfo pri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
+                                .colorAttachmentCount = 1, .pColorAttachments = &pra};
+         CmdBeginRendering(cb, &pri);
+         CmdEndRendering(cb);
+      }
+      CK(EndCommandBuffer(cb));
+      CK(QueueSubmit(q, 1, &(VkSubmitInfo){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                                           .pCommandBuffers = &cb}, fence));
+      CK(WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
+      CK(ResetFences(dev, 1, &fence));
+      printf("loadop load: every swapchain image CLEARed to magenta (0.9,0.1,0.9) before the loop\n");
+   }
+
    int blitrc = 0;
    struct timespec t0 = {0, 0};
    clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -1223,7 +1273,7 @@ main(int argc, char **argv)
          VkClearValue wblack = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}};   /* a lost sample reads 0,0,0 */
          VkRenderingAttachmentInfo wra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = views[idx],
                                          .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                         .loadOp = rtt_loadop, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                          .clearValue = wblack};
          VkRenderingInfo wri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                                 .renderArea = {{0, 0}, {ext.width, ext.height}}, .layerCount = 1,
@@ -1313,7 +1363,7 @@ main(int argc, char **argv)
          VkClearValue clearv = {.color = {.float32 = {0.0f, 0.0f, blend ? 1.0f : 0.0f, 1.0f}}};
          VkRenderingAttachmentInfo ra = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = views[idx],
                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .loadOp = rtt_loadop, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                         .clearValue = clearv};
          VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dview,
                                         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
