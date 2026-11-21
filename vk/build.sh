@@ -190,8 +190,12 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_trace" "$V/tests/t_vk_trace.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_angle_seq" "$V/tests/t_angle_seq.c" -ldl
 # X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)
+# --wl-after-x11 also needs libwayland-client; without it that mode reports "skipped" and the case is skipped (HAVE_WAYLAND_CLIENT).
 rm -f "$OUT/t_vk_xcb"
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb 2>"$OBJ/t_vk_xcb.err" \
+WL_CFLAGS=; WL_LIBS=
+pkg-config --exists wayland-client 2>/dev/null && { WL_CFLAGS=$(pkg-config --cflags wayland-client); WL_LIBS=$(pkg-config --libs wayland-client); }
+[ -n "$WL_LIBS" ] && case "${CC%% *}" in *bionic*|*android*) WL_CFLAGS=; WL_LIBS= ;; esac
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" $WL_CFLAGS -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb $WL_LIBS ${WL_LIBS:+-DHAVE_WAYLAND_CLIENT=1} 2>"$OBJ/t_vk_xcb.err" \
    || { if grep -qE "xcb/xcb.h: No such file|xcb/xcb.h. file not found|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_vk_xcb.err"; then
            echo "note: t_vk_xcb not built (no xcb headers/libs for this target)"; else cat "$OBJ/t_vk_xcb.err"; exit 1; fi; }
 # WSI contract: VK_EXT_swapchain_maintenance1 (present modes/scaling at create, per-present switch, release) + DRM modifiers.
