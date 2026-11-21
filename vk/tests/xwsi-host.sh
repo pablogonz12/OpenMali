@@ -43,10 +43,10 @@ if [ "$(cat "$W/nodri3.rc")" = 77 ]; then
    grep -qE "no X11 WSI|no xcb|VK_ICD_WSI_PLATFORM_XCB|does not advertise VK_KHR_xcb_surface" "$W/nodri3.log" \
       && { echo "skip: ICD without X11 WSI"; exit 0; }   # the harness' own skip: 77 stays the fixture's verdict
    echo "FAIL: exit 77 without a 'no X11 WSI' diagnostic"; tail -5 "$W/nodri3.log"; exit 1
+fi
 [ "$(cat "$W/pids.rc")" = 0 ] && grep -q '^PASS' "$W/pids.log" \
    || { echo "FAIL: --present-ids: vkWaitForPresentKHR on the software chain"; grep -E "FAIL|WaitForPresent" "$W/pids.log" | head -3; exit 1; }
 echo "present ids: vkWaitForPresentKHR completes on the software path (was VK_TIMEOUT on every frame)"
-fi
 [ "$(cat "$W/nodri3.rc")" = 0 ] && grep -q '^PASS' "$W/nodri3.log" && ! grep -q 'SUBOPTIMAL' "$W/nodri3.log" \
    && grep -qE "present path: shm=[01] dri3=0 \(software\)" "$W/nodri3.log" \
    || { echo "FAIL: X11 software present default"; tail -5 "$W/nodri3.log"; exit 1; }

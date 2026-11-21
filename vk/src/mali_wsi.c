@@ -246,17 +246,21 @@ struct mali_wsi_id_chain {
 static struct mali_wsi_id_chain mali_wsi_id_chains[16];
 static pthread_mutex_t mali_wsi_id_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void
+/* False when every slot is taken: the caller must then fail the creation rather than run an unrecorded chain whose
+ * waits would fall through to Mesa's (CodeRabbit #335, vk/src/mali_wsi.c:258). */
+static bool
 mali_wsi_id_add(VkSwapchainKHR sc, bool sw)
 {
+   bool added = false;
    pthread_mutex_lock(&mali_wsi_id_lock);
    struct mali_wsi_id_chain *slot = NULL;
    for (unsigned i = 0; i < sizeof(mali_wsi_id_chains) / sizeof(mali_wsi_id_chains[0]); i++) {
       if (mali_wsi_id_chains[i].sc == sc) { slot = &mali_wsi_id_chains[i]; break; }
       if (!mali_wsi_id_chains[i].sc && !slot) slot = &mali_wsi_id_chains[i];
    }
-   if (slot) *slot = (struct mali_wsi_id_chain){.sc = sc, .sw = sw, .done = 0};
+   if (slot) { *slot = (struct mali_wsi_id_chain){.sc = sc, .sw = sw, .done = 0}; added = true; }
    pthread_mutex_unlock(&mali_wsi_id_lock);
+   return added;
 }
 
 static void
@@ -306,17 +310,24 @@ mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t pr
    if (mali_wsi_id_get(swapchain, &sw, &done) && sw) {
       if (present_id <= done)
          return VK_SUCCESS;   /* already on the server: the copy and the xcb_flush finished in vkQueuePresentKHR */
-      /* Not presented yet: block like wsi_WaitForPresentKHR would, and honour the timeout (0 = poll). */
-      const uint64_t step = 1ull * 1000 * 1000, end = timeout;
-      uint64_t waited = 0;
-      do {
-         struct timespec ts = {0, (long)step};
+      /* Not presented yet: block like wsi_WaitForPresentKHR would, and honour the timeout (0 = poll once).
+       * Elapsed time is measured, not assumed: nanosleep returns early on EINTR (CodeRabbit #335, :315), and
+       * UINT64_MAX means "no timeout" and must keep polling (:318). */
+      struct timespec t0, now;
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      for (;;) {
+         struct timespec ts = {0, 1000 * 1000};
          nanosleep(&ts, NULL);
-         waited += step;
          if (mali_wsi_id_get(swapchain, &sw, &done) && present_id <= done)
             return VK_SUCCESS;
-      } while (timeout != UINT64_MAX && waited < end);
-      return VK_TIMEOUT;
+         if (timeout == UINT64_MAX)
+            continue;
+         clock_gettime(CLOCK_MONOTONIC, &now);
+         const uint64_t elapsed = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000000ull +
+                                  (uint64_t)(now.tv_nsec - t0.tv_nsec);
+         if (elapsed >= timeout)
+            return VK_TIMEOUT;
+      }
    }
    return wsi_WaitForPresentKHR(device, swapchain, present_id, timeout);
 }
@@ -773,6 +784,13 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
          if (info->pResults)
             for (uint32_t i = 0; i < info->swapchainCount; i++)
                info->pResults[i] = VK_SUCCESS;   /* the caller asked for per-swapchain results */
+         /* This path returns below, before the completion update further down: the ids are complete here (copy +
+          * xcb_flush done), so record them (CodeRabbit #335, vk/src/mali_wsi.c:825). */
+         const VkPresentIdKHR *pids = vk_find_struct_const(info->pNext, PRESENT_ID_KHR);
+         if (pids && pids->pPresentIds)
+            for (uint32_t i = 0; i < info->swapchainCount && i < pids->swapchainCount; i++)
+               if (pids->pPresentIds[i])
+                  mali_wsi_id_done(info->pSwapchains[i], pids->pPresentIds[i]);
          /* VK_EXT_swapchain_maintenance1 present fences: wsi_common signals them at the end of the per-image GPU
           * work (wsi_common.c:2679), which this shortcut never reaches - the frame is copied and the XShmPutImage
           * is queued here, so signal them here too. Without it a client that waits a present fence (the pattern
@@ -896,9 +914,14 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    if (r == VK_SUCCESS) {
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       (void)chain;
-      mali_wsi_id_add(*out, wsi_dev->sw);   /* the mode this chain was created on (#335, per chain) */
-      if (wsi_dev->sw)
+      if (!mali_wsi_id_add(*out, wsi_dev->sw)) {   /* the mode this chain was created on (#335, per chain) */
+         fprintf(stderr, "mali_vk: wsi: no free present-id slot; swapchain creation refused\n");
+         wsi_DestroySwapchainKHR(device, *out, alloc);
+         *out = VK_NULL_HANDLE;
+         r = VK_ERROR_TOO_MANY_OBJECTS;
+      } else if (wsi_dev->sw) {
          mali_x11_shm_create(*out, surface, chain, ci);
+      }
    }
 
    if (mali_wsi_debug() || r != VK_SUCCESS) {
