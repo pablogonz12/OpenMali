@@ -231,4 +231,42 @@ mali_afbc_image_eligible(const struct mali_afbc_image_info *i, unsigned *bpp_out
    return MALI_AFBC_OK;
 }
 
+
+/* ---- Stage 2 (host part): whole-image layout, mip chain + array layers. Within one array layer the mip levels are
+ * packed back to back, each level start aligned to its offset_align; layers repeat at array_stride (aligned to the
+ * largest level alignment). Level extent = max(1, dim >> level). Unused until mali_image.c is wired (default off). */
+#define MALI_AFBC_MAX_LEVELS 16
+
+struct mali_afbc_image_layout {
+   uint32_t levels, layers;
+   uint64_t level_offset[MALI_AFBC_MAX_LEVELS];  /* from layer start */
+   struct mali_afbc_layout level[MALI_AFBC_MAX_LEVELS];
+   uint64_t array_stride;
+   uint64_t size;
+   uint32_t base_align;    /* required alignment of the image base address */
+};
+
+static inline int
+mali_afbc_image_layout(unsigned arch, uint64_t modifier, unsigned bpp_bits, uint32_t width, uint32_t height,
+                       uint32_t levels, uint32_t layers, struct mali_afbc_image_layout *o)
+{
+   *o = (struct mali_afbc_image_layout){0};
+   if (!levels || levels > MALI_AFBC_MAX_LEVELS || !layers || !width || !height) return -1;
+   o->levels = levels; o->layers = layers;
+   uint64_t off = 0;
+   for (uint32_t l = 0; l < levels; l++) {
+      struct mali_afbc_params p = {arch, modifier, bpp_bits, width >> l ? width >> l : 1, height >> l ? height >> l : 1, 1};
+      if (mali_afbc_layout(&p, &o->level[l])) return -1;
+      if (o->level[l].offset_align > o->base_align) o->base_align = o->level[l].offset_align;
+      off = mali_afbc_align(off, o->level[l].offset_align);
+      o->level_offset[l] = off;
+      if (o->level[l].size > UINT64_MAX - off) return -1;
+      off += o->level[l].size;
+   }
+   o->array_stride = mali_afbc_align(off, o->base_align);
+   if (o->array_stride > UINT64_MAX / layers) return -1;
+   o->size = o->array_stride * layers;
+   return 0;
+}
+
 #endif

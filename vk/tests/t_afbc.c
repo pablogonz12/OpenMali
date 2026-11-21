@@ -131,6 +131,29 @@ int main(void)
    /* An eligible image's layout is computable with the reported bpp. */
    a = L(13, MALI_AFBC_SB_16x16, bpp ? bpp : 32, e.width, e.height, 1, &rc); EQ(rc, 0);
 
+
+   /* Stage 2: whole-image layout. 64x64 RGBA8 16x16 v13, 3 levels (64,32,16): per level 16B*blocks header (128-aligned) + 1KiB*blocks.
+    * L0: 4x4=16 sb: hdr 256 B, body 16384 -> 16640. L1: 2x2=4 sb: hdr 64->128, body 4096 -> 4224. L2: 1 sb: hdr 16->128, body 1024 -> 1152. */
+   struct mali_afbc_image_layout il;
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 3, 1, &il), 0);
+   EQ(il.level[0].size, 256 + 16384); EQ(il.level[1].size, 128 + 4096); EQ(il.level[2].size, 128 + 1024);
+   EQ(il.level_offset[0], 0); EQ(il.level_offset[1], 16640); EQ(il.level_offset[2], 16640 + 4224);
+   EQ(il.base_align, 128); EQ(il.array_stride, 16640 + 4224 + 1152); EQ(il.size, il.array_stride);
+   /* Layers repeat at array_stride. */
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 3, 5, &il), 0); EQ(il.size, 5 * il.array_stride);
+   /* Level 1 of a 1x1 chain clamps to 1 pixel -> 1 superblock. Tiled: 4096 alignment propagates to base and array stride. */
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16 | MALI_AFBC_MOD_TILED, 32, 128, 128, 2, 2, &il), 0);
+   EQ(il.base_align, 4096); CHECK(il.level_offset[1] % 4096 == 0); EQ(il.array_stride % 4096, 0);
+   EQ(il.level[1].aligned_w, 128); /* 64 px aligns up to the 128 tile */
+   /* Invalid: zero/too many levels or layers, bad modifier, overflow. */
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 0, 1, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 17, 1, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 64, 64, 1, 0, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, 0, 32, 64, 64, 1, 1, &il) == -1);
+   CHECK(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 65536, 65536, 1, 1u << 30, &il) == -1);
+   /* Single level matches the plain layout. */
+   EQ(mali_afbc_image_layout(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, 1, &il), 0);
+   a = L(13, MALI_AFBC_SB_16x16, 32, 1280, 720, 1, &rc); EQ(il.size, a.size);
    printf(fails ? "t_afbc: %d FAILED\n" : "t_afbc: all ok\n", fails);
    return fails != 0;
 }
