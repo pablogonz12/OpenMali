@@ -406,7 +406,7 @@ res_compute(VkPipeline h, const struct mali_compiled **c, uint64_t *va)
 static int
 target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned level, unsigned layer, struct mali_cmd_target *out)
 {
-   if (!img->va || level >= img->lay.d.levels || img->lay.d.tiled)
+   if (!img->va || level >= img->lay.d.levels)
       return -EINVAL;
    int zs = 0;
    bool has_d = true;   /* the format has a depth plane we can attach */
@@ -438,6 +438,9 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       return -EINVAL;
    const struct mali_plane_layout *pl = mali_image_plane_for_aspect(&img->lay, want_d ? VK_IMAGE_ASPECT_DEPTH_BIT : want_s ? VK_IMAGE_ASPECT_STENCIL_BIT : aspect);
    if (!pl)
+      return -EINVAL;
+   out->tiled = img->lay.d.tiled;
+   if (out->tiled && (st_fmt || pl->bs > 4 || pl->bw != 1))   /* tiled targets: single-plane, at most 4 bytes per pixel (RGBA8-class colour, D16/D24/D32) */
       return -EINVAL;
    out->width = MAX2(img->lay.d.extent.width >> level, 1u);
    out->height = MAX2(img->lay.d.extent.height >> level, 1u);

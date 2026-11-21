@@ -776,6 +776,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    bool load = is_load_op(ca->loadOp);
+   if (t.tiled && load) {   /* the preload draw reads the image as a linear buffer */
+      unsupported(cmd, "tiled colour loadOp LOAD");
+      return;
+   }
+   f->colour.tiled = t.tiled;
+   f->colour.surface_stride = t.tiled ? t.surface_stride : f->colour.surface_stride;
    struct mali_preload_src psrc;
    memset(&psrc, 0, sizeof psrc);
    if (load) {
@@ -858,6 +864,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, "depth attachment view");
          return;
       }
+      if (t.tiled && is_load_op(da->loadOp)) {
+         unsupported(cmd, "tiled depth loadOp LOAD");
+         return;
+      }
+      f->zs.tiled = t.tiled;
       if (is_load_op(da->loadOp)) {
          if ((t.zs_format != 1 && t.zs_format != 3) || t.samples > 1) {
             unsupported(cmd, "depth loadOp LOAD (D32_SFLOAT / D16_UNORM, single-sampled only)");
@@ -1063,6 +1074,8 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    f.colour.va = t.va;
    f.colour.rt = t.rt;
    f.colour.row_stride = t.row_stride;
+   f.colour.tiled = t.tiled;
+   f.colour.surface_stride = t.tiled ? t.surface_stride : 0;
    f.colour.clear = true;
    f.colour.store = true;
    memcpy(f.colour.clear_color, c->float32, sizeof f.colour.clear_color);
