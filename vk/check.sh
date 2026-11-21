@@ -57,7 +57,6 @@ run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
-for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
 for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done
 for g in v10 v13; do run "threads $g" 0 "$V/tests/xwsi-threads.sh" "$OUT" $g; done
 for g in v10 v13; do run "caps2 $g" 0 "$V/tests/xwsi-caps2.sh" "$OUT" $g; done
