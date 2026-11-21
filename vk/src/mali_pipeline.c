@@ -388,6 +388,35 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    vk_dynamic_graphics_state_init(&p->dynamic);
    vk_dynamic_graphics_state_fill(&p->dynamic, &st);
+   if (mali_apilog_on()) {   /* THROWAWAY apilog: the create-info subset, print-once per pipeline handle */
+      char dynl[256];
+      unsigned n = 0, ndynset = 0;
+      for (unsigned bi = 0; bi < MESA_VK_DYNAMIC_GRAPHICS_STATE_ENUM_MAX; bi++)
+         if (BITSET_TEST(p->dynamic.set, bi))
+            ndynset++;
+      dynl[0] = 0;
+      if (ci->pDynamicState)
+         for (uint32_t i = 0; i < ci->pDynamicState->dynamicStateCount; i++)
+            n += snprintf(dynl + n, sizeof dynl > n ? sizeof dynl - n : 0, "%s%d", n ? "," : "",
+                          (int)ci->pDynamicState->pDynamicStates[i]);
+      fprintf(stderr, "mali_apilog: PIPE seq=%u pipe=%p renderPass=0x%llx dynamic_rendering=%d ndyn=%u dyn=[%s] "
+              "ndynstate=%u vi_bindings=0x%x vi_attrs=0x%x nattr=%u prim=%u restart=%d ms_samples=%d "
+              "raster{poly=%d cull=0x%x front=%d clamp=%d} ds{test=%d write=%d func=%d} "
+              "vpmax=%.2f,%.2f tc=%d/%d\n",
+              mali_apilog_seq(), (void *)p, (unsigned long long)ci->renderPass, ci->renderPass == VK_NULL_HANDLE,
+              ci->pDynamicState ? ci->pDynamicState->dynamicStateCount : 0, dynl,
+              ndynset,
+              st.vi ? st.vi->bindings_valid : 0, st.vi ? st.vi->attributes_valid : 0, p->gfx.nattr, p->gfx.prim,
+              (int)p->gfx.prim_restart, ci->pMultisampleState ? (int)ci->pMultisampleState->rasterizationSamples : 0,
+              st.rs ? (int)st.rs->polygon_mode : -1, st.rs ? (unsigned)st.rs->cull_mode : 0,
+              st.rs ? (int)st.rs->front_face : -1, st.rs ? (int)st.rs->depth_clamp_enable : -1,
+              st.ds ? (int)st.ds->depth.test_enable : -1, st.ds ? (int)st.ds->depth.write_enable : -1,
+              st.ds ? (int)st.ds->depth.compare_op : -1,
+              ci->pViewportState && ci->pViewportState->pViewports ? ci->pViewportState->pViewports[0].maxDepth : 0.0f,
+              ci->pViewportState && ci->pViewportState->pViewports ? ci->pViewportState->pViewports[0].minDepth : 0.0f,
+              ci->pViewportState ? (int)ci->pViewportState->viewportCount : -1,
+              ci->pViewportState ? (int)ci->pViewportState->scissorCount : -1);
+   }
    vk_free(&dev->vk.alloc, state_mem);
    vk_free(&dev->vk.alloc, all);
    *out = mali_pipeline_to_handle(p);
@@ -649,6 +678,19 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *info)
 {
+   if (mali_apilog_on()) {   /* THROWAWAY apilog: the barriers we ignore anyway (notes/apilog.md) */
+      fprintf(stderr, "mali_apilog: BARRIER seq=%u cb=%p mem=%u nbuf=%u nimg=%u\n",
+              mali_apilog_seq(), (void *)cb, info->memoryBarrierCount, info->bufferMemoryBarrierCount,
+              info->imageMemoryBarrierCount);
+      for (uint32_t i = 0; i < info->imageMemoryBarrierCount && i < 4; i++) {
+         const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
+         fprintf(stderr, "mali_apilog:   imgbar%u img=0x%llx aspect=0x%x old=%d new=%d srcStage=0x%x dstStage=0x%x srcAcc=0x%llx dstAcc=0x%llx queue=%u,%u\n",
+                 i, (unsigned long long)b->image, (unsigned)b->subresourceRange.aspectMask, (int)b->oldLayout,
+                 (int)b->newLayout, (unsigned)b->srcStageMask, (unsigned)b->dstStageMask,
+                 (unsigned long long)b->srcAccessMask, (unsigned long long)b->dstAccessMask,
+                 b->srcQueueFamilyIndex, b->dstQueueFamilyIndex);
+      }
+   }
 }
 
 /* ---- resolvers for mali_cmd.c ---- */

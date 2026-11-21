@@ -7,6 +7,7 @@
  * Everything else lives in the runtime, wsi_common and the entrypoints in mali_image.c / mali_memory.c. */
 #include "mali_private.h"
 #include "mali_image.h"
+#include "mali_cmd.h"
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
@@ -1169,6 +1170,10 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
    VK_FROM_HANDLE(vk_queue, vq, queue);
+   if (mali_apilog_on())   /* THROWAWAY apilog: frame boundary */
+      fprintf(stderr, "mali_apilog: PRESENT seq=%u present=#%llu swapchains=%u waits=%u img0=%u\n", mali_apilog_seq(),
+              (unsigned long long)n, info->swapchainCount, info->waitSemaphoreCount,
+              info->swapchainCount && info->pImageIndices ? info->pImageIndices[0] : 0);
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
    if (mali_wsi_debug()) {
       const struct mali_physical_device *qpdev = mali_device_pdev(dev);

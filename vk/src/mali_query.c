@@ -118,6 +118,9 @@ mali_CmdBeginQuery(VkCommandBuffer h, VkQueryPool pool, uint32_t q, VkQueryContr
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
       return;
    }
+   if (mali_apilog_on())   /* THROWAWAY apilog */
+      fprintf(stderr, "mali_apilog: QUERYBEGIN seq=%u cb=%p pool=%p q=%u va=0x%llx mode=%u\n", mali_apilog_seq(),
+              (void *)h, (void *)pool, q, (unsigned long long)mali_qpool_value_va(&p->q, q), MALI_OCC_MODE_COUNTER);
    mali_cmd_set_occlusion(cmd, mali_qpool_value_va(&p->q, q), MALI_OCC_MODE_COUNTER);
 }
 
@@ -130,6 +133,8 @@ mali_CmdEndQuery(VkCommandBuffer h, VkQueryPool pool, uint32_t q)
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
       return;
    }
+   if (mali_apilog_on())   /* THROWAWAY apilog */
+      fprintf(stderr, "mali_apilog: QUERYEND seq=%u cb=%p pool=%p q=%u\n", mali_apilog_seq(), (void *)h, (void *)pool, q);
    mali_cmd_set_occlusion(cmd, 0, 0);
    struct mali_op op = mali_qpool_op_end(&p->q, q);
    mali_cmd_push_ops(cmd, &op, 1);

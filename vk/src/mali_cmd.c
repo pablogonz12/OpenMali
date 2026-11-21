@@ -29,6 +29,27 @@ static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
 static bool g_hw_set;
 
+/* THROWAWAY apilog (notes/apilog.md) */
+static int g_apilog = -1;
+
+bool
+mali_apilog_on(void)
+{
+   if (g_apilog < 0)
+      g_apilog = getenv("MALI_APILOG") ? 1 : 0;
+   return g_apilog;
+}
+
+unsigned
+mali_apilog_seq(void)
+{
+   static unsigned s;
+   if (!mali_apilog_on())
+      return 0;
+   return __atomic_add_fetch(&s, 1, __ATOMIC_RELAXED);
+}
+
+
 void
 mali_cmd_set_res(const struct mali_cmd_res_ops *ops)
 {
@@ -406,6 +427,43 @@ mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
 }
 
 /* ---- draws ---- */
+/* THROWAWAY apilog (notes/apilog.md): one line for a colour/depth attachment as the app declared it, and the copy the draws print. */
+static void
+apilog_att(struct mali_cmd_buffer *cmd, unsigned i, bool depth, const VkRenderingAttachmentInfo *a)
+{
+   struct mali_image_view *iv = mali_image_view_from_handle(a->imageView);
+   struct mali_image *img = iv && iv->vk.image ? container_of(iv->vk.image, struct mali_image, vk) : NULL;
+   const unsigned vfmt = iv ? (unsigned)iv->vk.view_format : 0;
+   const unsigned ifmt = img ? (unsigned)img->vk.format : 0;
+   const unsigned mut = img ? (img->vk.create_flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) != 0 : 0;
+   const unsigned long long va = img ? (unsigned long long)img->va : 0ULL;
+   fprintf(stderr, "mali_apilog:   %s%u view=0x%llx vfmt=%d ifmt=%d mut=%d iva=0x%llx layers=%u load=%d store=%d rmode=%d rview=0x%llx\n",
+           depth ? "zs" : "col", i, (unsigned long long)a->imageView, (int)vfmt, (int)ifmt, mut, va,
+           iv ? iv->vk.base_array_layer + 1 : 0, (int)a->loadOp, (int)a->storeOp, (int)a->resolveMode,
+           (unsigned long long)a->resolveImageView);
+   if (depth) {
+      cmd->ap_ri.zs[i < 2 ? i : 1].view = (uint64_t)a->imageView;
+      cmd->ap_ri.zs[i < 2 ? i : 1].view_fmt = vfmt;
+      cmd->ap_ri.zs[i < 2 ? i : 1].img_fmt = ifmt;
+      cmd->ap_ri.zs[i < 2 ? i : 1].mutable_fmt = mut;
+      cmd->ap_ri.zs[i < 2 ? i : 1].load = (unsigned)a->loadOp;
+      cmd->ap_ri.zs[i < 2 ? i : 1].store = (unsigned)a->storeOp;
+      cmd->ap_ri.zs[i < 2 ? i : 1].resolve_mode = (unsigned)a->resolveMode;
+      cmd->ap_ri.zs[i < 2 ? i : 1].resolve_view = (uint64_t)a->resolveImageView;
+      cmd->ap_ri.zs[i < 2 ? i : 1].img_va_lo = (unsigned)(va & 0xffffffffu);
+   } else if (i < 4) {
+      cmd->ap_ri.col[i].view = (uint64_t)a->imageView;
+      cmd->ap_ri.col[i].view_fmt = vfmt;
+      cmd->ap_ri.col[i].img_fmt = ifmt;
+      cmd->ap_ri.col[i].mutable_fmt = mut;
+      cmd->ap_ri.col[i].load = (unsigned)a->loadOp;
+      cmd->ap_ri.col[i].store = (unsigned)a->storeOp;
+      cmd->ap_ri.col[i].resolve_mode = (unsigned)a->resolveMode;
+      cmd->ap_ri.col[i].resolve_view = (uint64_t)a->resolveImageView;
+      cmd->ap_ri.col[i].img_va_lo = (unsigned)(va & 0xffffffffu);
+   }
+}
+
 static bool
 snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
 {
@@ -464,6 +522,50 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
    }
    if (!pv)
       m = MALI_D_ALL;
+   if (mali_apilog_on()) {   /* THROWAWAY apilog (notes/apilog.md): the draw's structural state, step 1 vs step 5 */
+      char setlist[640];
+      unsigned n = 0;
+      setlist[0] = 0;
+      for (unsigned i = 0; i < MESA_VK_DYNAMIC_GRAPHICS_STATE_ENUM_MAX; i++)
+         if (BITSET_TEST(dyn->set, i))
+            n += snprintf(setlist + n, sizeof setlist > n ? sizeof setlist - n : 0, "%s%u", n ? "," : "", i);
+      const struct vk_viewport_state *vp = &dyn->vp;
+      fprintf(stderr, "mali_apilog: DRAW seq=%u cb=%p ndraws=%u count=%u inst=%u first=%u fi=%u indexed=%d dirty=0x%x "
+              "ri{flags=0x%x ncol=%u viewMask=0x%x layers=%u area=%d,%d,%d,%d} "
+              "col0{v=0x%llx vfmt=%d ifmt=%d mut=%d iva_lo=0x%x load=%d store=%d} "
+              "zs{v=0x%llx vfmt=%d ifmt=%d load=%d store=%d} "
+              "frame{colva=0x%llx row=%u rtf=%s store=%d clear=%d samples=%u w=%u h=%u haszs=%d hasst=%d} "
+              "dyn{set=[%s] vp_n=%u vp0=%.1f,%.1f,%.1f,%.1f,%.3f,%.3f sc_n=%u sc0=%d,%d,%u,%u "
+              "cwe_n=%u cwe0=0x%x att=%u wm=0x%x discard=%d mask=0x%x bounds=%.2f,%.2f poly=%d clip=%d clamp=%d "
+              "cull=0x%x front=%d lp=%d dt=%d dw=%d df=%d} occ{va=0x%llx mode=%u} "
+              "vbs{va0=0x%llx st0=%u va1=0x%llx st1=%u} sets=%u ndynb=%u\n",
+              mali_apilog_seq(), (void *)cmd, fr->ndraws, count, inst, first, first_inst, 0, m,
+              cmd->ap_ri.flags, cmd->ap_ri.ncol, cmd->ap_ri.view_mask, cmd->ap_ri.layer_count,
+              cmd->ap_ri.area[0], cmd->ap_ri.area[1], cmd->ap_ri.area[2], cmd->ap_ri.area[3],
+              (unsigned long long)cmd->ap_ri.col[0].view, (int)cmd->ap_ri.col[0].view_fmt,
+              (int)cmd->ap_ri.col[0].img_fmt, (int)cmd->ap_ri.col[0].mutable_fmt, cmd->ap_ri.col[0].img_va_lo,
+              (int)cmd->ap_ri.col[0].load, (int)cmd->ap_ri.col[0].store,
+              (unsigned long long)cmd->ap_ri.zs[0].view, (int)cmd->ap_ri.zs[0].view_fmt, (int)cmd->ap_ri.zs[0].img_fmt,
+              (int)cmd->ap_ri.zs[0].load, (int)cmd->ap_ri.zs[0].store,
+              (unsigned long long)fr->colour.va, fr->colour.row_stride, fr->colour.rt ? "yes" : "R8G8B8A8_UNORM",
+              (int)fr->colour.store, (int)fr->colour.clear, fr->samples, fr->width, fr->height,
+              (int)fr->has_zs, (int)fr->has_st,
+              setlist, vp->viewport_count,
+              vp->viewport_count ? vp->viewports[0].x : 0.0f, vp->viewport_count ? vp->viewports[0].y : 0.0f,
+              vp->viewport_count ? vp->viewports[0].width : 0.0f, vp->viewport_count ? vp->viewports[0].height : 0.0f,
+              vp->viewport_count ? vp->viewports[0].minDepth : 0.0f, vp->viewport_count ? vp->viewports[0].maxDepth : 0.0f,
+              vp->scissor_count,
+              vp->scissor_count ? vp->scissors[0].offset.x : 0, vp->scissor_count ? vp->scissors[0].offset.y : 0,
+              vp->scissor_count ? vp->scissors[0].extent.width : 0, vp->scissor_count ? vp->scissors[0].extent.height : 0,
+              dyn->cb.color_write_enables, dyn->cb.attachments[0].write_mask, dyn->cb.attachment_count,
+              dyn->cb.attachments[0].write_mask, (int)dyn->rs.rasterizer_discard_enable, dyn->ms.sample_mask,
+              dyn->ds.depth.bounds_test.min, dyn->ds.depth.bounds_test.max, (int)dyn->rs.polygon_mode,
+              (int)dyn->rs.depth_clip_enable, (int)dyn->rs.depth_clamp_enable,
+              (unsigned)dyn->rs.cull_mode, (int)dyn->rs.front_face, (int)fr->provoking_last,
+              (int)dyn->ds.depth.test_enable, (int)dyn->ds.depth.write_enable, (int)dyn->ds.depth.compare_op,
+              (unsigned long long)cmd->occ_va, cmd->occ_mode,
+              (unsigned long long)cmd->vb_va[0], cmd->vb_stride[0], (unsigned long long)cmd->vb_va[1], cmd->vb_stride[1], cmd->nsets, cmd->ndyn);
+   }
    *d = (struct mali_rec){
       .dirty = m,
       .pipe = pv ? pv->pipe : NULL, .bind = pv ? pv->bind : NULL, .push = pv ? pv->push : NULL, .dyn = pv ? pv->dyn : NULL,
@@ -1063,6 +1165,30 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
    CMD(h);
    struct mali_frame *f = &cmd->cur;
+   if (mali_apilog_on()) {   /* THROWAWAY apilog: the structure as the app declared it, before any conversion */
+      memset(&cmd->ap_ri, 0, sizeof cmd->ap_ri);
+      cmd->ap_ri.ncol = ri->colorAttachmentCount;
+      cmd->ap_ri.flags = (unsigned)ri->flags;
+      cmd->ap_ri.view_mask = (unsigned)ri->viewMask;
+      cmd->ap_ri.layer_count = ri->layerCount;
+      cmd->ap_ri.area[0] = ri->renderArea.offset.x;
+      cmd->ap_ri.area[1] = ri->renderArea.offset.y;
+      cmd->ap_ri.area[2] = (int)ri->renderArea.extent.width;
+      cmd->ap_ri.area[3] = (int)ri->renderArea.extent.height;
+      fprintf(stderr, "mali_apilog: BEGINREND seq=%u cb=%p in_render=%d flags=0x%x susp=%d resum=%d contents=%d ncol=%u "
+              "viewMask=0x%x layers=%u area=%d,%d,%d,%d\n",
+              mali_apilog_seq(), (void *)h, (int)cmd->in_render, (unsigned)ri->flags,
+              (ri->flags & VK_RENDERING_SUSPENDING_BIT) != 0, (ri->flags & VK_RENDERING_RESUMING_BIT) != 0,
+              (ri->flags & VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT) != 0,
+              ri->colorAttachmentCount, (unsigned)ri->viewMask, ri->layerCount,
+              cmd->ap_ri.area[0], cmd->ap_ri.area[1], cmd->ap_ri.area[2], cmd->ap_ri.area[3]);
+      for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 4; i++)
+         apilog_att(cmd, i, false, &ri->pColorAttachments[i]);
+      if (ri->pDepthAttachment)
+         apilog_att(cmd, 0, true, ri->pDepthAttachment);
+      if (ri->pStencilAttachment)
+         apilog_att(cmd, 1, true, ri->pStencilAttachment);
+   }
    struct mali_cmd_target t;
    memset(&t, 0, sizeof t);
 
@@ -1298,6 +1424,10 @@ VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
    CMD(h);
+   if (mali_apilog_on())   /* THROWAWAY apilog */
+      fprintf(stderr, "mali_apilog: ENDREND seq=%u cb=%p in_render=%d ndraws=%u nframes=%u colva=0x%llx store=%d haszs=%d\n",
+              mali_apilog_seq(), (void *)h, (int)cmd->in_render, cmd->cur.ndraws, cmd->nframes,
+              (unsigned long long)cmd->cur.colour.va, (int)cmd->cur.colour.store, (int)cmd->cur.has_zs);
    if (!cmd->in_render) {
       unsupported(cmd, "EndRendering without a valid Begin");
       mali_frame_finish(&cmd->cur);
@@ -1373,6 +1503,11 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
 {
    CMD(h);
    struct mali_frame *f = &cmd->cur;
+   if (mali_apilog_on())   /* THROWAWAY apilog: a clear inside the pass (a post-draw overwrite would show up here) */
+      fprintf(stderr, "mali_apilog: CLEARATT seq=%u cb=%p in_render=%d na=%u nr=%u ndraws=%u area=%d,%d,%d,%d r0=%d,%d,%ux%u\n",
+              mali_apilog_seq(), (void *)h, (int)cmd->in_render, na, nr, f->ndraws, f->area[0], f->area[1], f->area[2], f->area[3],
+              nr ? rects[0].rect.offset.x : -1, nr ? rects[0].rect.offset.y : -1,
+              nr ? rects[0].rect.extent.width : 0, nr ? rects[0].rect.extent.height : 0);
    if (!cmd->in_render) {
       unsupported(cmd, "CmdClearAttachments outside a rendering");
       return;

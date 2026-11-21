@@ -691,6 +691,15 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    double p1 = prof_now();
    if (submit->command_buffer_count && be->host_sync)
       be->host_sync(dev->kdev);
+   if (mali_apilog_on()) {   /* THROWAWAY apilog: submission grouping/order */
+      char cbs[512];
+      unsigned n = 0;
+      cbs[0] = 0;
+      for (uint32_t i = 0; i < submit->command_buffer_count && n < sizeof cbs; i++)
+         n += snprintf(cbs + n, sizeof cbs - n, "%s%p", n ? "," : "", (void *)submit->command_buffers[i]);
+      fprintf(stderr, "mali_apilog: SUBMIT seq=%u ncbs=%u cbs=[%s] waits=%u signals=%u\n", mali_apilog_seq(),
+              submit->command_buffer_count, cbs, submit->wait_count, submit->signal_count);
+   }
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
