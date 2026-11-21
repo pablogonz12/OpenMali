@@ -38,6 +38,7 @@ static int g_discard;   /* 1: rasterizerDiscardEnable with both stages, 2: verte
 static int g_clear_u;   /* clear the colour attachment to the integer value (200,100,50,7) instead of float zeros */
 static int g_load;   /* two-pass LOAD test: store depth/stencil, and build s->rp2 = the same pass with loadOp LOAD */
 static int g_fail, g_fake, g_loop = 1, g_reset;
+static int g_vary;   /* vary16-own: 0 = the case's own shaders, 2/4 = the vec2/vec4 varying pair of --only vary */
 /* R4 fixed-function state of the next scene_create()/scene_draw() (all zero = the old tests' state) */
 static struct {
    int on;                      /* use fxz.vert (z = rot.w) and the fields below */
@@ -218,6 +219,8 @@ scene_create(struct scene *s, int depth)
    s->depth = depth;
    const char *vsn = g_inst ? "inst_attr.vert.spv" : g_sparse ? "rot_sparse.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
+   if (g_vary == 4) { vsn = "vary4.vert.spv"; fsn = "vary4.frag.spv"; }
+   if (g_vary == 2) { vsn = "vary2.vert.spv"; fsn = "vary2.frag.spv"; }
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
    if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) fsn = "ubo.frag.spv";
    if (mode == MODE_SETS8) fsn = "sets8.frag.spv";
@@ -811,6 +814,47 @@ report(const char *name, struct scene *s, double expect, double tolpct, int exac
    }
    printf("{\"test\":\"%s\",\"coverage\":%u,\"expect\":%.0f,\"err_pct\":%.3f,\"ok\":true}\n", name, cov, expect, err);
    return 1;
+}
+
+/* vary16-own (notes/vary16.md "Own Vulkan test"): one triangle drawn twice by our own Vulkan test — our SPIR-V reaches
+ * our compiler with no zink and no GLSL linker in between. The twin pair differs only in the varying: vary2.vert writes
+ * a vec2 (8 bytes), vary4.vert a vec4 (16). Each draw is read back (mean of every RGB channel, the centre pixel and the
+ * covered-pixel count), so "paints" is a number, and the packed constants keep the two means apart. */
+static int
+test_vary(void)
+{
+   static const char *names[2] = {"vary2", "vary4"};
+   static const int ncomp[2] = {2, 4};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   int ok = 1;
+   for (int k = 0; k < 2; k++) {
+      struct scene s = {.mode = MODE_TRI};
+      float rot[1][4] = {{1, 0, 0, 0}};
+      g_vary = ncomp[k];
+      if (!scene_create(&s, 0)) { g_vary = 0; return 0; }
+      if (!scene_draw(&s, 1, rot, f)) { g_vary = 0; return 0; }
+      if (g_fake) {
+         printf("{\"test\":\"%s\",\"varying_B\":%d,\"skipped\":\"fake backend\",\"ok\":true}\n", names[k], ncomp[k] * 4);
+      } else {
+         double mr = 0, mg = 0, mb = 0;
+         for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+               const uint8_t *p = s.px + y * s.pitch + x * 4;
+               mr += p[0], mg += p[1], mb += p[2];
+            }
+         mr /= (double)W * H, mg /= (double)W * H, mb /= (double)W * H;
+         const uint8_t *c = s.px + (H / 2) * s.pitch + (W / 2) * 4;
+         printf("{\"test\":\"%s\",\"varying_B\":%d,\"mean\":\"%.1f/255\",\"rgb\":\"%.1f,%.1f,%.1f\","
+                "\"centre\":\"%u,%u,%u,%u\",\"coverage\":%u,\"ok\":true}\n",
+                names[k], ncomp[k] * 4, (mr + mg + mb) / 3.0, mr, mg, mb, c[0], c[1], c[2], c[3], count_cov(&s));
+      }
+      scene_destroy(&s);
+   }
+   g_vary = 0;
+   DestroyFence(dev, f, NULL);
+   return ok;
 }
 
 static const float ID[4] = {1, 0, 0, 0};
@@ -2229,6 +2273,7 @@ main(int argc, char **argv)
 
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
+   if (ok && CASE_ON("vary")) ok &= test_vary();   /* vary16-own: the vec2 twin and the vec4 draw, one process */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
