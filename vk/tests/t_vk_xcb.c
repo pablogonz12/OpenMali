@@ -529,6 +529,7 @@ main(int argc, char **argv)
     * strip interpretations still cover the whole quad (fan: TL,TR,BL + TL,TR,BR; strip: TL,TR,BL + BL,TR,BR), so only the
     * topology changes and the coverage stays identical. */
    VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   int verts = 6;   /* --verts: how many vertices the quad draws (4 = the ladder's blit fan) */
    unsigned swap_flags = 0, swap_images = 0;
    unsigned long long rtt_dyn = 0;
    const char *rtt_how = "clear";
@@ -575,6 +576,10 @@ main(int argc, char **argv)
          else if (!strcmp(t, "dontcare")) rtt_loadop = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
          else { fprintf(stderr, "usage: --rtt-loadop clear|load|dontcare\n"); return 2; }
       }
+      else if (!strcmp(argv[i], "--verts") && i + 1 < argc) {
+         verts = atoi(argv[++i]);
+         if (verts < 3 || verts > 6) { fprintf(stderr, "usage: --verts 3..6\n"); return 2; }
+      }
       else if (!strcmp(argv[i], "--topology") && i + 1 < argc) {
          const char *t = argv[++i];
          if (!strcmp(t, "list")) topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -605,7 +610,7 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
       else { fprintf(stderr, "usage: t_vk_xcb [--direct icd.so] [--size WxH] [--pixels] "
                             "[--draw|--textured|--depth|--blend|--blit|--copy] [--rtt clear|draw|cmdclear [--rtt-split] [--rtt-dyn m]] "
-                            "[--rtt-blit clear|draw [--rtt-blit-split]] [--swap-usage h] [--swap-flags n] [--swap-images n] [--rtt-loadop clear|load|dontcare] "
+                            "[--rtt-blit clear|draw [--rtt-blit-split]] [--swap-usage h] [--swap-flags n] [--swap-images n] [--rtt-loadop clear|load|dontcare] [--verts 3..6] "
                             "[--hold s] [--wl-after-x11] [--pres-support] [--spv-dir d] [--expect-name s]\n"); return 2; }
    }
 
@@ -1173,7 +1178,7 @@ main(int argc, char **argv)
             CmdSetViewport(cb, 0, 1, &rvp);
             CmdSetScissor(cb, 0, 1, &rsr);
             CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
-            CmdDraw(cb, 6, 1, 0, 0);
+            CmdDraw(cb, (uint32_t)verts, 1, 0, 0);
          }
          CmdEndRendering(cb);
          /* the render-pass write -> a transfer read */
@@ -1243,7 +1248,7 @@ main(int argc, char **argv)
                CmdSetScissor(cb, 0, 1, &rsr);
                if (rtt_dyn) dyn_set_all(dev, GetDeviceProcAddr, cb, rtt_dyn, depth ? VK_TRUE : VK_FALSE, &rvp, &rsr);
                CmdPushConstants(cb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
-               CmdDraw(cb, 6, 1, 0, 0);
+               CmdDraw(cb, (uint32_t)verts, 1, 0, 0);
             }
             CmdEndRendering(cb);
          }
@@ -1287,7 +1292,7 @@ main(int argc, char **argv)
          CmdSetScissor(pcb, 0, 1, &wsr);
          if (rtt_dyn) dyn_set_all(dev, GetDeviceProcAddr, pcb, rtt_dyn, depth ? VK_TRUE : VK_FALSE, &wvp, &wsr);
          CmdPushConstants(pcb, play, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, (const float [4]){1.0f, 1.0f, 0.0f, 0.0f});
-         CmdDraw(pcb, 6, 1, 0, 0);
+         CmdDraw(pcb, (uint32_t)verts, 1, 0, 0);
          CmdEndRendering(pcb);
          b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
          b.dstAccessMask = 0;
