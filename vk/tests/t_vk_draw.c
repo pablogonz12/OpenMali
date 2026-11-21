@@ -114,7 +114,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -1186,6 +1186,13 @@ test_blitreplay(void)
             g_fail = 1; ok = 0; goto row_out;
          }
          if (ResetFences(dev, 1, &f) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         if (sub == 1) {
+            /* the readback memory is only asked to be HOST_VISIBLE (br_img's memtype): invalidate the mapping before the
+             * host reads it, which the spec requires unless the type is HOST_COHERENT (the call is a no-op there) */
+            VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = r.dstm,
+               .offset = 0, .size = VK_WHOLE_SIZE};
+            InvalidateMappedMemoryRanges(dev, 1, &mmr);
+         }
       }
       if (g_fake) {
          printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n",
