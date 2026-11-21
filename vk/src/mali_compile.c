@@ -779,11 +779,49 @@ mali_spirv_has_xfb(const uint32_t *w, uint32_t nwords)
    return 0;
 }
 
+/* THROWAWAY blit bisect: MALI_VS_OVERRIDE / MALI_FS_OVERRIDE replace that stage's SPIR-V with a file's words, so the
+ * ladder's own draw (count, target, pipeline layout, descriptors) runs with one shader swapped. Nothing else changes:
+ * the pipeline layout and its descriptor sets stay bound (our override shaders declare no descriptors, so the sets are
+ * simply unread — nothing dangles, the VAs and the SRT entries are still the app's and still valid). */
+static int
+mali_override_spirv(const char *path, uint32_t **words, size_t *nwords)
+{
+   FILE *f = fopen(path, "rb");
+   if (!f) return -1;
+   if (fseek(f, 0, SEEK_END) || ftell(f) <= 0) { fclose(f); return -1; }
+   long sz = ftell(f);
+   rewind(f);
+   uint32_t *w = malloc((size_t)sz);
+   if (!w || fread(w, 1, (size_t)sz, f) != (size_t)sz) { free(w); fclose(f); return -1; }
+   fclose(f);
+   *words = w;
+   *nwords = (size_t)sz / 4;
+   return 0;
+}
+
 int
 mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
 {
    if (!o || !out || !o->spirv || !o->spirv_words)
       return fail(err, errsz, "bad arguments");
+   {
+      const char *ov = o->stage == MALI_STAGE_VERTEX ? getenv("MALI_VS_OVERRIDE")
+                     : o->stage == MALI_STAGE_FRAGMENT ? getenv("MALI_FS_OVERRIDE") : NULL;
+      static uint32_t *ovw[2];
+      static size_t ovn[2];
+      const int k = o->stage == MALI_STAGE_VERTEX ? 0 : 1;
+      if (ov && *ov) {
+         if (!ovn[k] && mali_override_spirv(ov, &ovw[k], &ovn[k]) != 0)
+            return fail(err, errsz, "MALI_*_OVERRIDE: cannot read the override SPIR-V");
+         if (ovn[k]) {
+            struct mali_compile_opts *mutable = (struct mali_compile_opts *)o;
+            fprintf(stderr, "mali_override: %s stage=%d -> %s (%zu words)\n", k ? "FS" : "VS", (int)o->stage, ov, ovn[k]);
+            mutable->spirv = ovw[k];
+            mutable->spirv_words = ovn[k];
+            mutable->entry = NULL;
+         }
+      }
+   }
    /* spirv_to_nir dereferences a NULL builder option on a bad header: check it ourselves */
    if (o->spirv_words < 5 || o->spirv[0] != 0x07230203u)
       return fail(err, errsz, "not a SPIR-V module (bad magic or too short)");
