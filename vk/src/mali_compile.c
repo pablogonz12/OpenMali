@@ -9,6 +9,7 @@
 #include "panfrost/compiler/pan_nir.h"
 #include "panfrost/model/pan_model.h"
 #include "util/blake3/blake3.h"
+#include "nir_xfb_info.h"
 #include "nir.h"
 #include "nir_builder.h"
 
@@ -33,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 26 /* 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 32 /* 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -447,6 +448,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       return -1;
    }
 
+   /* VK_EXT_transform_feedback: the SPIR-V sets has_transform_feedback_varyings and the xfb_* decorations; the stores
+    * are created later, once IO is lowered to store_output intrinsics (below, where panfrost does the same:
+    * src/gallium/drivers/panfrost/pan_shader.c:124-136 runs nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores). */
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
    if (stage == MESA_SHADER_COMPUTE) {
@@ -536,6 +540,75 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size,
                nir_lower_io_use_interpolated_input_intrinsics);
       NIR_PASS(_, nir, nir_opt_constant_folding);
+      if (stage == MESA_SHADER_VERTEX && !o->xfb && nir->info.has_transform_feedback_varyings) {
+         /* The layout was built without the 32 B address area, so the stores would read bases that were never
+          * written. Refuse with a name instead of compiling the XFB semantics away silently (the #296 trap). */
+         free(out->bin); free(out->imm);
+         ralloc_free(nir);
+         return fail(err, errsz, "transform feedback varyings without a reserved push-constant area");
+      }
+      if (stage == MESA_SHADER_VERTEX && o->xfb && nir->info.has_transform_feedback_varyings) {
+         /* The lowered stores index their buffer with instance_id * num_vertices + raw_vertex_id
+          * (nir_lower_xfb_to_stores.c:44-46) and read the base with load_xfb_address. Panfrost answers those from
+          * driver sysvals (pan_cmdstream.c PAN_SYSVAL_NUM_VERTICES / PAN_SYSVAL_XFB); this driver has no sysval for
+          * either, so raw_vertex_id becomes the ordinary vertex ID and num_vertices 0, and the per-buffer base is
+          * the push-constant slot the draw fills (mali_cmd.c: the bound buffer address + offset). That is exact for
+          * instance_count == 1, and instanced XFB is refused at draw time (mali_cmd.c) rather than overlapping. */
+         /* Transform feedback: turn the declared outputs into global stores (nir_lower_xfb_to_stores.c:53 loads the
+          * per-buffer base with nir_intrinsic_load_xfb_address). No streamout job is needed: the stores go through the
+          * ordinary memory path, exactly like an SSBO store. */
+         static const nir_lower_xfb_to_stores_options xfb_opts = {.address_format = nir_address_format_64bit_global,
+                                                           /* the same vertex shader still rasterizes: a captured output the
+                                                            * rasterizer or the fragment shader reads must stay written */
+                                                           .keep_outputs = true};
+         nir_shader_gather_xfb_info(nir);
+         NIR_PASS(_, nir, nir_opt_constant_folding);
+         NIR_PASS(_, nir, nir_io_add_intrinsic_xfb_info);
+         NIR_PASS(_, nir, nir_lower_xfb_to_stores, &xfb_opts);
+         /* the two sysvals the lowering introduced, replaced before the backend sees them */
+         nir_foreach_block(blk, nir_shader_get_entrypoint(nir)) {
+            nir_foreach_instr_safe(ins, blk) {
+               if (ins->type != nir_instr_type_intrinsic)
+                  continue;
+               nir_intrinsic_instr *it = nir_instr_as_intrinsic(ins);
+               nir_builder b = nir_builder_at(nir_before_instr(ins));
+               nir_def *repl = NULL;
+               if (it->intrinsic == nir_intrinsic_load_raw_vertex_id)
+                  repl = nir_load_vertex_id(&b);
+               else if (it->intrinsic == nir_intrinsic_load_num_vertices)
+                  repl = nir_imm_int(&b, 0);
+               else if (it->intrinsic == nir_intrinsic_load_xfb_address) {
+                  /* The four buffer addresses sit in the push block right after the application's constants
+                   * (o->xfb_pc + k*8); mali_cmd.c fills them at draw time from the bound
+                   * VkBindTransformFeedbackBuffersEXT buffers. */
+                  const unsigned k = nir_intrinsic_base(it);
+                  /* The builder helper, like the sysval lowering above (mali_compile.c:93); the offset is src[0]
+                   * and must already include push_base, because add_push_base() has run: the emitter copies the
+                   * application's block to FAU byte push_base and this API-only area follows it. */
+                  repl = nir_load_push_constant(&b, 1, 64, nir_imm_int(&b, push_base + o->xfb_pc + k * 8));
+               }
+               if (repl)
+                  nir_def_replace(&it->def, repl);
+            }
+         }
+         /* add_push_base() already ran, so it did not see these loads: the block the emitter copies must reach the
+          * last address word, or the XFB bases never leave the draw record. */
+         pc.max_end = MAX2(pc.max_end, o->xfb_pc + 32);
+         if (getenv("MALI_TF_DBG")) {
+            unsigned nst = 0, nld = 0, nraw = 0;
+            nir_foreach_block(blk2, nir_shader_get_entrypoint(nir))
+               nir_foreach_instr(ins2, blk2) {
+                  if (ins2->type != nir_instr_type_intrinsic)
+                     continue;
+                  nir_intrinsic_instr *i2 = nir_instr_as_intrinsic(ins2);
+                  if (i2->intrinsic == nir_intrinsic_store_global) nst++;
+                  else if (i2->intrinsic == nir_intrinsic_load_push_constant) nld++;
+                  else if (i2->intrinsic == nir_intrinsic_load_xfb_address) nraw++;
+               }
+            fprintf(stderr, "mali_tf: compiled xfb %d xfb_pc %u push_base %u push_bytes %u stores %u push_loads %u raw_xfb %u\n",
+                    (int)nir->info.has_transform_feedback_varyings, o->xfb_pc, push_base, pc.max_end, nst, nld, nraw);
+         }
+      }
       pan_nir_lower_mediump_io(nir);
 
       if (stage == MESA_SHADER_VERTEX) {
@@ -686,6 +759,25 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (!out->imm) {
       free(out->bin);
       return fail(err, errsz, "out of memory");
+   }
+   return 0;
+}
+
+int
+mali_spirv_has_xfb(const uint32_t *w, uint32_t nwords)
+{
+   /* OpExecutionMode (16) <id> Xfb (11): the mode the SPIR-V spec requires on any module with XFB decorations,
+    * and the exact word spirv_to_nir.c:6110 turns into info.has_transform_feedback_varyings, so this scan and the
+    * lowering always agree. The instruction stream starts after the five header words (magic, version, generator,
+    * bound, schema); scanning from word 0 reads the magic as a 1827-word instruction and finds nothing (which is
+    * what silently disabled the whole path in 29). */
+   for (uint32_t i = 5; i + 2 < nwords;) {
+      const uint32_t wc = w[i] >> 16;
+      if (!wc)
+         break;
+      if ((w[i] & 0xffff) == 16 && w[i + 2] == 11)
+         return 1;
+      i += wc;
    }
    return 0;
 }

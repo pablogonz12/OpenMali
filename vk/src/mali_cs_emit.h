@@ -80,6 +80,11 @@ struct mali_gfx_state {
    bool logic_inert;                      /* static logicOp enabled but it cannot change the output (no colour output 0 / attachment 0 unwritable): no blend shader needed */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
+   /* VK_EXT_transform_feedback: a pipeline whose vertex shader declares XFB has a second vertex binary compiled WITHOUT
+    * the XFB lowering. A draw that is not inside a Begin/End range runs that one (mali_cmd.c), so the stores exist only
+    * while capture is active - the reason the extension can be on by default. NULL for every other pipeline. */
+   const struct mali_compiled *vs_plain;
+   uint64_t vs_plain_va;
    unsigned nattr;
    struct mali_attr attr[MALI_MAX_ATTR];
    bool depth_test, depth_write;
@@ -89,6 +94,8 @@ struct mali_gfx_state {
    unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 and the draw is likewise rewritten to an indexed point list */
    unsigned poly_prim;                    /* LINE/POINT: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
+   unsigned xfb_pc;                       /* VK_EXT_transform_feedback: push offset of the 4 u64 XFB buffer addresses */
+   bool xfb;                              /* the pipeline reserves that area (xfb_pc may legitimately be 0) */
 };
 
 /* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply

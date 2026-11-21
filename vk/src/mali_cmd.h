@@ -64,6 +64,15 @@ struct mali_cmd_buffer {
    unsigned nframes, capframes;
    struct mali_frame cur;       /* the open one */
    bool in_render;
+   /* VK_EXT_transform_feedback (stage 2): what the app bound and whether a streamout range is open. The streamout
+    * job itself does not exist yet (libkbase kbase_cs.h has no vertex-only/streamout run), so these are recorded,
+    * validated and marked written, and the draw is what still refuses (mali_compile.c names the missing lowering). */
+   struct {
+      VkBuffer buf[4];
+      VkDeviceSize off[4], size[4];
+      unsigned nbufs;
+      bool active;
+   } tf;
 
    struct mali_gfx_state gfx;
    bool have_gfx;
@@ -116,6 +125,14 @@ void mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned m
 void mali_cmd_mark_written(struct mali_cmd_buffer *cmd, struct mali_memory *mem);
 /* Same, by handle, through the resolvers (NULL-safe; a no-op where the resolver is not installed, e.g. unit tests). */
 void mali_cmd_mark_buffer_written(struct mali_cmd_buffer *cmd, VkBuffer b);
+
+/* VK_EXT_transform_feedback (stage 2): recorded and validated here; the streamout job itself is not implemented yet. */
+void mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint32_t count, const VkBuffer *buffers,
+                                             const VkDeviceSize *offsets, const VkDeviceSize *sizes);
+void mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
+                                       const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets);
+void mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
+                                     const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets);
 void mali_cmd_mark_image_written(struct mali_cmd_buffer *cmd, VkImage i);
 
 /* Install as dev->vk.command_buffer_ops (vk_common_Create/Allocate/Free/ResetCommandPool and Begin/End then work as is). */

@@ -119,6 +119,27 @@ rm -rf "$DRMR" "$DRMB" "$DRMX" "$DRMY"
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# VK_EXT_transform_feedback is ON by default (MALI_EXPERIMENTAL_TF=0 is the legacy opt-out, which also drops the UBO
+# counts back to 12/72: the two must never be mixed, see mali_physical_device.c). The extension, the feature bit, the
+# properties and the XFB lowering follow that one switch.
+for g in v11 v13; do run "vk_feat tf_default $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+for g in v11 v13; do run "vk_info $g tf opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+for g in v11 v13; do run "vk_feat tf_default $g opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
+for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
+for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
+# tf_inactive is the guard that makes default-on safe: an XFB program drawn outside Begin/End runs the pipeline's second,
+# non-XFB vertex program. The case asserts the driver's own accounting (MALI_TF_DBG names the program and its address, and
+# the two draws must pick different binaries); tf_reset asserts the same after a vkResetCommandBuffer.
+for g in v11 v13; do run "vk_feat tf_inactive $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_inactive; done
+for g in v11 v13; do run "vk_feat tf_reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reset; done
+# documented limits, asserted rather than hidden: no counter/append support, no size clamp
+for g in v11 v13; do run "vk_feat tf_multi $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_multi; done
+for g in v11 v13; do run "vk_feat tf_overflow $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_overflow; done
+# opt-out: the extension must not be advertised, so the capture cases must skip and say why (a silent skip would hide a gate that leaks)
+out=$(MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write 2>&1)
+if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"'; then echo "ok    vk_feat tf_write opt-out v11"
+else echo "FAIL  vk_feat tf_write opt-out v11"; echo "$out" | sed 's/^/        /'; fail=1; fi
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
@@ -286,6 +307,23 @@ run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
+# The same server without DRI3 (the X4's Xwayland: no DRM node, so MIT-SHM/PutImage is the only present path). zink asks
+# surface support first and stops on FALSE (zink_kopper.c:130-132), so the switch has to be taken at that query and not in
+# vkCreateSwapchainKHR: this case fails on such a driver with "surface not supported by the graphics queue".
+for g in v10 v13; do run "x11 no-dri3 $g" 0 "$V/tests/xwsi-nodri3.sh" "$OUT" $g; done
+# ...and it must stay an X11 decision: wsi.sw is device-wide, so the same flip used to turn every Wayland swapchain of the
+# process into a wl_shm/CPU one (wsi_common_wayland.c:3940) - on X8 the gamescope WSI layer's swapchain, whose shm (memfd)
+# buffers no dma-buf import can take (298 x vkGetMemoryFdPropertiesKHR -> VK_ERROR_INVALID_EXTERNAL_HANDLE in x8-1121-005438).
+for g in v10 v13; do run "wl after x11 no-dri3 $g" 0 "$V/tests/xwsi-wl-after-x11.sh" "$OUT" $g; done
+# Mesa's own software request (MESA_VK_WSI_DEBUG=sw) on a DRI3 server: the device is built for software (no
+# GetMemoryFdKHR), so the X11 swapchain must stay software too - #323 pushed it onto the dma-buf path and
+# wsi_common_x11 dereferenced the NULL export callback (SIGSEGV, exit 139, CMF + X8 on integration@20bb6c6).
+for g in v10 v13; do run "debug sw on dri3 $g" 0 "$V/tests/xwsi-debug-sw.sh" "$OUT" $g; done
+# CR #323 N2/N4/N5 on the X11 path: the software decision is per connection, a blocked acquire stalls nothing, and the
+# *2KHR surface queries answer what the 1-forms answer.
+for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done
+for g in v10 v13; do run "threads $g" 0 "$V/tests/xwsi-threads.sh" "$OUT" $g; done
+for g in v10 v13; do run "caps2 $g" 0 "$V/tests/xwsi-caps2.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
