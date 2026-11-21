@@ -38,12 +38,17 @@ struct mali_physical_device {
    /* M14 (mali_wsi.c): Mesa wsi_common, Wayland platform, linear dma-buf swapchain images. */
    struct wsi_device wsi;
    PFN_vkDestroyQueryPool wsi_real_destroy_query_pool;   /* what wsi.DestroyQueryPool pointed to before the NULL-tolerant guard */
-   /* The X11 server has no DRI3+Present: X11 surfaces take the software (MIT-SHM/PutImage) path. Kept here, not in
-    * wsi.sw, because wsi.sw is device-wide and Mesa's Wayland driver builds every Wayland swapchain as a wl_shm/CPU
-    * one while it is set (wsi_common_wayland.c:3940, :1506) - a Steam client asks about its X11 window first and
-    * would lose the dma-buf path for the gamescope WSI layer's Wayland swapchain (X8). */
-   bool wsi_x11_sw_xcb;    /* the server behind an XCB surface has no DRI3+Present */
-   bool wsi_x11_sw_xlib;   /* same for XLIB (never probed: no libX11 in the ICD, assumed software) */
+   /* The software present path as its own immutable wsi_device (sw=true, no modifiers, no dma-buf sync). One wsi call
+    * runs with pdev->vk.wsi_device pointing at `wsi` (dma-buf / what Mesa asked for) or at this copy, and a swapchain
+    * keeps the pointer it was created with, so a chain's mode is fixed at creation and the X11/Wayland decision is
+    * never a device-wide flag that another thread can change (CR #323 N4/N5/T7). */
+   struct wsi_device wsi_sw_dev;
+   /* The X11 server has no DRI3+Present: X11 surfaces take the software (MIT-SHM/PutImage) path. One entry per X
+    * connection (an xcb_connection_t* or a Display*): two displays in one process are two servers, so they must not
+    * share the decision (CR #323 N2). */
+   /* conn + the connection's X resource-id base: an xcb_connection_t that was disconnected can be handed out again
+    * by a later xcb_connect() at the same address, and the base tells the two servers apart (CR #323 N2). */
+   struct { uintptr_t conn; uint32_t base; bool sw; } wsi_x11_sw[8];
    /* wsi.sw as wsi_device_init left it: what Mesa itself asked for (VkDeviceCreateInfo's sw_device or
     * MESA_VK_WSI_DEBUG=sw, wsi_common.c:89). A floor for mali_wsi_sw_enter(): lowering it would put a device whose
     * wsi callbacks were fetched for software (GetMemoryFdKHR is NULL then, wsi_common.c:221) on the dma-buf path. */
@@ -99,6 +104,10 @@ VkResult mali_wsi_get_present_modes(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, V
 VkResult mali_wsi_get_surface_support(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32*);
 VkResult mali_wsi_get_surface_capabilities(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR*);
 VkResult mali_wsi_get_surface_formats(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkSurfaceFormatKHR*);
+VkResult mali_wsi_get_surface_capabilities2(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*,
+                                            VkSurfaceCapabilities2KHR*);
+VkResult mali_wsi_get_surface_formats2(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*, uint32_t*,
+                                       VkSurfaceFormat2KHR*);
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 VkBool32 mali_wsi_xcb_presentation_support(VkPhysicalDevice, uint32_t, xcb_connection_t*, xcb_visualid_t);
 #endif

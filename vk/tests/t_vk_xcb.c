@@ -315,11 +315,264 @@ wl_after_x11(void)
 
 #endif /* HAVE_WAYLAND_CLIENT */
 
+
+/* --caps2: the *2KHR surface queries must answer what the non-2 forms answer (STEAM-GAPS.md "X11 WSI";
+ * CR #323 N5). wsi_common.c:1149/1244 resolve the wsi_device themselves, so without a wrapper they ran with the
+ * device's own mode (dma-buf) while vkGetPhysicalDeviceSurface*KHR ran with the per-surface one: on a server without
+ * DRI3 the 1-form says "supported" and the 2-form describes the DRI3/modifier path (or fails). Exit 0 = agree,
+ * 77 = skipped, 1 = disagree. */
+static int
+caps2_check(void)
+{
+   int scr;
+   xcb_connection_t *c = xcb_connect(NULL, &scr);
+   if (xcb_connection_has_error(c)) { printf("skipped: no X server ($DISPLAY)\n"); return 77; }
+
+   IPFN(NULL, EnumerateInstanceExtensionProperties);
+   uint32_t n = 0;
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, NULL));
+   VkExtensionProperties *ep = calloc(n + 1, sizeof *ep);
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, ep));
+   int has_surf = 0, has_xcb = 0, has_cap2 = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      has_surf |= !strcmp(ep[i].extensionName, "VK_KHR_surface");
+      has_xcb |= !strcmp(ep[i].extensionName, "VK_KHR_xcb_surface");
+      has_cap2 |= !strcmp(ep[i].extensionName, "VK_KHR_get_surface_capabilities2");
+   }
+   free(ep);
+   if (!has_surf || !has_xcb) { printf("skipped: ICD without VK_KHR_xcb_surface\n"); return 77; }
+   if (!has_cap2) { printf("skipped: ICD without VK_KHR_get_surface_capabilities2\n"); return 77; }
+
+   /* The *2 forms are instance level only with the extension enabled (a NULL entry point otherwise). */
+   const char *iexts[] = {"VK_KHR_surface", "VK_KHR_xcb_surface", "VK_KHR_get_surface_capabilities2"};
+   VkInstance inst;
+   CK(((PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance"))(
+      &(VkInstanceCreateInfo){.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                              .pApplicationInfo = &(VkApplicationInfo){.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                                                       .pApplicationName = "t_vk_xcb --caps2",
+                                                                       .apiVersion = VK_API_VERSION_1_3},
+                              .enabledExtensionCount = 3, .ppEnabledExtensionNames = iexts}, NULL, &inst));
+   IPFN(inst, EnumeratePhysicalDevices);
+   IPFN(inst, GetPhysicalDeviceQueueFamilyProperties);
+   IPFN(inst, CreateXcbSurfaceKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilitiesKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilities2KHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormatsKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormats2KHR);
+   IPFN(inst, DestroyInstance);
+
+   uint32_t np = 1;
+   VkPhysicalDevice pd;
+   VkResult r = EnumeratePhysicalDevices(inst, &np, &pd);
+   REQ((r == VK_SUCCESS || r == VK_INCOMPLETE) && np >= 1, "no physical device");
+   uint32_t nq = 0;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+   VkQueueFamilyProperties *qf = calloc(nq, sizeof *qf);
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+   uint32_t fam = ~0u;
+   for (uint32_t i = 0; i < nq; i++)
+      if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { fam = i; break; }
+   free(qf);
+   REQ(fam != ~0u, "no graphics queue");
+
+   const xcb_setup_t *setup = xcb_get_setup(c);
+   xcb_screen_iterator_t sit = xcb_setup_roots_iterator(setup);
+   for (int i = 0; i < scr; i++) xcb_screen_next(&sit);
+   xcb_screen_t *s = sit.data;
+   xcb_window_t win = xcb_generate_id(c);
+   uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE};
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
+                     XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
+   xcb_map_window(c, win);
+   xcb_flush(c);
+   VkSurfaceKHR surf;
+   CK(CreateXcbSurfaceKHR(inst, &(VkXcbSurfaceCreateInfoKHR){.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+                                                             .connection = c, .window = win}, NULL, &surf));
+   VkBool32 sup = VK_FALSE;
+   CK(GetPhysicalDeviceSurfaceSupportKHR(pd, fam, surf, &sup));
+   printf("surface support %s\n", sup ? "TRUE" : "FALSE");
+
+   VkSurfaceCapabilitiesKHR c1;
+   CK(GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &c1));
+   const VkPhysicalDeviceSurfaceInfo2KHR s2 =
+      {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR, .surface = surf};
+   VkSurfaceCapabilities2KHR c2 = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+   const VkResult r2 = GetPhysicalDeviceSurfaceCapabilities2KHR(pd, &s2, &c2);
+   printf("caps:   1-form images %u..%u usage 0x%x alpha 0x%x\n", c1.minImageCount, c1.maxImageCount,
+          c1.supportedUsageFlags, c1.supportedCompositeAlpha);
+   printf("caps2:  result %d images %u..%u usage 0x%x alpha 0x%x\n", (int)r2,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.minImageCount : 0,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.maxImageCount : 0,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.supportedUsageFlags : 0,
+          r2 == VK_SUCCESS ? c2.surfaceCapabilities.supportedCompositeAlpha : 0);
+   REQ(r2 == VK_SUCCESS, "vkGetPhysicalDeviceSurfaceCapabilities2KHR failed where the 1-form succeeded");
+   REQ(c2.surfaceCapabilities.supportedUsageFlags == c1.supportedUsageFlags, "caps2 supportedUsageFlags differ");
+   REQ(c2.surfaceCapabilities.supportedCompositeAlpha == c1.supportedCompositeAlpha, "caps2 compositeAlpha differ");
+   REQ(c2.surfaceCapabilities.minImageCount == c1.minImageCount, "caps2 minImageCount differs");
+
+   uint32_t n1 = 0;
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &n1, NULL));
+   VkSurfaceFormatKHR *f1 = calloc(n1 + 1, sizeof *f1);
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &n1, f1));
+   uint32_t n2 = 0;
+   CK(GetPhysicalDeviceSurfaceFormats2KHR(pd, &s2, &n2, NULL));
+   VkSurfaceFormat2KHR *f2 = calloc(n2 + 1, sizeof *f2);
+   for (uint32_t i = 0; i < n2; i++)
+      f2[i].sType = VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR;
+   CK(GetPhysicalDeviceSurfaceFormats2KHR(pd, &s2, &n2, f2));
+   printf("formats: 1-form %u, 2-form %u\n", n1, n2);
+   REQ(n1 == n2, "formats2 count differs from formats");
+   for (uint32_t i = 0; i < n1; i++) {
+      REQ(f2[i].surfaceFormat.format == f1[i].format && f2[i].surfaceFormat.colorSpace == f1[i].colorSpace,
+          "formats2 entries differ from formats");
+   }
+   printf("caps2/formats2 agree with the 1-forms\n");
+   DestroyInstance(inst, NULL);
+   xcb_disconnect(c);
+   return 0;
+}
+
+
+/* --two-conns: two X connections in one process are two servers, so the X11 software decision must be per connection
+ * (CR #323 N2). $TVK_DISPLAY_A and $TVK_DISPLAY_B name them (one with DRI3, one without); each gets a window, a
+ * surface, a support/caps/formats query and a swapchain attempt. The harness reads the driver's own
+ * "platform=xcb ... sw=N" lines: A must stay dma-buf (sw=0, MALI_WSI=hw) while B takes the software path (sw=1). */
+static int
+one_conn(const char *name, xcb_connection_t *c, VkInstance inst, VkPhysicalDevice pd, uint32_t fam,
+         int make_swapchain)
+{
+   IPFN(inst, CreateXcbSurfaceKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceSupportKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceCapabilitiesKHR);
+   IPFN(inst, GetPhysicalDeviceSurfaceFormatsKHR);
+   IPFN(inst, CreateDevice);
+   IPFN(inst, GetDeviceProcAddr);
+
+   int scr = 0;
+   if (!c || xcb_connection_has_error(c)) { printf("%s: skipped (no server)\n", name); return 77; }
+   const xcb_setup_t *setup = xcb_get_setup(c);
+   xcb_screen_iterator_t sit = xcb_setup_roots_iterator(setup);
+   for (int i = 0; i < scr; i++) xcb_screen_next(&sit);
+   xcb_screen_t *s = sit.data;
+   xcb_window_t win = xcb_generate_id(c);
+   uint32_t vals[2] = {s->black_pixel, XCB_EVENT_MASK_EXPOSURE};
+   xcb_create_window(c, XCB_COPY_FROM_PARENT, win, s->root, 0, 0, W, H, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, s->root_visual,
+                     XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, vals);
+   xcb_map_window(c, win);
+   xcb_flush(c);
+
+   VkSurfaceKHR surf;
+   REQ(CreateXcbSurfaceKHR(inst, &(VkXcbSurfaceCreateInfoKHR){.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+                                                              .connection = c, .window = win}, NULL, &surf) == VK_SUCCESS,
+       "create surface");
+   VkBool32 sup = VK_FALSE;
+   CK(GetPhysicalDeviceSurfaceSupportKHR(pd, fam, surf, &sup));
+   VkSurfaceCapabilitiesKHR caps;
+   CK(GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &caps));
+   uint32_t nf = 0;
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &nf, NULL));
+   VkSurfaceFormatKHR *fm = calloc(nf + 1, sizeof *fm);
+   CK(GetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &nf, fm));
+   printf("%s: support %s, %u formats, extent %ux%u\n", name, sup ? "TRUE" : "FALSE", nf,
+          caps.currentExtent.width, caps.currentExtent.height);
+   if (!make_swapchain) return 0;
+
+   const char *dexts[] = {"VK_KHR_swapchain"};
+   float prio = 1.0f;
+   VkDevice dev;
+   CK(CreateDevice(pd, &(VkDeviceCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                                            .queueCreateInfoCount = 1,
+                                            .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+                                               .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                               .queueFamilyIndex = fam, .queueCount = 1, .pQueuePriorities = &prio},
+                                            .enabledExtensionCount = 1, .ppEnabledExtensionNames = dexts}, NULL, &dev));
+   PFN_vkCreateSwapchainKHR csc = (PFN_vkCreateSwapchainKHR)GetDeviceProcAddr(dev, "vkCreateSwapchainKHR");
+   REQ(csc, "no vkCreateSwapchainKHR");
+   VkExtent2D ext = caps.currentExtent.width == 0xFFFFFFFFu ? (VkExtent2D){W, H} : caps.currentExtent;
+   VkSwapchainKHR sc = VK_NULL_HANDLE;
+   VkResult r = csc(dev, &(VkSwapchainCreateInfoKHR){
+                             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = surf,
+                             .minImageCount = 3, .imageFormat = fm[0].format, .imageColorSpace = fm[0].colorSpace,
+                             .imageExtent = ext, .imageArrayLayers = 1,
+                             .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                             .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                             .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                             .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE}, NULL, &sc);
+   printf("%s: swapchain %s\n", name, r == VK_SUCCESS ? "created" : "failed");
+   PFN_vkDestroyDevice dd = (PFN_vkDestroyDevice)GetDeviceProcAddr(dev, "vkDestroyDevice");
+   if (dd) dd(dev, NULL);
+   return 0;
+}
+
+static int
+two_conns(void)
+{
+   const char *da = getenv("TVK_DISPLAY_A"), *db = getenv("TVK_DISPLAY_B");
+   REQ(da && db, "TVK_DISPLAY_A/TVK_DISPLAY_B must name two X displays");
+
+   IPFN(NULL, EnumerateInstanceExtensionProperties);
+   uint32_t n = 0;
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, NULL));
+   VkExtensionProperties *ep = calloc(n + 1, sizeof *ep);
+   CK(EnumerateInstanceExtensionProperties(NULL, &n, ep));
+   int has_surf = 0, has_xcb = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      has_surf |= !strcmp(ep[i].extensionName, "VK_KHR_surface");
+      has_xcb |= !strcmp(ep[i].extensionName, "VK_KHR_xcb_surface");
+   }
+   free(ep);
+   if (!has_surf || !has_xcb) { printf("skipped: ICD without VK_KHR_xcb_surface\n"); return 77; }
+   const char *iexts[] = {"VK_KHR_surface", "VK_KHR_xcb_surface"};
+   VkInstance inst;
+   CK(((PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance"))(
+      &(VkInstanceCreateInfo){.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                              .pApplicationInfo = &(VkApplicationInfo){.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                                                       .pApplicationName = "t_vk_xcb --two-conns",
+                                                                       .apiVersion = VK_API_VERSION_1_3},
+                              .enabledExtensionCount = 2, .ppEnabledExtensionNames = iexts}, NULL, &inst));
+   IPFN(inst, EnumeratePhysicalDevices);
+   IPFN(inst, GetPhysicalDeviceQueueFamilyProperties);
+   IPFN(inst, DestroyInstance);
+   uint32_t np = 1;
+   VkPhysicalDevice pd;
+   VkResult r = EnumeratePhysicalDevices(inst, &np, &pd);
+   REQ((r == VK_SUCCESS || r == VK_INCOMPLETE) && np >= 1, "no physical device");
+   uint32_t nq = 0;
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+   VkQueueFamilyProperties *qf = calloc(nq, sizeof *qf);
+   GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+   uint32_t fam = ~0u;
+   for (uint32_t i = 0; i < nq; i++) if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { fam = i; break; }
+   free(qf);
+   REQ(fam != ~0u, "no graphics queue");
+
+   /* Both connections are opened here and kept open: a disconnected xcb_connection_t can be handed out again at the
+    * same address by a later xcb_connect(), which would make a pointer-keyed decision ambiguous. */
+   int scr = 0;
+   xcb_connection_t *ca = xcb_connect(da, &scr), *cb = xcb_connect(db, &scr);
+   if (!ca || xcb_connection_has_error(ca)) { printf("skipped: no server on %s\n", da); return 77; }
+   if (!cb || xcb_connection_has_error(cb)) { printf("skipped: no server on %s\n", db); return 77; }
+   /* B is probed FIRST, without a swapchain: on the device-wide decision this query alone already forced every later
+    * XCB surface of the process onto the software path, which is the defect (CR #323 N2). */
+   int rb0 = one_conn("connB-probe", cb, inst, pd, fam, 0);
+   if (rb0) return rb0;
+   int ra = one_conn("connA", ca, inst, pd, fam, 1);
+   if (ra) return ra;
+   int rb = one_conn("connB", cb, inst, pd, fam, 1);
+   if (rb) return rb;
+   xcb_disconnect(ca);
+   xcb_disconnect(cb);
+   DestroyInstance(inst, NULL);
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
    const char *direct = NULL, *expect = NULL, *spv_dir = "shader";
-   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, wlfirst = 0, pressup = 0;
+   int pixels = 0, draw = 0, textured = 0, depth = 0, blend = 0, wlfirst = 0, pressup = 0, caps2 = 0, twoconn = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) direct = argv[++i];
       else if (!strcmp(argv[i], "--pixels")) pixels = 1;
@@ -328,6 +581,8 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--depth")) depth = 1;
       else if (!strcmp(argv[i], "--blend")) blend = 1;
       else if (!strcmp(argv[i], "--wl-after-x11")) wlfirst = 1;
+      else if (!strcmp(argv[i], "--caps2")) caps2 = 1;
+      else if (!strcmp(argv[i], "--two-conns")) twoconn = 1;
       else if (!strcmp(argv[i], "--pres-support")) pressup = 1;
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) spv_dir = argv[++i];
       else if (!strcmp(argv[i], "--expect-name") && i + 1 < argc) expect = argv[++i];
@@ -341,6 +596,10 @@ main(int argc, char **argv)
    REQ(gipa, "no GetInstanceProcAddr");
    if (pressup)
       return pres_support_first();
+   if (caps2)
+      return caps2_check();
+   if (twoconn)
+      return two_conns();
 #if defined(HAVE_WAYLAND_CLIENT)
    if (wlfirst)
       return wl_after_x11();

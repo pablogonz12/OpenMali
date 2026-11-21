@@ -318,6 +318,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    dispatch_table.GetPhysicalDeviceSurfaceCapabilitiesKHR = mali_wsi_get_surface_capabilities;
    dispatch_table.GetPhysicalDeviceSurfaceFormatsKHR = mali_wsi_get_surface_formats;
    dispatch_table.GetPhysicalDeviceSurfacePresentModesKHR = mali_wsi_get_present_modes;   /* + IMMEDIATE on the software path */
+   /* The *2 forms read wsi_device directly (wsi_common.c:1149/1244), so they need the same per-surface switch or they
+    * answer the dma-buf story on the software path (CR #323 N5). */
+   dispatch_table.GetPhysicalDeviceSurfaceCapabilities2KHR = mali_wsi_get_surface_capabilities2;
+   dispatch_table.GetPhysicalDeviceSurfaceFormats2KHR = mali_wsi_get_surface_formats2;
 #if defined(VK_USE_PLATFORM_XCB_KHR)
    dispatch_table.GetPhysicalDeviceXcbPresentationSupportKHR = mali_wsi_xcb_presentation_support;
 #endif
