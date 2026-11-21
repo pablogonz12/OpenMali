@@ -48,7 +48,7 @@ chmod +x "$W/inner.sh"
 timeout 200 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.log" 2>&1
 rc=$(cat "$W/rc" 2>/dev/null || echo 1)
 if [ "$rc" = 77 ]; then
-   grep -qE "skipped: (no X server|no Wayland display|ICD without)" "$W/xcb.log" && { echo "skipped: $(grep -m1 skipped "$W/xcb.log")"; exit 0; }
+   grep -qE "skipped: (no X server|no Wayland display|ICD without|t_vk_xcb built without wayland-client)" "$W/xcb.log" && { echo "skipped: $(grep -m1 skipped "$W/xcb.log")"; exit 0; }
 fi
 grep -vE 'alvr|CAP_SYS_NICE|Performance will|radv|xkbcomp|^>|^Errors from' "$W/gs.log" | grep -vE '^\[gamescope\]' | head -10
 grep -E "^(x11|wayland)" "$W/xcb.log" | head -5

@@ -42,6 +42,10 @@ echo "x11-no-dri3: server on :77 has no DRI3, has MIT-SHM"
 export DISPLAY=:77 MALI_BACKEND=fake MALI_FAKE_GPU=$GPU
 export VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json
 export MALI_WSI=hw MALI_SOFT=1 MALI_WSI_DEBUG=1
+# Presentation support before any surface exists: a client that asks this first must not get the dma-buf answer on a
+# server without DRI3 (CR #323 T6). Separate process, so nothing has been decided yet.
+timeout 60 "$OUT/t_vk_xcb" --direct "$OUT/libvulkan_mali.so" --pres-support >"$W/pres.log" 2>&1
+echo \$? >"$W/pres.rc"
 timeout 120 "$OUT/t_vk_xcb" --direct "$OUT/libvulkan_mali.so" --spv-dir "$SV/shader" --pixels >"$W/xcb.log" 2>&1
 echo \$? >"$W/rc"
 EOF
@@ -50,6 +54,9 @@ timeout 200 gamescope --backend headless -W 640 -H 480 -- "$W/inner.sh" >"$W/gs.
 grep -vE 'alvr|CAP_SYS_NICE|Performance will|radv|xkbcomp|^>|^Errors from' "$W/gs.log" | grep -vE '^\[gamescope\]' | head -20
 grep -E 'mali_vk: (wsi|surface|.*create_swapchain)' "$W/xcb.log" | head -6
 grep -E 'present path|Presented' "$W/xcb.log" | head -3
+prc=$(cat "$W/pres.rc" 2>/dev/null || echo 1)
+[ "$prc" = 0 ] || { echo "FAIL: presentation support before any surface is not TRUE (exit $prc)"; tail -8 "$W/pres.log"; exit 1; }
+grep -q 'before any surface: TRUE' "$W/pres.log" || { echo "FAIL: --pres-support did not print TRUE"; tail -5 "$W/pres.log"; exit 1; }
 rc=$(cat "$W/rc" 2>/dev/null || echo 1)
 [ "$rc" = 0 ] || { echo "FAIL: t_vk_xcb exit $rc"; tail -15 "$W/xcb.log"; exit 1; }
-echo "ok    x11 no-dri3 ($GPU): support TRUE, frame presented by MIT-SHM/PutImage"
+echo "ok    x11 no-dri3 ($GPU): presentation support TRUE before any surface, support TRUE, frame presented by MIT-SHM/PutImage"
