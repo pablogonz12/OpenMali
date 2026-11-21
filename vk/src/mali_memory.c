@@ -16,6 +16,67 @@
 #include "vk_alloc.h"
 #include "vk_util.h"
 
+/* THROWAWAY MALI_VBDBG (notes/jobdump.md): every live allocation's (gpu_va, size, cpu) so a draw can read the words of the
+ * vertex buffers it has bound (the VkBindVertexBuffer3InfoKHR path carries an address, not a handle). Off unless the env
+ * var is set: one static array, inserted at alloc, cleared at free. */
+#define MALI_MEMREG 1024
+struct mali_memreg { uint64_t va, size; const void *cpu; };
+static struct mali_memreg g_memreg[MALI_MEMREG];
+static unsigned g_nmemreg;
+static pthread_mutex_t g_memreg_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool
+memreg_on(void)
+{
+   static int on = -1;
+   if (on < 0)
+      on = getenv("MALI_VBDBG") ? 1 : 0;
+   return on;
+}
+
+static void
+memreg_add(const struct mali_bo *bo)
+{
+   if (!memreg_on() || !bo->cpu)
+      return;
+   pthread_mutex_lock(&g_memreg_lock);
+   if (g_nmemreg < MALI_MEMREG)
+      g_memreg[g_nmemreg++] = (struct mali_memreg){bo->gpu_va, bo->size, bo->cpu};
+   pthread_mutex_unlock(&g_memreg_lock);
+}
+
+static void
+memreg_del(uint64_t va)
+{
+   if (!memreg_on())
+      return;
+   pthread_mutex_lock(&g_memreg_lock);
+   for (unsigned i = 0; i < g_nmemreg; i++)
+      if (g_memreg[i].va == va) {
+         g_memreg[i] = g_memreg[--g_nmemreg];   /* order does not matter for a lookup table */
+         break;
+      }
+   pthread_mutex_unlock(&g_memreg_lock);
+}
+
+const void *
+mali_mem_cpu_of(uint64_t va, size_t len, uint64_t *base_va)
+{
+   const void *p = NULL;
+   if (!memreg_on())
+      return NULL;
+   pthread_mutex_lock(&g_memreg_lock);
+   for (unsigned i = 0; i < g_nmemreg; i++) {
+      if (va >= g_memreg[i].va && va - g_memreg[i].va + len <= g_memreg[i].size) {
+         p = (const uint8_t *)g_memreg[i].cpu + (va - g_memreg[i].va);
+         if (base_va)
+            *base_va = g_memreg[i].va;
+         break;
+      }
+   }
+   pthread_mutex_unlock(&g_memreg_lock);
+   return p;
+}
+
 #define MALI_MEM_TYPE_COUNT 2
 #define MALI_MAX_ALLOCS 4096
 #define MALI_LINE 64 /* nonCoherentAtomSize */
@@ -178,6 +239,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    /* mem_used was reserved before the allocation (mem_reserve); it must not be added again here. */
+   memreg_add(&mem->bo);
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
 }
@@ -190,6 +252,7 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
+   memreg_del(mem->bo.gpu_va);
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    /* A BO the kbase pool kept is still committed (kbase_bo_free only moves it to the free list), so its charge stays
     * until the pool really frees it or hands it to the next allocation; that is the pool's release callback. */

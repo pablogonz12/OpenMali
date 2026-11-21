@@ -27,6 +27,7 @@
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
 #include "mali_descriptor.h"   /* THROWAWAY restbl: mali_restbl_words */
+#include "mali_queue.h"        /* THROWAWAY vbdbg: mali_mem_cpu_of */
 #include "mali_event.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
@@ -398,6 +399,31 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       for (unsigned b = 0; b < nvb; b++)
          kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
       memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
+   }
+   if (getenv("MALI_VBDBG")) {   /* THROWAWAY vbdbg (notes/jobdump.md): the VBs this draw actually sees, read at the draw */
+      static unsigned vn;
+      if (vn++ < 400) {
+         fprintf(stderr, "mali_vbdbg: DRAW n=%u step=%s draw_id=%u prim=%u count=%u nvb=%u nattr=%u dyn_stride=%d",
+                 vn, getenv("LADDER_STEP") ? getenv("LADDER_STEP") : "?", d->draw_id, g->prim, d->count, nvb, g->nattr,
+                 (int)g->dyn_stride);
+         for (unsigned b = 0; b < nvb; b++) {
+            uint64_t mva = 0;
+            const uint32_t *w = mali_mem_cpu_of(d->vb_va[b], 64, &mva);
+            fprintf(stderr, " | vb%u va=0x%llx off=0x%llx size=%u stride=%u",
+                    b, (unsigned long long)d->vb_va[b],
+                    (unsigned long long)(d->vb_va[b] && mva ? d->vb_va[b] - mva : 0),
+                    d->vb_size[b], d->vb_stride[b]);
+            if (w) {
+               fprintf(stderr, " words=");
+               for (unsigned i = 0; i < 16; i++)
+                  fprintf(stderr, "%08x ", w[i]);
+            } else
+               fprintf(stderr, " words=(no cpu view)");
+         }
+         fprintf(stderr, "\n");
+      } else if (vn == 401) {
+         fprintf(stderr, "mali_vbdbg: ... (MALI_VBDBG limit, 400 draws)\n");
+      }
    }
    if (!s2) {
       /* resource table: entry 0 = driver set, 1.. = bound user sets, MALI_DYN_TABLE = the dynamic buffers (a table of its own); the entries between are never read */

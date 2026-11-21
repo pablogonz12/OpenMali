@@ -45,6 +45,10 @@ mali_device_pdev(struct mali_device *dev)
    return container_of(dev->vk.physical, struct mali_physical_device, vk);
 }
 
+/* THROWAWAY MALI_VBDBG (notes/jobdump.md): CPU view of a live VkDeviceMemory range [va, va+len), and the memory's own
+ * base VA when base_va is not NULL. NULL when the range is not inside a CPU-mapped allocation. */
+const void *mali_mem_cpu_of(uint64_t va, size_t len, uint64_t *base_va);
+
 /* Memory */
 struct mali_memory {
    struct vk_device_memory vk;

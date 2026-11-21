@@ -418,6 +418,35 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double w0 = prof_now();
    int wr = hw_wait(h, h->expected);
+   if (getenv("MALI_JOBDUMP") && wr == 0) {   /* THROWAWAY jobdump (notes/jobdump.md): the tiler's own consumption record, read after the fence */
+      static unsigned js;
+      const uint32_t *g = h->geo.cpu;
+      const unsigned nw = (unsigned)(h->geo.size / 4);
+      unsigned n = ++js;
+      /* geo words 0..7: the tiler heap descriptor the frame prologue writes (chunk size, chunk base) */
+      fprintf(stderr, "mali_jobdump: SUB n=%u expected=%llu geo=0x%llx geo_words=%u heap_first=0x%llx heap_chunk=%u hdr=",
+              n, (unsigned long long)h->expected, (unsigned long long)h->geo.gpu_va, nw,
+              (unsigned long long)h->heap.first_chunk_va, h->heap.chunk_size);
+      for (unsigned i = 0; i < 8 && i < nw; i++)
+         fprintf(stderr, "%08x ", g[i]);
+      fprintf(stderr, "\n");
+      /* geo words 1024..1087 = geo_va + 4096, the IDVS job record / geometry buffer the tiler writes into */
+      fprintf(stderr, "mali_jobdump: SUB n=%u rec[1024..1087]=", n);
+      for (unsigned i = 1024; i < 1088 && i < nw; i++)
+         fprintf(stderr, " %08x", g[i]);
+      fprintf(stderr, "\n");
+      /* 32 words at the heap's first chunk (the tile-list area). The kbase tiler heap is kernel-managed, so there is no
+       * CPU view unless an allocation covers that VA; say so instead of printing garbage. */
+      uint64_t hb = 0;
+      const uint32_t *hc = mali_mem_cpu_of(h->heap.first_chunk_va, 128, &hb);
+      fprintf(stderr, "mali_jobdump: SUB n=%u heap[first..+31]=", n);
+      if (hc)
+         for (unsigned i = 0; i < 32; i++)
+            fprintf(stderr, " %08x", hc[i]);
+      else
+         fprintf(stderr, " (no cpu view: kernel-managed kbase tiler heap)");
+      fprintf(stderr, "\n");
+   }
    if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
