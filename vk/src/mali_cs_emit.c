@@ -291,6 +291,33 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
    o->static_same = s1;   /* emit_draw_regs skips the registers derived from the static state when the previous draw set them */
+   /* THROWAWAY: MALI_NO_STATIC_SAME=1 forces the full static register file for every job (does the delta decision hide it?) */
+   if (getenv("MALI_NO_STATIC_SAME") && o->static_same) {
+      static unsigned forced;
+      if (forced < 8) { forced++; fprintf(stderr, "mali_ss: STATICSAME step=%s FORCED-FULL (s1 was 1)\n",
+                                           getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?"); }
+      o->static_same = false;
+   }
+   {   /* THROWAWAY: what the decision actually compares and what it decided, per draw */
+      static unsigned rows;
+      if (rows < 12) {
+         rows++;
+         const bool real = same_static(pd, d);
+         fprintf(stderr, "mali_ss: STATICSAME step=%s row=%u s1=%d risky=0 same_static=%d dirty=0x%x po=%d pd=%d "
+                         "first_inst=%u/%u nsets=%u/%u ndyn=%u/%u gfx_eq=%d fx_eq=%d setva_eq=%d vbo_eq=%d "
+                         "vs_va=0x%llx/0x%llx fs_va=0x%llx/0x%llx prim=%u/%u count=%u/%u\n",
+                         getenv("MALI_LADDER_STEP") ? getenv("MALI_LADDER_STEP") : "?", rows, (int)s1, (int)real,
+                         d->dirty, (int)(po != NULL), (int)(pd != NULL), d->first_instance,
+                         pd ? pd->first_instance : 0xffffffffu, d->nsets, pd ? pd->nsets : 0xffffffffu, d->ndyn,
+                         pd ? pd->ndyn : 0xffffffffu, pd && !memcmp(&pd->gfx, &d->gfx, sizeof d->gfx),
+                         pd && !memcmp(&pd->fx, &d->fx, sizeof d->fx),
+                         pd && pd->nsets == d->nsets && !memcmp(pd->set_va, d->set_va, d->nsets * sizeof d->set_va[0]),
+                         pd && !memcmp(pd->vb_va, d->vb_va, sizeof d->vb_va),
+                         (unsigned long long)g->vs_va, (unsigned long long)(pd ? pd->gfx.vs_va : 0),
+                         (unsigned long long)g->fs_va, (unsigned long long)(pd ? pd->gfx.fs_va : 0),
+                         g->prim, pd ? pd->gfx.prim : 0, d->count, pd ? pd->count : 0);
+      }
+   }
    o->dyn_same = s2;
    const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !(d->dirty & (MALI_D_VP | MALI_D_PUSH));   /* FAUs reusable */
    if (check_dirty()) {   /* trap: whatever the mask lets us reuse must be byte-equal to what the compares would have reused */
