@@ -193,11 +193,12 @@ main(int argc, char **argv)
                                                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &dip);
       CHECK(dr == VK_SUCCESS && (dip.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x depth image format samples follow the MSAA gate");
    }
-   /* VK_EXT_transform_feedback is WIP plumbing behind MALI_EXPERIMENTAL_TF=1 (mali_tf.h): the extension, the
-    * feature bit and the properties follow the same gate, and geometryStreams/queries/draw stay false. */
+   /* VK_EXT_transform_feedback is ON by default since 29a67a9d (a zink client needs it for GL 3.0):
+    * MALI_EXPERIMENTAL_TF=0 is the legacy opt-out. The extension, the feature bit and the properties follow the same
+    * gate (mali_tf.h `tf_enabled()`: true unless the env starts with '0'), like the UBO counts above (line 172). */
    {
       const char *g = getenv("MALI_EXPERIMENTAL_TF");
-      const int want = g && g[0] == '1';
+      const int want = !(g && g[0] == '0');
       uint32_t en = 0;
       int have = 0;
       EnumerateDeviceExtensionProperties(pd, NULL, &en, NULL);
