@@ -44,6 +44,10 @@ struct mali_physical_device {
     * would lose the dma-buf path for the gamescope WSI layer's Wayland swapchain (X8). */
    bool wsi_x11_sw_xcb;    /* the server behind an XCB surface has no DRI3+Present */
    bool wsi_x11_sw_xlib;   /* same for XLIB (never probed: no libX11 in the ICD, assumed software) */
+   /* wsi.sw as wsi_device_init left it: what Mesa itself asked for (VkDeviceCreateInfo's sw_device or
+    * MESA_VK_WSI_DEBUG=sw, wsi_common.c:89). A floor for mali_wsi_sw_enter(): lowering it would put a device whose
+    * wsi callbacks were fetched for software (GetMemoryFdKHR is NULL then, wsi_common.c:221) on the dma-buf path. */
+   bool wsi_sw_base;
 };
 
 struct mali_queue {

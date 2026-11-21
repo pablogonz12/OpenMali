@@ -273,6 +273,10 @@ for g in v10 v13; do run "x11 no-dri3 $g" 0 "$V/tests/xwsi-nodri3.sh" "$OUT" $g;
 # process into a wl_shm/CPU one (wsi_common_wayland.c:3940) - on X8 the gamescope WSI layer's swapchain, whose shm (memfd)
 # buffers no dma-buf import can take (298 x vkGetMemoryFdPropertiesKHR -> VK_ERROR_INVALID_EXTERNAL_HANDLE in x8-1121-005438).
 for g in v10 v13; do run "wl after x11 no-dri3 $g" 0 "$V/tests/xwsi-wl-after-x11.sh" "$OUT" $g; done
+# Mesa's own software request (MESA_VK_WSI_DEBUG=sw) on a DRI3 server: the device is built for software (no
+# GetMemoryFdKHR), so the X11 swapchain must stay software too - #323 pushed it onto the dma-buf path and
+# wsi_common_x11 dereferenced the NULL export callback (SIGSEGV, exit 139, CMF + X8 on integration@20bb6c6).
+for g in v10 v13; do run "debug sw on dri3 $g" 0 "$V/tests/xwsi-debug-sw.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
 run "vk_feat v10"     0 $F "$OUT/t_vk_feat" $DL --spv-dir "$V/shader"
 run "vk_compute v10"  0 $F "$OUT/t_vk_compute" $DL --spv-dir "$V/shader" --loop 200
