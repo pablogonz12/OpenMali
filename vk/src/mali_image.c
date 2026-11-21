@@ -190,6 +190,13 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
          }
          struct mali_hw_desc pl;
          mali_pack_plane(&pl, ordering, clump, va, size, s->row_stride, ss, div_up(w, 1), div_up(h, 1));
+         if (ly == 0 && li == 0)
+            mali_dbg_line("tex", "TEXEMIT view fmt=%d image_va=0x%llx payload_va=0x%llx plane_va=0x%llx slice_off=0x%llx "
+                                 "size=0x%llx row=%u ordering=%u w=%u h=%u plane_words=%08x %08x %08x %08x %08x %08x %08x %08x",
+                          (int)v->format, (unsigned long long)image_va, (unsigned long long)payload_va,
+                          (unsigned long long)va, (unsigned long long)s->offset, (unsigned long long)size, s->row_stride,
+                          ordering, div_up(w, 1), div_up(h, 1), pl.w[0], pl.w[1], pl.w[2], pl.w[3], pl.w[4], pl.w[5],
+                          pl.w[6], pl.w[7]);
          memcpy(out, &pl, 32);
          out += 32;
       }
@@ -220,6 +227,9 @@ mali_view_emit(unsigned arch, const struct mali_image_layout *l, uint64_t image_
    tex->w[5] = (uint32_t)(payload_va >> 32);
    tex->w[6] = array - 1;
    tex->w[7] = dim == 3 ? z0 - 1 : 0;
+   mali_dbg_line("tex", "TEXTEX view fmt=%d w0..7=%08x %08x %08x %08x %08x %08x %08x %08x (payload_va=0x%llx levels=%u array=%u swz=0x%x interleave=%d)",
+                 (int)v->format, tex->w[0], tex->w[1], tex->w[2], tex->w[3], tex->w[4], tex->w[5], tex->w[6], tex->w[7],
+                 (unsigned long long)payload_va, levels, array, swz, (int)interleave);
    return 0;
 }
 
@@ -511,6 +521,12 @@ view_refresh(struct mali_image_view *v)
       v->emitted_for_va = img->va;
       return;
    }
+   mali_dbg_line("tex", "TEXIMG img_va=0x%llx mem_off=0x%llx fmt=%d usage=0x%llx tiling=%s tiled=%d ext=%ux%ux%u samples=%u "
+                        "emitted_for_va=0x%llx emitted=%d",
+                 (unsigned long long)img->va, (unsigned long long)img->mem_off, (int)img->vk.format,
+                 (unsigned long long)(uint64_t)img->vk.usage, mali_dbg_tiling(img->vk.tiling), (int)img->lay.d.tiled,
+                 img->vk.extent.width, img->vk.extent.height, img->vk.extent.depth, img->vk.samples,
+                 (unsigned long long)v->emitted_for_va, (int)v->emitted);
    mali_view_emit(v->arch, vl, img->va, &v->vd, v->payload, v->payload_va, &v->tex);
    struct mali_view_desc sd = v->vd;
    sd.storage = true;

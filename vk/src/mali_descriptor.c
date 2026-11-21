@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* M7 descriptor sets over the Vulkan runtime. See mali_descriptor.h. */
 #include "mali_descriptor.h"
+#include "mali_dbg.h"
 #include "mali_format.h"
 #include "mali_image.h"
 
@@ -442,12 +443,17 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
          }
          break;
       }
-      if (ii->imageView && g_res->image_view(ii->imageView, type, &hw) == 0)
+      if (ii->imageView && g_res->image_view(ii->imageView, type, &hw) == 0) {
          *slot_at(s, base) = hw;
-      else if (!ii->imageView)
+         mali_dbg_line("desc", "DESC combined view=%p slot=%u tex=%08x %08x %08x %08x %08x %08x %08x %08x",
+                       (void *)ii->imageView, base, hw.w[0], hw.w[1], hw.w[2], hw.w[3], hw.w[4], hw.w[5], hw.w[6], hw.w[7]);
+      } else if (!ii->imageView)
          *slot_at(s, base) = null_hw;
-      if (b->imm_off == MALI_NO_IMM_SAMPLER && ii->sampler && g_res->sampler(ii->sampler, &hw) == 0)
+      if (b->imm_off == MALI_NO_IMM_SAMPLER && ii->sampler && g_res->sampler(ii->sampler, &hw) == 0) {
          *slot_at(s, base + 1) = hw;
+         mali_dbg_line("desc", "DESC sampler slot=%u words=%08x %08x %08x %08x (filter/wrap in w0: bit27 min NEAREST, bit28 mag NEAREST, wrap R 8-11, T 12-15, S 16-19)",
+                       base + 1, hw.w[0], hw.w[1], hw.w[2], hw.w[3]);
+      }
       break;
    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
