@@ -111,6 +111,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDrawIndirectCount = 0xffff,   /* multiDrawIndirect: record_indirect/expand_indirect expand any drawCount x stride (t_vk_feat mdilimit); spec minimum with the feature is 2^16-1 */
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
+      /* robustness2 requires both alignment limits: 1 or 4 for storage, a 1..256 power of two for uniform. The bound is
+       * checked per access against the descriptor size, so every 4-byte-aligned access is covered; 0 would be illegal. */
+      .robustStorageBufferAccessSizeAlignment = 4,
+      .robustUniformBufferAccessSizeAlignment = 4,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
       .maxViewportDimensions = {4096, 4096},
       .viewportBoundsRange = {-8192.0f, 8191.0f},
