@@ -29,6 +29,7 @@ static int g_tf;   /* VK_EXT_transform_feedback advertised (default on; MALI_EXP
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static PFN_vkGetPhysicalDeviceProperties2 g_gp2;   /* properties2, resolved in main: used by imgmax too */
+static PFN_vkGetPhysicalDeviceFeatures2 g_gf2;     /* features2, resolved in main: image2dview chains the EXT struct */
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
@@ -3503,6 +3504,81 @@ test_privdata(void)
  * that is where a self-imposed packing cap would show). zink lines: maxUniformBufferRange -> GL_MAX_UNIFORM_BLOCK_SIZE
  * (zink_screen.c:610-612), per-stage samplers/sampled images -> GL_MAX_TEXTURE_IMAGE_UNITS (:643-646), storage buffers
  * -> GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (:648-650), storage images -> GL_MAX_IMAGE_UNITS (:671-674). */
+/* VK_EXT_image_2d_view_of_3d (GL 4.2's texture views): a 2D view of one slice of a 3D image must be creatable and
+ * bindable. PanVK advertises image2DViewOf3D on this class of GPU; the slice layout already exists here for the core
+ * VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT path, so the failure before this was the create flag/feature only. */
+static int
+test_image2dview(void)
+{
+   VkPhysicalDeviceImage2DViewOf3DFeaturesEXT f3d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f3d};
+   CHECK(g_gf2 != NULL, "vkGetPhysicalDeviceFeatures2 resolved");
+   g_gf2(g_pd, &f2);
+   CHECK(f3d.image2DViewOf3D, "image2DViewOf3D not advertised (GL 4.2 needs VK_EXT_image_2d_view_of_3d)");
+   uint32_t en = 0;
+   int have = 0;
+   CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
+   VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+   if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+      for (uint32_t i = 0; i < en; i++)
+         if (!strcmp(e[i].extensionName, VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME)) have = 1;
+   free(e);
+   CHECK(have, "VK_EXT_image_2d_view_of_3d absent from the device extension list");
+
+   /* a 3D image split into four 2D slices, viewable without the core 2D_ARRAY_COMPATIBLE flag */
+   VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .flags = VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT,
+                            .imageType = VK_IMAGE_TYPE_3D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {16, 16, 4}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "3D image with VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory imem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &imem) == VK_SUCCESS, "image memory");
+   CHECK(BindImageMemory(dev, img, imem, 0) == VK_SUCCESS, "bind image");
+   /* slice 2 of 4: the EXT view takes one 2D slice of the 3D image */
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img,
+                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 2, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "2D view of slice 2 of the 3D image");
+   VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+   VkSampler smp;
+   CHECK(CreateSampler(dev, &sci, NULL, &smp) == VK_SUCCESS, "sampler");
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                      .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii = {smp, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                             .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   printf("{\"test\":\"image2dview\",\"ext\":\"%s\",\"image2DViewOf3D\":true,\"slice\":2,\"3d\":\"16x16x4\",\"ok\":true}\n",
+          VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroySampler(dev, smp, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, imem, NULL);
+   return 1;
+}
+
 static int
 test_gl43caps(void)
 {
@@ -4154,6 +4230,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
+   g_gf2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
@@ -4311,6 +4388,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
+   if (ok && CASE_ON("image2dview")) ok &= test_image2dview();
    if (ok && CASE_ON("gl43caps")) ok &= test_gl43caps();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();

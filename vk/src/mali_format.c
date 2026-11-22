@@ -311,6 +311,10 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
    }
    if ((flags & VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT) && (type != VK_IMAGE_TYPE_3D || tiling == VK_IMAGE_TILING_LINEAR))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   /* VK_EXT_image_2d_view_of_3d: the same slice layout as the core flag, just without requiring it. PanVK accepts it on
+    * any 3D tiled image (it advertises image2DViewOf3D); a linear 3D image has no per-slice stride to view. */
+   if ((flags & VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT) && (type != VK_IMAGE_TYPE_3D || tiling == VK_IMAGE_TILING_LINEAR))
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
    if ((flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) && !f.compressed) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    if (ds && type != VK_IMAGE_TYPE_2D && type != VK_IMAGE_TYPE_1D) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    if (f.compressed && type == VK_IMAGE_TYPE_1D) return VK_ERROR_FORMAT_NOT_SUPPORTED;

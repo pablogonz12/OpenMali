@@ -471,6 +471,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
       .EXT_hdr_metadata = true,              /* wsi_SetHdrMetadataEXT (wsi_common); stored by the Wayland chain, no-op elsewhere */
+      .EXT_image_2d_view_of_3d = true,       /* feature image2DViewOf3D: a 2D view of one slice of a 3D image (GL 4.2's
+                                              * texture views). The slice addressing already exists for the core
+                                              * VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT path (t_vk_meta view3d2d); the EXT only adds
+                                              * a create flag that does not require the core one. t_vk_feat image2dview. */
       .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
@@ -493,6 +497,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
        * buffer/image indices and offsets before the backend sees them. */
       .robustBufferAccess = true,
+      /* VK_EXT_image_2d_view_of_3d: PanVK advertises both features on this class of GPU (panvk_vX_physical_device.c,
+       * image2DViewOf3D). A 3D image's slices are already addressable as a 2D array view (mali_image.c:191-206
+       * packs per-layer offsets), so only the create flag had to be accepted (mali_format.c). */
+      .image2DViewOf3D = true,
       /* VK_EXT_robustness2 (DXVK 3.1.1 requires robustBufferAccess2 at device creation, DXVK-GAP.md:11). The bound of an
        * SSBO/UBO/texel buffer is dw1 of its 32-byte descriptor; lower_size_query turns the size query into a read of that word
        * through resource table 62 (PanVK's panvk_vX_shader.c:607-630) and lower_load_bounds wraps every load in "in range ?
