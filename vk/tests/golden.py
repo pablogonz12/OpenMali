@@ -134,6 +134,21 @@ def render_job(c, e, op_name):
             out.append('    FBD'); out += c.words(lo, 128, 'FBD')
             if ext: out.append('    ZS/CRC ext'); out += c.words(lo + 128, 64, 'ZSEXT')
             out.append('    RTD'); out += c.words(lo + 128 + 64 * ext, 64, 'RTD')
+            # R-RTSS: the RT descriptor's surface stride is the *image's* own plane stride (PanVK takes it from the
+            # slice layout: *surf_stride = slayout->tiled_or_linear.surface_stride_B, pan_desc.c:258-260, used for the
+            # writeback buffer at 903/958), never a frame-derived value. A row_stride x frame-height guess makes the
+            # writeback walk past the image: the explicit-LOD 32x64 case emitted ss = 459 rows x 2048 B for a 64-row
+            # target and the GPU took a TRANSLATION_FAULT past the arena. Single-sample (0) and Average resolve (1)
+            # targets do not use the field, so it must be 0 there; only Layered (3) carries the plane stride.
+            fbd = struct.unpack('<128I', c.dev.mem.read(lo, 512))
+            for n in range(4):
+                w1, rs_, ss_ = fbd[16 * n + 1], fbd[16 * n + 10], fbd[16 * n + 11]
+                if not (w1 & 1) or rs_ == 0:
+                    continue   # write disabled / unused slot
+                if (w1 >> 12) & 3 != 3 and ss_:
+                    c.violate('R-RTSS', 'RT%d surface stride %d with row stride %d on a single-sample target: must be 0 '
+                                         '(a frame-derived stride runs the writeback past the image)' % (n, ss_, rs_))
+                    break
     elif mp:
         for nm, reg, n, kind in mp:
             q = ds.pair(r, reg); done |= {reg, reg + 1}

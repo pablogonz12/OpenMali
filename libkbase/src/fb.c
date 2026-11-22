@@ -136,7 +136,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(q, 8, 0, 32, (uint32_t)va);                      /* RT Buffer base */
 		put(q, 9, 0, 32, (uint32_t)(va >> 32));
 		put(q, 10, 0, 32, rs);                               /* Row stride */
-		put(q, 11, 0, 32, ss ? ss : rs * p->height);         /* Surface stride */
+		/* Surface stride: the caller's (the image's own plane stride), or 0 when there is none. PanVK takes it from
+		 * the slice layout (*surf_stride = slayout->tiled_or_linear.surface_stride_B, pan_desc.c:258-260, used for
+		 * the writeback buffer at 903/958), never from the frame: a row_stride * frame-height guess makes the
+		 * writeback walk past the image (explicit-LOD 32x64: ss = 459 rows * 2048 B for a 64-row target, and the
+		 * GPU took a TRANSLATION_FAULT past the descriptor arena). Single-sample/Average targets do not use it. */
+		put(q, 11, 0, 32, ss);
 		uint32_t c = kb_fb_clear_word(p->clear_r, p->clear_g, p->clear_b, p->clear_a);
 		for (unsigned i = 0; i < 4; i++)
 			/* an extra target has its own clear words; only RT0 without them falls back to the byte clear value */
