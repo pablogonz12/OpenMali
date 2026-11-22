@@ -64,6 +64,14 @@ if [ -x "$V/out/t_state_sweep-native" ]; then
 else
    echo "skip  state sweep (no vk/out/t_state_sweep-native: tests/build-t_state_sweep.sh native)"
 fi
+# Fixed-function blend equation packing (host, no GPU): every (op, src factor, dst factor) the blender can express must
+# evaluate to the Vulkan formula. On main the SRC_COLOR/DST_COLOR ADD pair packed 2*src*dst instead of src^2+dst^2 and
+# this row failed; the pair now declines and goes through the blend shader.
+if cc -std=gnu11 -O2 -Wall -Wextra -I"$V/src" -o "$OUT/t_blend_eq" "$V/tests/t_blend_eq.c" "$V/src/mali_blend.c" 2>"$OUT/t_blend_eq.build.log"; then
+   run "blend equation" 0 "$OUT/t_blend_eq"
+else
+   echo "FAIL  blend equation (build)"; sed 's/^/        /' "$OUT/t_blend_eq.build.log"; fail=1
+fi
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
 for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
 for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done

@@ -27,6 +27,7 @@
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
 #include "mali_event.h"
+#include "mali_blend.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
 #define FAU_BYTES(words32) (((((size_t)(words32) + 1) / 2) * 8 + 63) & ~(size_t)63)
@@ -101,84 +102,22 @@ struct regs {
 static const struct regs R11 = { 72, 74, 64, 68, 70 };
 static const struct regs R13 = { 80, 82, 88, 84, 86 };
 
-/* ---- R4: fixed-function blend equation (port of panfrost lib/pan_blend.c to_mali_function for Vulkan enums) ---- */
-struct bfn { unsigned a, na, b, nb, c, ic; };
-struct bfac { unsigned c; bool inv; };
-
+/* The equation itself lives in mali_blend.c (no driver or Mesa headers) so tests/t_blend_eq.c can check the packing on the host. */
 static bool
-bfac_of(unsigned vk, struct bfac *o)
+mali_fixed_to_blend_eq(const struct mali_fixed *f, struct mali_blend_eq_in *o)
 {
-   switch (vk) {
-   case 0: *o = (struct bfac){1, false}; return true;   /* ZERO */
-   case 1: *o = (struct bfac){1, true}; return true;    /* ONE */
-   case 2: case 3: *o = (struct bfac){2, vk == 3}; return true;      /* SRC_COLOR */
-   case 4: case 5: *o = (struct bfac){3, vk == 5}; return true;      /* DST_COLOR */
-   case 6: case 7: *o = (struct bfac){5, vk == 7}; return true;      /* SRC_ALPHA */
-   case 8: case 9: *o = (struct bfac){6, vk == 9}; return true;      /* DST_ALPHA */
-   case 10: case 11: case 12: case 13: *o = (struct bfac){7, vk & 1}; return true;   /* CONSTANT_COLOR / CONSTANT_ALPHA */
-   default: return false;
-   }
-}
-
-static bool
-bfn_of(unsigned op, unsigned sf, unsigned df, struct bfn *f)
-{
-   struct bfac s, d;
-   if (op > 2 || !bfac_of(sf, &s) || !bfac_of(df, &d))
-      return false;
-   memset(f, 0, sizeof *f);
-   bool same_base = sf >= 2 && sf <= 13 && df >= 2 && df <= 13 && ((sf - 2) >> 1) == ((df - 2) >> 1);
-   if (sf == 0) {
-      f->a = 1; f->b = 3; f->nb = op == 1; f->ic = d.inv; f->c = d.c;
-   } else if (sf == 1) {
-      f->a = 2; f->b = 3;
-      if (op == 1) f->nb = 1; else if (op == 2) f->na = 1;
-      f->ic = d.inv; f->c = d.c;
-   } else if (df == 0) {
-      f->a = 1; f->b = 2; f->nb = op == 2; f->ic = s.inv; f->c = s.c;
-   } else if (df == 1) {
-      f->a = 3; f->b = 2;
-      if (op == 1) f->na = 1; else if (op == 2) f->nb = 1;
-      f->ic = s.inv; f->c = s.c;
-   } else if (sf == df) {
-      f->a = 1; f->ic = s.inv; f->c = s.c;
-      if (op == 0) f->b = 1;
-      else { f->b = 0; f->nb = op == 2; }
-   } else if (op == 0 && ((sf == 4 && df == 2) || (sf == 2 && df == 4))) {
-      f->a = 1; f->b = 3; f->c = 4;   /* src*dst + dst*src = dst * (2 src) */
-   } else if (same_base && s.inv != d.inv) {
-      f->a = 3; f->ic = s.inv; f->c = s.c;
-      if (op == 0) f->b = 0;
-      else if (op == 2) { f->b = 1; f->nb = 1; }
-      else { f->b = 1; f->na = 1; }
-   } else {
-      return false;
-   }
+   o->en = f->blend_en;
+   o->src_c = f->src_c, o->dst_c = f->dst_c, o->src_a = f->src_a, o->dst_a = f->dst_a;
+   o->op_c = f->op_c, o->op_a = f->op_a;
    return true;
-}
-
-static unsigned
-bconst_bits(unsigned vk)
-{
-   return vk >= 10 && vk <= 11 ? 7u : vk >= 12 && vk <= 13 ? 8u : 0u;
 }
 
 int
 mali_blend_equation(const struct mali_fixed *fx, uint32_t *eq, unsigned *cm)
 {
-   struct bfn c, a;
-   if (!fx->blend_en) {
-      *eq = 0x122u | (0x122u << 12);   /* replace: src */
-      *cm = 0;
-      return 0;
-   }
-   if (!bfn_of(fx->op_c, fx->src_c, fx->dst_c, &c) || !bfn_of(fx->op_a, fx->src_a, fx->dst_a, &a))
-      return -1;
-   uint32_t ec = c.a | (c.na << 3) | (c.b << 4) | (c.nb << 7) | (c.c << 8) | (c.ic << 11);
-   uint32_t ea = a.a | (a.na << 3) | (a.b << 4) | (a.nb << 7) | (a.c << 8) | (a.ic << 11);
-   *eq = ec | (ea << 12);
-   *cm = bconst_bits(fx->src_c) | bconst_bits(fx->dst_c) | bconst_bits(fx->src_a) | bconst_bits(fx->dst_a);
-   return 0;
+   struct mali_blend_eq_in in;
+   mali_fixed_to_blend_eq(fx, &in);
+   return mali_blend_eq(&in, eq, cm);
 }
 
 /* Applies the colour attachment 0 fixed-function blend state to a blend descriptor made by kb_draw_blend_opaque_*(). Returns -1 when

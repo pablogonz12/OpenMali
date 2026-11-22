@@ -41,7 +41,7 @@
 #define MAXLVL (NMIP - 1)
 #define D24MAX 16777215u
 
-static int g_fail, g_fake, g_ncase, g_alt_formula;
+static int g_fail, g_fake, g_ncase, g_alt_formula, g_blend_1lsb;
 static const char *g_only, *g_spvdir = "shader", *g_ppm;
 
 /* ---------------------------------------------------------------- device */
@@ -1524,7 +1524,7 @@ main(int argc, char **argv)
       uint8_t exp8[4] = {0, 0, 0, 0}, got8[4] = {0, 0, 0, 0};
       uint32_t expd = 0, gotd = 0, expd_hi = 0, exps = 0, gots = 0;
       int has_depth = 0, has_stencil = 0, bad = 0, badx = 0, bady = 0;
-      g_alt_formula = 0;
+      g_alt_formula = 0, g_blend_1lsb = 0;
 
       if (c->g == G_SAMP) {
          /* a filtered tap sum can land on the last bit of the hardware's weight precision, so allow 1 LSB there;
@@ -1573,16 +1573,24 @@ main(int argc, char **argv)
          for (int ch = 0; ch < 4; ch++)
             exp8[ch] = (uint8_t)e[ch];
          memcpy(got8, &col[(ty * FW + tx) * 4], 4);   /* report the tile's first pixel, also for a PASS */
+         /* The Mali blender applies the 8-bit factors in 1/256 fixed point, so a blend result whose exact value lands
+          * between two UNORM8 codes can be 1 LSB below the round-to-nearest value the spec's conversion asks for
+          * (e.g. 134.5 -> 134, not 135). Allow exactly that 1 LSB; anything larger is a packing error and still fails. */
+         int lsb = 0;
          for (int py = 0; py < TW && !bad; py++)
             for (int px = 0; px < TW && !bad; px++) {
                const uint8_t *q = &col[((ty + py) * FW + tx + px) * 4];
-               for (int ch = 0; ch < 4; ch++)
-                  if (q[ch] != exp8[ch]) {
+               for (int ch = 0; ch < 4; ch++) {
+                  int d = (int)q[ch] - exp8[ch];
+                  if (d < -1 || d > 1) {
                      bad = 1, badx = px, bady = py;
                      memcpy(got8, q, 4);
                      break;
                   }
+                  if (d) lsb = 1;
+               }
             }
+         if (!bad && lsb) g_blend_1lsb = 1;
       } else {
          has_depth = 1;
          has_stencil = c->d.stencil;
@@ -1664,6 +1672,8 @@ main(int argc, char **argv)
                 got8[0], got8[1], got8[2], got8[3]);
          if (g_alt_formula)
             printf(" note=mclamp-clamp-formula");
+         if (g_blend_1lsb)
+            printf(" note=blend-1lsb");
          if (has_depth && !has_stencil)
             printf(" depth=%06x", gotd);
          if (has_stencil)
