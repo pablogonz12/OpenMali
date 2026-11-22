@@ -311,9 +311,31 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
    }
 }
 
+static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const VkBuffer *bufs, const VkDeviceSize *offs)
 {
+   /* MALI_API_LOG: dump what each binding feeds, so the exact vertex stream can be replayed */
+   {
+      static int bseq;
+      const char *dir = mali_apilog_dir();
+      if (dir) {
+         int id = __atomic_fetch_add(&bseq, 1, __ATOMIC_RELAXED);
+         for (uint32_t i2 = 0; i2 < n; i2++) {
+            struct vk_buffer *b2 = vk_buffer_from_handle(bufs[i2]);
+            if (!b2 || b2->size <= offs[i2]) continue;
+            uint32_t sz = (uint32_t)(b2->size - offs[i2]);
+            if (sz > 262144u) sz = 262144u;
+            const uint8_t *p2 = buffer_cpu(bufs[i2], offs[i2], sz);
+            if (!p2) continue;
+            char nm[64];
+            snprintf(nm, sizeof nm, "vb%d_%u.bin", id, first + i2);
+            mali_apilog_dump(nm, p2, sz);
+            mali_apilog("VertexBuffer bind=%d binding=%u offset=%llu size=%u file=%s", id, first + i2, (unsigned long long)offs[i2], sz, nm);
+         }
+      }
+   }
    CMD(h);
    for (uint32_t i = 0; i < n; i++) {
       unsigned b = first + i;
@@ -332,7 +354,6 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
    }
 }
 
-static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
 
 
 VKAPI_ATTR void VKAPI_CALL
@@ -616,6 +637,7 @@ discarded(const struct mali_cmd_buffer *cmd)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
+   mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
    mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
    CMD(h);
    if (!cmd->in_render || !cmd->have_gfx) {
@@ -1030,6 +1052,7 @@ raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
+   mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
    mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
    CMD(h);
    struct mali_frame *f = &cmd->cur;

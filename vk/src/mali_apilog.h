@@ -35,4 +35,30 @@ mali_apilog(const char *fmt, ...)
    fflush(f);
 }
 
+static const char *mali_apilog_dir(void)
+{
+   static const char *p;
+   static int done;
+   if (!done) {
+      done = 1;
+      p = getenv("MALI_API_LOG");
+      if (p && !*p) p = NULL;
+   }
+   return p;
+}
+
+/* Dump a blob next to the log: <MALI_API_LOG>.<name> */
+static void
+mali_apilog_dump(const char *name, const void *data, size_t n)
+{
+   const char *base = mali_apilog_dir();
+   if (!base || !data || !n) return;
+   char path[512];
+   snprintf(path, sizeof path, "%s.%s", base, name);
+   FILE *f = fopen(path, "wb");
+   if (!f) return;
+   fwrite(data, 1, n, f);
+   fclose(f);
+}
+
 #endif

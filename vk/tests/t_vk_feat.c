@@ -2050,6 +2050,131 @@ test_bda(void)
  * dEQP-VK.descriptor_indexing's iterate(). Every quadrant must keep its own 256 points. */
 /* mpassload: the same 16 passes as mpass, but passes 2..16 use a LOAD render pass (the CTS's iterate() does exactly
  * this: LOAD what the previous pass stored). Every quadrant must still hold its own 256 points. */
+/* ctsidx: the CTS descriptor_indexing shaders and vertex data, verbatim. The SPIR-V is what our driver handed to the
+ * Bifrost compiler for dEQP-VK.descriptor_indexing.sampled_image on the X8 (MALI_API_LOG dumped it); the vertex buffer is
+ * the case's own bytes (1638 of its 4096 vertices, the 64 KB dump cap) in the CTS layout: vec4 position @0, vec2 normalpos
+ * @16, ivec4 index @24, stride 40, binding 0. The descriptor set is ours (16 solid-colour images, one sampler).
+ * Coverage must equal the drawn vertex count; less is the shader/data, not the harness. */
+static int
+test_ctsidx(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   static const uint8_t col[16][4] = {{255,0,0,255},{0,255,0,255},{0,0,255,255},{255,255,0,255},{0,255,255,255},{255,0,255,255},
+                                      {128,0,0,255},{0,128,0,255},{0,0,128,255},{128,128,0,255},{0,128,128,255},{128,0,128,255},
+                                      {255,128,0,255},{128,255,0,255},{0,255,128,255},{128,0,255,255}};
+   struct tex x[16];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+   for (int i = 0; i < 16; i++)
+      if (!tex_create(&t, &x[i], &ici, VK_IMAGE_VIEW_TYPE_2D, 1, col[i], 4, &reg, 1, &si)) return 0;
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 16, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   /* exactly what the CTS creates: PARTIALLY_BOUND on the image array, and only the six indices its vertex data uses
+    * (2, 3, 5, 7, 11, 13 - the primes the enumerator writes) get a descriptor */
+   static const int primes[6] = {2, 3, 5, 7, 11, 13};
+   VkDescriptorBindingFlags bf[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0};
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bfi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = 2, .pBindingFlags = bf};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set = VK_NULL_HANDLE;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii[16];
+   for (int i = 0; i < 16; i++) ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   VkDescriptorImageInfo smpi = {x[0].smp, VK_NULL_HANDLE, 0};
+   for (int k = 0; k < 6; k++) {
+      VkWriteDescriptorSet w1 = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                                 .dstArrayElement = (uint32_t)primes[k], .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &ii[primes[k]]};
+      UpdateDescriptorSets(dev, 1, &w1, 0, NULL);
+   }
+   VkWriteDescriptorSet wsm = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &smpi};
+   UpdateDescriptorSets(dev, 1, &wsm, 0, NULL);
+   struct hbuf vb = {0};
+   if (!hbuf_create(&vb, 163840, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   FILE *vf = fopen("tests/data/cts_didx_vb.bin", "rb");
+   if (!vf) { printf("{\"fail\":\"open tests/data/cts_didx_vb.bin\"}\n"); return 0; }
+   size_t got = fread(vb.p, 1, 163840, vf);
+   fclose(vf);
+   const unsigned nv = (unsigned)(got / 40);
+   VkVertexInputBindingDescription vbd = {0, 40, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad[3] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+                                               {1, 0, VK_FORMAT_R32G32_SFLOAT, 16},
+                                               {2, 0, VK_FORMAT_R32G32B32A32_SINT, 24}};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = vad};
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   g_vi = &vi;
+   int okp = make_pipe(&t, "cts_didx.vert.spv", "cts_didx.frag.spv", dsl, 0, &lay, &pipe);
+   g_vi = NULL;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   /* the case's structure: 16 passes, each its own command buffer + submit + readback of its own renderArea */
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t.rp, .framebuffer = t.fb,
+                                     .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+         VkDeviceSize voff = 0;
+         CmdBindVertexBuffers(cb, 0, 1, &vb.b, &voff);
+         CmdDraw(cb, nv, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         if (!g_fake) {   /* this pass's own area, right after its submit */
+            unsigned ina = 0;
+            for (int y = qy * 64; y < qy * 64 + 64; y++)
+               for (int x = qx * 64; x < qx * 64 + 64; x++) {
+                  const uint8_t *q = pix(&t, x, y);
+                  ina += (q[0] | q[1] | q[2]) != 0;
+               }
+            printf("{\"ctsidx\":\"pass%d\",\"inarea\":%u}\n", qy * 4 + qx, ina);
+         }
+      }
+   if (!g_fake) {
+      unsigned nz = 0;
+      for (int y = 0; y < H; y++)
+         for (int xx = 0; xx < W; xx++) {
+            const uint8_t *q = pix(&t, xx, y);
+            nz += (q[0] | q[1] | q[2]) != 0;
+         }
+      printf("{\"ctsidx\":\"single-cb\",\"n\":%u,\"covered\":%u}\n", nv, nz);
+      CHECK(nz >= nv - nv / 8, "CTS shaders+data: %u vertices covered %u px", nv, nz);
+   } else {
+      printf("{\"test\":\"ctsidx\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   hbuf_destroy(&vb);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 16; i++) tex_destroy(&x[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* mpasssubmit: the CTS's iterate() structure exactly - per pass: begin a command buffer, render the pass (LOAD after the
  * first) into its own renderArea, end, submit + fence wait, then copy the WHOLE image to a buffer in its OWN submit, reset
  * nothing but allocate fresh buffers (cb_begin), 16 times. Prints, per pass, how many pixels of that pass's area the
@@ -4290,6 +4415,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("mpass")) ok &= test_mpass();
    if (ok && g_only && CASE_ON("mpassload")) ok &= test_mpassload();
    if (ok && g_only && CASE_ON("mpasssubmit")) ok &= test_mpasssubmit();
+   if (ok && g_only && CASE_ON("ctsidx")) ok &= test_ctsidx();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("robust2")) ok &= test_robust2();
