@@ -60,9 +60,9 @@ static const char *
 unlowered_poly_sysval(nir_shader *nir, const char *kind)
 {
    static const struct { nir_intrinsic_op op; const char *name; } K[] = {
-      { nir_intrinsic_load_geometry_param_buffer_poly, "load_geometry_param_buffer_poly" },
-      { nir_intrinsic_load_vertex_param_buffer_poly, "load_vertex_param_buffer_poly" },
-      { nir_intrinsic_load_vs_outputs_poly, "load_vs_outputs_poly" },
+      /* The four sysvals lower_poly_sysvals (mali_descriptor_lower.c, from the tess lane) now lowers are *not* in this
+       * list: geometry/vertex param buffer and vs_outputs are handled, and a program that still shows one means the
+       * lowering did not reach it, which the compile below reports with the backend's own message. */
       { nir_intrinsic_load_index_size_poly, "load_index_size_poly" },
       { nir_intrinsic_load_input_topology_poly, "load_input_topology_poly" },
       { nir_intrinsic_load_ro_sink_address_poly, "load_ro_sink_address_poly" },

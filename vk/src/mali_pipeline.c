@@ -191,7 +191,13 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
           * quotes and what step (iii) starts from. MALI_EXPERIMENTAL_GS=1 is required above: nothing here is advertised. */
          struct mali_gs_programs gsp;
          char gsmsg[384] = "", rep[288] = "";
-         struct mali_compile_opts go = {.arch = arch};   /* layout: step (iii) compiles with the pipeline's flat layout */
+         /* The layout is what makes the descriptor lowering run at all: with layout NULL the compile keeps the plain
+          * NIR path, poly's sysvals survive, and Mesa's divergence analysis aborts the process. Flatten it here (the
+          * pipeline's own flatten happens later) so step (ii) compiles exactly as the pipeline would. */
+         struct mali_flat_layout gflat;
+         VK_FROM_HANDLE(vk_pipeline_layout, glayout, ci->layout);
+         const int gfrc = glayout ? mali_pipeline_layout_flatten(glayout, &gflat) : -1;
+         struct mali_compile_opts go = {.arch = arch, .layout = gfrc == 0 ? &gflat.c : NULL};
          const int grc = (mali_gs_poly_compile && gcode && gwords)
                             ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, &gsp, gsmsg, sizeof gsmsg) : -1;
          if (getenv("MALI_PIPE_DBG"))
