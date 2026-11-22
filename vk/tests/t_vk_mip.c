@@ -29,6 +29,7 @@ static VkPhysicalDeviceMemoryProperties mp;
 static VkCommandPool pool;
 static int g_fail;
 static const char *g_spv = "shader";
+static int g_ramp, g_probe;
 
 #define FNS(X) \
    X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) X(vkFreeMemory) \
@@ -119,9 +120,9 @@ static int buf_new(struct buf *o, VkDeviceSize n, VkBufferUsageFlags use, VkMemo
    VkMemoryRequirements rq;
    vkGetBufferMemoryRequirements(dev, o->b, &rq);
    uint32_t t = mem_type(rq.memoryTypeBits, want);
-   if (t == ~0u) return 2;
+   if (t == ~0u) { fprintf(stderr, "buffer: no mem type (bits %x)\n", rq.memoryTypeBits); return 2; }
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = rq.size, .memoryTypeIndex = t};
-   if (vkAllocateMemory_(dev, &ai, NULL, &o->m) != VK_SUCCESS) return 3;
+   if (vkAllocateMemory_(dev, &ai, NULL, &o->m) != VK_SUCCESS) { fprintf(stderr, "buffer: alloc %llu B failed\n", (unsigned long long)rq.size); return 3; }
    if (vkBindBufferMemory_(dev, o->b, o->m, 0) != VK_SUCCESS) return 4;
    o->n = n; o->p = NULL;
    if (want & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
@@ -145,13 +146,15 @@ static int img_new(struct img *o, uint32_t w, uint32_t h, uint32_t levels, VkFor
                            .extent = {w, h, 1}, .mipLevels = levels, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = use, .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-   if (vkCreateImage_(dev, &ci, NULL, &o->i) != VK_SUCCESS) return 1;
+   VkResult r = vkCreateImage_(dev, &ci, NULL, &o->i);
+   if (r != VK_SUCCESS) { fprintf(stderr, "CreateImage %ux%u lv%u -> %d\n", w, h, levels, (int)r); return 1; }
    VkMemoryRequirements rq;
    vkGetImageMemoryRequirements(dev, o->i, &rq);
    uint32_t t = mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-   if (t == ~0u) return 2;
+   if (t == ~0u) { fprintf(stderr, "no mem type for %ux%u lv%u (bits %x)\n", w, h, levels, rq.memoryTypeBits); return 2; }
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = rq.size, .memoryTypeIndex = t};
-   if (vkAllocateMemory_(dev, &ai, NULL, &o->m) != VK_SUCCESS) return 3;
+   r = vkAllocateMemory_(dev, &ai, NULL, &o->m);
+   if (r != VK_SUCCESS) { fprintf(stderr, "AllocateMemory %ux%u lv%u %llu B -> %d\n", w, h, levels, (unsigned long long)rq.size, (int)r); return 3; }
    if (vkBindImageMemory_(dev, o->i, o->m, 0) != VK_SUCCESS) return 4;
    o->w = w; o->h = h; o->levels = levels;
    return 0;
@@ -283,7 +286,7 @@ static int readback_levels(struct img *im, struct buf *dst, uint32_t **expect_of
 }
 
 /* ---- sampling pass: textureLod(L) on image B, NEAREST/NEAREST, 64x64 ---- */
-struct gfx { VkRenderPass rp; VkFramebuffer fb; VkPipeline pipe; VkPipelineLayout pl; VkDescriptorSetLayout dsl;
+struct gfx { VkRenderPass rp; VkFramebuffer fb; VkPipeline pipe, p_ramp, p_grad, p_lod, p_grad2, p_deriv; VkPipelineLayout pl; VkDescriptorSetLayout dsl;
              VkDescriptorPool dp; VkDescriptorSet ds; VkSampler smp; VkImageView view; struct img target; struct buf *rb; };
 
 static VkShaderModule shader(const char *name)
@@ -323,7 +326,8 @@ static int sample_level(struct gfx *g, struct img *im, float lod, uint8_t want[4
    vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g->pipe);
    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g->pl, 0, 1, &g->ds, 0, NULL);
-   vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &lod);
+   const float pcs[2] = {lod, 0.0f};
+   vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pcs, pcs);
    vkCmdDraw(cb, 3, 1, 0, 0);
    vkCmdEndRenderPass(cb);
    VkImageMemoryBarrier b2 = b;
@@ -345,6 +349,159 @@ static int sample_level(struct gfx *g, struct img *im, float lod, uint8_t want[4
    return bad;
 }
 
+
+/* ---- --ramp: three LOD twins on a coordinate whose gradient rises with x ---- */
+static void ramp_draw(struct gfx *g, VkPipeline pipe, float scale)
+{
+   VkImageSubresourceRange rng1 = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .srcAccessMask = 0,
+                             .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .image = g->target.i, .subresourceRange = rng1};
+   VkCommandBuffer cb = cb_begin();
+   vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   VkClearValue clear = {.color = {{0.0f, 0.0f, 0.0f, 1.0f}}};
+   VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = g->rp, .framebuffer = g->fb,
+                               .renderArea = {{0, 0}, {RT, RT}}, .clearValueCount = 1, .pClearValues = &clear};
+   vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g->pl, 0, 1, &g->ds, 0, NULL);
+   const float pcs[2] = {0.0f, scale};
+   vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pcs, pcs);
+   vkCmdDraw(cb, 3, 1, 0, 0);
+   vkCmdEndRenderPass(cb);
+   VkImageMemoryBarrier b2 = b;
+   b2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   b2.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   b2.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+   b2.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b2);
+   VkBufferImageCopy cp = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {RT, RT, 1}};
+   vkCmdCopyImageToBuffer(cb, g->target.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g->rb->b, 1, &cp);
+   cb_submit(cb);
+}
+
+static int level_of(const uint8_t *px)
+{
+   int l = ((int)px[0] - 11) / 37;
+   if (l < 0) l = 0;
+   if (l > 9) l = 9;
+   return l;
+}
+
+static void ramp_one(struct gfx *g, VkPipeline pipe, const char *twins, float scale)
+{
+   ramp_draw(g, pipe, scale);
+   const uint8_t *row = (const uint8_t *)g->rb->p + (size_t)(RT / 2) * RT * 4;
+   char str[RT + 1];
+   int obs[16], nobs = 0, prev = level_of(row);
+   for (int x = 0; x < RT; x++) {
+      int l = level_of(row + (size_t)x * 4);
+      str[x] = (char)('0' + l);
+      if (l != prev && nobs < 16) { obs[nobs++] = x; prev = l; }
+   }
+   str[RT] = 0;
+   printf("{\"scale\":%.2f,\"twin\":\"%s\",\"levels\":\"%s\",\"transitions\":[", scale, twins, str);
+   for (int i = 0; i < nobs; i++) printf("%s%d", i ? "," : "", obs[i]);
+   printf("],\"ideal\":[");
+   double ideal[8];
+   int nid = 0;
+   for (int k = 0; k < 8; k++) {
+      double xc = 0.70710678 * (double)(1 << k) / scale;   /* lod = k + 0.5 */
+      if (xc >= 1.0) break;
+      ideal[nid] = xc * RT - 0.5;
+      printf("%s%.1f", nid ? "," : "", ideal[nid]);
+      nid++;
+   }
+   printf("],\"dev_px\":[");
+   double maxdev = 0;
+   for (int i = 0; i < nobs && i < nid; i++) {
+      double dv = (double)obs[i] - ideal[i];
+      if (dv < 0) dv = -dv;
+      if (dv > maxdev) maxdev = dv;
+      printf("%s%.1f", i ? "," : "", (double)obs[i] - ideal[i]);
+   }
+   printf("],\"maxdev_px\":%.1f}\n", maxdev);
+}
+
+static void ramp_all(struct gfx *g)
+{
+   /* one 64x64 image, 8 levels, constant per level (same colours as the sample test) */
+   struct img B;
+   if (img_new(&B, RT, RT, mip_levels(RT, RT), VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
+      printf("{\"fail\":\"ramp image\"}\n");
+      return;
+   }
+   uint64_t total = 0;
+   for (uint32_t l = 0; l < mip_levels(RT, RT); l++) total += (uint64_t)lw(RT, l) * lw(RT, l) * 4;
+   struct buf ub;
+   if (buf_new(&ub, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+      printf("{\"fail\":\"ramp buffer\"}\n");
+      return;
+   }
+   uint8_t *p = ub.p;
+   for (uint32_t l = 0; l < mip_levels(RT, RT); l++) { const_fill(p, lw(RT, l) * lw(RT, l), l); p += (uint64_t)lw(RT, l) * lw(RT, l) * 4; }
+   VkCommandBuffer cb = cb_begin();
+   upload_levels(cb, &B, &ub, VK_IMAGE_LAYOUT_UNDEFINED);
+   barrier(cb, B.i, VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_levels(RT, RT), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+   cb_submit(cb);
+   VkImageViewCreateInfo bvi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = B.i, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, 1}};
+   vkCreateImageView(dev, &bvi, NULL, &g->view);
+   VkDescriptorImageInfo dii = {g->smp, g->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   VkWriteDescriptorSet wd = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g->ds, .dstBinding = 0,
+                              .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &dii};
+   vkUpdateDescriptorSets(dev, 1, &wd, 0, NULL);
+   const float scales[3] = {1.0f, 2.0f, 4.0f};
+   /* direct derivative check: dFdx(u) / analytic, as UNORM (ratio = channel/255*4) */
+   ramp_draw(g, g->p_deriv, 4.0f);
+   {
+      const uint8_t *row = (const uint8_t *)g->rb->p + (size_t)(RT / 2) * RT * 4;
+      printf("{\"deriv\":\"scale4\",\"ratio\":[");
+      int first = 1;
+      for (int x = 8; x < RT; x += 8) {
+         double r = (double)row[(size_t)x * 4] / 255.0 * 4.0;
+         printf("%s%.2f", first ? "" : ",", r);
+         first = 0;
+      }
+      printf("]}\n");
+   }
+   for (int i = 0; i < 3; i++) {
+      ramp_one(g, g->p_ramp, "implicit", scales[i]);
+      ramp_one(g, g->p_grad, "grad_analytic", scales[i]);
+      ramp_one(g, g->p_lod, "lod_analytic", scales[i]);
+      ramp_one(g, g->p_grad2, "grad_dFdx", scales[i]);
+   }
+}
+
+
+/* --create-probe: which images our driver refuses, by usage and level count (no rendering at all). */
+static void create_probe(void)
+{
+   static const struct { const char *name; VkImageUsageFlags use; } U[] = {
+      {"dst|sampled", VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT},
+      {"src|dst|sampled", VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT},
+      {"sampled", VK_IMAGE_USAGE_SAMPLED_BIT},
+      {"dst", VK_IMAGE_USAGE_TRANSFER_DST_BIT},
+      {"color|sampled", VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT},
+   };
+   static const uint32_t S[4][2] = {{4, 8}, {64, 64}, {128, 128}, {127, 99}};
+   for (int i = 0; i < 4; i++)
+      for (int u = 0; u < 5; u++)
+         for (int lv = 1; lv <= (int)mip_levels(S[i][0], S[i][1]); lv++) {
+            if (lv != 1 && lv != (int)mip_levels(S[i][0], S[i][1])) continue;
+            VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                    .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {S[i][0], S[i][1], 1}, .mipLevels = (uint32_t)lv,
+                                    .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                    .usage = U[u].use, .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+            VkImage im = VK_NULL_HANDLE;
+            VkResult r = vkCreateImage_(dev, &ci, NULL, &im);
+            printf("{\"create\":\"%ux%u\",\"levels\":%d,\"usage\":\"%s\",\"result\":%d}\n", S[i][0], S[i][1], lv, U[u].name, (int)r);
+            if (r == VK_SUCCESS) vkDestroyImage_(dev, im, NULL);
+         }
+}
+
 int main(int argc, char **argv)
 {
    const char *icd = NULL;
@@ -353,6 +510,8 @@ int main(int argc, char **argv)
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
+      else if (!strcmp(argv[i], "--ramp")) g_ramp = 1;
+      else if (!strcmp(argv[i], "--create-probe")) g_probe = 1;
       else { fprintf(stderr, "usage: t_vk_mip --direct icd.so --spv-dir dir\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
@@ -429,7 +588,7 @@ int main(int argc, char **argv)
    VkDescriptorSetLayoutBinding dslb = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
    VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &dslb};
    vkCreateDescriptorSetLayout(dev, &dli, NULL, &g.dsl);
-   VkPushConstantRange pcr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
+   VkPushConstantRange pcr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 2 * sizeof(float)};
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &g.dsl,
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
    vkCreatePipelineLayout(dev, &pli, NULL, &g.pl);
@@ -460,11 +619,27 @@ int main(int argc, char **argv)
                                         .layout = g.pl, .renderPass = g.rp};
    printf("{\"stage\":\"pipeline\"}\n");
    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &g.pipe) != VK_SUCCESS) { printf("{\"fail\":\"pipeline\"}\n"); return 1; }
+   /* the three LOD twins of --ramp: implicit texture(), textureGrad with analytic gradients, textureLod with the same number */
+   VkShaderModule rvs = shader("mipramp.vert");
+   VkShaderModule rfs = shader("mipramp.frag"), gfs = shader("mipgrad.frag"), lfs = shader("mipramplod.frag"),
+                 g2fs = shader("mipgrad2.frag"),
+                 dvfs = shader("mipderiv.frag");
+   st[0].module = rvs;
+   st[1].module = rfs;
+   VkPipeline *outs[5] = {&g.p_ramp, &g.p_grad, &g.p_lod, &g.p_grad2, &g.p_deriv};
+   VkShaderModule fmods[5] = {rfs, gfs, lfs, g2fs, dvfs};
+   for (int k = 0; k < 5; k++) {
+      st[1].module = fmods[k];
+      if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, outs[k]) != VK_SUCCESS) { printf("{\"fail\":\"ramp pipeline\"}\n"); return 1; }
+   }
 
    g.rb = calloc(1, sizeof *g.rb);
    if (buf_new(g.rb, RT * RT * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
       printf("{\"fail\":\"readback buffer\"}\n"); return 1;
    }
+
+   if (g_probe) { create_probe(); printf("{\"done\":true}\n"); return 0; }
+   if (g_ramp) { ramp_all(&g); printf("{\"done\":true}\n"); return 0; }
 
    for (int s = 0; s < nsizes; s++) {
       uint32_t w = sizes[s][0], h = sizes[s][1], lv = mip_levels(w, h);
