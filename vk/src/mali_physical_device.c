@@ -490,7 +490,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .robustBufferAccess2 = true,
       .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
-      .textureCompressionBC = true,
+      .textureCompressionBC = !mali_bc_disabled(),   /* MALI_NO_BC=1 (debug): advertise no BC, for the "is the BC path wrong" A/B */
       .hostQueryReset = true,
       .synchronization2 = true,
       .dynamicRendering = true,
