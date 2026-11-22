@@ -10,6 +10,10 @@ CF="-std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -I../third_party/mesa/inc
 SRC="tests/t_state_sweep.c"
 mkdir -p out
 what=${1:-aarch64}
+case "$what" in
+   native|aarch64|all) ;;
+   *) echo "unknown target '$what': use native|aarch64|all"; exit 2;;
+esac
 if [ "$what" = native ] || [ "$what" = all ]; then
    ${CC:-cc} $CF -o out/t_state_sweep-native $SRC -ldl -lm
    echo "built out/t_state_sweep-native"

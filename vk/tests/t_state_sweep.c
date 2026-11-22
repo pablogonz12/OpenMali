@@ -42,6 +42,7 @@
 #define D24MAX 16777215u
 
 static int g_fail, g_fake, g_ncase, g_alt_formula, g_blend_1lsb;
+static int g_has_clip, g_has_cb, g_has_mc;   /* device extensions this run really enabled */
 static const char *g_only, *g_spvdir = "shader", *g_ppm;
 
 /* ---------------------------------------------------------------- device */
@@ -333,9 +334,17 @@ struct scase {
    float z_base;
    uint8_t base8[4], test8[4];
    int ndraw;   /* 1: a single quad; 2: base quad (shared pipeline) then the case pipeline */
+   const char *skip;   /* set when the device cannot express the row: reported as SKIP, not PASS */
    VkPipeline pipe;
    VkDescriptorSet dset;
 };
+
+/* the --only predicate, used by every per-case loop so an unselected row cannot fail the run */
+static int
+case_selected(const struct scase *c)
+{
+   return !g_only || !strncmp(c->id, g_only, strlen(g_only));
+}
 
 static struct scase *cases;
 
@@ -465,10 +474,12 @@ st_case(int face, VkStencilOp op, const char *id, uint32_t wmask)
    c->d.sfail[0] = c->d.sfail[1] = VK_STENCIL_OP_KEEP;
    c->d.sdfail[0] = c->d.sdfail[1] = VK_STENCIL_OP_KEEP;
    c->d.spass[0] = c->d.spass[1] = VK_STENCIL_OP_KEEP;
-   /* the op goes into passOp, depthFailOp and failOp of BOTH faces: the state that has to reach the hardware is the
-    * stencil-op field itself, and which of the three paths a fragment takes must not decide the case */
-   c->d.sfail[0] = c->d.sfail[1] = c->d.sdfail[0] = c->d.sdfail[1] = op;
-   c->d.spass[0] = c->d.spass[1] = op;
+   /* the op goes into passOp, depthFailOp and failOp of the face this row targets; the other face gets ZERO, whose
+    * result (0x00) no op can produce from the 0x33 clear, so a driver that ignores cw cannot pass a face row */
+   for (int f = 0; f < 2; f++) {
+      VkStencilOp fo = f == face ? op : VK_STENCIL_OP_ZERO;
+      c->d.sfail[f] = c->d.sdfail[f] = c->d.spass[f] = fo;
+   }
    c->d.sref = 0x5a;
    c->d.swmask = wmask;
    c->d.scmpmask = 0xff;
@@ -578,7 +589,9 @@ build_cases(void)
    }
    /* anisotropy (implicit LOD, flat mips red/green/blue): 2:1 footprint. Without aniso the LOD follows the long axis
     * (log2 2 = 1 -> green); with maxAnisotropy >= the ratio it follows the short axis (0 -> red). Both are far from a
-    * mip boundary, so the driver's 4-bit mip precision cannot decide the colour. */
+    * mip boundary, so the driver's 4-bit mip precision cannot decide the colour. The expected colour is exact on
+    * purpose: this suite pins OUR driver's anisotropic scheme (M/notes/state-sweep.md, X4/X8 table), and the
+    * s_aniso_*_iso rows are the control that isolates the LOD rule from the anisotropy rule. */
    for (int a = 0; a < 4; a++) {
       float an = a == 0 ? 0.0f : (float)(1 << (a + 1));   /* off, 4, 8, 16 */
       struct scase *c = newcase(G_SAMP, "s_aniso_%d_ratio2", (int)an);
@@ -617,7 +630,7 @@ build_cases(void)
          c->bc[3] = 255;
       } else {
          static const int cust[4] = {64, 128, 192, 255};
-         c->border_color = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+         c->border_color = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
          for (int ch = 0; ch < 4; ch++) {
             c->bc[ch] = cust[ch];
             c->border_f[ch] = cust[ch] / 255.0f;
@@ -1034,7 +1047,9 @@ main(int argc, char **argv)
    if (!GetPhysicalDeviceMemoryProperties_)
       die("no vkGetPhysicalDeviceMemoryProperties");
    uint32_t n = 1;
-   if (EnumeratePhysicalDevices(inst, &n, &pd) != VK_SUCCESS || n < 1)
+   VkResult er = EnumeratePhysicalDevices(inst, &n, &pd);
+   /* a loader with more than one device answers VK_INCOMPLETE (or SUCCESS) and fills the slot: both are usable */
+   if ((er != VK_SUCCESS && er != VK_INCOMPLETE) || n < 1)
       die("no physical device");
    GetPhysicalDeviceProperties(pd, &g_props);
    GetPhysicalDeviceFeatures(pd, &g_feat);
@@ -1057,7 +1072,8 @@ main(int argc, char **argv)
    VkPhysicalDeviceCustomBorderColorFeaturesEXT cbf = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT,
       .customBorderColors = VK_TRUE, .customBorderColorWithoutFormat = VK_TRUE};
-   const char *en_ext[2];
+   const char *en_ext[4];
+   uint32_t nx = 0;
    void *chain = NULL;
    {
       PFN_vkEnumerateDeviceExtensionProperties EDE =
@@ -1073,11 +1089,32 @@ main(int argc, char **argv)
       for (uint32_t i = 0; i < ne; i++) {
          has_clip |= !strcmp(eps[i].extensionName, "VK_EXT_depth_clip_enable");
          has_cb |= !strcmp(eps[i].extensionName, "VK_EXT_custom_border_color");
+         g_has_mc |= !strcmp(eps[i].extensionName, "VK_KHR_sampler_mirror_clamp_to_edge");
       }
-      uint32_t nx = 0;
+      /* advertising the extension is not enough: both EXT features have to be answered true, and
+       * customBorderColorWithoutFormat decides whether the custom colour may be used with a format-less
+       * request (we pass a real format, so it is not needed, but asking for it ungated would be invalid) */
+      PFN_vkGetPhysicalDeviceFeatures2KHR gpf2 =
+         (PFN_vkGetPhysicalDeviceFeatures2KHR)gipa(inst, "vkGetPhysicalDeviceFeatures2KHR");
+      if (gpf2 && (has_clip || has_cb)) {
+         VkPhysicalDeviceCustomBorderColorFeaturesEXT cbq = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+         VkPhysicalDeviceDepthClipEnableFeaturesEXT dcq = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+         cbq.pNext = &dcq;
+         VkPhysicalDeviceFeatures2KHR f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
+                                            .pNext = &cbq};
+         gpf2(pd, &f2);
+         has_cb &= cbq.customBorderColors;
+         has_clip &= dcq.depthClipEnable;
+         cbf.customBorderColorWithoutFormat =
+            cbq.customBorderColorWithoutFormat ? VK_TRUE : VK_FALSE;
+      } else {
+         has_cb = has_clip = 0;
+      }
       if (has_clip) {
          en_ext[nx++] = "VK_EXT_depth_clip_enable";
-         cbf.pNext = chain;
+         dcf.pNext = chain;
          chain = &dcf;
       }
       if (has_cb) {
@@ -1085,14 +1122,18 @@ main(int argc, char **argv)
          cbf.pNext = chain;
          chain = &cbf;
       }
-      printf("{\"ext\":{\"depth_clip_enable\":%d,\"custom_border_color\":%d}}\n", has_clip, has_cb);
+      if (g_has_mc)
+         en_ext[nx++] = "VK_KHR_sampler_mirror_clamp_to_edge";
+      g_has_clip = has_clip, g_has_cb = has_cb;
+      printf("{\"ext\":{\"depth_clip_enable\":%d,\"custom_border_color\":%d,\"mirror_clamp_to_edge\":%d}}\n",
+             has_clip, has_cb, g_has_mc);
    }
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = qfi,
                                   .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = chain,
                              .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
-                             .enabledExtensionCount = (uint32_t)(en_ext[0] ? (en_ext[1] ? 2u : 1u) : 0u),
+                             .enabledExtensionCount = nx,
                              .ppEnabledExtensionNames = en_ext};
    VkPhysicalDeviceFeatures want = {.depthClamp = g_feat.depthClamp, .samplerAnisotropy = g_feat.samplerAnisotropy};
    dci.pEnabledFeatures = &want;
@@ -1106,17 +1147,24 @@ main(int argc, char **argv)
 
    build_cases();
    int nsel = 0;
-   for (int i = 0; i < g_ncase; i++)
-      if (!g_only || !strncmp(cases[i].id, g_only, strlen(g_only)))
-         nsel++;
-
-   if (g_fake) {
-      for (int i = 0; i < g_ncase; i++)
-         if (!g_only || !strncmp(cases[i].id, g_only, strlen(g_only)))
-            printf("case=%s SKIP fake-backend-executes-nothing\n", cases[i].id);
-      printf("{\"test\":\"state_sweep\",\"device\":\"%s\",\"cases\":%d,\"skipped\":\"fake backend\",\"ok\":true}\n",
-             g_props.deviceName, nsel);
-      return 0;
+   for (int i = 0; i < g_ncase; i++) {
+      struct scase *c = &cases[i];
+      if (!case_selected(c))
+         continue;
+      /* a row this device cannot express is a SKIP with the reason, never a PASS */
+      if (c->g == G_SAMP && c->s.aniso > 0.0f) {
+         if (!g_feat.samplerAnisotropy)
+            c->skip = "samplerAnisotropy unsupported";
+         else if (c->s.aniso > g_props.limits.maxSamplerAnisotropy)
+            c->skip = "maxSamplerAnisotropy below the case";
+      }
+      if (c->g == G_SAMP && !g_has_mc &&
+          (c->s.mu == VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE ||
+           c->s.mv == VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE))
+         c->skip = "VK_KHR_sampler_mirror_clamp_to_edge not enabled";
+      if (c->g == G_SAMP && c->border_color == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT && !g_has_cb)
+         c->skip = "VK_EXT_custom_border_color not enabled";
+      nsel++;
    }
 
    /* ---- attachments, textures, pipeline layout */
@@ -1237,7 +1285,7 @@ main(int argc, char **argv)
 
    for (int i = 0; i < g_ncase; i++) {
       struct scase *c = &cases[i];
-      if (c->g != G_SAMP)
+      if (c->g != G_SAMP || !case_selected(c) || c->skip)
          continue;
       VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                 .magFilter = c->s.magf, .minFilter = c->s.minf, .mipmapMode = c->s.mm,
@@ -1248,7 +1296,8 @@ main(int argc, char **argv)
                                 .minLod = 0.0f, .maxLod = (float)MAXLVL,
                                 .borderColor = c->border_color};
       VkSamplerCustomBorderColorCreateInfoEXT cbci = {
-         .sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT, .format = VK_FORMAT_UNDEFINED};
+         .sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT,
+         .format = VK_FORMAT_R8G8B8A8_UNORM};
       for (int ch = 0; ch < 4; ch++)
          cbci.customBorderColor.float32[ch] = c->border_f[ch];
       if (c->border_f[0] != 0.0f || c->border_f[1] != 0.0f || c->border_f[2] != 0.0f)
@@ -1287,6 +1336,8 @@ main(int argc, char **argv)
 
    for (int i = 0; i < g_ncase; i++) {
       struct scase *c = &cases[i];
+      if (!case_selected(c) || c->skip)
+         continue;
       if (c->g == G_SAMP) {
          c->pipe = c->shader == SH_TEXLOD ? pipe_tex : pipe_impl;
          c->ndraw = 1;
@@ -1342,6 +1393,28 @@ main(int argc, char **argv)
    bk.scmpmask = 0xff;
    pipe_base = make_pipe(&bk);
 
+   /* every shared pipeline the selected rows bind: a NULL one would otherwise reach CmdBindPipeline */
+   if (!pipe_tex || !pipe_impl || !pipe_solid || !pipe_base) {
+      printf("FAIL shared pipeline: tex=%p impl=%p solid=%p base=%p\n", (void *)pipe_tex, (void *)pipe_impl,
+             (void *)pipe_solid, (void *)pipe_base);
+      return 1;
+   }
+
+   /* The fake backend executes nothing, but it must still accept every sampler, descriptor set and pipeline the
+    * hardware path creates: the skip sits after that state exists, so a creation failure cannot hide behind it. */
+   if (g_fake) {
+      if (g_fail) {
+         printf("FAIL fake backend: a case pipeline failed to create\n");
+         return 1;
+      }
+      for (int i = 0; i < g_ncase; i++)
+         if (case_selected(&cases[i]))
+            printf("case=%s SKIP fake-backend-executes-nothing\n", cases[i].id);
+      printf("{\"test\":\"state_sweep\",\"device\":\"%s\",\"cases\":%d,\"skipped\":\"fake backend\",\"ok\":true}\n",
+             g_props.deviceName, nsel);
+      return 0;
+   }
+
    /* ---- buffers: texture staging, readback */
    VkDeviceMemory cbmem, dbmem, sbmem, tbmem[3];
    void *cmap, *dmap, *smap;
@@ -1372,18 +1445,23 @@ main(int argc, char **argv)
       die("command buffer");
    VkCommandBufferBeginInfo cbbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-   BeginCommandBuffer(cb, &cbbi);
+   if (BeginCommandBuffer(cb, &cbbi) != VK_SUCCESS) {
+      printf("FAIL vkBeginCommandBuffer\n");
+      g_fail = 1;
+      return 1;
+   }
 
    /* upload the three textures */
    {
-      VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, NMIP, 0, 1}};
       for (int i = 0; i < 3; i++) {
+         /* fresh barriers per texture: the second image must not inherit the first one's post-copy layouts/access */
+         VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                   .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                   .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, NMIP, 0, 1}};
          b.image = teximg[i];
          CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
                             1, &b);
@@ -1418,7 +1496,7 @@ main(int argc, char **argv)
    /* every case gets its own 8x8 tile */
    for (int i = 0; i < g_ncase; i++) {
       struct scase *c = &cases[i];
-      if (g_only && strncmp(c->id, g_only, strlen(g_only)))
+      if (!case_selected(c) || c->skip)
          continue;
       if (!c->pipe && c->g != G_SAMP)
          continue;
@@ -1483,7 +1561,11 @@ main(int argc, char **argv)
    VkBufferImageCopy rs = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1},
                            .imageExtent = {FW, FH, 1}};
    CmdCopyImageToBuffer(cb, depimg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sbuf, 1, &rs);
-   EndCommandBuffer(cb);
+   if (EndCommandBuffer(cb) != VK_SUCCESS) {
+      printf("FAIL vkEndCommandBuffer: nothing was submitted\n");
+      g_fail = 1;
+      return 1;
+   }
    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    VkFence fence;
    if (CreateFence(dev, &fci, NULL, &fence) != VK_SUCCESS)
@@ -1513,8 +1595,13 @@ main(int argc, char **argv)
    int npass = 0, nfail = 0, nskip = 0;
    for (int i = 0; i < g_ncase; i++) {
       struct scase *c = &cases[i];
-      if (g_only && strncmp(c->id, g_only, strlen(g_only)))
+      if (!case_selected(c))
          continue;
+      if (c->skip) {
+         printf("case=%s SKIP %s\n", c->id, c->skip);
+         nskip++;
+         continue;
+      }
       if (!c->pipe && c->g != G_SAMP) {
          printf("case=%s SKIP pipeline-create-failed\n", c->id);
          nskip++;
@@ -1581,8 +1668,11 @@ main(int argc, char **argv)
             for (int px = 0; px < TW && !bad; px++) {
                const uint8_t *q = &col[((ty + py) * FW + tx + px) * 4];
                for (int ch = 0; ch < 4; ch++) {
+                  /* the 1-LSB allowance belongs to the channels the blend writes; a masked-off channel must hold
+                   * the destination bit for bit (b_wmask_0 red is 102, a 103 has already destroyed it) */
+                  int tolch = ((c->b.mask >> ch) & 1) ? 1 : 0;
                   int d = (int)q[ch] - exp8[ch];
-                  if (d < -1 || d > 1) {
+                  if (d < -tolch || d > tolch) {
                      bad = 1, badx = px, bady = py;
                      memcpy(got8, q, 4);
                      break;
@@ -1698,6 +1788,7 @@ main(int argc, char **argv)
    }
    printf("{\"test\":\"state_sweep\",\"device\":\"%s\",\"cases\":%d,\"pass\":%d,\"fail\":%d,\"skip\":%d,"
           "\"ok\":%s}\n",
-          g_props.deviceName, npass + nfail + nskip, npass, nfail, nskip, nfail ? "false" : "true");
+          g_props.deviceName, npass + nfail + nskip, npass, nfail, nskip,
+          (nfail || g_fail) ? "false" : "true");
    return g_fail;
 }
