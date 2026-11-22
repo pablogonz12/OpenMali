@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-22T02:05:12+00:00",
+ "generated": "2026-11-22T02:05:59+00:00",
  "generator": "tools/featuremap.py v1",
- "commit": "b48640ce4ef28c42bbaaef87627b2cef96acd101",
+ "commit": "b9069eb2d2cd8007bdd237ce8a1a374346215f08",
  "sources": [
   {
    "id": "vk.xml",

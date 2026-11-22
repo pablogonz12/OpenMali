@@ -3,7 +3,7 @@
   "title": "wined3d, Vulkan backend \u2014 D3D11 on Vulkan (renderer=vulkan; the route that is dominated by DXVK)",
   "ref": "wine",
   "kind": "vulkan",
-  "note": "Rows are the four FL 10_0 tests in wined3d_adapter_vk_init() (adapter_vk.c:2215-2226) and the FL 11_0 test (:2237-2243). wined3d-vk rejects the adapter if any is false, so it is not a workaround for a DXVK refusal.",
+  "note": "Rows are the conditions of the FL 10_0 test in feature_level_from_caps() (adapter_vk.c:2213-2226) and the FL 11_0 test (:2233-2243). They are ANDed per level: a false one falls back to the next lower level, it does not reject the adapter -- a game that asks for the level above what the device reaches still fails, so the route is not a workaround for a DXVK refusal.",
   "explicit": [
     {
       "id": "wined3d-vk-multi-viewport",
