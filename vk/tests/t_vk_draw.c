@@ -154,6 +154,8 @@ case_skipped(const char *n)
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
 static VkDevice dev;
+static VkPhysicalDevice g_phys;   /* set in main: format-property queries inside the cases */
+static PFN_vkGetPhysicalDeviceFormatProperties g_gfp;
 static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
 
@@ -2267,6 +2269,17 @@ test_mrt_big(const char *name)
    int ok = 0;
 #define BIG_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
    BIG_CHECK(vs && fs, "shaders");
+   /* the format tables mandate colour-attachment support for optimalTilingFeatures only: a linear RGBA32F
+    * attachment is legal to reject, and this case needs linear tiling to read the pixels back */
+   if (g_gfp && g_phys) {
+      VkFormatProperties fp = {0};
+      g_gfp(g_phys, VK_FORMAT_R32G32B32A32_SFLOAT, &fp);
+      if (!(fp.linearTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+         printf("{\"test\":\"%s\",\"skipped\":\"linear RGBA32F is not a colour attachment on this device\",\"ok\":true}\n", name);
+         ok = 1;
+         goto out;
+      }
+   }
    for (int i = 0; i < 2; i++) {
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                               .format = VK_FORMAT_R32G32B32A32_SFLOAT, .extent = {bw, bh, 1}, .mipLevels = 1, .arrayLayers = 1,
@@ -3593,6 +3606,8 @@ main(int argc, char **argv)
    VkPhysicalDevice pd;
    uint32_t cnt = 1;
    VkResult r = EPD(inst, &cnt, &pd);
+   g_phys = pd;
+   g_gfp = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    if ((r != VK_SUCCESS && r != VK_INCOMPLETE) || cnt < 1) { printf("{\"fail\":\"no device\"}\n"); return 1; }
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
