@@ -111,6 +111,21 @@ int mali_bc_plan_decode(struct mali_bc_list *l, const struct mali_bc_layout *lay
 /* Whole image: every level, every layer (one job per level). */
 int mali_bc_plan_decode_all(struct mali_bc_list *l, const struct mali_bc_layout *lay, uint64_t image_va);
 
+/* MALI_NO_BC=1 (debug only): BC is advertised nowhere (no textureCompressionBC feature, no BC format features, CreateImage refused), so an
+ * app that can decompress itself (wined3d's own DXT/BPTC path) never reaches the emulation. The falsifier for "is the BC path wrong". */
+bool mali_bc_disabled(void);
+
+/* VkBufferImageCopy buffer geometry, in the driver's units: one entry per `bs`-sized block, `row` for a block row, `slice` for one image
+ * height (`bufferImageHeight` rows). bufferRowLength / bufferImageHeight are in texels (0 = tightly packed to the image extent) and are
+ * rounded up to whole blocks, exactly as Mesa's vk_image_buffer_copy_layout does. */
+struct mali_bc_bufgeom {
+   uint32_t row;     /* bytes per block row in the buffer */
+   uint64_t slice;   /* bytes per image (layer / z slice) in the buffer */
+   uint32_t ex, ey;  /* blocks to copy in x and y */
+};
+int mali_bc_buffer_geometry(uint32_t buffer_row_length, uint32_t buffer_image_height, VkExtent3D extent, uint32_t bw, uint32_t bh, uint32_t bs,
+                            struct mali_bc_bufgeom *out);
+
 /* Software reference of the jobs: bind VAs are host pointers. `dec` decodes ONE block (block_bytes of input) to 4 rows of 4 shadow texels
  * (out stride 4*shadow_bpt bytes per row, 16 texels row-major). Replicates the shader addressing (so planner bugs show). */
 typedef void (*mali_bc_block_fn)(const struct mali_bc_fmt *f, const uint8_t *block, uint8_t *out);

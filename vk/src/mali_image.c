@@ -606,7 +606,11 @@ mali_CreateImageView(VkDevice _dev, const VkImageViewCreateInfo *ci, const VkAll
       v->vd.layers = v->vk.layer_count;
    }
    if (img->bc && !img->native_view) {
-      v->vd.format = img->bc_lay.fmt->shadow;
+      /* Views sample the decoded shadow. The shadow holds the RAW decode bytes (no sRGB transfer applied), so the descriptor format has to
+       * follow the VIEW's own sRGB-ness, not the image's: a UNORM view of an *_SRGB image (D3D typeless, wined3d/zink) must read the raw
+       * values, and an SRGB view must let the texture unit linearise them. Both twins share one shadow bpt (mali_bc.c g_fmt). */
+      const struct mali_bc_fmt *vf = v->vk.format != img->vk.format ? mali_bc_format(v->vk.format) : NULL;
+      v->vd.format = vf && vf->shadow_bpt == img->bc_lay.fmt->shadow_bpt ? vf->shadow : img->bc_lay.fmt->shadow;
       v->vd.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
    }
    v->ycbcr = v->vk.format == MALI_YCBCR_FORMAT && (v->vk.aspects & VK_IMAGE_ASPECT_PLANE_0_BIT) && (v->vk.aspects & VK_IMAGE_ASPECT_PLANE_1_BIT);

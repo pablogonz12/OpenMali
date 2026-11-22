@@ -305,13 +305,15 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
          r = -EINVAL;
          break;
       }
-      uint32_t ex = (g->imageExtent.width + p->bw - 1) / p->bw, ey = (g->imageExtent.height + p->bh - 1) / p->bh;
-      uint32_t rl = g->bufferRowLength ? g->bufferRowLength : g->imageExtent.width;
-      uint32_t ih = g->bufferImageHeight ? g->bufferImageHeight : g->imageExtent.height;
+      struct mali_bc_bufgeom bg;
+      if (mali_bc_buffer_geometry(g->bufferRowLength, g->bufferImageHeight, g->imageExtent, p->bw, p->bh, p->bs, &bg)) {
+         r = -EINVAL;
+         break;
+      }
       buf_surf(&s, buf, g->bufferOffset);
-      s.row = (rl + p->bw - 1) / p->bw * p->bs;
-      s.slice = (ih + p->bh - 1) / p->bh * s.row;
-      r = mali_meta_plan_copy(&l, &d, &s, p->bs, ex, ey, zcount(img, g->imageSubresource, g->imageExtent));
+      s.row = bg.row;
+      s.slice = bg.slice;
+      r = mali_meta_plan_copy(&l, &d, &s, p->bs, bg.ex, bg.ey, zcount(img, g->imageSubresource, g->imageExtent));
       if (!r && img->bc)
          r = bc_decode(&l, img, g->imageSubresource, g->imageOffset, g->imageExtent);
    }
@@ -335,14 +337,16 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
          r = -EINVAL;
          break;
       }
-      uint32_t ex = (g->imageExtent.width + p->bw - 1) / p->bw, ey = (g->imageExtent.height + p->bh - 1) / p->bh;
-      uint32_t rl = g->bufferRowLength ? g->bufferRowLength : g->imageExtent.width;
-      uint32_t ih = g->bufferImageHeight ? g->bufferImageHeight : g->imageExtent.height;
+      struct mali_bc_bufgeom bg;
+      if (mali_bc_buffer_geometry(g->bufferRowLength, g->bufferImageHeight, g->imageExtent, p->bw, p->bh, p->bs, &bg)) {
+         r = -EINVAL;
+         break;
+      }
       buf_surf(&d, buf, g->bufferOffset);
-      d.row = (rl + p->bw - 1) / p->bw * p->bs;
-      d.slice = (ih + p->bh - 1) / p->bh * d.row;
-      if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: i2b src va %llx size %llu off %llu row %u slice %u | dst va %llx size %llu row %u | ex %u ey %u bs %u\n", (unsigned long long)s.va, (unsigned long long)s.size, (unsigned long long)s.off, s.row, s.slice, (unsigned long long)d.va, (unsigned long long)d.size, d.row, ex, ey, p->bs);
-      r = mali_meta_plan_copy(&l, &d, &s, p->bs, ex, ey, zcount(img, g->imageSubresource, g->imageExtent));
+      d.row = bg.row;
+      d.slice = bg.slice;
+      if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: i2b src va %llx size %llu off %llu row %u slice %u | dst va %llx size %llu row %u | ex %u ey %u bs %u\n", (unsigned long long)s.va, (unsigned long long)s.size, (unsigned long long)s.off, s.row, s.slice, (unsigned long long)d.va, (unsigned long long)d.size, d.row, bg.ex, bg.ey, p->bs);
+      r = mali_meta_plan_copy(&l, &d, &s, p->bs, bg.ex, bg.ey, zcount(img, g->imageSubresource, g->imageExtent));
    }
    emit(cmd, &l, r, "CmdCopyImageToBuffer2");
 }
