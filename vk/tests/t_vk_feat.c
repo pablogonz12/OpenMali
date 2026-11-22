@@ -28,6 +28,7 @@ static int g_ycbcr, g_imageless;
 static int g_tf;   /* VK_EXT_transform_feedback advertised (default on; MALI_EXPERIMENTAL_TF=0 opts out) */
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
+static PFN_vkGetPhysicalDeviceProperties2 g_gp2;   /* properties2, resolved in main: used by imgmax too */
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
@@ -3252,12 +3253,20 @@ imgmax_roundtrip(VkImageType type, VkExtent3D ext, uint32_t layers, VkImageCreat
    CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
    VkClearColorValue cc = {.float32 = {IMGMAX_CLEAR / 255.0f, 0.0f, 0.0f, 1.0f}};
    CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &rng);
+   /* the marker copy writes a sub-rect the clear also writes: order the two, or the clear can land last */
+   VkImageMemoryBarrier cw = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                              .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                              .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                              .image = img, .subresourceRange = rng};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &cw);
    VkBufferImageCopy mk = {.bufferRowLength = mw, .bufferImageHeight = mh,
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
                            .imageOffset = {ext.width - mw, ext.height - mh, slice}, .imageExtent = {mw, mh, 1}};
    CmdCopyBufferToImage(cb, mb.b, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &mk);
    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;   /* the contents must survive the transition: not UNDEFINED */
    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
    CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
    VkBufferImageCopy back[2] = {
@@ -3342,6 +3351,12 @@ test_imgmax(void)
    uint32_t dim = L->maxImageDimension2D;
    const char *e = getenv("MALI_IMGMAX_DIM");
    if (e && atoi(e) > 0) dim = (uint32_t)atoi(e);
+   /* the roundtrip writes a fixed IMGMAX_MARKER-square marker at the far corner and reads the origin: with a 2D size that
+    * small the marker covers the origin (or falls outside the image), so the override is refused before any allocation */
+   if (dim <= 512) {
+      printf("{\"test\":\"imgmax\",\"skipped\":\"MALI_IMGMAX_DIM %u is not larger than the 512-texel marker\",\"ok\":true}\n", dim);
+      return 1;
+   }
    /* failing-first: the GL 4.1 minimums zink's table asks for (VP_ZINK_requirements.json gl41) — 4096/256 before this change */
    CHECK(L->maxImageDimension1D >= 16384, "maxImageDimension1D %u < 16384", L->maxImageDimension1D);
    CHECK(L->maxImageDimension2D >= 16384, "maxImageDimension2D %u < 16384", L->maxImageDimension2D);
@@ -3370,9 +3385,23 @@ test_imgmax(void)
    /* array layers: the last layer's far corner. Wider than the 512-texel marker so the origin and the corner are different
     * data: 1024x64x2048 layers of R8 = 128 MiB (that, not the layer count, is what bounds this one) */
    if (!imgmax_roundtrip(VK_IMAGE_TYPE_2D, (VkExtent3D){1024, 64, 1}, L->maxImageArrayLayers, 0, "array")) return 0;
-   /* cube: six faces of the max */
-   if (!imgmax_roundtrip(VK_IMAGE_TYPE_2D, (VkExtent3D){L->maxImageDimensionCube, L->maxImageDimensionCube, 1}, 6,
-                         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, "cube")) return 0;
+   /* cube: six faces of the max — 6 * dim^2 bytes, which can exceed the allocation limit the driver reports */
+   {
+      /* the allocation ceiling lives in maintenance3 (VkPhysicalDeviceMaintenance3Properties), not in the limits chain */
+      VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES,
+                                                   .maxMemoryAllocationSize = ~(VkDeviceSize)0};
+      VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
+      if (g_gp2)   /* resolved once in main (gipa); KHR alias already falls back there */
+         g_gp2(g_pd, &p2);
+      const VkDeviceSize cube_bytes = (VkDeviceSize)L->maxImageDimensionCube * L->maxImageDimensionCube * 6;
+      if (cube_bytes > m3.maxMemoryAllocationSize) {
+         printf("{\"test\":\"imgmax_cube\",\"skipped\":\"%llu B exceeds maxMemoryAllocationSize %llu\",\"ok\":true}\n",
+                (unsigned long long)cube_bytes, (unsigned long long)m3.maxMemoryAllocationSize);
+      } else if (!imgmax_roundtrip(VK_IMAGE_TYPE_2D, (VkExtent3D){L->maxImageDimensionCube, L->maxImageDimensionCube, 1}, 6,
+                                   VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, "cube")) {
+         return 0;
+      }
+   }
    if (!imgmax_sample2d(dim)) return 0;
    printf("{\"test\":\"imgmax\",\"dims\":[%u,%u,%u,%u],\"layers\":%u,\"ok\":true}\n", L->maxImageDimension1D, dim,
           L->maxImageDimension3D, L->maxImageDimensionCube, L->maxImageArrayLayers);
@@ -3542,7 +3571,6 @@ test_memmodel(void)
 
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
-static PFN_vkGetPhysicalDeviceProperties2 g_gp2;
 static int
 test_subgroup_one(void)
 {
