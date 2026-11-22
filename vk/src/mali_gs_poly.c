@@ -97,6 +97,20 @@ compile_one(const char *kind, nir_shader *nir, unsigned arch, const struct mali_
                            "Mesa's divergence analysis", kind, want);
       return -1;
    }
+   /* tcs-compute-pipeline.md steps 6 and 8 applied to poly's programs: every memory mode a program still declares with
+    * a struct type has to be made explicit before the backend (nir_validate.c:1822 validate_var_decl,
+    * "glsl_type_is_scalar", is the assert that fires otherwise). do_compile's compute branch does this for
+    * nir_var_mem_shared and its tail for nir_var_mem_global; poly's programs carry the arena in *both* forms (the
+    * geometry/vs-output blobs are global, the count buffer's staging is shared), so the pair is run here, shared first
+    * (step 6) then global (step 8), before anything else touches the program. */
+   NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared, glsl_get_natural_size_align_bytes);
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared, nir_address_format_32bit_offset);
+   NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_global, glsl_get_natural_size_align_bytes);
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global, nir_address_format_64bit_global);
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: GS step (ii): compiling poly's %s program (%s, workgroup %u,%u,%u)\n", kind,
+              nir->info.stage == MESA_SHADER_COMPUTE ? "compute" : "vertex",
+              nir->info.workgroup_size[0], nir->info.workgroup_size[1], nir->info.workgroup_size[2]);
    struct mali_compile_opts o = *base;
    switch (nir->info.stage) {
    case MESA_SHADER_COMPUTE: o.stage = MALI_STAGE_COMPUTE; break;
