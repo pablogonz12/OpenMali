@@ -52,6 +52,7 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   mali_compiled_free(&p->vs_plain);   /* the XFB pipeline's side-effect-free vertex variant; the fail: path frees through here too */
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -225,7 +226,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
    o.xfb_pc = app_push;
-   o.xfb = xfb;
+   o.xfb = xfb ? MALI_XFB_STORES : 0;
    o.stage = MALI_STAGE_VERTEX;
    o.strip_psiz = ci->pInputAssemblyState && ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
    o.spirv = vcode;
@@ -248,16 +249,17 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    }
    if (xfb) {
       /* The same vertex shader without the XFB lowering: every draw outside a Begin/End range runs this one
-       * (mali_cmd.c), so a shader with XFB outputs stores nothing while capture is not active. Compiled once per
-       * pipeline with the same push layout (only the lowering differs), so the pipeline cache key does not change. */
-      o.xfb = 0;
+       * (mali_cmd.c), so a shader with XFB outputs stores nothing while capture is not active. MALI_XFB_PLAIN (not 0):
+       * the module still declares XFB, and a compile without a reserved area is refused (the #296 guard), which is why
+       * "o.xfb = 0" only ever worked as a cache hit that handed it the STORES binary. The push layout is the same. */
+      o.xfb = MALI_XFB_PLAIN;
       o.xfb_pc = 0;
       if (mali_compile(&o, &p->vs_plain, err, sizeof err)) {
          fprintf(stderr, "mali_vk: VS compile (non-XFB variant) failed: %s\n", err);
          res = VK_ERROR_INVALID_SHADER_NV;
          goto fail;
       }
-      o.xfb = 1;
+      o.xfb = MALI_XFB_STORES;
       o.xfb_pc = app_push;
    }
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
