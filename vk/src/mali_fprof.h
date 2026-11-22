@@ -28,6 +28,20 @@ struct mali_fprof_fl {
    double submit_us;    /* CPU time the backend kick took */
 };
 
+/* The steps of one present, as the software (MIT-SHM/PutImage) path runs them (mali_wsi.c): the acquire call, the
+ * wait for the frame's submit fence, the device->CPU sync of the image, the copy of the whole image into the shm
+ * segment, the X request + flush, and the whole vkQueuePresentKHR call around them. `present_ms` in the frame line is
+ * only the *interval* between two presents (1/fps at steady state); these are the times inside the call. */
+enum mali_fprof_wsi_step {
+   MALI_FPROF_WSI_ACQUIRE = 0,
+   MALI_FPROF_WSI_WAIT,
+   MALI_FPROF_WSI_SYNC,
+   MALI_FPROF_WSI_COPY,
+   MALI_FPROF_WSI_PUT,
+   MALI_FPROF_WSI_CALL,
+   MALI_FPROF_WSI_STEPS
+};
+
 /* MALI_FRAME_PROF=1 (or "stderr") -> lines on stderr; any other value -> a file path the lines are appended to. */
 struct mali_fprof {
    bool on;
@@ -45,6 +59,10 @@ struct mali_fprof {
    bool owned_out; /* out is a FILE we opened (closed at teardown) */
    struct mali_fprof_fl fl[MALI_FPROF_MAX];
    unsigned nfl;
+   /* per-step present times: the last present and the running sums, in ns */
+   uint64_t last_wsi_ns[MALI_FPROF_WSI_STEPS];
+   uint64_t sum_wsi_ns[MALI_FPROF_WSI_STEPS];
+   uint64_t nwsi;
 };
 
 void mali_fprof_init(struct mali_fprof *p, struct mali_device *dev);
@@ -59,6 +77,10 @@ void mali_fprof_kicked(struct mali_fprof *p, double submit_ms);
 void mali_fprof_retired(struct mali_fprof *p, struct mali_device *dev, uint64_t counter);
 /* A present-shaped submit (vk_common's QueuePresentKHR: no command buffers, waits + a signal). */
 void mali_fprof_present(struct mali_fprof *p);
+/* One step of the present path (`step` = enum mali_fprof_wsi_step) took `ns`; a no-op unless profiling is on. */
+void mali_fprof_wsi(struct mali_fprof *p, unsigned step, uint64_t ns);
+/* Start of a present: clears the per-step times of the last one. */
+void mali_fprof_wsi_begin(struct mali_fprof *p);
 /* GPU timestamp of "now", false if the backend has none. */
 bool mali_fprof_ticks(struct mali_device *dev, uint64_t *ticks);
 

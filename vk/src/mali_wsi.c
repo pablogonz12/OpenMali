@@ -7,7 +7,22 @@
  * Everything else lives in the runtime, wsi_common and the entrypoints in mali_image.c / mali_memory.c. */
 #include "mali_private.h"
 #include "mali_image.h"
+#include "mali_fprof.h"
 #include "mali_queue.h"
+
+#include <time.h>
+
+/* MALI_FRAME_PROF per-step present timers (mali_fprof.h enum mali_fprof_wsi_step). Off unless the env var set it: every
+ * helper is a load + compare and the clock read only happens when profiling is on. */
+static uint64_t
+wsi_now_ns(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+#define WSI_PROF_STEP(dev, step, t0) do { struct mali_fprof *p_ = mali_device_fprof(dev); if (p_->on) mali_fprof_wsi(p_, step, wsi_now_ns() - (t0)); } while (0)
+#define WSI_PROF_T0(t0) uint64_t t0 = 0; { struct mali_fprof *p_ = mali_device_fprof(dev); if (p_->on) t0 = wsi_now_ns(); }
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
 #include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below (#325) */
@@ -1003,10 +1018,12 @@ present_image_cpu_sync(struct mali_device *dev, struct mali_image *mi, uint32_t 
    if (!dev || !mi || !mi->mem)
       return;
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   WSI_PROF_T0(t_sync);
    if (be->bo_host_touch)
       be->bo_host_touch(dev->kdev, &mi->mem->bo);   /* a mapped BO: the next sync must cover it */
    if (be->bo_cache)
       be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+   WSI_PROF_STEP(dev, MALI_FPROF_WSI_SYNC, t_sync);
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: wsi present: image %u BO 0x%llx synced device->CPU before the copy\n",
               image_index, (unsigned long long)mi->va);
@@ -1030,6 +1047,12 @@ present_wait_submit_fence(struct mali_device *dev, uint32_t image_index)
    clock_gettime(CLOCK_MONOTONIC, &t0);
    int wr = be && be->fence_wait ? be->fence_wait(dev->kdev, ffd, 1000) : 0;
    clock_gettime(CLOCK_MONOTONIC, &t1);
+   if (dev) {   /* MALI_FRAME_PROF: the wait step (0 when the frame had already retired) */
+      struct mali_fprof *p = mali_device_fprof(dev);
+      if (p->on)
+         mali_fprof_wsi(p, MALI_FPROF_WSI_WAIT,
+                        (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull + (uint64_t)(t1.tv_nsec - t0.tv_nsec));
+   }
    close(ffd);
    const long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
    if (wr != 0) {
@@ -1159,9 +1182,12 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
    if (!present_wait_submit_fence(dev, image_index))
       return false;
    present_image_cpu_sync(dev, mali_image_from_handle(img->image), image_index);
+   WSI_PROF_T0(t_copy);
    memcpy((uint8_t *)st->addr + off, img->cpu_map, (size_t)st->stride * st->height);
+   WSI_PROF_STEP(dev, MALI_FPROF_WSI_COPY, t_copy);
    /* total_width is the *segment* pitch (the server reads rows of that width); src width/height are the image. */
    const uint16_t total_w = (uint16_t)(st->stride / 4);
+   WSI_PROF_T0(t_put);
    xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, total_w, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
    /* Gate only the modes that promise a non-tearing, ordered presentation. IMMEDIATE is the A/B measurement path and
@@ -1194,6 +1220,7 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
          *gated = true;
    }
    xcb_flush((xcb_connection_t *)st->conn);
+   WSI_PROF_STEP(dev, MALI_FPROF_WSI_PUT, t_put);
    return true;
 #endif
 }
@@ -1218,7 +1245,10 @@ mali_wsi_acquire_next_image2(VkDevice device, const VkAcquireNextImageInfoKHR *i
 {
    VK_FROM_HANDLE(mali_device, dev, device);
    struct mali_physical_device *pdev = mali_device_pdev(dev);
-   return wsi_common_acquire_next_image2(chain_wsi_device(pdev, info->swapchain), device, info, image_index);
+   WSI_PROF_T0(t_acq);
+   VkResult r = wsi_common_acquire_next_image2(chain_wsi_device(pdev, info->swapchain), device, info, image_index);
+   WSI_PROF_STEP(dev, MALI_FPROF_WSI_ACQUIRE, t_acq);
+   return r;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -1674,8 +1704,27 @@ mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uin
    (void)dev; (void)wi;
 }
 
+/* MALI_FRAME_PROF: the whole call, timed around the body below (which keeps every early return). */
+static VkResult
+mali_wsi_queue_present_body(VkQueue queue, const VkPresentInfoKHR *info);
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
+{
+   VK_FROM_HANDLE(vk_queue, vq, queue);
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   struct mali_fprof *p = mali_device_fprof(dev);
+   if (!p->on)
+      return mali_wsi_queue_present_body(queue, info);
+   mali_fprof_wsi_begin(p);
+   const uint64_t t0 = wsi_now_ns();
+   VkResult r = mali_wsi_queue_present_body(queue, info);
+   mali_fprof_wsi(p, MALI_FPROF_WSI_CALL, wsi_now_ns() - t0);
+   return r;
+}
+
+static VkResult
+mali_wsi_queue_present_body(VkQueue queue, const VkPresentInfoKHR *info)
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);

@@ -38,6 +38,9 @@ void mali_queue_setup(struct mali_device *dev); /* after vk_queue_init */
  * semaphore to wait (binary semaphores are not observable through vk_sync_wait in this driver), so it waits this
  * fence before reading the image that submission wrote. The caller closes it. */
 int mali_queue_last_fence_dup(struct mali_device *dev);
+/* M15 present profiling: the device's MALI_FRAME_PROF state (never NULL), `->on` false when the env var is unset.
+ * mali_wsi.c times the steps of a present into it (mali_fprof_wsi); the struct itself is private to mali_queue.c. */
+struct mali_fprof *mali_device_fprof(struct mali_device *dev);
 
 static inline struct mali_physical_device *
 mali_device_pdev(struct mali_device *dev)

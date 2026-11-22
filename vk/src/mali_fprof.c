@@ -10,7 +10,10 @@
  *               included, nor is the wait for older frames.
  *   gpu_ms      estimate of the frame's own GPU time from the GPU timestamp counter (kb_timeinfo, global, GPU clock),
  *               sampled when the CPU kicks the frame and when the CPU first sees the frame's retire counter move.
- *   present_ms  interval between two present-shaped submits (0 until a second one is seen).
+ *   present_ms  interval between two present-shaped submits (0 until a second one is seen). At a steady frame rate this
+ *               is 1/fps by construction: it says *when* the presents happened, never how long one took. The time inside
+ *               the call is wsi_us=acquire/wait/sync/copy/put/call (mali_fprof_wsi, mali_wsi.c), which is what a slow
+ *               software present actually costs.
  *   frame_ms    interval between two frame kicks (submit-to-submit): the wall clock the app runs at.
  *
  * The estimator (see also mali_fprof.h):
@@ -103,10 +106,14 @@ mali_fprof_finish(struct mali_fprof *p)
    if (p->on) {
       const unsigned n = p->n_gpu_bound + p->n_cpu_bound;
       const uint64_t present_n = p->npresent > 1 ? p->npresent - 1 : 0;
-      fprintf(p->out, "FRAMEPROF summary frames=%llu gpu_bound=%u cpu_bound=%u submit_us_avg=%.1f gpu_ms_avg=%.2f present_ms_avg=%.2f\n",
+      fprintf(p->out, "FRAMEPROF summary frames=%llu gpu_bound=%u cpu_bound=%u submit_us_avg=%.1f gpu_ms_avg=%.2f present_ms_avg=%.2f"
+                      " wsi_avg_us=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f\n",
               (unsigned long long)p->seq, p->n_gpu_bound, p->n_cpu_bound,
               n ? p->sum_submit_us / n : 0.0, n ? p->sum_gpu_ms / n : 0.0,
-              present_n ? p->sum_present_ms / present_n : 0.0);
+              present_n ? p->sum_present_ms / present_n : 0.0,
+              p->nwsi ? p->sum_wsi_ns[0] / 1e3 / p->nwsi : 0.0, p->nwsi ? p->sum_wsi_ns[1] / 1e3 / p->nwsi : 0.0,
+              p->nwsi ? p->sum_wsi_ns[2] / 1e3 / p->nwsi : 0.0, p->nwsi ? p->sum_wsi_ns[3] / 1e3 / p->nwsi : 0.0,
+              p->nwsi ? p->sum_wsi_ns[4] / 1e3 / p->nwsi : 0.0, p->nwsi ? p->sum_wsi_ns[5] / 1e3 / p->nwsi : 0.0);
       if (p->out)
          fflush(p->out);
       p->on = false;
@@ -185,9 +192,12 @@ mali_fprof_retired(struct mali_fprof *p, struct mali_device *dev, uint64_t count
          p->n_gpu_bound++;
       else
          p->n_cpu_bound++;
-      fprintf(p->out, "FRAMEPROF f=%llu submit_us=%.1f gpu_ms=%.2f est=%s depth=%u present_ms=%.2f frame_ms=%.2f bound=%s\n",
+      fprintf(p->out, "FRAMEPROF f=%llu submit_us=%.1f gpu_ms=%.2f est=%s depth=%u present_ms=%.2f frame_ms=%.2f bound=%s"
+                      " wsi_us=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f\n",
               (unsigned long long)p->seq, p->fl[i].submit_us, gpu_ms, sat ? "sat" : "idle", p->fl[i].pending,
-              p->have_present ? p->last_present_ms : 0.0, frame_ms, sat ? "gpu" : "cpu");
+              p->have_present ? p->last_present_ms : 0.0, frame_ms, sat ? "gpu" : "cpu",
+              p->last_wsi_ns[0] / 1e3, p->last_wsi_ns[1] / 1e3, p->last_wsi_ns[2] / 1e3,
+              p->last_wsi_ns[3] / 1e3, p->last_wsi_ns[4] / 1e3, p->last_wsi_ns[5] / 1e3);
    }
    if (k) {
       p->last_retire_ticks = ticks; /* one baseline advance for the whole observed batch */
@@ -210,4 +220,26 @@ mali_fprof_present(struct mali_fprof *p)
    p->last_present_cpu_ns = now;
    p->have_present = true;
    p->npresent++;
+}
+
+/* One step of a present: kept as a running sum (the summary) and as the last value (the next frame's line), both in ns.
+ * A step whose counter `ns` is 0 because it was not taken this time still resets the "last" value, so a line never
+ * mixes two presents from different paths (e.g. a dma-buf present after a software one). */
+void
+mali_fprof_wsi(struct mali_fprof *p, unsigned step, uint64_t ns)
+{
+   if (!p->on || step >= MALI_FPROF_WSI_STEPS)
+      return;
+   p->last_wsi_ns[step] = ns;
+   p->sum_wsi_ns[step] += ns;
+}
+
+void
+mali_fprof_wsi_begin(struct mali_fprof *p)
+{
+   if (!p->on)
+      return;
+   memset(p->last_wsi_ns, 0, sizeof p->last_wsi_ns);
+   if (p->nwsi != UINT64_MAX)
+      p->nwsi++;
 }

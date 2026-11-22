@@ -568,6 +568,14 @@ mali_queue_device_finish(struct mali_device *dev)
    pthread_mutex_destroy(&dev->sync_lock);
 }
 
+/* The device's profiling state. mali_hwctx is private to this file, so mali_wsi.c asks here rather than including it. */
+struct mali_fprof *
+mali_device_fprof(struct mali_device *dev)
+{
+   static struct mali_fprof off = { 0 };   /* a device without frames yet: every use is a no-op */
+   return (dev && dev->hw) ? &dev->hw->fp : &off;
+}
+
 int
 mali_queue_last_fence_dup(struct mali_device *dev)
 {
