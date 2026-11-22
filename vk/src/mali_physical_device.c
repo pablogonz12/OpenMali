@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
 #include "mali_tf.h"
+#include "mali_bc.h"
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
@@ -490,7 +491,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .robustBufferAccess2 = true,
       .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
-      .textureCompressionBC = !mali_bc_disabled(),   /* MALI_NO_BC=1 (debug): advertise no BC, for the "is the BC path wrong" A/B */
+      .textureCompressionBC = true,
       .hostQueryReset = true,
       .synchronization2 = true,
       .dynamicRendering = true,
@@ -554,6 +555,11 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .logicOp = true,             /* t_vk_draw fx_logic_* (static logicOpEnable through the blend shader) */
       .independentBlend = true,    /* t_vk_draw fx_blend_* (colour attachment 0; the driver renders one colour attachment) */
    };
+   /* MALI_NO_BC=1 (debug only, mali_bc.h): advertise neither textureCompressionBC nor any BC format feature, so an app that can decompress
+    * DXT/BPTC itself (wined3d) never reaches the emulation. The falsifier for "is the BC path wrong" on a device; never a product default. */
+   struct vk_features feat = features;
+   if (mali_bc_disabled())
+      feat.textureCompressionBC = false;
    struct vk_properties properties;
    mali_get_properties(gpu, &properties);
    /* VK_EXT_physical_device_drm: the numbers are stat() of the node that backs /dev/mali0 (the bridge's
@@ -568,7 +574,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       properties.drmPrimaryMinor = minor(drm.primary);
    }
 
-   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &enabled, &features,
+   VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk, &enabled, &feat,
                                              &properties, &dispatch_table);
    if (result != VK_SUCCESS)
       return result;
