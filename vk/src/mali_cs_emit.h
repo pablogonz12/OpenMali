@@ -164,6 +164,9 @@ struct mali_draw {
    const uint8_t *ind;                    /* indirect draw: CPU view of the VkDraw*IndirectCommand array (expanded at submit, mali_cmd.c) */
    const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* indirect draw read on the GPU: VA of one VkDraw*IndirectCommand; count/instance_count/first_*
+                                           * are then written by the CS LOAD_MULTIPLE, not by the CPU (ind stays NULL) */
+   bool ind_nodrain;                      /* control (MALI_IND_CPU=1): arguments read from the mapping at submit with no drain */
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
@@ -192,6 +195,9 @@ struct mali_rec {
    const uint8_t *ind;
    const uint32_t *ind_count;
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* != 0: this draw's arguments live at this VA, loaded by the CS at execution time */
+   bool ind_nodrain;                      /* control (MALI_IND_CPU=1): the arguments are read from the mapping at submit with
+                                           * no drain first, i.e. a compute job's write in this submission is invisible */
    unsigned occ_mode;
 };
 
@@ -253,15 +259,24 @@ struct mali_frame {
    struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
+   /* The pre block (compute-in-pass.md; mali_cmd_pre_dispatch): kernels that run at the head of this frame, before draw 0, in
+    * ascending `wave` order (one wait per non-empty wave). `sync_cs`: a later wave loads a job size this kernel writes, so a flush +
+    * WAIT LS follows its wave. Owned by the frame (mali_frame_finish frees it). */
+   struct mali_pre { struct mali_dispatch d; uint8_t wave; bool sync_cs; } *pre;
+   unsigned npre, cappre;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
    unsigned nops;
    struct mali_rec *draws;
    unsigned ndraws, cap;
    struct mali_pool *pool;                /* state blocks of the recorded draws (freed with the frame) */
    /* Submit-time facts accumulated as the records come in (mali_frame_note_rec), so mali_cmd_submit does not have to walk
-    * every record of the frame again: any_ind = some record is an indirect draw; poly_cpu = some record's effective
-    * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
-   bool any_ind, poly_cpu;
+    * every record of the frame again: any_ind = some record is an indirect draw; any_ind_cpu = some record's arguments are
+    * read through the CPU mapping at submit (the software rasteriser, DrawIndirectCount, polygonMode LINE/POINT, transform
+    * feedback: those need a drain, a GPU-read draw does not); poly_cpu = some record's effective pipeline is polygonMode
+    * LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
+   bool any_ind, any_ind_cpu, poly_cpu;
+   unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
+                            * at 1); CmdClearAttachments only clears that one */
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
 };
 

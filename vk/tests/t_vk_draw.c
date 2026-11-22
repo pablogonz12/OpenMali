@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil|indirect_gpu|inpass_compute]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -103,7 +103,7 @@ static struct st_state g_st2;  /* second pipeline (s->pipe2) for the LOAD pass: 
 
 /* MODE_SHAREIDX stays BELOW MODE_PUSHFS: the >= MODE_PUSHFS test means "the full-screen indexed quad", and that branch must not bind
  * an index buffer of its own before the share_idx draws (the point of that case is the exact index-buffer register sequence). */
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8 };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8, MODE_INDGPU, MODE_INPASS };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -129,7 +129,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -140,6 +140,7 @@ case_skipped(const char *n)
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
    X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
+   X(CmdDrawIndirect) X(CreateComputePipelines) X(CmdDispatch) \
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
@@ -220,6 +221,15 @@ struct scene {
    VkDescriptorSet dset[2];
    VkDescriptorSet dset8[8]; /* MODE_SETS8: eight sets bound in one draw */
    VkDescriptorSetLayout dsl8[8]; /* persistent set-layout array (a stack array dangled behind the pipeline layout) */
+   VkBuffer args;            /* MODE_INDGPU: the VkDrawIndirectCommand array a compute job writes (zeroed by the host) */
+   VkDeviceMemory argsmem;
+   uint8_t *argsp;           /* mapped, 64 bytes: read back after the fence to see what the GPU wrote */
+   VkShaderModule csm;       /* MODE_INDGPU: indargs.comp */
+   VkDescriptorSetLayout cdsl;
+   VkDescriptorPool cpool;
+   VkDescriptorSet cset;
+   VkPipelineLayout clayout;
+   VkPipeline cpipe;         /* MODE_INDGPU: the compute pipeline that writes the draw command */
    VkBuffer ubo[8];          /* uniform buffers (colours) */
    VkDeviceMemory ubomem;
    uint8_t *ubop;            /* mapped, 256 bytes per buffer */
@@ -420,7 +430,7 @@ scene_create(struct scene *s, int depth)
                                   1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1,
                                   0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1};
    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
-                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (mode == MODE_INPASS ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0)};
    for (int i = 0; i < 2; i++)
       CHECK(CreateBuffer(dev, &bi, NULL, &s->vb[i]) == VK_SUCCESS, "vertex buffer");
    GetBufferMemoryRequirements(dev, s->vb[0], &mr);
@@ -430,7 +440,10 @@ scene_create(struct scene *s, int depth)
    CHECK(AllocateMemory(dev, &va, NULL, &s->vbmem) == VK_SUCCESS, "vb mem");
    uint8_t *vp;
    CHECK(MapMemory(dev, s->vbmem, 0, VK_WHOLE_SIZE, 0, (void **)&vp) == VK_SUCCESS, "map vb");
-   memcpy(vp, pos, sizeof pos);
+   if (mode == MODE_INPASS)
+      memset(vp, 0, stride);   /* the positions exist only on the GPU: a kernel inside the pass writes them */
+   else
+      memcpy(vp, pos, sizeof pos);
    memcpy(vp + stride, colr, sizeof colr);
    UnmapMemory(dev, s->vbmem);
    CHECK(BindBufferMemory(dev, s->vb[0], s->vbmem, 0) == VK_SUCCESS, "bind vb0");
@@ -649,6 +662,62 @@ scene_create(struct scene *s, int depth)
 
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
+
+   if (mode == MODE_INDGPU || mode == MODE_INPASS) {
+      /* One VkDrawIndirectCommand the GPU writes: {vertexCount, instanceCount, firstVertex, firstInstance}. The host
+       * zeroes it and does not touch it again, so the draw is empty unless the command stream itself reads it after the
+       * compute job has run. */
+      VkBufferCreateInfo abi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 64,
+                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+      CHECK(CreateBuffer(dev, &abi, NULL, &s->args) == VK_SUCCESS, "args buffer");
+      GetBufferMemoryRequirements(dev, s->args, &mr);
+      VkMemoryAllocateInfo aai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                  .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+      CHECK(AllocateMemory(dev, &aai, NULL, &s->argsmem) == VK_SUCCESS, "args mem");
+      CHECK(MapMemory(dev, s->argsmem, 0, VK_WHOLE_SIZE, 0, (void **)&s->argsp) == VK_SUCCESS, "map args");
+      memset(s->argsp, 0, 64);
+      {   /* only HOST_VISIBLE was required: without a flush a non-coherent allocation may not have the zeros the GPU is
+           * meant to start from (the record-time zero check and the compute's read both depend on them) */
+         VkMappedMemoryRange mr0 = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->argsmem, .offset = 0,
+                                    .size = 64};
+         FlushMappedMemoryRanges(dev, 1, &mr0);
+      }
+      CHECK(BindBufferMemory(dev, s->args, s->argsmem, 0) == VK_SUCCESS, "bind args");
+
+      const unsigned nb = mode == MODE_INPASS ? 2 : 1;   /* INPASS: binding 1 = the vertex buffer (storage + vertex usage) */
+      s->csm = load_spv(mode == MODE_INPASS ? "inpass.comp.spv" : "indargs.comp.spv");
+      CHECK(s->csm, "load the compute shader");
+      VkDescriptorSetLayoutBinding csb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+                                             {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
+      VkDescriptorSetLayoutCreateInfo cdli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                              .bindingCount = nb, .pBindings = csb};
+      CHECK(CreateDescriptorSetLayout(dev, &cdli, NULL, &s->cdsl) == VK_SUCCESS, "compute dsl");
+      VkPushConstantRange cpcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 12};
+      VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                         .setLayoutCount = 1, .pSetLayouts = &s->cdsl,
+                                         .pushConstantRangeCount = mode == MODE_INPASS, .pPushConstantRanges = &cpcr};
+      CHECK(CreatePipelineLayout(dev, &cpli, NULL, &s->clayout) == VK_SUCCESS, "compute layout");
+      VkComputePipelineCreateInfo cpci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = s->clayout,
+                                          .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = s->csm, .pName = "main"}};
+      CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, NULL, &s->cpipe) == VK_SUCCESS, "compute pipeline");
+      VkDescriptorPoolSize cps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = nb};
+      VkDescriptorPoolCreateInfo cpci2 = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                          .poolSizeCount = 1, .pPoolSizes = &cps};
+      CHECK(CreateDescriptorPool(dev, &cpci2, NULL, &s->cpool) == VK_SUCCESS, "compute pool");
+      VkDescriptorSetAllocateInfo cdai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = s->cpool,
+                                          .descriptorSetCount = 1, .pSetLayouts = &s->cdsl};
+      CHECK(AllocateDescriptorSets(dev, &cdai, &s->cset) == VK_SUCCESS, "compute set");
+      VkDescriptorBufferInfo cbi = {.buffer = s->args, .offset = 0, .range = 64};
+      VkDescriptorBufferInfo cvi = {.buffer = s->vb[0], .offset = 0, .range = 256};
+      VkWriteDescriptorSet cw[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 0,
+                                     .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi},
+                                    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 1,
+                                     .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cvi}};
+      UpdateDescriptorSets(dev, nb, cw, 0, NULL);
+   }
    return 1;
 }
 
@@ -657,6 +726,13 @@ scene_destroy(struct scene *s)
 {
    DeviceWaitIdle(dev);
    if (s->pool) DestroyCommandPool(dev, s->pool, NULL);
+   if (s->cpipe) DestroyPipeline(dev, s->cpipe, NULL);
+   if (s->clayout) DestroyPipelineLayout(dev, s->clayout, NULL);
+   if (s->cpool) DestroyDescriptorPool(dev, s->cpool, NULL);
+   if (s->cdsl) DestroyDescriptorSetLayout(dev, s->cdsl, NULL);
+   if (s->csm) DestroyShaderModule(dev, s->csm, NULL);
+   if (s->args) DestroyBuffer(dev, s->args, NULL);
+   if (s->argsmem) FreeMemory(dev, s->argsmem, NULL);
    if (s->pipe) DestroyPipeline(dev, s->pipe, NULL);
    if (s->pipe2) DestroyPipeline(dev, s->pipe2, NULL);
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
@@ -723,6 +799,22 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = g_nocol ? 1 : g_msds ? 3 : s->depth ? 2 : 1,
                                .pClearValues = cv};
+   if (s->mode == MODE_INDGPU) {
+      /* The producer runs BEFORE the render pass: a compute job writes the VkDrawIndirectCommand into s->args, and the
+       * draw inside the pass must read it. The barrier is the app's own (Vulkan requires the app to synchronise the
+       * write against DRAW_INDIRECT; the driver must then not re-read the CPU mapping), and it is also what the
+       * driver's own ordering must survive: no drain, no host wait. */
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->cpipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->clayout, 0, 1, &s->cset, 0, NULL);
+      CmdDispatch(cb, 1, 1, 1);
+      VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+                             .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                             .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
+      VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+      CmdPipelineBarrier2(cb, &di);
+   }
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->second && g_st2.on && s->pipe2 ? s->pipe2 : s->pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
@@ -849,6 +941,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[i & 1], 0, NULL);
       if (s->mode == MODE_MDI)
          CmdDrawIndexedIndirect(cb, s->ib, 64, 2, 20);   /* multiDrawIndirect: drawCount 2 */
+      else if (s->mode == MODE_INDGPU)
+         CmdDrawIndirect(cb, s->args, 0, 1, 16);   /* the command the compute job above wrote */
       else if (s->mode >= MODE_PUSHFS)
          CmdDrawIndexed(cb, 6, 1, 0, 7, g_share == 3 ? g_share_fi[i] : 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
@@ -1052,6 +1146,112 @@ br_destroy(struct br_res *r)
       if (im) DestroyImage(dev, im, NULL);
       if (m) FreeMemory(dev, m, NULL);
    }
+}
+
+/* Degradation rows: three legal-Vulkan recordings that a compositor (zink / ANGLE / CEF) makes and that used to
+ * poison the whole command buffer with VK_ERROR_FEATURE_NOT_PRESENT at vkEndCommandBuffer. Each sub-case records a
+ * clear-only frame (no pipeline needed) and reports the vkEndCommandBuffer result, which is the failing-first signal:
+ *  a nullslot  - colourAttachmentCount 2 with the second view null (zink always emits N slots)
+ *  b msaa      - 4x MSAA colour pass with a vkCmdClearAttachments colour clear inside it (+ resolve target)
+ *  c rt1       - vkCmdClearAttachments naming colorAttachment 1 while only RT0 is bound (degrades, must not fail)
+ * Pixel contents need a device; the recording result is what the host fake can decide. */
+static int
+test_degrade(const char *name)
+{
+   static const struct { VkFormat f; VkSampleCountFlagBits s; int nullslot, msaa, rt1; const char *what; } cfg[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 1, 0, 0, "nullslot"},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_4_BIT, 0, 1, 0, "msaa-clear"},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 1, "clear-rt1"},
+   };
+   const unsigned w = 32, h = 32;
+   int bad = 0;
+   for (unsigned k = 0; k < sizeof cfg / sizeof cfg[0]; k++) {
+      VkImage im = VK_NULL_HANDLE, res = VK_NULL_HANDLE;
+      VkDeviceMemory mem = VK_NULL_HANDLE, rmem = VK_NULL_HANDLE;
+      VkImageView iv = VK_NULL_HANDLE, rv = VK_NULL_HANDLE;
+      VkCommandPool pool = VK_NULL_HANDLE;
+      VkCommandBuffer cb = VK_NULL_HANDLE;
+      if (cfg[k].msaa && !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {   /* MALI_EXPERIMENTAL_MSAA=0: not advertised */
+         printf("{\"test\":\"%s\",\"case\":\"%s\",\"skipped\":\"4x not supported\",\"ok\":true}\n", name, cfg[k].what);
+         continue;
+      }
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = cfg[k].f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              /* LINEAR tiling is illegal with samples > 1 (VUID-VkImageCreateInfo-tiling), and the readback
+                               * path below copies through a TRANSFER_SRC image, so the multisampled one is OPTIMAL */
+                              .samples = cfg[k].s, .tiling = cfg[k].msaa ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      VkMemoryRequirements mr;
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      if (CreateImage(dev, &ii, NULL, &im) != VK_SUCCESS) { g_fail = 1; break; }
+      GetImageMemoryRequirements(dev, im, &mr);
+      ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      if (AllocateMemory(dev, &ai, NULL, &mem) != VK_SUCCESS || BindImageMemory(dev, im, mem, 0) != VK_SUCCESS) { g_fail = 1; break; }
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = cfg[k].f, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      if (CreateImageView(dev, &vi, NULL, &iv) != VK_SUCCESS) { g_fail = 1; break; }
+      if (cfg[k].msaa) {   /* the resolve target a 4x pass must have */
+         VkImageCreateInfo ri2 = ii;
+         ri2.samples = VK_SAMPLE_COUNT_1_BIT;
+         ri2.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+         if (CreateImage(dev, &ri2, NULL, &res) != VK_SUCCESS) { g_fail = 1; break; }
+         GetImageMemoryRequirements(dev, res, &mr);
+         ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+         if (AllocateMemory(dev, &ai, NULL, &rmem) != VK_SUCCESS || BindImageMemory(dev, res, rmem, 0) != VK_SUCCESS) { g_fail = 1; break; }
+         VkImageViewCreateInfo rvi = vi;
+         rvi.image = res;
+         if (CreateImageView(dev, &rvi, NULL, &rv) != VK_SUCCESS) { g_fail = 1; break; }
+      }
+      VkRenderingAttachmentInfo att[2];
+      memset(att, 0, sizeof att);
+      att[0] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = iv,
+                                          .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          .resolveMode = cfg[k].msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+                                          .resolveImageView = rv, .resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      att[1] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = VK_NULL_HANDLE,
+                                          .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                          .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
+                            /* the rt1 row clears index 1, so index 1 must exist (it is the null slot: legal, no effect) */
+                            .colorAttachmentCount = (cfg[k].nullslot || cfg[k].rt1) ? 2u : 1u, .pColorAttachments = att};
+      VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      VkFence fence = VK_NULL_HANDLE;
+      if (CreateCommandPool(dev, &pci, NULL, &pool) != VK_SUCCESS) { g_fail = 1; break; }
+      cai.commandPool = pool;
+      if (AllocateCommandBuffers(dev, &cai, &cb) != VK_SUCCESS || BeginCommandBuffer(cb, &bi) != VK_SUCCESS) { g_fail = 1; break; }
+      CmdBeginRendering(cb, &ri);
+      if (cfg[k].msaa || cfg[k].rt1) {
+         VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = cfg[k].rt1 ? 1u : 0u};
+         ca.clearValue.color.float32[0] = 0.25f; ca.clearValue.color.float32[1] = 0.5f;
+         ca.clearValue.color.float32[2] = 0.75f; ca.clearValue.color.float32[3] = 1.0f;
+         VkClearRect cr = {.rect = {{0, 0}, {w / 2, h / 2}}, .baseArrayLayer = 0, .layerCount = 1};   /* a sub-rectangle too: the quad path */
+         CmdClearAttachments(cb, 1, &ca, 1, &cr);
+      }
+      CmdEndRendering(cb);
+      VkResult er = EndCommandBuffer(cb);
+      printf("{\"test\":\"%s\",\"case\":\"%s\",\"vkenv_result\":%d,\"ok\":%s}\n", name, cfg[k].what, (int)er,
+             er == VK_SUCCESS ? "true" : "false");
+      if (er != VK_SUCCESS) {
+         printf("FAIL  %s: vkEndCommandBuffer returned %d (a legal frame must not be refused)\n", cfg[k].what, (int)er);
+         bad = 1;
+      }
+      (void)CreateFence(dev, &fi, NULL, &fence);
+      if (fence) DestroyFence(dev, fence, NULL);
+      if (pool) DestroyCommandPool(dev, pool, NULL);
+      if (rv) DestroyImageView(dev, rv, NULL);
+      if (iv) DestroyImageView(dev, iv, NULL);
+      if (res) DestroyImage(dev, res, NULL);
+      if (im) DestroyImage(dev, im, NULL);
+      if (rmem) FreeMemory(dev, rmem, NULL);
+      if (mem) FreeMemory(dev, mem, NULL);
+   }
+   g_fail |= bad;
+   return !bad;
 }
 
 /* one pass into an image: CLEAR blue (the earlier submission's source) or the frame's own DONT_CARE pass */
@@ -1339,6 +1539,163 @@ test_blitreplay(void)
 }
 
 static const float ID[4] = {1, 0, 0, 0};
+
+/* GPU-read indirect draw (rung 2/3): the VkDrawIndirectCommand exists only on the GPU. The host zeroes the buffer at
+ * record time, a compute job writes {vertexCount 3, instanceCount 1, firstVertex 0, firstInstance 0}, the app's barrier
+ * orders the write against DRAW_INDIRECT, and the draw (non-indexed, the same triangle as "triangle") must paint 8192
+ * pixels. A driver that expands the command on the CPU at submit sees vertexCount 0 and draws nothing, which is exactly
+ * what main did and why DXVK/GPU-driven frames could not use indirect draws.
+ *
+ * Three runs make the point on hardware (MALI_PIPE_DBG=1 names each one):
+ *   (default)           arguments read on the GPU (command stream), no drain  -> coverage 8192
+ *   MALI_IND_CPU=1      arguments read on the CPU, NO drain (the failing control) -> coverage 0: the compute job's write
+ *                       is invisible because the mapping is read at submit, before the producer frame is even submitted
+ *   MALI_IND_CPU=drain  arguments read on the CPU after a drain (the pre-rung-2 shape, correct but serialized) -> 8192
+ * So the default cannot be passing through the same path as the control: without the drain the CPU read has nothing. */
+static int
+test_indirect_gpu(void)
+{
+   struct scene s = {.mode = MODE_INDGPU};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
+   CHECK(!memcmp(s.argsp, "\0\0\0\0\0\0\0\0", 8), "the command buffer must still be zero at record time");
+   g_hostread = 1;   /* the coverage check below reads the colour image through its mapping: it needs the dependency */
+   if (!scene_draw(&s, 1, rot, f)) return 0;
+   /* the producer ran: the GPU wrote the command (texture and buffer writes reach a coherent mapping after the fence) */
+   uint32_t cmd[4];
+   {   /* both allocations are read here (the command buffer and, in report(), the colour image): invalidate both, since
+        * HOST_VISIBLE memory need not be coherent */
+      VkMappedMemoryRange mr[2] = {{.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.argsmem, .offset = 0, .size = VK_WHOLE_SIZE},
+                                    {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0, .size = VK_WHOLE_SIZE}};
+      InvalidateMappedMemoryRanges(dev, 2, mr);
+   }
+   memcpy(cmd, s.argsp, sizeof cmd);
+   if (!g_fake)
+      CHECK(cmd[0] == 3 && cmd[1] == 1 && cmd[2] == 0 && cmd[3] == 0,
+            "compute job wrote {vertexCount %u, instanceCount %u, firstVertex %u, firstInstance %u}", cmd[0], cmd[1], cmd[2], cmd[3]);
+   int ok = report("indirect_gpu", &s, 8192.0, 1.0, 0);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+/* ---- inpass_compute (compute-in-pass.md, rung 1/2): a kernel inside a render pass feeds the draw after it ----
+ * One pass, clear, then per draw: dispatch inpass.comp (writes vertices into vb[0] and a VkDrawIndirectCommand into the args
+ * buffer), then vkCmdDrawIndirect reads both. Both buffers start zeroed, so a kernel that did not run (or ran too late, or whose
+ * output the draw did not see) draws nothing. The driver has no API-level way to take a vkCmdDispatch inside a pass (Vulkan
+ * forbids it): MALI_PRE_HOIST=1 is the test knob that makes it hoist the dispatch to the head of the pass' frame, which is
+ * the mechanism the tessellation and geometry-shader lanes call. Knob off: the dispatch is refused by name (end fails). */
+struct ip_draw { uint32_t mode, vbase, ai; int skip; };
+static int
+inpass_frame(struct scene *s, VkFence fence, const struct ip_draw *d, int nd, VkResult *end_res)
+{
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s->pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                  .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->rp, .framebuffer = s->fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ID);
+   for (int i = 0; i < nd; i++) {
+      uint32_t pc[3] = {d[i].skip ? 9u : d[i].mode, d[i].vbase, d[i].ai};
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->cpipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->clayout, 0, 1, &s->cset, 0, NULL);
+      CmdPushConstants(cb, s->clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, pc);
+      CmdDispatch(cb, 1, 1, 1);
+      VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
+      VkDeviceSize offs[2] = {(VkDeviceSize)d[i].vbase * 16, 0};
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      CmdDrawIndirect(cb, s->args, (VkDeviceSize)d[i].ai * 16, 1, 16);
+   }
+   CmdEndRenderPass(cb);
+   VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+   VkDependencyInfo hd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &hb};
+   CmdPipelineBarrier2(cb, &hd);
+   VkResult er = EndCommandBuffer(cb);
+   if (end_res) {
+      *end_res = er;
+      if (er != VK_SUCCESS) { FreeCommandBuffers(dev, s->pool, 1, &cb); return 1; }
+   } else
+      CHECK(er == VK_SUCCESS, "end = %d (the in-pass dispatch was refused)", er);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, fence);
+   CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   CHECK(r == VK_SUCCESS, "wait = %d", r);
+   ResetFences(dev, 1, &fence);
+   FreeCommandBuffers(dev, s->pool, 1, &cb);
+   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->colmem, .offset = 0, .size = VK_WHOLE_SIZE};
+   InvalidateMappedMemoryRanges(dev, 1, &mr);
+   return 1;
+}
+
+/* coverage check that also takes an expected 0 (report() divides by the expectation) */
+static int
+ip_cov(const char *name, struct scene *s, uint32_t expect, double tolpct)
+{
+   if (g_fake) {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      return 1;
+   }
+   uint32_t cov = count_cov(s);
+   double err = expect ? fabs((double)cov - expect) / expect * 100.0 : (double)cov;
+   CHECK(err <= tolpct, "%s coverage %u expected %u", name, cov, expect);
+   printf("{\"test\":\"%s\",\"coverage\":%u,\"expect\":%u,\"ok\":true}\n", name, cov, expect);
+   return 1;
+}
+
+static int
+test_inpass_compute(void)
+{
+   struct scene s = {.mode = MODE_INPASS};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   g_hostread = 1;
+   int ok = 1;
+   VkResult er;
+   /* 5 (first, so a red tree names the refusal): knob off, the dispatch inside the pass is refused by name */
+   unsetenv("MALI_PRE_HOIST");
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= inpass_frame(&s, f, &d, 1, &er); }
+   CHECK(ok && er != VK_SUCCESS, "knob off: a dispatch inside a render pass must be refused (end = %d)", er);
+   setenv("MALI_PRE_HOIST", "1", 1);
+   /* 2: the control that can fail - the kernel does nothing, the args stay zero, nothing is drawn */
+   { struct ip_draw d = {0, 0, 0, 1}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_skipped", &s, 0, 0.0);
+   /* 1: kernel writes 3 vertices + {3,1,0,0}; the draw uses them: the "triangle" case, 8192 px */
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_one", &s, 8192, 1.0);
+   /* 3: two kernels, two draws, disjoint vertex ranges and args slots, left and right half, in wave order */
+   { struct ip_draw d[2] = {{2, 0, 0, 0}, {3, 8, 1, 0}}; ok &= ok && inpass_frame(&s, f, d, 2, NULL); }
+   ok &= ok && ip_cov("inpass_two", &s, 13107, 2.0);
+   /* 4: staleness: the same buffers again, the kernel now writes 6 vertices / count 6: 8192 + 2048. A missing L2 clean before
+    * the CS LOAD of the args, or a missing vertex-cache invalidate, draws the previous frame's 3 vertices (8192) here. */
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_frame1", &s, 8192, 1.0);
+   { struct ip_draw d = {1, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_stale", &s, 10240, 1.0);
+   unsetenv("MALI_PRE_HOIST");
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
 
 static int
 test_triangle(void)
@@ -3365,6 +3722,8 @@ main(int argc, char **argv)
 
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
+   if (ok && g_only && CASE_ON("indirect_gpu")) ok &= test_indirect_gpu();
+   if (ok && g_only && CASE_ON("inpass_compute")) ok &= test_inpass_compute();
    if (ok && g_only && CASE_ON("blitreplay")) ok &= test_blitreplay();   /* --only only: it allocates two 800x600 images */
    if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
@@ -3438,6 +3797,7 @@ main(int argc, char **argv)
       if (g_feat.multiViewport) ok &= test_mode("multivp", MODE_MVP, 8192.0, 0.5);
       else printf("{\"test\":\"multivp\",\"skipped\":\"multiViewport not advertised\",\"ok\":true}\n");
    }
+   if (ok && CASE_ON("degrade")) ok &= test_degrade("degrade");
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
    if (ok && CASE_ON("clearquad")) ok &= test_mode("clearquad", MODE_CLEARQUAD, 0, 0);
    if (ok && CASE_ON("clearquad_zs")) { g_clearzs = 1; ok &= test_mode("clearquad_zs", MODE_CLEARQUAD, 0, 0); g_clearzs = 0; }

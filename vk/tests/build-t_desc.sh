@@ -22,13 +22,13 @@ LIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midgard
 SYS="-lSPIRV-Tools-opt -lSPIRV-Tools -lz -lzstd -ldrm -lm -pthread"
 for f in $LIBS; do [ -f $f ] || { echo "missing $B/$f"; exit 1; }; done
 W="-Wno-unused-parameter -Wno-unused-function -I$V/src"
-for f in mali_compile mali_descriptor mali_descriptor_lower mali_pipeline_layout; do
+for f in mali_compile mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_sampler; do
   eval "$CC $W -c $V/src/$f.c -o $OUT/$f.o" &
 done
 eval "$CC $W -c $V/tests/t_desc.c -o $OUT/t_desc.o" &
 eval "$CC -w -I$D/libkbase/include -c $D/libkbase/src/draw.c -o $OUT/kb_draw.o" &
 wait
 # shellcheck disable=SC2086
-c++ -o "$OUT/t_desc" "$OUT/t_desc.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor.o" "$OUT/mali_descriptor_lower.o" "$OUT/mali_pipeline_layout.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
+c++ -o "$OUT/t_desc" "$OUT/t_desc.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor.o" "$OUT/mali_descriptor_lower.o" "$OUT/mali_pipeline_layout.o" "$OUT/mali_sampler.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 cd "$D/.."
 timeout -k 5 120 "$OUT/t_desc" "$V/shader" "$@"
