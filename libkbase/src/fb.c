@@ -79,7 +79,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	 * Empty Tile Elimination state (CRC Read/Write Enable 12:30-31 are off here and we have no CRC or flush-id state), and
 	 * PanVK only enables them with it (panfrost/lib/pan_desc.c:1296-1310 pan_crc_has_empty_tile_elimination). Enabled
 	 * without that state, the tiler writes back tiles the frame never drew in, from an unloaded tile buffer. */
-	put(f, 12, 29, 1, 0);                                    /* Empty Tile Write Enable */
+	put(f, 12, 29, 1, 1);                                    /* ARM C1 (#370 reverted): Empty Tile Write Enable on */
 	put(f, 12, 28, 1, 0);                                    /* Empty Tile Read Enable */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
 	put(f, 12, 16, 2, !zs ? 1 : p->zs_format == KB_ZS_D32F ? 2 : p->zs_format == KB_ZS_D24X8 ? 1 : 0);

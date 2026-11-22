@@ -225,12 +225,8 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
     * sub-rectangle LOAD pass did not draw - dEQP-VK.descriptor_indexing's sixteen 16x16 passes, any partial update.
     * MALI_CTW=1 forces the old behaviour, MALI_CTW=0 forces it off, for A/B. */
    {
-      const char *ctw = getenv("MALI_CTW");
-      p.no_clean_tile_write = !(f->has_colour && f->colour.clear);
-      p.zs_no_clean_tile_write = !(f->has_zs && f->zs.clear);
-      p.s_no_clean_tile_write = !(f->has_st && f->st.clear);
-      if (ctw && ctw[0] == '1') p.no_clean_tile_write = p.zs_no_clean_tile_write = p.s_no_clean_tile_write = 0;
-      if (ctw && ctw[0] == '0') p.no_clean_tile_write = p.zs_no_clean_tile_write = p.s_no_clean_tile_write = 1;
+      /* ARM C1 (#370 reverted): the pre-#370 policy - Clean Tile Write Enable always on. */
+      p.no_clean_tile_write = p.zs_no_clean_tile_write = p.s_no_clean_tile_write = 0;
    }
    /* storeOp DONT_CARE/NONE: Write Enable off, the tile is never written back. A resolve writes through the same RT, so it keeps the write. */
    p.rt_no_store = f->has_colour && !f->colour.store && !f->colour.resolve_va;
@@ -250,7 +246,8 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       if (y1 > (int32_t)f->height - 1) y1 = (int32_t)f->height - 1;
       p.bound_x0 = (unsigned)x0; p.bound_y0 = (unsigned)y0;
       p.bound_x1 = (unsigned)x1; p.bound_y1 = (unsigned)y1;
-      p.bound_set = 1;
+      /* ARM C1 (#370 reverted): no bound box - the fragment job covers the whole attachment, as before #370. */
+      p.bound_set = 0;
    }
    p.tiler_va = tiler_ctx_va;
    p.provoking_last = f->provoking_last;
