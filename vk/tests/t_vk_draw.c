@@ -131,7 +131,7 @@ case_skipped(const char *n)
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
    X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
-   X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
+   X(CmdClearAttachments) X(CmdCopyBufferToImage) X(FlushMappedMemoryRanges) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
    X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults) \
@@ -2779,6 +2779,1118 @@ test_view_format(void)
    return ok;
 }
 
+/* ==========================================================================================
+ * Format sweep (notes/format-sweep.md): every vertex-attribute format and every sampled-image
+ * format the driver advertises gets a draw with known data and a readback compared against the
+ * value the format's own conversion rule gives. One JSON line per format; `--only vtxfmt` /
+ * `--only texfmt`. Real meshes are the reason for the shape: a non-zero attribute offset, a
+ * stride larger than the element, and a second stream at binding 1.
+ * ========================================================================================== */
+enum { K_UNORM, K_SNORM, K_USC, K_SSC, K_UINT, K_SINT, K_FLT, K_UF, K_E5, K_D16, K_D32, K_D24S8, K_SRGB };
+static const char *g_kname[] = {"unorm", "snorm", "uscaled", "sscaled", "uint", "sint", "float", "ufloat", "e5b9g9r9",
+                                "d16", "d32", "d24s8", "srgb"};
+struct fd {   /* one Vulkan format and how its components sit in the little-endian element */
+   VkFormat fmt;
+   const char *name;
+   unsigned char elem, ncomp, kind;
+   unsigned char bits[4], off[4];
+};
+#define F(fmt, elem, n, k, b0, b1, b2, b3, o0, o1, o2, o3) \
+   {VK_FORMAT_##fmt, #fmt, elem, n, k, {b0, b1, b2, b3}, {o0, o1, o2, o3}}
+#define F1(fmt, k, b0, o0) F(fmt, (b0 + 7) / 8, 1, K_##k, b0, 0, 0, 0, o0, 0, 0, 0)
+#define F2(fmt, k, e, b0, b1, o0, o1) F(fmt, e, 2, K_##k, b0, b1, 0, 0, o0, o1, 0, 0)
+#define F3(fmt, k, e, b0, b1, b2, o0, o1, o2) F(fmt, e, 3, K_##k, b0, b1, b2, 0, o0, o1, o2, 0)
+#define F4(fmt, k, e, b0, b1, b2, b3, o0, o1, o2, o3) F(fmt, e, 4, K_##k, b0, b1, b2, b3, o0, o1, o2, o3)
+static const struct fd g_fmts[] = {
+   /* 4/5/6-bit packed */
+   F2(R4G4_UNORM_PACK8, UNORM, 1, 4, 4, 4, 0),
+   F4(R4G4B4A4_UNORM_PACK16, UNORM, 2, 4, 4, 4, 4, 12, 8, 4, 0),
+   F4(B4G4R4A4_UNORM_PACK16, UNORM, 2, 4, 4, 4, 4, 4, 8, 12, 0),
+   F3(R5G6B5_UNORM_PACK16, UNORM, 2, 5, 6, 5, 11, 5, 0),
+   F3(B5G6R5_UNORM_PACK16, UNORM, 2, 5, 6, 5, 0, 5, 11),
+   F4(R5G5B5A1_UNORM_PACK16, UNORM, 2, 5, 5, 5, 1, 11, 6, 1, 0),
+   F4(B5G5R5A1_UNORM_PACK16, UNORM, 2, 5, 5, 5, 1, 1, 6, 11, 0),
+   F4(A1R5G5B5_UNORM_PACK16, UNORM, 2, 5, 5, 5, 1, 10, 5, 0, 15),
+   /* 8-bit */
+   F1(R8_UNORM, UNORM, 8, 0), F1(R8_SNORM, SNORM, 8, 0), F1(R8_USCALED, USC, 8, 0),
+   F1(R8_SSCALED, SSC, 8, 0), F1(R8_UINT, UINT, 8, 0), F1(R8_SINT, SINT, 8, 0),
+   F2(R8G8_UNORM, UNORM, 2, 8, 8, 0, 8), F2(R8G8_SNORM, SNORM, 2, 8, 8, 0, 8),
+   F2(R8G8_USCALED, USC, 2, 8, 8, 0, 8), F2(R8G8_SSCALED, SSC, 2, 8, 8, 0, 8),
+   F2(R8G8_UINT, UINT, 2, 8, 8, 0, 8), F2(R8G8_SINT, SINT, 2, 8, 8, 0, 8),
+   F3(R8G8B8_UNORM, UNORM, 3, 8, 8, 8, 0, 8, 16), F3(R8G8B8_SNORM, SNORM, 3, 8, 8, 8, 0, 8, 16),
+   F3(R8G8B8_USCALED, USC, 3, 8, 8, 8, 0, 8, 16), F3(R8G8B8_SSCALED, SSC, 3, 8, 8, 8, 0, 8, 16),
+   F3(R8G8B8_UINT, UINT, 3, 8, 8, 8, 0, 8, 16), F3(R8G8B8_SINT, SINT, 3, 8, 8, 8, 0, 8, 16),
+   F3(B8G8R8_UNORM, UNORM, 3, 8, 8, 8, 16, 8, 0), F3(B8G8R8_SNORM, SNORM, 3, 8, 8, 8, 16, 8, 0),
+   F3(B8G8R8_USCALED, USC, 3, 8, 8, 8, 16, 8, 0), F3(B8G8R8_SSCALED, SSC, 3, 8, 8, 8, 16, 8, 0),
+   F3(B8G8R8_UINT, UINT, 3, 8, 8, 8, 16, 8, 0), F3(B8G8R8_SINT, SINT, 3, 8, 8, 8, 16, 8, 0),
+   F4(R8G8B8A8_UNORM, UNORM, 4, 8, 8, 8, 8, 0, 8, 16, 24), F4(R8G8B8A8_SNORM, SNORM, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(R8G8B8A8_USCALED, USC, 4, 8, 8, 8, 8, 0, 8, 16, 24), F4(R8G8B8A8_SSCALED, SSC, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(R8G8B8A8_UINT, UINT, 4, 8, 8, 8, 8, 0, 8, 16, 24), F4(R8G8B8A8_SINT, SINT, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(B8G8R8A8_UNORM, UNORM, 4, 8, 8, 8, 8, 16, 8, 0, 24), F4(B8G8R8A8_SNORM, SNORM, 4, 8, 8, 8, 8, 16, 8, 0, 24),
+   F4(B8G8R8A8_USCALED, USC, 4, 8, 8, 8, 8, 16, 8, 0, 24), F4(B8G8R8A8_SSCALED, SSC, 4, 8, 8, 8, 8, 16, 8, 0, 24),
+   F4(B8G8R8A8_UINT, UINT, 4, 8, 8, 8, 8, 16, 8, 0, 24), F4(B8G8R8A8_SINT, SINT, 4, 8, 8, 8, 8, 16, 8, 0, 24),
+   F4(A8B8G8R8_UNORM_PACK32, UNORM, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(A8B8G8R8_SNORM_PACK32, SNORM, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(A8B8G8R8_USCALED_PACK32, USC, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(A8B8G8R8_SSCALED_PACK32, SSC, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(A8B8G8R8_UINT_PACK32, UINT, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(A8B8G8R8_SINT_PACK32, SINT, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   /* 16-bit (the skinned-mesh suspects: R16G16_SFLOAT UVs, R16G16B16A16_SNORM/SFLOAT) */
+   F1(R16_UNORM, UNORM, 16, 0), F1(R16_SNORM, SNORM, 16, 0), F1(R16_USCALED, USC, 16, 0),
+   F1(R16_SSCALED, SSC, 16, 0), F1(R16_UINT, UINT, 16, 0), F1(R16_SINT, SINT, 16, 0), F1(R16_SFLOAT, FLT, 16, 0),
+   F2(R16G16_UNORM, UNORM, 4, 16, 16, 0, 16), F2(R16G16_SNORM, SNORM, 4, 16, 16, 0, 16),
+   F2(R16G16_USCALED, USC, 4, 16, 16, 0, 16), F2(R16G16_SSCALED, SSC, 4, 16, 16, 0, 16),
+   F2(R16G16_UINT, UINT, 4, 16, 16, 0, 16), F2(R16G16_SINT, SINT, 4, 16, 16, 0, 16),
+   F2(R16G16_SFLOAT, FLT, 4, 16, 16, 0, 16),
+   F3(R16G16B16_UNORM, UNORM, 6, 16, 16, 16, 0, 16, 32), F3(R16G16B16_SNORM, SNORM, 6, 16, 16, 16, 0, 16, 32),
+   F3(R16G16B16_USCALED, USC, 6, 16, 16, 16, 0, 16, 32), F3(R16G16B16_SSCALED, SSC, 6, 16, 16, 16, 0, 16, 32),
+   F3(R16G16B16_UINT, UINT, 6, 16, 16, 16, 0, 16, 32), F3(R16G16B16_SINT, SINT, 6, 16, 16, 16, 0, 16, 32),
+   F3(R16G16B16_SFLOAT, FLT, 6, 16, 16, 16, 0, 16, 32),
+   F4(R16G16B16A16_UNORM, UNORM, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   F4(R16G16B16A16_SNORM, SNORM, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   F4(R16G16B16A16_USCALED, USC, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   F4(R16G16B16A16_SSCALED, SSC, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   F4(R16G16B16A16_UINT, UINT, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   F4(R16G16B16A16_SINT, SINT, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   F4(R16G16B16A16_SFLOAT, FLT, 8, 16, 16, 16, 16, 0, 16, 32, 48),
+   /* 32-bit */
+   F1(R32_UINT, UINT, 32, 0), F1(R32_SINT, SINT, 32, 0), F1(R32_SFLOAT, FLT, 32, 0),
+   F2(R32G32_UINT, UINT, 8, 32, 32, 0, 32), F2(R32G32_SINT, SINT, 8, 32, 32, 0, 32),
+   F2(R32G32_SFLOAT, FLT, 8, 32, 32, 0, 32),
+   F3(R32G32B32_UINT, UINT, 12, 32, 32, 32, 0, 32, 64), F3(R32G32B32_SINT, SINT, 12, 32, 32, 32, 0, 32, 64),
+   F3(R32G32B32_SFLOAT, FLT, 12, 32, 32, 32, 0, 32, 64),
+   F4(R32G32B32A32_UINT, UINT, 16, 32, 32, 32, 32, 0, 32, 64, 96),
+   F4(R32G32B32A32_SINT, SINT, 16, 32, 32, 32, 32, 0, 32, 64, 96),
+   F4(R32G32B32A32_SFLOAT, FLT, 16, 32, 32, 32, 32, 0, 32, 64, 96),
+   /* packed 32-bit (Unity's colour / normal packing on D3D11 level 10.1) */
+   F4(A2B10G10R10_UNORM_PACK32, UNORM, 4, 10, 10, 10, 2, 0, 10, 20, 30),
+   F4(A2B10G10R10_SNORM_PACK32, SNORM, 4, 10, 10, 10, 2, 0, 10, 20, 30),
+   F4(A2B10G10R10_USCALED_PACK32, USC, 4, 10, 10, 10, 2, 0, 10, 20, 30),
+   F4(A2B10G10R10_SSCALED_PACK32, SSC, 4, 10, 10, 10, 2, 0, 10, 20, 30),
+   F4(A2B10G10R10_UINT_PACK32, UINT, 4, 10, 10, 10, 2, 0, 10, 20, 30),
+   F4(A2B10G10R10_SINT_PACK32, SINT, 4, 10, 10, 10, 2, 0, 10, 20, 30),
+   F4(A2R10G10B10_UNORM_PACK32, UNORM, 4, 10, 10, 10, 2, 20, 10, 0, 30),
+   F4(A2R10G10B10_SNORM_PACK32, SNORM, 4, 10, 10, 10, 2, 20, 10, 0, 30),
+   F4(A2R10G10B10_USCALED_PACK32, USC, 4, 10, 10, 10, 2, 20, 10, 0, 30),
+   F4(A2R10G10B10_SSCALED_PACK32, SSC, 4, 10, 10, 10, 2, 20, 10, 0, 30),
+   F4(A2R10G10B10_UINT_PACK32, UINT, 4, 10, 10, 10, 2, 20, 10, 0, 30),
+   F4(A2R10G10B10_SINT_PACK32, SINT, 4, 10, 10, 10, 2, 20, 10, 0, 30),
+   F3(B10G11R11_UFLOAT_PACK32, UF, 4, 11, 11, 10, 21, 10, 0),
+   F3(E5B9G9R9_UFLOAT_PACK32, E5, 4, 9, 9, 9, 0, 9, 18),
+   /* sRGB: sampled images only (Vulkan has no sRGB vertex format) */
+   F1(R8_SRGB, SRGB, 8, 0),
+   F2(R8G8_SRGB, SRGB, 2, 8, 8, 0, 8),
+   F3(R8G8B8_SRGB, SRGB, 3, 8, 8, 8, 0, 8, 16),
+   F3(B8G8R8_SRGB, SRGB, 3, 8, 8, 8, 16, 8, 0),
+   F4(R8G8B8A8_SRGB, SRGB, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   F4(B8G8R8A8_SRGB, SRGB, 4, 8, 8, 8, 8, 16, 8, 0, 24),
+   F4(A8B8G8R8_SRGB_PACK32, SRGB, 4, 8, 8, 8, 8, 0, 8, 16, 24),
+   /* depth, for the texture sweep only (D24S8: depth in bits 8..31, stencil 0..7) */
+   F1(D16_UNORM, D16, 16, 0),
+   F1(D32_SFLOAT, D32, 32, 0),
+   F(D24_UNORM_S8_UINT, 4, 1, K_D24S8, 24, 0, 0, 0, 8, 0, 0, 0),
+};
+#undef F1
+#undef F2
+#undef F3
+#undef F4
+
+/* ---- encoders: raw component code <-> the value the format's conversion rule gives ---- */
+static void
+put_bits(uint8_t *p, int bo, int nb, uint32_t v)
+{
+   for (int i = 0; i < nb; i++, bo++)
+      if (v & (1u << i))
+         p[bo >> 3] |= (uint8_t)(1u << (bo & 7));
+}
+static uint32_t
+f2h(float f)
+{
+   uint32_t u;
+   memcpy(&u, &f, 4);
+   const uint32_t s = (u >> 16) & 0x8000u;
+   int e = (int)((u >> 23) & 0xff) - 127 + 15;
+   uint32_t m = u & 0x7fffffu;
+   if (e <= 0) return s;                                                    /* the sweep's values are normal and exact */
+   if (e >= 31) return s | 0x7c00u;
+   return s | ((uint32_t)e << 10) | (m >> 13);
+}
+static float
+h2f(uint32_t h)
+{
+   const uint32_t s = (h & 0x8000u) << 16;
+   const int e = (int)((h >> 10) & 0x1f);
+   uint32_t m = h & 0x3ffu;
+   uint32_t u;
+   if (e == 0) {
+      float f = (float)m / 1024.0f / 16384.0f;
+      return (h & 0x8000u) ? -f : f;
+   }
+   u = s | ((uint32_t)(e - 15 + 127) << 23) | (m << 13);
+   float f;
+   memcpy(&f, &u, 4);
+   return f;
+}
+static uint32_t
+f2uf(float f, int mb, int eb)   /* unsigned 11/10-bit style float: value = (m / 2^mb) * 2^(e - bias) */
+{
+   const int bias = (1 << (eb - 1)) - 1;
+   int e = 0;
+   while (e < (1 << eb) - 1 && f >= (float)(1u << (e - bias + 1))) e++;        /* normalise so m < 2^mb */
+   uint32_t m = (uint32_t)(f / (float)ldexp(1.0, e - bias) * (1u << mb) + 0.5f);
+   if (m >= (1u << mb)) { m = 0; e++; }
+   return ((uint32_t)e << mb) | m;
+}
+static float
+uf2f(uint32_t c, int mb, int eb)
+{
+   const int bias = (1 << (eb - 1)) - 1;
+   const uint32_t e = c >> mb, m = c & ((1u << mb) - 1);
+   return (float)((double)m / (double)(1u << mb) * ldexp(1.0, (int)e - bias));
+}
+/* The component code of component i (R,G,B,A order) for stream s, and the value the spec's conversion gives. */
+static void
+fmt_code(const struct fd *d, int i, int s, uint32_t *code, double *val)
+{
+   const int b = d->bits[i];
+   const uint32_t maxv = b >= 32 ? 0xffffffffu : ((1u << b) - 1u);
+   const double fa = 0.2 * (i + 1), fb = 0.5 + 0.1 * (i + 1);   /* stream A / stream B target fractions */
+   const double sa[4] = {-0.75, -0.25, 0.25, 0.75}, sb[4] = {-0.5, -0.1, 0.1, 0.5};
+   const double f = s ? fb : fa;
+   const double smax = (double)((1u << (b - 1)) - 1);
+   switch (d->kind) {
+   case K_UNORM: case K_D16: case K_SRGB:
+      *code = (uint32_t)(f * maxv + 0.5);
+      *val = d->kind == K_D16 ? (double)*code / maxv : (double)*code / maxv;
+      break;
+   case K_D24S8:
+      *code = (uint32_t)(f * 0xffffff + 0.5) & 0xffffffu;
+      *val = (double)*code / 16777215.0;
+      break;
+   case K_SNORM:
+      *code = (uint32_t)(int32_t)llround((s ? sb[i] : sa[i]) * smax);
+      *val = (double)(int32_t)*code / smax;
+      if (*val < -1.0) *val = -1.0;
+      break;
+   case K_USC:
+      *code = (uint32_t)(f * maxv + 0.5);
+      *val = (double)*code;
+      break;
+   case K_SSC:
+      *code = (uint32_t)(int32_t)llround((s ? sb[i] : sa[i]) * smax);
+      *val = (double)(int32_t)*code;
+      break;
+   case K_UINT:
+      *code = (uint32_t)(s ? i + 1 : i);
+      *val = (double)*code;
+      break;
+   case K_SINT:
+      *code = (uint32_t)(int32_t)(s ? (i & 1 ? 2 : 4) * (i < 2 ? -1 : 1) : (i & 1 ? 1 : 2) * (i < 2 ? -1 : 1));
+      *val = (double)(int32_t)*code;
+      break;
+   case K_FLT: {
+      const double v = s ? (const double[4]){0.1, 0.3, 0.6, 0.9}[i] : (const double[4]){0.25, 0.5, 0.75, 1.0}[i];
+      if (b == 16) { *code = f2h((float)v); *val = h2f(*code); }
+      else { float fv = (float)v; memcpy(code, &fv, 4); *val = fv; }
+      break;
+   }
+   case K_UF: {
+      const float v = s ? (const float[3]){0.1f, 0.3f, 0.6f}[i] : (const float[3]){0.25f, 0.5f, 0.75f}[i];
+      *code = f2uf(v, b, b == 11 ? 5 : 5);
+      *val = uf2f(*code, b, 5);
+      break;
+   }
+   case K_E5: {
+      const float v = s ? (const float[3]){0.1f, 0.3f, 0.6f}[i] : (const float[3]){0.25f, 0.5f, 0.75f}[i];
+      *code = (uint32_t)(v * 512.0f + 0.5f);
+      *val = (double)*code / 512.0;   /* shared exponent 15 */
+      break;
+   }
+   default:   /* K_D32 */
+      {
+         const float v = (float)(s ? fb : fa);
+         memcpy(code, &v, 4);
+         *val = v;
+      }
+      break;
+   }
+}
+/* scale/bias that maps the format's value range into [0,1] for the RGBA8 target (uniform for unorm/snorm/float) */
+static void
+fmt_scale(const struct fd *d, double sc[4], double bi[4])
+{
+   for (int i = 0; i < 4; i++) {
+      const uint32_t maxv = d->bits[i] >= 32 ? 0xffffffffu : ((1u << d->bits[i]) - 1u);
+      sc[i] = 1.0;
+      bi[i] = 0.0;
+      switch (d->kind) {
+      case K_USC: sc[i] = 1.0 / (double)maxv; break;
+      case K_SSC: sc[i] = 1.0 / (double)((1u << (d->bits[i] - 1)) - 1); break;
+      case K_UINT: sc[i] = 0.25; break;
+      case K_SINT: sc[i] = 0.125; bi[i] = 0.5; break;
+      default: break;
+      }
+   }
+}
+/* write stream s of format d into dst[0..elem): returns the value each component decodes to (missing = 0,0,0,1) */
+static void
+fmt_encode(const struct fd *d, int s, uint8_t *dst)
+{
+   memset(dst, 0, d->elem);
+   for (int i = 0; i < d->ncomp; i++) {
+      uint32_t code;
+      double val;
+      fmt_code(d, i, s, &code, &val);
+      if (d->kind == K_E5) {   /* the shared exponent, bits 27..31 */
+         put_bits(dst, d->off[i], d->bits[i], code);
+         put_bits(dst, 27, 5, 15);
+      } else {
+         put_bits(dst, d->off[i], d->bits[i], code);
+      }
+   }
+}
+static void
+fmt_expect(const struct fd *d, int s, int ncomp, double out[4])
+{
+   for (int i = 0; i < 4; i++) out[i] = i == 3 ? 1.0 : 0.0;
+   for (int i = 0; i < ncomp && i < d->ncomp; i++) {
+      uint32_t code;
+      double val;
+      fmt_code(d, i, s, &code, &val);
+      out[i] = val;
+   }
+}
+
+/* ---- sweep scaffolding: one RGBA8 target, one 8x8 cell per row, one submit ---- */
+#define FSW_CELL 8
+#define FSW_COLS (W / FSW_CELL)          /* 32 cells per line */
+#define FSW_MAX  (FSW_COLS * FSW_COLS)   /* 1024 rows */
+static VkPhysicalDevice g_pd;
+static PFN_vkGetPhysicalDeviceFormatProperties GetFmtProps;
+
+struct fsw {
+   VkImage img;
+   VkDeviceMemory mem;
+   VkImageView view;
+   uint8_t *px;
+   uint32_t pitch;
+   VkCommandPool pool;
+   VkCommandBuffer cb;
+   VkFence fence;
+   int nrow;
+};
+
+static VkRect2D
+fsw_rect(int row)
+{
+   VkRect2D r = {{(row % FSW_COLS) * FSW_CELL, (row / FSW_COLS) * FSW_CELL}, {FSW_CELL, FSW_CELL}};
+   return r;
+}
+
+static int
+fsw_init(struct fsw *f)
+{
+   memset(f, 0, sizeof *f);
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   CHECK(CreateImage(dev, &ii, NULL, &f->img) == VK_SUCCESS, "fsw image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, f->img, &mr);
+   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(mt >= 0, "fsw memory type");
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+   CHECK(AllocateMemory(dev, &ai, NULL, &f->mem) == VK_SUCCESS, "fsw image memory");
+   CHECK(BindImageMemory(dev, f->img, f->mem, 0) == VK_SUCCESS, "fsw bind");
+   uint8_t *map;
+   CHECK(MapMemory(dev, f->mem, 0, VK_WHOLE_SIZE, 0, (void **)&map) == VK_SUCCESS, "fsw map");
+   VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+   VkSubresourceLayout sl;
+   GetImageSubresourceLayout(dev, f->img, &sr, &sl);
+   f->pitch = (uint32_t)sl.rowPitch;
+   f->px = map + sl.offset;
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = f->img,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CHECK(CreateImageView(dev, &vi, NULL, &f->view) == VK_SUCCESS, "fsw view");
+   VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &pi, NULL, &f->pool) == VK_SUCCESS, "fsw pool");
+   VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = f->pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &cbi, &f->cb) == VK_SUCCESS, "fsw cb");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f->fence) == VK_SUCCESS, "fsw fence");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(f->cb, &bi) == VK_SUCCESS, "fsw begin");
+   VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .image = f->img, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+   CmdPipelineBarrier2(f->cb, &dep);
+   return 1;
+}
+
+static void
+fsw_cell_begin(struct fsw *f, int row)
+{
+   VkRect2D a = fsw_rect(row);
+   VkRenderingAttachmentInfo att = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = f->view,
+      .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .resolveMode = VK_RESOLVE_MODE_NONE,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   att.clearValue.color.float32[0] = 0.5f;   /* a drawn cell must overwrite this, and it sets alpha = 0 (the "drawn" mark) */
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = a, .layerCount = 1,
+      .colorAttachmentCount = 1, .pColorAttachments = &att};
+   CmdBeginRendering(f->cb, &ri);
+   f->nrow = row + 1;
+}
+
+static void
+fsw_cell_end(struct fsw *f)
+{
+   CmdEndRendering(f->cb);
+}
+
+static int
+fsw_submit(struct fsw *f)
+{
+   CHECK(EndCommandBuffer(f->cb) == VK_SUCCESS, "fsw end");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &f->cb};
+   CHECK(QueueSubmit(queue, 1, &si, f->fence) == VK_SUCCESS, "fsw submit");
+   CHECK(WaitForFences(dev, 1, &f->fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS, "fsw wait");
+   DeviceWaitIdle(dev);
+   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = f->mem, .offset = 0, .size = VK_WHOLE_SIZE};
+   InvalidateMappedMemoryRanges(dev, 1, &mr);
+   return 1;
+}
+
+/* the centre texel of a cell: returns 0 and rgb, or -1 when nothing was drawn (alpha still 0) */
+static int
+fsw_read(struct fsw *f, int row, int rgb[3])
+{
+   VkRect2D a = fsw_rect(row);
+   const uint8_t *p = f->px + (uint32_t)(a.offset.y + FSW_CELL / 2) * f->pitch + (uint32_t)(a.offset.x + FSW_CELL / 2) * 4;
+   if (!p[3]) return -1;
+   rgb[0] = p[0];
+   rgb[1] = p[1];
+   rgb[2] = p[2];
+   return 0;
+}
+
+static void
+fsw_destroy(struct fsw *f)
+{
+   if (f->fence) DestroyFence(dev, f->fence, NULL);
+   if (f->pool) DestroyCommandPool(dev, f->pool, NULL);
+   if (f->view) DestroyImageView(dev, f->view, NULL);
+   if (f->img) DestroyImage(dev, f->img, NULL);
+   if (f->mem) FreeMemory(dev, f->mem, NULL);
+   memset(f, 0, sizeof *f);
+}
+
+/* integer formats need their own shader modules: a uvec/ivec input is the only legal declaration */
+static int
+fmt_class(const struct fd *d) { return d->kind == K_UINT ? 1 : d->kind == K_SINT ? 2 : 0; }
+
+/* ==========================================================================================
+ * test_vtxfmt: every advertised vertex-buffer format, drawn as a flat attribute and read back.
+ * Four rows per format: binding 0 as vec4, binding 1 as vec4, binding 0 as vec2, binding 1 as vec2.
+ * Attribute offsets 4 and 8, strides element+8 .. element+11 (a real mesh layout), data in one buffer.
+ * ========================================================================================== */
+struct vtxpc { float scale[4], bias[4]; int32_t c[4]; };
+
+static int
+test_vtxfmt(void)
+{
+   const int nall = (int)(sizeof g_fmts / sizeof g_fmts[0]);
+   static int sel[512], stride_[512], baseA[512], baseB[512];
+   int nf = 0, trunc = 0;
+   /* 1. the advertised vertex formats, with a stride larger than the element */
+   for (int i = 0; i < nall; i++) {
+      VkFormatProperties fp;
+      GetFmtProps(g_pd, g_fmts[i].fmt, &fp);
+      if (g_fmts[i].kind == K_SRGB) continue;   /* no sRGB vertex format exists */
+      if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) continue;
+      if (nf == 256) { trunc = 1; break; }
+      sel[nf] = i;
+      stride_[nf] = ((g_fmts[i].elem + 3) & ~3) + 8;
+      nf++;
+   }
+   printf("{\"test\":\"vtxfmt\",\"formats\":%d%s}\n", nf, trunc ? ",\"truncated\":true" : "");
+   if (!nf) return 1;
+
+   /* 2. the vertex data: one buffer, stream A at offset 4 of each vertex, stream B at offset 8 */
+   VkDeviceSize tot = 16;
+   for (int k = 0; k < nf; k++) tot += 2 * (16 + 6 * (VkDeviceSize)stride_[k]);
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = tot,
+      .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+   VkBuffer vb;
+   CHECK(CreateBuffer(dev, &bci, NULL, &vb) == VK_SUCCESS, "vtxfmt buffer");
+   VkMemoryRequirements vmr;
+   GetBufferMemoryRequirements(dev, vb, &vmr);
+   int vmt = memtype(vmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(vmt >= 0, "vtxfmt memory type");
+   VkMemoryAllocateInfo vai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = vmr.size, .memoryTypeIndex = vmt};
+   VkDeviceMemory vmem;
+   CHECK(AllocateMemory(dev, &vai, NULL, &vmem) == VK_SUCCESS, "vtxfmt memory");
+   CHECK(BindBufferMemory(dev, vb, vmem, 0) == VK_SUCCESS, "vtxfmt bind");
+   uint8_t *bp;
+   CHECK(MapMemory(dev, vmem, 0, VK_WHOLE_SIZE, 0, (void **)&bp) == VK_SUCCESS, "vtxfmt map");
+   memset(bp, 0, (size_t)tot);
+   {
+      VkDeviceSize off = 16;
+      for (int k = 0; k < nf; k++) {
+         const struct fd *d = &g_fmts[sel[k]];
+         baseA[k] = (int)off;
+         off += 16 + 6 * (VkDeviceSize)stride_[k];
+         baseB[k] = (int)off;
+         off += 16 + 6 * (VkDeviceSize)stride_[k];
+         for (int v = 0; v < 6; v++) {
+            fmt_encode(d, 0, bp + baseA[k] + 4 + v * stride_[k]);
+            fmt_encode(d, 1, bp + baseB[k] + 8 + v * stride_[k]);
+         }
+      }
+   }
+   VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = vmem, .offset = 0, .size = VK_WHOLE_SIZE};
+   FlushMappedMemoryRanges(dev, 1, &flush);
+
+   /* 3. shaders + pipeline layout (16 B scale, 16 B bias, 16 B selector) */
+   VkShaderModule vsm[3], fsm;
+   vsm[0] = load_spv("fmtsw.vert.spv");
+   vsm[1] = load_spv("fmtsw_u.vert.spv");
+   vsm[2] = load_spv("fmtsw_s.vert.spv");
+   fsm = load_spv("fmtsw.frag.spv");
+   CHECK(vsm[0] && vsm[1] && vsm[2] && fsm, "vtxfmt shader modules");
+   VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .size = sizeof(struct vtxpc)};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1,
+      .pPushConstantRanges = &pcr};
+   VkPipelineLayout pl;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "vtxfmt layout");
+
+   /* 4. the sweep */
+   struct fsw f;
+   if (!fsw_init(&f)) return 0;
+   int bad = 0, nrow = 0, npix = 0;
+   static VkPipeline pipes[256];
+   for (int k = 0; k < nf; k++) {
+      const struct fd *d = &g_fmts[sel[k]];
+      const int nc = fmt_class(d);
+      VkVertexInputBindingDescription bd[2] = {{.binding = 0, .stride = (uint32_t)stride_[k], .inputRate = VK_VERTEX_INPUT_RATE_VERTEX},
+                                               {.binding = 1, .stride = (uint32_t)stride_[k], .inputRate = VK_VERTEX_INPUT_RATE_VERTEX}};
+      VkVertexInputAttributeDescription ad[4] = {{.location = 0, .binding = 0, .format = d->fmt, .offset = 4},
+                                                 {.location = 1, .binding = 1, .format = d->fmt, .offset = 8},
+                                                 {.location = 2, .binding = 0, .format = d->fmt, .offset = 4},
+                                                 {.location = 3, .binding = 1, .format = d->fmt, .offset = 8}};
+      VkPipelineVertexInputStateCreateInfo vin = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+         .vertexBindingDescriptionCount = 2, .pVertexBindingDescriptions = bd,
+         .vertexAttributeDescriptionCount = 4, .pVertexAttributeDescriptions = ad};
+      VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+      VkViewport vpv = {0.0f, 0.0f, (float)W, (float)H, 0.0f, 1.0f};
+      VkRect2D scs = {{0, 0}, {W, H}};
+      VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+         .viewportCount = 1, .pViewports = &vpv, .scissorCount = 1, .pScissors = &scs};
+      VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+         .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+         .lineWidth = 1.0f};
+      VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+      VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+      VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+         .attachmentCount = 1, .pAttachments = &cba};
+      VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+         .colorAttachmentCount = 1, .pColorAttachmentFormats = (VkFormat[]){VK_FORMAT_R8G8B8A8_UNORM}};
+      VkPipelineShaderStageCreateInfo st[2] = {
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+          .module = vsm[nc], .pName = "main"},
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .module = fsm, .pName = "main"}};
+      VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
+         .stageCount = 2, .pStages = st, .pVertexInputState = &vin, .pInputAssemblyState = &ia, .pViewportState = &vp,
+         .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .layout = pl};
+      VkPipeline pipe = VK_NULL_HANDLE;
+      if (CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe) != VK_SUCCESS) {
+         printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"skipped\":\"pipeline\",\"ok\":false}\n", d->name);
+         bad++;
+         continue;
+      }
+      pipes[k] = pipe;
+      if (g_fake) {
+         /* the fake backend renders nothing: the host can still assert that every advertised vertex format builds a pipeline */
+         printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"feat\":\"vb\",\"skipped\":\"fake backend renders nothing\",\"ok\":true}\n", d->name);
+         continue;
+      }
+      double sc[4], bi[4];
+      fmt_scale(d, sc, bi);
+      for (int w = 0; w < 4; w++) {
+         const int row = nrow++;
+         fsw_cell_begin(&f, row);
+         CmdBindPipeline(f.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkBuffer b[2] = {vb, vb};
+         /* the binding offsets are the streams' own non-zero starts; the attribute offsets 4 and 8 are inside each vertex */
+         VkDeviceSize offs[2] = {(VkDeviceSize)baseA[k], (VkDeviceSize)baseB[k]};
+         CmdBindVertexBuffers(f.cb, 0, 2, b, offs);
+         struct vtxpc pc = {.c = {w, 0, 0, 0}};
+         for (int i = 0; i < 4; i++) {
+            pc.scale[i] = (float)sc[i];
+            pc.bias[i] = (float)bi[i];
+         }
+         CmdPushConstants(f.cb, pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+         CmdDraw(f.cb, 6, 1, 0, 0);
+         fsw_cell_end(&f);
+      }
+   }
+   if (g_fake) {
+      for (int k = 0; k < nf; k++) if (pipes[k]) DestroyPipeline(dev, pipes[k], NULL);
+      DestroyPipelineLayout(dev, pl, NULL);
+      DestroyShaderModule(dev, vsm[0], NULL); DestroyShaderModule(dev, vsm[1], NULL);
+      DestroyShaderModule(dev, vsm[2], NULL); DestroyShaderModule(dev, fsm, NULL);
+      DestroyBuffer(dev, vb, NULL); FreeMemory(dev, vmem, NULL);
+      fsw_destroy(&f);
+      return bad == 0;
+   }
+   if (!fsw_submit(&f)) return 0;
+   /* 5. one line per format: the four rows' expectations against the readback */
+   nrow = 0;
+   for (int k = 0; k < nf; k++) {
+      const struct fd *d = &g_fmts[sel[k]];
+      double sc[4], bi[4];
+      fmt_scale(d, sc, bi);
+      int fmtbad = 0, first_row = -1, first_ch = -1, want0 = -1, got0 = -1;
+      for (int w = 0; w < 4; w++) {
+         const int row = nrow++;
+         double ex[4];
+         fmt_expect(d, w & 1, w >= 2 ? 2 : 4, ex);
+         int rgb[3], got[3], want[3];
+         if (fsw_read(&f, row, rgb)) {
+            if (!fmtbad) { first_row = w; first_ch = -1; want0 = -1; got0 = -1; }
+            fmtbad++;
+            continue;
+         }
+         npix++;
+         for (int i = 0; i < 3; i++) {
+            double t = ex[i] * sc[i] + bi[i];
+            t = t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t;
+            want[i] = (int)lround(t * 255.0);
+            got[i] = rgb[i];
+            if (abs(got[i] - want[i]) > 1 && first_ch < 0) { first_row = w; first_ch = i; want0 = want[i]; got0 = got[i]; }
+            if (abs(got[i] - want[i]) > 1) fmtbad++;
+         }
+      }
+      if (fmtbad) {
+         bad++;
+         printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"kind\":\"%s\",\"feat\":\"vb\",\"ok\":false,\"row\":%d,\"ch\":%d,\"expected\":%d,\"got\":%d}\n",
+                d->name, g_kname[d->kind], first_row, first_ch, want0, got0);
+      } else {
+         printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"feat\":\"vb\",\"ok\":true}\n", d->name);
+      }
+   }
+   for (int k = 0; k < nf; k++) if (pipes[k]) DestroyPipeline(dev, pipes[k], NULL);
+   DestroyPipelineLayout(dev, pl, NULL);
+   DestroyShaderModule(dev, vsm[0], NULL); DestroyShaderModule(dev, vsm[1], NULL);
+   DestroyShaderModule(dev, vsm[2], NULL); DestroyShaderModule(dev, fsm, NULL);
+   DestroyBuffer(dev, vb, NULL); FreeMemory(dev, vmem, NULL);
+   fsw_destroy(&f);
+   printf("{\"test\":\"vtxfmt\",\"result\":\"%s\",\"formats\":%d,\"rows\":%d,\"pixels\":%d}\n",
+          bad ? "FAIL" : "PASS", nf, nrow, npix);
+   return bad == 0;
+}
+
+/* ==========================================================================================
+ * test_texfmt: every advertised sampled-image format, an 8x8 known pattern with 3 mips uploaded
+ * and fetched at mip 0 and 1 with texelFetch and with textureLod. sRGB formats are the one place
+ * the two paths must differ (textureLod linearises, texelFetch does not).
+ * ========================================================================================== */
+static const struct {
+   VkFormat fmt;
+   const char *name;
+   int block;   /* block bytes */
+} g_bcfmt[] = {
+   {VK_FORMAT_BC1_RGB_UNORM_BLOCK, "BC1_RGB_UNORM", 8},
+   {VK_FORMAT_BC1_RGB_SRGB_BLOCK, "BC1_RGB_SRGB", 8},
+   {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, "BC1_RGBA_UNORM", 8},
+   {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, "BC1_RGBA_SRGB", 8},
+   {VK_FORMAT_BC2_UNORM_BLOCK, "BC2_UNORM", 16},
+   {VK_FORMAT_BC2_SRGB_BLOCK, "BC2_SRGB", 16},
+   {VK_FORMAT_BC3_UNORM_BLOCK, "BC3_UNORM", 16},
+   {VK_FORMAT_BC3_SRGB_BLOCK, "BC3_SRGB", 16},
+   {VK_FORMAT_BC4_UNORM_BLOCK, "BC4_UNORM", 8},
+   {VK_FORMAT_BC4_SNORM_BLOCK, "BC4_SNORM", 8},
+   {VK_FORMAT_BC5_UNORM_BLOCK, "BC5_UNORM", 16},
+   {VK_FORMAT_BC5_SNORM_BLOCK, "BC5_SNORM", 16},
+   {VK_FORMAT_BC7_UNORM_BLOCK, "BC7_UNORM", 16},
+   {VK_FORMAT_BC7_SRGB_BLOCK, "BC7_SRGB", 16},
+};
+#define TEX_NBC ((int)(sizeof g_bcfmt / sizeof g_bcfmt[0]))
+#define TEX_MIPS 3
+
+static double
+srgb_to_lin(double c)
+{
+   return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+/* the uniform channel values of stream s (0 = mip 0, 1 = mip 1) for the formats the table covers */
+static void
+tex_vals(const struct fd *d, int s, double out[4])
+{
+   fmt_expect(d, s, d->ncomp, out);
+}
+
+/* a uniform BC block: every texel decodes to rgb[] (the encoder writes the block's own endpoint codes,
+ * so the expected value is the spec's expansion of exactly what the block says) */
+static void
+bc_params(int k, int s, uint32_t *r, uint32_t *g, uint32_t *b, double rgb[3], double *alpha)
+{
+   const VkFormat fmt = g_bcfmt[k].fmt;
+   const double va[3] = {0.2, 0.4, 0.6}, vb[3] = {0.6, 0.7, 0.8};
+   const double v0 = s ? vb[0] : va[0], v1 = s ? vb[1] : va[1], v2 = s ? vb[2] : va[2];
+   *alpha = 1.0;
+   switch (fmt) {
+   case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+   case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+   case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK:
+   case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK:
+      *r = (uint32_t)lround(v0 * 31.0);
+      *g = (uint32_t)lround(v1 * 63.0);
+      *b = (uint32_t)lround(v2 * 31.0);
+      rgb[0] = (double)((*r << 3) | (*r >> 2)) / 255.0;
+      rgb[1] = (double)((*g << 2) | (*g >> 4)) / 255.0;
+      rgb[2] = (double)((*b << 3) | (*b >> 2)) / 255.0;
+      break;
+   case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_BC5_UNORM_BLOCK:
+      *r = s ? 0x90u : 0xc0u;
+      *g = s ? 0x60u : 0x30u;
+      *b = 0;
+      rgb[0] = (double)*r / 255.0;
+      rgb[1] = fmt == VK_FORMAT_BC4_UNORM_BLOCK ? 0.0 : (double)*g / 255.0;   /* BC4 is one channel */
+      rgb[2] = 0.0;
+      break;
+   case VK_FORMAT_BC4_SNORM_BLOCK: case VK_FORMAT_BC5_SNORM_BLOCK:
+      *r = s ? (uint32_t)(int32_t)64 : (uint32_t)(int32_t)96;
+      *g = s ? (uint32_t)(int32_t)-32 : (uint32_t)(int32_t)-96;
+      rgb[0] = (double)(int32_t)*r / 127.0;
+      rgb[1] = fmt == VK_FORMAT_BC4_SNORM_BLOCK ? 0.0 : (double)(int32_t)*g / 127.0;
+      rgb[2] = 0.0;
+      break;
+   default:   /* BC7 mode 6, endpoints equal, P = 0: value = (e << 1) / 255 */
+      *r = (uint32_t)lround(v0 * 127.0);
+      *g = (uint32_t)lround(v1 * 127.0);
+      *b = (uint32_t)lround(v2 * 127.0);
+      rgb[0] = (double)(*r << 1) / 255.0;
+      rgb[1] = (double)(*g << 1) / 255.0;
+      rgb[2] = (double)(*b << 1) / 255.0;
+      break;
+   }
+}
+
+static void
+bc_block(int k, int s, uint8_t *blk)
+{
+   const VkFormat fmt = g_bcfmt[k].fmt;
+   uint32_t r, g, b;
+   double rgb[3], alpha;
+   bc_params(k, s, &r, &g, &b, rgb, &alpha);
+   memset(blk, 0, (size_t)g_bcfmt[k].block);
+   switch (fmt) {
+   case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+   case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: {
+      const uint16_t c = (uint16_t)((r << 11) | (g << 5) | b);   /* BC1 stores RGB565 with R in bits 11..15 */
+      blk[0] = (uint8_t)c; blk[1] = (uint8_t)(c >> 8);
+      blk[2] = (uint8_t)c; blk[3] = (uint8_t)(c >> 8);   /* c0 == c1, all indices 0 -> colour 0 */
+      break;
+   }
+   case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK: {
+      const uint16_t c = (uint16_t)((r << 11) | (g << 5) | b);
+      for (int i = 0; i < 8; i++) blk[i] = 0xff;         /* the alpha block comes first: 4-bit alpha 15 = 1.0 */
+      blk[8] = (uint8_t)c; blk[9] = (uint8_t)(c >> 8);
+      blk[10] = (uint8_t)c; blk[11] = (uint8_t)(c >> 8);
+      break;
+   }
+   case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK: {
+      const uint16_t c = (uint16_t)((r << 11) | (g << 5) | b);
+      blk[0] = blk[1] = 0xff;                             /* alpha block first: a0 == a1 -> alpha 1.0 */
+      blk[8] = (uint8_t)c; blk[9] = (uint8_t)(c >> 8);
+      blk[10] = (uint8_t)c; blk[11] = (uint8_t)(c >> 8);
+      break;
+   }
+   case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_BC4_SNORM_BLOCK:
+      blk[0] = (uint8_t)r; blk[1] = (uint8_t)r;           /* a0 == a1, indices 0 */
+      break;
+   case VK_FORMAT_BC5_UNORM_BLOCK: case VK_FORMAT_BC5_SNORM_BLOCK:
+      blk[0] = (uint8_t)r; blk[1] = (uint8_t)r;
+      blk[8] = (uint8_t)g; blk[9] = (uint8_t)g;
+      break;
+   default: {                                             /* BC7 mode 6, one subset, 4-bit indices all 0 */
+      int bo = 7;                                          /* the 7-bit mode field, bit 6 set */
+      blk[0] |= 0x40;
+      const uint32_t e[8] = {r, r, g, g, b, b, 127, 127};  /* R0,R1,G0,G1,B0,B1,A0,A1 (7 bits each) */
+      for (int i = 0; i < 8; i++) { put_bits(blk, bo, 7, e[i]); bo += 7; }
+      bo += 2;                                             /* P0, P1 = 0 */
+      /* 16 four-bit indices, all 0; the first texel's MSB is the implicit anchor bit */
+      break;
+   }
+   }
+}
+
+static int
+tex_mip_size(int k, const struct fd *d, int mip)
+{
+   const int w = 8 >> mip, h = 8 >> mip;
+   if (k >= 0) return ((w + 3) / 4) * ((h + 3) / 4) * g_bcfmt[k].block;
+   return w * h * (int)d->elem;
+}
+
+static int
+test_texfmt(void)
+{
+   const int nall = (int)(sizeof g_fmts / sizeof g_fmts[0]);
+   static int sel[256], nf = 0;
+   static int rows_mip[FSW_MAX], rows_mode[FSW_MAX];
+   int nrow = 0, trunc = 0;
+   for (int i = 0; i < nall + TEX_NBC; i++) {
+      const int bc = i >= nall;
+      const VkFormat fmt = bc ? g_bcfmt[i - nall].fmt : g_fmts[i].fmt;
+      const struct fd *d = bc ? NULL : &g_fmts[i];
+      VkFormatProperties fp;
+      GetFmtProps(g_pd, fmt, &fp);
+      if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) continue;
+      if (!bc && d->kind == K_SRGB && !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) continue;
+      if (nf == 256) { trunc = 1; break; }
+      if (nrow + 4 > FSW_MAX) { trunc = 1; break; }
+      sel[nf] = bc ? -(i - nall) - 1 : i;
+      for (int m = 0; m < 2; m++)
+         for (int mode = 0; mode < 2; mode++) {
+            rows_mip[nrow] = m;
+            rows_mode[nrow] = mode;
+            nrow++;
+         }
+      nf++;
+   }
+   printf("{\"test\":\"texfmt\",\"formats\":%d,\"rows\":%d%s}\n", nf, nrow, trunc ? ",\"truncated\":true" : "");
+   if (!nf) return 1;
+
+   /* staging: every mip of every format, back to back */
+   VkDeviceSize tot = 16;
+   static int soff[256];
+   for (int k = 0; k < nf; k++) {
+      const int bc = sel[k] < 0;
+      const struct fd *d = bc ? NULL : &g_fmts[sel[k]];
+      soff[k] = (int)tot;
+      for (int m = 0; m < TEX_MIPS; m++) tot += (VkDeviceSize)tex_mip_size(bc ? -sel[k] - 1 : -1, d, m) + 16;
+   }
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = tot,
+      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+   VkBuffer sb;
+   CHECK(CreateBuffer(dev, &bci, NULL, &sb) == VK_SUCCESS, "texfmt staging");
+   VkMemoryRequirements smr;
+   GetBufferMemoryRequirements(dev, sb, &smr);
+   int smt = memtype(smr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(smt >= 0, "texfmt staging type");
+   VkMemoryAllocateInfo sai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = smr.size, .memoryTypeIndex = smt};
+   VkDeviceMemory smem;
+   CHECK(AllocateMemory(dev, &sai, NULL, &smem) == VK_SUCCESS, "texfmt staging memory");
+   CHECK(BindBufferMemory(dev, sb, smem, 0) == VK_SUCCESS, "texfmt staging bind");
+   uint8_t *sp;
+   CHECK(MapMemory(dev, smem, 0, VK_WHOLE_SIZE, 0, (void **)&sp) == VK_SUCCESS, "texfmt staging map");
+   memset(sp, 0, (size_t)tot);
+   for (int k = 0; k < nf; k++) {
+      const int bc = sel[k] < 0, bi = bc ? -sel[k] - 1 : -1;
+      const struct fd *d = bc ? NULL : &g_fmts[sel[k]];
+      VkDeviceSize off = (VkDeviceSize)soff[k];
+      for (int m = 0; m < TEX_MIPS; m++) {
+         const int sz = tex_mip_size(bi, d, m);
+         uint8_t *p = sp + off;
+         if (bc) {
+            const int bs = g_bcfmt[bi].block;
+            uint8_t blk[16];
+            bc_block(bi, m == 1, blk);
+            for (int i = 0; i + bs <= sz; i += bs) memcpy(p + i, blk, (size_t)bs);
+         } else {
+            uint8_t el[16];
+            fmt_encode(d, m == 1, el);
+            for (int i = 0; i + d->elem <= sz; i += d->elem) memcpy(p + i, el, d->elem);
+         }
+         off += (VkDeviceSize)sz + 16;
+      }
+   }
+   VkMappedMemoryRange sflush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = smem, .offset = 0, .size = VK_WHOLE_SIZE};
+   FlushMappedMemoryRanges(dev, 1, &sflush);
+
+   VkShaderModule vs = load_spv("fmtsw_quad.vert.spv");
+   VkShaderModule fs[3];
+   fs[0] = load_spv("fmtsw_tex.frag.spv");
+   fs[1] = load_spv("fmtsw_tex_u.frag.spv");
+   fs[2] = load_spv("fmtsw_tex_s.frag.spv");
+   CHECK(vs && fs[0] && fs[1] && fs[2], "texfmt shader modules");
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorCount = 1,
+      .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "texfmt dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, (uint32_t)nf};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = (uint32_t)nf,
+      .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "texfmt pool");
+   VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+      .size = sizeof(struct vtxpc)};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+      .pSetLayouts = &dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   VkPipelineLayout pl;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "texfmt layout");
+   VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
+      .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 2.0f};
+   VkSampler smp;
+   CHECK(CreateSampler(dev, &sci, NULL, &smp) == VK_SUCCESS, "texfmt sampler");
+
+   struct fsw f;
+   if (!fsw_init(&f)) return 0;
+   /* one pipeline per class (the sampled formats' only shader-side difference is float/uint/sint) */
+   VkPipeline pipe[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+   for (int c = 0; c < 3; c++) {
+      VkPipelineShaderStageCreateInfo st[2] = {
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+          .module = vs, .pName = "main"},
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .module = fs[c], .pName = "main"}};
+      VkPipelineVertexInputStateCreateInfo vin = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+      VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+      VkViewport vpv = {0.0f, 0.0f, (float)W, (float)H, 0.0f, 1.0f};
+      VkRect2D scs = {{0, 0}, {W, H}};
+      VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+         .viewportCount = 1, .pViewports = &vpv, .scissorCount = 1, .pScissors = &scs};
+      VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+         .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+         .lineWidth = 1.0f};
+      VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+      VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+      VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+         .attachmentCount = 1, .pAttachments = &cba};
+      VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+         .colorAttachmentCount = 1, .pColorAttachmentFormats = (VkFormat[]){VK_FORMAT_R8G8B8A8_UNORM}};
+      VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
+         .stageCount = 2, .pStages = st, .pVertexInputState = &vin, .pInputAssemblyState = &ia, .pViewportState = &vp,
+         .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .layout = pl};
+      CHECK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe[c]) == VK_SUCCESS, "texfmt pipeline %d", c);
+   }
+
+   /* images, views, descriptors, copies, then the draws */
+   static VkImage imgs[256];
+   static VkDeviceMemory imems[256];
+   static VkImageView views[256];
+   static int iaspect[256];
+   VkCommandBuffer cb = f.cb;
+   int nimg = 0;
+   for (int k = 0; k < nf; k++) {
+      const int bc = sel[k] < 0, bi = bc ? -sel[k] - 1 : -1;
+      const struct fd *d = bc ? NULL : &g_fmts[sel[k]];
+      const VkFormat fmt = bc ? g_bcfmt[bi].fmt : d->fmt;
+      const int depth = !bc && (d->kind == K_D16 || d->kind == K_D32 || d->kind == K_D24S8);
+      const VkImageAspectFlags asp = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+         .format = fmt, .extent = {8, 8, 1}, .mipLevels = TEX_MIPS, .arrayLayers = 1,
+         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                  (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      if (CreateImage(dev, &ii, NULL, &imgs[nimg]) != VK_SUCCESS) {
+         printf("{\"test\":\"texfmt\",\"fmt\":\"%s\",\"skipped\":\"vkCreateImage\",\"ok\":false}\n",
+                bc ? g_bcfmt[bi].name : d->name);
+         continue;
+      }
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, imgs[nimg], &mr);
+      int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      if (mt < 0) mt = memtype(mr.memoryTypeBits, 0);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      CHECK(AllocateMemory(dev, &ai, NULL, &imems[nimg]) == VK_SUCCESS, "texfmt image memory");
+      CHECK(BindImageMemory(dev, imgs[nimg], imems[nimg], 0) == VK_SUCCESS, "texfmt bind");
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = imgs[nimg],
+         .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt, .subresourceRange = {asp, 0, TEX_MIPS, 0, 1}};
+      CHECK(CreateImageView(dev, &vi, NULL, &views[nimg]) == VK_SUCCESS, "texfmt view");
+      iaspect[nimg] = (int)asp;
+      /* UNDEFINED -> TRANSFER_DST, then the three mips */
+      VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_NONE, .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+         .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .image = imgs[nimg],
+         .subresourceRange = {asp, 0, TEX_MIPS, 0, 1}};
+      VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+      CmdPipelineBarrier2(cb, &dep);
+      VkBufferImageCopy reg[TEX_MIPS];
+      memset(reg, 0, sizeof reg);
+      VkDeviceSize off = (VkDeviceSize)soff[k];
+      for (int m = 0; m < TEX_MIPS; m++) {
+         reg[m].bufferOffset = off;
+         reg[m].imageSubresource = (VkImageSubresourceLayers){asp, (uint32_t)m, 0, 1};
+         reg[m].imageExtent = (VkExtent3D){(uint32_t)(8 >> m), (uint32_t)(8 >> m), 1};
+         off += (VkDeviceSize)tex_mip_size(bi, d, m) + 16;
+      }
+      CmdCopyBufferToImage(cb, sb, imgs[nimg], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, TEX_MIPS, reg);
+      nimg++;
+   }
+   /* every copy, then every transition: one barrier batch, one submit */
+   for (int i = 0; i < nimg; i++) {
+      VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+         .image = imgs[i], .subresourceRange = {(VkImageAspectFlags)iaspect[i], 0, TEX_MIPS, 0, 1}};
+      VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+      CmdPipelineBarrier2(cb, &dep);
+   }
+   if (!g_fake) {
+      int nimg2 = 0;
+      for (int k = 0; k < nf; k++) {
+         const int bc = sel[k] < 0;
+         const struct fd *d = bc ? NULL : &g_fmts[sel[k]];
+         if (nimg2 >= nimg) break;
+         VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+         VkDescriptorSet ds;
+         CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "texfmt dset");
+         VkDescriptorImageInfo dii = {smp, views[nimg2], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0,
+            .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &dii};
+         UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+         const int cls = bc ? 0 : fmt_class(d);
+         double sc[4], biv[4];
+         for (int i = 0; i < 4; i++) { sc[i] = 1.0; biv[i] = 0.0; }
+         if (!bc) {
+            if (d->kind == K_SNORM) { for (int i = 0; i < 4; i++) { sc[i] = 0.5; biv[i] = 0.5; } }
+            else if (d->kind == K_SSC) {
+               for (int i = 0; i < 4; i++) { sc[i] = 0.5 / (double)((1u << (d->bits[i] - 1)) - 1); biv[i] = 0.5; }
+            } else if (d->kind == K_USC) {
+               for (int i = 0; i < 4; i++) sc[i] = 1.0 / (double)((1u << d->bits[i]) - 1u);
+            }
+         }
+         for (int r = 0; r < 4; r++) {
+            const int row = k * 4 + r;
+            fsw_cell_begin(&f, row);
+            CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe[cls]);
+            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &ds, 0, NULL);
+            struct vtxpc pc = {.c = {rows_mip[row] ? 1 : 3, rows_mip[row] ? 1 : 3, rows_mip[row], rows_mode[row]}};
+            for (int i = 0; i < 4; i++) {
+               pc.scale[i] = (float)sc[i];
+               pc.bias[i] = (float)biv[i];
+            }
+            CmdPushConstants(cb, pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+            CmdDraw(cb, 6, 1, 0, 0);
+            fsw_cell_end(&f);
+         }
+         nimg2++;
+      }
+   }
+   int bad = 0, npix = 0;
+   if (!g_fake) {
+      if (!fsw_submit(&f)) return 0;
+      for (int k = 0; k < nf; k++) {
+         const int bc = sel[k] < 0, bi = bc ? -sel[k] - 1 : -1;
+         const struct fd *d = bc ? NULL : &g_fmts[sel[k]];
+         const char *name = bc ? g_bcfmt[bi].name : d->name;
+         const int srgb = (!bc && d->kind == K_SRGB) || (bc && (g_bcfmt[bi].fmt == VK_FORMAT_BC1_RGB_SRGB_BLOCK ||
+            g_bcfmt[bi].fmt == VK_FORMAT_BC1_RGBA_SRGB_BLOCK || g_bcfmt[bi].fmt == VK_FORMAT_BC2_SRGB_BLOCK ||
+            g_bcfmt[bi].fmt == VK_FORMAT_BC3_SRGB_BLOCK || g_bcfmt[bi].fmt == VK_FORMAT_BC7_SRGB_BLOCK));
+         const int depth = !bc && (d->kind == K_D16 || d->kind == K_D32 || d->kind == K_D24S8);
+         int fmtbad = 0, fr = -1, fc = -1, fw = -1, fg = -1;
+         double sc[4], biv[4];
+         for (int i = 0; i < 4; i++) { sc[i] = 1.0; biv[i] = 0.0; }
+         if (!bc) {
+            if (d->kind == K_SNORM) { for (int i = 0; i < 4; i++) { sc[i] = 0.5; biv[i] = 0.5; } }
+            else if (d->kind == K_SSC) {
+               for (int i = 0; i < 4; i++) { sc[i] = 0.5 / (double)((1u << (d->bits[i] - 1)) - 1); biv[i] = 0.5; }
+            } else if (d->kind == K_USC) {
+               for (int i = 0; i < 4; i++) sc[i] = 1.0 / (double)((1u << d->bits[i]) - 1u);
+            }
+         }
+         for (int r = 0; r < 4; r++) {
+            const int row = k * 4 + r, mip = rows_mip[row], mode = rows_mode[row];
+            double ex[4];
+            if (bc) {
+               uint32_t cr, cg, cbv;
+               double rgb[3], alpha;
+               bc_params(bi, mip, &cr, &cg, &cbv, rgb, &alpha);
+               (void)cr; (void)cg; (void)cbv;
+               ex[0] = rgb[0]; ex[1] = rgb[1]; ex[2] = rgb[2]; ex[3] = 1.0;
+            } else {
+               tex_vals(d, mip, ex);
+               if (d->kind == K_SRGB)   /* both texelFetch and textureLod give the linear value (measured on a
+                                          * reference driver: mode 0 and mode 1 agree on every sRGB row) */
+                  for (int i = 0; i < 3; i++) ex[i] = srgb_to_lin(ex[i]);
+               if (d->kind == K_UINT) for (int i = 0; i < 3; i++) ex[i] = ex[i] / 255.0;
+               if (d->kind == K_SINT) for (int i = 0; i < 3; i++) ex[i] = (ex[i] + 128.0) / 255.0;
+            }
+            int rgb[3], want[3];
+            if (fsw_read(&f, row, rgb)) {
+               if (!fmtbad) { fr = mip * 2 + mode; fc = -1; }
+               fmtbad++;
+               continue;
+            }
+            npix++;
+            for (int i = 0; i < 3; i++) {
+               if (depth && i) continue;   /* a depth sample's other channels are definitional */
+               double t = (d || bc) ? ex[i] : ex[i];
+               if (!bc && (d->kind == K_UINT || d->kind == K_SINT)) {
+                  /* already mapped by the shader */
+               } else if (bc) {
+                  /* sRGB BC formats: textureLod linearises */
+                  if (srgb) t = srgb_to_lin(ex[i]);
+               } else {
+                  t = ex[i] * sc[i] + biv[i];
+               }
+               t = t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t;
+               want[i] = (int)lround(t * 255.0);
+               if (abs(rgb[i] - want[i]) > 1) {
+                  if (!fmtbad) { fr = mip * 2 + mode; fc = i; fw = want[i]; fg = rgb[i]; }
+                  fmtbad++;
+               }
+            }
+         }
+         if (fmtbad) {
+            bad++;
+            printf("{\"test\":\"texfmt\",\"fmt\":\"%s\",\"ok\":false,\"row\":%d,\"ch\":%d,\"expected\":%d,\"got\":%d}\n",
+                   name, fr, fc, fw, fg);
+         } else {
+            printf("{\"test\":\"texfmt\",\"fmt\":\"%s\",\"ok\":true}\n", name);
+         }
+      }
+   } else {
+      /* the fake backend renders nothing: report every row as skipped, not as a pass of anything */
+      for (int k = 0; k < nf; k++) {
+         const int bc = sel[k] < 0, bi = bc ? -sel[k] - 1 : -1;
+         printf("{\"test\":\"texfmt\",\"fmt\":\"%s\",\"skipped\":\"fake backend renders nothing\",\"ok\":true}\n",
+                bc ? g_bcfmt[bi].name : g_fmts[sel[k]].name);
+      }
+   }
+   for (int i = 0; i < nimg; i++) DestroyImageView(dev, views[i], NULL);
+   for (int i = 0; i < nimg; i++) DestroyImage(dev, imgs[i], NULL);
+   for (int i = 0; i < nimg; i++) FreeMemory(dev, imems[i], NULL);
+   for (int c = 0; c < 3; c++) if (pipe[c]) DestroyPipeline(dev, pipe[c], NULL);
+   DestroyPipelineLayout(dev, pl, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroySampler(dev, smp, NULL);
+   DestroyShaderModule(dev, vs, NULL);
+   for (int c = 0; c < 3; c++) DestroyShaderModule(dev, fs[c], NULL);
+   DestroyBuffer(dev, sb, NULL);
+   FreeMemory(dev, smem, NULL);
+   fsw_destroy(&f);
+   printf("{\"test\":\"texfmt\",\"result\":\"%s\",\"formats\":%d,\"rows\":%d,\"pixels\":%d}\n",
+          bad ? "FAIL" : "PASS", nf, nrow, npix);
+   return bad == 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2814,6 +3926,7 @@ main(int argc, char **argv)
    PFN_vkEnumeratePhysicalDevices EPD = (PFN_vkEnumeratePhysicalDevices)gipa(inst, "vkEnumeratePhysicalDevices");
    PFN_vkGetPhysicalDeviceMemoryProperties GMP = (PFN_vkGetPhysicalDeviceMemoryProperties)gipa(inst, "vkGetPhysicalDeviceMemoryProperties");
    PFN_vkGetPhysicalDeviceProperties GPP = (PFN_vkGetPhysicalDeviceProperties)gipa(inst, "vkGetPhysicalDeviceProperties");
+   GetFmtProps = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    PFN_vkGetPhysicalDeviceFeatures GPF = (PFN_vkGetPhysicalDeviceFeatures)gipa(inst, "vkGetPhysicalDeviceFeatures");
    PFN_vkCreateDevice CreateDevice = (PFN_vkCreateDevice)gipa(inst, "vkCreateDevice");
    PFN_vkGetDeviceProcAddr GDPA = (PFN_vkGetDeviceProcAddr)gipa(inst, "vkGetDeviceProcAddr");
@@ -2825,6 +3938,7 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
    GMP(pd, &memprops);
+   g_pd = pd;   /* format sweep: the advertised format features */
    g_fbcounts = pp.limits.framebufferColorSampleCounts;
    printf("{\"device\":\"%s\"}\n", pp.deviceName);
 
@@ -2995,6 +4109,8 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
+   if (ok && g_only && CASE_ON("vtxfmt")) ok &= test_vtxfmt();     /* explicit only: the sweep is one line per format */
+   if (ok && g_only && CASE_ON("texfmt")) ok &= test_texfmt();     /* explicit only: the sweep is one line per format */
    if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");

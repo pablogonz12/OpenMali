@@ -163,6 +163,10 @@ for g in v11 v13; do
    run "vk_draw sets8 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only sets8
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
    run "vk_draw blitreplay $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only blitreplay
+   # Format sweep (notes/format-sweep.md): the fake backend renders nothing, so the host asserts what it can here -- every
+   # advertised vertex format builds a pipeline, and every sampled format creates an image, a view and its 3-mip upload.
+   run "vk_draw vtxfmt $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only vtxfmt
+   run "vk_draw texfmt $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only texfmt
 done
 
 # Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
