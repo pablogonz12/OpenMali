@@ -1070,7 +1070,9 @@ test_degrade(const char *name)
       }
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                               .format = cfg[k].f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
-                              .samples = cfg[k].s, .tiling = VK_IMAGE_TILING_LINEAR,
+                              /* LINEAR tiling is illegal with samples > 1 (VUID-VkImageCreateInfo-tiling), and the readback
+                               * path below copies through a TRANSFER_SRC image, so the multisampled one is OPTIMAL */
+                              .samples = cfg[k].s, .tiling = cfg[k].msaa ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR,
                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
       VkMemoryRequirements mr;
       VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -1104,7 +1106,8 @@ test_degrade(const char *name)
                                           .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                           .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE};
       VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
-                            .colorAttachmentCount = cfg[k].nullslot ? 2u : 1u, .pColorAttachments = att};
+                            /* the rt1 row clears index 1, so index 1 must exist (it is the null slot: legal, no effect) */
+                            .colorAttachmentCount = (cfg[k].nullslot || cfg[k].rt1) ? 2u : 1u, .pColorAttachments = att};
       VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
       VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};

@@ -69,13 +69,21 @@ unsupported(struct mali_cmd_buffer *cmd, const char *what)
 static void
 degrade(struct mali_cmd_buffer *cmd, const char *what)
 {
+   /* Recording may run on several threads (separate command pools), so the lookup-and-insert is under one lock; the log line
+    * is printed outside it (stderr is slow) but only by the thread that inserted the entry */
    static const char *seen[16];
    static unsigned nseen;
-   bool first = false, found = false;
-   for (unsigned i = 0; i < nseen; i++)
-      if (seen[i] == what || (seen[i] && !strcmp(seen[i], what)))
-         found = true;
-   if (!found && nseen < sizeof seen / sizeof seen[0]) { seen[nseen++] = what; first = true; }
+   static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+   bool first = false;
+   pthread_mutex_lock(&m);
+   {
+      bool found = false;
+      for (unsigned i = 0; i < nseen; i++)
+         if (seen[i] == what || (seen[i] && !strcmp(seen[i], what)))
+            found = true;
+      if (!found && nseen < sizeof seen / sizeof seen[0]) { seen[nseen++] = what; first = true; }
+   }
+   pthread_mutex_unlock(&m);
    if (first && getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_cmd: degraded: %s (the frame continues)\n", what);
    (void)cmd;
@@ -1082,6 +1090,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    }
    if (ncol > 1 || (ncol == 1 && c0 != 0))
       degrade(cmd, "several colour attachment slots (rendering the first non-null one)");
+   f->colour_slot = no_col ? 0u : c0;   /* CmdClearAttachments must target this slot, and only this one */
    const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[c0];
    bool load = false;
    struct mali_preload_src psrc;
@@ -1453,8 +1462,12 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             continue;
          bool zc = a & VK_IMAGE_ASPECT_DEPTH_BIT, sc = a & VK_IMAGE_ASPECT_STENCIL_BIT;
          if ((zc && !f->has_zs) || (sc && !f->has_st)) {
+            /* only the aspect without a backing view has no effect: drop it and clear the other one */
             degrade(cmd, "CmdClearAttachments of a depth/stencil aspect this pass does not have");
-            continue;
+            zc = zc && f->has_zs;
+            sc = sc && f->has_st;
+            if (!zc && !sc)
+               continue;
          }
          if (f->samples != 1) {
             /* the depth/stencil quad writes one sample per fragment; at 4x that is not the clear Vulkan asks for */
@@ -1515,8 +1528,10 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
       for (uint32_t i = 0; i < na; i++) {
          if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
             continue;
-         if (att[i].colorAttachment != 0) {
-            degrade(cmd, "CmdClearAttachments of colour attachment > 0 (only RT0 is rendered)");
+         if (att[i].colorAttachment != f->colour_slot) {
+            /* a clear names an attachment index, not "the one we render": a null slot has no view (no effect) and another
+             * bound slot is not rendered by this pass - clearing the rendered RT for either would write the wrong image */
+            degrade(cmd, "CmdClearAttachments of a colour attachment this pass does not render");
             continue;
          }
          for (uint32_t r = 0; r < nr; r++) {
@@ -1527,6 +1542,9 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             struct mali_preload_src ps;
             memset(&ps, 0, sizeof ps);
             ps.arg = 19 | (f->colour.rt && f->colour.rt->int_bits ? (f->colour.rt->is_signed ? 2u : 1u) << 16 : 0);   /* the clear words are the raw shader output: integer-typed for integer formats */
+            /* the quad must be evaluated once per sample, or the clear only lands on sample 0: a constant colour needs no
+             * per-sample plane, so the stride stays 0 (arg 19 reads the clear words, not memory) */
+            ps.samples = f->samples > 1 ? f->samples : 0;
             memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
             struct mali_draw d;
             if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
