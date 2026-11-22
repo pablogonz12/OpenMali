@@ -152,16 +152,16 @@ hbuf_destroy(struct hbuf *h)
 /* Render target: linear RGBA8 256x256, host readable. */
 struct tgt {
    VkImage img; VkDeviceMemory mem; VkImageView view; VkRenderPass rp; VkFramebuffer fb;
-   uint8_t *px; uint32_t pitch;
+   uint8_t *px; uint32_t pitch; uint32_t w, h;
    VkCommandPool pool; VkFence fence;
 };
 
 static int
-tgt_create(struct tgt *t)
+tgt_create_wh(struct tgt *t, uint32_t tw, uint32_t th)
 {
    memset(t, 0, sizeof *t);
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                           .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                           .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {tw, th, 1}, .mipLevels = 1, .arrayLayers = 1,
                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -192,13 +192,21 @@ tgt_create(struct tgt *t)
                                  .subpassCount = 1, .pSubpasses = &sp};
    CHECK(CreateRenderPass(dev, &rpi, NULL, &t->rp) == VK_SUCCESS, "render pass");
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->rp, .attachmentCount = 1,
-                                  .pAttachments = &t->view, .width = W, .height = H, .layers = 1};
+                                  .pAttachments = &t->view, .width = tw, .height = th, .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &t->fb) == VK_SUCCESS, "framebuffer");
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &t->pool) == VK_SUCCESS, "pool");
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &t->fence) == VK_SUCCESS, "fence");
+   t->w = tw;
+   t->h = th;
    return 1;
+}
+
+static int
+tgt_create(struct tgt *t)
+{
+   return tgt_create_wh(t, W, H);
 }
 
 static void
