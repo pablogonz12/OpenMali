@@ -14,6 +14,7 @@
 #include "mali_image.h"
 #include "vk_enum_to_str.h"
 #include "mali_msaa.h"
+#include "mali_gs.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -127,7 +128,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    p->dev = dev;
 
-   const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL;
+   const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL, *gss = NULL;
+   unsigned gs_prims = 0;   /* lane 1: the input primitive of an accepted pass-through GS (0 = no geometry stage) */
    for (uint32_t i = 0; i < ci->stageCount; i++) {
       /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
       const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
@@ -141,6 +143,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          vss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
          fss = &ci->pStages[i];
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT)
+         gss = &ci->pStages[i];   /* accepted below only when it is a provable pass-through (mali_gs.c) */
       else {
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation / geometry: not supported */
          goto fail;
@@ -151,6 +155,36 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    if (!vss || !stage_spirv(vss, &vcode, &vwords) || (fss && !stage_spirv(fss, &fcode, &fwords))) {
       res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) pipelines: later */
       goto fail;
+   }
+
+   /* Geometry shaders, lane 1 of notes/gs-design.md §4: a *provable* pass-through GS (1-in/1-out, in order, one stream,
+    * every output a copy of the matching input vertex — mali_gs.c) is compiled into the vertex program by not existing:
+    * the stream it would emit is exactly the one the vertex shader above already produces, so the VS is compiled
+    * unchanged and the draw below keeps its topology, its vertex count and its pipeline state, which is why the pass-through
+    * draw record *is* the existing one (mali_cmd.c). Zero jobs, zero dispatches, zero bytes. Any other geometry shader is
+    * refused here with a named reason, before any state is built: it needs lane 2's compute pre-pass. The feature bit stays
+    * false (mali_physical_device.c), so an application cannot reach this path at all; MALI_EXPERIMENTAL_GS=1 (mali_gs.h) is
+    * the development gate the gs_* tests use, and it never advertises anything. */
+   if (gss) {
+      const uint32_t *gcode = NULL;
+      uint32_t gwords = 0;
+      char why[192] = "no SPIR-V in the geometry stage";
+      if (!mali_experimental_gs()) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: geometry shader refused: geometryShader is not advertised (MALI_EXPERIMENTAL_GS=1 is the development gate)\n");
+         goto fail;
+      }
+      if (!stage_spirv(gss, &gcode, &gwords) ||
+          !mali_gs_passthrough(gcode, gwords, gss->pName, &gs_prims, why, sizeof why)) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: geometry shader refused: %s\n", why);
+         goto fail;
+      }
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: geometry shader accepted as a pass-through (%u-in/1-out, compiled as the vertex program)\n",
+                 gs_prims);
    }
 
    all = vk_zalloc(&dev->vk.alloc, sizeof *all, 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
@@ -354,6 +388,20 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       default:
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported topology %d\n", ci->pInputAssemblyState->topology);
          goto fail;
+      }
+      /* A pass-through GS keeps the input topology: the vertex stream is unchanged. That is only a faithful draw for a
+       * LIST topology — a strip's gl_in order is the vertex order, so re-emitting those vertices as fresh strips reverses
+       * the winding of every odd triangle (and a fan's first vertex is not in gl_in at all), so strip/fan inputs are
+       * refused with a name instead of misrendering. */
+      if (gs_prims) {
+         const unsigned want = gs_prims == MALI_GS_POINTS ? 1 : gs_prims == MALI_GS_LINES ? 2 : 8;
+         if (g->poly_mode || g->prim != want) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: geometry shader refused: pass-through GS needs a %s list topology (pipeline has prim %u, polygonMode rewrite %u)\n",
+                       gs_prims == MALI_GS_POINTS ? "point" : gs_prims == MALI_GS_LINES ? "line" : "triangle", g->prim, g->poly_mode);
+            goto fail;
+         }
       }
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
       /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */

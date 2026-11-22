@@ -96,6 +96,18 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxVertexInputAttributeOffset = 2047,
       .maxVertexInputBindingStride = 2048,
       .maxVertexOutputComponents = 64,
+      /* Geometry: lane 1 of notes/gs-design.md §4 only runs a pass-through GS (1-in/1-out, one stream, one invocation),
+       * so these are the numbers step 6 will advertise. They are published now because Vulkan's limits are a device
+       * property, not a promise about a feature that is off: VkPhysicalDeviceFeatures::geometryShader stays FALSE
+       * until the compute pre-pass lands (notes/gs-design.md §7), so no application reaches geometry pipelines at all
+       * (t_vk_feat gs_limits asserts both halves). */
+      .maxGeometryShaderInvocations = 32,
+      .maxGeometryInputComponents = 128,
+      .maxGeometryOutputComponents = 128,
+      .maxGeometryOutputVertices = 256,
+      .maxGeometryTotalOutputComponents = 1024,
+      /* no maxGeometryStreams: Vulkan 1.4 removed it from VkPhysicalDeviceLimits; the stream count is the
+       * geometryStreams feature, which stays false (D3D11 has no multi-stream GS). */
       .maxFragmentInputComponents = 64,
       .maxFragmentOutputAttachments = 4,
       .maxFragmentDualSrcAttachments = 1,   /* dualSrcBlend: blend shader, attachment 0 */

@@ -89,6 +89,11 @@ static int g_have_dyn_dclip;   /* extendedDynamicState3DepthClipEnable advertise
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
+/* Lane 1 of notes/gs-design.md §4 (geometry shaders): the geometry module of the next scene, and two knobs the gs_reject
+ * case needs (an input-assembly topology other than the triangle list, and "this pipeline creation must fail"). */
+static const char *g_gs;
+static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+static int g_gs_expect_fail;
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (the cases gate on the driver's advertised counts, not on MALI_EXPERIMENTAL_MSAA) */
 static int g_msaa_store;   /* g_msaa: storeOp STORE on the 4x attachment (samples stored, resolve in a separate pass) instead of DONT_CARE (hardware Average) */
 
@@ -188,7 +193,7 @@ load_spv(const char *name)
 /* ------------------------------------------------------------------ scene */
 struct scene {
    int depth;
-   VkShaderModule vs, fs;
+   VkShaderModule vs, fs, gs;
    VkPipelineLayout layout;
    VkRenderPass rp, rp2;
    int second;   /* scene_draw uses rp2 (LOAD) */
@@ -240,7 +245,8 @@ scene_create(struct scene *s, int depth)
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
    s->vs = load_spv(vsn);
    s->fs = load_spv(fsn);
-   CHECK(s->vs && s->fs, "shader modules %s %s", vsn, fsn);
+   if (g_gs) s->gs = load_spv(g_gs);
+   CHECK(s->vs && s->fs && (!g_gs || s->gs), "shader modules %s %s%s%s", vsn, fsn, g_gs ? " " : "", g_gs ? g_gs : "");
 
    VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = 16};
    if (mode == MODE_PUSHFS) { pcr.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT; pcr.size = 32; }
@@ -507,7 +513,7 @@ scene_create(struct scene *s, int depth)
       UpdateDescriptorSets(dev, 1, &w, 0, NULL);
    }
 
-   VkPipelineShaderStageCreateInfo st[2] = {
+   VkPipelineShaderStageCreateInfo st[3] = {
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
        .module = s->vs, .pName = "main"},
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -520,8 +526,11 @@ scene_create(struct scene *s, int depth)
    VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                                                .vertexBindingDescriptionCount = g_inst ? 1 : 2, .pVertexBindingDescriptions = bd,
                                                .vertexAttributeDescriptionCount = g_inst ? 1 : 2, .pVertexAttributeDescriptions = ad2};
+   unsigned nst = 2;
+   if (g_gs) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                           .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = s->gs, .pName = "main"};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+                                                 .topology = g_topo};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                             .viewportCount = s->mode == MODE_MVP ? 4 : 1, .scissorCount = s->mode == MODE_MVP ? 4 : 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -574,12 +583,19 @@ scene_create(struct scene *s, int depth)
    }
    if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
                 cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
-   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = g_discard == 2 || g_nofs ? 1 : 2,
+   if (g_discard == 2 || g_nofs) nst = 1;   /* unchanged: one stage (no FS) */
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = nst,
                                       .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                       .pDepthStencilState = depth ? &dss : NULL, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe);
+   if (g_gs_expect_fail) {   /* gs_reject: the driver must refuse this pipeline, so a VK_SUCCESS here is the failure */
+      const int refused = r == VK_ERROR_FEATURE_NOT_PRESENT;
+      printf("{\"test\":\"%s\",\"pipeline\":%d,\"refused\":%s,\"ok\":%s}\n", g_gs, (int)r, refused ? "true" : "false",
+             refused ? "true" : "false");
+      return refused;
+   }
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
    if (g_dxvk) {
       rs.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -630,6 +646,7 @@ scene_destroy(struct scene *s)
    if (s->layout) DestroyPipelineLayout(dev, s->layout, NULL);
    if (s->vs) DestroyShaderModule(dev, s->vs, NULL);
    if (s->fs) DestroyShaderModule(dev, s->fs, NULL);
+   if (s->gs) DestroyShaderModule(dev, s->gs, NULL);
 }
 
 /* draw n triangles (rot[i] = cos, sin, ox, oy), submit, wait */
@@ -2779,6 +2796,109 @@ test_view_format(void)
    return ok;
 }
 
+/* ---- lane 1: geometry shaders (notes/gs-design.md §4) ----
+ * A *provable* pass-through GS (1-in/1-out, in order, every output a copy of the matching input vertex) must draw exactly
+ * what the same pipeline draws without the geometry stage: same coverage, same pixels, and — the assertion that matters —
+ * no extra work: the draw record is unchanged, so MALI_PROF=2's ndraws/nops and many_draws' us_per_draw cannot move
+ * (both are run with --gs in the PR). Everything else must still be refused, with the named reason check.sh greps.
+ * The advertised feature bit stays FALSE: MALI_EXPERIMENTAL_GS=1 is the development gate, and the first gs_reject row
+ * proves the gate is the only way in. */
+static int
+test_gs_passthrough(void)
+{
+   if (!getenv("MALI_EXPERIMENTAL_GS")) {
+      printf("{\"test\":\"gs_passthrough\",\"skipped\":\"MALI_EXPERIMENTAL_GS not set (geometryShader is not advertised)\",\"ok\":true}\n");
+      return 1;
+   }
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{1, 0, 0, 0.5f}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   int ok = 0, drew = 0;
+   if (!scene_create(&a, 0))
+      goto out;
+   g_gs = "gs_pass.geom.spv";
+   if (!scene_create(&b, 0))   /* the same pipeline, plus the geometry stage: creation is the host half of the gate */
+      goto out;
+   if (g_fake) {
+      printf("{\"test\":\"gs_passthrough\",\"skipped\":\"fake backend: pipelines only\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   drew = 1;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0, maxd = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            int d = 0;
+            for (int c = 0; c < 4; c++) {
+               const int e = abs((int)p[c] - (int)q[c]);
+               if (e > d) d = e;
+            }
+            if (d) diff++;
+            if (d > (int)maxd) maxd = (uint32_t)d;
+         }
+      printf("{\"test\":\"gs_passthrough\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"ok\":%s}\n",
+             cov_a, cov_b, diff, maxd, (cov_a == 8192 && diff == 0) ? "true" : "false");
+      ok = cov_a == 8192 && diff == 0;
+   }
+out:
+   if (drew) { /* both scenes own their own images: nothing to undo */ }
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_gs = NULL;
+   return ok;
+}
+
+/* Every geometry shader lane 1 does not accept must be refused at pipeline creation with VK_ERROR_FEATURE_NOT_PRESENT and
+ * a name for why (the driver prints it under MALI_PIPE_DBG; check.sh greps each row's reason). The last row is the gate
+ * itself: the same pass-through shader without MALI_EXPERIMENTAL_GS, which is the state every application sees. */
+static const struct { const char *geom; VkPrimitiveTopology topo; int gate_off; const char *why; } g_gs_rejects[] = {
+   {"gs_computed.geom.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "an output is computed, not copied from the input vertex"},
+   {"gs_amplify.geom.spv",  VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "max_vertices 6 is not 3"},
+   {"gs_loop.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "control flow (opcode"},
+   {"gs_primid.geom.spv",   VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "gl_PrimitiveID"},
+   {"gs_pass.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, "strip topology"},
+   {"gs_pass.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  1, "geometryShader is not advertised"},
+};
+
+static int
+test_gs_reject(void)
+{
+   int ok = 1;
+   for (unsigned i = 0; i < sizeof g_gs_rejects / sizeof *g_gs_rejects; i++) {
+      struct scene s;
+      memset(&s, 0, sizeof s);
+      s.mode = MODE_TRI;
+      g_gs = g_gs_rejects[i].geom;
+      g_topo = g_gs_rejects[i].topo;
+      g_gs_expect_fail = 1;
+      if (g_gs_rejects[i].gate_off)
+         unsetenv("MALI_EXPERIMENTAL_GS");
+      const int refused = scene_create(&s, 0);
+      g_gs_expect_fail = 0;
+      g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      scene_destroy(&s);
+      if (g_gs_rejects[i].gate_off)
+         setenv("MALI_EXPERIMENTAL_GS", "1", 1);
+      g_gs = NULL;
+      printf("{\"test\":\"gs_reject\",\"case\":\"%s %s\",\"reason\":\"%s\",\"refused\":%s,\"ok\":%s}\n",
+             g_gs_rejects[i].geom, g_gs_rejects[i].gate_off ? "gate off" : "gate on", g_gs_rejects[i].why,
+             refused ? "true" : "false", refused ? "true" : "false");
+      ok &= refused;
+   }
+   return ok;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2789,7 +2909,9 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--loop-reset")) g_reset = 1;
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
-      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case]\n"); return 2; }
+      else if (!strcmp(argv[i], "--gs") && i + 1 < argc) g_gs = argv[++i];   /* lane 1: draw every case through this geometry shader */
+      else if (!strcmp(argv[i], "--topo") && i + 1 < argc) g_topo = !strcmp(argv[++i], "strip") ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case] [--gs geom.spv] [--topo list|strip]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    const char *be = getenv("MALI_BACKEND");
@@ -2982,6 +3104,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
    if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
+   if (ok && g_only && CASE_ON("gs_passthrough")) ok &= test_gs_passthrough();
+   if (ok && g_only && CASE_ON("gs_reject")) ok &= test_gs_reject();
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();

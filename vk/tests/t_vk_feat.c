@@ -3509,6 +3509,32 @@ test_int64(void)
    return 1;
 }
 
+/* Lane 1 of notes/gs-design.md §4: geometry shaders. The *limits* are published (step 6 will advertise the feature with
+ * them), but VkPhysicalDeviceFeatures::geometryShader stays FALSE -- including with MALI_EXPERIMENTAL_GS=1 in the
+ * environment, which is what this case is run under. That env only lets *pipeline creation* accept a provable
+ * pass-through GS; it advertises nothing, so DXVK still refuses the device at init exactly as before and no application
+ * can discover the path. The refusal itself is t_vk_draw --only gs_reject. */
+static int
+test_gs_limits(void)
+{
+   const VkPhysicalDeviceLimits *l = &g_props.limits;
+   CHECK(!g_feat.geometryShader, "geometryShader is advertised: the pass-through subset is not the feature (notes/gs-design.md §7)");
+   CHECK(l->maxGeometryShaderInvocations == 32 && l->maxGeometryInputComponents == 128 &&
+         l->maxGeometryOutputComponents == 128 && l->maxGeometryOutputVertices == 256 &&
+         l->maxGeometryTotalOutputComponents == 1024,
+         "geometry limits %u/%u/%u/%u/%u", l->maxGeometryShaderInvocations, l->maxGeometryInputComponents,
+         l->maxGeometryOutputComponents, l->maxGeometryOutputVertices, l->maxGeometryTotalOutputComponents);
+   /* §1c's sixth row (maxGeometryStreams) has no core field to assert: Vulkan 1.4 removed it from
+    * VkPhysicalDeviceLimits, and the stream count now lives in VK_EXT_transform_feedback's geometryStreams, which our
+    * TF path leaves false. One stream is therefore the only shape this driver can express. */
+   printf("{\"test\":\"gs_limits\",\"geometryShader\":%s,\"gate\":\"%s\",\"limits\":[%u,%u,%u,%u,%u],\"ok\":true}\n",
+          g_feat.geometryShader ? "true" : "false",
+          getenv("MALI_EXPERIMENTAL_GS") ? "on" : "off",
+          l->maxGeometryShaderInvocations, l->maxGeometryInputComponents, l->maxGeometryOutputComponents,
+          l->maxGeometryOutputVertices, l->maxGeometryTotalOutputComponents);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3697,6 +3723,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("linerast")) ok &= test_linerast();
+   if (ok && g_only && CASE_ON("gs_limits")) ok &= test_gs_limits();
    if (ok && g_only && CASE_ON("tf_reject")) ok &= test_tf_reject();   /* explicit only: keeps the golden BO/address sequence */
    if (ok && g_only && CASE_ON("tf_record")) ok &= test_tf_record();
    if (ok && g_only && CASE_ON("tf_write")) ok &= test_tf_write();   /* stage 4: the data must land in the bound buffers */   /* stage 2: the commands record; the draw still refuses */
