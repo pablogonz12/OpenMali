@@ -2801,7 +2801,7 @@ test_samplecnt(void)
       const VkResult qr = g_ifp2(g_pd, &pi, &ip);
       CHECK(qr == VK_SUCCESS, "imageFormatProperties2(%s) (%d)", q[i].n, qr);
       if (qr != VK_SUCCESS) continue;   /* an unexpected error is not "4x unsupported": fail, do not skip the row */
-      if (ip.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_4_BIT) continue;
+      const VkBool32 adv4 = (ip.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_4_BIT) != 0;
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = q[i].f,
                               .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_4_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -2809,10 +2809,15 @@ test_samplecnt(void)
       VkResult r = CreateImage(dev, &ii, NULL, &img);
       if (r == VK_SUCCESS) DestroyImage(dev, img, NULL);
       printf("{\"test\":\"samplecnt_create4x\",\"format\":\"%s\",\"result\":%d}\n", q[i].n, r);
-      if (r == VK_SUCCESS) {
+      if (adv4 && r != VK_SUCCESS) {
+         /* the advertised case is tested too: a format that reports 4x must be creatable, or the advertisement lies */
+         printf("{\"fail\":\"samplecnt %s: imageFormatProperties offered 4x (0x%x) but vkCreateImage returned %d\"}\n", q[i].n,
+                ip.imageFormatProperties.sampleCounts, r);
+         ok = 0;
+      } else if (!adv4 && r == VK_SUCCESS) {
          printf("{\"fail\":\"samplecnt %s: vkCreateImage accepted 4x although imageFormatProperties offered 0x%x\"}\n", q[i].n, ip.imageFormatProperties.sampleCounts);
          ok = 0;
-      } else if (r != VK_ERROR_FORMAT_NOT_SUPPORTED) {
+      } else if (!adv4 && r != VK_ERROR_FORMAT_NOT_SUPPORTED) {
          /* any other error (out of memory, an invalid-handle mistake) is not the refusal this row is about: it must
           * name the expected result, or a broken run would read as a pass */
          printf("{\"fail\":\"samplecnt %s: vkCreateImage(4x) returned %d, want VK_ERROR_FORMAT_NOT_SUPPORTED (%d)\"}\n", q[i].n, r,
