@@ -85,6 +85,7 @@ STEAM_MISSING=0
 # GPU node (t_vk_drm below), which the fake backend has none of, so it stays in this count.
 ZINK_MISSING=1
 for g in v11 v13; do run "vk_headless $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_headless" --direct "$OUT/libvulkan_mali.so"; done
+run "ext_handles v11" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_ext_handles" --direct "$OUT/libvulkan_mali.so"
 for g in v11 v13; do run "steam_caps $g" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 # VK_EXT_physical_device_drm: the extension exists only with a node that stat() proves is the GPU char device (/dev/mali0;
 # the guest's /dev/dri/renderD<N> alias, BL_DRM_STANDIN). Symlinks stand in for the guest's nodes; /dev/null is 1:3.
@@ -237,10 +238,23 @@ done
 for g in v10 v11 v13; do
    name=vfmt-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
    out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=$g timeout -k 5 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only view_format 2>&1); rc=$?
-   GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" >/dev/null 2>&1
+   out2=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); grc=$?
    if [ $rc -ne 0 ]; then echo "FAIL  view_format $g (test exit $rc)"; echo "$out" | tail -8 | sed 's/^/        /'; fail=1
+   elif [ $grc -ne 0 ]; then echo "FAIL  rules view_format $g"; echo "$out2" | head -20 | sed 's/^/        /'; fail=1
    elif out=$(python3 -I "$V/tests/vfmt-words.py" "$GDIR/$name.txt" 2>&1); then echo "ok    view_format $g ($out)"
    else echo "FAIL  view_format $g: $out"; fail=1; fi
+done
+# share_idx (tests/check_share_idx.py): the frame-build fast path skips the per-draw register packing when nothing differs
+# (mali_cs_emit.c same_draw_words). vkCmdBindIndexBuffer sets no dirty bit, so the index-buffer VA is only protected by being part
+# of that key: four draws with identical per-draw words and the index buffer alternating A B A B (an identical pipeline rebind
+# before the third) must still write the index-buffer register four times. Explicit only (a new frame would change the goldens).
+for g in v11 v13; do
+   name=share_idx-$g; rm -f "$GDIR/$name.jsonl"
+   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" timeout -k 5 120 env MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only share_idx 2>&1); rc=$?
+   if [ $rc -ne 0 ]; then echo "FAIL  share_idx CS $g (test exit $rc)"; echo "$out" | tail -10 | sed 's/^/        /'; fail=1; continue; fi
+   out=$(timeout -k 5 120 python3 -I "$V/tests/check_share_idx.py" "$GDIR/$name.jsonl" "$g" 2>&1); rc=$?
+   if [ $rc -eq 0 ]; then echo "ok    share_idx CS $g ($out)"
+   else echo "FAIL  share_idx CS $g (missing per-draw index-buffer write: see same_draw_words)"; echo "$out" | sed 's/^/        /'; fail=1; fi
 done
 # Shader cache, cold vs warm: the same test on an empty private cache and again on the cache that run left must give byte-identical decoded
 # streams (a cached shader that yields different GPU state than a fresh compile would hide behind every host run that has a warm cache; see

@@ -9,12 +9,14 @@ clear value already converted to the attachment format, which is exactly the vie
 Frame 1: R8G8B8A8_UNORM image, R8G8B8A8_SRGB view (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT), clear 0.5 linear grey.
          The sRGB encoding of 0.5 is 0xbc (188); the linear value the bug emits is 0x80 (128).
 Frame 2: R8G8B8A8_SRGB image, R8G8B8A8_UNORM view: 0x80, not 0xbc.
-Frames 3, 4: the sampled-view cases render into a UNORM image with a UNORM view: 0x80.
+Frames 3, 4: the sampled-view cases render into a UNORM image with a UNORM view and clear to 0.25 grey: 0x40 (the sampled
+         draw writes 55 / 128, so the clear value is not one the draw could produce; every channel is 0x40, so
+         the clear word matches in either byte order).
 PanVK takes the colour format from the image view (panvk_vX_cmd_draw.c:159,171 and the conversion format at :794).
 """
 import sys
 
-WANT = [(1, 'bc'), (2, '80'), (3, '80'), (4, '80')]
+WANT = [(1, 'bc'), (2, '80'), (3, '40'), (4, '40')]
 
 
 def fbd_words(text):
