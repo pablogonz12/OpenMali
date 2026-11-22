@@ -1520,6 +1520,9 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
       }
       if (!f->has_colour) {
          degrade(cmd, "CmdClearAttachments colour quad without a colour attachment");
+         /* the depth/stencil quads above were appended to the frame: the register state they were built from is no longer
+          * valid for whatever draws follow, so forget it */
+         cmd->dirty = MALI_D_ALL;
          return;
       }
       /* Multisampled passes included: the constant-colour quad is an ordinary draw into the tile, so every sample of
