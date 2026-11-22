@@ -3274,7 +3274,18 @@ imgmax_roundtrip(VkImageType type, VkExtent3D ext, uint32_t layers, VkImageCreat
       {.bufferOffset = 1, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
        .imageOffset = {ext.width - 1, ext.height - 1, slice}, .imageExtent = {1, 1, 1}}};
    CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ob.b, 2, back);
+   {   /* the copies write ob: make that visible to the host before the assertions read it. A fence says the submission
+        * finished, not that the writes are visible to the host, so the barrier is what the readback relies on */
+      VkBufferMemoryBarrier hb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = ob.b, .offset = 0, .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+   }
    if (!cb_submit(&t, cb)) return 0;
+   {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = ob.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)InvalidateMappedMemoryRanges(dev, 1, &mmr);   /* no-op on coherent memory */
+   }
    if (!g_fake) {
       CHECK(ob.p[0] == IMGMAX_CLEAR, "%s: origin read 0x%02x, the clear wrote 0x%02x", name, ob.p[0], IMGMAX_CLEAR);
       CHECK(ob.p[1] == IMGMAX_MARK, "%s: far corner (%u,%u) read 0x%02x, the marker wrote 0x%02x", name, ext.width - 1, ext.height - 1,
