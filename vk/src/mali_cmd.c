@@ -686,6 +686,12 @@ buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
    return (const uint8_t *)mb->mem->bo.cpu + mb->mem_off + off;
 }
 
+/* Commands are unrolled: one LOAD_MULTIPLE + RUN_IDVS per VkDraw*IndirectCommand, because libkbase has no CS control flow
+ * (no WHILE/IF, kbase_cs.h). A drawCount above this therefore keeps the CPU expansion of every earlier release -- a real
+ * multiDrawIndirect needs the CS loop PanVK uses (panvk_vX_cmd_draw.c:3353), which is also what DrawIndirectCount waits
+ * for. 256 x ~15 words is a frame's worth of stream; the cases this exists for (DXVK, GPU-driven engines) issue 1..16. */
+#define MALI_IND_UNROLL_MAX 256u
+
 static void
 record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t n, uint32_t stride)
 {
@@ -708,7 +714,8 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
     * indirect draw is the one that must NOT read it, because the mapping still holds what the host wrote even after a
     * compute job rewrote the descriptor. The shaderDrawParameters sysvals are not in this list: the FAU words they read are
     * patched from the loaded registers by the command stream (mali_cs_emit.c emit_indirect_args). */
-   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || getenv("MALI_IND_CPU");   /* MALI_IND_CPU=1: control, the pre-rung-2 behaviour (read the mapping at submit) */
+   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || n > MALI_IND_UNROLL_MAX ||
+                         getenv("MALI_IND_CPU");   /* MALI_IND_CPU=1: control, the pre-rung-2 behaviour (read the mapping at submit) */
    const uint8_t *p = NULL;
    const uint32_t *cp = NULL;
    uint64_t va = 0;
