@@ -2819,6 +2819,7 @@ test_gs_passthrough(void)
    memset(&b, 0, sizeof b);
    a.mode = b.mode = MODE_TRI;
    int ok = 0, drew = 0;
+   g_gs = NULL;   /* the baseline must be the plain pipeline whatever a previous case left selected */
    if (!scene_create(&a, 0))
       goto out;
    g_gs = "gs_pass.geom.spv";
@@ -2882,8 +2883,12 @@ test_gs_reject(void)
       g_gs = g_gs_rejects[i].geom;
       g_topo = g_gs_rejects[i].topo;
       g_gs_expect_fail = 1;
+      /* each row sets the gate it means: a classifier-rejection row must reach the classifier, not the
+       * "geometryShader is not advertised" refusal that a run without the env would report instead */
       if (g_gs_rejects[i].gate_off)
          unsetenv("MALI_EXPERIMENTAL_GS");
+      else
+         setenv("MALI_EXPERIMENTAL_GS", "1", 1);
       const int refused = scene_create(&s, 0);
       g_gs_expect_fail = 0;
       g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
