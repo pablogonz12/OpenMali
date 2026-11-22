@@ -36,8 +36,10 @@ struct kb_fb_rt {
 struct kb_fb_params {
 	unsigned rt_extra_count;      /* 0..KB_FB_MAX_EXTRA_RT */
 	struct kb_fb_rt rt_extra[KB_FB_MAX_EXTRA_RT];
+	unsigned provoking_last;      /* 1: clear FBD word 11 bit 14 (last vertex provokes); 0 (default): first vertex, the Vulkan default */
 	unsigned width, height;       /* pixels, 1..65536 */
 	unsigned rt_none;             /* no colour attachment: the render target is declared but Write Enable is off, no buffer */
+	unsigned rt_no_store;         /* 1: colour buffer exists but is not written back (storeOp DONT_CARE/NONE): RT Write Enable off, no tile write traffic */
 	uint64_t rt_gpu_va;           /* colour buffer, 64-byte aligned */
 	uint32_t row_stride;          /* bytes between rows, multiple of 16 */
 	uint32_t surface_stride;      /* bytes per layer (0 = stride*height) */

@@ -49,6 +49,10 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dsl, vk.base, VkDescriptorSetLayout, VK_OBJE
 
 struct mali_dyn_buf { uint64_t va, size; };
 
+#define MALI_DSET_WROTE_MAX 8   /* D3D11 FL11_0 exposes at most 8 UAVs per shader; overflow falls back to a full sweep */
+
+struct mali_memory;
+
 struct mali_dset {
    struct vk_object_base base;
    struct mali_dsl *layout;
@@ -59,7 +63,13 @@ struct mali_dset {
    struct mali_dset *next;       /* pool list, sorted by offset */
    struct mali_dyn_buf *dyn;     /* dynamic buffers (base address, range); the dynamic offset is added when binding */
    unsigned arch;
+   /* M15: memory a storage descriptor of this set can be written by the GPU. Recorded at update, applied to the
+    * command buffer at bind, so a fence wait only CSYNCs BOs that were actually written (vk/MEMORY.md). */
+   struct mali_memory *wrote[MALI_DSET_WROTE_MAX];
+   unsigned nwrote;
+   bool wrote_full;
 };
+
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dset, base, VkDescriptorSet, VK_OBJECT_TYPE_DESCRIPTOR_SET)
 
 struct mali_dpool {
@@ -76,6 +86,8 @@ VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescripto
 
 /* Pure core, used by the entrypoints below and by tests. */
 void mali_dset_write(struct mali_dset *set, const VkWriteDescriptorSet *w);
+/* M15: remember that a storage descriptor of this set can write `mem` (called from write_one). */
+void mali_dset_mark_write(struct mali_dset *set, struct mali_memory *mem);
 void mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src);
 void mali_dset_update_template(struct mali_dset *set, const struct vk_descriptor_update_template *t, const void *data);
 /* Hardware Buffer descriptor of dynamic buffer i of the set with the dynamic offset applied (written by CmdBindDescriptorSets). */

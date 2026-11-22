@@ -67,6 +67,9 @@ main(int argc, char **argv)
    VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
    GetPhysicalDeviceProperties2(pd, &pr);
    CHECK(pr.properties.apiVersion >= VK_API_VERSION_1_3, "DXVK needs 1.3 (info.cpp:115)");
+   /* DXVK 3.1.x checks limits.maxPushConstantsSize >= 256 and refuses the device otherwise (dxvk_limits.h). */
+   CHECK(pr.properties.limits.maxPushConstantsSize >= 256, "maxPushConstantsSize %u < 256 (DXVK dxvk_limits.h requirement)",
+         pr.properties.limits.maxPushConstantsSize);
 
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
@@ -134,6 +137,23 @@ main(int argc, char **argv)
       for (unsigned i = 0; i < nhave; i++) adv |= !strcmp(have_ext[i], "VK_EXT_depth_clip_enable");
       CHECK(adv == (int)dce.depthClipEnable, "VK_EXT_depth_clip_enable advertised=%d but depthClipEnable=%u", adv, dce.depthClipEnable);
    }
+   {
+      VkPhysicalDeviceImageViewMinLodFeaturesEXT ml = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ml};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_image_view_min_lod");
+      CHECK(adv == (int)ml.minLod, "VK_EXT_image_view_min_lod advertised=%d but minLod=%u", adv, ml.minLod);
+   }
+   {
+      VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state");
+      CHECK(adv == (int)eds.extendedDynamicState, "VK_EXT_extended_dynamic_state advertised=%d but extendedDynamicState=%u", adv, eds.extendedDynamicState);
+      CHECK(adv && eds.extendedDynamicState, "VK_EXT_extended_dynamic_state must be advertised with the feature (DXVK requires it): adv=%d feat=%u", adv, eds.extendedDynamicState);
+   }
    VkPhysicalDeviceMaintenance6FeaturesKHR m6 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR, .pNext = &dce};
    {
       VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &m6};
@@ -141,6 +161,16 @@ main(int argc, char **argv)
       int adv = 0;
       for (unsigned i = 0; i < nhave; i++) adv |= !strcmp(have_ext[i], "VK_KHR_maintenance6");
       CHECK(adv == (int)m6.maintenance6, "VK_KHR_maintenance6 advertised=%d but maintenance6=%u", adv, m6.maintenance6);
+   }
+   {
+      VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds2};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_EXT_extended_dynamic_state2");
+      CHECK(adv == 1 && eds2.extendedDynamicState2 == 1, "VK_EXT_extended_dynamic_state2 advertised=%d extendedDynamicState2=%u (want 1/1)", adv, eds2.extendedDynamicState2);
+      /* the driver does not honour these: logic op is unsupported() in the draw snapshot, there is no tessellation */
+      CHECK(!eds2.extendedDynamicState2LogicOp && !eds2.extendedDynamicState2PatchControlPoints, "EDS2 logicOp=%u patchControlPoints=%u must stay false", eds2.extendedDynamicState2LogicOp, eds2.extendedDynamicState2PatchControlPoints);
    }
    /* VK_KHR_unified_image_layouts: name and feature bit move together, and the feature is reported through vkGetPhysicalDeviceFeatures2. */
    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR uil = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR};
@@ -151,6 +181,23 @@ main(int argc, char **argv)
       for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_KHR_unified_image_layouts");
       CHECK(adv == 1 && uil.unifiedImageLayouts == 1, "VK_KHR_unified_image_layouts advertised=%d unifiedImageLayouts=%u (want 1/1)", adv, uil.unifiedImageLayouts);
       CHECK(uil.unifiedImageLayoutsVideo == 0, "unifiedImageLayoutsVideo must stay false (no video)");
+   }
+   /* VK_KHR_shader_expect_assume: name and feature bit move together; the device accepts both (the SPIR-V capability is on in spirv_to_nir). */
+   {
+      VkPhysicalDeviceShaderExpectAssumeFeaturesKHR sea = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_EXPECT_ASSUME_FEATURES_KHR};
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sea};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      int adv = 0;
+      for (uint32_t i = 0; i < ne; i++) adv |= !strcmp(eps[i].extensionName, "VK_KHR_shader_expect_assume");
+      CHECK(adv == 1 && sea.shaderExpectAssume == 1, "VK_KHR_shader_expect_assume advertised=%d shaderExpectAssume=%u (want 1/1)", adv, sea.shaderExpectAssume);
+      VkPhysicalDeviceFeatures2 f2q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &sea};
+      VkDeviceQueueCreateInfo sq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
+      const char *sx = "VK_KHR_shader_expect_assume";
+      VkDeviceCreateInfo sd = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2q, .queueCreateInfoCount = 1, .pQueueCreateInfos = &sq,
+                               .enabledExtensionCount = 1, .ppEnabledExtensionNames = &sx};
+      VkDevice sdev = NULL;
+      CHECK(CreateDevice(pd, &sd, NULL, &sdev) == VK_SUCCESS, "device with shader_expect_assume + feature");
+      if (sdev) ((PFN_vkDestroyDevice)((PFN_vkGetInstanceProcAddr)gipa)(inst, "vkDestroyDevice"))(sdev, NULL);
    }
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e11};
    e2.features = f2.features; e11 = f11; e11.pNext = &e12; e12 = f12; e12.pNext = &e13; e13 = f13; e13.pNext = &m6;   /* m6 -> dce, queried above */

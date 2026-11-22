@@ -16,7 +16,9 @@
 #define MALI_DUMMY_SAMPLER_IDX   16u    /* table 0: all-zero sampler for texelFetch / sampler-less sampling (between the attributes 0..15 and the vertex buffers 17..) */
 #define MALI_DYN_TABLE           9u     /* resource table 9 (user sets use 1..8): the dynamic-buffer Buffer descriptors, a small table of its own */
 #define MALI_DYN_BUF_START       0u     /* index of the first dynamic-buffer descriptor in table MALI_DYN_TABLE */
-#define MALI_MAX_PUSH_BYTES      128u
+/* 256 B = 64 FAU words, DXVK 3.1.x needs >= 256 (dxvk_limits.h). The Bifrost/Valhall FAU has 64 slots (PAN_MAX_PUSH = 128 words,
+ * pan_compiler.h:140); the driver reserves words 0..9 in the VS (push block at word 10) so a full block ends at word 73 of 128. */
+#define MALI_MAX_PUSH_BYTES      256u
 #define MALI_NO_IMM_SAMPLER      0xffffffffu
 
 /* Values equal VkDescriptorType (so no Vulkan header is needed here). */
@@ -52,6 +54,7 @@ struct mali_compile_layout {
    struct mali_lset set[MALI_MAX_SETS];
    uint32_t dyn_start[MALI_MAX_SETS]; /* running index of the set's first dynamic buffer in the pipeline's dynamic-buffer array */
    uint32_t push_size;                /* bytes of push constants (<= MALI_MAX_PUSH_BYTES) */
+   uint32_t robust_access;            /* robustBufferAccess2/robustImageAccess2 enabled: bounds-check buffer/image accesses (nir_lower_robust_access); 0 = off */
 };
 
 static inline uint32_t mali_desc_stride(uint32_t type)

@@ -12,12 +12,14 @@ layout(set = 0, binding = 1, std430) readonly buffer St { uint d[]; } ss;
 layout(set = 0, binding = 0, std430) readonly buffer St { uint d[]; } ss;
 #endif
 #endif
-layout(push_constant) uniform P { uint zrow; uint srow; uint zfmt; uint pad; } p;   // row bytes, zfmt 0 = D32F, 1 = D16
+layout(push_constant) uniform P { uint zrow; uint srow; uint zfmt; uint pad; } p;   // row bytes, zfmt 0 = D32F, 1 = D16, 2 = D24 (low 24 bits of a 32-bit word)
 void main() {
    uvec2 f = uvec2(gl_FragCoord.xy);
 #ifdef DO_Z
    if (p.zfmt == 0u) {
       gl_FragDepth = uintBitsToFloat(zs.d[(f.y * p.zrow >> 2) + f.x]);
+   } else if (p.zfmt == 2u) {   // D24_UNORM_S8_UINT / D24X8: 24-bit UNORM in the low bits of a 32-bit word (stencil in the top byte)
+      gl_FragDepth = float(zs.d[(f.y * p.zrow >> 2) + f.x] & 0xffffffu) / 16777215.0;
    } else {
       uint off = f.y * p.zrow + f.x * 2u;
       gl_FragDepth = float((zs.d[off >> 2] >> ((off & 3u) * 8u)) & 0xffffu) / 65535.0;

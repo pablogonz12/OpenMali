@@ -37,12 +37,31 @@ if [ "$testonly" = false ]; then
    case $mach in AArch64*) ok "aarch64 ELF (importer isAarch64Elf)";; *) bad "not AArch64: $mach";; esac
    grep -aq 'libc.so.6' "$lib" && ok "contains libc.so.6 (importer isGlibc)" || bad "no libc.so.6 string"
 fi
+# WSI: ANGLE's VerifyExtensionsPresent needs VK_EXT_headless_surface (with the headless platform's vkCreateHeadlessSurfaceEXT compiled in)
+for n in VK_EXT_headless_surface vkCreateHeadlessSurfaceEXT VK_EXT_swapchain_colorspace; do
+   grep -aq "$n" "$lib" && ok "contains $n" || bad "no $n string (headless/colorspace WSI missing)"
+done
 # exports: loader entry points only
 syms=$(nm -D --defined-only "$lib" | awk '{print $3}' | sort | tr '\n' ' ')
 want="vk_icdGetInstanceProcAddr vk_icdGetPhysicalDeviceProcAddr vk_icdNegotiateLoaderICDInterfaceVersion "
 [ "$syms" = "$want" ] && ok "exports = 3 loader entry points" || bad "exports: $syms"
 echo "# NEEDED: $(readelf -d "$lib" | grep -o 'Shared library: \[[^]]*\]' | sed 's/.*\[\(.*\)\]/\1/' | tr '\n' ' ')"
 echo "# highest GLIBC: $(readelf -V "$lib" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1)  (meta minGlibc: $(jq -r .minGlibc meta.json))"
+# WSI variant: the X11 surface names are what Steam's CEF/ANGLE client asks for through the loader (VK_KHR_xlib/xcb_surface). A Wayland-only
+# library in that slot is the failure this check exists for, so a wsi zip must carry both names and the libxcb NEEDED entry.
+variant=$(jq -r .variant meta.json)
+case $variant in
+   *-wsi)
+      for n in VK_KHR_surface VK_KHR_xcb_surface VK_KHR_xlib_surface VK_KHR_wayland_surface; do
+         grep -aq "$n" "$lib" && ok "wsi: advertises $n" || bad "wsi: $n not in the library"
+      done
+      readelf -d "$lib" | grep -q 'libxcb.so.1' && ok "wsi: links libxcb.so.1 (wsi_common_x11)" || bad "wsi: no libxcb.so.1 NEEDED"
+      ;;
+   *-wl)
+      grep -aq 'VK_KHR_wayland_surface' "$lib" && ok "wl: advertises VK_KHR_wayland_surface" || bad "wl: no wayland surface"
+      echo "# note: $variant has no X11 surface (Steam's CEF client needs the -wsi variant)"
+      ;;
+esac
 
 if [ "$testonly" = true ] && [ "$mach" = "Advanced Micro Devices X86-64" -o "$arch" = x86_64 ]; then
    [ -x "$ticd" ] || { bad "t_icd not found at $ticd (run ../build.sh)"; exit 1; }

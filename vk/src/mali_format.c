@@ -342,7 +342,8 @@ mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, V
       out->maxArrayLayers = 1;
    } else if (type == VK_IMAGE_TYPE_2D && !(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && !f.compressed &&
               !(usage & VK_IMAGE_USAGE_STORAGE_BIT) && (feat & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
-      out->sampleCounts |= VK_SAMPLE_COUNT_4_BIT;   /* Mali: 1 and 4 (16x is not wired) */
+      if (mali_experimental_msaa())
+         out->sampleCounts |= VK_SAMPLE_COUNT_4_BIT;   /* Mali: 1 and 4 (16x is not wired); gated like 4x pipelines */
    }
    return VK_SUCCESS;
 }
@@ -375,19 +376,44 @@ mali_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, VkFormat format, Vk
       /* 1.3: sampled depth formats report SAMPLED_IMAGE_DEPTH_COMPARISON (the sampler has compareOp, mali_sampler.c) */
       if (ok && f.has_depth && (f.optimal & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) p3->optimalTilingFeatures |= 0x200000000ull;
    }
+   /* M14 image DRM format modifiers: one, DRM_FORMAT_MOD_LINEAR. A linear-only driver must report that modifier
+    * (with a plane count) for every format it supports, not an empty list: wsi_common / gamescope's WSI layer and
+    * zink read this to decide how to import and export images, and a zero count for a supported format is what
+    * shows up as "returned zero modifiers for DRM format 0x3231564e" (NV12) before the X11/GLX swapchain fails.
+    * NV12/P010 linear are two-plane layouts, everything else is one plane. */
+   const bool mod_ok = ok && (f.linear & f.optimal) != 0;
+   const uint32_t mod_planes = f.ycbcr ? 2 : 1;
+   const uint64_t mf = mod_ok ? (uint64_t)(f.linear & f.optimal) : 0;
    vk_foreach_struct(st, e, p->pNext) {
       if (st == VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT) {
          VkDrmFormatModifierPropertiesListEXT *l = e;
-         /* M14: LINEAR only (our "optimal" layout is linear unless MALI_IMAGE_TILED=1, which never applies to modifier images). */
-         const VkFormatFeatureFlags mf = ok && !f.ycbcr ? (f.linear & f.optimal) : 0;   /* NV12 has two memory planes: not exportable (wsi/dma-buf is single-plane) */
+         /* M14: LINEAR only (our "optimal" layout is linear unless MALI_IMAGE_TILED=1, which never applies to modifier images).
+          * Multi-planar formats report one modifier plane per memory plane; the image layout puts them in one allocation at
+          * plane[].offset (mali_image_layout_init) and GetImageSubresourceLayout exposes each (MEMORY_PLANE_n). NV12 reports
+          * 2 planes: gamescope asks for its DRM modifiers and treats a zero count as "no NV12 scanout". */
+         const VkFormatFeatureFlags mf = ok ? (f.linear & f.optimal) : 0;
+         const uint32_t mplanes = f.ycbcr ? f.nplanes : 1u;
          if (!l->pDrmFormatModifierProperties) {
             l->drmFormatModifierCount = mf ? 1 : 0;
          } else if (l->drmFormatModifierCount) {
             if (mf) {
                l->pDrmFormatModifierProperties[0] = (VkDrmFormatModifierPropertiesEXT){
-                  .drmFormatModifier = mali_wsi_modifier, .drmFormatModifierPlaneCount = 1, .drmFormatModifierTilingFeatures = mf};
+                  .drmFormatModifier = mali_wsi_modifier, .drmFormatModifierPlaneCount = mplanes, .drmFormatModifierTilingFeatures = mf};
                l->drmFormatModifierCount = 1;
             } else l->drmFormatModifierCount = 0;
+         }
+      }
+      if (st == VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_2_EXT) {
+         VkDrmFormatModifierPropertiesList2EXT *l2 = e;
+         if (!l2->pDrmFormatModifierProperties) {
+            l2->drmFormatModifierCount = mf ? 1 : 0;
+         } else if (l2->drmFormatModifierCount) {
+            if (mf) {
+               l2->pDrmFormatModifierProperties[0] = (VkDrmFormatModifierProperties2EXT){
+                  .drmFormatModifier = mali_wsi_modifier, .drmFormatModifierPlaneCount = mod_planes,
+                  .drmFormatModifierTilingFeatures = mf};
+               l2->drmFormatModifierCount = 1;
+            } else l2->drmFormatModifierCount = 0;
          }
       }
    }

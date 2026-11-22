@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -26,9 +26,13 @@
 
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
+static VkFormat g_vfmt;   /* view (and render pass attachment) format when it differs from g_colfmt: MUTABLE_FORMAT image; 0 = same */
 static unsigned g_colbpp = 4;
+static float g_pcfs[4] = {0.75f, 0.25f, 0.5f, 1.0f};   /* MODE_PUSHFS fragment colour (linear); tests override it */
+static VkFormat g_texfmt, g_texvfmt;   /* MODE_TEX source image / view format (0 = R8G8B8A8_UNORM; differs = MUTABLE_FORMAT) */
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
+static int g_hostread;  /* record the colour-write -> HOST_READ dependency: the test reads the image through its mapping */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
 static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
@@ -52,7 +56,9 @@ static struct {
    uint32_t wmask;
    float bc[4];
    int poly;                    /* VkPolygonMode (0 fill, 1 line, 2 point), applied with or without .on */
+   int dynpoly;                 /* poly is set with vkCmdSetPolygonModeEXT (pipeline polygonMode FILL + VK_DYNAMIC_STATE_POLYGON_MODE_EXT) */
    int dual;                    /* dual.frag (two outputs: o0 = varying colour, o1 = 0.5) instead of var.frag */
+   int logic;                   /* 1 + VkLogicOp: static logicOpEnable */
    int dyn;                     /* cull/front face/bias/blend constants are set dynamically (the static pipeline values are wrong on purpose) */
 } g_fx;
 /* stencil test of the next scene (depth test is off then); values are Vulkan's */
@@ -72,14 +78,23 @@ static uint32_t g_share_off[8], g_share_fi[8];
 static int g_dirty;   /* share_dirty: 1 viewport / 2 cull mode changes between draws, 3 = the same pipeline rebound before every draw
                         (push constants: the caller passes different rot[] values) */
 static int g_inst;   /* share_inst: per-instance attribute pipeline; 1 = firstInstance / vertex-buffer-offset changes between draws, 2 = four identical draws */
+static int g_dxvk;   /* dxvk_frame: second pipeline (cull back + alpha blend) and six dynamic states so the draw loop can churn state like DXVK */
 static int g_dyn;   /* many_draws: dynamic-UBO descriptor offset per draw (the mdbench triangle shape) */
+static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
+static PFN_vkCmdSetDepthClipEnableEXT CmdSetDepthClipEnableEXT_;   /* blitreplay: depthClipEnable via the dynamic state, if the extension is there */
+static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
+static int g_have_dyn_dclip;   /* extendedDynamicState3DepthClipEnable advertised and enabled: the bit the dynamic
+                                * VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT declaration and setter both need */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
-static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (needs MALI_EXPERIMENTAL_MSAA=1 on the driver) */
+static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (the cases gate on the driver's advertised counts, not on MALI_EXPERIMENTAL_MSAA) */
+static int g_msaa_store;   /* g_msaa: storeOp STORE on the 4x attachment (samples stored, resolve in a separate pass) instead of DONT_CARE (hardware Average) */
 
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI };
+/* MODE_SHAREIDX stays BELOW MODE_PUSHFS: the >= MODE_PUSHFS test means "the full-screen indexed quad", and that branch must not bind
+ * an index buffer of its own before the share_idx draws (the point of that case is the exact index-buffer register sequence). */
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8 };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -105,7 +120,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -119,7 +134,12 @@ case_skipped(const char *n)
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
-   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults)
+   X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults) \
+   X(CmdBeginRendering) X(CmdEndRendering) X(CmdPipelineBarrier2) X(CmdSetViewportWithCount)      \
+   X(CmdSetScissorWithCount) X(CmdSetLineWidth) X(CmdSetDepthBoundsTestEnable) X(CmdSetPrimitiveTopology)    \
+   X(CmdSetDepthTestEnable) X(CmdSetDepthWriteEnable) X(CmdSetDepthCompareOp)                      \
+   X(CmdSetStencilTestEnable) X(CmdSetStencilOp)                                                   \
+   X(CmdSetRasterizerDiscardEnable) X(CmdSetDepthBiasEnable) X(CmdSetPrimitiveRestartEnable)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -172,7 +192,7 @@ struct scene {
    VkPipelineLayout layout;
    VkRenderPass rp, rp2;
    int second;   /* scene_draw uses rp2 (LOAD) */
-   VkPipeline pipe;
+   VkPipeline pipe, pipe2;
    VkImage col, dep;
    VkDeviceMemory colmem, depmem, vbmem;
    VkImageView colv, depv;
@@ -183,12 +203,15 @@ struct scene {
    uint8_t *px;
    uint32_t pitch;
    VkBuffer ib;
+   VkBuffer ib2;  /* MODE_SHAREIDX: a second index buffer in the same allocation (only the VA differs from ib) */
    VkDeviceMemory ibmem;
    int mode;     /* MODE_* */
    VkDescriptorSetLayout dsl;
    VkDescriptorPool dpool;
    VkDescriptorSet dset[2];
-   VkBuffer ubo[3];          /* uniform buffers (colours) */
+   VkDescriptorSet dset8[8]; /* MODE_SETS8: eight sets bound in one draw */
+   VkDescriptorSetLayout dsl8[8]; /* persistent set-layout array (a stack array dangled behind the pipeline layout) */
+   VkBuffer ubo[8];          /* uniform buffers (colours) */
    VkDeviceMemory ubomem;
    uint8_t *ubop;            /* mapped, 256 bytes per buffer */
    VkImage tim;
@@ -212,7 +235,8 @@ scene_create(struct scene *s, int depth)
    const char *vsn = g_inst ? "inst_attr.vert.spv" : g_sparse ? "rot_sparse.vert.spv" : g_fx.on ? "fxz.vert.spv" : "rot.vert.spv", *fsn = "var.frag.spv";
    if (g_fx.dual) fsn = "dual.frag.spv";
    if (mode == MODE_TEX) { vsn = "tex.vert.spv"; fsn = "tex.frag.spv"; }
-   if (mode == MODE_UBO || mode == MODE_DESCUPD) fsn = "ubo.frag.spv";
+   if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) fsn = "ubo.frag.spv";
+   if (mode == MODE_SETS8) fsn = "sets8.frag.spv";
    if (mode == MODE_PUSHFS) fsn = "pc.frag.spv";
    s->vs = load_spv(vsn);
    s->fs = load_spv(fsn);
@@ -222,30 +246,35 @@ scene_create(struct scene *s, int depth)
    if (mode == MODE_PUSHFS) { pcr.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT; pcr.size = 32; }
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
-   if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD) {
+   if (mode == MODE_TEX || mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) {
       VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .descriptorType = mode == MODE_TEX ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
       VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                              .bindingCount = 1, .pBindings = &lb};
       CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &s->dsl) == VK_SUCCESS, "dsl");
-      pli.setLayoutCount = 1;
-      pli.pSetLayouts = &s->dsl;
-      VkDescriptorPoolSize ps = {lb.descriptorType, 2};
-      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
+      for (unsigned i = 0; i < 8; i++) s->dsl8[i] = s->dsl;
+      VkDescriptorSetLayout *l8 = s->dsl8;
+      unsigned nset = mode == MODE_SETS8 ? 8 : 2;   /* MODE_SETS8: eight identical layouts, all bound in one draw */
+      pli.setLayoutCount = mode == MODE_SETS8 ? 8 : 1;
+      pli.pSetLayouts = l8;
+      VkDescriptorPoolSize ps = {lb.descriptorType, nset};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = nset,
                                         .poolSizeCount = 1, .pPoolSizes = &ps};
       CHECK(CreateDescriptorPool(dev, &dpi, NULL, &s->dpool) == VK_SUCCESS, "dpool");
-      VkDescriptorSetLayout l2[2] = {s->dsl, s->dsl};
       VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = s->dpool,
-                                         .descriptorSetCount = 2, .pSetLayouts = l2};
-      CHECK(AllocateDescriptorSets(dev, &dai, s->dset) == VK_SUCCESS, "alloc sets");
+                                         .descriptorSetCount = nset, .pSetLayouts = l8};
+      CHECK(AllocateDescriptorSets(dev, &dai, mode == MODE_SETS8 ? s->dset8 : s->dset) == VK_SUCCESS, "alloc sets");
    }
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &s->layout) == VK_SUCCESS, "pipeline layout");
 
-   /* colour image: linear RGBA8, host visible so the test can read it back */
+   /* colour image: linear RGBA8, host visible so the test can read it back. g_vfmt: the view format differs from the
+    * image format (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT), as zink presents an SRGB view of a UNORM swapchain image. */
+   const VkFormat colvfmt = g_vfmt ? g_vfmt : g_colfmt;
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                            .format = g_colfmt, .extent = {W, H, 1}, .mipLevels = 1,
                            .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                           .flags = colvfmt != g_colfmt ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    CHECK(CreateImage(dev, &ii, NULL, &s->col) == VK_SUCCESS, "colour image");
    VkMemoryRequirements mr;
@@ -263,7 +292,7 @@ scene_create(struct scene *s, int depth)
    s->pitch = (uint32_t)sl.rowPitch;
    s->px += sl.offset;
    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = s->col,
-                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = g_colfmt,
+                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = g_vfmt ? g_vfmt : g_colfmt,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    CHECK(CreateImageView(dev, &vi, NULL, &s->colv) == VK_SUCCESS, "colour view");
 
@@ -307,7 +336,7 @@ scene_create(struct scene *s, int depth)
    }
 
    VkAttachmentDescription ad[2] = {
-      {.format = g_colfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
+      {.format = colvfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL},
@@ -317,7 +346,7 @@ scene_create(struct scene *s, int depth)
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
    if (g_msaa) {
       ad[0].samples = VK_SAMPLE_COUNT_4_BIT;
-      ad[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      ad[0].storeOp = g_msaa_store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
       ad[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
       ad[1] = ad[0];
       ad[1].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -386,7 +415,7 @@ scene_create(struct scene *s, int depth)
                              .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
    CHECK(CreateBuffer(dev, &ibi, NULL, &s->ib) == VK_SUCCESS, "index buffer");
    GetBufferMemoryRequirements(dev, s->ib, &mr);
-   VkMemoryAllocateInfo ia = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+   VkMemoryAllocateInfo ia = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size * 2,
                               .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
    CHECK(AllocateMemory(dev, &ia, NULL, &s->ibmem) == VK_SUCCESS, "ib mem");
    uint8_t *ip;
@@ -399,39 +428,51 @@ scene_create(struct scene *s, int depth)
    /* R4: two DrawIndexedIndirect commands at byte 64 (stride 20): triangle 1 {0,1,2}, triangle 2 {2,1,3} */
    static const uint32_t ind[10] = {3, 1, 0, 3, 0, 3, 1, 3, 3, 0};
    memcpy(ip + 64, ind, sizeof ind);
+   /* MODE_SHAREIDX: the second index buffer, its own BO at ibmem + mr.size (same size, same type, only the VA differs) */
+   CHECK(CreateBuffer(dev, &ibi, NULL, &s->ib2) == VK_SUCCESS, "index buffer 2");
+   static const uint16_t i16b[6] = {3, 4, 5, 5, 4, 6};
+   memcpy(ip + mr.size, i16b, sizeof i16b);
    UnmapMemory(dev, s->ibmem);
    CHECK(BindBufferMemory(dev, s->ib, s->ibmem, 0) == VK_SUCCESS, "bind ib");
+   CHECK(BindBufferMemory(dev, s->ib2, s->ibmem, mr.size) == VK_SUCCESS, "bind ib2");
 
-   if (mode == MODE_UBO || mode == MODE_DESCUPD) {
-      /* three 256-byte uniform buffers in one allocation; colours written by the test */
+   if (mode == MODE_UBO || mode == MODE_DESCUPD || mode == MODE_SETS8) {
+      /* 256-byte uniform buffers in one allocation; colours written by the test. MODE_SETS8: one per set (0..7) */
+      const unsigned nubo = mode == MODE_SETS8 ? 8 : 3;
       VkBufferCreateInfo ui = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
       VkDeviceSize step = 0;
-      for (int i = 0; i < 3; i++) CHECK(CreateBuffer(dev, &ui, NULL, &s->ubo[i]) == VK_SUCCESS, "ubo");
+      for (unsigned i = 0; i < nubo; i++) CHECK(CreateBuffer(dev, &ui, NULL, &s->ubo[i]) == VK_SUCCESS, "ubo");
       GetBufferMemoryRequirements(dev, s->ubo[0], &mr);
       step = (256 + mr.alignment - 1) & ~(mr.alignment - 1);
-      VkMemoryAllocateInfo ua = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = step * 3,
+      VkMemoryAllocateInfo ua = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = step * nubo,
                                  .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
       CHECK(AllocateMemory(dev, &ua, NULL, &s->ubomem) == VK_SUCCESS, "ubo mem");
       CHECK(MapMemory(dev, s->ubomem, 0, VK_WHOLE_SIZE, 0, (void **)&s->ubop) == VK_SUCCESS, "map ubo");
       static const float colA[4] = {0.25f, 0.5f, 0.75f, 1.0f}, colB[4] = {1.0f, 0.0f, 0.5f, 1.0f}, colC[4] = {0.0f, 1.0f, 0.0f, 1.0f};
-      memcpy(s->ubop, colA, 16);
-      memcpy(s->ubop + step, colB, 16);
-      memcpy(s->ubop + 2 * step, colC, 16);
-      for (int i = 0; i < 3; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
-      /* set 0 = colour A, set 1 = colour B */
-      for (int i = 0; i < 2; i++) {
+      static const float colD[4] = {0.5f, 0.0f, 1.0f, 1.0f};   /* sets 2..6: never read, must never alias to set 7 */
+      for (unsigned i = 0; i < nubo; i++) {
+         /* MODE_SETS8: only set 7 is green. UBO/DESCUPD: ubo[2] is the green one the descriptor update binds */
+         const float *c = i == 0 ? colA : i == 1 ? colB : (mode == MODE_SETS8 ? i == 7 : i == 2) ? colC : colD;
+         memcpy(s->ubop + step * i, c, 16);
+      }
+      for (unsigned i = 0; i < nubo; i++) CHECK(BindBufferMemory(dev, s->ubo[i], s->ubomem, step * i) == VK_SUCCESS, "bind ubo");
+      /* set 0 = colour A, set 1 = colour B, MODE_SETS8: set i = ubo[i], the shader reads set 7 = colour C */
+      for (unsigned i = 0; i < (mode == MODE_SETS8 ? 8u : 2u); i++) {
          VkDescriptorBufferInfo bi2 = {s->ubo[i], 0, 16};
-         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->dset[i], .dstBinding = 0,
+         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = mode == MODE_SETS8 ? s->dset8[i] : s->dset[i], .dstBinding = 0,
                                    .descriptorCount = 1, .descriptorType = g_dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
          UpdateDescriptorSets(dev, 1, &w, 0, NULL);
       }
    }
    if (mode == MODE_TEX) {
       /* 8x8 RGBA8 linear texture, texel (i,j) = (i*32, j*32, 128, 255) */
+      const VkFormat tfmt = g_texfmt ? g_texfmt : VK_FORMAT_R8G8B8A8_UNORM;
+      const VkFormat tvfmt = g_texvfmt ? g_texvfmt : tfmt;
       VkImageCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                              .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {8, 8, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .format = tfmt, .extent = {8, 8, 1}, .mipLevels = 1, .arrayLayers = 1,
                               .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .flags = tvfmt != tfmt ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
                               .usage = VK_IMAGE_USAGE_SAMPLED_BIT, .initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED};
       CHECK(CreateImage(dev, &ti, NULL, &s->tim) == VK_SUCCESS, "texture image");
       GetImageMemoryRequirements(dev, s->tim, &mr);
@@ -451,6 +492,7 @@ scene_create(struct scene *s, int depth)
       UnmapMemory(dev, s->timem);
       VkImageViewCreateInfo tv = vi;
       tv.image = s->tim;
+      tv.format = tvfmt;
       CHECK(CreateImageView(dev, &tv, NULL, &s->tiv) == VK_SUCCESS, "tex view");
       VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
                                 .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
@@ -483,7 +525,7 @@ scene_create(struct scene *s, int depth)
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                             .viewportCount = s->mode == MODE_MVP ? 4 : 1, .scissorCount = s->mode == MODE_MVP ? 4 : 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                .polygonMode = (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
+                                                .polygonMode = g_fx.dynpoly ? VK_POLYGON_MODE_FILL : (VkPolygonMode)g_fx.poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f, .rasterizerDiscardEnable = g_discard != 0};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = g_msaa ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT,
@@ -518,12 +560,14 @@ scene_create(struct scene *s, int depth)
    }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = g_nocol ? 0 : 1, .pAttachments = &cba};
-   VkDynamicState dyn[9] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+   if (g_fx.on && g_fx.logic) { cbs.logicOpEnable = VK_TRUE; cbs.logicOp = (VkLogicOp)(g_fx.logic - 1); }
+   VkDynamicState dyn[11] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
                             VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
    VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                           .dynamicStateCount = g_fx.on && g_fx.dyn ? 6 : 2, .pDynamicStates = dyn};
+                                           .dynamicStateCount = (g_fx.on && g_fx.dyn) || g_dxvk ? 6 : 2, .pDynamicStates = dyn};
    if (g_dynstr) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+   if (g_fx.dynpoly) dyn[dys.dynamicStateCount++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
    if (g_st.on && g_st.dyn) {   /* the three stencil states follow the others */
       for (int k = 0; k < 3; k++) dyn[dys.dynamicStateCount + k] = dyn[6 + k];
       dys.dynamicStateCount += 3;
@@ -537,6 +581,14 @@ scene_create(struct scene *s, int depth)
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
    VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe);
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
+   if (g_dxvk) {
+      rs.cullMode = VK_CULL_MODE_BACK_BIT;
+      cba.blendEnable = VK_TRUE;
+      cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe2);
+      CHECK(r == VK_SUCCESS, "graphics pipeline 2 = %d", r);
+   }
 
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
@@ -549,6 +601,7 @@ scene_destroy(struct scene *s)
    DeviceWaitIdle(dev);
    if (s->pool) DestroyCommandPool(dev, s->pool, NULL);
    if (s->pipe) DestroyPipeline(dev, s->pipe, NULL);
+   if (s->pipe2) DestroyPipeline(dev, s->pipe2, NULL);
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
    if (s->rp) DestroyRenderPass(dev, s->rp, NULL);
    if (s->rp2) DestroyRenderPass(dev, s->rp2, NULL);
@@ -562,6 +615,7 @@ scene_destroy(struct scene *s)
    if (s->dpool) DestroyDescriptorPool(dev, s->dpool, NULL);
    if (s->dsl) DestroyDescriptorSetLayout(dev, s->dsl, NULL);
    if (s->ib) DestroyBuffer(dev, s->ib, NULL);
+   if (s->ib2) DestroyBuffer(dev, s->ib2, NULL);
    if (s->ibmem) FreeMemory(dev, s->ibmem, NULL);
    if (s->vbmem) FreeMemory(dev, s->vbmem, NULL);
    if (s->msv) DestroyImageView(dev, s->msv, NULL);
@@ -595,7 +649,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
-   VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   const int lop = g_fx.on && g_fx.logic;   /* logic-op cases need a nonzero destination: (51,102,153,204) */
+   VkClearValue cv[2] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
    if (g_clear_f)
       memcpy(cv[0].color.float32, g_clear_f, 16);
    if (g_nocol)
@@ -638,6 +693,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdSetDepthBias(cb, g_fx.bias_c, g_fx.bias_clamp, g_fx.bias_s);
       CmdSetBlendConstants(cb, g_fx.bc);
    }
+   if (g_fx.dynpoly) CmdSetPolygonModeEXT_(cb, (VkPolygonMode)g_fx.poly);
    VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
    VkDeviceSize offs[2] = {0, 0};
    if (g_st.on && g_st.dyn) {
@@ -669,6 +725,11 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
       CmdDraw(cb, 3, 1, 0, 0);
       CmdBindVertexBuffers2_(cb, 0, 2, vbs, offs, sz, st16);
+      if (g_dynstr == 2) {
+         /* a plain vkCmdBindVertexBuffers after the 2-form (new offsets/sizes only) must keep the stride 16 set above: if it reset the
+          * stride to 0 the draw below would be degenerate and the triangle missing */
+         CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      }
       CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
       CmdDraw(cb, 3, 1, 0, 0);
       n = 0;
@@ -680,6 +741,21 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
    if (s->mode >= MODE_PUSHFS || s->mode == MODE_IDX32 || s->mode == MODE_MDI || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP) CmdBindIndexBuffer(cb, s->ib, 16, VK_INDEX_TYPE_UINT32);
    if ((s->mode == MODE_TEX || s->mode == MODE_UBO) && !g_dyn)
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[0], 0, NULL);
+   if (s->mode == MODE_SETS8)
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 8, s->dset8, 0, NULL);
+   if (s->mode == MODE_SHAREIDX) {
+      /* four indexed draws with identical per-draw parameters (count, offsets, instance, index type/size): only the index buffer
+       * moves, A B A B, and the pipeline is rebound (identically) before the third. vkCmdBindIndexBuffer sets no dirty bit, so this
+       * is the case that hangs on whether the index-buffer VA is part of the frame-build fast path's key (mali_cs_emit.c
+       * same_draw_words) — it must keep emitting the index-buffer register. Decoded by tests/check_share_idx.py. */
+      for (int i = 0; i < n; i++) {
+         if (i == 2) CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+         CmdBindIndexBuffer(cb, (i & 1) ? s->ib2 : s->ib, 0, VK_INDEX_TYPE_UINT16);
+         CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[0]);
+         CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
+      }
+      n = 0;
+   }
    for (int i = 0; i < n; i++) {
       if (g_dirty == 1) {
          VkViewport vi = {(i & 1) ? W / 2 : 0, 0, W / 2, H, 0.0f, 1.0f};
@@ -697,7 +773,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdSetScissor(cb, 0, 1, &sci);
       }
       if (s->mode == MODE_PUSHFS) {
-         float pc[8] = {rot[i][0], rot[i][1], rot[i][2], rot[i][3], 0.75f, 0.25f, 0.5f, 1.0f};
+         float pc[8] = {rot[i][0], rot[i][1], rot[i][2], rot[i][3], g_pcfs[0], g_pcfs[1], g_pcfs[2], g_pcfs[3]};
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
       } else {
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[i]);
@@ -714,8 +790,12 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdDrawIndexed(cb, 6, 1, 0, 7, g_share == 3 ? g_share_fi[i] : 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
          CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
-      else
+      else {
          CmdDraw(cb, 3, 1, 0, 0);
+         /* polygonMode POINT: a 2-vertex triangle-list draw assembles no triangle and is rewritten to a different primitive than the draw above;
+          * with MALI_DIRTY_CHECK (check.sh) a reuse of the previous descriptors across that change aborts in build_draw_descs */
+         if (g_fx.poly == 2) CmdDraw(cb, 2, 1, 0, 0);
+      }
    }
    if (s->mode == MODE_CLEARQUAD) {   /* CmdClearAttachments AFTER a draw, sub-rectangle: a constant-colour quad (the triangle must survive outside the rect) */
       VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0, .clearValue = {.color = {{0, 0, 1, 1}}}};
@@ -724,6 +804,15 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdClearAttachments(cb, g_clearzs && s->depth ? 2 : 1, cas, 1, &cr);
    }
    CmdEndRenderPass(cb);
+   /* the mapped colour image is read on the host after the fence wait: colour-attachment writes are not visible to the
+    * host by themselves and a fence wait is not a memory dependency (g_hostread: the view-format test reads pixels) */
+   if (g_hostread) {
+      VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+      VkDependencyInfo hd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &hb};
+      CmdPipelineBarrier2(cb, &hd);
+   }
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    g_t_rec += now_us() - t_rec0;
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
@@ -773,6 +862,417 @@ report(const char *name, struct scene *s, double expect, double tolpct, int exac
    }
    printf("{\"test\":\"%s\",\"coverage\":%u,\"expect\":%.0f,\"err_pct\":%.3f,\"ok\":true}\n", name, cov, expect, err);
    return 1;
+}
+
+/* ------------------------------------------------------------- blitreplay */
+/* notes/blitreplay.md: the black glBlitFramebuffer frame of notes/apilog.md (its "two call sequences", seq 11-19) issued
+ * as literally as that log allows by our own Vulkan test, so the black has a reproduction without zink. One pass, one
+ * submission, dynamic rendering with flags 0, one colour attachment (view fmt 44 on image fmt 44, usage 0x97,
+ * MUTABLE_FORMAT), loadOp DONT_CARE / storeOp STORE, dynamic state through the *WithCount setters, one draw:
+ * TRIANGLE_FAN, 4 vertices, one vertex buffer stride 32 with 2 attributes (position vec4, texcoord vec4 in pixels), FS =
+ * the dumped zink fragment shader read back with OpImageFetch (set 2, binding 128), source = an 800x600 colour image
+ * rendered by an earlier pass in an earlier submission. The vertex data is the frame's, copied from notes/jobdump.md:
+ * v0 pos(-1,-1,0,1) tex(0,600,0,0); v1 pos(1,-1,0,1) tex(800,600,0,0); v2/v3 = the top edge with tex y 0.
+ * BLITREPLAY=x[,y] selects the rows (default "0,6"): 0 = the replay, 1 = our FS with zink's VS, 2 = zink's FS with our
+ * VS, 3 = binding 128 -> 0, 4 = set 2 -> set 0, 5 = fan -> list, 6 = the twin (both shaders ours). Every row is read
+ * back (RGB mean, centre texel, covered pixels), so "black" and "paints" are numbers and not a verdict. */
+static const char *g_brname[7] = {"replay", "our_fs", "our_vs", "bind0", "set0", "list", "twin"};
+#define BR_W 800
+#define BR_H 600
+
+struct br_res {
+   VkImage src, dst;
+   VkDeviceMemory srcm, dstm;
+   VkImageView srcv, dstv;
+   VkSampler smp;
+   VkDescriptorSetLayout dsl[3];
+   VkPipelineLayout pl;
+   VkDescriptorPool dp;
+   VkDescriptorSet dset;
+   VkBuffer vb;
+   VkDeviceMemory vbm;
+   VkCommandPool pool;
+   uint8_t *dpx;
+   uint32_t dpitch;
+};
+
+/* one 800x600 colour image of the frame's shape, LINEAR + host visible so the test can read it back */
+static int
+br_img(VkImage *img, VkDeviceMemory *mem, VkImageView *view, VkFormat fmt, uint8_t **px, uint32_t *pitch)
+{
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+      .format = fmt, .extent = {BR_W, BR_H, 1}, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT,   /* 0x97, the frame's */
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT};
+   CHECK(CreateImage(dev, &ii, NULL, img) == VK_SUCCESS, "br image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, *img, &mr);
+   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(mt >= 0, "br image memory type");
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+   CHECK(AllocateMemory(dev, &ai, NULL, mem) == VK_SUCCESS, "br image memory");
+   CHECK(BindImageMemory(dev, *img, *mem, 0) == VK_SUCCESS, "br bind image");
+   uint8_t *map;
+   CHECK(MapMemory(dev, *mem, 0, VK_WHOLE_SIZE, 0, (void **)&map) == VK_SUCCESS, "br map image");
+   VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+   VkSubresourceLayout sl;
+   GetImageSubresourceLayout(dev, *img, &sr, &sl);
+   *pitch = (uint32_t)sl.rowPitch;
+   *px = map + sl.offset;
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = *img,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CHECK(CreateImageView(dev, &vi, NULL, view) == VK_SUCCESS, "br image view");
+   return 1;
+}
+
+static int
+br_setup(struct br_res *r)
+{
+   memset(r, 0, sizeof *r);
+   /* the sampled source is fmt 37 (R8G8B8A8_UNORM) and the frame's colour target fmt 44 (A8B8G8R8_UNORM_PACK32), as in
+    * notes/blit-instr.md's view line and notes/apilog.md's attachment line */
+   if (!br_img(&r->src, &r->srcm, &r->srcv, VK_FORMAT_R8G8B8A8_UNORM, &r->dpx, &r->dpitch)) return 0;
+   r->dpx = NULL;
+   if (!br_img(&r->dst, &r->dstm, &r->dstv, VK_FORMAT_B8G8R8A8_UNORM, &r->dpx, &r->dpitch)) return 0;
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
+      .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0.0f};   /* notes/blit-instr.md SAMPLER line */
+   CHECK(CreateSampler(dev, &si, NULL, &r->smp) == VK_SUCCESS, "br sampler");
+   /* no descriptor pool here: test_blitreplay's row loop creates and frees one per row, so a failed recreation cannot
+    * leave a NULL pool behind for the next AllocateDescriptorSets */
+   /* the frame's vertex data, 4 x 32 bytes, and the 6-vertex list form of the same quad after it */
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 512, .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+   CHECK(CreateBuffer(dev, &bi, NULL, &r->vb) == VK_SUCCESS, "br vertex buffer");
+   VkMemoryRequirements mr;
+   GetBufferMemoryRequirements(dev, r->vb, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+      .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+   CHECK(AllocateMemory(dev, &ai, NULL, &r->vbm) == VK_SUCCESS, "br vb memory");
+   CHECK(BindBufferMemory(dev, r->vb, r->vbm, 0) == VK_SUCCESS, "br bind vb");
+   float *vp;
+   CHECK(MapMemory(dev, r->vbm, 0, VK_WHOLE_SIZE, 0, (void **)&vp) == VK_SUCCESS, "br map vb");
+   static const float quad[4][8] = {
+      {-1, -1, 0, 1,    0, 600, 0, 0}, {1, -1, 0, 1,  800, 600, 0, 0},
+      {-1,  1, 0, 1,    0,   0, 0, 0}, {1,  1, 0, 1,  800,   0, 0, 0}};
+   /* the 6-vertex list form of the fan's own triangles, in list order: (1,2,0) = the fan's (0,1,2) and (2,3,0) = its
+    * (0,2,3), so rows 5 and the fan rows have the same footprint and a coverage difference can only be the topology.
+    * Offsets are bytes: vp is a float*, one vertex is 8 floats = 32 B, and the list starts after the 4 quad vertices */
+   static const int list[6] = {1, 2, 0, 2, 3, 0};
+   memcpy(vp, quad, sizeof quad);
+   for (int i = 0; i < 6; i++) memcpy((char *)vp + 32 * (4 + i), quad[list[i]], 32);
+   UnmapMemory(dev, r->vbm);
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &pci, NULL, &r->pool) == VK_SUCCESS, "br pool");
+   return 1;
+}
+
+static void
+br_destroy(struct br_res *r)
+{
+   DeviceWaitIdle(dev);
+   if (r->pool) DestroyCommandPool(dev, r->pool, NULL);
+   if (r->pl) DestroyPipelineLayout(dev, r->pl, NULL);
+   for (int i = 0; i < 3; i++) if (r->dsl[i]) DestroyDescriptorSetLayout(dev, r->dsl[i], NULL);
+   if (r->dp) DestroyDescriptorPool(dev, r->dp, NULL);
+   if (r->smp) DestroySampler(dev, r->smp, NULL);
+   if (r->vb) DestroyBuffer(dev, r->vb, NULL);
+   if (r->vbm) FreeMemory(dev, r->vbm, NULL);
+   for (int i = 0; i < 2; i++) {
+      VkImageView v = i ? r->dstv : r->srcv;
+      VkImage im = i ? r->dst : r->src;
+      VkDeviceMemory m = i ? r->dstm : r->srcm;
+      if (v) DestroyImageView(dev, v, NULL);
+      if (im) DestroyImage(dev, im, NULL);
+      if (m) FreeMemory(dev, m, NULL);
+   }
+}
+
+/* one pass into an image: CLEAR blue (the earlier submission's source) or the frame's own DONT_CARE pass */
+static int
+br_pass(struct br_res *r, VkCommandBuffer cb, int src, VkPipeline pipe, int variant)
+{
+   const VkFormat fmt = src ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
+   VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .srcStageMask = src ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+      .srcAccessMask = src ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : 0,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,   /* both passes start from UNDEFINED (br_img's initialLayout): the
+                                                 * source pass clears the whole image, so its contents are not needed */
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,   /* the frame's own transition: UNDEFINED -> GENERAL, seq 11 */
+      .image = src ? r->src : r->dst, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+      .pImageMemoryBarriers = &ib};
+   CmdPipelineBarrier2(cb, &dep);
+   VkRenderingAttachmentInfo att = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = src ? r->srcv : r->dstv, .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .resolveMode = VK_RESOLVE_MODE_NONE,
+      .loadOp = src ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   att.clearValue.color.float32[0] = 0.0f;
+   att.clearValue.color.float32[1] = 0.0f;
+   att.clearValue.color.float32[2] = 1.0f;
+   att.clearValue.color.float32[3] = 1.0f;
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .flags = 0,   /* the frame's ri.flags = 0 */
+      .renderArea = {{0, 0}, {BR_W, BR_H}}, .layerCount = 1, .viewMask = 0,
+      .colorAttachmentCount = 1, .pColorAttachments = &att};
+   (void)fmt;
+   CmdBeginRendering(cb, &ri);
+   if (!src) {
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkBuffer b = r->vb;
+      VkDeviceSize off = (variant == 5) ? 128 : 0, str = 32;
+      CmdBindVertexBuffers2_(cb, 0, 1, &b, &off, NULL, &str);
+      VkViewport vp = {0, 0, BR_W, BR_H, 0.0f, 1.0f};
+      VkRect2D sc = {{0, 0}, {BR_W, BR_H}};
+      CmdSetViewportWithCount(cb, 1, &vp);
+      CmdSetScissorWithCount(cb, 1, &sc);
+      CmdSetLineWidth(cb, 1.0f);
+      CmdSetDepthBias(cb, 0.0f, 0.0f, 0.0f);
+      float bc[4] = {0, 0, 0, 0};
+      CmdSetBlendConstants(cb, bc);
+      CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+      CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
+      CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+      CmdSetCullMode(cb, VK_CULL_MODE_NONE);
+      CmdSetFrontFace(cb, VK_FRONT_FACE_CLOCKWISE);   /* apilog prints the enum: front=1 = VK_FRONT_FACE_CLOCKWISE */
+      CmdSetPrimitiveTopology(cb, variant == 5 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN);
+      CmdSetDepthTestEnable(cb, VK_FALSE);
+      CmdSetDepthWriteEnable(cb, VK_FALSE);
+      CmdSetDepthCompareOp(cb, VK_COMPARE_OP_NEVER);   /* apilog: df=0 */
+      CmdSetDepthBoundsTestEnable(cb, VK_FALSE);
+      CmdSetStencilTestEnable(cb, VK_FALSE);
+      CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+                      VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+      CmdSetRasterizerDiscardEnable(cb, VK_FALSE);
+      CmdSetDepthBiasEnable(cb, VK_FALSE);
+      CmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+      if (CmdSetPolygonModeEXT_) CmdSetPolygonModeEXT_(cb, VK_POLYGON_MODE_FILL);
+      if (g_have_dyn_dclip && CmdSetDepthClipEnableEXT_) CmdSetDepthClipEnableEXT_(cb, VK_TRUE);   /* apilog: clip=1 */
+      VkDescriptorSet ds = r->dset;
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pl, variant == 4 ? 0 : 2, 1, &ds, 0, NULL);
+      char pc[52] = {0};   /* zink's gfx_pushconst block (52 B); the frame's blocks are zero */
+      CmdPushConstants(cb, r->pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+      CmdDraw(cb, variant == 5 ? 6 : 4, 1, 0, 0);
+   }
+   CmdEndRendering(cb);
+   return 1;
+}
+
+static int
+test_blitreplay(void)
+{
+   struct br_res r;
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "br fence");
+   if (!br_setup(&r)) { br_destroy(&r); DestroyFence(dev, f, NULL); return 0; }
+   const char *sel = getenv("BLITREPLAY");
+   int rows[8], nrow = 0;
+   if (!sel || !*sel) sel = "0,6";
+   for (char *p = (char *)sel; *p && nrow < 8;) {
+      char *end;
+      const long v = strtol(p, &end, 10);
+      /* every token must be a number inside 0..6 followed by a comma or the end: "0,typo,6" used to fill the rest of the
+       * slots with row 0 and silently skip row 6 */
+      if (end == p || v < 0 || v > 6 || (*end != ',' && *end != '\0')) {
+         printf("{\"test\":\"blitreplay\",\"fail\":\"bad BLITREPLAY token\",\"ok\":false}\n");
+         br_destroy(&r);
+         DestroyFence(dev, f, NULL);
+         return 0;
+      }
+      rows[nrow++] = (int)v;
+      p = (*end == ',') ? end + 1 : end;
+   }
+   int ok = 1;
+   for (int i = 0; i < nrow; i++) {
+      const int v = rows[i];
+      const int vs_ours = v == 2 || v == 6;
+      /* declared before the first goto so every failure path can free what exists and nothing else */
+      VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+      VkPipeline pipe = VK_NULL_HANDLE;
+      vs = load_spv(vs_ours ? "blitv_o.vert.spv" : "blitv_z.vert.spv");
+      fs = load_spv(v == 0 || v == 2 || v == 5 ? "blitfs_z.frag.spv" :
+                    v == 1 ? "blitfs_o.frag.spv" : v == 3 ? "blitfs_o_b0.frag.spv" :
+                    v == 4 ? "blitfs_o_s0.frag.spv" : "blitfs_o.frag.spv");
+      if (!vs || !fs) { ok = 0; goto row_out; }
+      /* descriptor layout: the frame has 3 sets and the sampler at set 2 binding 128; rows 3/4 move exactly one of the
+       * two, which is the only way the FS's hard-coded decorations can be compared */
+      const int dsidx = v == 4 ? 0 : 2, dbind = v == 3 ? 0 : 128;
+      for (int k = 0; k < 3; k++) {
+         VkDescriptorSetLayoutBinding lb = {.binding = (uint32_t)dbind, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+         VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = k == dsidx ? 1 : 0, .pBindings = &lb};
+         if (CreateDescriptorSetLayout(dev, &dli, NULL, &r.dsl[k]) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+      }
+      /* one pool per row, created and checked here: a failed recreation used to reach AllocateDescriptorSets as NULL */
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+         .poolSizeCount = 1, .pPoolSizes = &ps};
+      if (CreateDescriptorPool(dev, &dpi, NULL, &r.dp) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = r.dp,
+         .descriptorSetCount = 1, .pSetLayouts = &r.dsl[dsidx]};
+      if (AllocateDescriptorSets(dev, &dai, &r.dset) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+      VkDescriptorImageInfo dii = {r.smp, r.srcv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = r.dset,
+         .dstBinding = (uint32_t)dbind, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .pImageInfo = &dii};
+      UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+      VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .size = 52};
+      VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3,
+         .pSetLayouts = r.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+      if (CreatePipelineLayout(dev, &pli, NULL, &r.pl) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+      VkPipelineShaderStageCreateInfo st[2] = {
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+      VkVertexInputBindingDescription bd = {0, 32, VK_VERTEX_INPUT_RATE_VERTEX};
+      VkVertexInputAttributeDescription ad[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+                                                 {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16}};
+      VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bd,
+         .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = ad};
+      VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+         .topology = v == 5 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN};
+      VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+         .viewportCount = 0, .scissorCount = 0};   /* 04135/04136: 0 with VK_DYNAMIC_STATE_*_WITH_COUNT */
+      VkPipelineRasterizationDepthClipStateCreateInfoEXT dce = g_dce;
+      dce.depthClipEnable = VK_TRUE;   /* apilog: clip=1 */
+      VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+         .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_CLOCKWISE,
+         .lineWidth = 1.0f, .rasterizerDiscardEnable = VK_FALSE, .depthClampEnable = VK_FALSE, .depthBiasEnable = VK_FALSE};
+      if (g_have_dclip) { dce.pNext = NULL; rs.pNext = &dce; }   /* static value: ignored while the dynamic state below is declared */
+      VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+      VkPipelineColorBlendAttachmentState cba = {.blendEnable = VK_FALSE, .colorWriteMask = 0xf};
+      VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+         .attachmentCount = 1, .pAttachments = &cba};
+      VkDynamicState dyn[24] = {VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT, VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
+         VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+         VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+         VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
+         VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
+         VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+         VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+         VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
+         VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
+      unsigned ndyn = 21;
+      if (CmdSetPolygonModeEXT_) dyn[ndyn++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+      if (g_have_dyn_dclip) dyn[ndyn++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;   /* the EDS3 bit, not g_have_dclip */
+      VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+         .dynamicStateCount = ndyn, .pDynamicStates = dyn};
+      VkFormat cfmt = VK_FORMAT_B8G8R8A8_UNORM;
+      VkPipelineRenderingCreateInfo prc = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+         .colorAttachmentCount = 1, .pColorAttachmentFormats = &cfmt};
+      VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &prc,
+         .stageCount = 2, .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
+         .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = NULL,
+         .pColorBlendState = &cbs, .pDynamicState = &dys, .layout = r.pl};
+      VkResult pr = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+      if (pr != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+      /* the earlier submission: the source pass (CLEAR blue), and its layout transition to sampled */
+      for (int sub = 0; sub < 2; sub++) {
+         VkCommandBuffer cb;
+         VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = r.pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+         if (AllocateCommandBuffers(dev, &cbi, &cb) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         VkCommandBufferBeginInfo bi2 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+         if (BeginCommandBuffer(cb, &bi2) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         if (!br_pass(&r, cb, sub == 0, pipe, v)) { ok = 0; goto row_out; }
+         if (sub == 0) {
+            VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+               .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               .image = r.src, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            VkDependencyInfo dp = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+               .pImageMemoryBarriers = &ib};
+            CmdPipelineBarrier2(cb, &dp);
+         }
+         if (sub == 1) {
+            /* the readback below reads the destination's colour writes through the mapping: colour-attachment writes
+             * are not visible to the host by themselves and a fence wait is not a memory dependency */
+            VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+               .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+            VkDependencyInfo hdp = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+               .pMemoryBarriers = &hb};
+            CmdPipelineBarrier2(cb, &hdp);
+         }
+         if (EndCommandBuffer(cb) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         VkCommandBuffer cbs2[2] = {cb, VK_NULL_HANDLE};
+         unsigned ncb = 1;
+         if (sub == 1) {   /* the frame's submit is ncbs=2: its draw cb plus a sync cb (barriers only) */
+            VkCommandBufferAllocateInfo cbi2 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+               .commandPool = r.pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+            if (AllocateCommandBuffers(dev, &cbi2, &cbs2[1]) == VK_SUCCESS) {
+               VkCommandBufferBeginInfo bi3 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                  .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+               BeginCommandBuffer(cbs2[1], &bi3);
+               EndCommandBuffer(cbs2[1]);
+               ncb = 2;
+            }
+         }
+         VkSubmitInfo si2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = ncb, .pCommandBuffers = cbs2};
+         if (QueueSubmit(queue, 1, &si2, f) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         /* bounded like scene_draw: a failed wait must not be reset and must not be followed by a pixel read */
+         const VkResult wr = WaitForFences(dev, 1, &f, VK_TRUE, 2000000000ull);
+         if (wr != VK_SUCCESS) {
+            if (wr == VK_TIMEOUT) WaitForFences(dev, 1, &f, VK_TRUE, UINT64_MAX);
+            g_fail = 1; ok = 0; goto row_out;
+         }
+         if (ResetFences(dev, 1, &f) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         if (sub == 1) {
+            /* the readback memory is only asked to be HOST_VISIBLE (br_img's memtype): invalidate the mapping before the
+             * host reads it, which the spec requires unless the type is HOST_COHERENT (the call is a no-op there) */
+            VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = r.dstm,
+               .offset = 0, .size = VK_WHOLE_SIZE};
+            InvalidateMappedMemoryRanges(dev, 1, &mmr);
+         }
+      }
+      if (g_fake) {
+         printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n",
+                v, g_brname[v]);
+      } else {
+         /* the destination pass keeps the frame's LOAD_OP_DONT_CARE, so the pixels the draw does not write are
+          * undefined: the statistics cover the footprint every row draws (the fan's (0,1,2)+(0,2,3), which leaves the
+          * right-hand wedge -x < y < x, x > 0 untouched), never the whole 800x600 */
+         double mr = 0, mg = 0, mb = 0;
+         uint32_t cov = 0, area = 0;
+         for (int y = 0; y < BR_H; y++)
+            for (int x = 0; x < BR_W; x++) {
+               const double nx = (x + 0.5) / BR_W * 2.0 - 1.0, ny = (y + 0.5) / BR_H * 2.0 - 1.0;   /* NDC */
+               if (nx > 0.0 && ny > -nx && ny < nx) continue;   /* the fan's uncovered wedge: undefined contents */
+               const uint8_t *p = r.dpx + y * r.dpitch + x * 4;
+               mr += p[2], mg += p[1], mb += p[0];   /* fmt 44 = B8G8R8A8_UNORM */
+               cov += p[3] != 0;
+               area++;
+            }
+         mr /= (double)area, mg /= (double)area, mb /= (double)area;
+         const uint8_t *c = r.dpx + (BR_H / 2) * r.dpitch + (BR_W / 2) * 4;
+         printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"mean\":\"%.1f/255\",\"rgb\":\"%.1f,%.1f,%.1f\","
+                "\"centre\":\"%u,%u,%u,%u\",\"coverage\":%u,\"area\":%u,\"ok\":true}\n",
+                v, g_brname[v], (mr + mg + mb) / 3.0, mr, mg, mb, c[2], c[1], c[0], c[3], cov, area);
+      }
+   row_out:   /* success and every failure: one place, so a failed row cannot leave a module, fence or pool live */
+      DeviceWaitIdle(dev);
+      if (pipe) DestroyPipeline(dev, pipe, NULL);
+      if (r.pl) { DestroyPipelineLayout(dev, r.pl, NULL); r.pl = VK_NULL_HANDLE; }
+      for (int k = 0; k < 3; k++) if (r.dsl[k]) { DestroyDescriptorSetLayout(dev, r.dsl[k], NULL); r.dsl[k] = VK_NULL_HANDLE; }
+      if (r.dp) { DestroyDescriptorPool(dev, r.dp, NULL); r.dp = VK_NULL_HANDLE; }
+      if (vs) DestroyShaderModule(dev, vs, NULL);
+      if (fs) DestroyShaderModule(dev, fs, NULL);
+      if (!ok) break;
+   }
+   br_destroy(&r);
+   DestroyFence(dev, f, NULL);
+   return ok;
 }
 
 static const float ID[4] = {1, 0, 0, 0};
@@ -875,6 +1375,128 @@ test_many(void)
    if (ok && !g_dyn) ok = report("many_draws", &s, 8192.0, 1.0, 1);
    g_dyn = 0;
    free(rot);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+/* ---- dxvk_frame: a DXVK-shaped frame, the CPU cost of the driver per draw / per submit (host microbenchmark, fake backend) ----
+ * 3 render passes (60/30/10 % of the draws), per draw: 16 B push constants, a descriptor write + bind of a set of its own (DXVK rewrites
+ * its UBO/texture sets every few draws), per 4 draws a pipeline switch (two pipelines), per 8 draws cull/front-face/depth-bias/
+ * blend-constant/viewport/scissor changes, per 16 draws a vertex-buffer + index-buffer rebind; indexed draws. One QueueSubmit per frame.
+ * MALI_DXVK_DRAWS (3000), MALI_DXVK_REPS (200). Prints ns_per_draw (record+submit), record_ns_per_draw, submit_ns_per_draw, submit_ns. */
+static int
+test_dxvk_frame(void)
+{
+   long n_l = 3000, nrep_l = 200;
+   const char *ev[2] = {getenv("MALI_DXVK_DRAWS"), getenv("MALI_DXVK_REPS")};
+   long *dst[2] = {&n_l, &nrep_l};
+   for (int i = 0; i < 2; i++) {   /* checked conversion: a zero/negative/non-numeric count would divide by zero in the report yet print ok:true */
+      char *end = NULL;
+      if (!ev[i]) continue;
+      long v = strtol(ev[i], &end, 10);
+      if (end == ev[i] || *end || v <= 0 || v > 10000000) { printf("MALI_DXVK_%s must be a positive integer (got '%s')\n", i ? "REPS" : "DRAWS", ev[i]); return 0; }
+      *dst[i] = v;
+   }
+   const int n = (int)n_l, nrep = (int)nrep_l;
+   g_dxvk = 1;
+   struct scene s = {.mode = MODE_UBO};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) { g_dxvk = 0; return 0; }
+   /* one set per draw: each is written once and bound once per command buffer (rewriting a set that the recording cb already bound is invalid);
+    * the previous frame has completed (fence) before its sets are written again */
+   VkDescriptorPool dxpool = VK_NULL_HANDLE;
+   VkDescriptorSet *dxsets = calloc((size_t)n, sizeof *dxsets);
+   if (!dxsets) { printf("out of memory for %d descriptor sets\n", n); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
+   {
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (uint32_t)n};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = (uint32_t)n, .poolSizeCount = 1, .pPoolSizes = &ps};
+      VkDescriptorSetLayout *ls = malloc((size_t)n * sizeof *ls);
+      if (!ls) { printf("out of memory for %d set layouts\n", n); free(dxsets); scene_destroy(&s); DestroyFence(dev, f, NULL); return 0; }
+      for (int i = 0; i < n; i++) ls[i] = s.dsl;
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = (uint32_t)n, .pSetLayouts = ls};
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dxpool) == VK_SUCCESS, "dx pool");
+      dai.descriptorPool = dxpool;
+      CHECK(AllocateDescriptorSets(dev, &dai, dxsets) == VK_SUCCESS, "dx sets");
+      free(ls);
+   }
+   alloc_stats_start();
+   double t_rec = 0, t_sub = 0, t_all = 0;
+   int ok = 1;
+   for (int rep = -5; ok && rep < nrep; rep++) {   /* 5 warm-up frames */
+      double t0 = now_us(), tr;
+      VkCommandBuffer cb;
+      VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+      CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+      VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+      VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+      VkRect2D sc = {{0, 0}, {W, H}};
+      VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+      VkDeviceSize offs[2] = {0, 0};
+      const float bc[4] = {0.1f, 0.2f, 0.3f, 0.4f};
+      int d = 0;
+      static const int split[3] = {60, 30, 10};
+      for (int pass = 0; pass < 3; pass++) {
+         int cnt = pass == 2 ? n - d : n * split[pass] / 100;
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                                     .renderArea = {{0, 0}, {W, H}}, .clearValueCount = s.depth ? 2 : 1, .pClearValues = cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+         CmdSetViewport(cb, 0, 1, &vp);
+         CmdSetScissor(cb, 0, 1, &sc);
+         CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+         CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+         for (int i = 0; i < cnt; i++, d++) {
+            if ((d & 3) == 0) CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (d & 4) ? s.pipe2 : s.pipe);
+            if ((d & 7) == 0) {
+               CmdSetCullMode(cb, (d & 8) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+               CmdSetFrontFace(cb, (d & 16) ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+               CmdSetDepthBias(cb, (float)((d >> 3) & 3), 0.0f, 1.0f);   /* d is a multiple of 8 here: the update index d >> 3 is what changes */
+               CmdSetBlendConstants(cb, bc);
+               vp.x = (float)((d >> 3) & 1);
+               sc.offset.x = (d >> 3) & 1;
+               CmdSetViewport(cb, 0, 1, &vp);
+               CmdSetScissor(cb, 0, 1, &sc);
+            }
+            if ((d & 15) == 0) {
+               offs[0] = (d & 16) ? 16 : 0;
+               CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+               CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+            }
+            VkDescriptorBufferInfo bi2 = {s.ubo[d % 3], 0, 16};
+            VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dxsets[d], .dstBinding = 0,
+                                      .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &bi2};
+            UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+            CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &dxsets[d], 0, NULL);
+            float pc[4] = {1, 0, 0, (float)(d & 7)};
+            CmdPushConstants(cb, s.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
+            CmdDrawIndexed(cb, 6, 1, 0, 3, 0);
+         }
+         CmdEndRenderPass(cb);
+      }
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      tr = now_us();
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      VkResult r = QueueSubmit(queue, 1, &si, f);
+      double ts = now_us();
+      CHECK(r == VK_SUCCESS, "submit = %d", r);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+      ResetFences(dev, 1, &f);
+      FreeCommandBuffers(dev, s.pool, 1, &cb);
+      if (rep >= 0) { t_rec += tr - t0; t_sub += ts - tr; t_all += ts - t0; }
+   }
+   printf("{\"test\":\"dxvk_frame\",\"draws\":%d,\"passes\":3,\"frames\":%d,\"ns_per_draw\":%.1f,\"record_ns_per_draw\":%.1f,\"submit_ns_per_draw\":%.1f,\"submit_ns\":%.0f,\"alloc_B_per_draw\":%.0f,\"ok\":%s}\n",
+          n, nrep, t_all * 1000.0 / nrep / n, t_rec * 1000.0 / nrep / n, t_sub * 1000.0 / nrep / n, t_sub * 1000.0 / nrep,
+          (double)alloc_bytes() / (nrep + 5) / n, ok ? "true" : "false");
+   g_dxvk = 0;
+   if (dxpool) DestroyDescriptorPool(dev, dxpool, NULL);
+   free(dxsets);
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -1112,8 +1734,17 @@ test_load(const char *name, int kind)
          for (int i = 0; i < 6; i++) same &= pgot[i] == pref[i];
          ok = ok && same;
          if (!ok) {
-            /* which failure: pass 2 drew nothing (cov == pass 1), preload did not run (B overwrote A where it must be rejected: cov > ref), or B was rejected too much (cov < ref) */
-            const char *why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
+            /* Which failure. kind 2 is colour only (no depth attachment), so a coverage shortfall there is the
+             * LOAD preload losing edge samples, never "depth came back wrong": name the number and the plane
+             * question instead of sending the reader to the depth path. */
+            const char *why;
+            if (kind == 2)
+               why = cgot == cov1 ? "pass 2 wrote nothing (LOAD restored nothing)"
+                   : cgot > cref ? "LOAD over-restored: coverage above the one-pass reference"
+                   : cgot < cref ? "LOAD lost edge coverage at 4x (antialiased pixels whose samples were not restored) - compare load_roundtrip"
+                                  : "coverage equal, pixel values differ";
+            else
+               why = cgot == cov1 ? "pass2 wrote nothing (colour marker unchanged)" : cgot > cref ? "preload did not take effect: B drawn over A (depth/stencil came back as cleared)" : cgot < cref ? "B over-rejected: depth/stencil came back wrong (too near / non-zero)" : "coverage equal, pixel values differ";
             char pxs[400]; int n = 0;
             for (int i = 0; i < 6; i++)
                n += snprintf(pxs + n, sizeof pxs - n, " (%d,%d)%08x/%08x/%08x", PX[i][0], PX[i][1], p1[i], pref[i], pgot[i]);
@@ -1344,15 +1975,15 @@ test_discard(const char *name, int mode)
    return ok;
 }
 
-/* dynamic vertex binding stride: static stride 4 is wrong; draw 1 binds stride 0 (nothing), draw 2 stride 16 (the triangle) */
+/* dynamic vertex binding stride (rebind=1: a plain BindVertexBuffers follows the stride-16 2-form bind): static stride 4 is wrong; draw 1 binds stride 0 (nothing), draw 2 stride 16 (the triangle) */
 static int
-test_dynstride(const char *name)
+test_dynstride(const char *name, int rebind)
 {
    struct scene s = {.mode = MODE_TRI};
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
-   g_dynstr = 1;
+   g_dynstr = rebind ? 2 : 1;
    int ok = scene_create(&s, 0);
    float one[1][4] = {{1, 0, 0, 0}};
    if (ok) ok = scene_draw(&s, 1, one, f);
@@ -1402,6 +2033,92 @@ static int
 test_int_clear(const char *name, VkFormat fmt, unsigned bpp, uint32_t want0)
 {
    return test_int_clear_f(name, fmt, bpp, want0, NULL);
+}
+
+/* Alpha histogram in quarter steps: a LOAD that loses samples shows up as a shift to the 0 bucket. Diagnostics. */
+static void
+alpha_hist(const char *tag, struct scene *s)
+{
+   unsigned b[6] = {0};
+   for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {
+         unsigned a = s->px[y * s->pitch + x * 4 + 3];
+         b[a == 0 ? 0 : a == 255 ? 5 : 1 + (a - 1) / 64] += 1;
+      }
+   printf("{\"hist\":\"%s\",\"a0\":%u,\"a1_63\":%u,\"a64_127\":%u,\"a128_191\":%u,\"a192_254\":%u,\"a255\":%u}\n",
+          tag, b[0], b[1], b[2], b[3], b[4], b[5]);
+}
+
+/* Does loadOp LOAD restore every sample? pass 1 clears and draws A (store, resolve), pass 2 LOADs with no
+ * draw at all and stores/resolves again: coverage must be identical to pass 1. This isolates the preload
+ * from the second draw, so a shortfall is the per-sample restore and not geometry or depth. */
+static int
+load_roundtrip(const char *name)
+{
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised by the driver\",\"ok\":true}\n", name);
+      return 1;
+   }
+   g_msaa = 1;
+   g_msaa_store = 1;
+   g_load = 1;
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   int ok = scene_create(&s, 0);
+   g_load = 0;
+   float AB[1][4] = {{1, 0, -.5f, 0}};
+   uint32_t c1 = 0, c2 = 0;
+   if (ok) ok = scene_draw(&s, 1, AB, f);          /* pass 1: clear + A, stored and resolved */
+   if (ok) c1 = count_cov(&s);
+   if (!g_fake) alpha_hist("after_pass1", &s);
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 0, AB, f);          /* pass 2: LOAD, no draws, store + resolve */
+   s.second = 0;
+   if (ok) c2 = count_cov(&s);
+   if (!g_fake) alpha_hist("after_load_no_draw", &s);
+   /* stage 3: LOAD then DRAW a triangle that covers nothing new (the same A again): if the draw drops the samples
+    * the preload restored, coverage falls here; if it keeps them, coverage is unchanged and the loss in the real
+    * test comes from B's own samples at the seam. */
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 1, AB, f);
+   s.second = 0;
+   uint32_t c3 = 0;
+   if (ok) c3 = count_cov(&s);
+   if (!g_fake) alpha_hist("after_load_and_same_draw", &s);
+   if (ok) {
+      if (g_fake) {
+         printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      } else {
+         CHECK(c1 == c2, "%s: coverage after LOAD %u != after pass 1 %u (%d pixels lost by the per-sample preload)", name, c2, c1, (int)(c1 - c2));
+         CHECK(c1 == c3, "%s: coverage after LOAD + the same draw %u != pass 1 %u (%d pixels lost by drawing over loaded samples)", name, c3, c1, (int)(c1 - c3));
+         printf("{\"test\":\"%s\",\"cov_pass1\":%u,\"cov_after_load\":%u,\"cov_after_load_draw\":%u,\"ok\":%s}\n",
+                name, c1, c2, c3, c1 == c2 && c1 == c3 ? "true" : "false");
+      }
+   }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   g_msaa = 0;
+   g_msaa_store = 0;
+   return ok;
+}
+
+static int
+test_msaa_load(const char *name)
+{
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {   /* the driver's advertised count, not the env: see test_msaa */
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised by the driver\",\"ok\":true}\n", name);
+      return 1;
+   }
+   g_msaa = 1;
+   g_msaa_store = 1;
+   const int ok_main = test_load(name, 2);
+   const int ok_rt = load_roundtrip("msaa_load_roundtrip");   /* diagnostics: runs even when the main assertion failed */
+   int ok = ok_main && ok_rt;
+   g_msaa = 0;
+   g_msaa_store = 0;
+   return ok;
 }
 
 static int
@@ -1459,9 +2176,11 @@ test_two(int depth)
 static int
 test_msaa(const char *name, int mode)
 {
-   const char *gate = getenv("MALI_EXPERIMENTAL_MSAA");   /* 4x pipelines are gated; sample counts are advertised regardless (as on main) */
-   if (!(gate && gate[0] == '1') || !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
-      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised (MALI_EXPERIMENTAL_MSAA=1)\",\"ok\":true}\n", name,
+   /* Gate on the driver's advertised sample counts (g_fbcounts comes from the limits the driver reports, so
+    * MALI_EXPERIMENTAL_MSAA=0 shows up here as "no 4x"), never on the env var: an env gate skips the test on a
+    * driver that does advertise 4x, which is exactly the mistake that hid this case. */
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT) || (mode == 2 && !g_feat.sampleRateShading)) {
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA%s not advertised by the driver\",\"ok\":true}\n", name,
              mode == 2 ? " / sampleRateShading" : "");
       return 1;
    }
@@ -1592,8 +2311,41 @@ test_poly(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx
    return good;
 }
 
+/* VK_EXT_extended_dynamic_state3 polygonMode: same scenes as test_poly, but the pipeline is created FILL with POLYGON_MODE_EXT dynamic and the mode
+ * comes from vkCmdSetPolygonModeEXT. On the fake backend nothing renders: the draw must still build and its decoded stream (golden) differs from FILL. */
+static int
+test_poly_dyn(const char *name, int mode, int poly, uint32_t lo, uint32_t hi, int cx, int cy)
+{
+   struct scene s = {.mode = mode};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   if (!g_have_eds3) { printf("{\"test\":\"%s\",\"skipped\":\"extendedDynamicState3PolygonMode not advertised\",\"ok\":true}\n", name); return 1; }
+   if (!g_feat.fillModeNonSolid) { printf("{\"test\":\"%s\",\"skipped\":\"fillModeNonSolid not advertised\",\"ok\":true}\n", name); return 1; }
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&g_fx, 0, sizeof g_fx);
+   g_fx.poly = poly;
+   g_fx.dynpoly = 1;
+   if (!scene_create(&s, 0)) return 0;
+   s.mode = mode;
+   float rot[1][4] = {{1, 0, 0, 0}};
+   int ok = scene_draw(&s, 1, rot, f);
+   int good = ok;
+   if (ok && !g_fake) {
+      uint32_t cov = count_cov(&s);
+      const uint8_t *c = s.px + cy * s.pitch + cx * 4;
+      good = cov >= lo && cov <= hi && c[3] == 0;
+      if (!good) { printf("{\"fail\":\"%s: coverage %u expected %u..%u, interior alpha %u (want 0)\"}\n", name, cov, lo, hi, c[3]); g_fail++; }
+      else printf("{\"test\":\"%s\",\"cov\":%u,\"ok\":true}\n", name, cov);
+   } else if (ok)
+      printf("{\"test\":\"%s\",\"ok\":true,\"skipped\":\"pixels: fake backend\"}\n", name);
+   memset(&g_fx, 0, sizeof g_fx);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return good;
+}
+
 /* R4: fixed-function state. Triangle (-.5,-.5) (.5,-.5) (0,.5) in Vulkan y-down NDC is clockwise on screen. */
-enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15 };
+enum { EXP_COV, EXP_SAME, EXP_DOUBLE, EXP_HALF, EXP_ZERO, EXP_ADDSQ, EXP_RONLY, EXP_X15, EXP_ONES, EXP_NOT, EXP_XOR, EXP_INV };
 struct fxcase {
    const char *name;
    int depth, n;                  /* depth attachment, draws */
@@ -1623,6 +2375,13 @@ static void s_dst_src(void) { blend(VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_S
 static void s_d_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_inv_src1a(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD); }
 static void s_d_one_src1c(void) { g_fx.dual = 1; blend(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_OP_ADD); }
+/* logicOp (static logicOpEnable, colour logic op in the blend shader): the framebuffer is cleared to 0 before the draw (destination = 51,102,153,204) */
+static void s_lop_clear(void) { g_fx.logic = 1 + VK_LOGIC_OP_CLEAR; }
+static void s_lop_set(void) { g_fx.logic = 1 + VK_LOGIC_OP_SET; }
+static void s_lop_copy(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY; }
+static void s_lop_copy_inv(void) { g_fx.logic = 1 + VK_LOGIC_OP_COPY_INVERTED; }
+static void s_lop_xor(void) { g_fx.logic = 1 + VK_LOGIC_OP_XOR; }   /* src ^ dst */
+static void s_lop_invert(void) { g_fx.logic = 1 + VK_LOGIC_OP_INVERT; }   /* ~dst */
 static void s_mask_r(void) { g_fx.wmask = 1; }
 static void s_src_alpha(void) { blend(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD); }
 static void s_bias_off(void) { g_fx.bias = 1; }   /* bias enabled, factors 0: z = 1.0 fails LESS against the 1.0 clear */
@@ -1652,6 +2411,12 @@ static const struct fxcase g_fxcases[] = {
    {"fx_blend_one_srccolor", 0, 2, {0.5f, 0.5f}, EXP_ADDSQ, 0, 0, s_one_src},
    {"fx_blend_2srcdst", 0, 2, {0.5f, 0.5f}, EXP_ZERO, 0, 0, s_dst_src},
    {"fx_blend_srcalpha", 0, 2, {0.5f, 0.5f}, EXP_SAME, 0, 0, s_src_alpha},
+   {"fx_logic_clear", 0, 1, {0.5f}, EXP_ZERO, 0, 8, s_lop_clear},
+   {"fx_logic_set", 0, 1, {0.5f}, EXP_ONES, 0, 8, s_lop_set},
+   {"fx_logic_copy", 0, 1, {0.5f}, EXP_SAME, 0, 8, s_lop_copy},
+   {"fx_logic_copy_inv", 0, 1, {0.5f}, EXP_NOT, 0, 8, s_lop_copy_inv},
+   {"fx_logic_xor", 0, 1, {0.5f}, EXP_XOR, 0, 8, s_lop_xor},
+   {"fx_logic_invert", 0, 1, {0.5f}, EXP_INV, 0, 8, s_lop_invert},
    {"fx_dual_src1_color", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_src1c},
    {"fx_dual_inv_src1_alpha", 0, 1, {0.5f}, EXP_HALF, 0, 4, s_d_inv_src1a},
    {"fx_dual_one_src1_color", 0, 2, {0.5f, 0.5f}, EXP_X15, 0, 4, s_d_one_src1c},
@@ -1728,6 +2493,7 @@ test_fx(void)
       if (g_only && strcmp(g_only, "fx") && strcmp(g_only, c->name)) continue;
       if ((c->need & 1) && !g_feat.depthClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_have_dclip) { printf("{\"test\":\"%s\",\"skipped\":\"VK_EXT_depth_clip_enable not advertised\",\"ok\":true}\n", c->name); continue; }
+      if ((c->need & 8) && !g_feat.logicOp) { printf("{\"test\":\"%s\",\"skipped\":\"logicOp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 2) && !g_feat.depthBiasClamp) { printf("{\"test\":\"%s\",\"skipped\":\"depthBiasClamp not advertised\",\"ok\":true}\n", c->name); continue; }
       if ((c->need & 4) && !g_feat.dualSrcBlend) { printf("{\"test\":\"%s\",\"skipped\":\"dualSrcBlend not advertised\",\"ok\":true}\n", c->name); continue; }
       if (!fx_run(c, q, &cov)) return 0;
@@ -1741,6 +2507,10 @@ test_fx(void)
       case EXP_ZERO: e[0] = e[1] = e[2] = e[3] = 0; break;
       case EXP_ADDSQ: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] * e[k] / 255; e[3] = 255; break;
       case EXP_X15: for (int k = 0; k < 3; k++) e[k] = e[k] + e[k] / 2; e[3] = 255; break;
+      case EXP_ONES: e[0] = e[1] = e[2] = e[3] = 255; break;
+      case EXP_NOT: for (int k = 0; k < 4; k++) e[k] = 255 - (k == 3 ? 255 : e[k]); break;   /* ~src; the alpha written is 1.0 */
+      case EXP_XOR: { const int d[4] = {51, 102, 153, 204}; for (int k = 0; k < 4; k++) e[k] = (k == 3 ? 255 : e[k]) ^ d[k]; break; }   /* src ^ dst */
+      case EXP_INV: e[0] = 255 - 51; e[1] = 255 - 102; e[2] = 255 - 153; e[3] = 255 - 204; break;   /* ~dst */
       case EXP_RONLY: e[1] = e[2] = e[3] = 0; break;
       }
       if (c->exp != EXP_COV)
@@ -1975,6 +2745,27 @@ test_share_inst(void)
    return 1;
 }
 
+/* share_idx: the frame-build fast path skips the per-draw register packing when nothing differs (same_draw_words). The case
+ * (MODE_SHAREIDX) is four draws whose per-draw words are identical and whose index buffer alternates A B A B, with an identical
+ * pipeline rebind before the third: the index-buffer VA must be in the key (vkCmdBindIndexBuffer sets no dirty bit) and the rebind
+ * must not stop the following draw from packing. The C side only records and submits; tests/check_share_idx.py decodes the CS and
+ * counts the index-buffer register writes (check.sh "share_idx CS"). Explicit only: a new frame would change the vk_draw golden. */
+static int
+test_share_idx(void)
+{
+   struct scene s = {.mode = MODE_SHAREIDX};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   float rot[1][4] = {{1, 0, 0, 0}};
+   int ok = scene_draw(&s, 4, rot, f);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   if (ok) printf("{\"test\":\"share_idx\",\"draws\":4,\"ok\":true}\n");
+   return ok;
+}
+
 /* share_dirty (fake backend byte counter): each state group's dirty bit must make the draw rebuild what depends on it, and rebinding an equal
  * pipeline must not. Frames of 4 draws: push constants, viewport, cull mode change between draws (more bytes than the identical frame) and the
  * same pipeline rebound (no more bytes). MALI_DIRTY_CHECK (check.sh) additionally aborts when a mask reuses what really changed. */
@@ -2045,6 +2836,8 @@ test_quad(const char *name, int mode)
       const uint8_t *c = s.px + 128 * s.pitch + 128 * 4;
       if (mode == MODE_PUSHFS) CHECK(near3(c, 191, 64, 128, 2), "pc colour %u,%u,%u,%u", c[0], c[1], c[2], c[3]);
       if (mode == MODE_UBO) CHECK(near3(c, 64, 128, 191, 2), "ubo colour %u,%u,%u,%u", c[0], c[1], c[2], c[3]);
+      /* set 7 carries colour C and the shader reads ONLY set 7: the last of eight bound sets must reach the SRT */
+      if (mode == MODE_SETS8) CHECK(near3(c, 0, 255, 0, 2), "sets8 colour %u,%u,%u,%u (set 7's UBO)", c[0], c[1], c[2], c[3]);
       if (mode == MODE_DESCUPD) {
          const uint8_t *l = s.px + 128 * s.pitch + 64 * 4, *r = s.px + 128 * s.pitch + 192 * 4;
          CHECK(near3(l, 64, 128, 191, 2), "left (set 0) %u,%u,%u,%u", l[0], l[1], l[2], l[3]);
@@ -2068,6 +2861,82 @@ test_quad(const char *name, int mode)
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return 1;
+}
+
+/* Mutable-format views (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT): the view's format decides the encoding. zink presents the
+ * window through an SRGB view of a UNORM swapchain image (notes/apilog.md: vfmt=50 over ifmt=44), so a linear 0.5 grey
+ * written through an SRGB view must be encoded on write (188, not 128), and the reverse (SRGB image, UNORM view) must
+ * not be (128, not 188). Sampling: the same texel 128 through an SRGB view decodes to linear (55 in a UNORM target),
+ * through a UNORM view it stays 128.
+ * The render pass' attachment format is the VIEW format (Vulkan requires the framebuffer view to match it); the image
+ * keeps its own format plus VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT. */
+static int
+vfmt_run(const char *name, VkFormat imgfmt, VkFormat viewfmt, VkFormat texfmt, VkFormat texvfmt, unsigned want)
+{
+   struct scene s = {.mode = MODE_PUSHFS};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   static const float grey[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+   static const float qclear[4] = {0.25f, 0.25f, 0.25f, 0.25f};   /* the sampled cases: 0x40 in every channel, a value
+                                                                  * they never draw (55, 128), so a missing draw cannot pass */
+   static const float quarter[4] = {0.25f, 0.25f, 0.25f, 1.0f};   /* the draw's colour: differs from the clear, so a
+                                                                   * missing render-target write cannot pass as the clear */
+   g_colfmt = imgfmt;
+   g_vfmt = viewfmt;
+   g_texfmt = texfmt;
+   g_texvfmt = texvfmt;
+   g_clear_f = texfmt ? qclear : grey;
+   memcpy(g_pcfs, quarter, sizeof g_pcfs);
+   g_hostread = 1;
+   if (texfmt) s.mode = MODE_TEX;
+   int ok = scene_create(&s, 0);
+   float one[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, one, f);
+   g_hostread = 0;
+   uint32_t got = 0;
+   /* the pixel checks are hardware-only: the fake backend renders nothing, and the MALI_SOFT CPU rasteriser renders only
+    * pipelines the test registers CPU programs for (view_format registers none), so it is not a verdict either */
+   const int pixels = ok && !g_fake;
+   if (pixels) {
+      /* the allocation is HOST_VISIBLE (not necessarily HOST_COHERENT): invalidate before the host reads the mapping */
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0,
+                                 .size = VK_WHOLE_SIZE};
+      InvalidateMappedMemoryRanges(dev, 1, &mmr);
+      got = px_at(&s, W / 2, H / 2) & 0xff;
+      ok = got + 2 >= want && got <= want + 2;
+   }
+   printf("{\"test\":\"%s\",\"image\":%d,\"view\":%d,\"px\":%u,\"want\":%u,\"ok\":%s%s}\n", name, (int)imgfmt,
+          (int)viewfmt, got, want, ok ? "true" : "false",
+          pixels ? "" : g_fake ? ",\"skipped\":\"fake backend\"" : ",\"skipped\":\"no pixels\"");
+   CHECK(ok, "%s: pixel %u want %u", name, got, want);
+   g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;
+   g_vfmt = VK_FORMAT_UNDEFINED;
+   g_texfmt = g_texvfmt = VK_FORMAT_UNDEFINED;
+   g_clear_f = NULL;
+   memcpy(g_pcfs, (const float[4]){0.75f, 0.25f, 0.5f, 1.0f}, sizeof g_pcfs);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+static int
+test_view_format(void)
+{
+   int ok = 1;
+   /* UNORM image, SRGB view: the 0.25 linear draw (clear stays 0.5 grey) -> sRGB 137 (the bug renders 64) */
+   ok &= vfmt_run("view_srgb_over_unorm", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
+                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 137);
+   /* SRGB image, UNORM view: the 0.25 draw stays 64 (the bug renders 137) */
+   ok &= vfmt_run("view_unorm_over_srgb", VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM,
+                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 64);
+   /* sampled: texel 128 through an SRGB view decodes to linear and lands as 55 in the UNORM target; a UNORM view gives
+    * 128. These clear to 0.25 grey (0x40), so a missing draw reads 64 and fails (see vfmt_run's qclear). */
+   ok &= vfmt_run("view_sample_srgb", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
+                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, 55);
+   ok &= vfmt_run("view_sample_unorm", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
+                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, 128);
+   return ok;
 }
 
 int
@@ -2123,11 +2992,17 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading};
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
-   const char *dce_ext[] = {"VK_EXT_depth_clip_enable"};
+   const char *dce_ext[] = {"VK_EXT_depth_clip_enable", "VK_EXT_extended_dynamic_state3"};
+   const char *en_ext[2];
+   VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+   /* blitreplay records vkCmdPipelineBarrier2 and vkCmdBeginRendering: the 1.3 core commands are only legal with these
+    * two feature bits enabled, not merely with a 1.3 physical device */
+   VkPhysicalDeviceVulkan13Features v13_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+   VkPhysicalDeviceVulkan13Features v13_en = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    {
       PFN_vkGetPhysicalDeviceFeatures2 GPF2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
       PFN_vkEnumerateDeviceExtensionProperties EDE = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
@@ -2136,25 +3011,59 @@ main(int argc, char **argv)
       VkExtensionProperties eps[128];
       if (ne > 128) ne = 128;
       EDE(pd, NULL, &ne, eps);
-      int has = 0;
-      for (uint32_t i = 0; i < ne; i++) has |= !strcmp(eps[i].extensionName, dce_ext[0]);
-      VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dce_f};
+      int has = 0, has3 = 0;
+      for (uint32_t i = 0; i < ne; i++) {
+         has |= !strcmp(eps[i].extensionName, dce_ext[0]);
+         has3 |= !strcmp(eps[i].extensionName, dce_ext[1]);
+      }
+      v13_f.pNext = &dce_f;
+      dce_f.pNext = &eds3_f;
+      VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v13_f};
       GPF2(pd, &f2);
+      if (!v13_f.synchronization2 || !v13_f.dynamicRendering) {
+         printf("{\"fail\":\"no synchronization2/dynamicRendering\"}\n");
+         return 1;
+      }
+      VkPhysicalDeviceVulkan13Features v13_en_local = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+         .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE};
+      v13_en = v13_en_local;   /* di.pNext is read after this block: the struct has to outlive it */
+      void *chain = NULL;
+      if (has3 && (eds3_f.extendedDynamicState3PolygonMode || eds3_f.extendedDynamicState3DepthClipEnable)) {
+         /* enable only the two bits blitreplay sets dynamically; its depthClipEnable setter needs its own bit, which is
+          * not what g_have_dclip (the static VK_EXT_depth_clip_enable path) tracks */
+         g_have_eds3 = eds3_f.extendedDynamicState3PolygonMode;
+         g_have_dyn_dclip = eds3_f.extendedDynamicState3DepthClipEnable;
+         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+                                                               .extendedDynamicState3PolygonMode = (VkBool32)!!g_have_eds3,
+                                                               .extendedDynamicState3DepthClipEnable = (VkBool32)!!g_have_dyn_dclip};
+         eds3_f = e3;
+         eds3_f.pNext = NULL;
+         en_ext[di.enabledExtensionCount++] = dce_ext[1];
+         chain = &eds3_f;
+      }
       if (has && dce_f.depthClipEnable) {
          g_have_dclip = 1;
-         di.pNext = &dce_f;
-         di.enabledExtensionCount = 1;
-         di.ppEnabledExtensionNames = dce_ext;
+         dce_f.pNext = chain;
+         chain = &dce_f;
+         en_ext[di.enabledExtensionCount++] = dce_ext[0];
       }
+      v13_en.pNext = chain;
+      di.pNext = &v13_en;
+      di.ppEnabledExtensionNames = en_ext;
    }
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
+   CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
+   CmdSetDepthClipEnableEXT_ = g_have_dyn_dclip ? (PFN_vkCmdSetDepthClipEnableEXT)GDPA(dev, "vkCmdSetDepthClipEnableEXT") : NULL;
+   if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
+   if (ok && g_only && CASE_ON("blitreplay")) ok &= test_blitreplay();   /* --only only: it allocates two 800x600 images */
+   if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
    if (ok && CASE_ON("two")) ok &= test_two(0);
    if (ok && CASE_ON("depth")) ok &= test_two(1);
@@ -2164,7 +3073,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("nofs_depth")) ok &= test_nocol("nofs_depth", 0);
    if (ok && CASE_ON("nofs_stencil")) ok &= test_nocol("nofs_stencil", 1);
    if (ok && CASE_ON("nocol_stencil")) ok &= test_nocol("nocol_stencil", 1);
-   if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride");
+   if (ok && CASE_ON("dyn_stride")) ok &= test_dynstride("dyn_stride", 0);
+   if (ok && CASE_ON("dyn_stride_rebind")) ok &= test_dynstride("dyn_stride_rebind", 1);   /* plain BindVertexBuffers after BindVertexBuffers2 keeps the stride */
    if (ok && CASE_ON("discard_both")) ok &= test_discard("discard_both", 1);
    if (ok && CASE_ON("discard_vs_only")) ok &= test_discard("discard_vs_only", 2);
    if (ok && CASE_ON("int_clear_rgba8ui")) ok &= test_int_clear("int_clear_rgba8ui", VK_FORMAT_R8G8B8A8_UINT, 4, 0x073264c8u);
@@ -2183,6 +3093,10 @@ main(int argc, char **argv)
       if (ok && CASE_ON("rt_clear_a2b10g10r10ui")) ok &= test_int_clear("rt_clear_a2b10g10r10ui", VK_FORMAT_A2B10G10R10_UINT_PACK32, 4, 0xc32190c8u);
    }
    if (ok && CASE_ON("load_depth16")) { g_depfmt = VK_FORMAT_D16_UNORM; ok &= test_load("load_depth16", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   /* Source-engine/wined3d content: D24S8 depth LOAD (zs_format 2, 24-bit UNORM preload) and packed colour formats.
+    * Explicit only: the golden dump sequence stays as it was. */
+   if (ok && g_only && CASE_ON("load_depth24s8")) { g_depfmt = VK_FORMAT_D24_UNORM_S8_UINT; ok &= test_load("load_depth24s8", 0); g_depfmt = VK_FORMAT_D32_SFLOAT; }
+   if (ok && g_only && CASE_ON("load_colour_argb8")) { g_colfmt = VK_FORMAT_A8B8G8R8_UNORM_PACK32; g_colbpp = 4; ok &= test_load("load_colour_argb8", 2); g_colfmt = VK_FORMAT_R8G8B8A8_UNORM; g_colbpp = 4; }
    if (ok && CASE_ON("load_stencil")) ok &= test_load("load_stencil", 1);
    if (ok && CASE_ON("st_op_invert")) ok &= test_load("st_op_invert", 3);
    if (ok && CASE_ON("st_op_decwrap")) ok &= test_load("st_op_decwrap", 4);
@@ -2208,6 +3122,9 @@ main(int argc, char **argv)
       ok &= test_poly("poly_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
       ok &= test_poly("poly_line_idx32", MODE_IDX32, 1, 250, 2500, 100, 130);
       ok &= test_poly("poly_line_mdi", MODE_MDI, 1, 250, 5000, 100, 130);
+      ok &= test_poly_dyn("poly_dyn_line_tri", MODE_TRI, 1, 250, 1500, 128, 106);
+      ok &= test_poly_dyn("poly_dyn_point_tri", MODE_TRI, 2, 1, 40, 128, 106);
+      ok &= test_poly_dyn("poly_dyn_line_idx16", MODE_IDX16, 1, 250, 2500, 100, 130);
    }
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
@@ -2224,19 +3141,25 @@ main(int argc, char **argv)
    if (ok && (CASE_ON("fx") || (g_only && !strncmp(g_only, "fx_", 3)))) ok &= test_fx();
    if (ok && CASE_ON("msaa_resolve4")) ok &= test_msaa("msaa_resolve4", 1);
    if (ok && CASE_ON("msaa_sample_shading")) ok &= test_msaa("msaa_sample_shading", 2);
+   if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
    if (ok && CASE_ON("share")) ok &= test_share_inst();
    if (ok && CASE_ON("share")) ok &= test_share_dirty();
+   if (ok && g_only && CASE_ON("share_idx")) ok &= test_share_idx();   /* explicit only: not in the goldens */
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
    if (ok && CASE_ON("ubo")) ok &= test_quad("ubo", MODE_UBO);
+   if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
+   if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
+   if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
+   if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

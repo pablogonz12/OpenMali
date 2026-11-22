@@ -14,6 +14,7 @@
 #include <time.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <string.h>
 #include "mali_pipeline_layout_flat.h"
 
@@ -213,6 +214,8 @@ struct ddesc {   /* per-draw GPU blocks */
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
    uint32_t bl23[4][2];      /* (per render target) */
+   bool static_same;         /* this draw's static state (pipeline, FX, bound sets, firstInstance) equals the previous draw's (s1) */
+   bool dyn_same;            /* ... and so do its dynamic offsets (s2) */
 };
 
 static void *
@@ -278,13 +281,16 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       return -EINVAL;
    unsigned vs_entries = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);
    const unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;   /* SRT entries: driver set, user sets, (dynamic table at MALI_DYN_TABLE) */
-   const unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;
+   const unsigned res_alloc = (((nres + 3) & ~3u) * KB_RES_SIZE + 63u) & ~63u;   /* 64-aligned: the dynamic table follows it in the same block */
+   const unsigned dyn_alloc = d->ndyn ? ((d->ndyn * KB_DESC_SET_STRIDE) + 63u) & ~63u : 0;
 
    /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter. */
    const bool s1 = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
    /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
+   o->static_same = s1;   /* emit_draw_regs skips the registers derived from the static state when the previous draw set them */
+   o->dyn_same = s2;
    const bool s3 = s1 && pd->first_vertex == d->first_vertex && pd->draw_id == d->draw_id && !(d->dirty & (MALI_D_VP | MALI_D_PUSH));   /* FAUs reusable */
    if (check_dirty()) {   /* trap: whatever the mask lets us reuse must be byte-equal to what the compares would have reused */
       const bool o1 = po && same_static(pd, d);
@@ -326,15 +332,18 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       o->fst = po->fst;
       vst = NULL;
    } else {
-      vst = A(hw, res_alloc, 64, &o->vst);
-      o->fst = o->vst;
-      if (d->ndyn) {
-         dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
-         if (!dyn)
-            return -ENOMEM;
-      }
+      /* The resource table and the dynamic table are one block: one bump instead of two, and the 16-byte SRT entry that points at the
+       * table sits next to the table itself. Not zeroed (Anz): every entry the hardware reads is written below (entry 0, one per bound
+       * user set, and MALI_DYN_TABLE), and the gaps are never read (kb_draw_srt_ptr's count only bounds the reads). The arena is
+       * uncached on the device, where a zeroing memset here costs more per draw than everything this function does afterwards. */
+      vst = Anz(hw, res_alloc + dyn_alloc, 64, &o->vst);
       if (!vst)
          return -ENOMEM;
+      o->fst = o->vst;
+      if (dyn_alloc) {
+         dyn = (uint32_t *)((uint8_t *)vst + res_alloc);
+         va_dyn = o->vst + res_alloc;
+      }
    }
    if (s3) {
       o->vfau = po->vfau; o->ffau = po->ffau;
@@ -514,14 +523,50 @@ fau:;
    return 0;
 }
 
-/* fillModeNonSolid, polygonMode LINE: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges. Indices
- * (u32, vertex numbers as the original draw would fetch them, so vertexOffset/firstVertex stay in the draw) are generated here from the
- * CPU view of the bound index buffer (the same submit-time read the indirect draws use). Strips and fans share edges: each edge once.
- * Limits: cullMode and gl_FrontFacing are not honoured in line mode. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
+/* Triangle assembly for fillModeNonSolid. v = the n vertex numbers of the draw; prim = triangle topology (8 list, 10 strip, 12 fan); `restart`
+ * = the primitive-restart index when restart applies (strip/fan, indexed), else NULL. Every ASSEMBLED triangle yields its 3 edges (mode 1:
+ * a-b, b-c, c-a) or its 3 vertices (mode 2), so edges/vertices shared by neighbouring strip/fan triangles are emitted once per triangle (additive
+ * blend / stencil increment see every polygon). Incomplete primitives (list tail, strip/fan segments under 3 vertices) and restart markers
+ * produce nothing. `out` must hold 6 * n entries. Returns the number of entries written. */
+size_t
+mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const uint32_t *v, uint32_t n, uint32_t *out)
+{
+   size_t ni = 0;
+#define TRI(a, b, c) do { if (mode == 1) { out[ni++] = (a); out[ni++] = (b); out[ni++] = (b); out[ni++] = (c); out[ni++] = (c); out[ni++] = (a); } \
+                         else { out[ni++] = (a); out[ni++] = (b); out[ni++] = (c); } } while (0)
+   if (prim == 8) {
+      for (uint32_t t = 0; t + 2 < n; t += 3)
+         TRI(v[t], v[t + 1], v[t + 2]);
+   } else {
+      uint32_t s = 0;
+      while (s < n) {
+         uint32_t e = s;
+         while (e < n && !(restart && v[e] == *restart))
+            e++;
+         const uint32_t *w = v + s;
+         for (uint32_t t = 0; t + 2 < e - s; t++) {
+            if (prim == 10) TRI(w[t], w[t + 1], w[t + 2]);
+            else TRI(w[0], w[t + 1], w[t + 2]);
+         }
+         s = e + 1;
+      }
+   }
+#undef TRI
+   return ni;
+}
+
+/* fillModeNonSolid, polygonMode LINE / POINT: Mali has no polygon mode, so the triangle draw becomes an indexed LINE LIST of its edges (LINE) or
+ * POINT LIST of its vertices (POINT), per assembled triangle (mali_poly_assemble). Indices (u32, vertex numbers as the original draw would fetch
+ * them, so vertexOffset/firstVertex stay in the draw) are generated here from the CPU view of the bound index buffer (the same submit-time read
+ * the indirect draws use). Limits: cullMode and gl_FrontFacing are not honoured; Flat varyings come from each generated point's / line's own
+ * provoking vertex, NOT the source triangle's (the spec wants the triangle's value for all of them). Index generation cannot express that:
+ * a point has one vertex, and an edge a-b cannot take the value of a third vertex c; a fix needs a VS variant that re-fetches the triangle's
+ * provoking vertex outputs. Visible only when Flat/integer varyings differ across a triangle in LINE/POINT mode. Returns 0, -ENOMEM, or -EINVAL (indexed without CPU view). */
 static int
 poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw *o)
 {
    const unsigned prim = d->gfx.poly_prim;
+   const unsigned mode = d->gfx.poly_mode;
    const uint32_t n = d->count;
    uint32_t restart = d->index_size == 4 ? 0xffffffffu : d->index_size == 2 ? 0xffffu : 0xffu;
    if (d->indexed && (!d->index_cpu || (uint64_t)(d->first_index + n) * d->index_size > d->index_bytes))
@@ -542,36 +587,10 @@ poly_lines(const struct mali_hw *hw, const struct mali_draw *d, struct mali_draw
       free(v);
       return -ENOMEM;
    }
-   size_t ni = 0;
-#define EDGE(a, b) do { out[ni++] = (a); out[ni++] = (b); } while (0)
-   if (prim == 8) {
-      for (uint32_t t = 0; t + 2 < n; t += 3) {
-         EDGE(v[t], v[t + 1]); EDGE(v[t + 1], v[t + 2]); EDGE(v[t + 2], v[t]);
-      }
-   } else {
-      /* strip / fan, split at restart indices */
-      bool rs = d->gfx.prim_restart && d->indexed;
-      uint32_t s = 0;
-      while (s < n) {
-         uint32_t e = s;
-         while (e < n && !(rs && v[e] == restart))
-            e++;
-         uint32_t m = e - s;   /* vertices in this segment */
-         if (m >= 3) {
-            const uint32_t *w = v + s;
-            EDGE(w[0], w[1]);
-            for (uint32_t t = 0; t + 2 < m; t++) {
-               if (prim == 10) { EDGE(w[t + 1], w[t + 2]); EDGE(w[t], w[t + 2]); }
-               else { EDGE(w[t + 1], w[t + 2]); EDGE(w[0], w[t + 2]); }
-            }
-         }
-         s = e + 1;
-      }
-   }
-#undef EDGE
+   size_t ni = mali_poly_assemble(mode, prim, d->gfx.prim_restart && d->indexed ? &restart : NULL, v, n, out);
    free(v);
    *o = *d;
-   o->gfx.prim = 2;
+   o->gfx.prim = mode == 2 && ni ? 1 : 2;   /* nothing assembled in POINT mode: the zero-length line below, a point would cover a pixel */
    o->gfx.prim_restart = false;
    o->indexed = true;
    o->index_size = 4;
@@ -639,12 +658,57 @@ prim_size_bits(const struct mali_gfx_state *g, const struct mali_fixed *fx)
 }
 
 /* The per-draw register file (everything but the FAU pointers, which come after the heap prologue like in the references). */
+/* The per-draw parameters emit_draw_regs writes (everything the state groups do not carry). Kept for the previous draw so
+ * the whole per-draw register packing can be skipped when a record renews none of the state groups and every parameter is
+ * the same, which is the common case (same pipeline and viewport, only the dynamic offsets move). */
+struct dwp {
+   uint64_t index_va, occ_va;
+   uint32_t count, instance_count, first_index, first_vertex, first_instance, occ_mode;
+   uint32_t index_bytes, index_size, indexed;
+};
+
+static void
+dwp_of(struct dwp *p, const struct mali_draw *d)
+{
+   p->index_va = d->index_va; p->occ_va = d->occ_va;
+   p->count = d->count; p->instance_count = d->instance_count; p->first_index = d->first_index;
+   p->first_vertex = d->first_vertex; p->first_instance = d->first_instance; p->occ_mode = d->occ_mode;
+   p->index_bytes = d->index_bytes; p->index_size = d->index_size; p->indexed = d->indexed ? 1u : 0u;
+}
+
+/* True when every register emit_draw_regs writes for `b` is the value the previous draw wrote, except the two SRT pointers
+ * (they follow the per-draw dynamic table). The record must renew no state group; the index-buffer fields are per-record
+ * (vkCmdBindIndexBuffer sets no dirty bit), so they are part of the key. */
+static bool
+same_draw_words(const struct dwp *a, const struct mali_draw *b)
+{
+   if (!a || (b->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC | MALI_D_BIND)))
+      return false;
+   return a->count == b->count && a->instance_count == b->instance_count && a->first_index == b->first_index &&
+          a->first_vertex == b->first_vertex && a->first_instance == b->first_instance && a->occ_mode == b->occ_mode &&
+          a->occ_va == b->occ_va && a->indexed == (b->indexed ? 1u : 0u) && a->index_va == b->index_va &&
+          a->index_bytes == b->index_bytes && a->index_size == b->index_size;
+}
+
 static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
-               const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx)
+               const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx, bool same_words)
 {
    const struct mali_gfx_state *g = &d->gfx;
    bool v13 = env->arch == 13;
+   if (same_words) {
+      /* nothing but the SRT pointers can have changed (see same_draw_words) */
+      if (!o->dyn_same) {
+         if (v13) {
+            M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+            M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+         } else {
+            M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+            M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+         }
+      }
+      return;
+   }
    unsigned pk = ((g->depth_test && f->has_zs) || (f->has_st && d->fx.set && d->fx.st_test)) ? 0 : 2;
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
    /* a Z/S-only fragment shader (gl_FragDepth / stencil export, no colour output): no render target is written (panvk rt_written = 0: DCD render-target and write masks, blend count) */
@@ -693,14 +757,16 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    memcpy(&minz, &d->vp[4], 4);
    memcpy(&maxz, &d->vp[5], 4);
 
+   /* The registers derived from the static state (shader programs, blend, depth-stencil, the frame's tiler/FBD pointers) are re-emitted
+    * only when this draw's record says the previous draw of the frame did not already write the identical values: MALI_D_PIPE/FX/BIND
+    * clean and the same firstInstance (`static_same`, the same predicate build_draw_descs reuses the blocks with). The hardware keeps
+    * the last write, and the `known` shadow would have suppressed an identical value anyway, so the command stream is unchanged.
+    * The SRT pointers follow the per-draw dynamic table, so they belong to the `dyn_same` group instead. */
    if (!v13) {
-      M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
-      M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);
-      M48(c, KB_IDVS_FRAGMENT_SPD, o->spd_f);
-      M48(c, KB_IDVS_TSD, va_tsd);
-      M32(c, KB_IDVS_GLOBAL_ATTR_OFFSET, 0);
+      if (!o->dyn_same) {
+         M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+         M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+      }
       M32(c, KB_IDVS_INDEX_COUNT, d->count);
       M32(c, KB_IDVS_INSTANCE_COUNT, d->instance_count);
       M32(c, KB_IDVS_INDEX_OFFSET, d->first_index);
@@ -708,36 +774,39 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M48(c, KB_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 (no hardware evidence) */
       M32(c, KB_IDVS_INSTANCE_OFFSET, d->first_instance);
-      M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, rtm, 1, 1));
-      M48(c, KB_IDVS_TILER_CTX, va_tctx);
       M32(c, KB_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB_IDVS_LOW_DEPTH_CLAMP, minz);
       M32(c, KB_IDVS_HIGH_DEPTH_CLAMP, maxz);
       M48(c, KB_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
-      M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
-      M48(c, KB_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
-      M48(c, KB_IDVS_ZSD, o->zsd);
       M32(c, KB_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_draw_prim_flags_triangles(g->vs->vs_secondary_enable), false) & ~pf_clear) | idx_type_bits(d));
       M32(c, KB_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
-      M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
-      M32(c, KB_IDVS_TILER_FLAGS2, 0);
+      if (!o->static_same) {
+         M48(c, KB_IDVS_VERTEX_POS_SPD, o->spd_p);
+         M48(c, KB_IDVS_VERTEX_VARY_SPD, o->spd_v);
+         M48(c, KB_IDVS_FRAGMENT_SPD, o->spd_f);
+         M48(c, KB_IDVS_TSD, va_tsd);
+         M32(c, KB_IDVS_GLOBAL_ATTR_OFFSET, 0);
+         M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, rtm, 1, 1));
+         M48(c, KB_IDVS_TILER_CTX, va_tctx);
+         M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
+         M48(c, KB_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
+         M48(c, KB_IDVS_ZSD, o->zsd);
+         M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
+         M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
+         M32(c, KB_IDVS_TILER_FLAGS2, 0);
+      }
    } else {
       uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
-      M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
-      M48(c, KB13_IDVS_VERTEX_SPD, o->spd_p);
-      M48(c, KB13_IDVS_FRAGMENT_SPD, o->spd_f);
-      M48(c, KB13_IDVS_VERTEX_TSD, va_tsd);
-      M48(c, KB13_IDVS_FRAGMENT_TSD, va_tsd);
-      M32(c, KB13_IDVS_GLOBAL_ATTR_OFFSET, 0);
+      if (!o->dyn_same) {
+         M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+         M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
+      }
       M32(c, KB13_IDVS_INDEX_COUNT, d->count);
       M32(c, KB13_IDVS_INSTANCE_COUNT, d->instance_count);
       M32(c, KB13_IDVS_INDEX_OFFSET, d->first_index);
       M32(c, KB13_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 */
       M32(c, KB13_IDVS_INSTANCE_OFFSET, d->first_instance);
-      M48(c, KB13_IDVS_TILER_CTX, va_tctx);
       M32(c, KB13_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB13_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB13_IDVS_VIEWPORT_HIGH, (uint32_t)vh);
@@ -746,16 +815,24 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       M32(c, KB13_IDVS_VIEWPORT_LOW + 1, (uint32_t)(vl >> 32));
       M64(c, KB13_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
       M32(c, KB13_IDVS_INDEX_BUFFER_SIZE, d->indexed ? d->index_bytes : 0);
-      M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
-      M48(c, KB13_IDVS_ZSD, o->zsd);
-      M48(c, KB13_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
       M32(c, KB13_IDVS_TILER_FLAGS, (prim_flag_bits(g, kb_v13_prim_flags_triangles(), true) & ~pf_clear) | env->tf_or | idx_type_bits(d));
       M32(c, KB13_IDVS_DCD0, kb_draw_dcd0(&dop) | dcd_extra | ((d->occ_mode & 3u) << 14));
-      M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
-      M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, rtm, 1, 1, 0, 0));
-      M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
-      M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       M64(c, KB13_IDVS_OQ, d->occ_mode ? d->occ_va : 0);
+      if (!o->static_same) {
+         M48(c, KB13_IDVS_VERTEX_SPD, o->spd_p);
+         M48(c, KB13_IDVS_FRAGMENT_SPD, o->spd_f);
+         M48(c, KB13_IDVS_VERTEX_TSD, va_tsd);
+         M48(c, KB13_IDVS_FRAGMENT_TSD, va_tsd);
+         M32(c, KB13_IDVS_GLOBAL_ATTR_OFFSET, 0);
+         M48(c, KB13_IDVS_TILER_CTX, va_tctx);
+         M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
+         M48(c, KB13_IDVS_ZSD, o->zsd);
+         M48(c, KB13_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
+         M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
+         M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, rtm, 1, 1, 0, 0));
+         M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
+         M32(c, KB13_IDVS_TILER_FLAGS2, 0);
+      }
    }
 }
 
@@ -1007,17 +1084,38 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    bool v13 = env->arch == 13;
    const struct regs *R = v13 ? &R13 : &R11;
    struct cs c;
-   struct ddesc *dd = NULL;
-   struct mali_draw *mod = NULL;   /* polygonMode LINE draws rewritten to line lists */
+   /* One draw at a time: build_draw_descs only compares against the previous draw's blocks and emit_draw_regs only needs
+    * this draw's, so two slots are enough (a per-frame array of ndraws cost a calloc + free of ndraws blocks per frame). */
+   struct ddesc dd, dd_prev;
+   struct mali_draw mod;           /* polygonMode LINE/POINT draw rewritten to a list */
    int rc = 0;
    uint64_t va_smp = 0, va_tctx = 0, va_fbd = 0, va_tsd = 0;
 
    if (f->nops)
       return mali_ops_build(env, f->ops, f->nops, out, nout);
+   if (hw->soft) {
+      /* MALI_SOFT=1: render on the CPU instead of encoding a command stream. A frame the rasteriser cannot do is a hard
+       * error (-ENOTSUP), never a silent no-op: the whole point of the harness is that nothing passes unnoticed.
+       * This branch comes BEFORE the compute dispatch: with a software backend there is nothing that could execute a
+       * dispatch, so a compute frame must not be built and accepted. Reserve the placeholder word first too, so an
+       * allocation failure is reported before the rasteriser has written into the attachments. */
+      uint64_t *keep = calloc(1, sizeof *keep);   /* callers free() it: a valid pointer with ninstr 0 */
+      if (!keep)
+         return -ENOMEM;
+      if (!hw->soft(hw->user, f)) {
+         free(keep);
+         return -ENOTSUP;
+      }
+      *out = keep;
+      *nout = 0;
+      return 0;
+   }
    if (f->compute)
       return build_compute(hw, f, out, nout);
    *out = NULL;
    *nout = 0;
+   if (f->ncolour > 1)
+      return -ENOTSUP;   /* MRT frames exist for the software rasteriser only (maxColorAttachments = 1) */
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
       return -EINVAL;
    memset(&c, 0, sizeof c);
@@ -1033,9 +1131,6 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    memcpy(smp, kb_sample_positions, sizeof kb_sample_positions);
 
    if (geometry) {
-      dd = calloc(f->ndraws, sizeof *dd);
-      if (!dd)
-         return -ENOMEM;
       /* The heap descriptor is written ONCE (queue creation). Rewriting it per frame resets its pointers to the first chunk
        * while firmware owns grown chunks: the second frame that needed heap growth (>~600 draws) TRANSLATION_FAULTed on v11. */
       if (!env->heap_desc_ready)
@@ -1045,32 +1140,12 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
          kb_draw_tiler_ctx(tctx, f->width, f->height, env->hmask, env->geo_va, geom);
+      if (f->provoking_last)
+         tctx[2] &= ~(1u << 18);   /* First provoking vertex off = last vertex (v11 word 2 bit 18, v13.xml:2636 same) */
       if (f->samples == 4)
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
       if (f->samples == 4 && v13)
          tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
-      struct mali_draw x, pv;   /* the running full draw (updated by the groups each record renewed) and what build_draw_descs needs of the previous one */
-      memset(&x, 0, sizeof x);
-      memset(&pv, 0, sizeof pv);
-      for (unsigned i = 0; i < f->ndraws; i++) {
-         mali_draw_expand(&x, &f->draws[i]);
-         const struct mali_draw *dr = &x;
-         if (dr->gfx.poly_mode == 1) {
-            if (!mod && !(mod = calloc(f->ndraws, sizeof *mod))) { rc = -ENOMEM; goto out; }
-            if ((rc = poly_lines(hw, dr, &mod[i])))
-               goto out;
-            dr = &mod[i];
-         }
-         if ((rc = build_draw_descs(hw, f, dr, &dd[i], i ? &pv : NULL, i ? &dd[i - 1] : NULL)))
-            goto out;
-         if (check_dirty())
-            pv = *dr;
-         else {
-            pv.first_instance = dr->first_instance;
-            pv.first_vertex = dr->first_vertex;
-            pv.draw_id = dr->draw_id;
-         }
-      }
    }
    if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))
       goto out;
@@ -1087,12 +1162,36 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
    if (geometry) {
-      struct mali_draw x;
+      unsigned prev_prim = 0;
+      struct mali_draw x, pv;   /* the running full draw (updated by the groups each record renewed) and what build_draw_descs needs of the previous one */
       memset(&x, 0, sizeof x);
+      memset(&pv, 0, sizeof pv);
+      memset(&dd_prev, 0, sizeof dd_prev);
+      struct dwp dwp_prev, dwp_cur;
+      bool have_dwp = false;
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
-         const struct mali_draw *d = mod && x.gfx.poly_mode == 1 ? &mod[i] : &x;
-         emit_draw_regs(&c, env, f, d, &dd[i], va_tsd, va_tctx);
+         struct mali_draw *dr = &x;
+         if (dr->gfx.poly_mode) {
+            if ((rc = poly_lines(hw, dr, &mod)))
+               goto out;
+            dr = &mod;
+         }
+         /* poly_lines rewrites gfx.prim (an empty POINT draw even picks a different one than a non-empty one) behind the record-time dirty
+          * mask's back: a change of the EFFECTIVE primitive, in either direction, must not reuse the previous draw's descriptors. */
+         if (i && prev_prim != dr->gfx.prim)
+            dr->dirty |= MALI_D_PIPE;
+         prev_prim = dr->gfx.prim;
+         /* zeroed like the array it replaces: build_draw_descs leaves the fields of a reused group to the previous draw, and
+          * the blend words (bl23) are only written on the path that rebuilds them */
+         memset(&dd, 0, sizeof dd);
+         if ((rc = build_draw_descs(hw, f, dr, &dd, i ? &pv : NULL, i ? &dd_prev : NULL)))
+            goto out;
+         const bool same_words = same_draw_words(have_dwp ? &dwp_prev : NULL, dr);
+         emit_draw_regs(&c, env, f, dr, &dd, va_tsd, va_tctx, same_words);
+         dwp_of(&dwp_cur, dr);
+         dwp_prev = dwp_cur;
+         have_dwp = true;
          if (i == 0) {
             M48(&c, R->heap, env->heap_ctx_va);
             E(&c, kb_cs_heap_set(R->heap));
@@ -1101,9 +1200,17 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
             E(&c, kb_cs_req_res(KB_CS_RES_IDVS | KB_CS_RES_TILER));
             E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_STARTED));
          }
-         M64(&c, v13 ? KB13_IDVS_VERTEX_FAU : KB_IDVS_VERTEX_FAU, dd[i].vfau);
-         M64(&c, v13 ? KB13_IDVS_FRAGMENT_FAU : KB_IDVS_FRAGMENT_FAU, dd[i].ffau);
+         M64(&c, v13 ? KB13_IDVS_VERTEX_FAU : KB_IDVS_VERTEX_FAU, dd.vfau);
+         M64(&c, v13 ? KB13_IDVS_FRAGMENT_FAU : KB_IDVS_FRAGMENT_FAU, dd.ffau);
          E(&c, v13 ? kb13_cs_run_idvs2(0, 0) : kb_cs_run_idvs());
+         if (check_dirty())
+            pv = *dr;
+         else {
+            pv.first_instance = dr->first_instance;
+            pv.first_vertex = dr->first_vertex;
+            pv.draw_id = dr->draw_id;
+         }
+         dd_prev = dd;
       }
       E(&c, kb_cs_finish_tiling());
       E(&c, kb_cs_wait(1u << env->slot));
@@ -1120,8 +1227,6 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    rc = c.err;
 out:
-   free(dd);
-   free(mod);
    if (rc) {
       free(c.v);
       return rc;
@@ -1167,17 +1272,69 @@ struct mali_pool {
    _Alignas(16) uint8_t mem[];
 };
 
+/* Standard 64 KiB pool chunks are recycled through a small process-wide free list instead of calloc/free per frame: a 3000-draw frame
+ * needs ~16 chunks, and returning them to glibc every frame cost a brk trim + fresh zero pages (page faults) on the next one. Blocks
+ * are memset individually in mali_frame_blk, so the chunks need no zeroing. At most MALI_POOL_KEEP chunks are kept (4 MiB). */
+#define MALI_POOL_CHUNK (64u << 10)
+#define MALI_POOL_KEEP 64
+static pthread_mutex_t g_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct mali_pool *g_pool_free;
+static unsigned g_pool_nfree;
+
+static struct mali_pool *
+pool_chunk_get(size_t sz)
+{
+   struct mali_pool *np = NULL;
+   if (sz == MALI_POOL_CHUNK) {
+      pthread_mutex_lock(&g_pool_lock);
+      if ((np = g_pool_free)) {
+         g_pool_free = np->next;
+         g_pool_nfree--;
+      }
+      pthread_mutex_unlock(&g_pool_lock);
+   }
+   if (!np && !(np = malloc(sizeof *np + sz)))
+      return NULL;
+   np->used = 0;
+   np->size = sz;
+   return np;
+}
+
+static void
+pool_chunk_put(struct mali_pool *p)
+{
+   if (p->size == MALI_POOL_CHUNK) {
+      pthread_mutex_lock(&g_pool_lock);
+      if (g_pool_nfree < MALI_POOL_KEEP) {
+         p->next = g_pool_free;
+         g_pool_free = p;
+         g_pool_nfree++;
+         pthread_mutex_unlock(&g_pool_lock);
+         return;
+      }
+      pthread_mutex_unlock(&g_pool_lock);
+   }
+   free(p);
+}
+
+unsigned
+mali_frame_pool_cached(void)   /* test hook: chunks parked in the free list */
+{
+   pthread_mutex_lock(&g_pool_lock);
+   unsigned n = g_pool_nfree;
+   pthread_mutex_unlock(&g_pool_lock);
+   return n;
+}
+
 void *
 mali_frame_blk(struct mali_frame *f, size_t n)
 {
    n = (n + 15) & ~(size_t)15;
    struct mali_pool *p = f->pool;
    if (!p || p->used + n > p->size) {
-      size_t sz = n > (64u << 10) ? n : (64u << 10);
-      struct mali_pool *np = calloc(1, sizeof *np + sz);
+      struct mali_pool *np = pool_chunk_get(n > MALI_POOL_CHUNK ? n : MALI_POOL_CHUNK);
       if (!np)
          return NULL;
-      np->size = sz;
       np->next = p;
       f->pool = p = np;
    }
@@ -1209,7 +1366,21 @@ mali_frame_add_rec(struct mali_frame *f, const struct mali_rec *r)
       return -ENOMEM;
    *s = *r;
    f->ndraws++;
+   mali_frame_note_rec(f, s);
    return 0;
+}
+
+/* Accumulates the per-frame submit flags (see struct mali_frame): the same test mali_cmd_submit used to run over every
+ * record of the frame, done once per record while it is still cache-hot. */
+void
+mali_frame_note_rec(struct mali_frame *f, const struct mali_rec *r)
+{
+   if (r->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC))
+      f->cur_pipe = r->pipe;
+   if (r->ind)
+      f->any_ind = true;
+   if (f->cur_pipe && f->cur_pipe->gfx.poly_mode && r->indexed)
+      f->poly_cpu = true;
 }
 
 /* A full draw (the preload draws): own blocks for every group. */
@@ -1249,6 +1420,8 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
       x->gfx = r->pipe->gfx;
       memcpy(x->vp, r->pipe->vp, sizeof x->vp);
       memcpy(x->sc, r->pipe->sc, sizeof x->sc);
+      if (m & MALI_D_SC)
+         x->sc_set = true;   /* sticky like sc itself: a later draw that does not renew the scissor inherits it */
    }
    if (m & MALI_D_BIND) {
       const struct mali_bbind *b = r->bind;
@@ -1278,7 +1451,7 @@ mali_frame_finish(struct mali_frame *f)
    free(f->draws);
    for (struct mali_pool *p = f->pool, *n; p; p = n) {
       n = p->next;
-      free(p);
+      pool_chunk_put(p);
    }
    f->pool = NULL;
    free(f->ops);

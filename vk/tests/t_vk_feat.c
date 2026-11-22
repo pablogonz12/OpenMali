@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|idx32|aniso|mirror|cubearray|arrtex|inlineub|wide|linerast|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|clip|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -12,10 +12,12 @@
 #include <vulkan/vulkan.h>
 
 #include <dlfcn.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define W 256
 #define H 256
@@ -23,12 +25,15 @@
 static int g_fail, g_fake;
 static const char *g_only, *g_spv = "shader";
 static int g_ycbcr, g_imageless;
+static int g_tf;   /* VK_EXT_transform_feedback advertised (default on; MALI_EXPERIMENTAL_TF=0 opts out) */
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
+static PFN_vkResetCommandBuffer g_rcb;
+static PFN_vkEnumerateDeviceExtensionProperties g_edep;
 static VkBool32 g_mirror, g_bda, g_didx;
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
@@ -43,7 +48,9 @@ static int test_zinit(void);
 static int g_sgctl;   /* compute pipelines: add a required subgroup size 16 + REQUIRE_FULL_SUBGROUPS to the stage (test sgctl) */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
+static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
+static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must be refused, with a message naming TF */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
@@ -72,10 +79,13 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
-   X(CmdBindVertexBuffers)
+   X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
+static PFN_vkCmdBindTransformFeedbackBuffersEXT CmdBindTransformFeedbackBuffersEXT;
+static PFN_vkCmdBeginTransformFeedbackEXT CmdBeginTransformFeedbackEXT;
+static PFN_vkCmdEndTransformFeedbackEXT CmdEndTransformFeedbackEXT;
 static VkDevice dev;
 static VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
@@ -258,7 +268,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw, .pNext = g_rs_next};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                              .sampleShadingEnable = g_sample_shading, .minSampleShading = g_sample_shading ? 1.0f : 0.0f};
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
@@ -268,7 +279,27 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                       .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
-   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+   VkResult r;
+   if (g_expect_xfb_fail) {
+      /* Capture stderr: the refusal must name the reason, not just return an error code. */
+      char msg[512] = "";
+      fflush(stderr);
+      int saved = dup(2);
+      FILE *cap = tmpfile();
+      CHECK(saved >= 0 && cap && dup2(fileno(cap), 2) >= 0, "stderr capture (tf)");
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
+      fflush(stderr);
+      dup2(saved, 2);
+      close(saved);
+      rewind(cap);
+      if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
+      if (g_modless) { free(vcode); free(fcode); }
+      else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
+      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "a transform-feedback pipeline must be refused (%d)", r);
+      CHECK(strstr(msg, "transform feedback") != NULL, "the refusal must name transform feedback: %s", msg);
+      return 1;
+   }
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
    if (g_modless) { free(vcode); free(fcode); }
    else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
    CHECK(r == VK_SUCCESS, "graphics pipeline = %d", r);
@@ -417,6 +448,56 @@ test_firstinst(void)
    return 1;
 }
 
+/* multiDrawIndirect at maxDrawIndirectCount with a padded stride (32 != sizeof(VkDrawIndirectCommand) = 16). Entries 0, 1 and limit-1 hold real draws
+ * (firstInstance 0, 2, 3 -> columns 0, 2, 3 of the inst shader); every other entry is all-zero (no-op), and the 16 padding bytes of the used entries
+ * are garbage that a stride-16 reader would execute. */
+static int
+test_mdilimit(void)
+{
+   if (!g_feat.multiDrawIndirect) { printf("{\"test\":\"mdilimit\",\"skipped\":\"multiDrawIndirect not advertised\",\"ok\":true}\n"); return 1; }
+   uint32_t lim = g_props.limits.maxDrawIndirectCount;
+   CHECK(lim >= 0xffff, "maxDrawIndirectCount %u < 65535 with multiDrawIndirect", lim);
+   const uint32_t stride = 32;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "inst.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   struct hbuf ib;
+   VkDeviceSize sz = 16 + (VkDeviceSize)stride * (lim - 1) + 16;
+   if (!hbuf_create(&ib, sz, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) return 0;
+   memset(ib.p, 0, sz);
+   static const uint32_t idx[3] = {0, 1, 2};
+   memcpy(ib.p, idx, sizeof idx);
+   static const uint32_t first[3] = {0, 2, 3};
+   const uint32_t slot[3] = {0, 1, lim - 1};
+   for (int i = 0; i < 3; i++) {
+      uint32_t *e = (uint32_t *)(void *)(ib.p + 16 + (size_t)stride * slot[i]);
+      e[0] = 3; e[1] = 1; e[2] = 0; e[3] = first[i];
+      e[4] = 3; e[5] = 1; e[6] = 0; e[7] = 1;   /* padding: would be a visible triangle if the stride were 16 */
+   }
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT32);
+   CmdDrawIndirect(cb, ib.b, 16, lim, stride);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      uint32_t cov = coverage(&t);
+      CHECK(abs((int)cov - 3 * 2048) <= 3 * 2048 / 50, "coverage %u expected %u", cov, 3 * 2048);
+      static const int cx[4] = {21, 85, 149, 213};
+      for (int i = 0; i < 4; i++)
+         CHECK(red_at(&t, cx[i], 117) == (i != 1), "column %d: %s", i, i == 1 ? "padding was executed (stride ignored)" : "triangle missing");
+      printf("{\"test\":\"mdilimit\",\"coverage\":%u,\"limit\":%u,\"ok\":true}\n", cov, lim);
+   } else printf("{\"test\":\"mdilimit\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&ib);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* ---------------------------------------------------------------- vertex attribute divisor */
 /* One float attribute at instance rate with divisor d (shader div.vert: x offset = value). 6 instances; the vertex buffer holds the
  * offsets 0, 0.5, 1, 1.5 (triangle k at column k of four). Instance i reads element i / d (d = 0: element 0), so the triangles drawn are
@@ -427,10 +508,10 @@ test_divisor(void)
 {
    if (!g_div && !g_div0) { printf("{\"test\":\"divisor\",\"skipped\":\"vertexAttributeInstanceRateDivisor not advertised\",\"ok\":true}\n"); return 1; }
    CHECK(g_div_max >= 0xffff, "maxVertexAttribDivisor %u", g_div_max);
-   /* {divisor, firstInstance, instances}. Second block: firstInstance != 0. Hardware (v10, 2026-11-18): the draw's INSTANCE_OFFSET is added to the instance
-    * index BEFORE the divide, element = (firstInstance + i) / divisor, not Vulkan's firstInstance + i / divisor. That is why supportsNonZeroFirstInstance
-    * (KHR_vertex_attribute_divisor) is false: applications must not draw with firstInstance != 0 and divisor > 1. The test pins what the hardware does
-    * (so a change shows up) and checks divisor 1 and the zero divisor, which are exact for any firstInstance. */
+   /* {divisor, firstInstance, instances}. Second block: firstInstance != 0. Hardware (v10, 2026-11-18): the draw's INSTANCE_OFFSET is added to the
+    * instance index BEFORE the divide, element = (firstInstance + i) / divisor - which IS Vulkan's rule (the instance index starts at firstInstance,
+    * vktDrawInstancedTests.cpp:926-927 builds its reference the same way). supportsNonZeroFirstInstance stays false only because the one device run of
+    * the firstInstance cases (job 20261118-142435-48673771) failed and has never been explained; the test pins the hardware so a rerun shows it. */
    static const uint32_t cs[][3] = {{1, 0, 6}, {2, 0, 6}, {3, 0, 6}, {4, 0, 6}, {5, 0, 6}, {7, 0, 6}, {0, 0, 6},
                                     {2, 1, 4}, {3, 1, 6}, {4, 2, 8}, {1, 1, 2}, {0, 1, 3}};
    struct hbuf vb;
@@ -480,6 +561,78 @@ test_divisor(void)
       DestroyPipelineLayout(dev, lay, NULL);
       tgt_destroy(&t);
    }
+   hbuf_destroy(&vb);
+   return 1;
+}
+
+/* ---------------------------------------------------------------- inst_divisor: three instance/vertex rates in one draw */
+/* Proves that VkVertexInputBindingDivisorDescriptionEXT reaches the attribute descriptors, with a control that is a different RATE in
+ * the same draw: location 0 (binding 0) is instance rate with divisor 1, so instance k reads element k (red = 0 on instance 0, red = 255
+ * on instance 1); location 1 (binding 1) has divisor 0, i.e. one element for every instance (green = 255 in both halves, 0 if the
+ * divisor were ignored and the element advanced); location 2 (binding 2) is vertex rate, so its value differs between two pixels of the
+ * same triangle (blue near 0 at the first vertex, near 255 at the third). One draw, one readback. */
+static int
+test_inst_divisor(void)
+{
+   if (!g_div || !g_div0) { printf("{\"test\":\"inst_divisor\",\"skipped\":\"vertexAttributeInstanceRateDivisor/ZeroDivisor not advertised\",\"ok\":true}\n"); return 1; }
+   /* One buffer, three bindings: [0..31] the two divisor-1 elements (vec4), [32..39] the two divisor-0 elements, [40..51] the three
+    * vertex-rate elements. Element 1 of the divisor-0 binding is 0.0 so a divisor that is ignored shows up as a black right half. */
+   struct hbuf vb;
+   if (!hbuf_create(&vb, 64, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memset(vb.p, 0, 64);
+   const float inst_el[2][4] = {{0.0f, 0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}};
+   const float zero_el[2] = {1.0f, 0.0f};
+   const float vtx_el[3] = {0.0f, 0.0f, 1.0f};
+   memcpy(vb.p, inst_el, sizeof inst_el);
+   memcpy(vb.p + 32, zero_el, sizeof zero_el);
+   memcpy(vb.p + 40, vtx_el, sizeof vtx_el);
+
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription bd[3] = {{.binding = 0, .stride = 16, .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE},
+                                            {.binding = 1, .stride = 4, .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE},
+                                            {.binding = 2, .stride = 4, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX}};
+   VkVertexInputAttributeDescription ad[3] = {{.location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0},
+                                              {.location = 1, .binding = 1, .format = VK_FORMAT_R32_SFLOAT, .offset = 0},
+                                              {.location = 2, .binding = 2, .format = VK_FORMAT_R32_SFLOAT, .offset = 0}};
+   VkVertexInputBindingDivisorDescriptionEXT dd[2] = {{.binding = 0, .divisor = 1}, {.binding = 1, .divisor = 0}};
+   VkPipelineVertexInputDivisorStateCreateInfoEXT dsci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
+                                                          .vertexBindingDivisorCount = 2, .pVertexBindingDivisors = dd};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .pNext = &dsci,
+                                              .vertexBindingDescriptionCount = 3, .pVertexBindingDescriptions = bd,
+                                              .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = ad};
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_vi = &vi;
+   int mp = make_pipe(&t, "inst_div.vert.spv", "inst_div.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!mp) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   VkBuffer bufs[3] = {vb.b, vb.b, vb.b};   /* the three bindings are windows into one buffer */
+   VkDeviceSize off[3] = {0, 32, 40};
+   CmdBindVertexBuffers(cb, 0, 3, bufs, off);
+   CmdDraw(cb, 3, 2, 0, 0);   /* two instances, same geometry: the left half is instance 0, the right half instance 1 */
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *left = pix(&t, 50, 204);    /* instance 0, inside the triangle */
+      const uint8_t *right = pix(&t, 204, 204);  /* instance 1, the same place in its half */
+      const uint8_t *bot = pix(&t, 12, 242);     /* vertex 0 corner: vertex-rate value 0 */
+      const uint8_t *top = pix(&t, 12, 31);      /* vertex 2 corner: vertex-rate value 1 */
+      CHECK(left[0] < 20 && left[3] == 255, "instance 0: divisor-1 element 0 (red %u)", left[0]);
+      CHECK(right[0] > 235, "instance 1: divisor-1 element 1 (red %u)", right[0]);
+      CHECK(left[1] > 235 && right[1] > 235, "divisor 0 must read element 0 for both instances (green %u/%u)", left[1], right[1]);
+      CHECK(bot[2] < 40 && top[2] > 200, "vertex-rate attribute must advance per vertex (blue %u bottom / %u top)", bot[2], top[2]);
+      printf("{\"test\":\"inst_divisor\",\"divisor\":1,\"zero_divisor\":0,\"vertex_rate\":true,\"left\":\"%u,%u,%u\",\"right\":\"%u,%u,%u\""
+             ",\"top_blue\":%u,\"bottom_blue\":%u,\"ok\":true}\n", left[0], left[1], left[2], right[0], right[1], right[2], top[2], bot[2]);
+   } else {
+      printf("{\"test\":\"inst_divisor\",\"divisor\":1,\"zero_divisor\":0,\"vertex_rate\":true,\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
    hbuf_destroy(&vb);
    return 1;
 }
@@ -899,6 +1052,475 @@ test_linerast(void)
    } else {
       printf("{\"test\":\"linerast\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
+   return 1;
+}
+
+/* VK_EXT_transform_feedback is plumbing-only (mali_tf.h): the XFB decorations are lowered to global stores by the
+ * compiler, and the pipeline is then refused because no streamout job exists to execute it. The test proves both the
+ * code and that the message names the reason. */
+static int
+test_tf_reject(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   /* stage 3: the XFB outputs are lowered to global stores, so the pipeline compiles (the stores' base address is
+    * still 0 until the per-buffer address is wired, which is what the buffer-content test will check). */
+   g_expect_xfb_fail = 0;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   CHECK(pipe != VK_NULL_HANDLE, "an XFB pipeline must compile now that the lowering is in");
+   if (ok) printf("{\"test\":\"tf_reject\",\"pipeline\":\"compiled\",\"ok\":true}\n");
+   return ok;
+}
+
+/* Stage 2 of VK_EXT_transform_feedback: the commands must record and validate (bind buffers, begin, end), and the
+ * XFB buffer must be marked GPU-written so the fence wait syncs it. The streamout job does not exist yet, so the
+ * *draw* is still what cannot happen (mali_compile.c names the missing nir_load_xfb_address lowering); this case
+ * proves the recording path and that the failure is the lowering, not a missing command. */
+static int
+test_tf_record(void)
+{
+   if (!CmdBindTransformFeedbackBuffersEXT) {
+      printf("{\"test\":\"tf_record\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   VkBuffer xfb = VK_NULL_HANDLE;
+   VkDeviceSize sz = 4 * 4 * 4;   /* 4 vertices x vec4 */
+   /* Memory-backed through the harness helper: vkCmdBindTransformFeedbackBuffersEXT requires every buffer to be
+    * completely and contiguously bound (CodeRabbit on #313, t_vk_feat.c:1026). */
+   struct hbuf hb = {0};
+   if (!hbuf_create(&hb, sz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+      return 0;
+   xfb = hb.b;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cb");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xfb, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){sz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "begin/end/bind must record cleanly (%d)", (int)r);
+   /* the draw: still refused, and the message must name the lowering, not a missing entrypoint */
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   if (!ok) return 0;
+   printf("{\"test\":\"tf_record\",\"record\":\"ok\",\"pipeline\":\"%s\",\"pending\":\"nir_load_xfb_address lowering + streamout job\",\"ok\":true}\n",
+          pipe ? "created" : "refused (named)");
+   DestroyBuffer(dev, xfb, NULL);
+   return 1;
+}
+
+/* Stage 4 of VK_EXT_transform_feedback: the lowered stores must land in the buffers passed to
+ * vkCmdBindTransformFeedbackBuffersEXT, at the bind offset plus the declared xfb_offset. Two buffers, the second
+ * bound at byte 16 and written through a 4-byte xfb_offset inside an 8-byte stride: the 0xcc words that survive
+ * prove the offsets and the stride are honoured, not that everything landed at address 0. */
+static int
+test_tf_write(void)
+{
+   if (!CmdBindTransformFeedbackBuffersEXT) {
+      printf("{\"test\":\"tf_write\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 3 };
+   static const float pos[NV][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
+   struct hbuf vb, xb[2];
+   /* Buffer 1 is 40 B and the bind starts at 16, so its capture size is 24, not 16 + NV*8 (VUID-02363). */
+   const VkDeviceSize xsz[2] = {NV * 16, 24}, xoff[2] = {0, 16};
+   if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memcpy(vb.p, pos, sizeof pos);
+   for (int i = 0; i < 2; i++) {
+      if (!hbuf_create(&xb[i], xsz[i], VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+         return 0;
+      memset(xb[i].p, 0xcc, xsz[i]);   /* a word the XFB stores must not touch */
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb2.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   /* begin/end outside the render pass, like the spec requires */
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 2, (VkBuffer[2]){xb[0].b, xb[1].b}, xoff, xsz);
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   VkDeviceSize voff = 0;
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, &voff);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   /* the buffers are GPU-written, so invalidate the host mapping before reading it */
+   VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE};
+   for (int i = 0; i < 2; i++) {
+      rg.memory = xb[i].m;
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb %d", i);
+   }
+   if (!g_fake) {
+      const float *a = (const float *)xb[0].p;
+      const uint32_t *w1 = (const uint32_t *)xb[1].p;
+      for (int i = 0; i < NV; i++) {
+         for (int c = 0; c < 4; c++)
+            CHECK(a[i * 4 + c] == pos[i][c], "xfb buffer 0 vertex %d comp %d: got %g want %g", i, c, a[i * 4 + c], pos[i][c]);
+         /* buffer 1: bind offset 16 + xfb_offset 4, stride 8 -> the float sits at word 5 + 2i */
+         CHECK(((const float *)w1)[5 + 2 * i] == pos[i][0] * 2.0f, "xfb buffer 1 vertex %d: got %g want %g", i,
+               ((const float *)w1)[5 + 2 * i], pos[i][0] * 2.0f);
+         CHECK(w1[4 + 2 * i] == 0xccccccccu, "xfb buffer 1 stride: word before vertex %d must be untouched", i);
+      }
+      for (unsigned w = 0; w < 4; w++)
+         CHECK(w1[w] == 0xccccccccu, "xb buffer 1: the 16 bytes before the bind offset must be untouched (word %u)", w);
+      printf("{\"test\":\"tf_write\",\"buffers\":2,\"offsets\":[0,16],\"vertices\":%d,\"ok\":true}\n", NV);
+   } else {
+      printf("{\"test\":\"tf_write\",\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   for (int i = 0; i < 2; i++) hbuf_destroy(&xb[i]);
+   return 1;
+}
+
+/* VK_EXT_transform_feedback is on by default and MALI_EXPERIMENTAL_TF=0 is the opt-out (mali_tf.h). This case pins the
+ * advertised surface of both states: the extension, the feature bit and the properties must follow one switch (an
+ * extension advertised without its feature, or the reverse, is what makes zink think it can capture).
+ * Before the flip the default run had no extension at all, so the first CHECK failed. */
+static int
+test_tf_default(void)
+{
+   const char *g = getenv("MALI_EXPERIMENTAL_TF");
+   const int want = !(g && g[0] == '0');
+   uint32_t en = 0;
+   int have = 0;
+   CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
+   VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+   if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+      for (uint32_t i = 0; i < en; i++)
+         if (!strcmp(e[i].extensionName, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME)) have = 1;
+   free(e);
+   CHECK(have == want, "VK_EXT_transform_feedback %s by default (MALI_EXPERIMENTAL_TF=0 opts out), gate %d",
+         have ? "advertised" : "absent", want);
+   printf("{\"test\":\"tf_default\",\"extension\":\"%s\",\"default\":%s,\"ok\":true}\n", have ? "advertised" : "absent",
+          want ? "on" : "off");
+   return 1;
+}
+
+/* The driver names the vertex program it selected for a draw (MALI_TF_DBG): capture fd 2 around one case, so "the
+ * inactive draw ran the non-XFB program" is an assertion here and not a line someone has to read. */
+static int g_dbgsave = -1;
+static char g_dbgfile[128];
+
+static void
+tf_dbg_begin(void)
+{
+   snprintf(g_dbgfile, sizeof g_dbgfile, "/tmp/mali-tf-dbg.%ld.log", (long)getpid());
+   setenv("MALI_TF_DBG", "1", 1);
+   fflush(stderr);
+   g_dbgsave = dup(2);
+   if (!freopen(g_dbgfile, "w", stderr))   /* glibc marks freopen warn_unused_result; CI builds with -Werror */
+      fprintf(stderr, "tf debug: cannot open %s\n", g_dbgfile);
+}
+
+static int
+tf_dbg_count(const char *needle, uint64_t *va)
+{
+   fflush(stderr);
+   FILE *f = fopen(g_dbgfile, "r");
+   if (!f) return 0;
+   char line[256];
+   int n = 0;
+   while (fgets(line, sizeof line, f)) {
+      if (!strstr(line, needle)) continue;
+      const char *at = strstr(line, " at 0x");
+      if (va && at) sscanf(at + 4, "%" SCNx64, va);
+      n++;
+   }
+   fclose(f);
+   return n;
+}
+
+static void
+tf_dbg_end(void)
+{
+   fflush(stderr);
+   if (g_dbgsave >= 0) {
+      dup2(g_dbgsave, 2);
+      close(g_dbgsave);
+      g_dbgsave = -1;
+   }
+   unlink(g_dbgfile);
+   unsetenv("MALI_TF_DBG");
+}
+
+/* The mandatory guard of the default-on flip: an XFB program drawn with NO BeginTransformFeedback and NOTHING bound
+ * must not store anywhere. The lowering used to run unconditionally while the buffer bases were patched only while TF
+ * was active, so such a draw stored to GPU VA 0. The driver now compiles a second, non-XFB vertex program and runs it
+ * for every draw outside Begin/End; this case checks that choice (both directions, through MALI_TF_DBG), that the draw
+ * still renders, and (on hardware) that the bound buffers stay untouched. */
+static int
+test_tf_inactive(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_inactive\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 3 };
+   static const float pos[NV][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
+   struct hbuf vb, xb;
+   const VkDeviceSize xsz = NV * 16;
+   if (!hbuf_create(&vb, sizeof pos, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memcpy(vb.p, pos, sizeof pos);
+   if (!hbuf_create(&xb, xsz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, xsz);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   /* draw 1: no bind, no Begin -> the non-XFB program, nothing may be stored */
+   tf_dbg_begin();
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   /* draw 2: inside Begin/End with the buffer bound -> the XFB program (the flip must not disable capture) */
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){xsz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) { tf_dbg_end(); return 0; }
+   uint64_t plva = 0, xfva = 0;
+   int plain = tf_dbg_count("tf: draw uses the plain vertex program at 0x", &plva);
+   int xf = tf_dbg_count("tf: draw uses the XFB vertex program at 0x", &xfva);
+   tf_dbg_end();
+   CHECK(plain == 1, "the draw outside Begin/End must run the non-XFB vertex program (%d of the driver's lines)", plain);
+   CHECK(xf == 1, "the draw inside Begin/End must run the XFB vertex program (%d)", xf);
+   CHECK(plva && xfva && plva != xfva, "the two vertex programs must be different binaries (0x%" PRIx64 " vs 0x%" PRIx64 ")",
+         plva, xfva);
+   if (!g_fake) {
+      VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE, .memory = xb.m};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb");
+      /* draw 2 captured the three vertices: slot i holds pos[i] */
+      for (int i = 0; i < NV; i++)
+         for (int c = 0; c < 4; c++)
+            CHECK(((const float *)xb.p)[i * 4 + c] == pos[i][c], "xfb buffer vertex %d comp %d: got %g want %g", i, c,
+                  ((const float *)xb.p)[i * 4 + c], pos[i][c]);
+      const uint8_t *p = pix(&t, W / 2, H / 2);   /* the last pass painted the red triangle: the inactive draw rendered too */
+      CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0, "centre %u,%u,%u want 255,0,0 (the XFB draw still renders)", p[0], p[1], p[2]);
+      printf("{\"test\":\"tf_inactive\",\"plain\":1,\"xfb\":1,\"ok\":true}\n");
+   } else {
+      printf("{\"test\":\"tf_inactive\",\"skipped\":\"buffer and pixel contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   hbuf_destroy(&xb);
+   return 1;
+}
+
+/* vkResetCommandBuffer must drop the recorded TF state (mali_cmd.c reset_state): the buffers are destroyed right after
+ * the bind, so a draw that still believed the range was open would dereference a freed handle. Before the fix the stale
+ * active flag survived the reset. */
+static int
+test_tf_reset(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_reset\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   struct hbuf vb;
+   if (!hbuf_create(&vb, 3 * 16, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   for (int i = 0; i < 12; i++) ((float *)vb.p)[i] = (float)(i + 1);
+   struct hbuf xb;
+   if (!hbuf_create(&xb, 3 * 16, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, 3 * 16);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){48});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);   /* range left open: the reset has to forget it */
+   CHECK(g_rcb && g_rcb(cb, 0) == VK_SUCCESS, "reset");
+   CHECK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}) == VK_SUCCESS, "re-begin");
+   hbuf_destroy(&xb);   /* the handle a stale tf record would still point at */
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   tf_dbg_begin();
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) { tf_dbg_end(); return 0; }
+   int plain = tf_dbg_count("tf: draw uses the plain vertex program at 0x", NULL);
+   tf_dbg_end();
+   CHECK(plain == 1, "the draw after the reset must not see the old range (%d plain lines)", plain);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   return 1;
+}
+
+/* Two captures in one Begin/End. KNOWN-LIMIT: the counter buffers are not implemented (mali_cmd.c only marks them
+ * written), so the second draw restarts at the bound offset instead of appending: the last draw wins and the slots
+ * after it are left alone. The case asserts that behaviour so a silent change cannot pass unnoticed. */
+static int
+test_tf_multi(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_multi\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 3 };
+   static const float a[NV][4] = {{1, 0, 0, 0}, {2, 0, 0, 0}, {3, 0, 0, 0}};
+   static const float b[NV][4] = {{7, 0, 0, 0}, {8, 0, 0, 0}, {9, 0, 0, 0}};
+   struct hbuf vb;
+   if (!hbuf_create(&vb, sizeof a + sizeof b, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   memcpy(vb.p, a, sizeof a);
+   memcpy(vb.p + sizeof a, b, sizeof b);
+   struct hbuf xb;
+   const VkDeviceSize xsz = 2 * NV * 16;   /* room for the append that is not implemented, plus a guard word */
+   if (!hbuf_create(&xb, xsz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, xsz);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){xsz});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){sizeof a});
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE, .memory = xb.m};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb");
+      int first_is_b = 1, rest_untouched = 1;
+      for (int i = 0; i < NV; i++)
+         first_is_b &= ((const float *)xb.p)[i * 4] == b[i][0];
+      for (int i = NV; i < 2 * NV; i++)
+         rest_untouched &= ((const uint32_t *)xb.p)[i * 4] == 0xccccccccu;
+      CHECK(first_is_b, "KNOWN-LIMIT: without counter buffers the second draw restarts at the bind offset (it must overwrite)");
+      CHECK(rest_untouched, "KNOWN-LIMIT: nothing is appended past the bind offset");
+      printf("{\"test\":\"tf_multi\",\"append\":\"not implemented (counters ignored)\",\"known_limit\":true,\"ok\":true}\n");
+   } else {
+      printf("{\"test\":\"tf_multi\",\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   hbuf_destroy(&xb);
+   return 1;
+}
+
+/* Output larger than the bound range. KNOWN-LIMIT: the per-buffer sizes are recorded and never read (mali_cmd.c), so
+ * the stores run past the declared size instead of stopping at it. The case asserts that documented gap: the buffer is
+ * big enough that the overrun stays inside the allocation, so it is a correctness bug here, not a fault. */
+static int
+test_tf_overflow(void)
+{
+   if (!g_tf) {
+      printf("{\"test\":\"tf_overflow\",\"skipped\":\"VK_EXT_transform_feedback not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   enum { NV = 6, NIN = 12 };   /* 6 vertices' worth of room, only 16 bytes declared */
+   struct hbuf vb;
+   if (!hbuf_create(&vb, NV * 16, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   for (int i = 0; i < NV * 4; i++) ((float *)vb.p)[i] = (float)(i + 1);
+   struct hbuf xb;
+   const VkDeviceSize xsz = NV * 16;
+   if (!hbuf_create(&xb, xsz, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(xb.p, 0xcc, xsz);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+   VkPipelineLayout lay = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   g_vi = &vi;
+   int ok = make_pipe(&t, "xfb.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_vi = NULL;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindVertexBuffers(cb, 0, 1, &vb.b, (VkDeviceSize [1]){0});
+   /* the declared size is one vertex; the draw has NV */
+   CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &xb.b, (VkDeviceSize [1]){0}, (VkDeviceSize [1]){16});
+   CmdBeginTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, NV, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   CmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      CHECK(coverage(&t) > 0, "the overflowing draw must still complete and render");
+      VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .offset = 0, .size = VK_WHOLE_SIZE, .memory = xb.m};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &rg) == VK_SUCCESS, "invalidate xfb");
+      int past = 0;
+      for (int i = NIN; i < NV * 4; i++)
+         past += ((const uint32_t *)xb.p)[i] != 0xccccccccu;
+      CHECK(past > 0, "KNOWN-LIMIT: writes are not clamped to the bound size (no word past 16 B written)");
+      printf("{\"test\":\"tf_overflow\",\"declared\":16,\"written_past\":%d,\"ok\":true}\n", past);
+   } else {
+      printf("{\"test\":\"tf_overflow\",\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   hbuf_destroy(&vb);
+   hbuf_destroy(&xb);
    return 1;
 }
 
@@ -1658,6 +2280,170 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
    return 1;
 }
 
+/* didxbuf: hardware probe for dynamic + non-uniform indexing of arrays of UBOs, SSBOs and storage images (didx_buf.comp).
+ * Runs only when the device advertises (and we enable) shader{Uniform,Storage}BufferArray{Dynamic,NonUniform}Indexing and
+ * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
+ * rejects unadvertised features at vkCreateDevice), so the lowering can be verified on hardware before the bits are advertised. */
+static int g_dbuf, g_dbuf_force;
+static int
+test_didxbuf(void)
+{
+   if (!g_dbuf) { printf("{\"test\":\"didxbuf\",\"skipped\":\"buffer/storage-image array indexing not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { NT = 64, IW = 8, IH = 16, IMGB = IW * IH * 4, SW = 192 };
+   struct hbuf ub[4], sb[4], ob, stg, rb;
+   for (int i = 0; i < 4; i++) {
+      if (!hbuf_create(&ub[i], 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) || !hbuf_create(&sb[i], SW * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+      uint32_t *u = (uint32_t *)(void *)ub[i].p, *s = (uint32_t *)(void *)sb[i].p;
+      for (int j = 0; j < 4; j++) u[j] = 0xA000u + i * 16 + j;
+      for (int j = 0; j < SW; j++) s[j] = j < NT ? 0xB000u + i * 256 + j : 0xEEEEEEEEu;
+   }
+   const size_t osz = 16 + NT * 6 * 4;
+   if (!hbuf_create(&ob, osz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&stg, 4 * IMGB, VK_BUFFER_USAGE_TRANSFER_SRC_BIT) ||
+       !hbuf_create(&rb, 4 * IMGB, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(ob.p, 0xEE, osz);
+   ((uint32_t *)(void *)ob.p)[0] = 2;   /* dyn index */
+   uint32_t *st = (uint32_t *)(void *)stg.p;
+   for (int i = 0; i < 4; i++)
+      for (int k = 0; k < IW * IH; k++) st[i * IW * IH + k] = (k < IW * 8) ? 0xC000u + i * 0x100u + k : 0xEEEEEEEEu;
+   memset(rb.p, 0, 4 * IMGB);
+
+   VkImage img[4]; VkDeviceMemory imem[4]; VkImageView iv[4];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R32_UINT, IW, IH, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkDescriptorImageInfo ii[4];
+   for (int i = 0; i < 4; i++) {
+      CHECK(CreateImage(dev, &ici, NULL, &img[i]) == VK_SUCCESS, "image");
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, img[i], &mr);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+      CHECK(AllocateMemory(dev, &ai, NULL, &imem[i]) == VK_SUCCESS, "image memory");
+      CHECK(BindImageMemory(dev, img[i], imem[i], 0) == VK_SUCCESS, "bind image");
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = VK_FORMAT_R32_UINT, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view");
+      ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, iv[i], VK_IMAGE_LAYOUT_GENERAL};
+   }
+
+   VkDescriptorSetLayoutBinding lb[4] = {
+      {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+      {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 4, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo ubi[4], sbi[4], obi = {ob.b, 0, VK_WHOLE_SIZE};
+   for (int i = 0; i < 4; i++) { ubi[i] = (VkDescriptorBufferInfo){ub[i].b, 0, 16}; sbi[i] = (VkDescriptorBufferInfo){sb[i].b, 0, SW * 4}; }
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = ubi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = sbi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 2, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("didx_buf.comp.spv");
+   CHECK(m, "shader didx_buf.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "pipeline didx_buf = %d", r);
+
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   VkImageMemoryBarrier ib[4];
+   for (int i = 0; i < 4; i++)
+      ib[i] = (VkImageMemoryBarrier){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .image = img[i], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   for (int i = 0; i < 4; i++) {
+      VkBufferImageCopy reg = {.bufferOffset = (VkDeviceSize)i * IMGB, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {IW, IH, 1}};
+      CmdCopyBufferToImage(cb, stg.b, img[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+   }
+   for (int i = 0; i < 4; i++) {
+      ib[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      ib[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      ib[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      ib[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+   CmdDispatch(cb, 1, 1, 1);
+   for (int i = 0; i < 4; i++) {
+      ib[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      ib[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      ib[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 4, ib);
+   for (int i = 0; i < 4; i++) {
+      VkBufferImageCopy reg = {.bufferOffset = (VkDeviceSize)i * IMGB, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {IW, IH, 1}};
+      CmdCopyImageToBuffer(cb, img[i], VK_IMAGE_LAYOUT_GENERAL, rb.b, 1, &reg);
+   }
+   if (!cb_submit(&t, cb)) return 0;
+
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)(const void *)ob.p + 4;
+      const uint32_t *ri = (const uint32_t *)(const void *)rb.p;
+      int bad[8] = {0}, first[8] = {0};
+#define BAD(c, got) do { if (!(bad[c]++)) first[c] = (got); } while (0)
+      for (int tt = 0; tt < NT; tt++) {
+         uint32_t nu = tt & 3, di = 2, x = tt & 7, y = tt >> 3;
+         uint32_t want[6] = {0xA000u + di * 16, 0xA000u + nu * 16 + 1, 0xB000u + di * 256 + tt, 0xB000u + nu * 256 + tt,
+                             0xC000u + di * 0x100u + y * IW + x, 0xC000u + nu * 0x100u + y * IW + x};
+         for (int k = 0; k < 6; k++) if (o[tt * 6 + k] != want[k]) BAD(k, o[tt * 6 + k]);
+         /* every SSBO, both write regions: the selected one holds the written value, all others stay 0xEEEEEEEE */
+         for (uint32_t i = 0; i < 4; i++) {
+            const uint32_t *s = (const uint32_t *)(const void *)sb[i].p;
+            uint32_t w6 = i == nu ? 0x5000u + tt * 8u + nu : 0xEEEEEEEEu; /* non-uniform SSBO write */
+            uint32_t w7 = i == di ? 0x6000u + tt : 0xEEEEEEEEu;           /* dynamic SSBO write */
+            if (s[64 + tt] != w6) BAD(6, s[64 + tt]);
+            if (s[128 + tt] != w7) BAD(7, s[128 + tt]);
+         }
+      }
+      int ibad = 0;
+      for (int i = 0; i < 4; i++)
+         for (int tt = 0; tt < NT; tt++) {
+            uint32_t got = ri[i * IW * IH + (8 + (tt >> 3)) * IW + (tt & 7)], want = (uint32_t)(tt & 3) == (uint32_t)i ? 0xD000u + tt : 0xEEEEEEEEu;
+            if (got != want) ibad++;
+         }
+      static const char *nm[8] = {"ubo_dyn", "ubo_nonuniform", "ssbo_dyn_read", "ssbo_nonuniform_read", "img_dyn_load", "img_nonuniform_load", "ssbo_nonuniform_write", "ssbo_dyn_write"};
+      int tot = ibad;
+      for (int k = 0; k < 8; k++) {
+         tot += bad[k];
+         printf("{\"didxbuf\":\"%s\",\"bad\":%d,\"first\":\"0x%x\"}\n", nm[k], bad[k], first[k]);
+      }
+      printf("{\"didxbuf\":\"img_nonuniform_store\",\"bad\":%d}\n", ibad);
+      CHECK(tot == 0, "%d wrong results (forced=%d)", tot, g_dbuf_force);
+      printf("{\"test\":\"didxbuf\",\"forced\":%s,\"ok\":true}\n", g_dbuf_force ? "true" : "false");
+   } else printf("{\"test\":\"didxbuf\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 4; i++) {
+      DestroyImageView(dev, iv[i], NULL); DestroyImage(dev, img[i], NULL); FreeMemory(dev, imem[i], NULL);
+      hbuf_destroy(&ub[i]); hbuf_destroy(&sb[i]);
+   }
+   hbuf_destroy(&ob); hbuf_destroy(&stg); hbuf_destroy(&rb);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static int
 test_scalar(void)
 {
@@ -1764,6 +2550,130 @@ test_inlineub(void)
    return 1;
 }
 
+/* Push constants at the advertised limit: DXVK 3.1.x refuses the device below 256 B (dxvk_limits.h). A 256-byte block is pushed
+ * whole; the VS and the FS read the last word (offset 252, the FS turns it into the colour) and the CS copies it to a storage
+ * buffer. The shaders also carry FAU immediates, so a reservation that does not cover the push block corrupts one of the two
+ * (t_compile checks the invariant directly; here the API path and the reported limit are checked against what works). */
+static int
+test_push256(void)
+{
+   uint32_t lim = g_props.limits.maxPushConstantsSize;
+   CHECK(lim >= 256, "maxPushConstantsSize %u < 256 (DXVK 3.1.x needs 256)", lim);
+   uint8_t pc[256];
+   for (unsigned i = 0; i < sizeof pc; i += 4) {
+      float f = i == 252 ? 1.0f : 0.0f;   /* offset 252: the value the shaders read */
+      memcpy(pc + i, &f, 4);
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf ob;
+   if (!hbuf_create(&ob, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(ob.p, 0xEE, 64);
+
+   /* graphics: one layout, both stages, the full advertised block */
+   VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .offset = 0, .size = lim};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "pipeline layout %u B", lim);
+   /* the limit is the real one: a pipeline over it must be refused (layout creation itself is not validated: the flatten that
+    * bounds it runs when a pipeline is created) */
+   pcr.size = lim + 4;
+   VkPipelineLayout over = VK_NULL_HANDLE;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &over) == VK_SUCCESS, "layout of %u B", lim + 4);
+   pcr.size = lim;
+
+   VkShaderModule vm = load_spv("push252.vert.spv"), fm = load_spv("push252.frag.spv");
+   CHECK(vm && fm, "shaders push252.vert/frag");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = lay, .renderPass = t.rp};
+   VkPipeline pipe;
+   gp.layout = over;
+   VkResult r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r != VK_SUCCESS, "graphics pipeline with %u B push constants (over the advertised %u) accepted", lim + 4, lim);
+   DestroyPipelineLayout(dev, over, NULL);
+   gp.layout = lay;
+   r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
+   CHECK(r == VK_SUCCESS, "graphics pipeline with %u B push constants = %d", lim, r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf graphics");
+   begin_pass(cb, &t, pipe);
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, lim, pc);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0, "centre %u,%u,%u want 255,0,0 (push constant at offset 252)", p[0], p[1], p[2]);
+   }
+
+   /* compute: same block, the word at 252 lands in the storage buffer */
+   VkDescriptorSetLayoutBinding lb = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo bi = {ob.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet wds = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 1, &wds, 0, NULL);
+   VkPushConstantRange cpcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = lim};
+   VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &cpcr};
+   VkPipelineLayout clay;
+   CHECK(CreatePipelineLayout(dev, &cpli, NULL, &clay) == VK_SUCCESS, "compute layout %u B", lim);
+   VkShaderModule cm = load_spv("push252.comp.spv");
+   CHECK(cm, "shader push252.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = clay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = cm, .pName = "main"}};
+   VkPipeline cpipe;
+   r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &cpipe);
+   CHECK(r == VK_SUCCESS, "compute pipeline with %u B push constants = %d", lim, r);
+   VkCommandBuffer ccb = cb_begin(&t);   /* no render pass: a bare dispatch */
+   CHECK(ccb, "cmdbuf compute");
+   CmdBindPipeline(ccb, VK_PIPELINE_BIND_POINT_COMPUTE, cpipe);
+   CmdBindDescriptorSets(ccb, VK_PIPELINE_BIND_POINT_COMPUTE, clay, 0, 1, &ds, 0, NULL);
+   CmdPushConstants(ccb, clay, VK_SHADER_STAGE_COMPUTE_BIT, 0, lim, pc);
+   CmdDispatch(ccb, 1, 1, 1);
+   if (!cb_submit(&t, ccb)) return 0;
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)ob.p;
+      CHECK(o[0] == 0x3f800000u, "CS read the word at offset 252: %08x want 3f800000", o[0]);
+      printf("{\"test\":\"push256\",\"ok\":true}\n");
+   } else printf("{\"test\":\"push256\",\"skipped\":\"pixels: fake backend (limit %u B, layouts, pipelines, draws and dispatch ran)\",\"ok\":true}\n", lim);
+   DestroyPipeline(dev, cpipe, NULL);
+   DestroyPipelineLayout(dev, clay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyShaderModule(dev, cm, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyShaderModule(dev, vm, NULL);
+   DestroyShaderModule(dev, fm, NULL);
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static int
 test_ubostd(void)
 {
@@ -1853,7 +2763,78 @@ test_demote(void)
    return 1;
 }
 
+/* sampleRateShading with 1-sample rasterisation (always supported): sample shading is a no-op, gl_SampleID is 0 and gl_SamplePosition the
+ * pixel centre. Shader uses the `sample` qualifier, gl_SampleID and gl_SamplePosition (SPIR-V SampleRateShading). Red = ok. */
+static int
+test_samplerate(void)
+{
+   if (!g_feat.sampleRateShading) { printf("{\"test\":\"samplerate\",\"skipped\":\"sampleRateShading not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_sample_shading = VK_TRUE;
+   int ok = make_pipe(&t, "sampid.vert.spv", "sampid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+   g_sample_shading = VK_FALSE;
+   if (!ok) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 3, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint8_t *p = pix(&t, W / 2, H / 2);
+      CHECK(near(p, 255, 0, 0, 255, 2), "sample shading at 1 sample: %u,%u,%u,%u (want 255,0,0,255)", p[0], p[1], p[2], p[3]);
+      printf("{\"test\":\"samplerate\",\"ok\":true}\n");
+   } else printf("{\"test\":\"samplerate\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderClipDistance: clip[0]=ndc.x, clip[2]=ndc.y-0.5; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+/* VK_EXT_provoking_vertex on hardware: flat colour (v0 red, v1 green, v2 blue) over a covering triangle; FIRST must read red, LAST blue */
+static VkBool32 g_pv_last;
+static int
+test_provoking(void)
+{
+   if (!g_pv_last) { printf("{\"test\":\"provoking\",\"skipped\":\"provokingVertexLast not advertised\",\"ok\":true}\n"); return 1; }
+   static const struct { VkProvokingVertexModeEXT m; const char *n; uint8_t r, g, b; } modes[2] = {
+      {VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT, "first", 255, 0, 0}, {VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT, "last", 0, 0, 255}};
+   for (int i = 0; i < 2; i++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pv = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
+                                                                     .provokingVertexMode = modes[i].m};
+      g_rs_next = &pv;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      int okp = make_pipe(&t, "provoking.vert.spv", "provoking.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_rs_next = NULL;
+      if (!okp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      CmdDraw(cb, 3, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         int bad = 0, n = 0;
+         for (int y = 4; y < H - 4; y += 7)
+            for (int x = 4; x < W - 4; x += 7) { const uint8_t *p = pix(&t, x, y); n++; bad += !near(p, modes[i].r, modes[i].g, modes[i].b, 255, 2); }
+         const uint8_t *p = pix(&t, 100, 100);
+         CHECK(bad == 0, "provoking %s: %d of %d pixels wrong (centre %u,%u,%u,%u, want %u,%u,%u,255)", modes[i].n, bad, n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+         printf("{\"test\":\"provoking\",\"mode\":\"%s\",\"centre\":[%u,%u,%u,%u],\"want\":[%u,%u,%u,255],\"ok\":true}\n", modes[i].n, p[0], p[1], p[2], p[3], modes[i].r, modes[i].g, modes[i].b);
+      } else printf("{\"test\":\"provoking\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   return 1;
+}
+
 static int
 test_clip(void)
 {
@@ -1882,6 +2863,43 @@ test_clip(void)
       CHECK(bad == 0, "%d of %d pixels wrong (in %u,%u,%u,%u  x<128 %u,%u,%u,%u  y<192 %u,%u,%u,%u)", bad, n, pix(&t, 200, 220)[0], pix(&t, 200, 220)[1], pix(&t, 200, 220)[2], pix(&t, 200, 220)[3], pix(&t, 60, 220)[0], pix(&t, 60, 220)[1], pix(&t, 60, 220)[2], pix(&t, 60, 220)[3], pix(&t, 200, 100)[0], pix(&t, 200, 100)[1], pix(&t, 200, 100)[2], pix(&t, 200, 100)[3]);
       printf("{\"test\":\"clip\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
    } else printf("{\"test\":\"clip\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* shaderClipDistance: 8 distances: clip[0]=ndc.x, clip[7]=ndc.y-0.5; limits must report 8 / cull 0 / combined 8; only x>=128 and y>=192 (ndc y>=0.5) may be covered. */
+static int
+test_clip8(void)
+{
+   if (!g_feat.shaderClipDistance) { printf("{\"test\":\"clip8\",\"skipped\":\"shaderClipDistance not advertised\",\"ok\":true}\n"); return 1; }
+   const VkPhysicalDeviceProperties pr = g_props;
+   CHECK(pr.limits.maxClipDistances == 8 && pr.limits.maxCullDistances == (g_feat.shaderCullDistance ? 8u : 0u) && pr.limits.maxCombinedClipAndCullDistances == 8, "clip/cull limits %u/%u/%u", pr.limits.maxClipDistances, pr.limits.maxCullDistances, pr.limits.maxCombinedClipAndCullDistances);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "clip8.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - 128) <= 2 || abs(y - 192) <= 2) continue;
+            int in = x >= 128 && y >= 192;
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            bad += in ? !near(p, 255, 0, 0, 255, 2) : p[3] != 0;
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (in %u,%u,%u,%u  x<128 %u,%u,%u,%u  y<192 %u,%u,%u,%u)", bad, n, pix(&t, 200, 220)[0], pix(&t, 200, 220)[1], pix(&t, 200, 220)[2], pix(&t, 200, 220)[3], pix(&t, 60, 220)[0], pix(&t, 60, 220)[1], pix(&t, 60, 220)[2], pix(&t, 60, 220)[3], pix(&t, 200, 100)[0], pix(&t, 200, 100)[1], pix(&t, 200, 100)[2], pix(&t, 200, 100)[3]);
+      printf("{\"test\":\"clip8\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"clip8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
@@ -2246,12 +3264,40 @@ test_sgctl(void)
    g_sgctl = 1;
    int ok = test_subgroup_one();
    g_sgctl = 0;
+   /* A size the hardware does not have must be refused at pipeline creation, not silently compiled at 16: that is the
+    * corruption path (masks/shuffles lowered for 32 lanes but executed by 16). */
+   VkDescriptorSetLayoutBinding b = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("subgroup.comp.spv");
+   CHECK(m, "shader subgroup.comp.spv");
+   for (unsigned bad = 8; bad <= 32; bad <<= 1) {
+      if (bad == p13.maxSubgroupSize) continue;
+      VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+                                                                 .requiredSubgroupSize = bad};
+      VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &rss,
+                   .flags = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                   .module = m, .pName = "main"}};
+      VkPipeline pipe = VK_NULL_HANDLE;
+      VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+      CHECK(r != VK_SUCCESS, "requiredSubgroupSize %u accepted (%d)", bad, r);
+      if (r == VK_SUCCESS) DestroyPipeline(dev, pipe, NULL);
+   }
+   DestroyShaderModule(dev, m, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
    if (ok) printf("{\"test\":\"sgctl\",\"ok\":true}\n");
    return ok;
 }
 
 /* shaderInt16 + storageBuffer16BitAccess / shaderInt8 + storageBuffer8BitAccess */
-static VkBool32 g_i16, g_i8;
+static VkBool32 g_i16, g_i8, g_intdot;
 static int
 test_int16(void)
 {
@@ -2319,6 +3365,86 @@ test_int8(void)
       CHECK(bad == 0, "%d wrong int8 results", bad);
       printf("{\"test\":\"int8\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
    } else printf("{\"test\":\"int8\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* intdot_props: VkPhysicalDeviceShaderIntegerDotProductProperties must be fully written (0xCD garbage must be gone) and honest:
+ * no dot instruction exists in the backend, so every *Accelerated hint is VK_FALSE. Also checked through the Vulkan 1.3 properties chain. */
+static int
+test_intdot_props(void)
+{
+   if (!g_intdot) return 1;
+   VkPhysicalDeviceShaderIntegerDotProductProperties dp;
+   memset(&dp, 0xCD, sizeof(dp));
+   dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES; dp.pNext = NULL;
+   VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+   g_gp2(g_pd, &p2);
+   const VkBool32 *b = (const VkBool32 *)((const char *)&dp + offsetof(VkPhysicalDeviceShaderIntegerDotProductProperties, integerDotProduct8BitUnsignedAccelerated));
+   int n = (int)((sizeof(dp) - offsetof(VkPhysicalDeviceShaderIntegerDotProductProperties, integerDotProduct8BitUnsignedAccelerated)) / sizeof(VkBool32));
+   int bad = 0;
+   for (int i = 0; i < n; i++) if (b[i] != VK_FALSE) bad++;
+   VkPhysicalDeviceVulkan13Properties p13;
+   memset(&p13, 0xCD, sizeof(p13));
+   p13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES; p13.pNext = NULL;
+   p2.pNext = &p13;
+   g_gp2(g_pd, &p2);
+   if (p13.integerDotProduct8BitUnsignedAccelerated != VK_FALSE || p13.integerDotProduct64BitMixedSignednessAccelerated != VK_FALSE ||
+       p13.integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated != VK_FALSE) bad++;
+   printf("{\"test\":\"intdot_props\",\"fields\":%d,\"bad\":%d,\"ok\":%s}\n", n, bad, bad || n != 30 ? "false" : "true");
+   return !bad && n == 30;
+}
+
+/* shaderIntegerDotProduct: packed 4x8 u/s/mixed, accumulating-saturating and 8-/16-bit vector dot products against a C reference
+ * (operands include 0xFF/0x80 bytes so signedness mistakes and missing saturation change the result). */
+static int
+test_intdot(void)
+{
+   if (!g_intdot) { printf("{\"test\":\"intdot\",\"skipped\":\"shaderIntegerDotProduct not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf bf[2];
+   if (!hbuf_create(&bf[0], 192 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&bf[1], 64 * 9 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   uint32_t *a = (uint32_t *)bf[0].p;
+   uint32_t seed = 0x1234567u;
+   for (int i = 0; i < 64; i++) {
+      seed = seed * 1664525u + 1013904223u;
+      a[i] = i == 0 ? 0xFFFFFFFFu : i == 1 ? 0x80808080u : seed;
+      seed = seed * 1664525u + 1013904223u;
+      a[64 + i] = i == 0 ? 0xFFFFFFFFu : i == 1 ? 0x80808080u : seed;
+      a[128 + i] = i < 8 ? 0x7FFFFFF0u : i < 16 ? 0x80000010u : i < 24 ? 0xFFFFFF00u : (seed ^ (seed >> 7));   /* near the saturation limits */
+   }
+   memset(bf[1].p, 0xEE, 64 * 9 * 4);
+   const VkDescriptorType ty[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+   if (!run_comp(&t, "intdot.comp.spv", 2, ty, bf, 1)) return 0;
+   if (!g_fake) {
+      int bad = 0;
+      for (int i = 0; i < 64; i++) {
+         uint32_t x = a[i], y = a[64 + i], c = a[128 + i];
+         int64_t u8 = 0, s8 = 0, m8 = 0, u16 = 0, s16 = 0;
+         for (int k = 0; k < 4; k++) {
+            uint32_t xb = (x >> (8 * k)) & 0xff, yb = (y >> (8 * k)) & 0xff;
+            u8 += (int64_t)xb * yb;
+            s8 += (int64_t)(int8_t)xb * (int8_t)yb;
+            m8 += (int64_t)xb * (int8_t)yb;
+         }
+         for (int k = 0; k < 2; k++) {
+            uint32_t xh = (x >> (16 * k)) & 0xffff, yh = (y >> (16 * k)) & 0xffff;
+            u16 += (int64_t)xh * yh;
+            s16 += (int64_t)(int16_t)xh * (int16_t)yh;
+         }
+         int64_t us = (int64_t)c + u8; if (us > 0xffffffffll) us = 0xffffffffll;
+         int64_t ss = (int64_t)(int32_t)c + s8; if (ss > INT32_MAX) ss = INT32_MAX; if (ss < INT32_MIN) ss = INT32_MIN;
+         const uint32_t e[9] = {(uint32_t)u8, (uint32_t)s8, (uint32_t)m8, (uint32_t)us, (uint32_t)ss, (uint32_t)u8, (uint32_t)s8, (uint32_t)u16, (uint32_t)s16};
+         for (int k = 0; k < 9; k++) {
+            uint32_t g = ((uint32_t *)bf[1].p)[i * 9 + k];
+            if (g != e[k] && !bad++) printf("{\"info\":\"intdot i=%d k=%d x=%08x y=%08x c=%08x got %08x want %08x\"}\n", i, k, x, y, c, g, e[k]);
+         }
+      }
+      CHECK(bad == 0, "%d wrong integer dot product results", bad);
+      printf("{\"test\":\"intdot\",\"invocations\":64,\"bad\":%d,\"ok\":true}\n", bad);
+   } else printf("{\"test\":\"intdot\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    for (int i = 0; i < 2; i++) hbuf_destroy(&bf[i]);
    tgt_destroy(&t);
    return 1;
@@ -2410,6 +3536,7 @@ main(int argc, char **argv)
    if (CreateInstance(&ici, NULL, &inst) != VK_SUCCESS) { printf("{\"fail\":\"CreateInstance\"}\n"); return 1; }
 #define I(n) PFN_vk##n n = (PFN_vk##n)gipa(inst, "vk" #n)
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceMemoryProperties); I(GetPhysicalDeviceProperties);
+   g_edep = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
    I(GetPhysicalDeviceFeatures2); I(CreateDevice); I(GetDeviceProcAddr); I(DestroyInstance);
    VkPhysicalDevice pd;
    uint32_t cnt = 1;
@@ -2457,7 +3584,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -2471,16 +3598,24 @@ main(int argc, char **argv)
    g_bda = f12.bufferDeviceAddress;
    g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
             f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
+   {
+      const char *fe = getenv("MALI_TEST_FORCE_DIDX_BUF");   /* test-only: probe the lowering before the bits are advertised */
+      g_dbuf_force = fe && *fe == '1';
+      g_dbuf = (g_feat.shaderUniformBufferArrayDynamicIndexing && g_feat.shaderStorageBufferArrayDynamicIndexing && g_feat.shaderStorageImageArrayDynamicIndexing &&
+                f12.shaderUniformBufferArrayNonUniformIndexing && f12.shaderStorageBufferArrayNonUniformIndexing && f12.shaderStorageImageArrayNonUniformIndexing) || g_dbuf_force;
+   }
    float prio = 1.0f;
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    /* enable exactly what is advertised (everything advertised is under test somewhere) */
    VkPhysicalDeviceVulkan12Features e12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge, .bufferDeviceAddress = f12.bufferDeviceAddress, .runtimeDescriptorArray = f12.runtimeDescriptorArray,
       .shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing, .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .descriptorBindingSampledImageUpdateAfterBind = f12.descriptorBindingSampledImageUpdateAfterBind, .descriptorBindingUpdateUnusedWhilePending = f12.descriptorBindingUpdateUnusedWhilePending,
+      .shaderUniformBufferArrayNonUniformIndexing = f12.shaderUniformBufferArrayNonUniformIndexing, .shaderStorageBufferArrayNonUniformIndexing = f12.shaderStorageBufferArrayNonUniformIndexing,
+      .shaderStorageImageArrayNonUniformIndexing = f12.shaderStorageImageArrayNonUniformIndexing,
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderIntegerDotProduct = f13.shaderIntegerDotProduct, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
@@ -2495,21 +3630,52 @@ main(int argc, char **argv)
                                                             .vertexAttributeInstanceRateZeroDivisor = fdv.vertexAttributeInstanceRateZeroDivisor};
    VkPhysicalDeviceLineRasterizationFeaturesEXT elr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT, .pNext = &edv, .rectangularLines = flr.rectangularLines};
    e2.pNext = &elr;
-   const char *dexts[6]; uint32_t ndx = 0;
+   VkPhysicalDeviceProvokingVertexFeaturesEXT epv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT, .pNext = e2.pNext, .provokingVertexLast = VK_TRUE};
+   { VkPhysicalDeviceProvokingVertexFeaturesEXT fpv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fpv};
+     GetPhysicalDeviceFeatures2(pd, &q2); g_pv_last = fpv.provokingVertexLast; epv.provokingVertexLast = fpv.provokingVertexLast; }
+   if (g_pv_last) e2.pNext = &epv;
+   /* VK_EXT_transform_feedback: enabled only when the driver advertises it (default on since the flip; the loader
+    * runs with MALI_EXPERIMENTAL_TF=0 only in the opt-out case), so --only tf_record can reach the three commands. */
+   VkPhysicalDeviceTransformFeedbackFeaturesEXT ftf = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT, .pNext = e2.pNext};
+   {
+      VkPhysicalDeviceTransformFeedbackFeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+      GetPhysicalDeviceFeatures2(pd, &q2);
+      g_tf = q.transformFeedback;
+      ftf.transformFeedback = q.transformFeedback;
+      ftf.geometryStreams = q.geometryStreams;
+   }
+   if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
+   const char *dexts[8]; uint32_t ndx = 0;
+   if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
    if (g_cbc) dexts[ndx++] = "VK_EXT_custom_border_color";
    if (g_m5) dexts[ndx++] = "VK_KHR_maintenance5";
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
+   if (g_tf) dexts[ndx++] = "VK_EXT_transform_feedback";
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
+   /* the three TF commands exist only when VK_EXT_transform_feedback is enabled on the device: optional loads */
+   CmdBindTransformFeedbackBuffersEXT = (PFN_vkCmdBindTransformFeedbackBuffersEXT)GetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
+   CmdBeginTransformFeedbackEXT = (PFN_vkCmdBeginTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
+   CmdEndTransformFeedbackEXT = (PFN_vkCmdEndTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
+   /* When the device has the extension enabled, all three commands must be exposed: a missing one must not turn into
+    * a "not advertised" skip (CodeRabbit on #313, t_vk_feat.c:3594). */
+   if (g_tf && (!CmdBindTransformFeedbackBuffersEXT || !CmdBeginTransformFeedbackEXT || !CmdEndTransformFeedbackEXT)) {
+      printf("{\"fail\":\"VK_EXT_transform_feedback advertised without all three commands\"}\n");
+      return 1;
+   }
    g_gsl = (PFN_vkGetImageSubresourceLayout)GetDeviceProcAddr(dev, "vkGetImageSubresourceLayout");
    g_rf = (PFN_vkResetFences)GetDeviceProcAddr(dev, "vkResetFences");
+   g_rcb = (PFN_vkResetCommandBuffer)GetDeviceProcAddr(dev, "vkResetCommandBuffer");
    g_pd_cr = (PFN_vkCreatePrivateDataSlot)GetDeviceProcAddr(dev, "vkCreatePrivateDataSlotEXT");
    g_pd_set = (PFN_vkSetPrivateData)GetDeviceProcAddr(dev, "vkSetPrivateDataEXT");
    g_pd_get = (PFN_vkGetPrivateData)GetDeviceProcAddr(dev, "vkGetPrivateDataEXT");
@@ -2520,15 +3686,27 @@ main(int argc, char **argv)
    int ok = 1;
    if (ok && CASE_ON("imageless")) ok &= test_imageless();
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
+   if (ok && CASE_ON("mdilimit")) ok &= test_mdilimit();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
    if (ok && CASE_ON("cbc")) ok &= test_cbc();
    if (ok && CASE_ON("divisor")) ok &= test_divisor();
+   if (ok && g_only && CASE_ON("inst_divisor")) ok &= test_inst_divisor();
    if (ok && CASE_ON("cubearray")) ok &= test_cubearray();
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("linerast")) ok &= test_linerast();
+   if (ok && g_only && CASE_ON("tf_reject")) ok &= test_tf_reject();   /* explicit only: keeps the golden BO/address sequence */
+   if (ok && g_only && CASE_ON("tf_record")) ok &= test_tf_record();
+   if (ok && g_only && CASE_ON("tf_write")) ok &= test_tf_write();   /* stage 4: the data must land in the bound buffers */   /* stage 2: the commands record; the draw still refuses */
+   /* VK_EXT_transform_feedback on by default (MALI_EXPERIMENTAL_TF=0 opts out): the guard that keeps a non-capturing draw
+    * safe, the reset path, and the two documented limits. Explicit only, like the cases above. */
+   if (ok && g_only && CASE_ON("tf_inactive")) ok &= test_tf_inactive();
+   if (ok && g_only && CASE_ON("tf_reset")) ok &= test_tf_reset();
+   if (ok && g_only && CASE_ON("tf_multi")) ok &= test_tf_multi();
+   if (ok && g_only && CASE_ON("tf_overflow")) ok &= test_tf_overflow();
+   if (ok && CASE_ON("tf_default")) ok &= test_tf_default();   /* default-on: the extension must be there with no env */
    if (ok && CASE_ON("storfmt")) ok &= test_storfmt();
    if (ok && CASE_ON("storfmt_nf")) ok &= test_storfmt_nf();
    if (ok && CASE_ON("ycbcr")) ok &= test_ycbcr();
@@ -2536,18 +3714,24 @@ main(int argc, char **argv)
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
+   if (ok && CASE_ON("push256")) ok &= test_push256();
    if (ok && CASE_ON("ubostd")) ok &= test_ubostd();
    if (ok && CASE_ON("zinit")) ok &= test_zinit();
    if (ok && CASE_ON("int16")) ok &= test_int16();
    if (ok && CASE_ON("int64")) ok &= test_int64();
    if (ok && CASE_ON("int8")) ok &= test_int8();
+   if (ok && CASE_ON("intdot")) ok &= test_intdot() && test_intdot_props();
    if (ok && CASE_ON("subgroup")) ok &= test_subgroup();
    if (ok && CASE_ON("sgctl")) ok &= test_sgctl();
    if (ok && CASE_ON("demote")) ok &= test_demote();
    if (ok && CASE_ON("clip")) ok &= test_clip();
+   if (ok && CASE_ON("provoking")) ok &= test_provoking();
+   if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
+   if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();

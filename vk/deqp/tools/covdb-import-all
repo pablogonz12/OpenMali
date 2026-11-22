@@ -1,0 +1,35 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Rebuild vk/deqp/covdb.sqlite from every dEQP-VK result this laptop already has.
+#   tools/covdb-import-all [--fresh]     (--fresh deletes the db and imports everything again)
+# Then: tools/covdb summary | tools/covdb failing | tools/covdb status <case>
+set -euo pipefail
+H=$(cd "$(dirname "$0")" && pwd); C=$H/covdb; D=$(dirname "$H")
+FARM=${MALI_FARM_STATE:-$HOME/.local/state/mali-farm}/logs
+[ "${1:-}" = "--fresh" ] && rm -f "$D/covdb.sqlite"
+
+# reference: PanVK-kbase, not our driver (covdb leaves it out of summary/failing unless --all)
+"$C" import "$D/baseline-poco.tsv" --tool panvk --notes "PanVK-kbase reference baseline, not our driver"
+# our driver on the host fake GPUs (v11, v13), sanitizer build
+"$C" import "$D/host-baseline.tsv"
+# tracked per-case runs
+"$C" import "$D/ours-daily-sample-poco.tsv" --notes "newest tracked x8 daily sample; qdeqp records no commit"
+"$C" import "$D/ours-daily-sample-cmf.tsv" --force --notes "SUSPECT not a CMF run: byte-identical to ours-daily-sample-poco.tsv (md5 c34a05f1); qdeqp records no commit"
+"$C" import "$D/ours-daily-sample-poco-x4.tsv" --notes "farm job 7c6e37a1 x4; qdeqp records no commit"
+# tracked group summaries: only their single-case groups carry a case name
+for f in baseline-poco.csv ours-daily-sample-poco.csv ours-daily-sample-cmf.csv ours-smoke-poco.csv; do
+    "$C" import "$D/$f" --notes "aggregate CSV: only groups with total==1 imported; per-case rows are in the TSV of the same run"
+done
+# every phone run the farm kept (filename carries date, phone and driver commit)
+if [ -d "$FARM" ]; then
+    "$C" import "$FARM"/*-daily.tsv
+    # notes-only exports (case + dEQP note, no PASS rows): kept for their signatures, out of the default scope
+    for f in "$FARM"/*-notes.tsv; do
+        case $f in *sweep-*) continue;; esac
+        "$C" import "$f"
+    done
+    # the host sweeps name no phone: fake GPUs v10 and v11
+    "$C" import "$FARM/sweep-v10-notes.tsv" --force --phone host --gpu-class v10
+    "$C" import "$FARM/sweep-v11-notes.tsv" --force --phone host --gpu-class v11
+fi
+"$C" summary | head -3

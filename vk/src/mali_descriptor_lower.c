@@ -89,9 +89,26 @@ lower_tex(nir_builder *b, nir_tex_instr *tex, struct ctx *c)
       }
       plane = nir_src_as_uint(tex->src[pi].src);
    }
-   nir_def *th = deref_handle(b, c, nir_src_as_deref(tex->src[ti].src), false, plane);
-   nir_def *sh = si >= 0 ? deref_handle(b, c, nir_src_as_deref(tex->src[si].src), true, 0)
-                         : nir_imm_int(b, pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX));
+   nir_deref_instr *tderef = nir_src_as_deref(tex->src[ti].src);
+   nir_def *th = deref_handle(b, c, tderef, false, plane);
+   nir_def *sh;
+   if (si >= 0) {
+      sh = deref_handle(b, c, nir_src_as_deref(tex->src[si].src), true, 0);
+   } else {
+      /* A texelFetch (txf/txf_ms) of a combined image sampler has a texture deref and no sampler deref. Fetching
+       * through the all-zero dummy sampler entry (table 0) returns 0 on the phone for every texel; the combined
+       * image sampler already owns a real sampler at slot + stride - 1, so use that instead. */
+      unsigned tset, tbinding;
+      uint32_t timm;
+      nir_def *tssa;
+      const struct mali_lbinding *tbd = NULL;
+      if (deref_binding(tderef, &tset, &tbinding, &timm, &tssa))
+         tbd = find(c, tset, tbinding);
+      if (tbd && tbd->type == MALI_DT_COMBINED_IMAGE_SAMPLER)
+         sh = deref_handle(b, c, tderef, true, 0);
+      else
+         sh = nir_imm_int(b, pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX));
+   }
    if (si >= 0) nir_tex_instr_remove_src(tex, si);
    if (pi >= 0) nir_tex_instr_remove_src(tex, nir_tex_instr_src_index(tex, nir_tex_src_plane));
    nir_tex_instr_remove_src(tex, nir_tex_instr_src_index(tex, nir_tex_src_texture_deref));
@@ -177,6 +194,32 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
    return true;
 }
 
+static bool
+robust_filter(const nir_intrinsic_instr *i, const void *d)
+{
+   switch (i->intrinsic) {   /* descriptor-backed accesses only (not shared memory) */
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_ssbo:
+   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_store:
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Returns true (as "progress") when a buffer size query is present; changes nothing. */
+static bool
+has_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   return i->intrinsic == nir_intrinsic_get_ssbo_size || i->intrinsic == nir_intrinsic_get_ubo_size;
+}
+
 bool
 mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, char *err, size_t errsz)
 {
@@ -187,6 +230,15 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
+   if (layout->robust_access) {   /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
+      NIR_PASS(_, nir, nir_lower_robust_access, robust_filter, NULL);
+      /* TODO(robustness2): the Bifrost/Valhall backend has no get_ssbo_size/get_ubo_size (PanVK reads the size from its descriptor
+       * table); until the driver lowers it, refuse instead of letting the backend assert. Keeps robustBufferAccess2 unadvertised. */
+      if (nir_shader_intrinsics_pass(nir, has_size_query, nir_metadata_all, NULL)) {
+         if (err && errsz) snprintf(err, errsz, "robust buffer access: get_ssbo_size/get_ubo_size not supported by the backend yet");
+         return false;
+      }
+   }
    /* nonuniformEXT() indices: the hardware takes one resource handle per warp, so divergent handles become a waterfall loop
     * (same set of types as PanVK; runs after the UBO/SSBO IO lowering). */
    const enum nir_lower_non_uniform_access_type types =

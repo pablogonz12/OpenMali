@@ -3,7 +3,7 @@
  * v13 patches word 11 (tile log2, colour allocation in KiB) as in tests/rung2_v13.h. Load/store ops map as follows:
  *   colour loadOp CLEAR -> clear colour in the FBD; DONT_CARE -> clear to 0 (no FBD "no clear" knob in kb_fb_pack yet);
  *   colour LOAD         -> not representable (rejected by mali_cmd.c before it gets here);
- *   colour storeOp      -> always stored (Clean Tile Write on);
+ *   colour storeOp      -> DONT_CARE/NONE: RT Write Enable off (unless an MSAA resolve writes through it); STORE: Clean Tile Write on;
  *   depth loadOp CLEAR  -> Z clear value; depth storeOp DONT_CARE/NONE -> Z write enable off (zs_no_store).
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
 #include <errno.h>
@@ -246,9 +246,12 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.rt_alloc = off / tpx;   /* every arch: the FBD tile allocation covers all targets, not RT0 only */
    }
    p.rt_none = !f->has_colour;
+   /* storeOp DONT_CARE/NONE: Write Enable off, the tile is never written back. A resolve writes through the same RT, so it keeps the write. */
+   p.rt_no_store = f->has_colour && !f->colour.store && !f->colour.resolve_va;
    if (p.rt_none)
       p.row_stride = 0;
    p.tiler_va = tiler_ctx_va;
+   p.provoking_last = f->provoking_last;
    p.sample_locations_va = sample_locations_va;
    bool msaa = f->samples == 4;
    if (msaa) {
