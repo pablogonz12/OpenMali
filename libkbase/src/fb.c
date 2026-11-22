@@ -86,7 +86,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 16, 4, 1);
 		put(x, 0, 20, 4, 2);
 		put(x, 0, 24, 2, 0);
-		put(x, 0, 31, 1, 1);
+		put(x, 0, 31, 1, !p->s_no_clean_tile_write);   /* Clean Tile Write Enable: only for a CLEAR loadOp (see kbase_fb.h) */
 		put(x, 12, 0, 32, (uint32_t)p->s_gpu_va);            /* Base */
 		put(x, 13, 0, 32, (uint32_t)(p->s_gpu_va >> 32));
 		put(x, 14, 0, 32, s_row);                            /* Row Stride */
@@ -99,7 +99,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
 		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
 		put(x, 0, 8, 2, 0);                                  /* MSAA single */
-		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
+		put(x, 0, 31, 1, !p->zs_no_clean_tile_write);         /* Clean Tile Write Enable: only for a CLEAR loadOp (see kbase_fb.h) */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */

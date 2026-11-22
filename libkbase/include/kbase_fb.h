@@ -35,6 +35,14 @@ struct kb_fb_params {
 	uint64_t tiler_va;            /* Tiler Context pointer; 0 = geometry-less frame */
 	/* experiment knobs (defaults 0 = the documented configuration) */
 	unsigned no_clean_tile_write; /* 0 (default): Clean Tile Write Enable set, empty tiles are written */
+	/* Clean Tile Write Enable is the "write the clear value (or nothing) for tiles this frame does not touch" bit. It is only
+	 * correct when the attachment's loadOp is CLEAR: then untouched tiles must receive the clear value. With LOAD the untouched
+	 * tiles must keep their old contents, and with DONT_CARE they are undefined - in both cases writing them back from an
+	 * unloaded tile buffer erases what earlier frames/passes put there. PanVK sets it per attachment from the load op:
+	 * panfrost/lib/pan_fb.c:412-437 pan_fb_get_clean_tile (load target "always" = clear), consumed at pan_desc.c:1094-1119
+	 * (colour) and :523-526 (ZS). */
+	unsigned zs_no_clean_tile_write; /* as no_clean_tile_write for the ZS target (word 0 bit 31, shared with S) */
+	unsigned s_no_clean_tile_write;  /* as no_clean_tile_write for the S8 target (same bit) */
 	unsigned block_format;        /* 0 = linear (2) , 1 = tiled u-interleaved (1) */
 	/* depth attachment (genxml v11 "ZS Target" + FBD Z fields). Zero-initialised = none: output stays 192 B, identical to before. */
 	enum kb_zs_format zs_format;

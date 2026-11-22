@@ -6,6 +6,7 @@
  *   colour storeOp      -> DONT_CARE/NONE: RT Write Enable off (unless an MSAA resolve writes through it); STORE: Clean Tile Write on;
  *   depth loadOp CLEAR  -> Z clear value; depth storeOp DONT_CARE/NONE -> Z write enable off (zs_no_store).
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
+#include <stdlib.h>
 #include <errno.h>
 #include <math.h>
 #include <string.h>
@@ -219,6 +220,18 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.clear_a = mali_unorm8(f->colour.clear_color[3]);
    }
    p.rt_none = !f->has_colour;
+   /* Clean Tile Write Enable (FBD RT word 1 bit 31): tiles this frame does not touch are written back from the tile buffer,
+    * so the bit is only correct when the loadOp CLEARs them. Unconditional (the old default) it erased every pixel a
+    * sub-rectangle LOAD pass did not draw - dEQP-VK.descriptor_indexing's sixteen 16x16 passes, any partial update.
+    * MALI_CTW=1 forces the old behaviour, MALI_CTW=0 forces it off, for A/B. */
+   {
+      const char *ctw = getenv("MALI_CTW");
+      p.no_clean_tile_write = !(f->has_colour && f->colour.clear);
+      p.zs_no_clean_tile_write = !(f->has_zs && f->zs.clear);
+      p.s_no_clean_tile_write = !(f->has_st && f->st.clear);
+      if (ctw && ctw[0] == '1') p.no_clean_tile_write = p.zs_no_clean_tile_write = p.s_no_clean_tile_write = 0;
+      if (ctw && ctw[0] == '0') p.no_clean_tile_write = p.zs_no_clean_tile_write = p.s_no_clean_tile_write = 1;
+   }
    /* storeOp DONT_CARE/NONE: Write Enable off, the tile is never written back. A resolve writes through the same RT, so it keeps the write. */
    p.rt_no_store = f->has_colour && !f->colour.store && !f->colour.resolve_va;
    if (p.rt_none)

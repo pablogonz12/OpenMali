@@ -741,6 +741,7 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
    d->set_bytes[0] = (kind == MALI_PRELOAD_ZS ? 2 : 1) * 32;
    d->count = 3;
    d->instance_count = 1;
+   d->preload = true;   /* restores the whole tile-aligned render area (tile_area) */
    if (kind != MALI_PRELOAD_COLOUR) {
       /* depth/stencil only: colour write mask 0; Z through the depth test (ALWAYS + write), S through a REPLACE-always stencil state */
       d->fx.set = true;
