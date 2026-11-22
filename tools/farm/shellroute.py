@@ -11,6 +11,7 @@ import argparse, json, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import farmlib as L  # noqa: E402
+import json  # noqa: E402
 import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
@@ -537,6 +538,8 @@ def smoke(a):
         missing = [c for c in a.only.split(",") if c and c not in ran]
         if missing:
             print("unscheduled --only case(s): " + ",".join(missing), flush=True)
+            # farmd counts failures from JSON records: a plain line would leave the run reported as clean
+            print(json.dumps({"test": "schedule", "missing": missing, "ok": False}), flush=True)
             ok = False
     for n, extra, oc in runs:
         if gated(a.lock):
