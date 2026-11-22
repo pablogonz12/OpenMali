@@ -722,7 +722,12 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
  * (mali_cs_emit.c, kb_cs_wait(0xffff) + kb_cs_sync_add64), and the head of every frame invalidates the other caches (0x002)
  * after waiting them; a frame that follows a host write additionally cleans+invalidates L2 and LSC (0x332, see
  * mali_cmd.c's host_write_pending), which is what a reader of an earlier frame's writes needs.
- * Keep that invariant if you touch either side; a real barrier implementation is only needed once frames overlap. */
+ * Keep that invariant if you touch either side.
+ *
+ * Limitation, stated so it is not mistaken for a guarantee: this covers the dependencies between frames. A barrier between
+ * two draws *within* one frame (a render-pass self-dependency, e.g. sampling an attachment written earlier in the same pass)
+ * is NOT implemented - the retire drain runs after both draws, and the frame head runs before them, so neither orders them.
+ * Such a pipeline needs the real barrier (or a frame split) and is refused by nothing today; see notes/frame-ordering.md. */
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *info)
 {

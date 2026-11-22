@@ -177,6 +177,24 @@ def retire_norm(seq):
 
 
 
+def tail_slot4_wait_missing(seq_raw):
+    """A FINISH_FRAGMENT that signals slot 4 defers; slot 4 is what the tail flush waits before it cleans L2/LSC, so that wait
+    must be there. Checked on our raw stream, because retire_norm drops it as a fragment-ordering difference."""
+    for i, w in enumerate(seq_raw):
+        if (w >> 56) & 0xff != 11 or ((w >> 48) & 0xf) != 4:
+            continue
+        for j in range(i + 1, len(seq_raw)):
+            if (seq_raw[j] >> 56) & 0xff != 36:          # FLUSH_CACHE2
+                continue
+            p = seq_raw[j - 1] if j else 0
+            if (p >> 56) & 0xff == 3 and (p >> 16) & 0xffff == 0x0010:
+                break
+            return i                                      # a tail flush with no slot-4 wait before it
+        else:
+            return i                                      # no tail flush at all after the deferred fragment
+    return None
+
+
 def retire_drain_missing(seq_raw):
     """Our stream must drain every scoreboard slot before the retire SYNC_ADD64 (frame-ordering.md): without the WAIT the
     add runs immediately and the fence signals before the fragment writeback. Checked before retire_norm, which drops it."""
@@ -210,6 +228,9 @@ for arch in (11, 13):
         miss = retire_drain_missing(raw_a)
         if miss is not None:
             fails.append('%s: our stream has no WAIT(0xffff) before the retire SYNC_ADD64 at word %d' % (name, miss))
+        miss = tail_slot4_wait_missing(raw_a)
+        if miss is not None:
+            fails.append('%s: FINISH_FRAGMENT at word %d signals slot 4 with no WAIT(0x0010) before the tail FLUSH_CACHE2' % (name, miss))
         oa, qa = retire_norm(raw_a), trace(sa, arch)[1]
         ob, qb = retire_norm(trace(sb, arch)[0]), trace(sb, arch)[1]
         nd = 0
