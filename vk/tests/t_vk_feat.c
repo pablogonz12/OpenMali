@@ -3583,6 +3583,47 @@ test_image2dview(void)
 /* GL 4.3's texture-format rows (zink lists them as SAMPLED_IMAGE requirements for the 4.3 profile): R8G8B8A8 UNORM/SRGB,
  * the 16-bit UNORM/SNORM family, and D32_SFLOAT_S8 sampled. "Unknown" in the audit meant no caps dump had a
  * VkFormatProperties section; this row is that section, and it must be true for every one of them. */
+/* GL 4.3 -> 4.5 band that is not tessellation / vertex stores / compute-1024. zink's profile tables name exactly two hard
+ * requirements above 4.3 (VP_ZINK_requirements.json): GL 4.4 = B10G11R11_UFLOAT_PACK32 with VERTEX_BUFFER_BIT, GL 4.5 =
+ * shaderCullDistance. Everything else here is what the GL spec adds at those levels and zink reads from a feature bit:
+ * mirror-clamp-to-edge (4.4), depth clamp / clip control (4.5), and the honesty pin for cull distance while it is off
+ * (Vulkan's Required Limits: maxCullDistances is 0 while shaderCullDistance is false). */
+static int
+test_gl44band(void)
+{
+   /* VK_KHR_sampler_mirror_clamp_to_edge has no feature struct: the extension name is the whole contract (GL 4.4's
+    * ARB_texture_mirror_clamp_to_edge). */
+   {
+      uint32_t en = 0;
+      int mirror = 0;
+      CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
+      VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+      if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+         for (uint32_t i = 0; i < en; i++)
+            if (!strcmp(e[i].extensionName, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME)) mirror = 1;
+      free(e);
+      CHECK(mirror, "VK_KHR_sampler_mirror_clamp_to_edge absent (GL 4.4 ARB_texture_mirror_clamp_to_edge)");
+   }
+   CHECK(g_feat.depthClamp, "depthClamp false (GL 4.5 depth clamp)");
+   CHECK(g_feat.shaderCullDistance == VK_FALSE, "shaderCullDistance true: #350 is reverted on this base (arm C2), so a shader "
+         "using gl_CullDistance would take an unvalidated path");
+   /* Vulkan's limits rules: maxCullDistances must be 0 while shaderCullDistance is false, and
+    * maxCombinedClipAndCullDistances must be at least maxClipDistances (8 each here: clip only, no cull slots). */
+   CHECK(g_props.limits.maxCullDistances == 0, "maxCullDistances %u must be 0 while shaderCullDistance is false",
+         g_props.limits.maxCullDistances);
+   CHECK(g_props.limits.maxCombinedClipAndCullDistances >= g_props.limits.maxClipDistances,
+         "maxCombinedClipAndCullDistances %u < maxClipDistances %u", g_props.limits.maxCombinedClipAndCullDistances,
+         g_props.limits.maxClipDistances);
+   VkFormatProperties b;
+   CHECK(g_gfp != NULL, "vkGetPhysicalDeviceFormatProperties resolved");
+   g_gfp(g_pd, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &b);
+   CHECK(b.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
+         "B10G11R11_UFLOAT_PACK32 has no VERTEX_BUFFER_BIT (0x%x): GL 4.4's only hard format row", b.bufferFeatures);
+   printf("{\"test\":\"gl44band\",\"mirrorClamp\":true,\"depthClamp\":true,\"cull\":false,\"b10g11r11\":\"0x%x\","
+          "\"d32s8_clip_control\":\"%s\",\"ok\":true}\n", b.bufferFeatures, "not advertised");
+   return 1;
+}
+
 static int
 test_gl43fmt(void)
 {
@@ -4420,6 +4461,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("image2dview")) ok &= test_image2dview();
+   if (ok && CASE_ON("gl44band")) ok &= test_gl44band();
    if (ok && CASE_ON("gl43fmt")) ok &= test_gl43fmt();
    if (ok && CASE_ON("gl43caps")) ok &= test_gl43caps();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
