@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|vsstore] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax|vsstore] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -28,6 +28,7 @@ static int g_ycbcr, g_imageless;
 static int g_tf;   /* VK_EXT_transform_feedback advertised (default on; MALI_EXPERIMENTAL_TF=0 opts out) */
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
+static PFN_vkGetPhysicalDeviceProperties2 g_gp2;   /* properties2, resolved in main: used by imgmax too */
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
@@ -76,7 +77,7 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed)            \
    X(CmdBindIndexBuffer) X(CmdDrawIndirect) X(CmdDrawIndexedIndirect) X(CreateDescriptorSetLayout)                  \
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
-   X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CreateBufferView) X(DestroyBufferView) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
+   X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CreateBufferView) X(DestroyBufferView) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage) X(CmdClearColorImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
    X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)
@@ -3241,6 +3242,163 @@ test_gather(void)
    return 1;
 }
 
+/* ---------------------------------------------------------------- image limits (the zink GL 4.1 gate, notes/zink-gl-version.md) */
+/* VkPhysicalDeviceLimits image numbers are claims until an image at that size exists: this case creates one at each advertised
+ * maximum, clears it with vkCmdClearColorImage, writes a marker block into its far corner with vkCmdCopyBufferToImage and reads
+ * the corner and the origin back. The 2D one is also SAMPLED through the texture unit (quad.vert's uv spans 0..1, so with a
+ * 16384 texture one 256-wide target pixel covers 64 texels).
+ * Format R8_UNORM, not RGBA8: 16384^2 RGBA8 is 1 GiB, exactly maxMemoryAllocationSize, and R8 keeps the cube at 6 * 256 MiB,
+ * which is the smallest a 16384 cube can be. A device that refuses that says so at the cube line.
+ * MALI_IMGMAX_DIM overrides the 2D size so a ladder (4096/8192/16384) is one binary. The fake backend has no memory: it checks
+ * the limits and the spec relations and skips the images. */
+static const uint8_t IMGMAX_CLEAR = 0x10, IMGMAX_MARK = 0x40;
+
+static int
+imgmax_roundtrip(VkImageType type, VkExtent3D ext, uint32_t layers, VkImageCreateFlags flags, const char *name)
+{
+   VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = VK_FORMAT_R8_UNORM,
+                            .extent = ext, .mipLevels = 1, .arrayLayers = layers, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "%s: create %ux%ux%u x %u layer(s)", name, ext.width, ext.height, ext.depth, layers);
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory mem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "%s: %llu KiB allocation refused", name, (unsigned long long)(mr.size >> 10));
+   CHECK(BindImageMemory(dev, img, mem, 0) == VK_SUCCESS, "%s: bind", name);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf mb, ob;
+   const uint32_t mw = ext.width < 512 ? ext.width : 512, mh = ext.height < 512 ? ext.height : 512;
+   if (!hbuf_create(&mb, (VkDeviceSize)mw * mh, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return 0;
+   if (!hbuf_create(&ob, 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   memset(mb.p, IMGMAX_MARK, (size_t)mw * mh);
+   memset(ob.p, 0, 2);
+   const uint32_t slice = type == VK_IMAGE_TYPE_3D ? ext.depth - 1 : 0;   /* 3D: last slice by offset; arrays: last layer */
+   const uint32_t layer = type == VK_IMAGE_TYPE_3D ? 0 : layers - 1;
+   VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
+   VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                             .image = img, .subresourceRange = rng};
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "%s: cmdbuf", name);
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   VkClearColorValue cc = {.float32 = {IMGMAX_CLEAR / 255.0f, 0.0f, 0.0f, 1.0f}};
+   CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &rng);
+   /* the marker copy writes a sub-rect the clear also writes: order the two, or the clear can land last */
+   VkImageMemoryBarrier cw = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                              .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                              .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                              .image = img, .subresourceRange = rng};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &cw);
+   VkBufferImageCopy mk = {.bufferRowLength = mw, .bufferImageHeight = mh,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+                           .imageOffset = {ext.width - mw, ext.height - mh, slice}, .imageExtent = {mw, mh, 1}};
+   CmdCopyBufferToImage(cb, mb.b, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &mk);
+   b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;   /* the contents must survive the transition: not UNDEFINED */
+   b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   VkBufferImageCopy back[2] = {
+      {.bufferOffset = 0, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1}, .imageExtent = {1, 1, 1}},
+      {.bufferOffset = 1, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+       .imageOffset = {ext.width - 1, ext.height - 1, slice}, .imageExtent = {1, 1, 1}}};
+   CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ob.b, 2, back);
+   {   /* the copies write ob: make that visible to the host before the assertions read it. A fence says the submission
+        * finished, not that the writes are visible to the host, so the barrier is what the readback relies on */
+      VkBufferMemoryBarrier hb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = ob.b, .offset = 0, .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+   }
+   if (!cb_submit(&t, cb)) return 0;
+   {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = ob.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)InvalidateMappedMemoryRanges(dev, 1, &mmr);   /* no-op on coherent memory */
+   }
+   if (!g_fake) {
+      CHECK(ob.p[0] == IMGMAX_CLEAR, "%s: origin read 0x%02x, the clear wrote 0x%02x", name, ob.p[0], IMGMAX_CLEAR);
+      CHECK(ob.p[1] == IMGMAX_MARK, "%s: far corner (%u,%u) read 0x%02x, the marker wrote 0x%02x", name, ext.width - 1, ext.height - 1,
+            ob.p[1], IMGMAX_MARK);
+   }
+   hbuf_destroy(&mb);
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, mem, NULL);
+   printf("{\"test\":\"imgmax_%s\",\"extent\":[%u,%u,%u],\"layers\":%u,\"bytes\":%llu,\"ok\":true}\n", name, ext.width, ext.height,
+          ext.depth, layers, (unsigned long long)mr.size);
+   return 1;
+}
+
+/* the 2D maximum, sampled: cleared, marked in the far corner, then read through the texture unit at both ends of the quad */
+static int
+imgmax_sample2d(uint32_t dim)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   const uint8_t one = 0;
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8_UNORM, dim, dim, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .maxLod = 0.25f};
+   struct tex x;
+   if (!tex_create(&t, &x, &ici, VK_IMAGE_VIEW_TYPE_2D, 1, &one, 1, &reg, 1, &si)) return 0;
+   struct hbuf mb;
+   if (!hbuf_create(&mb, 512 * 512, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return 0;
+   memset(mb.p, IMGMAX_MARK, 512 * 512);
+   VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                             .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = x.img, .subresourceRange = rng};
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "imgmax_2d: cmdbuf");
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   VkClearColorValue cc = {.float32 = {IMGMAX_CLEAR / 255.0f, 0.0f, 0.0f, 1.0f}};
+   CmdClearColorImage(cb, x.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &rng);
+   {   /* the marker copy overwrites part of what the clear wrote: written commands have no implicit order, so
+        * without this the clear could land last and the far corner would sample the clear colour */
+      VkImageMemoryBarrier cw = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                 .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .image = x.img, .subresourceRange = rng};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &cw);
+   }
+   VkBufferImageCopy mk = {.bufferRowLength = 512, .bufferImageHeight = 512, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {dim - 512, dim - 512, 0}, .imageExtent = {512, 512, 1}};
+   CmdCopyBufferToImage(cb, mb.b, x.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &mk);
+   b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+   b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   if (!cb_submit(&t, cb)) return 0;
+   hbuf_destroy(&mb);
+   const float s[4] = {1.0f, 1.0f, 0.0f, 0.0f};   /* uv 0..1 across the quad = the whole image */
+   if (!quad_draw(&t, &x, "tex.frag.spv", s)) return 0;
+   if (!g_fake) {
+      const uint8_t *o = pix(&t, 0, 0), *c = pix(&t, W - 1, H - 1);
+      /* R8_UNORM samples as (r, 0, 0, 1); pixel (W-1,H-1) covers texels 16352..16383, inside the 512-texel marker */
+      CHECK(near(o, IMGMAX_CLEAR, 0, 0, 255, 2), "imgmax_2d: uv 0 sampled %u,%u,%u,%u, the clear wrote %u", o[0], o[1], o[2], o[3], IMGMAX_CLEAR);
+      CHECK(near(c, IMGMAX_MARK, 0, 0, 255, 2), "imgmax_2d: far corner sampled %u,%u,%u,%u, the marker wrote %u", c[0], c[1], c[2], c[3], IMGMAX_MARK);
+      printf("{\"test\":\"imgmax_2d_sample\",\"dim\":%u,\"origin\":%u,\"corner\":%u,\"ok\":true}\n", dim, o[0], c[0]);
+   }
+   tex_destroy(&x);
+   tgt_destroy(&t);
+   return 1;
+}
 
 /* vertexPipelineStoresAndAtomics (zink GL 4.2 gate, notes/zink-gl-version.md:44): the vertex stage stores i+1 into an SSBO and
  * does atomicAdd/atomicMax on it, keeping what each atomic returned (oldc[]). The binding is VK_SHADER_STAGE_VERTEX_BIT only and
@@ -3342,6 +3500,70 @@ test_vsstore(void)
    DestroyDescriptorSetLayout(dev, dsl, NULL);
    hbuf_destroy(&sb);
    tgt_destroy(&t);
+   return 1;
+}
+/* maxImageDimension{1D,2D,Cube}, 3D, maxImageArrayLayers, and the framebuffer/viewport limits that must match them */
+static int
+test_imgmax(void)
+{
+   const VkPhysicalDeviceLimits *L = &g_props.limits;
+   uint32_t dim = L->maxImageDimension2D;
+   const char *e = getenv("MALI_IMGMAX_DIM");
+   if (e && atoi(e) > 0) dim = (uint32_t)atoi(e);
+   /* the roundtrip writes a fixed IMGMAX_MARKER-square marker at the far corner and reads the origin: with a 2D size that
+    * small the marker covers the origin (or falls outside the image), so the override is refused before any allocation */
+   if (dim <= 512) {
+      printf("{\"test\":\"imgmax\",\"skipped\":\"MALI_IMGMAX_DIM %u is not larger than the 512-texel marker\",\"ok\":true}\n", dim);
+      return 1;
+   }
+   /* failing-first: the GL 4.1 minimums zink's table asks for (VP_ZINK_requirements.json gl41) — 4096/256 before this change */
+   CHECK(L->maxImageDimension1D >= 16384, "maxImageDimension1D %u < 16384", L->maxImageDimension1D);
+   CHECK(L->maxImageDimension2D >= 16384, "maxImageDimension2D %u < 16384", L->maxImageDimension2D);
+   CHECK(L->maxImageDimensionCube >= 16384, "maxImageDimensionCube %u < 16384", L->maxImageDimensionCube);
+   CHECK(L->maxImageDimension3D >= 2048, "maxImageDimension3D %u < 2048", L->maxImageDimension3D);
+   CHECK(L->maxImageArrayLayers >= 2048, "maxImageArrayLayers %u < 2048", L->maxImageArrayLayers);
+   /* the limits that must not be smaller than the images they point at (VUID-VkPhysicalDeviceLimits-maxFramebufferWidth-07702,
+    * -maxFramebufferHeight-07703, -maxViewportDimensions-07700/07701) */
+   CHECK(L->maxFramebufferWidth >= L->maxImageDimension2D && L->maxFramebufferHeight >= L->maxImageDimension2D,
+         "framebuffer %ux%u < maxImageDimension2D %u", L->maxFramebufferWidth, L->maxFramebufferHeight, L->maxImageDimension2D);
+   CHECK(L->maxViewportDimensions[0] >= L->maxImageDimension2D && L->maxViewportDimensions[1] >= L->maxImageDimension2D,
+         "maxViewportDimensions %ux%u < maxImageDimension2D %u", L->maxViewportDimensions[0], L->maxViewportDimensions[1],
+         L->maxImageDimension2D);
+   CHECK(L->viewportBoundsRange[0] <= -2.0f * (float)L->maxImageDimension2D &&
+            L->viewportBoundsRange[1] >= 2.0f * (float)L->maxImageDimension2D - 1.0f,
+         "viewportBoundsRange [%g,%g] does not cover +-2*%u", L->viewportBoundsRange[0], L->viewportBoundsRange[1], L->maxImageDimension2D);
+   if (g_fake) {
+      printf("{\"test\":\"imgmax\",\"skipped\":\"image allocation: fake backend\",\"dims\":[%u,%u,%u,%u],\"layers\":%u,\"ok\":true}\n",
+             L->maxImageDimension1D, dim, L->maxImageDimension3D, L->maxImageDimensionCube, L->maxImageArrayLayers);
+      return 1;
+   }
+   /* a limit above this is only a number: 1D at its max (the smallest of the four) */
+   if (!imgmax_roundtrip(VK_IMAGE_TYPE_1D, (VkExtent3D){L->maxImageDimension1D, 1, 1}, 1, 0, "1d")) return 0;
+   /* 3D: x and y at the max, 8 slices (2048^3 R8 is 8 GiB, over every allocation limit we have) */
+   if (!imgmax_roundtrip(VK_IMAGE_TYPE_3D, (VkExtent3D){L->maxImageDimension3D, L->maxImageDimension3D, 8}, 1, 0, "3d")) return 0;
+   /* array layers: the last layer's far corner. Wider than the 512-texel marker so the origin and the corner are different
+    * data: 1024x64x2048 layers of R8 = 128 MiB (that, not the layer count, is what bounds this one) */
+   if (!imgmax_roundtrip(VK_IMAGE_TYPE_2D, (VkExtent3D){1024, 64, 1}, L->maxImageArrayLayers, 0, "array")) return 0;
+   /* cube: six faces of the max — 6 * dim^2 bytes, which can exceed the allocation limit the driver reports */
+   {
+      /* the allocation ceiling lives in maintenance3 (VkPhysicalDeviceMaintenance3Properties), not in the limits chain */
+      VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES,
+                                                   .maxMemoryAllocationSize = ~(VkDeviceSize)0};
+      VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
+      if (g_gp2)   /* resolved once in main (gipa); KHR alias already falls back there */
+         g_gp2(g_pd, &p2);
+      const VkDeviceSize cube_bytes = (VkDeviceSize)L->maxImageDimensionCube * L->maxImageDimensionCube * 6;
+      if (cube_bytes > m3.maxMemoryAllocationSize) {
+         printf("{\"test\":\"imgmax_cube\",\"skipped\":\"%llu B exceeds maxMemoryAllocationSize %llu\",\"ok\":true}\n",
+                (unsigned long long)cube_bytes, (unsigned long long)m3.maxMemoryAllocationSize);
+      } else if (!imgmax_roundtrip(VK_IMAGE_TYPE_2D, (VkExtent3D){L->maxImageDimensionCube, L->maxImageDimensionCube, 1}, 6,
+                                   VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, "cube")) {
+         return 0;
+      }
+   }
+   if (!imgmax_sample2d(dim)) return 0;
+   printf("{\"test\":\"imgmax\",\"dims\":[%u,%u,%u,%u],\"layers\":%u,\"ok\":true}\n", L->maxImageDimension1D, dim,
+          L->maxImageDimension3D, L->maxImageDimensionCube, L->maxImageArrayLayers);
    return 1;
 }
 
@@ -3508,7 +3730,6 @@ test_memmodel(void)
 
 /* subgroup operations (basic/vote/ballot/arithmetic/shuffle/shuffle_relative/clustered/quad): one 64-invocation workgroup, 16 results each. */
 static VkPhysicalDeviceVulkan11Properties g_p11;
-static PFN_vkGetPhysicalDeviceProperties2 g_gp2;
 static int
 test_subgroup_one(void)
 {
@@ -4101,6 +4322,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
+   if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
    if (ok && CASE_ON("vsstore")) ok &= test_vsstore();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
 

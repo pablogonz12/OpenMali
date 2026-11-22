@@ -53,11 +53,15 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
       /* pipelineCacheUUID: zero until the shader cache exists (M6, from the build-id). */
 
-      .maxImageDimension1D = 4096,
-      .maxImageDimension2D = 4096,
-      .maxImageDimension3D = 256,
-      .maxImageDimensionCube = 4096,
-      .maxImageArrayLayers = 256,
+      /* Image limits: MALI_MAX_DIM_* in mali_format.h (the image layout and imageFormatProperties path), raise both together.
+       * 16384 is what GL 4.1 needs and what the device test t_vk_feat imgmax creates, clears and samples on the X8 (Mali-G925);
+       * PanVK claims 2^16 (panvk_vX_physical_device.c:864-868) but a 65536^2 R8 image is 4 GiB, over our 1 GiB
+       * maxMemoryAllocationSize, so we advertise what is proven. 3D 2048 (GL 4.1 minimum) instead of 256; array layers 2048. */
+      .maxImageDimension1D = MALI_MAX_DIM_1D,
+      .maxImageDimension2D = MALI_MAX_DIM_2D,
+      .maxImageDimension3D = MALI_MAX_DIM_3D,
+      .maxImageDimensionCube = MALI_MAX_DIM_2D,
+      .maxImageArrayLayers = MALI_MAX_LAYERS,
       .maxTexelBufferElements = 65536,
       .maxUniformBufferRange = 16384,
       .maxStorageBufferRange = 1u << 27,
@@ -132,8 +136,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .robustStorageBufferAccessSizeAlignment = 4,
       .robustUniformBufferAccessSizeAlignment = 4,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
-      .maxViewportDimensions = {4096, 4096},
-      .viewportBoundsRange = {-8192.0f, 8191.0f},
+      /* Tied to maxImageDimension2D: VUID-VkPhysicalDeviceLimits-maxViewportDimensions-07700/07701 want the viewport to
+       * cover the largest image, and viewportBoundsRange at least [-2*maxImageDimension2D, 2*maxImageDimension2D-1]. 4096
+       * was below the GL 4.x spec minimum of 16384 and left that relation broken once the image limits went up. */
+      .maxViewportDimensions = {MALI_MAX_DIM_2D, MALI_MAX_DIM_2D},
+      .viewportBoundsRange = {-2.0f * (float)MALI_MAX_DIM_2D, 2.0f * (float)MALI_MAX_DIM_2D - 1.0f},
       .minMemoryMapAlignment = 64,
       .minTexelBufferOffsetAlignment = 256,
       .minUniformBufferOffsetAlignment = 256,
@@ -142,8 +149,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxTexelOffset = 7,
       .minTexelGatherOffset = -8,   /* shaderImageGatherExtended: i4 narrow / i8 register texel offset; t_vk_feat gatherlim */
       .maxTexelGatherOffset = 7,
-      .maxFramebufferWidth = 4096,
-      .maxFramebufferHeight = 4096,
+      .maxFramebufferWidth = MALI_MAX_DIM_2D,
+      .maxFramebufferHeight = MALI_MAX_DIM_2D,
       .maxFramebufferLayers = 256,
       .framebufferColorSampleCounts = samples_1_4,
       .framebufferDepthSampleCounts = samples_1_4,
@@ -766,14 +773,18 @@ mali_GetPhysicalDeviceExternalBufferProperties(
    VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
    VkExternalBufferProperties *pExternalBufferProperties)
 {
-   /* dma-buf only (M4). */
+   /* dma-buf only (M4). OPAQUE_FD is the same object to this driver (kbase hands out a dma-buf fd; see
+    * mali_memory.c's import/export): the two are interchangeable, and a client that queries before it imports
+    * (zink for gamescope, ANGLE) must be told so, or it picks the dma-buf path or gives up. */
+   const VkExternalMemoryHandleTypeFlags ours =
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
    VkExternalMemoryProperties p = {0};
-   if (pExternalBufferInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   if (pExternalBufferInfo->handleType & ours)
       p = (VkExternalMemoryProperties){
          .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
                                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
-         .exportFromImportedHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-         .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+         .exportFromImportedHandleTypes = ours,
+         .compatibleHandleTypes = ours,
       };
    pExternalBufferProperties->externalMemoryProperties = p;
 }
