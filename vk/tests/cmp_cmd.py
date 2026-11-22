@@ -151,18 +151,22 @@ def retire_norm(seq):
     out = []
     prev = None
     head_flush_seen = False
+    last_wait = None
     for i, w in enumerate(seq):
         op = (w >> 56) & 0xff
         nxt = (seq[i + 1] >> 56) & 0xff if i + 1 < len(seq) else None
         if op == 11:                                   # FINISH_FRAGMENT: fold wait mask (31:16) and signal slot (51:48), but
-            m, sl = (w >> 16) & 0xffff, (w >> 48) & 0xf   # only the two legal shapes: the reference's (mask 0, slot 0) or
-            if (m, sl) in ((0, 0), (0x0008, 4)):          # ours (endpoint wait, slot 4). A self-dependent mask (slot 4 in
-                w &= ~((0xffff << 16) | (0xf << 48))      # the wait mask) stays and is compared, so it cannot hide here
-        if op == 36 and not head_flush_seen:             # the HEAD flush compares its "others" field only
-            w = (w & ~0xfff) | (w & 0xf00)               # (head is now others-invalidate only, 0x200 vs 0x233)
-            head_flush_seen = True                       # a tail flush keeps its full mode: 0x011 vs 0x000 must differ
+            m, sl = (w >> 16) & 0xffff, (w >> 48) & 0xf   # only the two legal shapes: the reference's (mask 0, slot 0) after
+            ok = (m, sl) == (0x0008, 4) or ((m, sl) == (0, 0) and last_wait == 0x0008)   # its endpoint wait, or ours (mask
+            if ok:                                        # endpoint, slot 4). Anything else - a self-dependent mask, or a
+                w &= ~((0xffff << 16) | (0xf << 48))      # synchronous form with no endpoint wait before it - is compared
+        if op == 36 and not head_flush_seen:             # the HEAD flush: only the three intended encodings fold -
+            if (w & 0xfff) in (0x233, 0x200, 0x002, 0x332):   # reference's, our others-invalidate, and the
+                w = (w & ~0xfff) | 0x200                  # L2/LSC clean+invalidate of a frame after a host write
+                head_flush_seen = True                   # any other mode is compared as-is; a tail flush keeps its full mode
         if op == 3:
             m = (w >> 16) & 0xffff
+            last_wait = m   # remembered even when the wait itself is dropped below
             # the two fragment-ordering waits the two streams express differently: the reference's endpoint wait right
             # after RUN_FRAGMENT, and our wait on the deferred FINISH_FRAGMENT slot (4) before the tail flush. A WAIT on
             # those masks anywhere else - the one after FINISH_TILING - is compared like every other instruction.
@@ -195,12 +199,22 @@ def tail_slot4_wait_missing(seq_raw):
     return None
 
 
+def raw_words(side):
+    """Every instruction word the stream contains, unmasked: trace() clears the low bits of the SYNC ops, which is exactly
+    where an add's wait mask lives."""
+    return [e['w'] for e in ds.collect(side) if e['op'] not in (0, 1, 2)]
+
+
 def retire_drain_missing(seq_raw):
     """Our stream must drain every scoreboard slot before the retire SYNC_ADD64 (frame-ordering.md): without the WAIT the
-    add runs immediately and the fence signals before the fragment writeback. Checked before retire_norm, which drops it."""
+    add runs immediately and the fence signals before the fragment writeback. The add's own wait mask must stay zero - a
+    deferred instruction increments its own slot before waiting, so a mask there is a self-dependency. Checked on the raw
+    words, before trace() masks the add's low bits and retire_norm drops the WAIT."""
     for i, w in enumerate(seq_raw):
         if (w >> 56) & 0xff != 51:
             continue
+        if (w >> 16) & 0xffff:
+            return i
         p = seq_raw[i - 1] if i else 0
         if (p >> 56) & 0xff != 3 or (p >> 16) & 0xffff != 0xffff:
             return i
@@ -224,14 +238,14 @@ for arch in (11, 13):
             fails.append('%s: no reference dump' % name)
             continue
         sa, sb = ds.load_ours(od), ds.load_ours(rd)
-        raw_a = trace(sa, arch)[0]
+        raw_a = raw_words(sa)
         miss = retire_drain_missing(raw_a)
         if miss is not None:
             fails.append('%s: our stream has no WAIT(0xffff) before the retire SYNC_ADD64 at word %d' % (name, miss))
         miss = tail_slot4_wait_missing(raw_a)
         if miss is not None:
             fails.append('%s: FINISH_FRAGMENT at word %d signals slot 4 with no WAIT(0x0010) before the tail FLUSH_CACHE2' % (name, miss))
-        oa, qa = retire_norm(raw_a), trace(sa, arch)[1]
+        oa, qa = retire_norm(trace(sa, arch)[0]), trace(sa, arch)[1]
         ob, qb = retire_norm(trace(sb, arch)[0]), trace(sb, arch)[1]
         nd = 0
         if BREAK:
