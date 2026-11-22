@@ -550,8 +550,10 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
 static bool
 write_denied(struct mali_dset *s, uint32_t binding)
 {
-   if (s->in_use <= 0 || !s->layout->bflags) return false;
-   if (mali_dtab_write_allowed(binding < s->layout->nbindings ? s->layout->bflags[binding] : 0, true)) return false;
+   if (s->in_use <= 0) return false;
+   /* no binding-flags array means every binding has zero flags, so the write-while-in-use rule does not apply to it */
+   const VkDescriptorBindingFlags f = s->layout->bflags && binding < s->layout->nbindings ? s->layout->bflags[binding] : 0;
+   if (mali_dtab_write_allowed(f, true)) return false;
    s->denied_writes++;
    return true;
 }

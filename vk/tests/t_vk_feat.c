@@ -2235,6 +2235,7 @@ test_didxvidx(void)
       DestroyPipeline(dev, pipe, NULL);
       DestroyPipelineLayout(dev, lay, NULL);
       tgt_destroy(&t);
+      hbuf_destroy(&vb);   /* part 1b allocates one per iteration: they were all live until device destruction */
    }
    /* ---- part 2: the same varying indexes a descriptor array of sampled images ---- */
    if (!g_didx) {
