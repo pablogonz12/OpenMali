@@ -523,6 +523,12 @@ def smoke(a):
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
             if c in (ONLY_DRAW if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
                 runs.append((n, f"{extra} --only {c}", c))
+    if a.only:   # a requested case this route does not schedule must be reported, not silently skipped
+        ran = {oc for _, _, oc in runs if oc}
+        missing = [c for c in a.only.split(",") if c and c not in ran]
+        if missing:
+            print("unscheduled --only case(s): " + ",".join(missing), flush=True)
+            ok = False
     for n, extra, oc in runs:
         if gated(a.lock):
             sys.exit(75)

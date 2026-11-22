@@ -377,7 +377,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
             t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
             t.op_c = r->op_c; t.op_a = r->op_a;
          }
-         if (apply_blend(b, &t))
+         /* a target this draw does not write keeps its descriptor disabled below: validating its blend equation
+          * would refuse the draw for state the hardware never sees (independentBlend allows any state on it) */
+         const bool inactive = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) ||
+                                     (d->fx.set && d->fx.rtb[i - 1].wmask == 0));
+         if (!inactive && apply_blend(b, &t))
             return -EINVAL;
       }
       /* A target this draw does not write must not be written at all: disable its blend descriptor (PanVK

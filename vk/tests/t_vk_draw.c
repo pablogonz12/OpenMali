@@ -2350,7 +2350,7 @@ test_mrt_big(const char *name)
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    BIG_CHECK(r == VK_SUCCESS, "wait = %d", r);
    ok = 1;
-   printf("{\"test\":\"%s\",\"%ux%u\",\"ok\":true}\n", name, bw, bh);
+   printf("{\"test\":\"%s\",\"width\":%u,\"height\":%u,\"ok\":true}\n", name, bw, bh);
 out:
    DeviceWaitIdle(dev);
    if (fence) DestroyFence(dev, fence, NULL);
