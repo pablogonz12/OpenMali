@@ -4,7 +4,8 @@
  *  - a steady 8-alloc/frame loop costs MEM_ALLOC only for the first frame
  *  - never pooled: EXPORT, EXEC, EVENT and driver-internal (non HOSTLAZY) BOs are really freed
  *  - the pool is bounded: past MALI_BO_POOL_MB the oldest are really freed (MEM_FREE count grows), a BO over the per-BO cap is never pooled
- *  - a reused BO is lazy again (no MEM_SYNC until bo_host_touch) and, once touched, tracked for MEM_SYNC like a fresh one
+ *  - a reused BO is lazy again (no MEM_SYNC until bo_host_touch); once touched, it follows the CPU->device policy
+ *    (write-combined mappings need no MEM_SYNC at all, cached ones only after a CPU write)
  *  - device_destroy frees everything still pooled (MEM_FREE count == MEM_ALLOC count) */
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,7 +102,9 @@ int main(void)
    EXPECT(kb_fake_memsync_count(va) == s0, "reused BO is lazy again: no MEM_SYNC before bo_host_touch");
    b->bo_host_touch(k, &y);
    b->host_sync(k); b->submit_cs(k, cs, 0);
-   EXPECT(kb_fake_memsync_count(va) > s0, "after bo_host_touch the reused BO is synced");
+   /* write-combined mapping (HOSTLAZY without CACHED): the dsb orders it, no MEM_SYNC ioctl is needed */
+   EXPECT(kb_fake_memsync_count(va) == s0, "after bo_host_touch a write-combined reused BO still needs no MEM_SYNC (%u)",
+          kb_fake_memsync_count(va) - s0);
    b->bo_free(k, &y);
    s0 = kb_fake_memsync_count(va);
    b->host_sync(k); b->submit_cs(k, cs, 0);

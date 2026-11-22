@@ -390,6 +390,7 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
        * contents, also after dc civac). Zero them and write the zeroes back so the GPU sees them too. */
       memset(bo->cpu, 0, size);
       kb_bo_cache_flush_inv(bo, 0, size);
+      kb_bo_mark_cpu_write(bo);   /* the zeroes are dirty lines until the first CPU->device sync covers them */
    }
    *out = (struct mali_bo){.gpu_va = bo->gpu_va, .cpu = bo->cpu, .size = size, .flags = flags,
                            .dmabuf_fd = bo->dmabuf_fd, .priv = bo};
@@ -492,6 +493,8 @@ kbase_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t
                         !invalidate);
    else
       kb_bo_cache_flush_inv(bo->priv, off, len); /* dc civac works in both directions */
+   if (!invalidate)
+      kb_bo_mark_cpu_write(bo->priv);   /* vkFlushMappedMemoryRanges / a writeback: the next submit must clean it */
 }
 
 static int
@@ -697,10 +700,26 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy && !(k->bos[i]->flags & KB_BO_NOCOH)) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x hot %d dmabuf %d\n", k->bos[i]->size, k->bos[i]->flags, k->bos[i]->hot, k->bos[i]->dmabuf_fd >= 0); }
       fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
    }
+   if (!dev2cpu)
+      kb_wmb();   /* write-combined mappings: complete the CPU's stores before the doorbell (see kbase.h kb_wmb) */
    for (unsigned i = 0; i < k->nbos; i++) {
       struct kb_bo *b = k->bos[i];
       if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (sel == SYNC_HOT && !b->hot) || (sel == SYNC_COLD && b->hot))
          continue;
+      /* CPU -> device: only a CPU-cached mapping has dirty lines to clean, and only if the CPU wrote since the last
+       * clean. A write-combined mapping (VkDeviceMemory without HOST_CACHED, every DXVK/zink UBO and staging ring)
+       * needs no MEM_SYNC at all: the kernel's sync is a no-op for it, and the barrier above is the ordering the
+       * doorbell needs. That is PanVK's model (it maps coherent memory and syncs at map, not per submit). Before
+       * this, each mapped BO cost one no-op ioctl per queue submit -- 8-20 per frame-submit under DXVK.
+       * MALI_SYNC_ALL=1 restores the sweep for A/B. */
+      if (!dev2cpu && !(e && e[0] == '1')) {
+         /* Only a mapping that can hold dirty cache lines counts (a native KB_BO_CPU_CACHED one, or an imported
+          * dma-buf whose heap is cached), and only while the CPU has written it since the last clean. */
+         if (!(b->flags & KB_BO_CPU_CACHED) && b->dmabuf_fd < 0)
+            continue;
+         if (!b->cpu_wrote)
+            continue;
+      }
       /* dma-buf imports are in k->bos[] for the device->CPU sweep only: we must not push our CPU copy of somebody
        * else's buffer at the GPU before a submit (that direction stays native-BO only). */
       if (!dev2cpu && b->imported)
@@ -723,6 +742,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
       if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
+      else if (!dev2cpu && sr >= 0)
+         b->cpu_wrote = false;       /* the clean covered the writes up to here; later ones set it again */
    }
    pthread_mutex_unlock(&k->bo_lock);
 }

@@ -217,6 +217,20 @@ int kb_fake_gpu_write(uint64_t va, size_t off, const void *src, size_t len)
 
 bool kb_fake_incoherent(uint64_t va) { struct region *r = find_region(va); return r && r->shadow; }
 
+/* What the GPU reads. A CPU-cached mapping is only visible after MEM_SYNC type 1 (the shadow copy); a write-combined
+ * mapping (no BASE_MEM_CACHED_CPU) is Normal-NC, so the CPU's stores are in memory and a `dsb st` (kb_wmb) is all
+ * the ordering the doorbell needs -- that is the claim the CPU->device sync policy rests on. */
+int kb_fake_gpu_read(uint64_t va, size_t off, void *dst, size_t len)
+{
+	struct region *r = find_region(va);
+	if (!r || !r->cpu || off + len > r->len) return -1;
+	if (r->flags & BASE_MEM_CACHED_CPU) {
+		if (r->shadow) { memcpy(dst, (uint8_t *)r->shadow + off, len); return 0; }
+	}
+	memcpy(dst, (uint8_t *)r->cpu + off, len);
+	return 0;
+}
+
 struct synccnt { uint64_t va; unsigned n; };
 static struct synccnt syncs[256];
 static int nsync;
