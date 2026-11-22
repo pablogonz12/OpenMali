@@ -1253,8 +1253,23 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
        * (kb_draw_tiler_ctx, libkbase/src/draw.c:57) has no effective-tile field -- only v13's has one
        * (kb_v13_tiler_ctx, draw_v13.c:9) -- so shrinking the FBD tile below the tiler's bins makes geometry and
        * fragments disagree (measured: 16 bpp at 16x16 draws almost nothing). */
-      f->tile_log2 = bpp_tot <= 16 ? 10u : 8u;
-      f->hmask = bpp_tot <= 16 ? 0xfeu : 0xffu;
+      /* Square tiles only (the FBD field is log2 of the tile's PIXEL count, so an odd log2 is not a square): 32x32,
+       * 16x16, 8x8, 4x4. Measured on G615 (X4): 2xRGBA8 (8 B/px) and 4xRGBA8 (16 B/px) at 32x32 collapse to the last
+       * fragment output, while the same frames at 16x16 are per-RT exact, so 32x32 is only usable up to a 4 KiB colour
+       * total; 16x16 carries up to 8 KiB (PanVK's pan_select_tile_size budget is 2x that, pan_desc.c:618-660). */
+      unsigned tl = 10;
+      while (tl > 4 && ((1u << tl) * bpp_tot) > (tl >= 10 ? 4096u : 8192u))
+         tl -= 2;
+      if (((1u << tl) * bpp_tot) > 8192u) {
+         unsupported(cmd, "colour attachments exceed the tile colour buffer even at 4x4");
+         return;
+      }
+      f->tile_log2 = tl;
+      f->hmask = tl >= 10 ? 0xfeu : 0xffu;   /* the tiler's smallest bin is 16x16; 8x8/4x4 keep it (the FBD sets the tile) */
+      if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
+         f->tile_log2 = (unsigned)atoi(getenv("MALI_TILE_LOG2"));
+         f->hmask = f->tile_log2 >= 10 ? 0xfeu : 0xffu;
+      }
    }
    }
    struct mali_preload_src zsrc;

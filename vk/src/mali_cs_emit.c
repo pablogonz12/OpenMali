@@ -445,8 +445,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
        * panvk_vX_blend.c:127-130: loc unused or equation.color_mask == 0 -> enable = false, mode OFF). */
       const bool unused = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) || (d->fx.set && i && d->fx.rtb[i - 1].wmask == 0));
       if (unused) {
-         b[0] = 0;   /* Load Destination, Alpha To One, Enable = 0 */
-         b[2] = 3;   /* Internal Blend Mode: Off */
+         b[0] = 0;                       /* Load Destination, Alpha To One, Enable = 0 */
+         b[2] = 3 | (i << 16);           /* Internal Blend Mode: Off, Fixed-Function RT = i (as the enabled ones) */
          b[3] = 0;
       }
       b[2] |= i << 16;   /* Blend Fixed-Function: Render Target */
