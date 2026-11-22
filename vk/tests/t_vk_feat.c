@@ -3330,6 +3330,15 @@ imgmax_sample2d(uint32_t dim)
    CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
    VkClearColorValue cc = {.float32 = {IMGMAX_CLEAR / 255.0f, 0.0f, 0.0f, 1.0f}};
    CmdClearColorImage(cb, x.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cc, 1, &rng);
+   {   /* the marker copy overwrites part of what the clear wrote: written commands have no implicit order, so
+        * without this the clear could land last and the far corner would sample the clear colour */
+      VkImageMemoryBarrier cw = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                 .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .image = x.img, .subresourceRange = rng};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &cw);
+   }
    VkBufferImageCopy mk = {.bufferRowLength = 512, .bufferImageHeight = 512, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageOffset = {dim - 512, dim - 512, 0}, .imageExtent = {512, 512, 1}};
    CmdCopyBufferToImage(cb, mb.b, x.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &mk);
