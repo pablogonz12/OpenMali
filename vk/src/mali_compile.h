@@ -40,11 +40,20 @@ struct mali_compile_opts {
    size_t spirv_words;
    const char *entry;             /* NULL = "main" */
    unsigned xfb_pc;               /* VS only: push-constant offset of the 4 XFB buffer addresses (app push size) */
-   unsigned xfb;                  /* VS only: the pipeline layout reserves 32 B at xfb_pc for them (0 = no XFB) */
+   unsigned xfb;                  /* VS only: 0 = no XFB; MALI_XFB_STORES = lower the declared XFB outputs to global stores at the
+                                   * 4 buffer addresses in the reserved push-constant area; MALI_XFB_PLAIN = the same XFB-declaring
+                                   * shader compiled so that it stores nothing (the variant a draw outside a capture range runs,
+                                   * mali_pipeline.c) */
    unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 24, FS 8, CS 8) */
    unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
+   /* VS: the fragment shader that consumes the outputs, so the noperspective bitfield the backend asks for
+    * (nir_intrinsic_load_noperspective_varyings_pan, inlined by pan_nir_lower_noperspective_vs) is the one the FS
+    * actually interpolates with. NULL = no FS (rasterizer discard, meta shaders): mask 0. */
+   const uint32_t *fs_spirv;
+   size_t fs_spirv_words;
+   const char *fs_entry;
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
    unsigned cull_distances;       /* FS: gl_CullDistance count written by the VS (compiled.vs_cull_distances); the VS stores d>=0 as 1, the FS discards where one interpolates to 0 (all three vertices negative) */
@@ -84,6 +93,7 @@ struct mali_compiled {
    uint32_t cull_varying;         /* VS: driver_location of the merged clip+cull varying (handed to the FS compile); FS: the one it read */
    uint32_t cull_varying_first;   /* the varying carrying cull distance 0 / the last one: the pipeline refuses a VS/FS disagreement */
    uint32_t cull_varying_last;
+   uint32_t noperspective_mask;   /* VS: FS's noperspective bitfield inlined into the code; FS: the bitfield its inputs use */
    uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
    uint32_t nvarying;
    struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */
@@ -116,6 +126,11 @@ int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *ou
  * VK_ERROR_FEATURE_NOT_PRESENT rather than VK_ERROR_INVALID_SHADER_NV). */
 #define MALI_COMPILE_UNSUPPORTED (-2)
 
+/* mali_compile_opts.xfb modes. Two different binaries come out of ONE XFB-declaring vertex shader: STORES (capture range
+ * open: store the recorded outputs at the 4 buffer addresses) and PLAIN (no range open: store nothing). Both are legal
+ * inputs, so neither may be refused, and the cache key must separate them. */
+#define MALI_XFB_STORES 1u
+#define MALI_XFB_PLAIN  2u
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the

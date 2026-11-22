@@ -459,10 +459,19 @@ main(int argc, char **argv)
       CHECK(strstr(msg, "unsupported feature VkPhysicalDeviceFeatures::geometryShader") != NULL,
             "message names the feature: %s", msg);
    }
-   /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. */
+   /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. robustBufferAccess2
+    * is advertised now (robustness2, t_vk_feat robust2), so the unsupported half of the same struct is robustImageAccess2. */
    {
+      /* positive probe first: the advertised half must read true in the capability query, or the rejection below
+       * would pass just as well on a driver that reports both halves false (nothing tested, nothing proven) */
+      VkPhysicalDeviceRobustness2FeaturesEXT r2q = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 fq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &r2q};
+      GetPhysicalDeviceFeatures2(pd, &fq);
+      CHECK(r2q.robustBufferAccess2 == VK_TRUE, "robustBufferAccess2 must be reported true (it is advertised)");
+      CHECK(r2q.robustImageAccess2 == VK_FALSE, "robustImageAccess2 must stay false while it is unsupported");
       VkPhysicalDeviceRobustness2FeaturesEXT r2 = {
-         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustBufferAccess2 = VK_TRUE};
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustImageAccess2 = VK_TRUE};
       VkDeviceCreateInfo d3 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
                                .pQueueCreateInfos = &qci, .pNext = &r2};
       VkDevice d = NULL;
@@ -481,8 +490,8 @@ main(int argc, char **argv)
          msg[n] = 0;
          fclose(cap);
       }
-      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustBufferAccess2 must be rejected (%d)", rr);
-      CHECK(strstr(msg, "unsupported feature robustBufferAccess2") != NULL, "message names the chain feature: %s", msg);
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustImageAccess2 must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature robustImageAccess2") != NULL, "message names the chain feature: %s", msg);
    }
 
 #define D(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)

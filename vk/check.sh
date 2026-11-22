@@ -35,8 +35,12 @@ if [ $build = 1 ]; then env -u LD_PRELOAD "$V/build.sh" >/dev/null || { echo "FA
 fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
-# Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=2            # measured with t_dxvk_caps. shaderCullDistance landed (t_vk_feat cull). sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
+# Number of DXVK-required core/1.1-1.3/robustness2 features still false (of 49); lower it only with a passing test for the new feature.
+# measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws.
+# 2026-11-22 robustness2: the list grew 47 -> 49 because robustness2.robustBufferAccess2/nullDescriptor are DXVK 3.1.1
+# requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted; robustBufferAccess2 is advertised now (vk_feat robust2,
+# X4 6/6), so the honest count is 3/49 where main's 47-row list read 3.
+DXVK_MISSING=2
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
@@ -56,6 +60,22 @@ run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --di
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# RUNG2 state sweep (samplers / blend / depth-stencil). The fake backend executes nothing, so the host side checks that
+# every case builds its Vulkan state, sampler and pipeline and that the case table is complete; the pixel verdicts are
+# hardware-only (vk/tests/build-t_state_sweep.sh native; notes/state-sweep.md).
+if [ -x "$V/out/t_state_sweep-native" ]; then
+   for g in v11 v13; do run "state sweep fake $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$V/out/t_state_sweep-native" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"; done
+else
+   echo "skip  state sweep (no vk/out/t_state_sweep-native: tests/build-t_state_sweep.sh native)"
+fi
+# Fixed-function blend equation packing (host, no GPU): every (op, src factor, dst factor) the blender can express must
+# evaluate to the Vulkan formula. On main the SRC_COLOR/DST_COLOR ADD pair packed 2*src*dst instead of src^2+dst^2 and
+# this row failed; the pair now declines and goes through the blend shader.
+if cc -std=gnu11 -O2 -Wall -Wextra -I"$V/src" -o "$OUT/t_blend_eq" "$V/tests/t_blend_eq.c" "$V/src/mali_blend.c" 2>"$OUT/t_blend_eq.build.log"; then
+   run "blend equation" 0 "$OUT/t_blend_eq"
+else
+   echo "FAIL  blend equation (build)"; sed 's/^/        /' "$OUT/t_blend_eq.build.log"; fail=1
+fi
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
 for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
 for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done
@@ -82,6 +102,7 @@ STEAM_MISSING=0
 # GPU node (t_vk_drm below), which the fake backend has none of, so it stays in this count.
 ZINK_MISSING=1
 for g in v11 v13; do run "vk_headless $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_headless" --direct "$OUT/libvulkan_mali.so"; done
+run "ext_handles v11" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_ext_handles" --direct "$OUT/libvulkan_mali.so"
 for g in v11 v13; do run "steam_caps $g" 0 -u BL_DRM_STANDIN MALI_DRM_DIR=/nonexistent MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_steam_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"; done
 # VK_EXT_physical_device_drm: the extension exists only with a node that stat() proves is the GPU char device (/dev/mali0;
 # the guest's /dev/dri/renderD<N> alias, BL_DRM_STANDIN). Symlinks stand in for the guest's nodes; /dev/null is 1:3.
@@ -109,14 +130,41 @@ rm -rf "$DRMR" "$DRMB" "$DRMX"
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# Every sample-count query must agree, and image creation must refuse a count the device did not offer: with =0 the
+# 4x counts are gone from the limits and from VkImageFormatProperties, so vkCreateImage(samples=4) must return
+# VK_ERROR_FORMAT_NOT_SUPPORTED (it succeeded before this case existed: an app could build a 4x attachment and hit a
+# refusal inside a render pass, notes/ms-stencil-load.md).
+for g in v11 v13; do for e in 0 1; do run "vk_feat samplecnt $g msaa=$e" 0 MALI_EXPERIMENTAL_MSAA=$e MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only samplecnt; done; done
 # VK_EXT_transform_feedback is ON by default (MALI_EXPERIMENTAL_TF=0 is the legacy opt-out, which also drops the UBO
 # counts back to 12/72: the two must never be mixed, see mali_physical_device.c). The extension, the feature bit, the
 # properties and the XFB lowering follow that one switch.
 for g in v11 v13; do run "vk_feat tf_default $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+# Interpolation qualifiers (smooth/noperspective/flat x plain/centroid/sample, invariant on and off, forward and reversed
+# winding): the fake devices create every pipeline (SPIR-V compile, varying setup, record) and skip the pixels; the
+# pixel comparison is hardware-only and is the X4 sweep (notes/interp-sweep.md).
+for g in v10 v11 v13; do run "vk_interp $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_interp" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"; done
+# noperspective (the 12 hardware FAILs in notes/interp-sweep.md): the VS must inline the FS's bitfield, not 0. Assert on
+# the compiled stages, since the fake backend rasterises nothing: MALI_INTERP_DBG prints the mask each stage compiled with,
+# and both must be 1 (varying location 0 of t_interp's noperspective shaders) - a VS with 0 renders c/w on the phone.
+# sel=1 is the backend's own "mask ? v * w : v" select around the output store: with the mask 0 the multiply exists but is
+# not selected, so a VS that passes this line emits the multiply on the phone (12/12, notes/interp-sweep.md).
+# MALI_SHADER_CACHE= : the rows above already cached these modules, and a cache hit compiles nothing to print.
+out=$(MALI_BACKEND=fake MALI_FAKE_GPU=v10 MALI_INTERP_DBG=1 MALI_SHADER_CACHE= "$OUT/t_interp" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only noperspective 2>&1)
+if echo "$out" | grep -q 'mali_interp: stage=VS mask=00000001 inlined=1 sel=1' &&
+   echo "$out" | grep -q 'mali_interp: stage=FS mask=00000001'; then
+   echo "ok    vk_interp noperspective mask v10"
+else
+   echo "FAIL  vk_interp noperspective mask v10"; echo "$out" | grep -E 'mali_interp|FAIL|fail' | head -5 | sed 's/^/        /'; fail=1
+fi
 for g in v11 v13; do run "vk_info $g tf opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_feat tf_default $g opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
 for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
 for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
+# robustness2 (VK_EXT_robustness2 robustBufferAccess2, DXVK 3.1.1 device creation): every access in shader/robust2.comp is one
+# element past its descriptor. --robust2 enables the feature at device creation, so the pipeline carries the bounds-checked
+# size loads (get_ssbo_size/get_ubo_size -> descriptor dw1 via resource table 62); on the phone the loads must read 0,
+# the OOB store/atomic are discarded, and the null descriptor reads 0.
+for g in v10 v11 v13; do run "vk_feat robust2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only robust2 --robust2; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
 # tf_inactive is the guard that makes default-on safe: an XFB program drawn outside Begin/End runs the pipeline's second,
 # non-XFB vertex program. The case asserts the driver's own accounting (MALI_TF_DBG names the program and its address, and
@@ -164,6 +212,30 @@ for g in v11 v13; do
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
    run "vk_draw blitreplay $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only blitreplay
 done
+
+# Geometry shaders, lane 1 (notes/gs-design.md §4). A *provable* pass-through GS is drawn by the vertex program alone
+# (zero extra work); every other GS is refused at pipeline creation, and the feature bit is NOT advertised.
+# MALI_EXPERIMENTAL_GS=1 is the development gate these cases need -- and gs_limits asserts that even with it set,
+# VkPhysicalDeviceFeatures::geometryShader is false, which is the state every application sees (DXVK keeps refusing at
+# init). The refusal reasons are checked by name: a bare VK_ERROR_FEATURE_NOT_PRESENT is not evidence of a decision.
+for g in v11 v13; do
+   # both halves of the Required Limits rule: 0 for every maxGeometry* while the feature is unsupported (gate off),
+   # the would-be numbers while the development gate is on -- and geometryShader is false either way
+   run "vk_feat gs_limits $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_limits
+   run "vk_feat gs_limits $g gate off" 0 -u MALI_EXPERIMENTAL_GS MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_limits
+   run "vk_draw gs_passthrough $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_passthrough
+   run "vk_draw gs_reject $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_reject
+done
+out=$(MALI_EXPERIMENTAL_GS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_reject 2>&1)
+gs_rc=$?   # a crash or a timeout must not read as "all six reasons printed"
+gs_n=0
+for r in "an output is computed, not copied from the input vertex" "max_vertices 6 is not 3" "control flow (opcode" \
+         "reads gl_PrimitiveID" "pass-through GS needs a triangle list topology" "geometryShader is not advertised"; do
+   echo "$out" | grep -qF "geometry shader refused: $r" && gs_n=$((gs_n+1))
+done
+if [ $gs_rc -ne 0 ]; then echo "FAIL  gs refusal diagnostic exited $gs_rc (want 0)"; echo "$out" | tail -5 | sed 's/^/        /'; fail=1
+elif [ $gs_n -eq 6 ]; then echo "ok    gs refusals name their reason (6/6)"
+else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "geometry shader refused" | sed 's/^/        /'; fail=1; fi
 
 # Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
 # colour attachment read back by vkCmdCopyImageToBuffer. The fake backend executes nothing, so this is the record-side gate
@@ -325,6 +397,9 @@ run "vk_info v10"     0 $F "$OUT/t_vk_info" $DL
 run "dxvk_caps v10"   0 $F "$OUT/t_dxvk_caps" $DL --expect-missing "$DXVK_MISSING"
 run "steam_caps v10"   0 $F "$OUT/t_steam_caps" $DL --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"
 run "vk_trace v10"    0 $F "$OUT/t_vk_trace" $DL
+# the trace handler observes and chains: a SIGSEGV the program fixes up (mprotect + return), a SIGBUS it longjmps out of, an
+# ignored SIGBUS and the no-handler (SIG_DFL) death path (FEX: replacing FEX's own SIGBUS handler killed the game)
+run "trace chain v10" 0 $F "$OUT/t_trace_chain" $DL
 run "angle_seq v10"   0 $F "$OUT/t_angle_seq" $DL
 run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
