@@ -719,7 +719,7 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
 /* Nothing to do here, and the reason is NOT that the queue serialises submissions (one submission carries every frame of the
  * command buffer, and the GPU runs them back to back). What makes a barrier's ordering observable is the retire rule
  * instead: the end-of-command-buffer retire word is only added after every scoreboard slot of the frame has drained
- * (mali_cs_emit.c, kb_cs_sync_add64_wait(..., 0xffff)), and the head of every compute/meta job cleans+invalidates L2 and
+ * (mali_cs_emit.c, kb_cs_wait(0xffff) + kb_cs_sync_add64), and the head of every compute/meta job cleans+invalidates L2 and
  * invalidates the other caches (mali_cs_emit.c flush 0x332), which is what a reader of an earlier frame's writes needs.
  * Keep that invariant if you touch either side; a real barrier implementation is only needed once frames overlap. */
 VKAPI_ATTR void VKAPI_CALL

@@ -60,12 +60,13 @@ static inline uint64_t kb_cs_sync_set32(unsigned addr_reg, unsigned data_reg, un
 { return kb_cs_sync(KB_CS_OP_SYNC_SET32, addr_reg, data_reg, scope, 0, 0); }
 static inline uint64_t kb_cs_sync_add64(unsigned addr_reg, unsigned data_reg, unsigned scope)
 { return kb_cs_sync(KB_CS_OP_SYNC_ADD64, addr_reg, data_reg, scope, 0, 0); }
-/* SYNC_ADD64 that WAITS for the scoreboard slots in wait_mask before the add. The wait mask is what makes the retire word
- * mean "this frame's GPU work is done": with mask 0 the add runs immediately, so the fence the CPU waits on signals before
- * the fragment writeback (and before any other asynchronous job of the frame) has completed. 0xffff = every slot, the
- * PanVK finish_cs style (panfrost/vulkan/panvk_vX_cmd_buffer.c:109, "CS_WAIT for all scoreboards before SYNC_ADD64"). */
-static inline uint64_t kb_cs_sync_add64_wait(unsigned addr_reg, unsigned data_reg, unsigned scope, unsigned wait_mask)
-{ return kb_cs_sync(KB_CS_OP_SYNC_ADD64, addr_reg, data_reg, scope, wait_mask, 0); }
+/* The retire word is what makes "this frame's GPU work is done" true: a SYNC_ADD64 with wait mask 0 runs immediately, so
+ * the fence the CPU waits on would signal before the fragment writeback (and before the frame's other asynchronous jobs).
+ * The drain is therefore a WAIT on every scoreboard slot followed by the ordinary kb_cs_sync_add64 - exactly the PanVK
+ * finish_cs order (panfrost/vulkan/panvk_vX_cmd_buffer.c:109 cs_wait_slots(b, all_mask) right before SYNC_ADD64). It must
+ * NOT be done with a wait mask on the add itself: a deferred instruction increments its own signal slot before waiting, so
+ * a mask that contains that slot waits on itself forever (Mesa rejects exactly that, cs_builder.h). */
+#define KB_CS_RETIRE_DRAIN kb_cs_wait(0xffff)
 static inline uint64_t kb_cs_sync_set64(unsigned addr_reg, unsigned data_reg, unsigned scope)
 { return kb_cs_sync(KB_CS_OP_SYNC_SET64, addr_reg, data_reg, scope, 0, 0); }
 

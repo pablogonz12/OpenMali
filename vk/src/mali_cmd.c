@@ -1592,8 +1592,17 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       if (cmd->wrote_full)
          g_hw.bo_wrote(g_hw.user, NULL);
    }
+   bool host_write = false;
+   {
+      struct mali_device *dev = (struct mali_device *)cmd->vk.base.device;   /* vk_device is mali_device's first member */
+      if (dev && dev->host_write_pending) {   /* consumed here: the frames of this submission see it, later ones do not */
+         host_write = true;
+         dev->host_write_pending = false;
+      }
+   }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
+      fr.host_write = host_write;
       /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
       bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
       if ((ind || poly_cpu) && g_hw.drain) {

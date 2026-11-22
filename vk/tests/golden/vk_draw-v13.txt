@@ -1,4 +1,4 @@
-kick dev0 #1  (67 instructions)
+kick dev0 #1  (68 instructions)
   HEAP3 live len=0x1000 flags=0x0
   HEAP4 live len=0x200000 flags=0x0
   BO0 live len=0x2000000 flags=0x200
@@ -125,8 +125,9 @@ kick dev0 #1  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #2  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #2  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -243,8 +244,9 @@ kick dev0 #2  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #3  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #3  (68 instructions)
   BO5 FREED len=0x40000 flags=0x100
   BO6 FREED len=0x1000 flags=0x0
   BO7 FREED len=0x1000 flags=0x100
@@ -371,8 +373,9 @@ kick dev0 #3  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #4  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #4  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -489,8 +492,9 @@ kick dev0 #4  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #5  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #5  (71 instructions)
   BO10 FREED len=0x40000 flags=0x100
   BO11 FREED len=0x1000 flags=0x0
   BO12 FREED len=0x1000 flags=0x100
@@ -702,8 +706,9 @@ kick dev0 #5  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #6  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #6  (71 instructions)
   BO15 FREED len=0x40000 flags=0x100
   BO16 FREED len=0x1000 flags=0x0
   BO17 FREED len=0x1000 flags=0x100
@@ -920,8 +925,9 @@ kick dev0 #6  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #7  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #7  (71 instructions)
   BO20 FREED len=0x40000 flags=0x100
   BO21 FREED len=0x1000 flags=0x0
   BO22 FREED len=0x40000 flags=0x100
@@ -1140,8 +1146,9 @@ kick dev0 #7  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #8  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #8  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -1261,8 +1268,9 @@ kick dev0 #8  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #9  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #9  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -1382,8 +1390,9 @@ kick dev0 #9  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #10  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #10  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -1503,8 +1512,9 @@ kick dev0 #10  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #11  (96 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #11  (97 instructions)
   BO34 live len=0x1000 flags=0x8
   BO35 live len=0x1000 flags=0x8
   BO36 live len=0x1000 flags=0x800
@@ -1802,8 +1812,9 @@ kick dev0 #11  (96 instructions)
    90 WAIT           0300000000100000
    91 FLUSH_CACHE2   2400500000000011
    92 WAIT           0300000000010000
-   95 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #12  (67 instructions)
+   95 WAIT           03000000ffff0000
+   96 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #12  (68 instructions)
   BO27 FREED len=0x40000 flags=0x100
   BO28 FREED len=0x1000 flags=0x0
   BO29 FREED len=0x40000 flags=0x100
@@ -1936,8 +1947,9 @@ kick dev0 #12  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #13  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #13  (68 instructions)
   BO39 FREED len=0x40000 flags=0x100
   BO40 FREED len=0x1000 flags=0x0
   BO41 FREED len=0x40000 flags=0x100
@@ -2068,8 +2080,9 @@ kick dev0 #13  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #14  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #14  (68 instructions)
   BO46 FREED len=0x40000 flags=0x100
   BO47 FREED len=0x1000 flags=0x0
   BO48 FREED len=0x40000 flags=0x100
@@ -2200,8 +2213,9 @@ kick dev0 #14  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #15  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #15  (68 instructions)
   BO53 FREED len=0x40000 flags=0x100
   BO54 FREED len=0x1000 flags=0x0
   BO55 FREED len=0x50000 flags=0x100
@@ -2332,8 +2346,9 @@ kick dev0 #15  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #16  (76 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #16  (77 instructions)
   BO60 FREED len=0x40000 flags=0x100
   BO61 FREED len=0x1000 flags=0x0
   BO62 FREED len=0x50000 flags=0x100
@@ -2547,8 +2562,9 @@ kick dev0 #16  (76 instructions)
    70 WAIT           0300000000100000
    71 FLUSH_CACHE2   2400500000000011
    72 WAIT           0300000000010000
-   75 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #17  (76 instructions)
+   75 WAIT           03000000ffff0000
+   76 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #17  (77 instructions)
   BO67 FREED len=0x40000 flags=0x100
   BO68 FREED len=0x1000 flags=0x0
   BO69 FREED len=0x1000 flags=0x100
@@ -2760,8 +2776,9 @@ kick dev0 #17  (76 instructions)
    70 WAIT           0300000000100000
    71 FLUSH_CACHE2   2400500000000011
    72 WAIT           0300000000010000
-   75 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #18  (16 instructions)
+   75 WAIT           03000000ffff0000
+   76 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #18  (23 instructions)
   BO72 FREED len=0x40000 flags=0x100
   BO73 FREED len=0x1000 flags=0x0
   BO74 FREED len=0x1000 flags=0x100
@@ -2788,9 +2805,16 @@ kick dev0 #18  (16 instructions)
       04000000 86880299 00000000 00000000 00000000 00000000 00000000 00000000
       BO77 00000400 00040000 00000000 00000000 00000000 00000000
     regs: r43=ff00ff
-   12 REQ_RESOURCE   2200000000000000
-   15 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #19  (16 instructions)
+   12 LOAD_MULTIPLE  140a5200000f0028
+   13 WAIT           0300000000010000
+   14 FINISH_FRAGMENT 0b040a0c00080001
+   15 REQ_RESOURCE   2200000000000000
+   16 WAIT           0300000000100000
+   17 FLUSH_CACHE2   2400500000000011
+   18 WAIT           0300000000010000
+   21 WAIT           03000000ffff0000
+   22 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #19  (23 instructions)
   BO77 FREED len=0x40000 flags=0x100
   BO78 FREED len=0x1000 flags=0x0
   BO79 FREED len=0x1000 flags=0x100
@@ -2817,9 +2841,16 @@ kick dev0 #19  (16 instructions)
       04000000 86880299 00000000 00000000 00000000 00000000 00000000 00000000
       BO82 00000400 00040000 00000000 00000000 00000000 00000000
     regs: r43=ff00ff
-   12 REQ_RESOURCE   2200000000000000
-   15 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #20  (67 instructions)
+   12 LOAD_MULTIPLE  140a5200000f0028
+   13 WAIT           0300000000010000
+   14 FINISH_FRAGMENT 0b040a0c00080001
+   15 REQ_RESOURCE   2200000000000000
+   16 WAIT           0300000000100000
+   17 FLUSH_CACHE2   2400500000000011
+   18 WAIT           0300000000010000
+   21 WAIT           03000000ffff0000
+   22 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #20  (68 instructions)
   BO82 FREED len=0x40000 flags=0x100
   BO83 FREED len=0x1000 flags=0x0
   BO84 FREED len=0x1000 flags=0x100
@@ -2946,8 +2977,9 @@ kick dev0 #20  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #21  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #21  (68 instructions)
   BO87 FREED len=0x40000 flags=0x100
   BO88 FREED len=0x1000 flags=0x0
   BO89 FREED len=0x1000 flags=0x100
@@ -3074,8 +3106,9 @@ kick dev0 #21  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #22  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #22  (68 instructions)
   BO92 FREED len=0x40000 flags=0x100
   BO93 FREED len=0x1000 flags=0x0
   BO94 FREED len=0x1000 flags=0x100
@@ -3202,8 +3235,9 @@ kick dev0 #22  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #23  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #23  (68 instructions)
   BO97 FREED len=0x10000 flags=0x100
   BO98 FREED len=0x1000 flags=0x0
   BO99 FREED len=0x1000 flags=0x100
@@ -3330,8 +3364,9 @@ kick dev0 #23  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #24  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #24  (68 instructions)
   BO102 FREED len=0x10000 flags=0x100
   BO103 FREED len=0x1000 flags=0x0
   BO104 FREED len=0x1000 flags=0x100
@@ -3458,8 +3493,9 @@ kick dev0 #24  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #25  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #25  (68 instructions)
   BO107 FREED len=0x40000 flags=0x100
   BO108 FREED len=0x1000 flags=0x0
   BO109 FREED len=0x1000 flags=0x100
@@ -3586,8 +3622,9 @@ kick dev0 #25  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #26  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #26  (68 instructions)
   BO112 FREED len=0x40000 flags=0x100
   BO113 FREED len=0x1000 flags=0x0
   BO114 FREED len=0x1000 flags=0x100
@@ -3714,8 +3751,9 @@ kick dev0 #26  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #27  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #27  (68 instructions)
   BO117 FREED len=0x20000 flags=0x100
   BO118 FREED len=0x1000 flags=0x0
   BO119 FREED len=0x1000 flags=0x100
@@ -3842,8 +3880,9 @@ kick dev0 #27  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #28  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #28  (68 instructions)
   BO122 FREED len=0x40000 flags=0x100
   BO123 FREED len=0x1000 flags=0x0
   BO124 FREED len=0x1000 flags=0x100
@@ -3970,8 +4009,9 @@ kick dev0 #28  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #29  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #29  (68 instructions)
   BO127 FREED len=0x40000 flags=0x100
   BO128 FREED len=0x1000 flags=0x0
   BO129 FREED len=0x1000 flags=0x100
@@ -4098,8 +4138,9 @@ kick dev0 #29  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #30  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #30  (68 instructions)
   BO132 FREED len=0x100000 flags=0x100
   BO133 FREED len=0x1000 flags=0x0
   BO134 FREED len=0x1000 flags=0x100
@@ -4226,8 +4267,9 @@ kick dev0 #30  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #31  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #31  (68 instructions)
   BO137 FREED len=0x40000 flags=0x100
   BO138 FREED len=0x1000 flags=0x0
   BO139 FREED len=0x1000 flags=0x100
@@ -4354,8 +4396,9 @@ kick dev0 #31  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #32  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #32  (71 instructions)
   BO142 FREED len=0x40000 flags=0x100
   BO143 FREED len=0x1000 flags=0x0
   BO144 FREED len=0x1000 flags=0x100
@@ -4572,8 +4615,9 @@ kick dev0 #32  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #33  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #33  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -4693,8 +4737,9 @@ kick dev0 #33  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #34  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #34  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -4814,8 +4859,9 @@ kick dev0 #34  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #35  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #35  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -4935,8 +4981,9 @@ kick dev0 #35  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #36  (96 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #36  (97 instructions)
   BO154 live len=0x1000 flags=0x800
   BO155 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
@@ -5231,8 +5278,9 @@ kick dev0 #36  (96 instructions)
    90 WAIT           0300000000100000
    91 FLUSH_CACHE2   2400500000000011
    92 WAIT           0300000000010000
-   95 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #37  (70 instructions)
+   95 WAIT           03000000ffff0000
+   96 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #37  (71 instructions)
   BO147 FREED len=0x40000 flags=0x100
   BO148 FREED len=0x1000 flags=0x0
   BO149 FREED len=0x20000 flags=0x100
@@ -5453,8 +5501,9 @@ kick dev0 #37  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #38  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #38  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -5574,8 +5623,9 @@ kick dev0 #38  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #39  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #39  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -5695,8 +5745,9 @@ kick dev0 #39  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #40  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #40  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -5816,8 +5867,9 @@ kick dev0 #40  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #41  (96 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #41  (97 instructions)
   BO163 live len=0x1000 flags=0x800
   BO164 live len=0x1000 flags=0x8
   BO165 live len=0x1000 flags=0x800
@@ -6115,8 +6167,9 @@ kick dev0 #41  (96 instructions)
    90 WAIT           0300000000100000
    91 FLUSH_CACHE2   2400500000000011
    92 WAIT           0300000000010000
-   95 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #42  (70 instructions)
+   95 WAIT           03000000ffff0000
+   96 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #42  (71 instructions)
   BO156 FREED len=0x40000 flags=0x100
   BO157 FREED len=0x1000 flags=0x0
   BO158 FREED len=0x50000 flags=0x100
@@ -6337,8 +6390,9 @@ kick dev0 #42  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #43  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #43  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -6458,8 +6512,9 @@ kick dev0 #43  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #44  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #44  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -6579,8 +6634,9 @@ kick dev0 #44  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #45  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #45  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -6700,8 +6756,9 @@ kick dev0 #45  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #46  (96 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #46  (97 instructions)
   BO173 live len=0x1000 flags=0x800
   BO174 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
@@ -6998,8 +7055,9 @@ kick dev0 #46  (96 instructions)
    90 WAIT           0300000000100000
    91 FLUSH_CACHE2   2400500000000011
    92 WAIT           0300000000010000
-   95 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #47  (70 instructions)
+   95 WAIT           03000000ffff0000
+   96 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #47  (71 instructions)
   BO166 FREED len=0x40000 flags=0x100
   BO167 FREED len=0x1000 flags=0x0
   BO168 FREED len=0x50000 flags=0x100
@@ -7220,8 +7278,9 @@ kick dev0 #47  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #48  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #48  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -7341,8 +7400,9 @@ kick dev0 #48  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #49  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #49  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -7462,8 +7522,9 @@ kick dev0 #49  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #50  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #50  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -7583,8 +7644,9 @@ kick dev0 #50  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #51  (96 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #51  (97 instructions)
   BO182 live len=0x1000 flags=0x800
   BO183 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
@@ -7881,8 +7943,9 @@ kick dev0 #51  (96 instructions)
    90 WAIT           0300000000100000
    91 FLUSH_CACHE2   2400500000000011
    92 WAIT           0300000000010000
-   95 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #52  (70 instructions)
+   95 WAIT           03000000ffff0000
+   96 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #52  (71 instructions)
   BO175 FREED len=0x40000 flags=0x100
   BO176 FREED len=0x1000 flags=0x0
   BO177 FREED len=0x50000 flags=0x100
@@ -8098,8 +8161,9 @@ kick dev0 #52  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #53  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #53  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -8216,8 +8280,9 @@ kick dev0 #53  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #54  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #54  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -8334,8 +8399,9 @@ kick dev0 #54  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #55  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #55  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -8452,8 +8518,9 @@ kick dev0 #55  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #56  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #56  (79 instructions)
   BO189 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -8659,8 +8726,9 @@ kick dev0 #56  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #57  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #57  (71 instructions)
   BO184 FREED len=0x80000 flags=0x100
   BO185 FREED len=0x1000 flags=0x0
   BO186 FREED len=0x1000 flags=0x100
@@ -8873,8 +8941,9 @@ kick dev0 #57  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #58  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #58  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -8991,8 +9060,9 @@ kick dev0 #58  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #59  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #59  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -9109,8 +9179,9 @@ kick dev0 #59  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #60  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #60  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -9227,8 +9298,9 @@ kick dev0 #60  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #61  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #61  (79 instructions)
   BO195 live len=0x1000 flags=0x8
   BO196 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
@@ -9435,8 +9507,9 @@ kick dev0 #61  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #62  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #62  (71 instructions)
   BO190 FREED len=0x40000 flags=0x100
   BO191 FREED len=0x1000 flags=0x0
   BO192 FREED len=0x1000 flags=0x100
@@ -9649,8 +9722,9 @@ kick dev0 #62  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #63  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #63  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -9767,8 +9841,9 @@ kick dev0 #63  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #64  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #64  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -9885,8 +9960,9 @@ kick dev0 #64  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #65  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #65  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -10003,8 +10079,9 @@ kick dev0 #65  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #66  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #66  (79 instructions)
   BO202 live len=0x1000 flags=0x8
   BO203 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
@@ -10211,8 +10288,9 @@ kick dev0 #66  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #67  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #67  (71 instructions)
   BO197 FREED len=0x40000 flags=0x100
   BO198 FREED len=0x1000 flags=0x0
   BO199 FREED len=0x1000 flags=0x100
@@ -10425,8 +10503,9 @@ kick dev0 #67  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #68  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #68  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -10543,8 +10622,9 @@ kick dev0 #68  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #69  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #69  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -10661,8 +10741,9 @@ kick dev0 #69  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #70  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #70  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -10779,8 +10860,9 @@ kick dev0 #70  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #71  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #71  (79 instructions)
   BO209 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -10986,8 +11068,9 @@ kick dev0 #71  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #72  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #72  (71 instructions)
   BO204 FREED len=0x40000 flags=0x100
   BO205 FREED len=0x1000 flags=0x0
   BO206 FREED len=0x1000 flags=0x100
@@ -11200,8 +11283,9 @@ kick dev0 #72  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #73  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #73  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -11318,8 +11402,9 @@ kick dev0 #73  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #74  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #74  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -11436,8 +11521,9 @@ kick dev0 #74  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #75  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #75  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -11554,8 +11640,9 @@ kick dev0 #75  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #76  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #76  (79 instructions)
   BO215 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -11761,8 +11848,9 @@ kick dev0 #76  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #77  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #77  (71 instructions)
   BO210 FREED len=0x80000 flags=0x100
   BO211 FREED len=0x1000 flags=0x0
   BO212 FREED len=0x1000 flags=0x100
@@ -11975,8 +12063,9 @@ kick dev0 #77  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #78  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #78  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -12093,8 +12182,9 @@ kick dev0 #78  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #79  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #79  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -12211,8 +12301,9 @@ kick dev0 #79  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #80  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #80  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -12329,8 +12420,9 @@ kick dev0 #80  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #81  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #81  (79 instructions)
   BO221 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -12536,8 +12628,9 @@ kick dev0 #81  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #82  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #82  (71 instructions)
   BO216 FREED len=0x40000 flags=0x100
   BO217 FREED len=0x1000 flags=0x0
   BO218 FREED len=0x1000 flags=0x100
@@ -12750,8 +12843,9 @@ kick dev0 #82  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #83  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #83  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -12868,8 +12962,9 @@ kick dev0 #83  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #84  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #84  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -12986,8 +13081,9 @@ kick dev0 #84  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #85  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #85  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -13104,8 +13200,9 @@ kick dev0 #85  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #86  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #86  (79 instructions)
   BO227 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -13311,8 +13408,9 @@ kick dev0 #86  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #87  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #87  (71 instructions)
   BO222 FREED len=0x80000 flags=0x100
   BO223 FREED len=0x1000 flags=0x0
   BO224 FREED len=0x1000 flags=0x100
@@ -13525,8 +13623,9 @@ kick dev0 #87  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #88  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #88  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -13643,8 +13742,9 @@ kick dev0 #88  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #89  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #89  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -13761,8 +13861,9 @@ kick dev0 #89  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #90  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #90  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -13879,8 +13980,9 @@ kick dev0 #90  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #91  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #91  (79 instructions)
   BO233 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -14086,8 +14188,9 @@ kick dev0 #91  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #92  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #92  (71 instructions)
   BO228 FREED len=0x40000 flags=0x100
   BO229 FREED len=0x1000 flags=0x0
   BO230 FREED len=0x1000 flags=0x100
@@ -14300,8 +14403,9 @@ kick dev0 #92  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #93  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #93  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -14418,8 +14522,9 @@ kick dev0 #93  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #94  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #94  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -14536,8 +14641,9 @@ kick dev0 #94  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #95  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #95  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -14654,8 +14760,9 @@ kick dev0 #95  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #96  (78 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #96  (79 instructions)
   BO239 live len=0x1000 flags=0x800
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
@@ -14861,8 +14968,9 @@ kick dev0 #96  (78 instructions)
    72 WAIT           0300000000100000
    73 FLUSH_CACHE2   2400500000000011
    74 WAIT           0300000000010000
-   77 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #97  (70 instructions)
+   77 WAIT           03000000ffff0000
+   78 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #97  (71 instructions)
   BO234 FREED len=0x20000 flags=0x100
   BO235 FREED len=0x1000 flags=0x0
   BO236 FREED len=0x1000 flags=0x100
@@ -15080,8 +15188,9 @@ kick dev0 #97  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #98  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #98  (71 instructions)
   BO240 FREED len=0x40000 flags=0x100
   BO241 FREED len=0x1000 flags=0x0
   BO242 FREED len=0x20000 flags=0x100
@@ -15300,8 +15409,9 @@ kick dev0 #98  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #99  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #99  (68 instructions)
   BO247 FREED len=0x40000 flags=0x100
   BO248 FREED len=0x1000 flags=0x0
   BO249 FREED len=0x50000 flags=0x100
@@ -15435,8 +15545,9 @@ kick dev0 #99  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #100  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #100  (68 instructions)
   BO254 FREED len=0x40000 flags=0x100
   BO255 FREED len=0x1000 flags=0x0
   BO256 FREED len=0x10000 flags=0x100
@@ -15570,8 +15681,9 @@ kick dev0 #100  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #101  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #101  (68 instructions)
   BO261 FREED len=0x40000 flags=0x100
   BO262 FREED len=0x1000 flags=0x0
   BO263 FREED len=0x10000 flags=0x100
@@ -15705,8 +15817,9 @@ kick dev0 #101  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #102  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #102  (68 instructions)
   BO268 FREED len=0x40000 flags=0x100
   BO269 FREED len=0x1000 flags=0x0
   BO270 FREED len=0x10000 flags=0x100
@@ -15840,8 +15953,9 @@ kick dev0 #102  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #103  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #103  (68 instructions)
   BO275 FREED len=0x40000 flags=0x100
   BO276 FREED len=0x1000 flags=0x0
   BO277 FREED len=0x10000 flags=0x100
@@ -15975,8 +16089,9 @@ kick dev0 #103  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #104  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #104  (68 instructions)
   BO282 FREED len=0x40000 flags=0x100
   BO283 FREED len=0x1000 flags=0x0
   BO284 FREED len=0x10000 flags=0x100
@@ -16110,8 +16225,9 @@ kick dev0 #104  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #105  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #105  (68 instructions)
   BO289 FREED len=0x40000 flags=0x100
   BO290 FREED len=0x1000 flags=0x0
   BO291 FREED len=0x10000 flags=0x100
@@ -16245,8 +16361,9 @@ kick dev0 #105  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #106  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #106  (68 instructions)
   BO296 FREED len=0x40000 flags=0x100
   BO297 FREED len=0x1000 flags=0x0
   BO298 FREED len=0x10000 flags=0x100
@@ -16380,8 +16497,9 @@ kick dev0 #106  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #107  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #107  (68 instructions)
   BO303 FREED len=0x40000 flags=0x100
   BO304 FREED len=0x1000 flags=0x0
   BO305 FREED len=0x10000 flags=0x100
@@ -16515,8 +16633,9 @@ kick dev0 #107  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #108  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #108  (68 instructions)
   BO310 FREED len=0x40000 flags=0x100
   BO311 FREED len=0x1000 flags=0x0
   BO312 FREED len=0x10000 flags=0x100
@@ -16650,8 +16769,9 @@ kick dev0 #108  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #109  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #109  (68 instructions)
   BO317 FREED len=0x40000 flags=0x100
   BO318 FREED len=0x1000 flags=0x0
   BO319 FREED len=0x10000 flags=0x100
@@ -16785,8 +16905,9 @@ kick dev0 #109  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #110  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #110  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -16906,8 +17027,9 @@ kick dev0 #110  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #111  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #111  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -17112,8 +17234,9 @@ kick dev0 #111  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #112  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #112  (68 instructions)
   BO324 FREED len=0x40000 flags=0x100
   BO325 FREED len=0x1000 flags=0x0
   BO326 FREED len=0x10000 flags=0x100
@@ -17247,8 +17370,9 @@ kick dev0 #112  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #113  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #113  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -17368,8 +17492,9 @@ kick dev0 #113  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #114  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #114  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -17574,8 +17699,9 @@ kick dev0 #114  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #115  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #115  (68 instructions)
   BO331 FREED len=0x40000 flags=0x100
   BO332 FREED len=0x1000 flags=0x0
   BO333 FREED len=0x10000 flags=0x100
@@ -17709,8 +17835,9 @@ kick dev0 #115  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #116  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #116  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -17830,8 +17957,9 @@ kick dev0 #116  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #117  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #117  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -18036,8 +18164,9 @@ kick dev0 #117  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #118  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #118  (68 instructions)
   BO338 FREED len=0x40000 flags=0x100
   BO339 FREED len=0x1000 flags=0x0
   BO340 FREED len=0x10000 flags=0x100
@@ -18171,8 +18300,9 @@ kick dev0 #118  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #119  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #119  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -18292,8 +18422,9 @@ kick dev0 #119  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #120  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #120  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -18498,8 +18629,9 @@ kick dev0 #120  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #121  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #121  (68 instructions)
   BO345 FREED len=0x40000 flags=0x100
   BO346 FREED len=0x1000 flags=0x0
   BO347 FREED len=0x10000 flags=0x100
@@ -18633,8 +18765,9 @@ kick dev0 #121  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #122  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #122  (68 instructions)
   BO352 FREED len=0x40000 flags=0x100
   BO353 FREED len=0x1000 flags=0x0
   BO354 FREED len=0x50000 flags=0x100
@@ -18768,8 +18901,9 @@ kick dev0 #122  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #123  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #123  (68 instructions)
   BO359 FREED len=0x40000 flags=0x100
   BO360 FREED len=0x1000 flags=0x0
   BO361 FREED len=0x50000 flags=0x100
@@ -18903,8 +19037,9 @@ kick dev0 #123  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #124  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #124  (68 instructions)
   BO366 FREED len=0x40000 flags=0x100
   BO367 FREED len=0x1000 flags=0x0
   BO368 FREED len=0x50000 flags=0x100
@@ -19038,8 +19173,9 @@ kick dev0 #124  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #125  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #125  (68 instructions)
   BO373 FREED len=0x40000 flags=0x100
   BO374 FREED len=0x1000 flags=0x0
   BO375 FREED len=0x50000 flags=0x100
@@ -19173,8 +19309,9 @@ kick dev0 #125  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #126  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #126  (68 instructions)
   BO380 FREED len=0x40000 flags=0x100
   BO381 FREED len=0x1000 flags=0x0
   BO382 FREED len=0x50000 flags=0x100
@@ -19308,8 +19445,9 @@ kick dev0 #126  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #127  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #127  (68 instructions)
   BO387 FREED len=0x40000 flags=0x100
   BO388 FREED len=0x1000 flags=0x0
   BO389 FREED len=0x50000 flags=0x100
@@ -19443,8 +19581,9 @@ kick dev0 #127  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #128  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #128  (68 instructions)
   BO394 FREED len=0x40000 flags=0x100
   BO395 FREED len=0x1000 flags=0x0
   BO396 FREED len=0x50000 flags=0x100
@@ -19578,8 +19717,9 @@ kick dev0 #128  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #129  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #129  (68 instructions)
   BO401 FREED len=0x40000 flags=0x100
   BO402 FREED len=0x1000 flags=0x0
   BO403 FREED len=0x50000 flags=0x100
@@ -19713,8 +19853,9 @@ kick dev0 #129  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #130  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #130  (68 instructions)
   BO408 FREED len=0x40000 flags=0x100
   BO409 FREED len=0x1000 flags=0x0
   BO410 FREED len=0x50000 flags=0x100
@@ -19848,8 +19989,9 @@ kick dev0 #130  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #131  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #131  (68 instructions)
   BO415 FREED len=0x40000 flags=0x100
   BO416 FREED len=0x1000 flags=0x0
   BO417 FREED len=0x50000 flags=0x100
@@ -19983,8 +20125,9 @@ kick dev0 #131  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #132  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #132  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -20104,8 +20247,9 @@ kick dev0 #132  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #133  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #133  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -20310,8 +20454,9 @@ kick dev0 #133  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #134  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #134  (68 instructions)
   BO422 FREED len=0x40000 flags=0x100
   BO423 FREED len=0x1000 flags=0x0
   BO424 FREED len=0x50000 flags=0x100
@@ -20445,8 +20590,9 @@ kick dev0 #134  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #135  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #135  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -20566,8 +20712,9 @@ kick dev0 #135  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #136  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #136  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -20772,8 +20919,9 @@ kick dev0 #136  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #137  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #137  (68 instructions)
   BO429 FREED len=0x40000 flags=0x100
   BO430 FREED len=0x1000 flags=0x0
   BO431 FREED len=0x50000 flags=0x100
@@ -20907,8 +21055,9 @@ kick dev0 #137  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #138  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #138  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -21028,8 +21177,9 @@ kick dev0 #138  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #139  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #139  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -21234,8 +21384,9 @@ kick dev0 #139  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #140  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #140  (68 instructions)
   BO436 FREED len=0x40000 flags=0x100
   BO437 FREED len=0x1000 flags=0x0
   BO438 FREED len=0x50000 flags=0x100
@@ -21369,8 +21520,9 @@ kick dev0 #140  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #141  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #141  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -21490,8 +21642,9 @@ kick dev0 #141  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #142  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #142  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -21696,8 +21849,9 @@ kick dev0 #142  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #143  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #143  (68 instructions)
   BO443 FREED len=0x40000 flags=0x100
   BO444 FREED len=0x1000 flags=0x0
   BO445 FREED len=0x50000 flags=0x100
@@ -21831,8 +21985,9 @@ kick dev0 #143  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #144  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #144  (68 instructions)
   BO450 FREED len=0x40000 flags=0x100
   BO451 FREED len=0x1000 flags=0x0
   BO452 FREED len=0x50000 flags=0x100
@@ -21966,8 +22121,9 @@ kick dev0 #144  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #145  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #145  (68 instructions)
   BO457 FREED len=0x40000 flags=0x100
   BO458 FREED len=0x1000 flags=0x0
   BO459 FREED len=0x50000 flags=0x100
@@ -22101,8 +22257,9 @@ kick dev0 #145  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #146  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #146  (68 instructions)
   BO464 FREED len=0x40000 flags=0x100
   BO465 FREED len=0x1000 flags=0x0
   BO466 FREED len=0x50000 flags=0x100
@@ -22236,8 +22393,9 @@ kick dev0 #146  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #147  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #147  (68 instructions)
   BO471 FREED len=0x40000 flags=0x100
   BO472 FREED len=0x1000 flags=0x0
   BO473 FREED len=0x50000 flags=0x100
@@ -22371,8 +22529,9 @@ kick dev0 #147  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #148  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #148  (68 instructions)
   BO478 FREED len=0x40000 flags=0x100
   BO479 FREED len=0x1000 flags=0x0
   BO480 FREED len=0x50000 flags=0x100
@@ -22506,8 +22665,9 @@ kick dev0 #148  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #149  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #149  (68 instructions)
   BO485 FREED len=0x40000 flags=0x100
   BO486 FREED len=0x1000 flags=0x0
   BO487 FREED len=0x50000 flags=0x100
@@ -22641,8 +22801,9 @@ kick dev0 #149  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #150  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #150  (68 instructions)
   BO492 FREED len=0x40000 flags=0x100
   BO493 FREED len=0x1000 flags=0x0
   BO494 FREED len=0x50000 flags=0x100
@@ -22776,8 +22937,9 @@ kick dev0 #150  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #151  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #151  (68 instructions)
   BO499 FREED len=0x40000 flags=0x100
   BO500 FREED len=0x1000 flags=0x0
   BO501 FREED len=0x50000 flags=0x100
@@ -22911,8 +23073,9 @@ kick dev0 #151  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #152  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #152  (68 instructions)
   BO506 FREED len=0x40000 flags=0x100
   BO507 FREED len=0x1000 flags=0x0
   BO508 FREED len=0x50000 flags=0x100
@@ -23046,8 +23209,9 @@ kick dev0 #152  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #153  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #153  (68 instructions)
   BO513 FREED len=0x40000 flags=0x100
   BO514 FREED len=0x1000 flags=0x0
   BO515 FREED len=0x50000 flags=0x100
@@ -23181,8 +23345,9 @@ kick dev0 #153  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #154  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #154  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -23302,8 +23467,9 @@ kick dev0 #154  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #155  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #155  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -23508,8 +23674,9 @@ kick dev0 #155  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #156  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #156  (68 instructions)
   BO520 FREED len=0x40000 flags=0x100
   BO521 FREED len=0x1000 flags=0x0
   BO522 FREED len=0x50000 flags=0x100
@@ -23643,8 +23810,9 @@ kick dev0 #156  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #157  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #157  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -23764,8 +23932,9 @@ kick dev0 #157  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #158  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #158  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -23970,8 +24139,9 @@ kick dev0 #158  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #159  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #159  (68 instructions)
   BO527 FREED len=0x40000 flags=0x100
   BO528 FREED len=0x1000 flags=0x0
   BO529 FREED len=0x50000 flags=0x100
@@ -24105,8 +24275,9 @@ kick dev0 #159  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #160  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #160  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -24226,8 +24397,9 @@ kick dev0 #160  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #161  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #161  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -24432,8 +24604,9 @@ kick dev0 #161  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #162  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #162  (68 instructions)
   BO534 FREED len=0x40000 flags=0x100
   BO535 FREED len=0x1000 flags=0x0
   BO536 FREED len=0x50000 flags=0x100
@@ -24567,8 +24740,9 @@ kick dev0 #162  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #163  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #163  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -24688,8 +24862,9 @@ kick dev0 #163  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #164  (70 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #164  (71 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -24894,8 +25069,9 @@ kick dev0 #164  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #165  (67 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #165  (68 instructions)
   BO541 FREED len=0x40000 flags=0x100
   BO542 FREED len=0x1000 flags=0x0
   BO543 FREED len=0x50000 flags=0x100
@@ -25024,8 +25200,9 @@ kick dev0 #165  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #166  (80 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #166  (81 instructions)
   BO548 FREED len=0x40000 flags=0x100
   BO549 FREED len=0x1000 flags=0x0
   BO550 FREED len=0x1000 flags=0x100
@@ -25237,8 +25414,9 @@ kick dev0 #166  (80 instructions)
    74 WAIT           0300000000100000
    75 FLUSH_CACHE2   2400500000000011
    76 WAIT           0300000000010000
-   79 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #167  (67 instructions)
+   79 WAIT           03000000ffff0000
+   80 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #167  (68 instructions)
   BO553 FREED len=0x40000 flags=0x100
   BO554 FREED len=0x1000 flags=0x0
   BO555 FREED len=0x1000 flags=0x100
@@ -25365,8 +25543,9 @@ kick dev0 #167  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #168  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #168  (68 instructions)
   BO558 FREED len=0x40000 flags=0x100
   BO559 FREED len=0x1000 flags=0x0
   BO560 FREED len=0x1000 flags=0x100
@@ -25493,8 +25672,9 @@ kick dev0 #168  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #169  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #169  (68 instructions)
   BO563 FREED len=0x40000 flags=0x100
   BO564 FREED len=0x1000 flags=0x0
   BO565 FREED len=0x1000 flags=0x100
@@ -25621,8 +25801,9 @@ kick dev0 #169  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #170  (71 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #170  (72 instructions)
   BO568 FREED len=0x40000 flags=0x100
   BO569 FREED len=0x1000 flags=0x0
   BO570 FREED len=0x1000 flags=0x100
@@ -25834,8 +26015,9 @@ kick dev0 #170  (71 instructions)
    65 WAIT           0300000000100000
    66 FLUSH_CACHE2   2400500000000011
    67 WAIT           0300000000010000
-   70 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #171  (68 instructions)
+   70 WAIT           03000000ffff0000
+   71 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #171  (69 instructions)
   BO573 FREED len=0x40000 flags=0x100
   BO574 FREED len=0x1000 flags=0x0
   BO575 FREED len=0x1000 flags=0x100
@@ -25962,8 +26144,9 @@ kick dev0 #171  (68 instructions)
    62 WAIT           0300000000100000
    63 FLUSH_CACHE2   2400500000000011
    64 WAIT           0300000000010000
-   67 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #172  (67 instructions)
+   67 WAIT           03000000ffff0000
+   68 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #172  (68 instructions)
   BO578 FREED len=0x40000 flags=0x100
   BO579 FREED len=0x1000 flags=0x0
   BO580 FREED len=0x1000 flags=0x100
@@ -26090,8 +26273,9 @@ kick dev0 #172  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #173  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #173  (68 instructions)
   BO583 FREED len=0x40000 flags=0x100
   BO584 FREED len=0x1000 flags=0x0
   BO585 FREED len=0x1000 flags=0x100
@@ -26218,8 +26402,9 @@ kick dev0 #173  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #174  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #174  (68 instructions)
   BO588 FREED len=0x40000 flags=0x100
   BO589 FREED len=0x1000 flags=0x0
   BO590 FREED len=0x1000 flags=0x100
@@ -26346,8 +26531,9 @@ kick dev0 #174  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #175  (82 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #175  (83 instructions)
   BO593 FREED len=0x40000 flags=0x100
   BO594 FREED len=0x1000 flags=0x0
   BO595 FREED len=0x1000 flags=0x100
@@ -26564,8 +26750,9 @@ kick dev0 #175  (82 instructions)
    76 WAIT           0300000000100000
    77 FLUSH_CACHE2   2400500000000011
    78 WAIT           0300000000010000
-   81 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #176  (97 instructions)
+   81 WAIT           03000000ffff0000
+   82 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #176  (98 instructions)
   BO598 FREED len=0x40000 flags=0x100
   BO599 FREED len=0x1000 flags=0x0
   BO600 FREED len=0x1000 flags=0x100
@@ -26879,8 +27066,9 @@ kick dev0 #176  (97 instructions)
    91 WAIT           0300000000100000
    92 FLUSH_CACHE2   2400500000000011
    93 WAIT           0300000000010000
-   96 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #177  (82 instructions)
+   96 WAIT           03000000ffff0000
+   97 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #177  (83 instructions)
   BO605 FREED len=0x40000 flags=0x100
   BO606 FREED len=0x1000 flags=0x0
   BO607 FREED len=0x40000 flags=0x100
@@ -27802,8 +27990,9 @@ kick dev0 #177  (82 instructions)
    76 WAIT           0300000000100000
    77 FLUSH_CACHE2   2400500000000011
    78 WAIT           0300000000010000
-   81 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #178  (77 instructions)
+   81 WAIT           03000000ffff0000
+   82 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #178  (78 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -28175,8 +28364,9 @@ kick dev0 #178  (77 instructions)
    71 WAIT           0300000000100000
    72 FLUSH_CACHE2   2400500000000011
    73 WAIT           0300000000010000
-   76 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #179  (93 instructions)
+   76 WAIT           03000000ffff0000
+   77 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #179  (94 instructions)
   BO810 FREED len=0x40000 flags=0x100
   BO811 FREED len=0x1000 flags=0x0
   BO812 FREED len=0x1000 flags=0x100
@@ -28907,8 +29097,9 @@ kick dev0 #179  (93 instructions)
    87 WAIT           0300000000100000
    88 FLUSH_CACHE2   2400500000000011
    89 WAIT           0300000000010000
-   92 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #180  (70 instructions)
+   92 WAIT           03000000ffff0000
+   93 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #180  (71 instructions)
   BO815 FREED len=0x40000 flags=0x100
   BO816 FREED len=0x1000 flags=0x0
   BO817 FREED len=0x1000 flags=0x100
@@ -29283,8 +29474,9 @@ kick dev0 #180  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #181  (96 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #181  (97 instructions)
   BO821 FREED len=0x40000 flags=0x100
   BO822 FREED len=0x1000 flags=0x0
   BO823 FREED len=0x1000 flags=0x100
@@ -29658,8 +29850,9 @@ kick dev0 #181  (96 instructions)
    90 WAIT           0300000000100000
    91 FLUSH_CACHE2   2400500000000011
    92 WAIT           0300000000010000
-   95 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #182  (70 instructions)
+   95 WAIT           03000000ffff0000
+   96 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #182  (71 instructions)
   BO826 FREED len=0x40000 flags=0x100
   BO827 FREED len=0x1000 flags=0x0
   BO828 FREED len=0x1000 flags=0x100
@@ -30033,8 +30226,9 @@ kick dev0 #182  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #183  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #183  (71 instructions)
   BO831 FREED len=0x40000 flags=0x100
   BO832 FREED len=0x1000 flags=0x0
   BO833 FREED len=0x1000 flags=0x100
@@ -30416,8 +30610,9 @@ kick dev0 #183  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #184  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #184  (71 instructions)
   BO836 FREED len=0x40000 flags=0x100
   BO837 FREED len=0x1000 flags=0x0
   BO838 FREED len=0x1000 flags=0x100
@@ -30799,8 +30994,9 @@ kick dev0 #184  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #185  (76 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #185  (77 instructions)
   BO841 FREED len=0x40000 flags=0x100
   BO842 FREED len=0x1000 flags=0x0
   BO843 FREED len=0x1000 flags=0x100
@@ -31182,8 +31378,9 @@ kick dev0 #185  (76 instructions)
    70 WAIT           0300000000100000
    71 FLUSH_CACHE2   2400500000000011
    72 WAIT           0300000000010000
-   75 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #186  (70 instructions)
+   75 WAIT           03000000ffff0000
+   76 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #186  (71 instructions)
   BO846 FREED len=0x40000 flags=0x100
   BO847 FREED len=0x1000 flags=0x0
   BO848 FREED len=0x1000 flags=0x100
@@ -31565,8 +31762,9 @@ kick dev0 #186  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #187  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #187  (71 instructions)
   BO851 FREED len=0x40000 flags=0x100
   BO852 FREED len=0x1000 flags=0x0
   BO853 FREED len=0x1000 flags=0x100
@@ -31948,8 +32146,9 @@ kick dev0 #187  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #188  (82 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #188  (83 instructions)
   BO856 FREED len=0x40000 flags=0x100
   BO857 FREED len=0x1000 flags=0x0
   BO858 FREED len=0x1000 flags=0x100
@@ -32331,8 +32530,9 @@ kick dev0 #188  (82 instructions)
    76 WAIT           0300000000100000
    77 FLUSH_CACHE2   2400500000000011
    78 WAIT           0300000000010000
-   81 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #189  (70 instructions)
+   81 WAIT           03000000ffff0000
+   82 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #189  (71 instructions)
   BO861 FREED len=0x40000 flags=0x100
   BO862 FREED len=0x1000 flags=0x0
   BO863 FREED len=0x1000 flags=0x100
@@ -32714,8 +32914,9 @@ kick dev0 #189  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #190  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #190  (71 instructions)
   BO866 FREED len=0x40000 flags=0x100
   BO867 FREED len=0x1000 flags=0x0
   BO868 FREED len=0x1000 flags=0x100
@@ -33097,8 +33298,9 @@ kick dev0 #190  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #191  (97 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #191  (98 instructions)
   BO871 FREED len=0x40000 flags=0x100
   BO872 FREED len=0x1000 flags=0x0
   BO873 FREED len=0x1000 flags=0x100
@@ -33480,8 +33682,9 @@ kick dev0 #191  (97 instructions)
    91 WAIT           0300000000100000
    92 FLUSH_CACHE2   2400500000000011
    93 WAIT           0300000000010000
-   96 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #192  (70 instructions)
+   96 WAIT           03000000ffff0000
+   97 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #192  (71 instructions)
   BO876 FREED len=0x40000 flags=0x100
   BO877 FREED len=0x1000 flags=0x0
   BO878 FREED len=0x1000 flags=0x100
@@ -33863,8 +34066,9 @@ kick dev0 #192  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #193  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #193  (71 instructions)
   BO881 FREED len=0x40000 flags=0x100
   BO882 FREED len=0x1000 flags=0x0
   BO883 FREED len=0x1000 flags=0x100
@@ -34246,8 +34450,9 @@ kick dev0 #193  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #194  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #194  (71 instructions)
   BO886 FREED len=0x40000 flags=0x100
   BO887 FREED len=0x1000 flags=0x0
   BO888 FREED len=0x1000 flags=0x100
@@ -34629,8 +34834,9 @@ kick dev0 #194  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #195  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #195  (71 instructions)
   BO891 FREED len=0x40000 flags=0x100
   BO892 FREED len=0x1000 flags=0x0
   BO893 FREED len=0x1000 flags=0x100
@@ -35012,8 +35218,9 @@ kick dev0 #195  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #196  (70 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #196  (71 instructions)
   BO896 FREED len=0x40000 flags=0x100
   BO897 FREED len=0x1000 flags=0x0
   BO898 FREED len=0x1000 flags=0x100
@@ -35395,8 +35602,9 @@ kick dev0 #196  (70 instructions)
    64 WAIT           0300000000100000
    65 FLUSH_CACHE2   2400500000000011
    66 WAIT           0300000000010000
-   69 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #197  (77 instructions)
+   69 WAIT           03000000ffff0000
+   70 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #197  (78 instructions)
   BO901 FREED len=0x40000 flags=0x100
   BO902 FREED len=0x1000 flags=0x0
   BO903 FREED len=0x1000 flags=0x100
@@ -35778,8 +35986,9 @@ kick dev0 #197  (77 instructions)
    71 WAIT           0300000000100000
    72 FLUSH_CACHE2   2400500000000011
    73 WAIT           0300000000010000
-   76 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #198  (67 instructions)
+   76 WAIT           03000000ffff0000
+   77 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #198  (68 instructions)
   BO906 FREED len=0x40000 flags=0x100
   BO907 FREED len=0x1000 flags=0x0
   BO908 FREED len=0x1000 flags=0x100
@@ -35906,8 +36115,9 @@ kick dev0 #198  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #199  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #199  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -36024,8 +36234,9 @@ kick dev0 #199  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #200  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #200  (68 instructions)
     2 FLUSH_CACHE2   2400500000000200
     3 WAIT           0300000000010000
    38 HEAP_SET       3000580000000000
@@ -36142,8 +36353,9 @@ kick dev0 #200  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #201  (110 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #201  (112 instructions)
   BO911 FREED len=0x40000 flags=0x100
   BO912 FREED len=0x1000 flags=0x0
   BO913 FREED len=0x1000 flags=0x100
@@ -36205,15 +36417,16 @@ kick dev0 #201  (110 instructions)
    22 REQ_RESOURCE   2200000000000000
    23 FLUSH_CACHE2   2400500000000011
    24 WAIT           0300000000010000
-   27 SYNC_ADD64     33005456ffff0000 addr=BO2
-   30 FLUSH_CACHE2   2400500000000200
-   31 WAIT           0300000000010000
-   66 HEAP_SET       3000580000000000
-   67 SET_STATE_IMM32 1c00000000000003
-   68 SET_STATE_IMM32 1c00000100000000
-   69 REQ_RESOURCE   220000000000000c
-   70 HEAP_OPERATION 3100000000000000
-   75 RUN_IDVS2      0c00000200000000
+   27 WAIT           03000000ffff0000
+   28 SYNC_ADD64     3300545600000000 addr=BO2
+   31 FLUSH_CACHE2   2400500000000200
+   32 WAIT           0300000000010000
+   67 HEAP_SET       3000580000000000
+   68 SET_STATE_IMM32 1c00000000000003
+   69 SET_STATE_IMM32 1c00000100000000
+   70 REQ_RESOURCE   220000000000000c
+   71 HEAP_OPERATION 3100000000000000
+   76 RUN_IDVS2      0c00000200000000
   RUN_IDVS2 regs:
     SRT_v r0 = BO0+0x9d980|0x4
     SRT_v
@@ -36298,7 +36511,7 @@ kick dev0 #201  (110 instructions)
     blend
       00000a00 f0122122 00000019 000ed000
     regs: r33=3 r34=1 r38=1 r39=1 r43=ff00ff r45=ff00ff r47=3f800000 r51=10 r56=470008 r57=481c00b r58=1ffff r59=3001000 r64=BO921+0x40|0x8 r84=BO2 r86=1 r88=HEAP3
-   77 RUN_IDVS2      0c00000200000000
+   78 RUN_IDVS2      0c00000200000000
   RUN_IDVS2 regs:
     SRT_v r0 = BO0+0x9d980|0x4
     SRT_v
@@ -36383,12 +36596,12 @@ kick dev0 #201  (110 instructions)
     blend
       00000a00 f0122122 00000019 000ed000
     regs: r33=3 r34=1 r38=1 r39=1 r43=ff00ff r45=ff00ff r47=3f800000 r51=10 r56=470008 r57=481c00b r58=1ffff r59=3001000 r64=BO921+0x40|0x28 r84=BO2 r86=1 r88=HEAP3
-   78 FINISH_TILING  0900000000000000
-   79 WAIT           0300000000080000
-   80 HEAP_OPERATION 3100000100000000
-   81 REQ_RESOURCE   2200000000000002
-   82 SET_STATE_IMM32 1c00000000000003
-   86 RUN_FRAGMENT   0700000000000000
+   79 FINISH_TILING  0900000000000000
+   80 WAIT           0300000000080000
+   81 HEAP_OPERATION 3100000100000000
+   82 REQ_RESOURCE   2200000000000002
+   83 SET_STATE_IMM32 1c00000000000003
+   87 RUN_FRAGMENT   0700000000000000
   RUN_FRAGMENT regs:
     FBD r40 = BO0+0x9d540|0x1
     FBD
@@ -36400,19 +36613,20 @@ kick dev0 #201  (110 instructions)
       04000000 86880299 00000000 00000000 00000000 00000000 00000000 00000000
       BO916 00000400 00040000 00000000 00000000 00000000 00000000
     regs: r0=BO0+0x9d980|0x4 r2=BO0+0x9d980|0x4 r8=BO0+0x9d9c0^0xd00 r10=BO0+0x9da40^0x800 r16=BO0+0x9d640|0x20 r18=BO0+0x9d680 r24=BO0+0x9d640 r26=BO0+0x9d640 r33=3 r34=1 r38=1 r39=1 r43=ff00ff r47=3f800000 r51=10 r52=BO0+0x9d6c0|0x20 r54=BO0+0x9d6c0|0x1 r56=470008 r57=481c00b r58=1ffff r59=3001000 r64=BO921+0x40|0x28 r82=BO0+0x9d4c0 r84=BO2 r86=1 r88=HEAP3
-   87 LOAD_MULTIPLE  140a5200000f0028
-   88 WAIT           0300000000010000
-   89 FINISH_FRAGMENT 0b040a0c00080001
-   90 REQ_RESOURCE   2200000000000000
-   91 WAIT           0300000000100000
-   92 FLUSH_CACHE2   2400500000000011
-   93 WAIT           0300000000010000
-   96 SYNC_ADD64     33005456ffff0000 addr=BO2
-  100 SYNC_SET32     2600545600000000 addr=BO921+0x40
-  103 SYNC_SET32     2600545600000000 addr=BO921+0x50
-  106 SYNC_SET32     2600545600000000 addr=BO921+0x60
-  109 SYNC_ADD64     3300545600000000 addr=BO2
-kick dev0 #202  (67 instructions)
+   88 LOAD_MULTIPLE  140a5200000f0028
+   89 WAIT           0300000000010000
+   90 FINISH_FRAGMENT 0b040a0c00080001
+   91 REQ_RESOURCE   2200000000000000
+   92 WAIT           0300000000100000
+   93 FLUSH_CACHE2   2400500000000011
+   94 WAIT           0300000000010000
+   97 WAIT           03000000ffff0000
+   98 SYNC_ADD64     3300545600000000 addr=BO2
+  102 SYNC_SET32     2600545600000000 addr=BO921+0x40
+  105 SYNC_SET32     2600545600000000 addr=BO921+0x50
+  108 SYNC_SET32     2600545600000000 addr=BO921+0x60
+  111 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #202  (68 instructions)
   BO916 FREED len=0x40000 flags=0x100
   BO917 FREED len=0x1000 flags=0x0
   BO918 FREED len=0x1000 flags=0x100
@@ -36541,8 +36755,9 @@ kick dev0 #202  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #203  (67 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #203  (68 instructions)
   BO924 FREED len=0x40000 flags=0x100
   BO925 FREED len=0x1000 flags=0x0
   BO926 FREED len=0x1000 flags=0x100
@@ -36675,8 +36890,9 @@ kick dev0 #203  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #204  (76 instructions)
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #204  (77 instructions)
   BO929 FREED len=0x1000 flags=0x0
   BO930 FREED len=0x40000 flags=0x100
   BO931 FREED len=0x1000 flags=0x0
@@ -36900,8 +37116,9 @@ kick dev0 #204  (76 instructions)
    70 WAIT           0300000000100000
    71 FLUSH_CACHE2   2400500000000011
    72 WAIT           0300000000010000
-   75 SYNC_ADD64     33005456ffff0000 addr=BO2
-kick dev0 #205  (67 instructions)
+   75 WAIT           03000000ffff0000
+   76 SYNC_ADD64     3300545600000000 addr=BO2
+kick dev0 #205  (68 instructions)
   BO936 FREED len=0x1000 flags=0x0
   BO937 FREED len=0x40000 flags=0x100
   BO938 FREED len=0x1000 flags=0x0
@@ -37040,4 +37257,5 @@ kick dev0 #205  (67 instructions)
    61 WAIT           0300000000100000
    62 FLUSH_CACHE2   2400500000000011
    63 WAIT           0300000000010000
-   66 SYNC_ADD64     33005456ffff0000 addr=BO2
+   66 WAIT           03000000ffff0000
+   67 SYNC_ADD64     3300545600000000 addr=BO2

@@ -149,15 +149,27 @@ def retire_norm(seq):
     difference, so compare the instructions with those three fields folded and the two fragment-ordering waits dropped.
     """
     out = []
-    for w in seq:
+    prev = None
+    head_flush_seen = False
+    for i, w in enumerate(seq):
         op = (w >> 56) & 0xff
+        nxt = (seq[i + 1] >> 56) & 0xff if i + 1 < len(seq) else None
         if op == 11:                                   # FINISH_FRAGMENT: fold wait mask (31:16) and signal slot (51:48)
             w &= ~((0xffff << 16) | (0xf << 48))
-        if op == 36:                                     # FLUSH_CACHE2: compare the "others" field only
-            w = (w & ~0xfff) | (w & 0xf00)               # head flush is now others-invalidate only (0x200 vs 0x233)
-        if op == 3 and ((w >> 16) & 0xffff) in (0x0008, 0x0010):   # WAIT: the fragment-slot waits (bit 3 = endpoint, bit 4 = our new slot)
-            continue
+        if op == 36 and not head_flush_seen:             # the HEAD flush compares its "others" field only
+            w = (w & ~0xfff) | (w & 0xf00)               # (head is now others-invalidate only, 0x200 vs 0x233)
+            head_flush_seen = True                       # a tail flush keeps its full mode: 0x011 vs 0x000 must differ
+        if op == 3:
+            m = (w >> 16) & 0xffff
+            # the two fragment-ordering waits the two streams express differently: the reference's endpoint wait right
+            # after RUN_FRAGMENT, and our wait on the deferred FINISH_FRAGMENT slot (4) before the tail flush. A WAIT on
+            # those masks anywhere else - the one after FINISH_TILING - is compared like every other instruction.
+            if (m == 0x0008 and prev == 7) or (m == 0x0010 and nxt == 36):
+                continue
+            if m == 0xffff and nxt == 51:                 # our retire drain: WAIT all slots, then the retire SYNC_ADD64
+                continue
         out.append(w)
+        prev = op
     return out
 
 
