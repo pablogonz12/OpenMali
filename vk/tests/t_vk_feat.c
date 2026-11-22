@@ -3222,7 +3222,9 @@ test_robustimg(void)
    if (!tgt_create(&t)) return 0;
    struct hbuf sb;
    if (!hbuf_create(&sb, 12 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
-   memset(sb.p, 0, 12 * 4);
+   /* sentinel 0xff, outside every accepted value: the out-of-bounds checks accept 0 for RGB (and 0 or 255 for
+    * alpha), so a zeroed buffer would let a shader that writes only the in-bounds load pass them */
+   memset(sb.p, 0xff, 12 * 4);
    VkImageCreateInfo ici = img2d(VK_FORMAT_R8_UNORM, 64, 64, 1, 1, 0);
    ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    VkImage img;
