@@ -1946,7 +1946,7 @@ test_mrt(const char *name, int nrt)
    if (!g_fake && map) {   /* output i = (i+1)/10 * gl_FragCoord.x/W, so target i must hold (i+1)/10 * 32/W at x = 32 */
          printf("{\"map\":[");
          for (int i = 0; i < nrt; i++) {
-            const uint8_t *q = px[i] + (size_t)48 * pitch[i] + 32u * 4u;
+            const uint8_t *q = px[i] + (size_t)48 * pitch[i] + 32u * (g_mrt32 ? 16u : 4u);   /* texel size of the selected format */
             const float want = (float)(i + 1) * 0.1f * 32.5f / (float)W;   /* 0.1*(i+1)*gl_FragCoord.x/W at the sampled pixel */
             const float got = g_mrt32 ? *(const float *)q : (float)q[0] / 255.0f;
             const int check = (!strcmp(name, "mrtmap") || !strcmp(name, "mrtmapb")) ||   /* mrtmap32f only prints (float readback, not a product path) */
@@ -1991,6 +1991,10 @@ out:
 static int
 test_mrt_mixed(const char *name)
 {
+   if (!g_feat.independentBlend) {   /* the case needs different blend state and write masks per attachment (VUID-...-00605) */
+      printf("{\"test\":\"%s\",\"skipped\":\"independentBlend not advertised\",\"ok\":true}\n", name);
+      return 1;
+   }
    static const VkFormat fmt[4] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
                                    VK_FORMAT_R32_UINT, VK_FORMAT_R8G8B8A8_UNORM};
    static const unsigned bpp[4] = {4, 8, 4, 4};
