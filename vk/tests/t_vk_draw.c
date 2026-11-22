@@ -665,7 +665,7 @@ scene_create(struct scene *s, int depth)
       {   /* only HOST_VISIBLE was required: without a flush a non-coherent allocation may not have the zeros the GPU is
            * meant to start from (the record-time zero check and the compute's read both depend on them) */
          VkMappedMemoryRange mr0 = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->argsmem, .offset = 0,
-                                    .size = 64};
+                                    .size = VK_WHOLE_SIZE};
          FlushMappedMemoryRanges(dev, 1, &mr0);
       }
       CHECK(BindBufferMemory(dev, s->args, s->argsmem, 0) == VK_SUCCESS, "bind args");
@@ -786,8 +786,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                              .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-                             .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                             .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
+                             .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                             .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_HOST_READ_BIT};
       VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
       CmdPipelineBarrier2(cb, &di);
    }

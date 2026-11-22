@@ -1729,7 +1729,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          if (getenv("MALI_PIPE_DBG"))
             fprintf(stderr, "mali_vk: drained before frame %u/%u (CPU-read indirect arguments)\n", i, cmd->nframes);
       }
-      if (ind_cpu && g_hw.soft) {
+      if (ind && g_hw.soft) {
          /* MALI_SOFT=1: the rasteriser rejects an indirect draw on the frame record, and expansion below would
           * erase that origin before it ever sees it. Reject here, while the record still says "indirect". */
          res = VK_ERROR_FEATURE_NOT_PRESENT;
