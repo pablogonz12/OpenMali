@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|vsstore] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -3204,6 +3204,75 @@ test_gather(void)
    return 1;
 }
 
+
+/* vertexPipelineStoresAndAtomics (zink GL 4.2 gate, notes/zink-gl-version.md:44): the vertex stage stores i+1 into an SSBO and
+ * does atomicAdd/atomicMax on it, keeping what each atomic returned (oldc[]). The binding is VK_SHADER_STAGE_VERTEX_BIT only and
+ * vsstore.frag just passes the colour through, so whatever lands in the buffer came from the vertex stage. Stores and atomics
+ * share the one feature bit, so both are checked: an atomic that quietly returned 0 would still leave data[] correct. */
+static int
+test_vsstore(void)
+{
+   /* The feature is not advertised (mali_physical_device.c: the X8 duplicates VS side effects), so MALI_EXPERIMENTAL_VSSTORE=1 is
+    * how the falsifier is re-run after a driver change. No validation layer checks the bit, so the pipeline runs either way. */
+   const int forced = getenv("MALI_EXPERIMENTAL_VSSTORE") != NULL;
+   if (!g_feat.vertexPipelineStoresAndAtomics && !forced) {
+      printf("{\"test\":\"vsstore\",\"skipped\":\"vertexPipelineStoresAndAtomics not advertised (MALI_EXPERIMENTAL_VSSTORE=1 runs it anyway)\",\"ok\":true}\n");
+      return 1;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { N = 18 };   /* count, maxi, data[8], oldc[8] (vsstore.vert) */
+   struct hbuf sb;
+   if (!hbuf_create(&sb, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(sb.p, 0, N * 4);
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "vsstore: dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "vsstore: dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "vsstore: alloc set");
+   VkDescriptorBufferInfo bi = {sb.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "vsstore.vert.spv", "vsstore.frag.spv", dsl, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "vsstore: cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      const uint32_t *b = (const uint32_t *)(const void *)sb.p;
+      CHECK(b[0] == 6, "vsstore: atomicAdd counter %u expected 6", b[0]);
+      CHECK(b[1] == 5, "vsstore: atomicMax %u expected 5", b[1]);
+      for (uint32_t i = 0; i < 6; i++) CHECK(b[2 + i] == i + 1, "vsstore: data[%u] = %u expected %u", i, b[2 + i], i + 1);
+      uint32_t seen = 0;
+      for (uint32_t i = 0; i < 6; i++) {
+         CHECK(b[10 + i] < 6, "vsstore: atomicAdd returned %u for vertex %u", b[10 + i], i);
+         seen |= 1u << b[10 + i];
+      }
+      CHECK(seen == 0x3f, "vsstore: the six atomicAdd returns are not 0..5 (0x%x)", seen);
+      printf("{\"test\":\"vsstore\",\"count\":%u,\"max\":%u,\"forced\":%s,\"ok\":true}\n", b[0], b[1], forced ? "true" : "false");
+   } else printf("{\"test\":\"vsstore\",\"skipped\":\"pixels+memory: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   hbuf_destroy(&sb);
+   tgt_destroy(&t);
+   return 1;
+}
+
 static PFN_vkCreatePrivateDataSlot g_pd_cr;
 static PFN_vkSetPrivateData g_pd_set;
 static PFN_vkGetPrivateData g_pd_get;
@@ -3959,6 +4028,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
+   if (ok && CASE_ON("vsstore")) ok &= test_vsstore();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
 
    DeviceWaitIdle(dev);

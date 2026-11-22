@@ -512,6 +512,15 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .samplerYcbcrConversion = true,                                   /* t_vk_feat ycbcr (NV12 only; pixels on hardware, smoke) */
       .shaderClipDistance = true,                                       /* t_vk_feat clip */
       .shaderImageGatherExtended = true,                                /* t_vk_feat gather */
+      /* vertexPipelineStoresAndAtomics (zink GL 4.2, notes/zink-gl-version.md:44): VS stores to an SSBO plus atomicAdd/atomicMax,
+       * t_vk_feat vsstore (X8 G925, arch 13, 2026-11-22). PanVK gates it on PAN_ARCH >= 13 for the same reason we can have it:
+       * before v13 the hardware speculatively references invalid indices (panvk_vX_physical_device.c:336-339). Not exercised on
+       * v10/v11 (the fake backends there only check the flag). */
+      /* vertexPipelineStoresAndAtomics stays FALSE: t_vk_feat vsstore on the X8 (G925, arch 13) stores and atomically bumps
+       * an SSBO from the vertex stage twice per draw (atomicAdd counter 12 for a 6-vertex draw), so the side effects of an
+       * IDVS vertex program are duplicated between the vertex job and the per-tile varying program. Advertising it would give
+       * every VS store and atomic double effect on a real app; the test is kept so the day that stops being true it flips. */
+      .vertexPipelineStoresAndAtomics = false,
       .fragmentStoresAndAtomics = true,                                 /* t_vk_feat fsstore */
       .vulkanMemoryModel = true, .vulkanMemoryModelDeviceScope = true,  /* t_vk_feat memmodel */
       .shaderInt64 = true,                                              /* t_vk_feat int64 */
