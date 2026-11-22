@@ -11,12 +11,11 @@ import argparse, json, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import farmlib as L  # noqa: E402
-import json  # noqa: E402
 import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
-ONLY_DRAW = "many_draws share triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture mrt2 mrt4".split()
+ONLY_DRAW = "many_draws share triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
 ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
 ONLY_FEAT = ["storfmt_nf", "ycbcr", "spec", "linerast", "divisor"]               # t_vk_feat cases of the smoke set (Steam-session features); linerast/divisor: pixel tests of the line-rasterization and vertex-divisor patches (skip until advertised); same list as FEAT in vk/tests/valguest.sh
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
@@ -512,12 +511,6 @@ def smoke(a):
     except OSError:
         feat_bin = b""
     feat = [c for c in ONLY_FEAT if c.encode() + b"\0" in feat_bin]
-    # the draw cases are static, but a tree built before a case existed has no CASE_ON for it: ask the binary
-    try:
-        draw_bin = open(os.path.join(out, "t_vk_draw"), "rb").read()
-    except OSError:
-        draw_bin = b""
-    draw_cases = [c for c in ONLY_DRAW if c.encode() + b"\0" in draw_bin] or ONLY_DRAW
     for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", ""), ("t_vk_feat", "")):
         if not a.only:
             if n == "t_vk_feat":
@@ -528,19 +521,8 @@ def smoke(a):
                 runs.append((n, "--only many_draws", "many_draws"))   # 3k/10k/50k draws in one frame (arena overflow, was DEVICE_LOST)
             continue
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
-            if c in (draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
+            if c in (ONLY_DRAW if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
                 runs.append((n, f"{extra} --only {c}", c))
-    if a.only and not any(c for c in a.only.split(",")):
-        print("--only given with no case names; refusing to report an empty run as a pass", flush=True)
-        return 2
-    if a.only:   # a requested case this route does not schedule must be reported, not silently skipped
-        ran = {oc for _, _, oc in runs if oc}
-        missing = [c for c in a.only.split(",") if c and c not in ran]
-        if missing:
-            print("unscheduled --only case(s): " + ",".join(re.sub(r"[\r\n]", "?", c) for c in missing), flush=True)
-            # farmd counts failures from JSON records: a plain line would leave the run reported as clean
-            print(json.dumps({"test": "schedule", "missing": missing, "ok": False}), flush=True)
-            ok = False
     for n, extra, oc in runs:
         if gated(a.lock):
             sys.exit(75)

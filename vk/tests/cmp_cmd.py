@@ -139,6 +139,54 @@ def run(cmd, env, **kw):
 
 def hx(v):
     return hex(v) if isinstance(v, int) else v
+def retire_norm(seq):
+    """Fold the DELIBERATE retire/fragment differences from notes/frame-ordering.md § Round 2 into one shape.
+
+    Our driver now defers FINISH_FRAGMENT (non-zero wait mask) so it can signal its own scoreboard slot (4) and waits that
+    slot before the tail flush; the hand-built reference keeps the synchronous form (mask 0, slot 0) plus the endpoint wait
+    the reference always had. The head cache flush became others-invalidate only (0x200) instead of L2/LSC clean+invalidate
+    (0x332), because a head L2 invalidate discards a previous frame's tile writeback. None of that is a register or draw
+    difference, so compare the instructions with those three fields folded and the two fragment-ordering waits dropped.
+    """
+    out = []
+    prev = None
+    head_flush_seen = False
+    for i, w in enumerate(seq):
+        op = (w >> 56) & 0xff
+        nxt = (seq[i + 1] >> 56) & 0xff if i + 1 < len(seq) else None
+        if op == 11:                                   # FINISH_FRAGMENT: fold wait mask (31:16) and signal slot (51:48), but
+            m, sl = (w >> 16) & 0xffff, (w >> 48) & 0xf   # only the two legal shapes: the reference's (mask 0, slot 0) or
+            if (m, sl) in ((0, 0), (0x0008, 4)):          # ours (endpoint wait, slot 4). A self-dependent mask (slot 4 in
+                w &= ~((0xffff << 16) | (0xf << 48))      # the wait mask) stays and is compared, so it cannot hide here
+        if op == 36 and not head_flush_seen:             # the HEAD flush compares its "others" field only
+            w = (w & ~0xfff) | (w & 0xf00)               # (head is now others-invalidate only, 0x200 vs 0x233)
+            head_flush_seen = True                       # a tail flush keeps its full mode: 0x011 vs 0x000 must differ
+        if op == 3:
+            m = (w >> 16) & 0xffff
+            # the two fragment-ordering waits the two streams express differently: the reference's endpoint wait right
+            # after RUN_FRAGMENT, and our wait on the deferred FINISH_FRAGMENT slot (4) before the tail flush. A WAIT on
+            # those masks anywhere else - the one after FINISH_TILING - is compared like every other instruction.
+            if (m == 0x0008 and prev == 7) or (m == 0x0010 and nxt == 36):
+                continue
+            if m == 0xffff and nxt == 51:                 # our retire drain: WAIT all slots, then the retire SYNC_ADD64
+                continue
+        out.append(w)
+        prev = op
+    return out
+
+
+
+
+def retire_drain_missing(seq_raw):
+    """Our stream must drain every scoreboard slot before the retire SYNC_ADD64 (frame-ordering.md): without the WAIT the
+    add runs immediately and the fence signals before the fragment writeback. Checked before retire_norm, which drops it."""
+    for i, w in enumerate(seq_raw):
+        if (w >> 56) & 0xff != 51:
+            continue
+        p = seq_raw[i - 1] if i else 0
+        if (p >> 56) & 0xff != 3 or (p >> 16) & 0xffff != 0xffff:
+            return i
+    return None
 
 
 fails = []
@@ -158,8 +206,12 @@ for arch in (11, 13):
             fails.append('%s: no reference dump' % name)
             continue
         sa, sb = ds.load_ours(od), ds.load_ours(rd)
-        oa, qa = trace(sa, arch)
-        ob, qb = trace(sb, arch)
+        raw_a = trace(sa, arch)[0]
+        miss = retire_drain_missing(raw_a)
+        if miss is not None:
+            fails.append('%s: our stream has no WAIT(0xffff) before the retire SYNC_ADD64 at word %d' % (name, miss))
+        oa, qa = retire_norm(raw_a), trace(sa, arch)[1]
+        ob, qb = retire_norm(trace(sb, arch)[0]), trace(sb, arch)[1]
         nd = 0
         if BREAK:
             oa[0] ^= 1

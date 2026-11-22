@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "mali_apilog.h"
 #include "mali_cmd.h"
 #include "kbase.h"
 #include "mali_descriptor.h"
@@ -310,9 +311,31 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
    }
 }
 
+static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const VkBuffer *bufs, const VkDeviceSize *offs)
 {
+   /* MALI_API_LOG: dump what each binding feeds, so the exact vertex stream can be replayed */
+   {
+      static int bseq;
+      const char *dir = mali_apilog_dir();
+      if (dir) {
+         int id = __atomic_fetch_add(&bseq, 1, __ATOMIC_RELAXED);
+         for (uint32_t i2 = 0; i2 < n; i2++) {
+            struct vk_buffer *b2 = vk_buffer_from_handle(bufs[i2]);
+            if (!b2 || b2->size <= offs[i2]) continue;
+            uint32_t sz = (uint32_t)(b2->size - offs[i2]);
+            if (sz > 262144u) sz = 262144u;
+            const uint8_t *p2 = buffer_cpu(bufs[i2], offs[i2], sz);
+            if (!p2) continue;
+            char nm[64];
+            snprintf(nm, sizeof nm, "vb%d_%u.bin", id, first + i2);
+            mali_apilog_dump(nm, p2, sz);
+            mali_apilog("VertexBuffer bind=%d binding=%u offset=%llu size=%u file=%s", id, first + i2, (unsigned long long)offs[i2], sz, nm);
+         }
+      }
+   }
    CMD(h);
    for (uint32_t i = 0; i < n; i++) {
       unsigned b = first + i;
@@ -331,7 +354,6 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
    }
 }
 
-static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
 
 
 VKAPI_ATTR void VKAPI_CALL
@@ -588,44 +610,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
-      /* colour attachments 1..3: per-attachment blend state (each gets its own blend descriptor) */
-      for (unsigned i = 1; i < 4 && i < fr->ncolour; i++) {
-         const struct vk_color_blend_attachment_state *ci = &dyn->cb.attachments[i];
-         struct mali_rtblend *r = &x->rtb[i - 1];
-         r->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && ci->blend_enable;
-         r->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? ci->write_mask : 0xf;
-         if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << i)))
-            r->wmask = 0;
-         r->src_c = ci->src_color_blend_factor; r->dst_c = ci->dst_color_blend_factor;
-         r->src_a = ci->src_alpha_blend_factor; r->dst_a = ci->dst_alpha_blend_factor;
-         r->op_c = ci->color_blend_op; r->op_a = ci->alpha_blend_op;
-         /* a target that is never written — zero write mask, or a fragment shader that has no output for it — keeps
-          * its state unjudged: independentBlend allows any equation behind an inactive output */
-         /* fs_colour_mask == 0 means "no colour output" for a bound fragment shader too (a depth-only FS):
-          * only the no-FS case (discard pipelines) leaves every target's state unjudged */
-         const uint32_t cmask = bp->gfx.fs ? bp->gfx.fs->fs_colour_mask : 0;
-         const bool written = !bp->gfx.fs ? true : (cmask & (1u << i)) != 0;
-         if (r->blend_en && r->wmask && written) {
-            struct mali_fixed t = *x;
-            t.blend_en = true; t.wmask = r->wmask; t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
-            t.op_c = r->op_c; t.op_a = r->op_a;
-            uint32_t eq; unsigned cm;
-            if (mali_blend_equation(&t, &eq, &cm))
-               unsupported(cmd, "blend equation (fixed function)");
-         }
-      }
-      /* a blend shader (logic op, dual-source) writes RT0 only in our encoder: refuse it for a multi-target frame
-       * whatever enables it, not only when the dynamic logicOp happens to be on */
-      if (fr->ncolour > 1 && bp->gfx.blend_va)
-         unsupported(cmd, "blend shader with several colour attachments");
       /* vk_graphics_state keeps the previous pass' logic_op_enable when a pipeline without colour blending is bound:
        * a depth-only pass must ignore it, not fail the command buffer on retained state */
       if (dyn->cb.logic_op_enable && cmd->cur.has_colour) {
-         if (bp->gfx.blend_va) {
+         if (bp->gfx.blend_va)
             x->blend_en = true;   /* the pipeline's blend shader does the logic op (mali_pipeline.c); it reads the destination */
-            if (fr->ncolour > 1)
-               unsupported(cmd, "blend shader (logic op / dual source) with several colour attachments");
-         }
          else if (!bp->gfx.logic_inert)
             unsupported(cmd, "dynamic logic op");
       }
@@ -648,6 +637,8 @@ discarded(const struct mali_cmd_buffer *cmd)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
+   mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
+   mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
    CMD(h);
    if (!cmd->in_render || !cmd->have_gfx) {
       unsupported(cmd, "draw outside a rendering with a pipeline");
@@ -1061,6 +1052,8 @@ raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
+   mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
+   mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
    CMD(h);
    struct mali_frame *f = &cmd->cur;
    struct mali_cmd_target t;
@@ -1079,15 +1072,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    bool no_col = true;
    for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
       if (ri->pColorAttachments[i].imageView) no_col = false;
-   if (!no_col && (ri->colorAttachmentCount > 4 || !ri->pColorAttachments[0].imageView)) {
-      unsupported(cmd, "more than 4 colour attachments / null first colour attachment");
+   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
+      unsupported(cmd, "need exactly one colour attachment");
       return;
    }
-   for (uint32_t i = 1; !no_col && i < ri->colorAttachmentCount; i++)
-      if (!ri->pColorAttachments[i].imageView) {
-         unsupported(cmd, "null colour attachment between used ones");
-         return;
-      }
    const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
    bool load = false;
    struct mali_preload_src psrc;
@@ -1104,13 +1092,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "colour attachment view");
       return;
    }
-   /* M15: every colour target of this frame is GPU-written, not just RT0 */
-   if (!no_col && g_res.image_view_mem) {
+   /* M15: the colour target is GPU-written in this frame */
+   if (!no_col && g_res.image_view_mem)
       mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
-      for (uint32_t i = 1; i < ri->colorAttachmentCount; i++)
-         if (ri->pColorAttachments[i].imageView)
-            mali_cmd_mark_written(cmd, g_res.image_view_mem(ri->pColorAttachments[i].imageView));
-   }
    if (!no_col)
       load = is_load_op(ca->loadOp);
    if (load) {
@@ -1219,80 +1203,6 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
    }
-   f->ncolour = ri->colorAttachmentCount;
-   if (f->ncolour > 1) {
-      /* colour attachments 1..3: same size, single sampled, no LOAD / resolve (not wired for RT>0); the tile colour buffer holds the
-       * sum of the targets' bytes per pixel, capped at the largest single-RT total proven on hardware (16 B) */
-      unsigned bpp = t.rt ? t.rt->alloc : 4u;
-      if (f->samples != 1) {
-         unsupported(cmd, "several colour attachments with MSAA");
-         return;
-      }
-      for (uint32_t i = 1; i < f->ncolour; i++) {
-         const VkRenderingAttachmentInfo *cx = &ri->pColorAttachments[i];
-         struct mali_cmd_target tx;
-         memset(&tx, 0, sizeof tx);
-         if (g_res.image_view(cx->imageView, &tx) || tx.is_zs || tx.samples > 1 || tx.width != t.width || tx.height != t.height) {
-            unsupported(cmd, "colour attachment view (size / samples must match attachment 0)");
-            return;
-         }
-         if (is_load_op(cx->loadOp)) {
-            unsupported(cmd, "colour loadOp LOAD on colour attachment > 0");
-            return;
-         }
-         if (cx->resolveMode != VK_RESOLVE_MODE_NONE) {
-            unsupported(cmd, "resolve of colour attachment > 0");
-            return;
-         }
-         struct mali_att *x = &f->colour_x[i - 1];
-         x->va = tx.va;
-         x->rt = tx.rt;
-         x->row_stride = tx.row_stride;
-         x->clear = cx->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
-         x->store = cx->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
-         if (x->clear)
-            memcpy(x->clear_color, cx->clearValue.color.float32, sizeof x->clear_color);
-         bpp += tx.rt ? tx.rt->alloc : 4u;
-      }
-      /* Tile-buffer budget: 16 KiB. PanVK shrinks the effective tile as the colour bytes per pixel grow
-       * (pan_select_tile_size, third_party/mesa/src/panfrost/lib/pan_desc.c:618-626: tile_size = budget >> log2(bpp))
-       * and derives the tiler's smallest bin from that tile (pan_choose_hierarchy_mask, pan_tiler.c:300: the mask is
-       * log2(w/16) | log2(h/16)<<6). 32x32 holds up to 16 B/px, 16x16 up to 64 B/px, which is all four advertised
-       * colour attachments can ask for (4 x RGBA32F). Shrink rather than refuse. */
-      /* Budget: PanVK uses pan_query_optimal_tib_size() = tib_size / 2 for pipelining (pan_props.h:47-56), i.e.
-       * 8 KiB on this part, and then tile_size = budget >> log2(bytes_per_pixel) (pan_desc.c:626). So 32x32 holds
-       * 8 B/px, 16x16 holds 32 B/px, 8x8 holds 128 B/px. */
-      unsigned bpp_tot = bpp * (f->samples > 1 ? 4u : 1u);
-      /* 16 KiB: 32x32 holds up to 16 B/px, 16x16 up to 64 B/px. NOT smaller: on arch 10 the tiler context
-       * (kb_draw_tiler_ctx, libkbase/src/draw.c:57) has no effective-tile field -- only v13's has one
-       * (kb_v13_tiler_ctx, draw_v13.c:9) -- so shrinking the FBD tile below the tiler's bins makes geometry and
-       * fragments disagree (measured: 16 bpp at 16x16 draws almost nothing).
-       * Measured tile colour-buffer limit with several targets on G615: every RT slot must end below 4 KiB
-       * (2xRGBA8 at 16x16 = 2 KiB works, 4xRGBA8 = 4 KiB works, 20 B/px = 5 KiB leaves the last target reading
-       * slot 0), so the total is capped at 4096 bytes per tile. */
-      /* Square tiles only (the FBD field is log2 of the tile's PIXEL count, so an odd log2 is not a square): 32x32,
-       * 16x16, 8x8, 4x4. Measured on G615 (X4): 2xRGBA8 (8 B/px) and 4xRGBA8 (16 B/px) at 32x32 collapse to the last
-       * fragment output, while the same frames at 16x16 are per-RT exact, so 32x32 is only usable up to a 4 KiB colour
-       * total; 16x16 carries up to 8 KiB (PanVK's pan_select_tile_size budget is 2x that, pan_desc.c:618-660). */
-      unsigned tl = 10;
-      while (tl > 4 && ((1u << tl) * bpp_tot) > 4096u)
-         tl -= 2;
-      if (((1u << tl) * bpp_tot) > 4096u) {
-         unsupported(cmd, "colour attachments exceed the 4 KiB tile colour buffer even at 4x4");
-         return;
-      }
-      f->tile_log2 = tl;
-      f->hmask = tl >= 10 ? 0xfeu : 0xffu;   /* the tiler's smallest bin is 16x16; 8x8/4x4 keep it (the FBD sets the tile) */
-      if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
-         const int want = atoi(getenv("MALI_TILE_LOG2"));
-         if (want < 2 || want > 12) {   /* a bigger tile overflows the colour total and the allocation loops forever */
-            unsupported(cmd, "MALI_TILE_LOG2 out of range (2..12)");
-            return;
-         }
-         f->tile_log2 = (unsigned)want;
-         f->hmask = f->tile_log2 >= 10 ? 0xfeu : 0xffu;
-      }
-   }
    }
    struct mali_preload_src zsrc;
    memset(&zsrc, 0, sizeof zsrc);
@@ -1399,6 +1309,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      f->preload_all = true;   /* box = the tile-aligned render area, draws clipped to the render area (tile_area) */
    }
    cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;
@@ -1426,6 +1337,7 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
+   mali_apilog("EndRendering cb=%p", (void *)h);
    CMD(h);
    if (!cmd->in_render) {
       unsupported(cmd, "EndRendering without a valid Begin");
@@ -1708,8 +1620,18 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       if (cmd->wrote_full)
          g_hw.bo_wrote(g_hw.user, NULL);
    }
+   bool host_write = false;
+   struct mali_device *dev = (struct mali_device *)cmd->vk.base.device;   /* vk_device is mali_device's first member */
+   if (dev) {
+      /* one atomic exchange: a flush on another thread between a load and a store would be lost, and the next submission
+       * would then skip the L2/LSC invalidate its host-written input needs */
+      host_write = atomic_exchange_explicit(&dev->host_write_pending, false, memory_order_acq_rel);
+      if (host_write)   /* given back below unless this submission really hands a frame carrying the flag to the GPU */
+         dev->host_write_owed = true;
+   }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
+      fr.host_write = host_write;
       /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
       bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
       if ((ind || poly_cpu) && g_hw.drain) {
@@ -1773,6 +1695,13 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          res = VK_ERROR_DEVICE_LOST;
    } else if (res != VK_SUCCESS && counted) {
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
+   }
+   /* a failure before submit_multi (indirect expansion, build, realloc) hands nothing to the GPU: the marker goes back, or
+    * the next successful submission would use the 0x002 head and read a stale clean L2 line for the host-written memory */
+   if (dev && dev->host_write_owed) {
+      if (res != VK_SUCCESS || !nall)
+         atomic_store_explicit(&dev->host_write_pending, true, memory_order_release);
+      dev->host_write_owed = false;
    }
    free(all);
    return res;

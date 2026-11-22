@@ -26,6 +26,9 @@
 #include "kbase_fb.h"
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
+
+/* free scoreboard slot (0 = LS, 3 = endpoint jobs) for the fragment job's completion signal */
+#define MALI_SLOT_FRAGMENT 4
 #include "mali_event.h"
 #include "mali_blend.h"
 
@@ -152,7 +155,7 @@ struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
-   uint32_t bl23[4][2];      /* (per render target) */
+   uint32_t bl23[2];         /* words 2..3 of the blend descriptor (CPU copy: the arena is write-combined, never read back) */
    bool static_same;         /* this draw's static state (pipeline, FX, bound sets, firstInstance) equals the previous draw's (s1) */
    bool dyn_same;            /* ... and so do its dynamic offsets (s2) */
 };
@@ -245,14 +248,14 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
 
    if (s1) {
       o->spd_p = po->spd_p; o->spd_v = po->spd_v; o->spd_f = po->spd_f;
-      o->bl = po->bl; o->zsd = po->zsd; memcpy(o->bl23, po->bl23, sizeof o->bl23);
+      o->bl = po->bl; o->zsd = po->zsd; o->bl23[0] = po->bl23[0]; o->bl23[1] = po->bl23[1];
       spd_p = spd_v = spd_f = bl = zsd = NULL;
    } else {
       spd_p = A(hw, KB_SPD_SIZE, 32, &o->spd_p);
       if (!v13)
          spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
       spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
-      bl = A(hw, KB_BLEND_SIZE * (f->ncolour > 1 ? 4 : 1), 64, &o->bl);   /* one descriptor per colour attachment */
+      bl = A(hw, KB_BLEND_SIZE, 64, &o->bl);
       zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
    }
    if (s1) {
@@ -349,54 +352,27 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
    if (s1)
       goto fau;
-   uint32_t blt[4][4];   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
+   uint32_t blt[4] = {0, 0, 0, 0};   /* built on the stack, stored once (the arena is write-combined: no read-modify-write there) */
    uint32_t *bl_arena = bl;
-   const unsigned nrt = f->has_colour && f->ncolour > 1 ? f->ncolour : 1;
-   memset(blt, 0, sizeof blt);
-   for (unsigned i = 0; i < nrt; i++) {
-      const struct mali_att *at = i ? &f->colour_x[i - 1] : &f->colour;
-      uint32_t *b = blt[i];
-      if (at->rt) {
-         kb_draw_blend_opaque_fmt(b, at->rt->blend_pixfmt, at->rt->ncomp);
-         if (at->rt->int_bits)
-            b[0] &= ~(1u << 11);   /* no rounding for integer targets */
-      } else
-         kb_draw_blend_opaque_rgba8(b);
-      if (i == 0 && g->blend_va && d->fx.blend_en) {
-         /* blend shader (mode 0): word0 = load dest | enable | round-to-FB-precision (no sRGB RT formats are exposed), word3 = shader PC
-          * (16-aligned, same 4G region as the FS) */
-         b[0] = 1u | (1u << 9) | (1u << 11);
-         b[1] = 0;
-         b[2] = 0;
-         b[3] = (uint32_t)g->blend_va;
-      } else {
-         struct mali_fixed t = d->fx;
-         if (i) {
-            const struct mali_rtblend *r = &d->fx.rtb[i - 1];
-            t.blend_en = r->blend_en; t.wmask = r->wmask;
-            t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
-            t.op_c = r->op_c; t.op_a = r->op_a;
-         }
-         /* a target this draw does not write keeps its descriptor disabled below: validating its blend equation
-          * would refuse the draw for state the hardware never sees (independentBlend allows any state on it) */
-         const bool inactive = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) ||
-                                     (d->fx.set && d->fx.rtb[i - 1].wmask == 0));
-         if (!inactive && apply_blend(b, &t))
-            return -EINVAL;
-      }
-      /* A target this draw does not write must not be written at all: disable its blend descriptor (PanVK
-       * panvk_vX_blend.c:127-130: loc unused or equation.color_mask == 0 -> enable = false, mode OFF). */
-      const bool unused = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) || (d->fx.set && i && d->fx.rtb[i - 1].wmask == 0));
-      if (unused) {
-         b[0] = 0;                       /* Load Destination, Alpha To One, Enable = 0 */
-         b[2] = 3 | (i << 16);           /* Internal Blend Mode: Off, Fixed-Function RT = i (as the enabled ones) */
-         b[3] = 0;
-      }
-      b[2] |= i << 16;   /* Blend Fixed-Function: Render Target */
-      memcpy(bl_arena + 4 * i, b, 16);
-      o->bl23[i][0] = b[2];
-      o->bl23[i][1] = b[3];
-   }
+   bl = blt;
+   if (f->colour.rt) {
+      kb_draw_blend_opaque_fmt(bl, f->colour.rt->blend_pixfmt, f->colour.rt->ncomp);
+      if (f->colour.rt->int_bits)
+         bl[0] &= ~(1u << 11);   /* no rounding for integer targets */
+   } else
+      kb_draw_blend_opaque_rgba8(bl);
+   if (g->blend_va && d->fx.blend_en) {
+      /* blend shader (mode 0): word0 = load dest | enable | round-to-FB-precision (no sRGB RT formats are exposed), word3 = shader PC
+       * (16-aligned, same 4G region as the FS) */
+      bl[0] = 1u | (1u << 9) | (1u << 11);
+      bl[1] = 0;
+      bl[2] = 0;
+      bl[3] = (uint32_t)g->blend_va;
+   } else if (apply_blend(bl, &d->fx))
+      return -EINVAL;
+   memcpy(bl_arena, blt, sizeof blt);
+   o->bl23[0] = blt[2];
+   o->bl23[1] = blt[3];
 
    /* depth/stencil */
    if (g->depth_test && f->has_zs) {
@@ -464,10 +440,8 @@ fau:;
       memcpy((uint8_t *)fau + g->push_base[st], d->push[st], n);
    }
    if (v13) {
-      for (unsigned i = 0; i < (f->has_colour && f->ncolour > 1 ? f->ncolour : 1u); i++) {
-         ffau[4 + 2 * i] = o->bl23[i][0];   /* RT i at words 4 + 2i (RT0 hardware-proven; RT1..3 unverified, see lane report) */
-         ffau[5 + 2 * i] = o->bl23[i][1];
-      }
+      ffau[4] = o->bl23[0];
+      ffau[5] = o->bl23[1];
    }
    if (g->blend_va && d->fx.blend_en)
       memcpy(ffau, d->fx.bconst, 16);   /* blend shader constants: FAU words 0..3 */
@@ -641,6 +615,27 @@ same_draw_words(const struct dwp *a, const struct mali_draw *b)
           a->index_bytes == b->index_bytes && a->index_size == b->index_size;
 }
 
+/* The frame's tiler bounding box. Only a LOAD frame widens it, to the render area rounded OUTWARD to whole tiles: the tiler
+ * writes back whole tiles, so a tile the render area only partly covers must be restored by the preload for the whole tile,
+ * or its other pixels are lost when it is written back. PanVK gets this for free: its tiling area is rounded
+ * (panfrost/lib/pan_fb.c:106 pan_fb_bbox_align, pan_fb.h:178 tiling_area_px contains render_area_px) and LOAD is the
+ * hardware per-tile load; we emulate LOAD with a preload draw, so the preload draw and this box have to match.
+ * Every other frame keeps the render area as its box. */
+static void
+tile_area(const struct mali_env *env, const struct mali_frame *f, int32_t out[4])
+{
+   (void)env;
+   int32_t x0 = f->area[0] < 0 ? 0 : f->area[0], y0 = f->area[1] < 0 ? 0 : f->area[1];
+   int32_t x1 = x0 + (f->area[2] > 1 ? f->area[2] : 1) - 1, y1 = y0 + (f->area[3] > 1 ? f->area[3] : 1) - 1;
+   if (f->preload_all) {
+      x0 &= ~31; y0 &= ~31;              /* 32x32 px tiles (our FBD/twin tile size) */
+      x1 |= 31; y1 |= 31;
+      if (f->width && x1 > (int32_t)f->width - 1) x1 = (int32_t)f->width - 1;
+      if (f->height && y1 > (int32_t)f->height - 1) y1 = (int32_t)f->height - 1;
+   }
+   out[0] = x0; out[1] = y0; out[2] = x1 - x0 + 1; out[3] = y1 - y0 + 1;
+}
+
 static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
                const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx, bool same_words)
@@ -664,13 +659,6 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    struct kb_dcd_opts dop = { pk, 0, 1, 1, 1 };
    /* a Z/S-only fragment shader (gl_FragDepth / stencil export, no colour output): no render target is written (panvk rt_written = 0: DCD render-target and write masks, blend count) */
    const bool nort = !f->has_colour || (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil) && !g->fs->fs_writes_colour);   /* no colour attachment: the colour output has no render target (panvk rt_written = 0) */
-   /* colour attachments the fragment shader writes (mask) and the blend descriptor count */
-   const unsigned nrt = f->has_colour && f->ncolour > 1 ? f->ncolour : 1;
-   unsigned rtm = nort ? 0 : 1;
-   if (!nort && nrt > 1 && g->fs)
-      rtm = g->fs->fs_colour_mask & ((1u << nrt) - 1);
-   const unsigned rtn = rtm ? nrt : 0;
-   const bool fs_skips_target = nrt > 1 && rtm != ((1u << nrt) - 1u);   /* an attached target this draw leaves untouched: forward pixel kill could drop an earlier draw's fragment */
    if (g->fs && (g->fs->fs_writes_depth || g->fs->fs_writes_stencil)) {
       dop.pixel_kill = 3;   /* the fragment shader produces Z/S: the test and the update both run late (panvk: force late for shader-written depth) */
       dop.zs_update = 3;
@@ -680,17 +668,10 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    if (!f->has_colour && f->has_st && d->fx.set && d->fx.st_test)
       dop.allow_fpk = 0;
    uint32_t dcd_extra = 0, pf_clear = 0;
-   /* the preload helper leaves fx.set false, so this guard cannot live inside the block: with two attachments and a
-    * preload shader that writes only some of them the forward pixel kill must still be off */
-   if (fs_skips_target)
-      dop.allow_fpk = 0;
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
       if (d->fx.blend_en || d->fx.wmask != 0xf)
-         dop.allow_fpk = 0;
-      for (unsigned i = 1; i < nrt; i++)
-         if (d->fx.rtb[i - 1].blend_en || d->fx.rtb[i - 1].wmask != 0xf)
-            dop.allow_fpk = 0;   /* the draw reads the destination: no forward pixel kill (panvk any_dest_read) */
+         dop.allow_fpk = 0;   /* the draw reads the destination: no forward pixel kill (panvk any_dest_read) */
       if (g->prim == 0 || g->prim == 8 || g->prim == 10 || g->prim == 12)
          dcd_extra = (uint32_t)(d->fx.cull & 3u) << 17;
       if (!d->fx.depth_clip)
@@ -703,9 +684,30 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    }
    unsigned vx = d->vp[0] < 0 ? 0 : (unsigned)d->vp[0], vy = d->vp[1] < 0 ? 0 : (unsigned)d->vp[1];
    unsigned vmx = vx + (d->vp[2] > 1 ? (unsigned)d->vp[2] : 1) - 1, vmy = vy + (d->vp[3] > 1 ? (unsigned)d->vp[3] : 1) - 1;
+   if (d->preload) {
+      int32_t ta[4];
+      tile_area(env, f, ta);   /* the preload's coverage is its viewport (a full-screen triangle) */
+      vx = (unsigned)ta[0]; vy = (unsigned)ta[1];
+      vmx = vx + (unsigned)ta[2] - 1; vmy = vy + (unsigned)ta[3] - 1;
+   }
    int32_t sx = d->sc[0] < 0 ? 0 : d->sc[0], sy = d->sc[1] < 0 ? 0 : d->sc[1];
-   uint64_t scis = kb_draw_scissor((unsigned)sx, (unsigned)sy, (unsigned)(sx + (d->sc[2] > 1 ? d->sc[2] : 1) - 1),
-                                   (unsigned)(sy + (d->sc[3] > 1 ? d->sc[3] : 1) - 1));
+   int32_t sw = d->sc[2] > 1 ? d->sc[2] : 1, sh = d->sc[3] > 1 ? d->sc[3] : 1;
+   if (d->preload) {
+      int32_t ta[4];
+      tile_area(env, f, ta);   /* the preload restores every pixel of the tiles the frame writes back */
+      sx = ta[0]; sy = ta[1]; sw = ta[2]; sh = ta[3];
+   } else if (f->preload_all && f->area[2] > 0 && f->area[3] > 0) {
+      /* the box is now wider than the render area (whole tiles): pixels outside the render area are not written by this pass */
+      int32_t ax1 = f->area[0] + f->area[2], ay1 = f->area[1] + f->area[3];
+      int32_t dx1 = sx + sw, dy1 = sy + sh;
+      sx = sx < f->area[0] ? f->area[0] : sx;
+      sy = sy < f->area[1] ? f->area[1] : sy;
+      dx1 = dx1 > ax1 ? ax1 : dx1;
+      dy1 = dy1 > ay1 ? ay1 : dy1;
+      sw = dx1 - sx; sh = dy1 - sy;
+      if (sw < 1 || sh < 1) { sx = sy = 0; sw = sh = 1; }
+   }
+   uint64_t scis = kb_draw_scissor((unsigned)sx, (unsigned)sy, (unsigned)(sx + sw - 1), (unsigned)(sy + sh - 1));
    uint32_t minz, maxz;
    memcpy(&minz, &d->vp[4], 4);
    memcpy(&maxz, &d->vp[5], 4);
@@ -740,12 +742,12 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M48(c, KB_IDVS_FRAGMENT_SPD, o->spd_f);
          M48(c, KB_IDVS_TSD, va_tsd);
          M32(c, KB_IDVS_GLOBAL_ATTR_OFFSET, 0);
-         M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, rtm, 1, 1));
+         M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, nort ? 0 : 1, 1, 1));
          M48(c, KB_IDVS_TILER_CTX, va_tctx);
          M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
-         M48(c, KB_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);   /* v10.xml Draw 'Blend count' 12:0 (4 bits) + 'Blend' 12:4 (address: bits 0..3 are the count) */
+         M48(c, KB_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
          M48(c, KB_IDVS_ZSD, o->zsd);
-         M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
+         M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
          M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
          M32(c, KB_IDVS_TILER_FLAGS2, 0);
       }
@@ -780,9 +782,9 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M48(c, KB13_IDVS_TILER_CTX, va_tctx);
          M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
          M48(c, KB13_IDVS_ZSD, o->zsd);
-         M48(c, KB13_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);   /* v10.xml Draw 'Blend count' 12:0 + 'Blend' 12:4 */
-         M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
-         M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, rtm, 1, 1, 0, 0));
+         M48(c, KB13_IDVS_BLEND_DESC, nort ? 0 : (o->bl | 1));
+         M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, nort ? 0 : 1));
+         M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, nort ? 0 : 1, 1, 1, 0, 0));
          M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));
          M32(c, KB13_IDVS_TILER_FLAGS2, 0);
       }
@@ -794,24 +796,36 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
               uint64_t va_tctx, bool geometry)
 {
    unsigned slot = env->slot;
-   int x0 = f->area[0] < 0 ? 0 : f->area[0], y0 = f->area[1] < 0 ? 0 : f->area[1];
-   unsigned x1 = x0 + (f->area[2] > 1 ? f->area[2] : 1) - 1, y1 = y0 + (f->area[3] > 1 ? f->area[3] : 1) - 1;
+   int32_t ta[4];
+   tile_area(env, f, ta);
+   unsigned x0 = (unsigned)ta[0], y0 = (unsigned)ta[1];
+   unsigned x1 = (unsigned)(ta[0] + ta[2] - 1), y1 = (unsigned)(ta[1] + ta[3] - 1);
 
    E(c, kb_cs_req_res(KB_CS_RES_FRAGMENT));
    E(c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, slot));
-   M48(c, 40, kb_fb_pointer_ex(va_fbd, f->has_colour && f->ncolour > 1 ? f->ncolour : 1, f->has_zs || f->has_st));
+   M48(c, 40, kb_fb_pointer_ex(va_fbd, 1, f->has_zs || f->has_st));
    M32(c, 42, kb_fb_bbox_min(x0, y0));
    M32(c, 43, kb_fb_bbox_max(x1, y1));
-   if (geometry)
-      M48(c, R->tctx_copy, va_tctx);
+   /* Both paths: the FINISH_FRAGMENT below reads its heap chunk words through this register, and a clear-only frame has no
+    * tiler context of its own (zeroed), but the register must still point at it - an unset register is whatever the previous
+    * frame left, i.e. a stale tiler context or a garbage address. */
+   M48(c, R->tctx_copy, va_tctx);
    M48(c, 44, 0);   /* FRAGMENT TEM_POINTER / ROW_STRIDE alias the IDVS depth clamps / viewport regs: zero */
    M32(c, 46, 0);
    E(c, kb_cs_run_fragment(0));
-   E(c, kb_cs_wait(1u << slot));
-   if (geometry) {
+   /* No WAIT 1<<slot here: it would consume the endpoint increment that FINISH_FRAGMENT's own wait mask needs, and a second
+    * waiter on that slot would then hang (notes/frame-ordering.md § Round 2, point 1). */
+   {
+      /* Not only for geometry frames: slot 4 is incremented by FINISH_FRAGMENT alone, and the tail waits that slot before it
+       * cleans L2/LSC - so a clear-only frame needs it too, or its tile writeback is never cleaned and a host read after the
+       * fence can see a stale attachment. With no tiler the heap chunk words in the tiler context are zero (A() zeroes the
+       * block), i.e. the instruction submits no chunks. */
       E(c, kb_cs_load_multiple(10, R->tctx_copy, 0xf, 40));
       E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
-      E(c, kb_cs_finish_fragment_heap(true, 10, 12));
+      /* A non-zero WAIT MASK is what makes this a deferred op: the packer drops the signal slot of a synchronous instruction
+       * (Mesa cs_apply_async, cs_builder.h:866-889), so with mask 0 slot 4 never increments and the tail WAIT and the 0xffff
+       * retire are vacuous - exactly what Round 1 shipped. Wait the fragment run's endpoint slot, signal slot 4. */
+      E(c, kb_cs_finish_fragment_heap_signal(true, 10, 12, MALI_SLOT_FRAGMENT, 1u << slot));
    }
    E(c, kb_cs_req_res(0));
 }
@@ -941,13 +955,22 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    E(&c, kb_cs_nop());
    if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    {
-      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x332); 0 = none */
-      int hf = e ? (int)strtol(e, NULL, 16) : 0x332;
+      /* 0x002 = other-cache invalidate only, same rule as the graphics head (see there: a frame after a host write needs the
+       * L2/LSC invalidate, f->host_write). MALI_CHF=<hex> overrides (0 = no flush) */
+      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x002 / 0x332) */
+      int hf = e ? (int)strtol(e, NULL, 16) : (f->host_write ? 0x332 : 0x002);
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      /* This job READS memory an earlier frame of the same submission may have written (the CTS's copy, a render->sample or
+       * render->compute chain, a LOAD preload). Waiting only the LS slot lets the read run before the previous frame's tiler
+       * and fragment (tile writeback) have finished, so a sub-rectangle render followed by an image read returned only the
+       * current area. Wait every slot: frames do not overlap here, so this is the stall the fence already implies.
+       * MALI_NOHEADWAIT=1 disables it for A/B. */
+      if (!getenv("MALI_NOHEADWAIT"))
+         E(&c, kb_cs_wait(0xffff));
    }
    M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
    M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
@@ -1020,6 +1043,9 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
+   /* same rule as the graphics retire: the fence must not signal before every slot of this frame has drained. Drain with
+    * a WAIT, then the ordinary add - a wait mask on the add would include the add's own slot and never complete */
+   E(&c, KB_CS_RETIRE_DRAIN);
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    if (c.err) {
       free(c.v);
@@ -1067,6 +1093,8 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       return build_compute(hw, f, out, nout);
    *out = NULL;
    *nout = 0;
+   if (f->ncolour > 1)
+      return -ENOTSUP;   /* MRT frames exist for the software rasteriser only (maxColorAttachments = 1) */
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
       return -EINVAL;
    memset(&c, 0, sizeof c);
@@ -1074,7 +1102,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
 
    void *smp = A(hw, sizeof kb_sample_positions, 64, &va_smp);
    uint32_t *tctx = A(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
-   uint8_t *fbd = A(hw, f->ncolour > 1 ? KB_FB_DESC_SIZE_MAX : KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
+   uint8_t *fbd = A(hw, KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
    uint32_t *tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
    if (!smp || !tctx || !fbd || !tsd)
       return -ENOMEM;
@@ -1088,9 +1116,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
       uint64_t geom = (env->geo_va + 4096) | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
       if (v13)
-         kb_v13_tiler_ctx(tctx, f->width, f->height, f->hmask ? f->hmask : env->hmask, f->tile_log2 ? f->tile_log2 : env->tile_log2, env->geo_va, geom);
+         kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
-         kb_draw_tiler_ctx(tctx, f->width, f->height, f->hmask ? f->hmask : env->hmask, env->geo_va, geom);
+         kb_draw_tiler_ctx(tctx, f->width, f->height, env->hmask, env->geo_va, geom);
       if (f->provoking_last)
          tctx[2] &= ~(1u << 18);   /* First provoking vertex off = last vertex (v11 word 2 bit 18, v13.xml:2636 same) */
       if (f->samples == 4)
@@ -1104,8 +1132,16 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    /* head: flush stale descriptor lines, WAIT for it (async), then registers */
    E(&c, kb_cs_nop());
    {
-      static int hf = -1;
-      if (hf < 0) { const char *e = getenv("MALI_HF"); hf = e ? (int)strtol(e, NULL, 16) : 0x332; }
+      /* Other-cache invalidate only (0x002 = texture/RO-L1) is the default. A frame after a host write (f->host_write) keeps
+       * the old 0x332 CLEAN+INVALIDATE of L2 and LSC instead: the CPU bytes are in memory, but a clean L2 line for that address
+       * is stale and only an invalidate drops it. Cleaning+invalidating L2 at the head of every frame was the bug: it discards
+       * a previous frame's tile writeback still dirty in L2, so a render pass followed by an image read in the same submission
+       * returned only the newest area (PanVK clean+invalidates L2/LSC only for host writes,
+       * panfrost/vulkan/csf/panvk_vX_cmd_buffer.c:365-404 collect_cache_flush_info). MALI_HF=<hex> overrides for A/B; only
+       * that override is cached, the default is recomputed for every frame from its own f->host_write. */
+      static int hf_env = -2;
+      if (hf_env == -2) { const char *e = getenv("MALI_HF"); hf_env = e ? (int)strtol(e, NULL, 16) : -1; }
+      const int hf = hf_env >= 0 ? hf_env : (f->host_write ? 0x332 : 0x002);
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
@@ -1168,13 +1204,21 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_COMPLETED));
    }
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
-   if (geometry && !getenv("MALI_NOTF")) {
+   if (!getenv("MALI_NOTF")) {
       M32(&c, R->flush_id, 0);
+      E(&c, kb_cs_wait(1u << MALI_SLOT_FRAGMENT));   /* the fragment job and its tile writeback */
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
+   /* The retire word is what the CPU's fence waits on, so it must only change once EVERY asynchronous job of this frame has
+    * completed - the tiler, the fragment (tile writeback) and the cache flushes. An add with wait mask 0 (the old
+    * kb_cs_sync_add64 alone) ran immediately, i.e. every fence signalled before the fragment writeback: a readback or a
+    * reused buffer read after the fence could see stale data. The drain is a separate WAIT on every scoreboard slot and
+    * then the add, the PanVK finish_cs order (panvk_vX_cmd_buffer.c:109 cs_wait_slots(b, all_mask) before SYNC_ADD64);
+    * putting 0xffff in the add's own wait mask would make it wait on its own signal slot and never complete. */
+   E(&c, KB_CS_RETIRE_DRAIN);
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    rc = c.err;
 out:

@@ -116,8 +116,6 @@ struct mali_fixed {
    uint8_t src_c, dst_c, src_a, dst_a;    /* VkBlendFactor */
    uint8_t op_c, op_a;                    /* VkBlendOp (ADD 0, SUBTRACT 1, REVERSE_SUBTRACT 2) */
    float bconst[4];
-   /* colour attachments 1..3 (RT0 uses the fields above) */
-   struct mali_rtblend { bool blend_en; uint8_t wmask, src_c, dst_c, src_a, dst_a, op_c, op_a; } rtb[3];
    /* stencil (Vulkan values; applied only when the frame has a stencil attachment) */
    bool st_test;
    struct mali_st_face st_f, st_b;
@@ -149,6 +147,7 @@ struct mali_draw {
    float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
    int32_t sc[4];                         /* scissor x, y, w, h */
    bool sc_set;                           /* a scissor was set: an empty one clips everything, unset means render area */
+   bool preload;                          /* the loadOp LOAD preload draw: it covers the whole tile-aligned render area */
    unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
@@ -250,10 +249,10 @@ struct mali_frame {
    unsigned resolve_level, resolve_layer;         /* source: the attachment view's mip level / base array layer */
    unsigned resolve_dst_level, resolve_dst_layer; /* destination: the RESOLVE view's own mip level / base array layer */
    struct mali_att colour, zs, st;
-   struct mali_att colour_x[3];           /* colour attachments 1..3 (ncolour = total colour attachments, 0/1 = colour only) */
-   unsigned ncolour;
-   unsigned tile_log2;                    /* effective tile size, log2 pixels (0 = arch default): shrunk when the colour targets need more tile-buffer bytes */
-   uint32_t hmask;                        /* tiler hierarchy mask that matches tile_log2 (0 = arch default) */
+   unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
+   struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
+   bool preload_all;                      /* loadOp LOAD: the LOAD preload restores the whole tile-aligned render area, so the
+                                           * frame bbox is that box and every draw is clipped to the render area */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
@@ -265,6 +264,9 @@ struct mali_frame {
     * every record of the frame again: any_ind = some record is an indirect draw; poly_cpu = some record's effective
     * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
    bool any_ind, poly_cpu;
+   /* host_write: the CPU wrote device memory before this submission (vkFlushMappedMemoryRanges), so the head flush has to
+    * invalidate L2/LSC as well - a clean GPU L2 line for a host-written address is stale (see mali_cs_emit.c) */
+   bool host_write;
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
 };
 

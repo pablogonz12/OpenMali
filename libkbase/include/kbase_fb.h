@@ -22,23 +22,15 @@ enum kb_zs_format { KB_ZS_NONE = 0, KB_ZS_D32F = 1, KB_ZS_D24X8 = 2, KB_ZS_D16 =
 #define KB_FB_DESC_SIZE_ZS    (KB_FB_FBD_SIZE + KB_FB_ZSEXT_SIZE + KB_FB_RTD_SIZE)   /* 256 */
 unsigned kb_zs_bytes_per_pixel(enum kb_zs_format f);
 
-/* Colour targets beyond RT0 (up to 3 more, descriptors follow RT0, 64 B each). Same encoding as the rt_* fields of RT0. */
-#define KB_FB_MAX_EXTRA_RT 3u
-#define KB_FB_DESC_SIZE_MAX (KB_FB_DESC_SIZE_ZS + KB_FB_MAX_EXTRA_RT * KB_FB_RTD_SIZE)
-struct kb_fb_rt {
-	uint64_t va;
-	uint32_t row_stride, surface_stride;
-	unsigned internal, wb, swizzle;
-	unsigned internal_offset;     /* bytes into the tile colour buffer, multiple of 16 */
-	unsigned no_store;            /* 1: this target is not written back (storeOp DONT_CARE/NONE) */
-	uint32_t clear[4];
-};
-
 struct kb_fb_params {
-	unsigned rt_extra_count;      /* 0..KB_FB_MAX_EXTRA_RT */
-	struct kb_fb_rt rt_extra[KB_FB_MAX_EXTRA_RT];
 	unsigned provoking_last;      /* 1: clear FBD word 11 bit 14 (last vertex provokes); 0 (default): first vertex, the Vulkan default */
 	unsigned width, height;       /* pixels, 1..65536 */
+	/* Bound Min/Max (FBD words 9..10, inclusive pixels): the tile range the FRAGMENT job processes. PanVK packs it from the
+	 * frame bounding box (panfrost/lib/pan_desc.c:1501-1502) and the draw's bounding box from the render area rounded to
+	 * tiles (panvk_vX_cmd_draw.c:4418-4427). Default 0 = the whole attachment. If it is the whole attachment, the fragment
+	 * job writes back tiles the frame never drew in - from an unloaded tile buffer - which erases them. */
+	unsigned bound_x0, bound_y0, bound_x1, bound_y1;   /* 0,0,width-1,height-1 when all zero */
+	unsigned bound_set;           /* 1: use the bound_* fields above */
 	unsigned rt_none;             /* no colour attachment: the render target is declared but Write Enable is off, no buffer */
 	unsigned rt_no_store;         /* 1: colour buffer exists but is not written back (storeOp DONT_CARE/NONE): RT Write Enable off, no tile write traffic */
 	uint64_t rt_gpu_va;           /* colour buffer, 64-byte aligned */
@@ -49,6 +41,14 @@ struct kb_fb_params {
 	uint64_t tiler_va;            /* Tiler Context pointer; 0 = geometry-less frame */
 	/* experiment knobs (defaults 0 = the documented configuration) */
 	unsigned no_clean_tile_write; /* 0 (default): Clean Tile Write Enable set, empty tiles are written */
+	/* Clean Tile Write Enable is the "write the clear value (or nothing) for tiles this frame does not touch" bit. It is only
+	 * correct when the attachment's loadOp is CLEAR: then untouched tiles must receive the clear value. With LOAD the untouched
+	 * tiles must keep their old contents, and with DONT_CARE they are undefined - in both cases writing them back from an
+	 * unloaded tile buffer erases what earlier frames/passes put there. PanVK sets it per attachment from the load op:
+	 * panfrost/lib/pan_fb.c:412-437 pan_fb_get_clean_tile (load target "always" = clear), consumed at pan_desc.c:1094-1119
+	 * (colour) and :523-526 (ZS). */
+	unsigned zs_no_clean_tile_write; /* as no_clean_tile_write for the ZS target (word 0 bit 31, shared with S) */
+	unsigned s_no_clean_tile_write;  /* as no_clean_tile_write for the S8 target (same bit) */
 	unsigned block_format;        /* 0 = linear (2) , 1 = tiled u-interleaved (1) */
 	/* depth attachment (genxml v11 "ZS Target" + FBD Z fields). Zero-initialised = none: output stays 192 B, identical to before. */
 	enum kb_zs_format zs_format;

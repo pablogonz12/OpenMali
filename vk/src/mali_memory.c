@@ -255,6 +255,10 @@ mali_FlushMappedMemoryRanges(VkDevice _device, uint32_t count, const VkMappedMem
 
    for (uint32_t i = 0; i < count; i++)
       range_cache(dev, &ranges[i], false);
+   /* CPU -> device: the GPU may still hold a clean L2 line for this memory (range_cache only does the CPU side for a
+    * non-cached BO), so the next submission's head flush must invalidate L2/LSC */
+   if (count)
+      atomic_store_explicit(&dev->host_write_pending, true, memory_order_release);
    return VK_SUCCESS;
 }
 
