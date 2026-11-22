@@ -38,9 +38,19 @@ spirv-val $n.spv
 echo "static const uint32_t ${n}_spv[] = {" >> $H
 od -An -v -tx4 -w16 $n.spv | sed -E 's# ([0-9a-f]{8})#0x\1,#g' >> $H
 echo "};" >> $H
-# depth/stencil loadOp LOAD: preload_zs.frag variants (Z, S, ZS)
+# depth/stencil loadOp LOAD: preload_zs.frag variants (Z, S, ZS), then the same three multisampled (per-sample plane by gl_SampleID)
 for v in z:DO_Z s:DO_S zs:DO_Z:DO_S; do
    n=preload_${v%%:*}_frag; defs=""
+   for d in $(echo ${v#*:} | tr : ' '); do defs="$defs -D$d"; done
+   glslangValidator -V --target-env vulkan1.1 $defs preload_zs.frag -o $n.spv >/dev/null
+   spirv-val $n.spv
+   echo "static const uint32_t ${n}_spv[] = {" >> $H
+   od -An -v -tx4 -w16 $n.spv | sed -E 's/ ([0-9a-f]{8})/0x\1,/g' >> $H
+   echo "};" >> $H
+done
+# multisampled depth/stencil loadOp LOAD: the same three with -DOUT_SAMPLE, so each sample reads its own plane
+for v in z:DO_Z s:DO_S zs:DO_Z:DO_S; do
+   n=preload_${v%%:*}_ms_frag; defs="-DOUT_SAMPLE"
    for d in $(echo ${v#*:} | tr : ' '); do defs="$defs -D$d"; done
    glslangValidator -V --target-env vulkan1.1 $defs preload_zs.frag -o $n.spv >/dev/null
    spirv-val $n.spv
