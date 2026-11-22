@@ -252,6 +252,8 @@ struct mali_frame {
    struct mali_att colour, zs, st;
    struct mali_att colour_x[3];           /* colour attachments 1..3 (ncolour = total colour attachments, 0/1 = colour only) */
    unsigned ncolour;
+   unsigned tile_log2;                    /* effective tile size, log2 pixels (0 = arch default): shrunk when the colour targets need more tile-buffer bytes */
+   uint32_t hmask;                        /* tiler hierarchy mask that matches tile_log2 (0 = arch default) */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */

@@ -250,6 +250,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    p.rt_no_store = f->has_colour && !f->colour.store && !f->colour.resolve_va;
    if (p.rt_none)
       p.row_stride = 0;
+   p.tile_log2 = f->tile_log2;
    p.tiler_va = tiler_ctx_va;
    p.provoking_last = f->provoking_last;
    p.sample_locations_va = sample_locations_va;
@@ -259,7 +260,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
        * pointer = table + pattern * 256 (pan_sample_positions_offset). */
       p.samples_log2 = 2;
       p.sample_pattern = 2;
-      p.tile_log2 = 8;
+      p.tile_log2 = f->tile_log2 ? f->tile_log2 : 8;
       p.sample_locations_va = sample_locations_va + 2 * 256;
       if (f->colour.resolve_va) {
          p.rt_gpu_va = f->colour.resolve_va;      /* Average: RT base is the single-sample resolve image */
@@ -297,7 +298,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       unsigned al = ((1u << env->tile_log2) * bpp) >> 10;
       if (!al)
          al = 1;
-      unsigned tl = env->tile_log2 - (msaa ? 2 : 0);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */
+      unsigned tl = f->tile_log2 ? f->tile_log2 : env->tile_log2 - (msaa ? 2 : 0);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */
       w[11] = (w[11] & ~((0xfu << 9) | (0xffu << 24))) | ((tl & 0xfu) << 9) | (al << 24);
    }
    return 0;

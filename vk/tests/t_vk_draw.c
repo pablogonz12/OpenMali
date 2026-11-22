@@ -1922,8 +1922,9 @@ test_mrt(const char *name, int nrt)
                const uint8_t *p = px[i] + (size_t)y * pitch[i] + (size_t)(h ? 3 * W / 4 : W / 4) * 4;
                for (int c = 0; c < 4; c++)
                   if (p[c] != (want[c] > 0.5f ? 255 : 0)) {
-                     if (!bad++)
-                        printf("{\"detail\":\"rt%d y%d %s: got %02x%02x%02x%02x\"}\n", i, y, h ? "clear" : "draw", p[0], p[1], p[2], p[3]);
+                     if (bad < 12)
+                        printf("{\"detail\":\"rt%d y%d x%d %s: got %02x%02x%02x%02x want %02x\"}\n", i, y, h ? 3 * W / 4 : W / 4, h ? "clear" : "draw", p[0], p[1], p[2], p[3], want[c] > 0.5f ? 255 : 0);
+                     bad++;
                      break;
                   }
             }
@@ -1947,6 +1948,198 @@ out:
    if (vs) DestroyShaderModule(dev, vs, NULL);
    if (fs) DestroyShaderModule(dev, fs, NULL);
 #undef MRT_CHECK
+   return ok;
+}
+
+
+/* MRT with mixed formats and per-attachment state: RT0 RGBA8 (no blend), RT1 RGBA16F (ADD ONE/ONE:
+ * 0.25 clear + 0.5 draw = 0.75, written to R only), RT2 R32_UINT (integer target), RT3 RGBA8 with
+ * colorWriteMask = 0. mrt.vert draws the left half only, so the right half of every target must keep
+ * its clear value. Fails on main with "need exactly one colour attachment" at vkEndCommandBuffer. */
+static int
+test_mrt_mixed(const char *name)
+{
+   static const VkFormat fmt[4] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                   VK_FORMAT_R32_UINT, VK_FORMAT_R8G8B8A8_UNORM};
+   static const unsigned bpp[4] = {4, 8, 4, 4};
+   VkImage im[4] = {0};
+   VkDeviceMemory mem[4] = {0};
+   VkImageView iv[4] = {0};
+   uint8_t *px[4] = {0};
+   uint32_t pitch[4] = {0};
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv("mrtmix.frag.spv");
+   VkRenderPass rp = VK_NULL_HANDLE;
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE;
+   int ok = 0;
+   unsigned bad = 0;
+#define MIX_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   MIX_CHECK(vs && fs, "shaders");
+   for (int i = 0; i < 4; i++) {
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = fmt[i], .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      MIX_CHECK(CreateImage(dev, &ii, NULL, &im[i]) == VK_SUCCESS, "image %d", i);
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, im[i], &mr);
+      int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      MIX_CHECK(mt >= 0, "no host visible type");
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      MIX_CHECK(AllocateMemory(dev, &ai, NULL, &mem[i]) == VK_SUCCESS, "mem %d", i);
+      MIX_CHECK(BindImageMemory(dev, im[i], mem[i], 0) == VK_SUCCESS, "bind %d", i);
+      MIX_CHECK(MapMemory(dev, mem[i], 0, VK_WHOLE_SIZE, 0, (void **)&px[i]) == VK_SUCCESS, "map %d", i);
+      VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+      VkSubresourceLayout sl;
+      GetImageSubresourceLayout(dev, im[i], &sr, &sl);
+      pitch[i] = (uint32_t)sl.rowPitch;
+      px[i] += sl.offset;
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = fmt[i], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      MIX_CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view %d", i);
+   }
+   VkAttachmentDescription ad[4];
+   VkAttachmentReference ar[4];
+   for (int i = 0; i < 4; i++) {
+      ad[i] = (VkAttachmentDescription){.format = fmt[i], .samples = VK_SAMPLE_COUNT_1_BIT,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+      ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   }
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 4, .pColorAttachments = ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 4, .pAttachments = ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   MIX_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 4,
+                                  .pAttachments = iv, .width = W, .height = H, .layers = 1};
+   MIX_CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   MIX_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba[4];
+   for (int i = 0; i < 4; i++) cba[i] = (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xf};
+   cba[1].blendEnable = VK_TRUE;
+   cba[1].srcColorBlendFactor = cba[1].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+   cba[1].dstColorBlendFactor = cba[1].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+   cba[1].colorBlendOp = cba[1].alphaBlendOp = VK_BLEND_OP_ADD;
+   cba[1].colorWriteMask = 0x1;   /* R only: G/B/A keep the clear value */
+   cba[3].colorWriteMask = 0x0;   /* masked out: the target must keep its clear colour */
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = 4, .pAttachments = cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = pl, .renderPass = rp};
+   MIX_CHECK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe) == VK_SUCCESS, "graphics pipeline");
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   MIX_CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   MIX_CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   MIX_CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv[4];
+   memset(cv, 0, sizeof cv);
+   cv[1].color.float32[0] = 0.25f; cv[1].color.float32[3] = 1.0f;   /* RGBA16F clear: R = 0.25 */
+   cv[2].color.uint32[0] = 7u;                                      /* R32_UINT clear: 7 */
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 4, .pClearValues = cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   {
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+   }
+   MIX_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   MIX_CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, fence);
+   MIX_CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   MIX_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   ok = 1;
+   if (!g_fake) {   /* drawn left half vs clear right half, at several rows */
+      for (int y = 8; y < H; y += 40)
+         for (int side = 0; side < 2; side++) {
+            const unsigned x = (unsigned)(side ? 3 * W / 4 : W / 4);
+            /* RT0 RGBA8: draw (0.5, 0.25, 1, 1) = 128,64,255,255; clear 0 */
+            const uint8_t *p = px[0] + (size_t)y * pitch[0] + (size_t)x * bpp[0];
+            const unsigned want0[4] = {side ? 0u : 128u, side ? 0u : 64u, side ? 0u : 255u, side ? 0u : 255u};
+            for (int c = 0; c < 4; c++)
+               if ((unsigned)p[c] + 1u < want0[c] || (unsigned)p[c] > want0[c] + 1u) {
+                  if (bad < 4)
+                     printf("{\"detail\":\"rt0 y%d %s got %02x%02x%02x%02x\"}\n", y, side ? "clear" : "draw", p[0], p[1], p[2], p[3]);
+                  bad++;
+               }
+            /* RT1 RGBA16F: R = clear 0.25 + draw 0.5 (ADD ONE/ONE) on the drawn half; half bits 0x3a00 */
+            const uint16_t *h = (const uint16_t *)(px[1] + (size_t)y * pitch[1] + (size_t)x * bpp[1]);
+            const unsigned want1 = side ? 0x3400u : 0x3a00u;
+            if ((unsigned)(h[0] & 0x7fffu) != want1) {
+               if (bad < 4)
+                  printf("{\"detail\":\"rt1 y%d %s got %04x want %04x\"}\n", y, side ? "clear" : "draw", h[0], want1);
+               bad++;
+            }
+            /* RT2 R32_UINT: draw 1234, clear 7 */
+            const uint32_t u = *(const uint32_t *)(px[2] + (size_t)y * pitch[2] + (size_t)x * bpp[2]);
+            if (u != (side ? 7u : 1234u)) {
+               if (bad < 4)
+                  printf("{\"detail\":\"rt2 y%d %s got %u\"}\n", y, side ? "clear" : "draw", u);
+               bad++;
+            }
+            /* RT3 RGBA8 with colorWriteMask 0: the clear colour survives on both halves */
+            const uint8_t *q = px[3] + (size_t)y * pitch[3] + (size_t)x * bpp[3];
+            for (int c = 0; c < 4; c++)
+               if (q[c]) {
+                  if (bad < 4)
+                     printf("{\"detail\":\"rt3 y%d %s got %02x%02x%02x%02x (masked out)\"}\n", y, side ? "clear" : "draw", q[0], q[1], q[2], q[3]);
+                  bad++;
+               }
+         }
+      ok = bad == 0;
+   }
+   printf("{\"test\":\"%s\",\"bad\":%u,\"ok\":%s%s}\n", name, bad, ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend\"" : "");
+   if (!ok) g_fail = 1;
+out:
+   DeviceWaitIdle(dev);
+   if (fence) DestroyFence(dev, fence, NULL);
+   if (pool) DestroyCommandPool(dev, pool, NULL);
+   if (pipe) DestroyPipeline(dev, pipe, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (fb) DestroyFramebuffer(dev, fb, NULL);
+   if (rp) DestroyRenderPass(dev, rp, NULL);
+   for (int i = 0; i < 4; i++) {
+      if (iv[i]) DestroyImageView(dev, iv[i], NULL);
+      if (im[i]) DestroyImage(dev, im[i], NULL);
+      if (mem[i]) FreeMemory(dev, mem[i], NULL);
+   }
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef MIX_CHECK
    return ok;
 }
 
@@ -3157,6 +3350,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
+   if (ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");   /* mixed formats, per-attachment blend and write mask */
    if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");

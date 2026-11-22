@@ -1240,10 +1240,18 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             memcpy(x->clear_color, cx->clearValue.color.float32, sizeof x->clear_color);
          bpp += tx.rt ? tx.rt->alloc : 4u;
       }
-      if (bpp > 16) {
-         unsupported(cmd, "colour attachments exceed the 16 bytes per pixel tile buffer budget");
+      /* Tile-buffer budget: 16 KiB. PanVK shrinks the effective tile as the colour bytes per pixel grow
+       * (pan_select_tile_size, third_party/mesa/src/panfrost/lib/pan_desc.c:618-626: tile_size = budget >> log2(bpp))
+       * and derives the tiler's smallest bin from that tile (pan_choose_hierarchy_mask, pan_tiler.c:300: the mask is
+       * log2(w/16) | log2(h/16)<<6). 32x32 holds up to 16 B/px, 16x16 up to 64 B/px, which is all four advertised
+       * colour attachments can ask for (4 x RGBA32F). Shrink rather than refuse. */
+      unsigned bpp_tot = bpp * (f->samples > 1 ? 4u : 1u);
+      if (bpp_tot > 64) {
+         unsupported(cmd, "colour attachments exceed the 16 KiB tile buffer (more than 64 bytes per pixel)");
          return;
       }
+      f->tile_log2 = bpp_tot <= 16 ? 10u : 8u;
+      f->hmask = bpp_tot <= 16 ? 0xfeu : 0xffu;
    }
    }
    struct mali_preload_src zsrc;

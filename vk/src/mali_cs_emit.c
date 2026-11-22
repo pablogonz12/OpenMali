@@ -1114,8 +1114,6 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       return build_compute(hw, f, out, nout);
    *out = NULL;
    *nout = 0;
-   if (f->ncolour > 1)
-      return -ENOTSUP;   /* MRT frames exist for the software rasteriser only (maxColorAttachments = 1) */
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
       return -EINVAL;
    memset(&c, 0, sizeof c);
@@ -1137,9 +1135,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
       uint64_t geom = (env->geo_va + 4096) | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
       if (v13)
-         kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
+         kb_v13_tiler_ctx(tctx, f->width, f->height, f->hmask ? f->hmask : env->hmask, f->tile_log2 ? f->tile_log2 : env->tile_log2, env->geo_va, geom);
       else
-         kb_draw_tiler_ctx(tctx, f->width, f->height, env->hmask, env->geo_va, geom);
+         kb_draw_tiler_ctx(tctx, f->width, f->height, f->hmask ? f->hmask : env->hmask, env->geo_va, geom);
       if (f->provoking_last)
          tctx[2] &= ~(1u << 18);   /* First provoking vertex off = last vertex (v11 word 2 bit 18, v13.xml:2636 same) */
       if (f->samples == 4)
