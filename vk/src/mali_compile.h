@@ -48,6 +48,7 @@ struct mali_compile_opts {
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
    unsigned cull_distances;       /* FS: gl_CullDistance count written by the VS (compiled.vs_cull_distances); the VS stores d>=0 as 1, the FS discards where one interpolates to 0 (all three vertices negative) */
+   unsigned cull_varying;         /* FS: the varying the VS wrote the merged clip+cull array in (compiled.cull_varying). NOT num_inputs: the VS's gl_Position takes varying 0, so the array is at 1 even when the FS reads nothing */
    int sample_shading;            /* FS: pipeline sampleShadingEnable with minSampleShading * samples > 1 (PanVK: nir->info.fs.uses_sample_shading) */
    int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
    unsigned nspec;                         /* VkSpecializationInfo: mapEntryCount (0 = none) */
@@ -80,6 +81,9 @@ struct mali_compiled {
    uint64_t vs_secondary_preload;
    uint32_t vs_clip_distances;    /* VS: gl_ClipDistance array size (0 = none) */
    uint32_t vs_cull_distances;    /* VS: gl_CullDistance array size (0 = none), lowered to 0/1 varyings */
+   uint32_t cull_varying;         /* VS: driver_location of the merged clip+cull varying (handed to the FS compile); FS: the one it read */
+   uint32_t cull_varying_first;   /* the varying carrying cull distance 0 / the last one: the pipeline refuses a VS/FS disagreement */
+   uint32_t cull_varying_last;
    uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
    uint32_t nvarying;
    struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */

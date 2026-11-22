@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 34 /* 34: shaderCullDistance (the VS stores d>=0 as 1 in the cull half of the merged CLIP_DIST array, the FS discards where one is 0) ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 35 /* 35: shaderCullDistance reads the merged clip/cull array at the varying the VS reports (compiled.cull_varying) instead of the FS's num_inputs, and no longer counts the slot twice ; 34: shaderCullDistance (the VS stores d>=0 as 1 in the cull half of the merged CLIP_DIST array, the FS discards where one is 0) ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -177,31 +177,35 @@ type_size(const struct glsl_type *t, bool bindless)
 static bool
 lower_cull_write(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   const unsigned *range = data;   /* { first cull component, one past the last } */
+   const unsigned *range = data;   /* { 0, cull_distance_array_size, flags_base } */
 
    if (intr->intrinsic != nir_intrinsic_store_output)
       return false;
    nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
-   if (sem.location != VARYING_SLOT_CLIP_DIST0 && sem.location != VARYING_SLOT_CLIP_DIST1)
+   if (sem.location != VARYING_SLOT_CULL_DIST0 && sem.location != VARYING_SLOT_CULL_DIST1)
       return false;
 
+   const unsigned flags_base = range[2];
    const unsigned first =
-      (sem.location - VARYING_SLOT_CLIP_DIST0) * 4 + nir_src_as_uint(intr->src[1]) * 4 + nir_intrinsic_component(intr);
+      (sem.location - VARYING_SLOT_CULL_DIST0) * 4 + nir_src_as_uint(intr->src[1]) * 4 + nir_intrinsic_component(intr);
    const unsigned width = nir_src_num_components(intr->src[0]);
-   bool touched = false;
-   for (unsigned k = 0; k < width; k++)
-      touched |= first + k >= range[0] && first + k < range[1];
-   if (!touched)
-      return false;
+   bool progress = false;
 
    b->cursor = nir_before_instr(&intr->instr);
-   nir_def *lane[4];
    for (unsigned k = 0; k < width; k++) {
+      const unsigned d = first + k;
+      if (d < range[0] || d >= range[1])
+         continue;
+      /* the distance stays as written; the flag goes to its own whole-slot varying at the end of the outputs */
       nir_def *v = nir_channel(b, intr->src[0].ssa, k);
-      lane[k] = (first + k >= range[0] && first + k < range[1]) ? nir_b2f32(b, nir_fge_imm(b, v, 0.0)) : v;
+      nir_store_output(b, nir_b2f32(b, nir_fge_imm(b, v, 0.0)), nir_imm_int(b, 0),
+                       .component = (d - range[0]) % 4, .write_mask = 0x1,
+                       .io_semantics.location = VARYING_SLOT_VAR0 + flags_base + (d - range[0]) / 4,
+                       .io_semantics.num_slots = 1,
+                       .base = flags_base + (d - range[0]) / 4);
+      progress = true;
    }
-   nir_src_rewrite(&intr->src[0], nir_vec(b, lane, width));
-   return true;
+   return progress;
 }
 
 /* FS half: discard where one of the cull flags interpolates to 0. Runs before nir_lower_io, next to
@@ -209,20 +213,12 @@ lower_cull_write(nir_builder *b, nir_intrinsic_instr *intr, void *data)
  * driver_location is the declared gl_ClipDistance input's, else the next free input location, which is where the
  * VS's nir_assign_io_var_locations put it (CLIP_DIST0 sorts after every generic varying). */
 static void
-lower_cull_fs(nir_shader *nir, unsigned clip_size, unsigned cull_size)
+lower_cull_fs(nir_shader *nir, unsigned clip_size, unsigned cull_size, unsigned base,
+              unsigned *varying_first, unsigned *varying_last)
 {
    const unsigned slots = DIV_ROUND_UP(clip_size + cull_size, 4);
-   unsigned base = ~0u;
-   nir_foreach_shader_in_variable(var, nir)
-      if (var->data.location == VARYING_SLOT_CLIP_DIST0)
-         base = var->data.driver_location;
-   if (base == ~0u) {
-      base = nir->num_inputs;
-      nir->num_inputs += slots;
-   } else if (nir->num_inputs < base + slots) {
-      nir->num_inputs = base + slots;   /* the cull slots follow the declared clip array in the same location */
-   }
-   nir->info.inputs_read |= BITFIELD64_RANGE(VARYING_SLOT_CLIP_DIST0, slots);
+   nir->num_inputs = MAX2(nir->num_inputs, base + slots);
+   nir->info.inputs_read |= BITFIELD64_RANGE(VARYING_SLOT_VAR0 + base, slots);
 
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
    nir_builder b = nir_builder_at(nir_before_impl(impl));
@@ -230,28 +226,30 @@ lower_cull_fs(nir_shader *nir, unsigned clip_size, unsigned cull_size)
    nir_def *culled = NULL;
 
    for (unsigned i = 0; i < cull_size; i++) {
-      const unsigned total = clip_size + i, slot = total / 4, comp = total % 4;
+      const unsigned slot = i / 4, comp = i % 4;
       if (!loaded[slot]) {
          nir_def *bary = nir_load_barycentric(&b, nir_intrinsic_load_barycentric_pixel, INTERP_MODE_NONE);
-         loaded[slot] = nir_load_interpolated_input(&b, 4, 32, bary, nir_imm_int(&b, slot), .base = base + slot,
-                                                   .io_semantics.location = VARYING_SLOT_CLIP_DIST0,
-                                                   .io_semantics.no_validate = true);
+         loaded[slot] = nir_load_interpolated_input(&b, 4, 32, bary, nir_imm_int(&b, slot), .base = base,
+                                                   .io_semantics.location = VARYING_SLOT_VAR0 + base + slot,
+                                                   .io_semantics.num_slots = 1);
       }
       nir_def *zero = nir_feq_imm(&b, nir_channel(&b, loaded[slot], comp), 0.0);
       culled = culled ? nir_ior(&b, culled, zero) : zero;
    }
+   *varying_first = base;
+   *varying_last = base + (cull_size - 1) / 4;
    nir_discard_if(&b, culled);
    nir->info.fs.uses_discard = true;
    nir_progress(true, impl, nir_metadata_control_flow);
    if (getenv("MALI_CULL_DBG"))
-      fprintf(stderr, "mali_cull: fs clip %u cull %u at varying %u (%u slot%s), discard inserted\n",
-              clip_size, cull_size, base, slots, slots == 1 ? "" : "s");
+      fprintf(stderr, "mali_cull: fs clip %u cull %u at varying %u (%u slot%s) -> %u..%u, discard inserted\n",
+              clip_size, cull_size, base, slots, slots == 1 ? "" : "s", *varying_first, *varying_last);
 }
 
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, cull_distances, sample_shading;
+   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, cull_distances, cull_varying, sample_shading;
    uint32_t subgroup_size;   /* required subgroup size (0 = arch default): a requested 8/32 must not reuse a 16-wide binary */
    /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
    uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
@@ -271,6 +269,7 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
    k.cull_distances = o->cull_distances;
+   k.cull_varying = o->cull_varying;
    k.sample_shading = o->sample_shading != 0;
    k.subgroup_size = o->subgroup_size;
    k.vs_layout_size = o->link_vs ? o->link_vs->size : 0;
@@ -596,7 +595,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    struct pan_varying_layout vl;
    memset(&vl, 0, sizeof vl);
    const struct pan_varying_layout *vs_layout = NULL;
-   unsigned clip_distances = 0, cull_distances = 0;
+   unsigned clip_distances = 0, cull_distances = 0, cull_varying = 0, cull_varying_first = 0, cull_varying_last = 0;
 
    if (stage == MESA_SHADER_COMPUTE) {
       NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared, glsl_get_natural_size_align_bytes);
@@ -614,13 +613,22 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          nir_gather_clip_cull_distance_sizes_from_vars(nir);
          clip_distances = nir->info.clip_distance_array_size;
          cull_distances = nir->info.cull_distance_array_size;
-         /* Merge clip and cull into VARYING_SLOT_CLIP_DIST0 also when only cull is declared: the FS side reads the
-          * cull flags from that one location, so both stages must agree on it. */
-         if (clip_distances || cull_distances)
+         /* Not merged when cull is declared: the merged form is two partial compact vars (clip frac 0, cull frac
+          * clip) in one driver location, which pan_varying_collect_formats does not support (asserts at :353 and
+          * :181 in t_vk_ref). gl_CullDistance keeps VARYING_SLOT_CULL_DIST0, whole slots. */
+         if (clip_distances && !cull_distances)
             NIR_PASS(_, nir, nir_merge_clip_cull_distance_vars);
          nir_foreach_shader_in_variable(var, nir)
             var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
          nir_assign_io_var_locations(nir, nir_var_shader_out);
+         if (cull_distances) {
+            /* the flags get their own whole-slot varying after every other output: the FS must read it at this
+             * driver location, so the number goes to the FS compile (mali_compile_opts.cull_varying) */
+            cull_varying = nir->num_outputs;
+            cull_varying_first = cull_varying;
+            cull_varying_last = cull_varying + DIV_ROUND_UP(cull_distances, 4) - 1;
+            nir->num_outputs = cull_varying_last + 1;
+         }
       } else {
          nir_assign_io_var_locations(nir, nir_var_shader_in);
          nir_assign_io_var_locations(nir, nir_var_shader_out);
@@ -628,7 +636,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          if (o->clip_distances)
             NIR_PASS(_, nir, nir_lower_clip_fs, (1u << o->clip_distances) - 1, true, true);
          if (o->cull_distances)
-            lower_cull_fs(nir, o->clip_distances, o->cull_distances);
+            lower_cull_fs(nir, o->clip_distances, o->cull_distances, o->cull_varying, &cull_varying_first, &cull_varying_last);
       }
       NIR_PASS(_, nir, nir_lower_var_copies);
       NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees, nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
@@ -636,7 +644,20 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
                nir_lower_io_use_interpolated_input_intrinsics);
       if (stage == MESA_SHADER_VERTEX && cull_distances) {
          /* after nir_lower_io: the cull distances are store_output intrinsics inside the merged array now */
-         unsigned range[2] = { clip_distances, clip_distances + cull_distances };
+         unsigned range[3] = { 0, cull_distances, cull_varying };
+         if (getenv("MALI_CULL_DBG")) {
+            nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+               nir_foreach_instr(ins, blk) {
+                  if (ins->type != nir_instr_type_intrinsic) continue;
+                  nir_intrinsic_instr *i2 = nir_instr_as_intrinsic(ins);
+                  if (i2->intrinsic != nir_intrinsic_store_output) continue;
+                  nir_io_semantics s2 = nir_intrinsic_io_semantics(i2);
+                  fprintf(stderr, "mali_cull: store loc %d slots %u base %d off %u comp %u mask %x ncomp %u\n",
+                          s2.location, s2.num_slots, nir_intrinsic_base(i2),
+                          (unsigned)(nir_src_is_const(i2->src[1]) ? nir_src_as_uint(i2->src[1]) : 999u),
+                          nir_intrinsic_component(i2), nir_intrinsic_write_mask(i2), (unsigned)nir_src_num_components(i2->src[0]));
+               }
+         }
          bool wrote = false;
          NIR_PASS(wrote, nir, nir_shader_intrinsics_pass, lower_cull_write, nir_metadata_control_flow, range);
          if (getenv("MALI_CULL_DBG"))
@@ -844,9 +865,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       out->generic_size_B = vl.generic_size_B;
       out->vs_clip_distances = clip_distances;
       out->vs_cull_distances = cull_distances;
+      out->cull_varying = cull_varying;
       out->layout.size = sizeof vl;
       memcpy(out->layout.data, &vl, sizeof vl);
    }
+   /* both stages: the varying that carries cull distance 0 / the last one (mali_pipeline compares them) */
+   out->cull_varying_first = cull_varying_first;
+   out->cull_varying_last = cull_varying_last;
    if (stage != MESA_SHADER_COMPUTE) {
       const struct pan_varying_layout *L = vs_layout ? vs_layout : &info.varyings.formats;
       for (unsigned i = 0; i < L->count && out->nvarying < 64; i++) {

@@ -233,9 +233,21 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
    o.cull_distances = p->vs.vs_cull_distances;
+   o.cull_varying = p->vs.cull_varying;
    const bool rs_discard = st.rs && st.rs->rasterizer_discard_enable;
    if ((fss || !rs_discard) && mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
+      res = VK_ERROR_INVALID_SHADER_NV;
+      goto fail;
+   }
+
+   /* shaderCullDistance: the FS discards on the varyings the VS wrote, and each stage works them out from its own
+    * location assignment. A disagreement reads another varying - a wrong picture, not a crash - so refuse. */
+   if (!rs_discard && p->vs.vs_cull_distances &&
+       (p->vs.cull_varying_first != p->fs.cull_varying_first || p->vs.cull_varying_last != p->fs.cull_varying_last)) {
+      fprintf(stderr, "mali_vk: cull distance varyings disagree: VS %u..%u, FS %u..%u (%u clip + %u cull)\n",
+              p->vs.cull_varying_first, p->vs.cull_varying_last, p->fs.cull_varying_first, p->fs.cull_varying_last,
+              p->vs.vs_clip_distances, p->vs.vs_cull_distances);
       res = VK_ERROR_INVALID_SHADER_NV;
       goto fail;
    }
