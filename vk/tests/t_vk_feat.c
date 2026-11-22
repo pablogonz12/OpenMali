@@ -30,6 +30,7 @@ static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization inf
 static VkPhysicalDevice g_pd;
 static PFN_vkGetPhysicalDeviceProperties2 g_gp2;   /* properties2, resolved in main: used by imgmax too */
 static PFN_vkGetPhysicalDeviceFeatures2 g_gf2;     /* features2, resolved in main: image2dview chains the EXT struct */
+static PFN_vkGetPhysicalDeviceFormatProperties g_gfp;   /* format properties, resolved in main: gl43fmt */
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
@@ -3579,6 +3580,35 @@ test_image2dview(void)
    return 1;
 }
 
+/* GL 4.3's texture-format rows (zink lists them as SAMPLED_IMAGE requirements for the 4.3 profile): R8G8B8A8 UNORM/SRGB,
+ * the 16-bit UNORM/SNORM family, and D32_SFLOAT_S8 sampled. "Unknown" in the audit meant no caps dump had a
+ * VkFormatProperties section; this row is that section, and it must be true for every one of them. */
+static int
+test_gl43fmt(void)
+{
+   static const struct { VkFormat f; const char *n; } f[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM, "rgba8_unorm"}, {VK_FORMAT_R8G8B8A8_SRGB, "rgba8_srgb"},
+      {VK_FORMAT_R16_UNORM, "r16_unorm"}, {VK_FORMAT_R16G16_UNORM, "rg16_unorm"}, {VK_FORMAT_R16G16B16A16_UNORM, "rgba16_unorm"},
+      {VK_FORMAT_R16_SNORM, "r16_snorm"}, {VK_FORMAT_R16G16_SNORM, "rg16_snorm"}, {VK_FORMAT_R16G16B16A16_SNORM, "rgba16_snorm"},
+   };
+   char line[512] = "";
+   for (unsigned i = 0; i < sizeof f / sizeof f[0]; i++) {
+      CHECK(g_gfp != NULL, "vkGetPhysicalDeviceFormatProperties resolved");
+      VkFormatProperties fp;
+      g_gfp(g_pd, f[i].f, &fp);
+      const VkFormatFeatureFlags want = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+      CHECK((fp.optimalTilingFeatures & want) == want, "%s not sampleable+linear in optimal tiling (0x%x, want 0x%x)",
+            f[i].n, fp.optimalTilingFeatures, want);
+      snprintf(line + strlen(line), sizeof line - strlen(line), "%s:0x%x ", f[i].n, fp.optimalTilingFeatures);
+   }
+   VkFormatProperties dz;
+   g_gfp(g_pd, VK_FORMAT_D32_SFLOAT_S8_UINT, &dz);
+   CHECK(dz.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "D32_SFLOAT_S8_UINT not sampleable (0x%x)",
+         dz.optimalTilingFeatures);
+   printf("{\"test\":\"gl43fmt\",\"colour\":\"%s\",\"d32s8\":\"0x%x\",\"ok\":true}\n", line, dz.optimalTilingFeatures);
+   return 1;
+}
+
 static int
 test_gl43caps(void)
 {
@@ -4231,6 +4261,7 @@ main(int argc, char **argv)
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
    g_gf2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
+   g_gfp = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
@@ -4389,6 +4420,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("image2dview")) ok &= test_image2dview();
+   if (ok && CASE_ON("gl43fmt")) ok &= test_gl43fmt();
    if (ok && CASE_ON("gl43caps")) ok &= test_gl43caps();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
