@@ -2073,6 +2073,9 @@ test_quadsize(void)
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
+   return 1;
+}
+
 /* pointgrid: 256 POINT_LIST vertices over a 16x16 grid. With the advertised pointSizeRange {1, 1} every point must cover
  * exactly one pixel (256 of 65536) whatever gl_PointSize the shader writes. Before the fix the driver asked the tiler for a
  * per-vertex point-size ARRAY it never filled, so the tiler read a NULL array and most points were dropped: 55 px on the
