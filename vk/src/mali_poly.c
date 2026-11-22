@@ -96,6 +96,43 @@ mali_poly_lower_tes(unsigned arch, const uint32_t *spirv, uint32_t nwords, const
    return out->ok;
 }
 
+int
+mali_poly_lower_tcs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
+                    struct mali_poly_tcs *out, char *err, size_t errsz)
+{
+   if (out) memset(out, 0, sizeof *out);
+   if (!out)
+      return 0;
+   glsl_type_singleton_init_or_ref();
+   nir_shader *tcs = mali_poly_nir_from_spirv(arch, spirv, nwords, MESA_SHADER_TESS_CTRL, entry, err, errsz);
+   if (!tcs) {
+      glsl_type_singleton_decref();
+      return 0;
+   }
+   if (tcs->info.stage != MESA_SHADER_TESS_CTRL) {
+      if (err && errsz) snprintf(err, errsz, "no tessellation control shader in this module");
+      ralloc_free(tcs);
+      glsl_type_singleton_decref();
+      return 0;
+   }
+   mali_poly_preprocess(tcs);
+   out->lowered = poly_nir_lower_tcs(tcs, false) ? 1 : 0;
+   out->stride = poly_tcs_output_stride(tcs);
+   out->per_vertex_outputs = (uint32_t)poly_tcs_per_vertex_outputs(tcs);
+   out->vertices_out = tcs->info.tess.tcs_vertices_out;
+   out->shared_size = tcs->info.shared_size;
+   out->ok = out->lowered;
+   if (out->lowered) {
+      nir_validate_shader(tcs, "poly TCS output");
+      out->nir_valid = 1;
+   } else if (err && errsz) {
+      snprintf(err, errsz, "poly_nir_lower_tcs refused this shader");
+   }
+   ralloc_free(tcs);
+   glsl_type_singleton_decref();
+   return out->ok;
+}
+
 static void
 fill_from_info(struct mali_poly_gs *out, const struct poly_gs_info *info)
 {

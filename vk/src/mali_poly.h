@@ -66,6 +66,21 @@ struct mali_poly_tes {
 int mali_poly_lower_tes(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry, int to_hw_vs,
                         struct mali_poly_tes *out, char *err, size_t errsz);
 
+/* ---- the control half, for T2 step 2 (notes/tess-design.md § T2): poly_nir_lower_tcs(tcs, false) as one call. The
+ * lowered shader is compute-shaped (its stores go to the TCS output buffer through `load_tess_param_buffer_poly`), so the
+ * record side needs two numbers from it: the per-patch stride of that buffer and the control points per patch. */
+struct mali_poly_tcs {
+   uint32_t ok;
+   uint32_t nir_valid;
+   uint32_t lowered;          /* 1 = poly_nir_lower_tcs returned true */
+   uint32_t stride;           /* poly_tcs_output_stride(): bytes per patch in the TCS output buffer */
+   uint32_t per_vertex_outputs; /* poly_tcs_per_vertex_outputs(): bitmask of varyings written per control point */
+   uint32_t vertices_out;     /* nir->info.tess.tcs_vertices_out */
+   uint32_t shared_size;      /* nir->info.shared_size after lowering (the barrier check's input) */
+};
+int mali_poly_lower_tcs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
+                        struct mali_poly_tcs *out, char *err, size_t errsz);
+
 /* ---- shared with mali_tess.c: SPIR-V -> NIR with this driver's options, then the standard preprocessing (the list is in
  * mali_poly.c and is the one AgX hands poly). Both return NULL on failure with the reason in err. */
 void *mali_poly_nir_from_spirv(unsigned arch, const uint32_t *spirv, uint32_t nwords, unsigned stage, const char *entry,

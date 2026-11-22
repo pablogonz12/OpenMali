@@ -131,6 +131,32 @@ case_tes(const char *file)
    return 0;
 }
 
+/* T2 step 2's first number: Mesa's poly_nir_lower_tcs() on a real TCS, and the buffer geometry the record side needs. */
+static int
+case_tcs(const char *file, unsigned want_stride, unsigned want_verts)
+{
+   uint32_t nwords = 0;
+   uint32_t *spirv = read_spv(file, &nwords);
+   if (!spirv) return 1;
+   struct mali_poly_tcs tcs;
+   char err[256] = "";
+   int ok = mali_poly_lower_tcs(g_arch, spirv, nwords, "main", &tcs, err, sizeof err);
+   free(spirv);
+   if (!ok) { printf("{\"test\":\"gs_lower\",\"tcs\":\"%s\",\"ok\":false,\"error\":\"%s\"}\n", file, err); return 1; }
+   const char *why = NULL;
+   if (!tcs.lowered) why = "poly_nir_lower_tcs returned false";
+   else if (!tcs.nir_valid) why = "the lowered shader failed nir_validate";
+   else if (tcs.vertices_out != want_verts) why = "tcs_vertices_out is not the declared patch size";
+   /* The stride is poly's own arithmetic (poly_tcs_output_stride, poly_nir_lower_tess.c:34) and it is measured, not
+    * predicted: the assertion is that it is a non-zero multiple of 4 bytes for a shader that does write varyings. */
+   else if (tcs.stride < want_stride || (tcs.stride & 3)) why = "the TCS output stride is not a sane buffer stride";
+   printf("{\"test\":\"gs_lower\",\"tcs\":\"%s\",\"arch\":%u,\"ok\":%s,\"stride\":%u,\"vertices_out\":%u,"
+          "\"per_vertex_outputs\":%u,\"shared_size\":%u%s%s}\n", file, g_arch, why ? "false" : "true", tcs.stride,
+          tcs.vertices_out, tcs.per_vertex_outputs, tcs.shared_size, why ? ",\"why\":\"" : "", why ? why : "");
+   if (why) { g_fail = 1; return 1; }
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -146,6 +172,8 @@ main(int argc, char **argv)
    if (case_gs("gs_loop.geom.spv", 4, 0, "3 emitted in an unrolled loop, dynamic: 3 + 3/3")) return 1;
    if (case_gs("gs_computed.geom.spv", 4, 0, "3 emitted, dynamic: 3 + 3/3")) return 1;
    if (case_tes("tess_tri.tese.spv")) return 1;
+   /* T2 step 2: the control shader through Mesa's poly lowering; 3 control points, position + one vec4 per vertex */
+   if (case_tcs("tess_tri.tesc.spv", 4, 3)) return 1;
    case_not_a_gs();
    if (g_fail) { printf("{\"test\":\"gs_lower\",\"ok\":false}\n"); return 1; }
    printf("{\"test\":\"gs_lower\",\"ok\":true,\"cases\":4}\n");
