@@ -14,12 +14,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 static inline bool
 mali_experimental_gs(void)
 {
    const char *e = getenv("MALI_EXPERIMENTAL_GS");
-   return e && e[0] == '1';
+   return e && !strcmp(e, "1");   /* "12", "1x" and "1 " stay off: this gate decides what the device advertises */
 }
 
 /* Input primitive of a pass-through GS (Vulkan ExecutionMode InputPoints/InputLines/InputTriangles). */

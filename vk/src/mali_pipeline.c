@@ -403,6 +403,17 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
        * refused with a name instead of misrendering. */
       if (gs_prims) {
          const unsigned want = gs_prims == MALI_GS_POINTS ? 1 : gs_prims == MALI_GS_LINES ? 2 : 8;
+         /* the topology the draw will use is not knowable when the pipeline takes it dynamically, and a POINT/LINE
+          * polygon rewrite turns one triangle into several primitives (the per-vertex flags would then be split) */
+         const bool dyn_prim = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY);
+         const bool poly_rewrite = st.rs && st.rs->polygon_mode != VK_POLYGON_MODE_FILL;
+         if (dyn_prim || poly_rewrite) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: geometry shader refused: pass-through GS needs a static list topology and polygonMode FILL (dynamic topology %u, polygonMode %d)\n",
+                       (unsigned)dyn_prim, st.rs ? (int)st.rs->polygon_mode : (int)VK_POLYGON_MODE_FILL);
+            goto fail;
+         }
          if (g->poly_mode || g->prim != want) {
             res = VK_ERROR_FEATURE_NOT_PRESENT;
             if (getenv("MALI_PIPE_DBG"))
