@@ -1625,7 +1625,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    if (dev) {
       /* one atomic exchange: a flush on another thread between a load and a store would be lost, and the next submission
        * would then skip the L2/LSC invalidate its host-written input needs */
-      host_write = __atomic_exchange_n(&dev->host_write_pending, false, __ATOMIC_ACQ_REL);
+      host_write = atomic_exchange_explicit(&dev->host_write_pending, false, memory_order_acq_rel);
       if (host_write)   /* given back below unless this submission really hands a frame carrying the flag to the GPU */
          dev->host_write_owed = true;
    }
@@ -1700,7 +1700,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
     * the next successful submission would use the 0x002 head and read a stale clean L2 line for the host-written memory */
    if (dev && dev->host_write_owed) {
       if (res != VK_SUCCESS || !nall)
-         __atomic_store_n(&dev->host_write_pending, true, __ATOMIC_RELEASE);
+         atomic_store_explicit(&dev->host_write_pending, true, memory_order_release);
       dev->host_write_owed = false;
    }
    free(all);
