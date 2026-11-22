@@ -1953,8 +1953,11 @@ test_mrt(const char *name, int nrt)
    if (!g_fake && map) {   /* output i = (i+1)/10 * gl_FragCoord.x/W, so target i must hold (i+1)/10 * 32/W at x = 32 */
          printf("{\"map\":[");
          for (int i = 0; i < nrt; i++) {
-            const uint8_t *q = px[i] + (size_t)48 * pitch[i] + 32u * (g_mrt32 ? 16u : 4u);   /* texel size of the selected format */
-            const float want = (float)(i + 1) * 0.1f * 32.5f / (float)W;   /* 0.1*(i+1)*gl_FragCoord.x/W at the sampled pixel */
+            /* 3*W/8 keeps adjacent targets' accepted ranges apart: at x = 32 the bytes are ~3.2 and ~6.5, which the
+             * 2/255 tolerance makes indistinguishable, so one value could satisfy both rows */
+            const unsigned sx = 3 * W / 8;
+            const uint8_t *q = px[i] + (size_t)48 * pitch[i] + sx * (g_mrt32 ? 16u : 4u);   /* texel size of the selected format */
+            const float want = (float)(i + 1) * 0.1f * ((float)sx + 0.5f) / (float)W;   /* 0.1*(i+1)*gl_FragCoord.x/W at the sampled pixel */
             const float got = g_mrt32 ? *(const float *)q : (float)q[0] / 255.0f;
             const int check = (!strcmp(name, "mrtmap") || !strcmp(name, "mrtmapb")) ||   /* mrtmap32f only prints (float readback, not a product path) */
                               (!strcmp(name, "mrtmap1") && i == 0);   /* the single-output probes only print */
@@ -2188,6 +2191,131 @@ out:
    if (vs) DestroyShaderModule(dev, vs, NULL);
    if (fs) DestroyShaderModule(dev, fs, NULL);
 #undef MIX_CHECK
+   return ok;
+}
+
+
+/* A dEQP-shaped MRT frame: two RGBA32F targets of 128x280 (the explicit-LOD 32x64 case's render target) and a
+ * draw, so the fake backend's R-VA/R-GEOM rules see the same sizes the phone faults on. Pixels are not checked
+ * (the fake backend skips them); this exists to validate every GPU address the frame reaches. */
+static int
+test_mrt_big(const char *name)
+{
+   const unsigned bw = 128, bh = 280;
+   VkImage im[2] = {0};
+   VkDeviceMemory mem[2] = {0};
+   VkImageView iv[2] = {0};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   VkPipelineLayout pl = VK_NULL_HANDLE;
+   VkPipeline pipe = VK_NULL_HANDLE;
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkFence fence = VK_NULL_HANDLE;
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv("mrt2.frag.spv");
+   int ok = 0;
+#define BIG_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
+   BIG_CHECK(vs && fs, "shaders");
+   for (int i = 0; i < 2; i++) {
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = VK_FORMAT_R32G32B32A32_SFLOAT, .extent = {bw, bh, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      BIG_CHECK(CreateImage(dev, &ii, NULL, &im[i]) == VK_SUCCESS, "image %d", i);
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, im[i], &mr);
+      int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      BIG_CHECK(mt >= 0, "no host visible type for a %u x %u RGBA32F target (%llu bytes)", bw, bh, (unsigned long long)mr.size);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+      BIG_CHECK(AllocateMemory(dev, &ai, NULL, &mem[i]) == VK_SUCCESS, "mem %d", i);
+      BIG_CHECK(BindImageMemory(dev, im[i], mem[i], 0) == VK_SUCCESS, "bind %d", i);
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = VK_FORMAT_R32G32B32A32_SFLOAT, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      BIG_CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view %d", i);
+   }
+   VkAttachmentDescription ad[2];
+   VkAttachmentReference ar[2];
+   for (int i = 0; i < 2; i++) {
+      ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R32G32B32A32_SFLOAT, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+      ar[i] = (VkAttachmentReference){(uint32_t)i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   }
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 2, .pColorAttachments = ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2, .pAttachments = ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   BIG_CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 2,
+                                  .pAttachments = iv, .width = bw, .height = bh, .layers = 1};
+   BIG_CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+   BIG_CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "layout");
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vis = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba[2];
+   for (int i = 0; i < 2; i++) cba[i] = (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 2, .pAttachments = cba};
+   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                      .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
+                                      .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                      .pDynamicState = &dys, .layout = pl, .renderPass = rp};
+   BIG_CHECK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe) == VK_SUCCESS, "pipeline");
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   BIG_CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   BIG_CHECK(AllocateCommandBuffers(dev, &cai, NULL == NULL ? &cb : &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   BIG_CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv[2];
+   memset(cv, 0, sizeof cv);
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                               .renderArea = {{0, 0}, {bw, bh}}, .clearValueCount = 2, .pClearValues = cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   VkViewport vp = {0, 0, bw, bh, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {bw, bh}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   BIG_CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   BIG_CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, fence);
+   BIG_CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   BIG_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   ok = 1;
+   printf("{\"test\":\"%s\",\"%ux%u\",\"ok\":true}\n", name, bw, bh);
+out:
+   DeviceWaitIdle(dev);
+   if (fence) DestroyFence(dev, fence, NULL);
+   if (pool) DestroyCommandPool(dev, pool, NULL);
+   if (pipe) DestroyPipeline(dev, pipe, NULL);
+   if (pl) DestroyPipelineLayout(dev, pl, NULL);
+   if (fb) DestroyFramebuffer(dev, fb, NULL);
+   if (rp) DestroyRenderPass(dev, rp, NULL);
+   for (int i = 0; i < 2; i++) {
+      if (iv[i]) DestroyImageView(dev, iv[i], NULL);
+      if (im[i]) DestroyImage(dev, im[i], NULL);
+      if (mem[i]) FreeMemory(dev, mem[i], NULL);
+   }
+   if (vs) DestroyShaderModule(dev, vs, NULL);
+   if (fs) DestroyShaderModule(dev, fs, NULL);
+#undef BIG_CHECK
    return ok;
 }
 
@@ -3402,6 +3530,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrtmap")) ok &= test_mrt("mrtmap", 4);
    if (ok && CASE_ON("mrtmapo0")) ok &= test_mrt("mrtmapo0", 4);
    if (ok && CASE_ON("mrtmapo2")) ok &= test_mrt("mrtmapo2", 4);
+   if (ok && CASE_ON("bigmrt")) ok &= test_mrt_big("bigmrt");
    if (ok && CASE_ON("mrtmap1")) ok &= test_mrt("mrtmap1", 1);
    if (ok && CASE_ON("mrtmapb")) { g_mrtblend = 1; ok &= test_mrt("mrtmapb", 4); g_mrtblend = 0; }
    if (ok && CASE_ON("mrtmap32f")) { g_mrt32 = 1; ok &= test_mrt("mrtmap32f", 4); g_mrt32 = 0; }   /* permutation probe: prints the R byte each target received */   /* mixed formats, per-attachment blend and write mask */
