@@ -73,7 +73,8 @@ main(int argc, char **argv)
 
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
-   VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &f12};
+   VkPhysicalDeviceRobustness2FeaturesEXT fr2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &f12};
+   VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &fr2};
    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13};
    GetPhysicalDeviceFeatures2(pd, &f2);
 
@@ -98,6 +99,10 @@ main(int argc, char **argv)
       V(13, shaderDemoteToHelperInvocation), V(13, shaderZeroInitializeWorkgroupMemory),
       V(13, subgroupSizeControl), V(13, synchronization2),
 #undef V
+      /* VK_EXT_robustness2: DXVK 3.1.1 requires resilientBufferAccess2 at device creation (DXVK-GAP.md:11). Not part of
+       * f11/f12/f13, so it is listed by hand; this row is why DXVK_MISSING counts it. */
+      {"robustness2.robustBufferAccess2", fr2.robustBufferAccess2},
+      {"robustness2.nullDescriptor", fr2.nullDescriptor},
    };
    unsigned nreq = sizeof(req) / sizeof(req[0]), missing = 0;
    for (unsigned i = 0; i < nreq; i++) {

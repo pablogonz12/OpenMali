@@ -408,7 +408,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
-      .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
+      .EXT_robustness2 = true,               /* nullDescriptor + robustBufferAccess2 (t_vk_feat nulld, robust2) */
       .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; dynamic LogicOp/patchControlPoints stay off (static logicOp runs through the blend shader) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
@@ -457,9 +457,17 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * (vk_device.c:211) rejects a device without it: zink could not create a device
        * ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). What it guarantees here: with the feature
        * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
-       * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
-       * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
+       * buffer/image indices and offsets before the backend sees them. */
       .robustBufferAccess = true,
+      /* VK_EXT_robustness2 (DXVK 3.1.1 requires robustBufferAccess2 at device creation, DXVK-GAP.md:11). The bound of an
+       * SSBO/UBO/texel buffer is dw1 of its 32-byte descriptor; mali_descriptor_lower.c lower_size_query turns the size
+       * query into a load of that word through resource table 62, exactly as PanVK does on v9+
+       * (panvk_vX_shader.c:607-630), and nir_lower_robust_access then zeroes/discards every access outside
+       * [0, bound) with the robustness2 range rules. Null descriptors are the all-zero slot (mali_descriptor.c:423):
+       * size 0, so they read zero and drop writes for free. t_vk_feat robust2, t_desc robust.
+       * robustImageAccess2 stays false: it needs the OOB image alpha/value emulation PanVK only has on v10+ with
+       * extra work (zenithblue patches 181/184), and DXVK does not require it. */
+      .robustBufferAccess2 = true,
       .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
       .textureCompressionBC = true,

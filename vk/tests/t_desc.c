@@ -565,21 +565,22 @@ test_compile(unsigned arch)
    r = mali_compile(&o, &c, err, sizeof err);
    CHECK(r == 0, "comp compile: %s", err);
    if (r == 0) { CHECK(c.bin_size > 0 && c.ubo_count >= 1 && c.push_const_bytes == 4, "comp ubo %u push %u", c.ubo_count, c.push_const_bytes); mali_compiled_free(&c); }
-   /* robust_access (robustBufferAccess2/robustImageAccess2 lowering, default off): nir_lower_robust_access runs and inserts
-    * get_ssbo_size/get_ubo_size queries, which the backend cannot do yet -> the compile is refused cleanly (not an assert). The
-    * features stay unadvertised until the size lowering exists. */
+   /* robust_access (robustBufferAccess2 lowering, default off): nir_lower_robust_access runs, inserts get_ssbo_size/get_ubo_size,
+    * and mali_descriptor_lower.c lower_size_query turns each query into a load of dw1 of the 32-byte hardware Buffer descriptor
+    * through resource table 62 (PanVK's v9+ valhall_lower_get_ssbo_size). A robust program with SSBO + UBO accesses must
+    * therefore compile and differ from the default one. */
    {
       struct mali_compile_layout rl = fl.c;
       rl.robust_access = 1;
-      struct mali_compiled cr;
+      struct mali_compiled cr, cn;
       o.layout = &rl;
       err[0] = 0;
-      CHECK(mali_compile(&o, &cr, err, sizeof err) != 0 && strstr(err, "get_ssbo_size"), "robust compute with SSBO/UBO must be refused until size queries exist: %s", err);
-      CHECK(mali_compile(&o, &cr, NULL, 0) != 0 && mali_compile(&o, &cr, NULL, sizeof err) != 0, "robust refusal with err == NULL must fail cleanly, not crash");
+      CHECK(mali_compile(&o, &cr, err, sizeof err) == 0, "robust compute with SSBO/UBO must compile (size query lowered): %s", err);
       o.layout = &fl.c;
-      err[0] = 0;
-      CHECK(mali_compile(&o, &cr, err, sizeof err) == 0, "default (robust off) compute still compiles: %s", err);
+      CHECK(mali_compile(&o, &cn, err, sizeof err) == 0, "default (robust off) compute still compiles: %s", err);
+      CHECK(cr.bin_size != cn.bin_size || memcmp(cr.bin, cn.bin, cr.bin_size), "robust access must change the code (bounds-checked loads)");
       mali_compiled_free(&cr);
+      mali_compiled_free(&cn);
    }
    /* without layout the old descriptor-free path still compiles the plain shaders */
    free(fs.w); free(cs.w);

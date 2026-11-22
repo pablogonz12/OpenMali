@@ -182,7 +182,8 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
-   case nir_intrinsic_get_ssbo_size: src = 0; break;
+   case nir_intrinsic_get_ssbo_size:
+   case nir_intrinsic_get_ubo_size: src = 0; break;
    case nir_intrinsic_store_ssbo: src = 1; break;
    default: return false;
    }
@@ -213,11 +214,26 @@ robust_filter(const nir_intrinsic_instr *i, const void *d)
    }
 }
 
-/* Returns true (as "progress") when a buffer size query is present; changes nothing. */
+/* robustness2 buffer bounds: nir_lower_robust_access asks the buffer for its size with get_ssbo_size/get_ubo_size, which the
+ * Valhall backend does not have. The bound is dw1 of the 32-byte hardware Buffer descriptor, and the hardware exposes the
+ * descriptor-table memory as resource "table 62" (index = table id, offset = bytes into that table), so the size is a UBO load
+ * at slot * MALI_DESC_SLOT_SIZE + 4. Same lowering as PanVK's v9+ path
+ * (third_party/mesa/src/panfrost/vulkan/panvk_vX_shader.c:607-630 valhall_lower_get_ssbo_size, citing pan_nir.h:63-73). A null
+ * descriptor is the all-zero slot (mali_descriptor.c:423-430), so its size reads 0 and every access is discarded. */
 static bool
-has_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
+lower_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
-   return i->intrinsic == nir_intrinsic_get_ssbo_size || i->intrinsic == nir_intrinsic_get_ubo_size;
+   if (i->intrinsic != nir_intrinsic_get_ssbo_size && i->intrinsic != nir_intrinsic_get_ubo_size)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[0].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *table = nir_ior_imm(b, nir_ushr_imm(b, h, 24), pan_res_handle(62, 0));
+   nir_def *off = nir_iadd_imm(b, nir_imul_imm(b, nir_iand_imm(b, h, BITFIELD_MASK(24)), MALI_DESC_SLOT_SIZE), 4);
+   nir_def *size = nir_load_ubo(b, 1, 32, table, off, .range = ~0u, .align_mul = MALI_DESC_SLOT_SIZE, .align_offset = 4);
+   nir_def_replace(&i->def, size);
+   return true;
 }
 
 bool
@@ -230,15 +246,8 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
-   if (layout->robust_access) {   /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
+   if (layout->robust_access)    /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
       NIR_PASS(_, nir, nir_lower_robust_access, robust_filter, NULL);
-      /* TODO(robustness2): the Bifrost/Valhall backend has no get_ssbo_size/get_ubo_size (PanVK reads the size from its descriptor
-       * table); until the driver lowers it, refuse instead of letting the backend assert. Keeps robustBufferAccess2 unadvertised. */
-      if (nir_shader_intrinsics_pass(nir, has_size_query, nir_metadata_all, NULL)) {
-         if (err && errsz) snprintf(err, errsz, "robust buffer access: get_ssbo_size/get_ubo_size not supported by the backend yet");
-         return false;
-      }
-   }
    /* nonuniformEXT() indices: the hardware takes one resource handle per warp, so divergent handles become a waterfall loop
     * (same set of types as PanVK; runs after the UBO/SSBO IO lowering). */
    const enum nir_lower_non_uniform_access_type types =
@@ -250,5 +259,8 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
       struct nir_lower_non_uniform_access_options opts = { .types = types };
       NIR_PASS(_, nir, nir_lower_non_uniform_access, &opts);
    }
+   /* after the waterfall: a divergent size query has become per-lane loads by now (PanVK runs it in the same place) */
+   if (layout->robust_access)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size_query, nir_metadata_control_flow, NULL);
    return true;
 }
