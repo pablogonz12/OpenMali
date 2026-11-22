@@ -4,6 +4,7 @@
 #include "../src/mali_descriptor.h"
 #include "../src/mali_pipeline_layout.h"
 #include "../src/mali_compile.h"
+#include "../src/mali_image.h"
 #include "../../libkbase/include/kbase_draw.h"
 
 #include "vk_alloc.h"
@@ -591,6 +592,62 @@ test_compile(unsigned arch)
    vk_descriptor_set_layout_unref(&g_dev, &l1->vk);
 }
 
+/* ---- sampler descriptor words: the part of audit-descriptors.md #4 that is a pure bit convention ----
+ * The hardware compares in the opposite order to Vulkan's compareOp (Mesa says so at pan_encoder.h:161-175, "The hardware compares in
+ * the wrong order, so we have to flip before encoding. Yes, really." and uses it for the sampler at pan_cmdstream.c:147-152 /
+ * panvk_vX_sampler.c:55-61), NEAREST must not round to nearest even (panvk_vX_sampler.c:112-137, CTS 5547), unnormalizedCoordinates
+ * clears "Normalized Coordinates" (panvk_vX_sampler.c:117) and "Clamp integer array indices" is never set (panvk_vX_sampler.c:118).
+ * Word 1 bits 13:15 = Compare Function, word 0 bits 21/25/26 = round-to-nearest-even / normalized coordinates / clamp-int-array. */
+static void
+test_sampler_words(void)
+{
+   struct mali_hw_desc o;
+   struct vk_sampler s;
+   memset(&s, 0, sizeof s);
+   VkSamplerCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                             .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR,
+                             .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT};
+   /* compareOp is stored flipped: the sampler compares the reference against the texel, Vulkan the texel against the reference */
+   static const struct { VkCompareOp vk; unsigned hw; const char *name; } cmp[] = {
+      { VK_COMPARE_OP_NEVER, 0, "NEVER" }, { VK_COMPARE_OP_LESS, 4, "LESS->GREATER" },
+      { VK_COMPARE_OP_EQUAL, 2, "EQUAL" }, { VK_COMPARE_OP_LESS_OR_EQUAL, 6, "LEQUAL->GEQUAL" },
+      { VK_COMPARE_OP_GREATER, 1, "GREATER->LESS" }, { VK_COMPARE_OP_NOT_EQUAL, 5, "NOT_EQUAL" },
+      { VK_COMPARE_OP_GREATER_OR_EQUAL, 3, "GEQUAL->LEQUAL" }, { VK_COMPARE_OP_ALWAYS, 7, "ALWAYS" },
+   };
+   for (unsigned i = 0; i < sizeof cmp / sizeof cmp[0]; i++) {
+      VkSamplerCreateInfo c = ci;
+      c.compareEnable = VK_TRUE;
+      c.compareOp = cmp[i].vk;
+      mali_sampler_pack(11, &c, &s, &o);
+      CHECK(((o.w[1] >> 13) & 7u) == cmp[i].hw, "%s: compare function %u, want %u", cmp[i].name, (o.w[1] >> 13) & 7u, cmp[i].hw);
+   }
+   VkSamplerCreateInfo c = ci;   /* compareEnable FALSE: NEVER, as panvk_translate_sampler_compare_func */
+   c.compareEnable = VK_FALSE;
+   c.compareOp = VK_COMPARE_OP_ALWAYS;
+   mali_sampler_pack(11, &c, &s, &o);
+   CHECK(((o.w[1] >> 13) & 7u) == 0, "compareEnable FALSE must pack NEVER, got %u", (o.w[1] >> 13) & 7u);
+
+   mali_sampler_pack(11, &ci, &s, &o);
+   CHECK(o.w[0] & (1u << 21), "LINEAR filters keep round-to-nearest-even");
+   CHECK(o.w[0] & (1u << 25), "normalized coordinates set for a normalized sampler");
+   CHECK(!(o.w[0] & (1u << 26)), "clamp integer array indices must stay clear (panvk_vX_sampler.c:118)");
+   c = ci;
+   c.minFilter = c.magFilter = VK_FILTER_NEAREST;
+   mali_sampler_pack(11, &c, &s, &o);
+   CHECK(!(o.w[0] & (1u << 21)), "NEAREST/NEAREST must clear round-to-nearest-even (the upper 2^-9 of a texel rounds up otherwise)");
+   CHECK((o.w[0] & (1u << 27)) && (o.w[0] & (1u << 28)), "NEAREST stays set for both filters");
+   c = ci;
+   c.unnormalizedCoordinates = VK_TRUE;
+   c.compareEnable = VK_FALSE;
+   mali_sampler_pack(11, &c, &s, &o);
+   CHECK(!(o.w[0] & (1u << 25)), "unnormalizedCoordinates clears Normalized Coordinates (panvk_vX_sampler.c:117)");
+   CHECK(((o.w[0] >> 8) & 0xfu) == 9, "unnormalized: wrap R is CLAMP_TO_EDGE whatever addressModeW says (got %u)", (o.w[0] >> 8) & 0xfu);
+   printf("  sampler words: 8 compare functions, nearest rounding, normalized/clamp bits%s\n", g_verbose ? "" : "");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -610,6 +667,7 @@ main(int argc, char **argv)
       test_write_copy(a);
       test_inline_template_imm(a);
    }
+   test_sampler_words();
    test_compile(11);
    test_compile(13);
    clock_gettime(CLOCK_MONOTONIC, &b);

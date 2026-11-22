@@ -610,6 +610,68 @@ test_logicop(void)
    }
 }
 
+/* Transform feedback: mali_pipeline.c:249-264 compiles the SAME XFB-declaring vertex shader twice per XFB pipeline — once
+ * with the store lowering (`p->vs`, MALI_XFB_STORES + xfb_pc = the application's push size) and once without it
+ * (`p->vs_plain`, MALI_XFB_PLAIN), because every draw outside a Begin/End range runs the plain one and must store
+ * nothing while no capture buffer is bound. Both are legal compiles and they are different binaries; the cache key
+ * (mkey) must separate them. On the audit's main, xfb/xfb_pc were absent from the key and the plain variant was asked
+ * for as "o.xfb = 0": a compile of an XFB module without the reserved area is refused (#296 guard, mali_compile.c), so
+ * the second compile only ever came back as a cache HIT serving the STORES binary — a draw outside a capture range
+ * stored to whatever the XFB bases held. With the cache off, the same pipeline failed to create. */
+static void
+t_xfb_key(void)
+{
+   struct spv vs = load("xfb.vert.spv");
+   if (!vs.w)
+      return;
+   char dir[] = "/tmp/mali-t_compile-xfbXXXXXX";
+   if (!mkdtemp(dir)) {
+      printf("  FAIL mkdtemp\n");
+      g_fail++;
+      free(vs.w);
+      return;
+   }
+   char err[256] = "";
+   struct mali_compile_opts o = { .arch = 11, .stage = MALI_STAGE_VERTEX, .spirv = vs.w, .spirv_words = vs.n, .cache_dir = "" };
+   struct mali_compiled st = {0}, pl = {0}, st2 = {0}, pl2 = {0};
+   /* no cache: both variants must compile and must differ */
+   o.xfb = MALI_XFB_STORES;
+   o.xfb_pc = 16;
+   CHECK(!mali_compile(&o, &st, err, sizeof err), "XFB STORES variant: %s", err);
+   o.xfb = MALI_XFB_PLAIN;
+   o.xfb_pc = 0;
+   CHECK(!mali_compile(&o, &pl, err, sizeof err), "XFB PLAIN variant (must be a legal compile, not only a cache hit): %s", err);
+   if (st.bin && pl.bin)
+      CHECK(st.bin_size != pl.bin_size || memcmp(st.bin, pl.bin, st.bin_size), "the STORES and PLAIN variants are the same %u-byte binary",
+            st.bin_size);
+   /* warm disk cache, mali_pipeline.c's order: STORES first, then PLAIN */
+   o.cache_dir = dir;
+   o.xfb = MALI_XFB_STORES;
+   o.xfb_pc = 16;
+   CHECK(!mali_compile(&o, &st2, err, sizeof err), "cached XFB STORES compile: %s", err);
+   o.xfb = MALI_XFB_PLAIN;
+   o.xfb_pc = 0;
+   CHECK(!mali_compile(&o, &pl2, err, sizeof err), "cached XFB PLAIN compile: %s", err);
+   if (st2.bin && st.bin)
+      CHECK(st2.bin_size == st.bin_size && !memcmp(st2.bin, st.bin, st2.bin_size), "the cached STORES binary differs from the uncached one");
+   if (pl2.bin && pl.bin) {
+      /* a shared key: the PLAIN compile is a hit and its bytes are the STORES binary (xfb/xfb_pc are not in mkey) */
+      CHECK(pl2.cache_hit == 0, "the PLAIN variant was served from the cache under the STORES key (xfb/xfb_pc not in the key)");
+      CHECK(pl2.bin_size == pl.bin_size && !memcmp(pl2.bin, pl.bin, pl2.bin_size), "the cached PLAIN binary differs from the uncached one");
+      if (st.bin)
+         CHECK(pl2.bin_size != st.bin_size || memcmp(pl2.bin, st.bin, st.bin_size), "the cached PLAIN binary is the STORES binary");
+   }
+   mali_compiled_free(&st);
+   mali_compiled_free(&pl);
+   mali_compiled_free(&st2);
+   mali_compiled_free(&pl2);
+   char cmd[600];
+   snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+   if (system(cmd))
+      g_fail++;
+   free(vs.w);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -629,6 +691,7 @@ main(int argc, char **argv)
    test_private_init();
    test_bda_frag();
    test_determinism_and_cache();
+   t_xfb_key();
    test_ycbcr();
    test_wpos_center();
    test_subgroup();
