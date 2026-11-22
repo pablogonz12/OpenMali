@@ -57,6 +57,14 @@ struct mali_cmd_res_ops {
 void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
 void mali_cmd_set_hw(const struct mali_hw *hw);   /* copied; NULL clears. Without it submit returns VK_ERROR_FEATURE_NOT_PRESENT */
 
+/* THROWAWAY apilog (notes/apilog.md): MALI_APILOG=1 prints one line per structural entry point (begin/end rendering, draw,
+ * barrier, query, copy/blit, submit, present) with a global sequence number. Never merged. */
+bool mali_apilog_on(void);
+unsigned mali_apilog_seq(void);   /* ++ while on, 0 while off */
+
+uint32_t mali_cd_spv(const uint32_t *code, uint32_t words);
+void mali_cd_pipe(const void *pipe, uint32_t vs, uint32_t fs);
+void mali_cd_flush(void);
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;
 
@@ -81,6 +89,9 @@ struct mali_cmd_buffer {
    uint32_t vb_stride[MALI_MAX_VB];   /* stride from vkCmdBindVertexBuffers2/3KHR setStride (used when the pipeline's VERTEX_INPUT_BINDING_STRIDE is dynamic) */
    uint8_t push[2][MALI_PUSH_MAX];
    unsigned nsets;
+   struct mali_dset *cd_set[MALI_CMD_SETS];   /* THROWAWAY chardump */
+   const uint8_t *cd_vb[MALI_MAX_VB];
+   uint64_t cd_pipe;
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
    unsigned ndyn;                       /* dynamic buffer descriptors (offset applied), table-0 entry MALI_DYN_BUF_START + i */
@@ -92,6 +103,20 @@ struct mali_cmd_buffer {
    const struct mali_compiled *cs;   /* bound compute pipeline */
    uint64_t cs_va;
    uint8_t push_cs[MALI_PUSH_MAX];
+   /* THROWAWAY apilog: the last VkRenderingInfo as the app gave it, so a draw can print its structure (flags, formats) */
+   struct {
+      unsigned ncol, flags, view_mask, layer_count;
+      int32_t area[4];
+      struct {
+         uint64_t view, resolve_view;
+         unsigned view_fmt, img_fmt, mutable_fmt, load, store, resolve_mode, img_va_lo;
+      } col[4];
+      struct {
+         uint64_t view, resolve_view;
+         unsigned view_fmt, img_fmt, mutable_fmt, load, store, resolve_mode, img_va_lo;
+      } zs[2];
+   } ap_ri;
+
    uint64_t occ_va;             /* M13: active occlusion query counter address (0 = none), copied into every draw */
    uint32_t dirty;                  /* MALI_D_* accumulated by the state setters since the last draw snapshot */
    unsigned occ_mode;

@@ -414,6 +414,20 @@ mali_dset_mark_write(struct mali_dset *s, struct mali_memory *mem)
       s->wrote_full = true;
 }
 
+void
+mali_cd_note(struct mali_dset *s, uint32_t slot, uint32_t type, uint64_t view)
+{
+   static int on = -1;
+   if (on < 0) on = getenv("MALI_CHARDUMP") ? 1 : 0;
+   if (!on) return;
+   if (!s->cd) s->cd = calloc(512, sizeof(struct mali_cd_ent));
+   if (!s->cd) return;
+   struct mali_cd_ent *e = s->cd;
+   uint32_t k = slot + 1, h = (k * 2654435761u) & 511;
+   for (int i = 0; i < 512; i++, h = (h + 1) & 511)
+      if (e[h].key == k || !e[h].key) { e[h].key = k; e[h].type = type; e[h].view = view; return; }
+}
+
 static void
 write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDescriptorType type, const VkDescriptorImageInfo *ii,
           const VkDescriptorBufferInfo *bi, const VkBufferView *bv)
@@ -425,6 +439,9 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
    struct mali_hw_desc null_hw;
    memset(&null_hw, 0, sizeof null_hw);
    uint32_t base = b->slot + idx * b->stride;
+   if (ii && (type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+              type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT))
+      mali_cd_note(s, base, type, (uint64_t)ii->imageView);
    switch (type) {
    case VK_DESCRIPTOR_TYPE_SAMPLER:
       if (b->imm_off == MALI_NO_IMM_SAMPLER) {

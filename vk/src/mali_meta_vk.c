@@ -253,6 +253,10 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   if (mali_apilog_on())   /* THROWAWAY apilog */
+      fprintf(stderr, "mali_apilog: COPYIMG seq=%u cb=%p src=0x%llx dst=0x%llx nreg=%u ext0=%ux%u\n", mali_apilog_seq(),
+              (void *)h, (unsigned long long)ci->srcImage, (unsigned long long)ci->dstImage, ci->regionCount,
+              ci->regionCount ? ci->pRegions[0].extent.width : 0, ci->regionCount ? ci->pRegions[0].extent.height : 0);
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkImageCopy2 *g = &ci->pRegions[i];
@@ -326,6 +330,11 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
    struct vk_buffer *buf = vk_buffer_from_handle(ci->dstBuffer);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   if (mali_apilog_on())   /* THROWAWAY apilog: the app's readback, the frame marker the two logs are aligned on */
+      fprintf(stderr, "mali_apilog: IMG2BUF seq=%u cb=%p img=0x%llx ifmt=%d iva=0x%llx nreg=%u ext0=%ux%u\n", mali_apilog_seq(),
+              (void *)h, (unsigned long long)ci->srcImage, img ? (int)img->vk.format : -1,
+              img ? (unsigned long long)img->va : 0ULL, ci->regionCount,
+              ci->regionCount ? ci->pRegions[0].imageExtent.width : 0, ci->regionCount ? ci->pRegions[0].imageExtent.height : 0);
    mark_dst_buf(cmd, buf);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
@@ -585,6 +594,11 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   if (mali_apilog_on())   /* THROWAWAY apilog */
+      fprintf(stderr, "mali_apilog: BLITIMG seq=%u cb=%p src=0x%llx sfmt=%d sva=0x%llx dst=0x%llx dfmt=%d dva=0x%llx nreg=%u filter=%d\n",
+              mali_apilog_seq(), (void *)h, (unsigned long long)ci->srcImage, si ? (int)si->vk.format : -1,
+              si ? (unsigned long long)si->va : 0ULL, (unsigned long long)ci->dstImage, di ? (int)di->vk.format : -1,
+              di ? (unsigned long long)di->va : 0ULL, ci->regionCount, (int)ci->filter);
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);

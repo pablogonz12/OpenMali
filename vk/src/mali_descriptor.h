@@ -61,6 +61,7 @@ struct mali_dset {
    uint64_t va;
    uint32_t bytes, off;
    struct mali_dset *next;       /* pool list, sorted by offset */
+   void *cd;                     /* THROWAWAY chardump: slot -> image view table */
    struct mali_dyn_buf *dyn;     /* dynamic buffers (base address, range); the dynamic offset is added when binding */
    unsigned arch;
    /* M15: memory a storage descriptor of this set can be written by the GPU. Recorded at update, applied to the
@@ -86,6 +87,8 @@ VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescripto
 
 /* Pure core, used by the entrypoints below and by tests. */
 void mali_dset_write(struct mali_dset *set, const VkWriteDescriptorSet *w);
+struct mali_cd_ent { uint32_t key, type; uint64_t view; };
+void mali_cd_note(struct mali_dset *s, uint32_t slot, uint32_t type, uint64_t view);
 /* M15: remember that a storage descriptor of this set can write `mem` (called from write_one). */
 void mali_dset_mark_write(struct mali_dset *set, struct mali_memory *mem);
 void mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src);
