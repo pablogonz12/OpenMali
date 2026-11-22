@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "mali_apilog.h"
 #include "mali_cmd.h"
 #include "kbase.h"
 #include "mali_descriptor.h"
@@ -615,6 +616,7 @@ discarded(const struct mali_cmd_buffer *cmd)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
+   mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
    CMD(h);
    if (!cmd->in_render || !cmd->have_gfx) {
       unsupported(cmd, "draw outside a rendering with a pipeline");
@@ -1028,6 +1030,7 @@ raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
+   mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
    CMD(h);
    struct mali_frame *f = &cmd->cur;
    struct mali_cmd_target t;
@@ -1310,6 +1313,7 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
+   mali_apilog("EndRendering cb=%p", (void *)h);
    CMD(h);
    if (!cmd->in_render) {
       unsupported(cmd, "EndRendering without a valid Begin");

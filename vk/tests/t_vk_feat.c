@@ -2156,7 +2156,12 @@ test_mpasssubmit(void)
          /* readback in its own submit, exactly like the CTS */
          VkCommandBuffer cb2 = cb_begin(&t);
          CHECK(cb2, "cmdbuf (copy)");
-         VkBufferImageCopy rgn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {W, H, 1}};
+         /* the CTS copies only the pass's own renderArea, with an image offset, into a bigger buffer at a buffer offset
+          * (commandReadFrameBuffer): exercise exactly that - 64x64 sub-rect, row length W, offset into the big buffer */
+         VkBufferImageCopy rgn = {.bufferOffset = (VkDeviceSize)((qy * 64) * W + qx * 64) * 4,
+                                  .bufferRowLength = W, .bufferImageHeight = H,
+                                  .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                  .imageOffset = {qx * 64, qy * 64, 0}, .imageExtent = {64, 64, 1}};
          CmdCopyImageToBuffer(cb2, t.img, VK_IMAGE_LAYOUT_GENERAL, rb.b, 1, &rgn);
          if (!cb_submit(&t, cb2)) return 0;
          if (!g_fake) {
@@ -2172,12 +2177,19 @@ test_mpasssubmit(void)
          }
       }
    if (!g_fake) {
-      unsigned quad[16] = {0}, nz = 0;
+      VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      InvalidateMappedMemoryRanges(dev, 1, &mr);
+      unsigned quad[16] = {0}, nz = 0, asmquad[16] = {0}, asmnz = 0, diff = 0;
       for (int y = 0; y < H; y++)
          for (int x = 0; x < W; x++) {
             const uint8_t *q = pix(&t, x, y);
+            const uint8_t *a = rb.p + (size_t)y * W * 4 + (size_t)x * 4;
             if (q[0] | q[1] | q[2]) { nz++; quad[(y / 64) * 4 + x / 64]++; }
+            if (a[0] | a[1] | a[2]) { asmnz++; asmquad[(y / 64) * 4 + x / 64]++; }
+            diff += (q[0] != a[0]) || (q[1] != a[1]) || (q[2] != a[2]) || (q[3] != a[3]);
          }
+      printf("{\"mpasssubmit\":\"assembled\",\"covered\":%u,\"vs_image_diff\":%u}\n", asmnz, diff);
+      for (int i = 0; i < 16; i++) if (asmquad[i] != quad[i]) printf("{\"mpasssubmit\":\"asmq%d\",\"assembled\":%u,\"image\":%u}\n", i, asmquad[i], quad[i]);
       printf("{\"mpasssubmit\":\"total\",\"covered\":%u}\n", nz);
       for (int i = 0; i < 16; i++) printf("{\"mpasssubmit\":\"q%d\",\"covered\":%u}\n", i, quad[i]);
    } else {
