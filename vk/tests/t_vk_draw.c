@@ -2254,6 +2254,60 @@ test_mode(const char *name, int mode, double expect, double tol)
 }
 
 
+/* The in-flight frame list (mali_queue.c: struct mali_hwctx.fl[MALI_MAX_INFLIGHT] = 3, appended at hw_submit_multi)
+ * is bounded by hw_job_begin's retire(max-1), which assumes ONE submission per command buffer. mali_cmd_submit does
+ * not hold that: it submits the frames accumulated so far whenever an indirect draw arrives (the args are read on the
+ * CPU, mali_cmd.c:1613-1627) and then the tail, so a command buffer with five frames whose second, third, fourth and
+ * fifth draws are indirect appends five entries. On main the append h->fl[h->nfl] ran past fl[3] into nfl/cur_start
+ * (mali_queue.c:414): ASan reports the heap-buffer-overflow, without it nfl becomes the retire-counter value and the
+ * next retire memmoves a wild length. Nothing may be dropped either: an entry is the arena range a submission still
+ * reads, so the fix retires (or grows), it never skips the append. */
+static int
+test_fl_bound(void)
+{
+   struct scene s = {.mode = MODE_MDI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   s.mode = MODE_MDI;
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+   CHECK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}) == VK_SUCCESS, "begin");
+   for (int k = 0; k < 5; k++) {   /* five render passes = five frames = (four flushes + tail) submissions */
+      VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                                  .renderArea = {{0, 0}, {W, H}}, .clearValueCount = s.depth ? 2 : 1, .pClearValues = cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+      CmdSetViewport(cb, 0, 1, &(VkViewport){0, 0, W, H, 0.0f, 1.0f});
+      CmdSetScissor(cb, 0, 1, &(VkRect2D){{0, 0}, {W, H}});
+      VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+      VkDeviceSize offs[2] = {0, 0};
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+      CmdDrawIndexedIndirect(cb, s.ib, 64, 2, 20);   /* every frame is the drain point, so all four flushes happen */
+      CmdEndRenderPass(cb);
+   }
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, f);
+   CHECK(r == VK_SUCCESS, "submit = %d", r);
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+   ResetFences(dev, 1, &f);
+   if (!g_fake)
+      printf("{\"test\":\"fl_bound\",\"frames\":5,\"submissions\":5,\"ok\":true}\n");
+   else
+      printf("{\"test\":\"fl_bound\",\"submissions\":5,\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   FreeCommandBuffers(dev, s.pool, 1, &cb);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return 1;
+}
+
 /* fillModeNonSolid: polygonMode LINE / POINT. Filled coverage of the quad modes is 16384 (idx) / 8192 (triangle); LINE must leave the
  * interior empty and cover only the edges (lo..hi pixels, triangle perimeter ~ 440 + diagonal for the quad), POINT only the vertices. */
 static int
@@ -3211,6 +3265,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
    if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);
+   if (ok && g_only && CASE_ON("fl_bound")) ok &= test_fl_bound();
    if (ok && CASE_ON("scissor")) ok &= test_mode("scissor", MODE_SCISSOR, 8192.0, 0.5);
    if (ok && CASE_ON("viewport")) ok &= test_mode("viewport", MODE_VPORT, 8192.0, 0.5);
    if (ok && CASE_ON("multivp")) {
