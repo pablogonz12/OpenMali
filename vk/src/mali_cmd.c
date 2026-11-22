@@ -1592,8 +1592,18 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       if (cmd->wrote_full)
          g_hw.bo_wrote(g_hw.user, NULL);
    }
+   bool host_write = false;
+   struct mali_device *dev = (struct mali_device *)cmd->vk.base.device;   /* vk_device is mali_device's first member */
+   if (dev) {
+      /* one atomic exchange: a flush on another thread between a load and a store would be lost, and the next submission
+       * would then skip the L2/LSC invalidate its host-written input needs */
+      host_write = __atomic_exchange_n(&dev->host_write_pending, false, __ATOMIC_ACQ_REL);
+      if (host_write)   /* given back below unless this submission really hands a frame carrying the flag to the GPU */
+         dev->host_write_owed = true;
+   }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
+      fr.host_write = host_write;
       /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
       bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
       if ((ind || poly_cpu) && g_hw.drain) {
@@ -1657,6 +1667,13 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          res = VK_ERROR_DEVICE_LOST;
    } else if (res != VK_SUCCESS && counted) {
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
+   }
+   /* a failure before submit_multi (indirect expansion, build, realloc) hands nothing to the GPU: the marker goes back, or
+    * the next successful submission would use the 0x002 head and read a stale clean L2 line for the host-written memory */
+   if (dev && dev->host_write_owed) {
+      if (res != VK_SUCCESS || !nall)
+         __atomic_store_n(&dev->host_write_pending, true, __ATOMIC_RELEASE);
+      dev->host_write_owed = false;
    }
    free(all);
    return res;
