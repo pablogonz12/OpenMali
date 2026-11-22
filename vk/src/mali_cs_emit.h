@@ -217,6 +217,7 @@ struct mali_rec {
    bool ind_nodrain;                      /* control (MALI_IND_CPU=1): the arguments are read from the mapping at submit with
                                            * no drain first, i.e. a compute job's write in this submission is invisible */
    unsigned occ_mode;
+   struct mali_gsdraw *gs;                /* a geometry-shader draw (index_va and dyn_desc[31] are resolved at build) */
 };
 
 /* A compute dispatch (M11): one per frame record, executed with RUN_COMPUTE. */

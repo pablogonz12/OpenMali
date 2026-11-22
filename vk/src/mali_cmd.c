@@ -473,10 +473,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       .count = count, .instance_count = inst, .first_vertex = first, .first_instance = first_inst,
    };
    if (m & (MALI_D_BIND | MALI_D_DYNBUF)) {
-      struct mali_bdyn *bd = mali_frame_blk(fr, sizeof *bd + cmd->ndyn * sizeof bd->d[0]);
+      const unsigned nd = (cmd->have_gfx && cmd->gfx.gs.on) ? MALI_DYN_ARR : cmd->ndyn;   /* GS: index 31 is the driver header, filled at build */
+      struct mali_bdyn *bd = mali_frame_blk(fr, sizeof *bd + nd * sizeof bd->d[0]);
       if (!bd)
          return false;
-      bd->n = cmd->ndyn;
+      bd->n = nd;
       memcpy(bd->d, cmd->dyn_desc, cmd->ndyn * sizeof bd->d[0]);
       d->dyn = bd;
    }
@@ -490,7 +491,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       bb->nsets = cmd->nsets;
       memcpy(bb->set_va, cmd->set_va, sizeof bb->set_va);
       memcpy(bb->set_bytes, cmd->set_bytes, sizeof bb->set_bytes);
-      bb->ndyn = cmd->ndyn;
+      bb->ndyn = (cmd->have_gfx && cmd->gfx.gs.on) ? MALI_DYN_ARR : cmd->ndyn;
       d->bind = bb;
    }
    /* VK_EXT_transform_feedback: the pipeline reserves 32 B after the app's push constants for the four XFB buffer
@@ -535,6 +536,10 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          return false;
       d->pipe = bp;
       bp->gfx = cmd->gfx;
+      if (bp->gfx.gs.on) {   /* the rasterisation draw of a GS: poly's output index buffer is a triangle strip with restart markers */
+         bp->gfx.prim = 10;
+         bp->gfx.prim_restart = true;
+      }
       if (xfb_off) {   /* no range open: the non-XFB program (mali_pipeline.c), so nothing is stored */
          bp->gfx.vs = bp->gfx.vs_plain;
          bp->gfx.vs_va = bp->gfx.vs_plain_va;
@@ -611,6 +616,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          default: unsupported(cmd, "polygon mode");
          }
       }
+      if (bp->gfx.gs.on) {
+         bp->gfx.prim = 10;
+         bp->gfx.prim_restart = true;
+         bp->gfx.poly_mode = 0;
+      }
       /* the colour attachment this frame renders: index 0 unless the pass's leading slots are null (then slot 1, ...), so
        * the blend and colour-write state must be read for that slot, not for slot 0 the view may not exist for */
       const unsigned cs = cmd->cur.has_colour ? (cmd->cur.colour_slot & 7u) : 0u;
@@ -647,6 +657,96 @@ discarded(const struct mali_cmd_buffer *cmd)
    return cmd->gfx.discard || cmd->vk.dynamic_graphics_state.rs.rasterizer_discard_enable;
 }
 
+/* GS lane 2 step (iii): one direct draw through a geometry-shader pipeline. Records (1) the VS as a compute kernel over
+ * (vertices, instances) and (2) the GS body over (primitives, instances) into the pass's pre block, waves 0 and 1 (compute-in-pass.md),
+ * then (3) the rasterisation draw: an indexed triangle-strip draw over the output index buffer main fills, shaded by poly's copy
+ * program. The arena/index buffer addresses exist only at frame build (mali_frame_build, struct mali_gsdraw). */
+extern void mali_gs_draw_counts(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *) __attribute__((weak));
+
+static bool
+gs_attr_pullable(int fmt)
+{
+   switch (fmt) {
+   case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R32G32B32A32_SFLOAT:
+   case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT:
+   case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static void
+gs_draw(struct mali_cmd_buffer *cmd, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
+{
+   const struct mali_gfx_state *g = &cmd->gfx;
+   if (!mali_gs_draw_counts || cmd->gfx.nattr > MALI_MAX_ATTR) {
+      unsupported(cmd, "geometry shader draw without the poly library");
+      return;
+   }
+   struct mali_gsdraw *gd = mali_frame_blk(&cmd->cur, sizeof *gd);
+   if (!gd) {
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+   gd->nverts = vcount;
+   gd->ninst = icount;
+   gd->max_indices = g->gs.max_indices;
+   gd->shape = 0;   /* MALI_POLY_SHAPE_DYNAMIC_INDEXED: the only shape the pipeline accepts */
+   gd->count_words = 1;
+   gd->vs_outputs = g->gs.vs_outputs;
+   gd->first_vertex = first;
+   gd->first_instance = first_inst;
+   gd->nattr = g->nattr;
+   mali_gs_draw_counts(gd->max_indices, gd->shape, vcount, icount, &gd->nprims, &gd->index_count, &gd->instance_count);
+   for (unsigned i = 0; i < g->nattr; i++) {
+      const struct mali_attr *a = &g->attr[i];
+      if (!gs_attr_pullable(a->vk_format) || a->binding >= MALI_MAX_VB || !cmd->vb_va[a->binding]) {
+         unsupported(cmd, "geometry shader: vertex attribute format or unbound binding");
+         return;
+      }
+      gd->attr[i].va = cmd->vb_va[a->binding] + a->offset;
+      gd->attr[i].stride = g->dyn_stride ? cmd->vb_stride[a->binding] : a->stride;
+      gd->attr[i].inst = a->instance;
+   }
+   if (!gd->nprims || !gd->index_count)
+      return;
+   /* the two kernels: same sets, push block and dynamic descriptors as the draw; table-9 index 31 (the poly header) is patched at build */
+   for (unsigned k = 0; k < 2; k++) {
+      struct mali_dispatch d;
+      memset(&d, 0, sizeof d);
+      d.cs = k ? g->gs.main : g->gs.vs_cs;
+      d.cs_va = k ? g->gs.main_va : g->gs.vs_cs_va;
+      memcpy(d.push, cmd->push[0], sizeof d.push);
+      d.nsets = cmd->nsets;
+      memcpy(d.set_va, cmd->set_va, sizeof d.set_va);
+      memcpy(d.set_bytes, cmd->set_bytes, sizeof d.set_bytes);
+      d.ndyn = MALI_DYN_ARR;
+      memcpy(d.dyn_desc, cmd->dyn_desc, sizeof cmd->dyn_desc);
+      d.groups[0] = k ? gd->nprims : vcount;
+      d.groups[1] = icount;
+      d.groups[2] = 1;
+      if (mali_cmd_pre_dispatch(cmd, &d, k, false))
+         return;
+      cmd->cur.pre[cmd->cur.npre - 1].gs = gd;
+   }
+   cmd->dirty |= MALI_D_ALL;   /* a GS draw always carries its own blocks: its dyn table has a per-draw entry */
+   struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
+   if (!sl || !snapshot_draw(cmd, sl, gd->index_count, gd->instance_count, 0, 0)) {
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+   sl->indexed = true;
+   sl->index_size = 4;
+   sl->index_va = 0;   /* resolved at build */
+   sl->index_cpu = NULL;
+   sl->index_bytes = gd->index_count * 4;
+   sl->first_index = 0;
+   sl->gs = gd;
+   cmd->cur.ndraws++;
+   mali_frame_note_rec(&cmd->cur, sl);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
@@ -664,6 +764,10 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
     * write every instance's vertices to the same slots. Refuse rather than write overlapping data silently. */
    if (cmd->tf.active && icount > 1) {
       unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
+      return;
+   }
+   if (cmd->gfx.gs.on) {
+      gs_draw(cmd, vcount, icount, first, first_inst);
       return;
    }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
