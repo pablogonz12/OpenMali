@@ -3769,6 +3769,12 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
+   /* the MRT cases build vertex+fragment pipelines only: a --gs request would be silently ignored, so refuse it */
+   if (ok && g_gs && (CASE_ON("mrt2") || CASE_ON("mrt4") || CASE_ON("mrtmix") || CASE_ON("mrtmap") || CASE_ON("bigmrt"))) {
+      printf("{\"fail\":\"--gs %s given, but the MRT cases do not bind a geometry shader\"}\n", g_gs);
+      g_fail = 1;
+      return 0;
+   }
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
    if (ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");

@@ -601,8 +601,10 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          r->op_c = ci->color_blend_op; r->op_a = ci->alpha_blend_op;
          /* a target that is never written — zero write mask, or a fragment shader that has no output for it — keeps
           * its state unjudged: independentBlend allows any equation behind an inactive output */
+         /* fs_colour_mask == 0 means "no colour output" for a bound fragment shader too (a depth-only FS):
+          * only the no-FS case (discard pipelines) leaves every target's state unjudged */
          const uint32_t cmask = bp->gfx.fs ? bp->gfx.fs->fs_colour_mask : 0;
-         const bool written = !cmask || (cmask & (1u << i));
+         const bool written = !bp->gfx.fs ? true : (cmask & (1u << i)) != 0;
          if (r->blend_en && r->wmask && written) {
             struct mali_fixed t = *x;
             t.blend_en = true; t.wmask = r->wmask; t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;

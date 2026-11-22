@@ -537,7 +537,7 @@ def smoke(a):
         ran = {oc for _, _, oc in runs if oc}
         missing = [c for c in a.only.split(",") if c and c not in ran]
         if missing:
-            print("unscheduled --only case(s): " + ",".join(missing), flush=True)
+            print("unscheduled --only case(s): " + ",".join(re.sub(r"[\r\n]", "?", c) for c in missing), flush=True)
             # farmd counts failures from JSON records: a plain line would leave the run reported as clean
             print(json.dumps({"test": "schedule", "missing": missing, "ok": False}), flush=True)
             ok = False

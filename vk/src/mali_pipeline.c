@@ -302,7 +302,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
             /* the shader must write that output too: a depth-only FS with two bound attachments writes no colour, so
              * the logic op is still inert there and the pipeline must stay accepted */
             other_writes = st.rp->color_attachment_formats[i] != VK_FORMAT_UNDEFINED && (a[i].write_mask & 0xf) != 0 &&
-                           (!p->fs.fs_colour_mask || (p->fs.fs_colour_mask & (1u << i)));
+                           (p->fs.fs_colour_mask & (1u << i));
       }
       const bool rt0_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
                              st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
