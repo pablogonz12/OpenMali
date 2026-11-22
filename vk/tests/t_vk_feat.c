@@ -2129,6 +2129,164 @@ test_didx(void)
 }
 
 
+/* didxvidx: the CTS descriptor-indexing pattern - the array index arrives as a flat int varying from the vertex
+ * shader (descriptorIndexing_vertN/fragN in vktDescriptorSetsIndexingTests.cpp), not from gl_FragCoord as didx does.
+ * Part 1 isolates the varying (flat int, push constant value -> colour); part 2 puts the array back. */
+static int
+test_didxvidx(void)
+{
+   static const uint8_t col[4][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}};
+   /* ---- part 1: flat int varying, no descriptors ---- */
+   for (int k = 0; k < 4; k++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      if (!make_pipe(&t, "flatint.vert.spv", "flatint.frag.spv", VK_NULL_HANDLE, 32, &lay, &pipe)) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      const float s[8] = {1, 1, 0, 0, (float)k, 0, 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, s);
+      CmdDraw(cb, 6, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         const uint8_t *q = pix(&t, 32, 32);
+         CHECK(near(q, col[k][0], col[k][1], col[k][2], 255, 2), "flat int varying k=%d gave %u,%u,%u,%u", k, q[0], q[1], q[2], q[3]);
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   /* ---- part 1a: a full-screen TRIANGLE quad whose VS also writes gl_PointSize (the CTS shaders do this) ---- */
+   {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      if (!make_pipe(&t, "quad_ps.vert.spv", "flatint.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe)) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      const float s[4] = {1, 1, 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+      CmdDraw(cb, 6, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         unsigned nz = 0;
+         for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 64; x++) {
+               const uint8_t *q = pix(&t, x, y);
+               nz += (q[0] | q[1] | q[2]) != 0;
+            }
+         printf("{\"quadsize\":%u,\"of\":4096,\"centre\":[%u,%u,%u,%u]}\n", nz, pix(&t, 32, 32)[0], pix(&t, 32, 32)[1], pix(&t, 32, 32)[2], pix(&t, 32, 32)[3]);
+         CHECK(nz > 3900, "a triangle quad whose VS writes gl_PointSize covered %u of 4096 px", nz);
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   /* ---- part 1b: the value comes from an INTEGER vertex attribute, as the CTS shaders do (ivec4 index) ---- */
+   for (int k = 0; k < 4; k++) {
+      struct hbuf vb = {0};
+      int32_t v[6 * 4];
+      for (int i = 0; i < 6; i++) { v[i * 4 + 0] = k; v[i * 4 + 1] = 0; v[i * 4 + 2] = 0; v[i * 4 + 3] = 0; }
+      if (!hbuf_create(&vb, sizeof v, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+      memcpy(vb.p, v, sizeof v);
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkVertexInputBindingDescription vbd = {0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+      VkVertexInputAttributeDescription vad = {0, 0, VK_FORMAT_R32G32B32A32_SINT, 0};
+      VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                                 .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                                 .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &vad};
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      g_vi = &vi;
+      int okp = make_pipe(&t, "intattr.vert.spv", "flatint.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_vi = NULL;
+      if (!okp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      VkDeviceSize voff = 0;
+      CmdBindVertexBuffers(cb, 0, 1, &vb.b, &voff);
+      CmdDraw(cb, 6, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         const uint8_t *q = pix(&t, 32, 32);
+         printf("{\"intattr\":%d,\"rgba\":[%u,%u,%u,%u]}\n", k, q[0], q[1], q[2], q[3]);
+         CHECK(near(q, col[k][0], col[k][1], col[k][2], 255, 2), "integer vertex attribute k=%d gave %u,%u,%u,%u", k, q[0], q[1], q[2], q[3]);
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   /* ---- part 2: the same varying indexes a descriptor array of sampled images ---- */
+   for (int k = 0; k < 4; k++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      struct tex x[4];
+      VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+      VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+      VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                                .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+      for (int i = 0; i < 4; i++)
+         if (!tex_create(&t, &x[i], &ici, VK_IMAGE_VIEW_TYPE_2D, 1, col[i], 4, &reg, 1, &si)) return 0;
+      VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 4, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                            {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+      VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+      VkDescriptorSetLayout dsl;
+      CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+      VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+      VkDescriptorPool dp;
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+      VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+      VkDescriptorSet set;
+      CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+      VkDescriptorImageInfo ii[4];
+      for (int i = 0; i < 4; i++) ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkDescriptorImageInfo smpi = {x[0].smp, VK_NULL_HANDLE, 0};
+      VkWriteDescriptorSet w[2] = {
+         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 4,
+          .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = ii},
+         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &smpi}};
+      UpdateDescriptorSets(dev, 2, w, 0, NULL);
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      if (!make_pipe(&t, "didx_vidx.vert.spv", "didx_vidx.frag.spv", dsl, 32, &lay, &pipe)) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+      const float s[8] = {1, 1, 0, 0, (float)k, 0, 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, s);
+      CmdDraw(cb, 6, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         const uint8_t *q = pix(&t, 32, 32);
+         if (!near(q, col[k][0], col[k][1], col[k][2], 255, 2))
+            printf("{\"didxvidx\":\"element %d sampled %u,%u,%u,%u, wanted %u,%u,%u\"}\n", k, q[0], q[1], q[2], q[3], col[k][0], col[k][1], col[k][2]);
+         CHECK(near(q, col[k][0], col[k][1], col[k][2], 255, 2), "array element %d via flat int varying gave %u,%u,%u,%u", k, q[0], q[1], q[2], q[3]);
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      DestroyDescriptorPool(dev, dp, NULL);
+      DestroyDescriptorSetLayout(dev, dsl, NULL);
+      for (int i = 0; i < 4; i++) tex_destroy(&x[i]);
+      tgt_destroy(&t);
+   }
+   if (!g_fake) printf("{\"test\":\"didxvidx\",\"ok\":true}\n");
+   return 1;
+}
+
 /* didx_oob: out-of-range index into a partially-bound sampled-image array reads the Null Descriptor (zero), not garbage. */
 static int
 test_didx_oob(void)
@@ -4018,6 +4176,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && g_only && CASE_ON("didxvidx")) ok &= test_didxvidx();
    if (ok && CASE_ON("didxoob")) ok &= test_didx_oob();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();

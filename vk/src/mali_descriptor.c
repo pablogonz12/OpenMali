@@ -193,6 +193,7 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
             memset(&d->ycbcr[first], 0, b->count * sizeof *d->ycbcr);
          }
       }
+      if (getenv("MALI_DSET_DBG")) fprintf(stderr, "DSET layout b=%u type=%u count=%u stride=%u slot=%u\n", n, b->type, b->count, b->stride, d->slot_count);
       if (b->stride) {
          b->slot = d->slot_count;
          d->slot_count += b->stride * b->count;
@@ -613,6 +614,7 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       const struct mali_lbinding *b = &l->b[binding];
       if (b->type == MALI_DT_NONE) return;
       if (write_denied(s, binding)) { elem++; continue; }
+      if (getenv("MALI_DSET_DBG")) fprintf(stderr, "DSET write set=%p binding=%u elem=%u count=%u slot=%u stride=%u vh0=%p\n", (void*)s, binding, elem, w->descriptorCount, b->slot, b->stride, (void*)(uintptr_t)(w->pImageInfo ? (uintptr_t)w->pImageInfo[i].imageView : 0));
       write_one(s, b, elem, w->descriptorType,
                 w->pImageInfo ? &w->pImageInfo[i] : NULL, w->pBufferInfo ? &w->pBufferInfo[i] : NULL,
                 w->pTexelBufferView ? &w->pTexelBufferView[i] : NULL);
