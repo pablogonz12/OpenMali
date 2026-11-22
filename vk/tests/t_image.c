@@ -267,7 +267,9 @@ test_sampler(unsigned arch)
    mali_sampler_pack(arch, &ci, &s, &o);
    CHECK((o.w[0] >> 27 & 1) == 1 && (o.w[0] >> 28 & 1) == 0, "filters %08x", o.w[0]);
    CHECK((o.w[0] >> 30) == 3, "mipmap mode");
-   CHECK(((o.w[1] >> 13) & 7) == 1, "compare func %u", (o.w[1] >> 13) & 7);
+   /* LESS packs GREATER (4): the hardware compares the reference against the texel, Vulkan the texel against the reference
+    * (pan_encoder.h:161-175 pan_flip_compare_func, used by the sampler at panvk_vX_sampler.c:55-61) */
+   CHECK(((o.w[1] >> 13) & 7) == 4, "compare func %u (VK_COMPARE_OP_LESS flips to GREATER)", (o.w[1] >> 13) & 7);
    CHECK(((o.w[1] >> 16) & 0x1fff) == 1024, "max lod %u", (o.w[1] >> 16) & 0x1fff);
 
    /* border colour swizzle: unset mapping is identity; BGRA view mapping swaps R/B in the descriptor; ONE/ZERO channels do not move data */

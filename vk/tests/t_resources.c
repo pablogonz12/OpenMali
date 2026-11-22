@@ -225,11 +225,15 @@ run(void)
    CHECK(mali_image_view_desc(view, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &tex_e) == 0, "view desc");
    CHECK(iv->payload_va != 0 && tex_e.w[4] == (uint32_t)iv->payload_va, "texture payload pointer");
    e[1] = tex_e;
-   /* M5 sampler = libkbase's nearest/clamp sampler (mali_pack_sampler) plus genxml defaults (bits 21, 26) and maxLod (word 1) */
+   /* M5 sampler = libkbase's nearest/clamp sampler (mali_pack_sampler) plus maxLod (word 1). Bit 21 (round-to-nearest-even) is
+    * NOT set for NEAREST/NEAREST and bit 26 (clamp integer array indices) is never set (audit-descriptors.md #4,
+    * panvk_vX_sampler.c:112-118): the two bits are the whole difference to libkbase's reference. */
    struct mali_hw_desc ks;
    mali_pack_sampler(arch, &ks, 1, 1, 9);
    e[2] = mali_sampler_from_handle(smp)->hw;
-   CHECK((e[2].w[0] ^ ks.w[0]) == ((1u << 21) | (1u << 26)), "sampler word0 %08x vs %08x", e[2].w[0], ks.w[0]);
+   CHECK(!(e[2].w[0] & ((1u << 21) | (1u << 26))), "sampler word0 %08x: NEAREST clears 21, 26 stays clear", e[2].w[0]);
+   CHECK((e[2].w[0] & ~((1u << 21) | (1u << 26))) == (ks.w[0] & ~((1u << 21) | (1u << 26))),
+         "sampler word0 %08x vs %08x outside those two bits", e[2].w[0], ks.w[0]);
    CHECK(!memcmp(&e[2].w[2], &ks.w[2], 24), "sampler tail");
    mali_pack_buffer(arch, &e[3], va + 1024, 4096 - 1024);
    struct mali_fmt f;
