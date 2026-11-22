@@ -77,6 +77,7 @@ struct mali_gfx_state {
    bool dyn_stride;                       /* VERTEX_INPUT_BINDING_STRIDE is dynamic: attribute strides come from the bind call (draw.vb_stride) */
    bool discard;                          /* no fragment stage / rasterizerDiscardEnable: draws are skipped */
    bool per_sample;                       /* sampleRateShading: the fragment shader runs per sample (DCD0 evaluate-per-sample) */
+   bool needs_tcs;                        /* T2: the control shader is a compute program the draw must dispatch first; refused until it does */
    bool logic_inert;                      /* static logicOp enabled but it cannot change the output (no colour output 0 / attachment 0 unwritable): no blend shader needed */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */

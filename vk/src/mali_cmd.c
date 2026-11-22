@@ -502,6 +502,13 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          return false;
       d->pipe = bp;
       bp->gfx = cmd->gfx;
+      /* T2: the pipeline has a control shader that is compiled as a compute program (mali_pipeline.c), and running it is
+       * the compute job that must precede this draw. Until that job is recorded, a draw with it is refused by name instead
+       * of rasterising the untessellated vertex stream. */
+      if (bp->gfx.needs_tcs) {
+         unsupported(cmd, "tessellation: the control shader's compute dispatch is not wired yet (T2 step 3)");
+         return false;
+      }
       if (xfb_off) {   /* no range open: the non-XFB program (mali_pipeline.c), so nothing is stored */
          bp->gfx.vs = bp->gfx.vs_plain;
          bp->gfx.vs_va = bp->gfx.vs_plain_va;

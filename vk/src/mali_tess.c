@@ -202,6 +202,15 @@ collect_deref_stores(nir_shader *nir, struct dstore *out, unsigned max)
    return n;
 }
 
+void
+mali_tess_header(uint8_t hdr[MALI_TESS_HDR_SIZE], uint64_t blob, uint64_t vblob, uint64_t vs_outputs)
+{
+   memset(hdr, 0, MALI_TESS_HDR_SIZE);
+   memcpy(hdr + MALI_TESS_HDR_BLOB, &blob, sizeof blob);
+   memcpy(hdr + MALI_TESS_HDR_VBLOB, &vblob, sizeof vblob);
+   memcpy(hdr + MALI_TESS_HDR_VSOUT, &vs_outputs, sizeof vs_outputs);
+}
+
 int
 mali_tess_passthrough(unsigned arch, const uint32_t *tcs_words, uint32_t ntcs, const char *tcs_entry,
                       const uint32_t *tes_words, uint32_t ntes, const char *tes_entry, char *why, size_t whysz)

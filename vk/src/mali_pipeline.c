@@ -33,7 +33,7 @@ struct mali_pipeline {
    struct mali_device *dev;
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
-   struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_compiled vs, fs, cs, blend, tcs;   /* tcs: the control shader as compute (T2), when the pipeline is not T1's identity */   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
    struct mali_compiled vs_plain;            /* XFB programs: the same VS without the XFB lowering (mali_tf.h) */
    bool is_compute;
    struct mali_bo code;
@@ -52,6 +52,7 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   mali_compiled_free(&p->tcs);
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -132,6 +133,9 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL, *gss = NULL;
    const VkPipelineShaderStageCreateInfo *tcss = NULL, *tesss = NULL;
    unsigned gs_prims = 0;   /* lane 1: the input primitive of an accepted pass-through GS (0 = no geometry stage) */
+   int tcs_t2 = 0;          /* T2: the TCS is not T1's identity, so it is compiled as a compute program (below) */
+   const uint32_t *tcode2 = NULL;
+   uint32_t twords2 = 0;
    for (uint32_t i = 0; i < ci->stageCount; i++) {
       /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
       const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
@@ -230,12 +234,27 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
             fprintf(stderr, "mali_vk: tessellation refused: no fragment shader\n");
          goto fail;
       }
-      if (!mali_tess_passthrough(arch, tcode, twords, tcss->pName, tecode, tewords,
-                                 tesss->pName, why, sizeof why)) {
-         res = VK_ERROR_FEATURE_NOT_PRESENT;
+      if (!mali_tess_passthrough(arch, tcode, twords, tcss->pName, tecode, tewords, tesss->pName, why, sizeof why)) {
+         /* T2: not T1's identity. The control shader is compiled as a *compute* program (mali_compile.c
+          * MALI_STAGE_TESS_CTRL: poly_nir_lower_tcs + the compute path), and the draw runs it as a dispatch before the
+          * vertex job. Until that dispatch is wired, drawing is refused by name (mali_cmd.c), so the pipeline is accepted
+          * here and nothing is misrendered. The reason T1 gave is kept for the debug log. */
+         /* Only the *control* stage is T2's now: the TES still has to be the T1 identity (poly's TES lowering is step 4).
+          * Until then a TCS reason accepts the pipeline and a TES reason keeps refusing it, by name. */
+         const bool tes_reason = strstr(why, "tessellation evaluation") || strstr(why, "only triangles") ||
+                                 strstr(why, "only equal_spacing") || strstr(why, "point_mode") ||
+                                 strstr(why, "gl_TessCoord") || strstr(why, "no SPIR-V");   /* every refuse() of mali_tess.c; mali_tcs.c's are the control stage */
+         if (tes_reason) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: tessellation refused: %s\n", why);
+            goto fail;
+         }
+         tcs_t2 = 1;
+         tcode2 = tcode;
+         twords2 = twords;
          if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: tessellation refused: %s\n", why);
-         goto fail;
+            fprintf(stderr, "mali_vk: tessellation not the T1 identity (%s); compiling the control shader as compute (T2)\n", why);
       }
       if (getenv("MALI_PIPE_DBG"))
          fprintf(stderr, "mali_vk: tessellation accepted as a pass-through (level 1.0, 3 control points, compiled as the vertex program)\n");
@@ -294,6 +313,30 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.fs_entry = fss ? fss->pName : NULL;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
    int vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   if (!vcr && tcs_t2) {
+      struct mali_compile_opts tobj = o;
+      tobj.stage = MALI_STAGE_TESS_CTRL;
+      tobj.link_vs = NULL;
+      tobj.fs_spirv = NULL;
+      tobj.fs_entry = NULL;
+      tobj.fs_spirv_words = 0;
+      tobj.spirv = tcode2;
+      tobj.spirv_words = twords2;
+      tobj.entry = tcss->pName;
+      set_spec(&tobj, specbuf, tcss->pSpecializationInfo);
+      if (mali_compile(&tobj, &p->tcs, err, sizeof err)) {
+         fprintf(stderr, "mali_vk: TCS compile failed: %s\n", err);
+         res = VK_ERROR_INVALID_SHADER_NV;
+         goto fail;
+      }
+      /* The draw is refused until the dispatch exists (mali_cmd.c), and the numbers go to the debug log because the
+       * tessellation blob's layout is decided from them. */
+      p->gfx.needs_tcs = 1;
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: TCS compiled as compute: %u control points, stride %u B, mask %llx, %u B of code\n",
+                 p->tcs.tcs_vertices_out, p->tcs.tcs_output_stride,
+                 (unsigned long long)p->tcs.tcs_per_vertex_outputs, p->tcs.bin_size);
+   }
    if (vcr) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
       res = vcr == MALI_COMPILE_UNSUPPORTED ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV;

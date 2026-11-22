@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "mali_poly.h"
+#include "mali_tess.h"
 
 static const char *g_spv = "shader";
 static unsigned g_arch = 11;
@@ -150,6 +151,21 @@ case_tcs(const char *file, unsigned want_stride, unsigned want_verts)
    /* The stride is poly's own arithmetic (poly_tcs_output_stride, poly_nir_lower_tess.c:34) and it is measured, not
     * predicted: the assertion is that it is a non-zero multiple of 4 bytes for a shader that does write varyings. */
    else if (tcs.stride < want_stride || (tcs.stride & 3)) why = "the TCS output stride is not a sane buffer stride";
+   /* T2 step 3: the header the driver writes per tess draw must carry the addresses at the offsets poly's sysvals are
+    * lowered to (mali_descriptor_lower.c:lower_poly_sysvals: 0, 8, 16). One helper and one lowering, two places, so this
+    * reads the bytes back instead of trusting that two comments agree. */
+   {
+      uint8_t hdr[MALI_TESS_HDR_SIZE];
+      uint64_t got[3];
+      mali_tess_header(hdr, 0x1111222233334444ull, 0x5555666677778888ull, 0x9999aaaabbbbccccull);
+      memcpy(&got[0], hdr + MALI_TESS_HDR_BLOB, 8);
+      memcpy(&got[1], hdr + MALI_TESS_HDR_VBLOB, 8);
+      memcpy(&got[2], hdr + MALI_TESS_HDR_VSOUT, 8);
+      if (!why && (got[0] != 0x1111222233334444ull || got[1] != 0x5555666677778888ull || got[2] != 0x9999aaaabbbbccccull))
+         why = "the tessellation header does not carry the three addresses at offsets 0/8/16";
+      if (!why && (MALI_TESS_HDR_BLOB != 0 || MALI_TESS_HDR_VBLOB != 8 || MALI_TESS_HDR_VSOUT != 16))
+         why = "the tessellation header offsets disagree with the descriptor lowering";
+   }
    printf("{\"test\":\"gs_lower\",\"tcs\":\"%s\",\"arch\":%u,\"ok\":%s,\"stride\":%u,\"vertices_out\":%u,"
           "\"per_vertex_outputs\":%llu,\"shared_size\":%u%s%s}\n", file, g_arch, why ? "false" : "true", tcs.stride,
           tcs.vertices_out, (unsigned long long)tcs.per_vertex_outputs, tcs.shared_size, why ? ",\"why\":\"" : "",

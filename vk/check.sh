@@ -256,20 +256,23 @@ else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "g
 for g in v11 v13; do
    run "vk_draw tess_tri $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_tri
    run "vk_draw tess_reject $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject
-   # T2's device falsifier is t_vk_draw --only tess_bar (bar.tesc against the barrier-free rotation tess_rot.tesc). It has no
-   # row yet on purpose: a non-identity TCS is still refused by T1's classifier, so its pipeline cannot be created until T2
-   # step 3 wires the compute dispatch (notes/tess-design.md § T2). The compile half is covered by the cs_barrier rows above.
+   # T2: a non-identity TCS is no longer refused — its pipeline is accepted and the control shader is compiled as the
+   # compute program the dispatch will run (tess_bar creates bar.tesc and the barrier-free rotation tess_rot.tesc; both must
+   # report 3 control points, stride 120 B, mask 0x100000001). Drawing with it is still refused by name in mali_cmd.c until
+   # the compute job is recorded, so this row checks the pipeline, and the pixel half (--only tess_bar on a device) waits
+   # for the dispatch.
+   run "vk_draw tess_bar $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_bar
 done
 out=$(MALI_EXPERIMENTAL_TESS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject 2>&1)
 tess_rc=$?
 tess_n=0
-for r in "gl_TessLevelOuter is 2, not 1.0" "an output is computed, not copied from the patch input" \
+for r in "tessellationShader is not advertised" \
          "an output that is not a copy of a patch input (at gl_TessCoord = e0)" "only triangles patches are accepted"; do
    echo "$out" | grep -qF "tessellation refused: $r" && tess_n=$((tess_n+1))
 done
 if [ $tess_rc -ne 0 ]; then echo "FAIL  tess refusal diagnostic exited $tess_rc (want 0)"; echo "$out" | tail -5 | sed 's/^/        /'; fail=1
-elif [ $tess_n -eq 4 ]; then echo "ok    tess refusals name their reason (4/4)"
-else echo "FAIL  tess refusals name their reason ($tess_n/4)"; echo "$out" | grep "tessellation refused" | sed 's/^/        /'; fail=1; fi
+elif [ $tess_n -eq 3 ]; then echo "ok    tess refusals name their reason (3/3)"
+else echo "FAIL  tess refusals name their reason ($tess_n/3)"; echo "$out" | grep "tessellation refused" | sed 's/^/        /'; fail=1; fi
 
 # GS lane 2, step (i) (notes/gs-design.md §5(i)): Mesa's src/poly geometry lowering, linked into the driver as an
 # unmodified library (vk/poly.sh -> out/<target>/poly/libpoly_nir.a) and called through mali_poly.c, i.e. the same object

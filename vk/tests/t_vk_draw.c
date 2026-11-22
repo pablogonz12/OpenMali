@@ -3099,7 +3099,10 @@ test_tess_bar(void)
    if (!scene_create(&b, 0))
       goto out;
    if (g_fake) {
-      printf("{\"test\":\"tess_bar\",\"cover\":\"pipelines only (fake backend)\",\"ok\":true}\n");
+      /* T2 step 3: both pipelines are created and each carries a control shader compiled as a compute program (the debug
+       * log below says which). The draw itself is still refused by name (mali_cmd.c) — that refusal and this acceptance are
+       * the two halves of the step, so the row is honest about which one it covers. */
+      printf("{\"test\":\"tess_bar\",\"pipelines\":\"bar.tesc + tess_rot.tesc as compute\",\"draw\":\"refused until the dispatch is recorded\",\"ok\":true}\n");
       ok = 1;
       goto out;
    }
@@ -3131,15 +3134,21 @@ out:
    return ok;
 }
 
-/* Every tessellation pipeline T1 does not accept must be refused at pipeline creation with a named reason: the gate off,
- * levels above 1.0, a TCS that moves a vertex, a non-identity TES, and quads. check.sh greps each reason. */
+/* Every tessellation pipeline this driver does not accept is refused at pipeline creation with a named reason: the gate
+ * off, a non-identity TES, and quads. check.sh greps each reason.
+ *
+ * A *non-identity TCS* used to be on this list (T1 could only fold the identity); since T2 it is accepted — the control
+ * shader is compiled as the compute program the dispatch will run — so `tess_levels` and `tess_move` moved to
+ * g_tess_t2_accept below. That is the honest split: the pipeline exists, the draw is refused by name until the dispatch is
+ * recorded, and neither is a silent misrender. */
 static const struct { const char *tesc, *tese; int gate_off; const char *why; } g_tess_rejects[] = {
    {"tess_tri.tesc.spv", "tess_tri.tese.spv", 1, "tessellationShader is not advertised"},
-   {"tess_levels.tesc.spv", "tess_tri.tese.spv", 0, "gl_TessLevelOuter[0] is 2, not 1.0"},
-   {"tess_move.tesc.spv", "tess_tri.tese.spv", 0, "a tessellation control output that is not a copy of the patch input"},
    {"tess_tri.tesc.spv", "tess_shift.tese.spv", 0, "an output that is not a copy of a patch input (at gl_TessCoord = e0)"},
    {"tess_tri.tesc.spv", "tess_quad.tese.spv", 0, "only triangles patches are accepted"},
 };
+
+/* T2: accepted at pipeline creation (the TCS compiles as compute), refused at draw time. */
+static const char *const g_tess_t2_accept[] = {"tess_levels.tesc.spv", "tess_move.tesc.spv"};
 
 static int
 test_tess_reject(void)
@@ -3166,6 +3175,21 @@ test_tess_reject(void)
              g_tess_rejects[i].tesc, g_tess_rejects[i].gate_off ? "gate off" : g_tess_rejects[i].tese,
              g_tess_rejects[i].why, refused ? "true" : "false", refused ? "true" : "false");
       ok &= refused;
+   }
+   /* T2: a non-identity control shader must now be ACCEPTED at pipeline creation, and its compute program compiled. */
+   for (unsigned i = 0; i < sizeof g_tess_t2_accept / sizeof *g_tess_t2_accept; i++) {
+      struct scene s;
+      memset(&s, 0, sizeof s);
+      s.mode = MODE_TRI;
+      g_tesc = g_tess_t2_accept[i];
+      g_tese = "tess_tri.tese.spv";
+      setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+      const int accepted = scene_create(&s, 0);   /* 1 = the pipeline was created */
+      scene_destroy(&s);
+      g_tesc = g_tese = NULL;
+      printf("{\"test\":\"tess_reject\",\"case\":\"%s (T2)\",\"accepted\":%s,\"ok\":%s}\n", g_tess_t2_accept[i],
+             accepted ? "true" : "false", accepted ? "true" : "false");
+      ok &= accepted;
    }
    return ok;
 }

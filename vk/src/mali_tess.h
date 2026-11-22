@@ -40,6 +40,16 @@ mali_experimental_tess(void)
 
 /* 1 = the pair is a provable pass-through at levels 1.0 (the caller then compiles the VS and ignores the TES), 0 = refused
  * with a reason in `why` (never empty). Both modules are complete SPIR-V; arch selects the NIR options (11/13/10). */
+/* T2 step 3: the 32-byte header poly's lowered tess stages read their 64-bit addresses from (table 9 index 31,
+ * MALI_TESS_TABLE/MALI_TESS_PARAM_IDX). The offsets are the *contract* with mali_descriptor_lower.c:lower_poly_sysvals()
+ * (0 = tess_param_buffer_poly, 8 = vertex_param_buffer_poly, 16 = vs_outputs_poly), so the two live apart and a test
+ * asserts the pairing instead of two comments agreeing. The driver writes one of these per tess draw. */
+#define MALI_TESS_HDR_SIZE 32u
+#define MALI_TESS_HDR_BLOB   0u   /* struct poly_tess_params: levels, patch count, output offsets (src/poly/tessellator.h) */
+#define MALI_TESS_HDR_VBLOB  8u   /* the same blob for the vertex side of the chain (the TCS reads the patch inputs) */
+#define MALI_TESS_HDR_VSOUT 16u   /* the VS-output arena the vertex pre-pass wrote (T2 step 4) */
+void mali_tess_header(uint8_t hdr[MALI_TESS_HDR_SIZE], uint64_t blob, uint64_t vblob, uint64_t vs_outputs);
+
 int mali_tess_passthrough(unsigned arch, const uint32_t *tcs, uint32_t ntcs, const char *tcs_entry,
                           const uint32_t *tes, uint32_t ntes, const char *tes_entry, char *why, size_t whysz);
 
