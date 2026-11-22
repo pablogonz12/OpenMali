@@ -2227,7 +2227,11 @@ test_smallpass(void)
          /* MALI_SP_FULLAREA=1: renderArea is the whole image (scissor still limits the draw to this pass's 16x16), so the
           * frame's bbox covers everything: separates "a sub-rect renderArea loses the rest of the image" from "the copy
           * reads only part of it". */
-         VkRect2D ra = getenv("MALI_SP_FULLAREA") ? (VkRect2D){{0, 0}, {64, 64}} : (VkRect2D){{qx * 16, qy * 16}, {16, 16}};
+         /* MALI_SP_TAILFULL=1: only the last pass gets the whole-image renderArea (its bbox is then the whole image too). If
+          * the readback after it holds everything, the earlier passes' pixels were in memory all along and only the
+          * writeback/copy of a sub-rectangle frame is what loses them. */
+         int tailfull = getenv("MALI_SP_TAILFULL") && qx == 3 && qy == 3;
+         VkRect2D ra = (getenv("MALI_SP_FULLAREA") || tailfull) ? (VkRect2D){{0, 0}, {64, 64}} : (VkRect2D){{qx * 16, qy * 16}, {16, 16}};
          VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
                                      .framebuffer = first ? t.fb : fb2,
                                      .renderArea = ra, .clearValueCount = 1, .pClearValues = &cv};
