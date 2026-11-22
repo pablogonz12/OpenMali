@@ -1316,8 +1316,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
                  1u << (tl / 2), 1u << (tl / 2), bpp_tot, zpp_tot, spp, cbudget, zbudget, f->ncolour);
       if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
          const int want = atoi(getenv("MALI_TILE_LOG2"));
-         if (want < 2 || want > 12 || ((1u << want) * bpp_tot) > cbudget) {
-            unsupported(cmd, "MALI_TILE_LOG2 does not fit the tile colour budget (2..12, (1<<n)*bpp <= budget)");
+         if (want < 4 || want > 12 || ((1u << want) * bpp_tot) > cbudget) {
+            /* a tile smaller than 16 pixels makes the per-target bytes no multiple of 16, and the FBD packs Internal Buffer
+             * Offset >> 4: two targets (four per tile with 1-byte formats at tile_log2=2) would share an offset */
+            unsupported(cmd, "MALI_TILE_LOG2 does not fit the tile colour budget (4..12, (1<<n)*bpp <= budget)");
             return;
          }
          f->tile_log2 = (unsigned)want;

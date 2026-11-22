@@ -230,6 +230,11 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
          struct kb_fb_rt *x = &p.rt_extra[n];
          x->va = a->va;
          x->row_stride = a->row_stride ? a->row_stride : f->width * 4;
+         /* the FBD packs Internal Buffer Offset as bytes >> 4, so an offset that is not a multiple of 16 would overlap the
+          * previous target (MALI_TILE_LOG2=2 with two 1-byte formats leaves 4 bytes per target). The tile override that can
+          * produce such a layout is refused in mali_cmd.c; refuse here too, where the encoding is */
+         if (off & 0xf)
+            return -EINVAL;
          x->internal_offset = off;
          x->no_store = !a->store && !a->resolve_va;
          if (a->rt) {
