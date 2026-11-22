@@ -441,6 +441,14 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          if (apply_blend(b, &t))
             return -EINVAL;
       }
+      /* A target this draw does not write must not be written at all: disable its blend descriptor (PanVK
+       * panvk_vX_blend.c:127-130: loc unused or equation.color_mask == 0 -> enable = false, mode OFF). */
+      const bool unused = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) || (d->fx.set && i && d->fx.rtb[i - 1].wmask == 0));
+      if (unused) {
+         b[0] = 0;   /* Load Destination, Alpha To One, Enable = 0 */
+         b[2] = 3;   /* Internal Blend Mode: Off */
+         b[3] = 0;
+      }
       b[2] |= i << 16;   /* Blend Fixed-Function: Render Target */
       memcpy(bl_arena + 4 * i, b, 16);
       o->bl23[i][0] = b[2];
@@ -790,7 +798,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M32(c, KB_IDVS_DCD2, kb_draw_dcd2(0, rtm, 1, 1));
          M48(c, KB_IDVS_TILER_CTX, va_tctx);
          M32(c, KB_IDVS_VARY_SIZE, g->vs->generic_size_B);
-         M48(c, KB_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
+         M48(c, KB_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);   /* v10.xml Draw 'Blend count' 12:0 (4 bits) + 'Blend' 12:4 (address: bits 0..3 are the count) */
          M48(c, KB_IDVS_ZSD, o->zsd);
          M32(c, KB_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
          M32(c, KB_IDVS_PRIMITIVE_SIZE, g->vs->vs_writes_point_size && g->prim == 1 ? 0 : prim_size_bits(g, &d->fx));
@@ -827,7 +835,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M48(c, KB13_IDVS_TILER_CTX, va_tctx);
          M32(c, KB13_IDVS_VARY_SIZE, g->vs->generic_size_B);
          M48(c, KB13_IDVS_ZSD, o->zsd);
-         M48(c, KB13_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);
+         M48(c, KB13_IDVS_BLEND_DESC, rtn ? (o->bl | rtn) : 0);   /* v10.xml Draw 'Blend count' 12:0 + 'Blend' 12:4 */
          M32(c, KB13_IDVS_DCD1, kb_draw_dcd1(0xffff, rtm));
          M32(c, KB13_IDVS_DCD2, kb_v13_dcd2(0, rtm, 1, 1, 0, 0));
          M32(c, KB13_IDVS_LINE_WIDTH, prim_size_bits(g, &d->fx));

@@ -31,6 +31,8 @@ static unsigned g_colbpp = 4;
 static float g_pcfs[4] = {0.75f, 0.25f, 0.5f, 1.0f};   /* MODE_PUSHFS fragment colour (linear); tests override it */
 static VkFormat g_texfmt, g_texvfmt;   /* MODE_TEX source image / view format (0 = R8G8B8A8_UNORM; differs = MUTABLE_FORMAT) */
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
+static int g_mrtblend;  /* mrtmapb: the same probe with blending ON (ONE/ZERO), i.e. Fixed-Function mode BDs */
+static int g_mrt32;     /* mrtmap32f: the permutation probe with RGBA32F targets */
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
 static int g_hostread;  /* record the colour-write -> HOST_READ dependency: the test reads the image through its mapping */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
@@ -1803,7 +1805,10 @@ test_mrt(const char *name, int nrt)
    VkImageView iv[4] = {0};
    uint8_t *px[4] = {0};
    uint32_t pitch[4] = {0};
-   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv(nrt == 2 ? "mrt2.frag.spv" : "mrt4.frag.spv");
+   const int map = !strncmp(name, "mrtmap", 6) || !strcmp(name, "mrtmapb") || !strcmp(name, "mrtmap32f");   /* mrtmap*: prints the R byte each target received */
+   const char *mapfrag = !strcmp(name, "mrtmapo0") ? "mrtonly0.frag.spv" : !strcmp(name, "mrtmapo2") ? "mrtonly2.frag.spv" : "mrtmap.frag.spv";
+   const VkFormat mf = g_mrt32 ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+   VkShaderModule vs = load_spv("mrt.vert.spv"), fs = load_spv(map ? mapfrag : nrt == 2 ? "mrt2.frag.spv" : "mrt4.frag.spv");
    VkRenderPass rp = VK_NULL_HANDLE;
    VkFramebuffer fb = VK_NULL_HANDLE;
    VkPipelineLayout pl = VK_NULL_HANDLE;
@@ -1815,8 +1820,9 @@ test_mrt(const char *name, int nrt)
 #define MRT_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
    MRT_CHECK(vs && fs, "shaders");
    for (int i = 0; i < nrt; i++) {
+      const VkFormat mf = g_mrt32 ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                              .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .format = mf, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
                               .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                               .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -1835,13 +1841,13 @@ test_mrt(const char *name, int nrt)
       pitch[i] = (uint32_t)sl.rowPitch;
       px[i] += sl.offset;
       VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                  .format = VK_FORMAT_R8G8B8A8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+                                  .format = mf, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
       MRT_CHECK(CreateImageView(dev, &vi, NULL, &iv[i]) == VK_SUCCESS, "view %d", i);
    }
    VkAttachmentDescription ad[4];
    VkAttachmentReference ar[4];
    for (int i = 0; i < nrt; i++) {
-      ad[i] = (VkAttachmentDescription){.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+      ad[i] = (VkAttachmentDescription){.format = mf, .samples = VK_SAMPLE_COUNT_1_BIT,
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
@@ -1870,6 +1876,13 @@ test_mrt(const char *name, int nrt)
                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
    VkPipelineColorBlendAttachmentState cba[4];
    for (int i = 0; i < 4; i++) cba[i] = (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xf};
+   if (g_mrtblend)
+      for (int i = 0; i < nrt; i++) {
+         cba[i].blendEnable = VK_TRUE;
+         cba[i].srcColorBlendFactor = cba[i].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+         cba[i].dstColorBlendFactor = cba[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+         cba[i].colorBlendOp = cba[i].alphaBlendOp = VK_BLEND_OP_ADD;
+      }
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = (uint32_t)nrt, .pAttachments = cba};
    VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -1929,6 +1942,15 @@ test_mrt(const char *name, int nrt)
                   }
             }
       ok = bad == 0;
+      if (map) {   /* 0.1/0.2/0.3/0.4 in RGBA8 are 26/51/77/102: a permuted mapping shows up as a permuted byte */
+         printf("{\"map\":[");
+         for (int i = 0; i < nrt; i++) {
+            const uint8_t *q = px[i] + (size_t)48 * pitch[i] + 32u * 4u;
+            if (g_mrt32) printf("%s%.2f", i ? "," : "", *(const float *)q);
+            else printf("%s%u", i ? "," : "", q[0]);
+         }
+         printf("],\"want\":[26,51,77,102]}\n");
+      }
    }
    printf("{\"test\":\"%s\",\"rts\":%d,\"bad\":%u,\"ok\":%s%s}\n", name, nrt, bad, ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend\"" : "");
    if (!ok) g_fail = 1;
@@ -3350,7 +3372,13 @@ main(int argc, char **argv)
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
-   if (ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");   /* mixed formats, per-attachment blend and write mask */
+   if (ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");
+   if (ok && CASE_ON("mrtmap")) ok &= test_mrt("mrtmap", 4);
+   if (ok && CASE_ON("mrtmapo0")) ok &= test_mrt("mrtmapo0", 4);
+   if (ok && CASE_ON("mrtmapo2")) ok &= test_mrt("mrtmapo2", 4);
+   if (ok && CASE_ON("mrtmap1")) ok &= test_mrt("mrtmap1", 1);
+   if (ok && CASE_ON("mrtmapb")) { g_mrtblend = 1; ok &= test_mrt("mrtmapb", 4); g_mrtblend = 0; }
+   if (ok && CASE_ON("mrtmap32f")) { g_mrt32 = 1; ok &= test_mrt("mrtmap32f", 4); g_mrt32 = 0; }   /* permutation probe: prints the R byte each target received */   /* mixed formats, per-attachment blend and write mask */
    if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
