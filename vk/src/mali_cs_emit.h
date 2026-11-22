@@ -165,6 +165,7 @@ struct mali_draw {
    uint32_t ind_n, ind_stride;
    uint64_t ind_va;                       /* indirect draw read on the GPU: VA of one VkDraw*IndirectCommand; count/instance_count/first_*
                                            * are then written by the CS LOAD_MULTIPLE, not by the CPU (ind stays NULL) */
+   bool ind_nodrain;                      /* control (MALI_IND_CPU=1): arguments read from the mapping at submit with no drain */
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
@@ -194,6 +195,8 @@ struct mali_rec {
    const uint32_t *ind_count;
    uint32_t ind_n, ind_stride;
    uint64_t ind_va;                       /* != 0: this draw's arguments live at this VA, loaded by the CS at execution time */
+   bool ind_nodrain;                      /* control (MALI_IND_CPU=1): the arguments are read from the mapping at submit with
+                                           * no drain first, i.e. a compute job's write in this submission is invisible */
    unsigned occ_mode;
 };
 

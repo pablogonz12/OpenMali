@@ -1345,8 +1345,8 @@ mali_frame_note_rec(struct mali_frame *f, const struct mali_rec *r)
       f->cur_pipe = r->pipe;
    if (r->ind || r->ind_va)
       f->any_ind = true;
-   if (r->ind && !r->ind_va)
-      f->any_ind_cpu = true;
+   if (r->ind && !r->ind_va && !r->ind_nodrain)
+      f->any_ind_cpu = true;   /* MALI_IND_CPU=1: no drain on purpose (the failing control) */
    if (f->cur_pipe && f->cur_pipe->gfx.poly_mode && r->indexed)
       f->poly_cpu = true;
 }
@@ -1410,7 +1410,7 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
    x->index_size = r->index_size; x->first_index = r->first_index;
    x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
    x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
-   x->ind_stride = r->ind_stride; x->ind_va = r->ind_va; x->occ_mode = r->occ_mode;
+   x->ind_stride = r->ind_stride; x->ind_va = r->ind_va; x->ind_nodrain = r->ind_nodrain; x->occ_mode = r->occ_mode;
 }
 
 void

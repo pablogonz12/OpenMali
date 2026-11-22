@@ -1414,7 +1414,14 @@ static const float ID[4] = {1, 0, 0, 0};
  * record time, a compute job writes {vertexCount 3, instanceCount 1, firstVertex 0, firstInstance 0}, the app's barrier
  * orders the write against DRAW_INDIRECT, and the draw (non-indexed, the same triangle as "triangle") must paint 8192
  * pixels. A driver that expands the command on the CPU at submit sees vertexCount 0 and draws nothing, which is exactly
- * what main did and why DXVK/GPU-driven frames could not use indirect draws. */
+ * what main did and why DXVK/GPU-driven frames could not use indirect draws.
+ *
+ * Three runs make the point on hardware (MALI_PIPE_DBG=1 names each one):
+ *   (default)           arguments read on the GPU (command stream), no drain  -> coverage 8192
+ *   MALI_IND_CPU=1      arguments read on the CPU, NO drain (the failing control) -> coverage 0: the compute job's write
+ *                       is invisible because the mapping is read at submit, before the producer frame is even submitted
+ *   MALI_IND_CPU=drain  arguments read on the CPU after a drain (the pre-rung-2 shape, correct but serialized) -> 8192
+ * So the default cannot be passing through the same path as the control: without the drain the CPU read has nothing. */
 static int
 test_indirect_gpu(void)
 {
