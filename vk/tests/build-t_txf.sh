@@ -22,12 +22,19 @@ LIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midgard
 SYS="-lvulkan -lSPIRV-Tools-opt -lSPIRV-Tools -lz -lzstd -ldrm -lm -pthread"
 for f in $LIBS; do [ -f $f ] || { echo "missing $B/$f"; exit 1; }; done
 W="-I$D/third_party/mesa/include -Wno-unused-parameter -Wno-unused-function -I$V/src"
+# A bare `wait` returns 0 even when a child failed, so a failed compile used to link the previous object and pass:
+# drop the objects first, then wait on each pid (the compiles stay parallel).
+rm -f "$OUT"/mali_compile.o "$OUT"/mali_descriptor.o "$OUT"/mali_descriptor_lower.o "$OUT"/mali_pipeline_layout.o \
+      "$OUT"/mali_meta.o "$OUT"/mali_bc.o "$OUT"/t_txf.o "$OUT"/kb_draw.o
+pids=()
 for f in mali_compile mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_meta mali_bc; do
-  eval "$CC $W -c $V/src/$f.c -o $OUT/$f.o" &
+  eval "$CC $W -c $V/src/$f.c -o $OUT/$f.o" & pids+=($!)
 done
-eval "$CC $W -c $V/tests/t_txf.c -o $OUT/t_txf.o" &
-eval "$CC -w -I$D/libkbase/include -c $D/libkbase/src/draw.c -o $OUT/kb_draw.o" &
-wait
+eval "$CC $W -c $V/tests/t_txf.c -o $OUT/t_txf.o" & pids+=($!)
+eval "$CC -w -I$D/libkbase/include -c $D/libkbase/src/draw.c -o $OUT/kb_draw.o" & pids+=($!)
+rc=0
+for p in "${pids[@]}"; do wait "$p" || rc=1; done
+[ $rc = 0 ] || { echo "t_txf: a compile failed"; exit 1; }
 # shellcheck disable=SC2086
 c++ -o "$OUT/t_txf" "$OUT/t_txf.o" "$OUT/mali_compile.o" "$OUT/mali_descriptor.o" "$OUT/mali_descriptor_lower.o" "$OUT/mali_pipeline_layout.o" "$OUT/mali_meta.o" "$OUT/mali_bc.o" "$OUT/kb_draw.o" -Wl,--start-group $LIBS -Wl,--end-group $SYS
 # the three shaders at the frame's layout, both Valhall arches the phones build (v10 = X4): every texture instruction must

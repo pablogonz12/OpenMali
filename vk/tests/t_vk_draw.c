@@ -80,6 +80,8 @@ static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT_;
 static PFN_vkCmdSetDepthClipEnableEXT CmdSetDepthClipEnableEXT_;   /* blitreplay: depthClipEnable via the dynamic state, if the extension is there */
 static int g_have_eds3;      /* VK_EXT_extended_dynamic_state3 advertised, enabled, extendedDynamicState3PolygonMode set */
 static int g_have_dclip;   /* VK_EXT_depth_clip_enable advertised and enabled */
+static int g_have_dyn_dclip;   /* extendedDynamicState3DepthClipEnable advertised and enabled: the bit the dynamic
+                                * VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT declaration and setter both need */
 static VkPipelineRasterizationDepthClipStateCreateInfoEXT g_dce = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
 static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts */
 static const char *g_only, *g_spv = "shader";
@@ -112,7 +114,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -898,10 +900,8 @@ br_setup(struct br_res *r)
       .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
       .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0.0f};   /* notes/blit-instr.md SAMPLER line */
    CHECK(CreateSampler(dev, &si, NULL, &r->smp) == VK_SUCCESS, "br sampler");
-   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
-   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
-      .poolSizeCount = 1, .pPoolSizes = &ps};
-   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &r->dp) == VK_SUCCESS, "br descriptor pool");
+   /* no descriptor pool here: test_blitreplay's row loop creates and frees one per row, so a failed recreation cannot
+    * leave a NULL pool behind for the next AllocateDescriptorSets */
    /* the frame's vertex data, 4 x 32 bytes, and the 6-vertex list form of the same quad after it */
    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 512, .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
    CHECK(CreateBuffer(dev, &bi, NULL, &r->vb) == VK_SUCCESS, "br vertex buffer");
@@ -916,9 +916,12 @@ br_setup(struct br_res *r)
    static const float quad[4][8] = {
       {-1, -1, 0, 1,    0, 600, 0, 0}, {1, -1, 0, 1,  800, 600, 0, 0},
       {-1,  1, 0, 1,    0,   0, 0, 0}, {1,  1, 0, 1,  800,   0, 0, 0}};
-   static const int list[6] = {0, 1, 2, 2, 1, 3};
+   /* the 6-vertex list form of the fan's own triangles, in list order: (1,2,0) = the fan's (0,1,2) and (2,3,0) = its
+    * (0,2,3), so rows 5 and the fan rows have the same footprint and a coverage difference can only be the topology.
+    * Offsets are bytes: vp is a float*, one vertex is 8 floats = 32 B, and the list starts after the 4 quad vertices */
+   static const int list[6] = {1, 2, 0, 2, 3, 0};
    memcpy(vp, quad, sizeof quad);
-   for (int i = 0; i < 6; i++) memcpy(vp + 32 * (4 + i), quad[list[i]], 32);
+   for (int i = 0; i < 6; i++) memcpy((char *)vp + 32 * (4 + i), quad[list[i]], 32);
    UnmapMemory(dev, r->vbm);
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &r->pool) == VK_SUCCESS, "br pool");
@@ -956,7 +959,8 @@ br_pass(struct br_res *r, VkCommandBuffer cb, int src, VkPipeline pipe, int vari
       .srcAccessMask = src ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : 0,
       .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
       .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-      .oldLayout = src ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,   /* both passes start from UNDEFINED (br_img's initialLayout): the
+                                                 * source pass clears the whole image, so its contents are not needed */
       .newLayout = VK_IMAGE_LAYOUT_GENERAL,   /* the frame's own transition: UNDEFINED -> GENERAL, seq 11 */
       .image = src ? r->src : r->dst, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
@@ -1004,7 +1008,7 @@ br_pass(struct br_res *r, VkCommandBuffer cb, int src, VkPipeline pipe, int vari
       CmdSetDepthBiasEnable(cb, VK_FALSE);
       CmdSetPrimitiveRestartEnable(cb, VK_FALSE);
       if (CmdSetPolygonModeEXT_) CmdSetPolygonModeEXT_(cb, VK_POLYGON_MODE_FILL);
-      if (CmdSetDepthClipEnableEXT_) CmdSetDepthClipEnableEXT_(cb, VK_TRUE);   /* apilog: clip=1 */
+      if (g_have_dyn_dclip && CmdSetDepthClipEnableEXT_) CmdSetDepthClipEnableEXT_(cb, VK_TRUE);   /* apilog: clip=1 */
       VkDescriptorSet ds = r->dset;
       CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pl, variant == 4 ? 0 : 2, 1, &ds, 0, NULL);
       char pc[52] = {0};   /* zink's gfx_pushconst block (52 B); the frame's blocks are zero */
@@ -1022,25 +1026,36 @@ test_blitreplay(void)
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "br fence");
-   if (!br_setup(&r)) return 0;
+   if (!br_setup(&r)) { br_destroy(&r); DestroyFence(dev, f, NULL); return 0; }
    const char *sel = getenv("BLITREPLAY");
    int rows[8], nrow = 0;
    if (!sel || !*sel) sel = "0,6";
    for (char *p = (char *)sel; *p && nrow < 8;) {
       char *end;
-      rows[nrow++] = (int)strtol(p, &end, 10);
-      p = end;
-      if (*p == ',') p++;
+      const long v = strtol(p, &end, 10);
+      /* every token must be a number inside 0..6 followed by a comma or the end: "0,typo,6" used to fill the rest of the
+       * slots with row 0 and silently skip row 6 */
+      if (end == p || v < 0 || v > 6 || (*end != ',' && *end != '\0')) {
+         printf("{\"test\":\"blitreplay\",\"fail\":\"bad BLITREPLAY token\",\"ok\":false}\n");
+         br_destroy(&r);
+         DestroyFence(dev, f, NULL);
+         return 0;
+      }
+      rows[nrow++] = (int)v;
+      p = (*end == ',') ? end + 1 : end;
    }
    int ok = 1;
    for (int i = 0; i < nrow; i++) {
-      const int v = rows[i] < 0 || rows[i] > 6 ? 0 : rows[i];
+      const int v = rows[i];
       const int vs_ours = v == 2 || v == 6;
-      VkShaderModule vs = load_spv(vs_ours ? "blitv_o.vert.spv" : "blitv_z.vert.spv");
-      VkShaderModule fs = load_spv(v == 0 || v == 2 || v == 5 ? "blitfs_z.frag.spv" :
-                                   v == 1 ? "blitfs_o.frag.spv" : v == 3 ? "blitfs_o_b0.frag.spv" :
-                                   v == 4 ? "blitfs_o_s0.frag.spv" : "blitfs_o.frag.spv");
-      if (!vs || !fs) return 0;
+      /* declared before the first goto so every failure path can free what exists and nothing else */
+      VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+      VkPipeline pipe = VK_NULL_HANDLE;
+      vs = load_spv(vs_ours ? "blitv_o.vert.spv" : "blitv_z.vert.spv");
+      fs = load_spv(v == 0 || v == 2 || v == 5 ? "blitfs_z.frag.spv" :
+                    v == 1 ? "blitfs_o.frag.spv" : v == 3 ? "blitfs_o_b0.frag.spv" :
+                    v == 4 ? "blitfs_o_s0.frag.spv" : "blitfs_o.frag.spv");
+      if (!vs || !fs) { ok = 0; goto row_out; }
       /* descriptor layout: the frame has 3 sets and the sampler at set 2 binding 128; rows 3/4 move exactly one of the
        * two, which is the only way the FS's hard-coded decorations can be compared */
       const int dsidx = v == 4 ? 0 : 2, dbind = v == 3 ? 0 : 128;
@@ -1049,11 +1064,16 @@ test_blitreplay(void)
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
          VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount = k == dsidx ? 1 : 0, .pBindings = &lb};
-         if (CreateDescriptorSetLayout(dev, &dli, NULL, &r.dsl[k]) != VK_SUCCESS) { g_fail = 1; return 0; }
+         if (CreateDescriptorSetLayout(dev, &dli, NULL, &r.dsl[k]) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
       }
+      /* one pool per row, created and checked here: a failed recreation used to reach AllocateDescriptorSets as NULL */
+      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+         .poolSizeCount = 1, .pPoolSizes = &ps};
+      if (CreateDescriptorPool(dev, &dpi, NULL, &r.dp) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
       VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = r.dp,
          .descriptorSetCount = 1, .pSetLayouts = &r.dsl[dsidx]};
-      if (AllocateDescriptorSets(dev, &dai, &r.dset) != VK_SUCCESS) { g_fail = 1; return 0; }
+      if (AllocateDescriptorSets(dev, &dai, &r.dset) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
       VkDescriptorImageInfo dii = {r.smp, r.srcv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
       VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = r.dset,
          .dstBinding = (uint32_t)dbind, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1062,7 +1082,7 @@ test_blitreplay(void)
       VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .size = 52};
       VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3,
          .pSetLayouts = r.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
-      if (CreatePipelineLayout(dev, &pli, NULL, &r.pl) != VK_SUCCESS) { g_fail = 1; return 0; }
+      if (CreatePipelineLayout(dev, &pli, NULL, &r.pl) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
       VkPipelineShaderStageCreateInfo st[2] = {
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
@@ -1075,13 +1095,13 @@ test_blitreplay(void)
       VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
          .topology = v == 5 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN};
       VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-         .viewportCount = 1, .scissorCount = 1};
+         .viewportCount = 0, .scissorCount = 0};   /* 04135/04136: 0 with VK_DYNAMIC_STATE_*_WITH_COUNT */
       VkPipelineRasterizationDepthClipStateCreateInfoEXT dce = g_dce;
       dce.depthClipEnable = VK_TRUE;   /* apilog: clip=1 */
       VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
          .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_CLOCKWISE,
          .lineWidth = 1.0f, .rasterizerDiscardEnable = VK_FALSE, .depthClampEnable = VK_FALSE, .depthBiasEnable = VK_FALSE};
-      if (g_have_dclip) { dce.pNext = NULL; rs.pNext = &dce; }
+      if (g_have_dclip) { dce.pNext = NULL; rs.pNext = &dce; }   /* static value: ignored while the dynamic state below is declared */
       VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
          .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
       VkPipelineColorBlendAttachmentState cba = {.blendEnable = VK_FALSE, .colorWriteMask = 0xf};
@@ -1098,7 +1118,7 @@ test_blitreplay(void)
          VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
       unsigned ndyn = 21;
       if (CmdSetPolygonModeEXT_) dyn[ndyn++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
-      if (g_have_dclip) dyn[ndyn++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;
+      if (g_have_dyn_dclip) dyn[ndyn++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;   /* the EDS3 bit, not g_have_dclip */
       VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
          .dynamicStateCount = ndyn, .pDynamicStates = dyn};
       VkFormat cfmt = VK_FORMAT_B8G8R8A8_UNORM;
@@ -1108,19 +1128,18 @@ test_blitreplay(void)
          .stageCount = 2, .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
          .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = NULL,
          .pColorBlendState = &cbs, .pDynamicState = &dys, .layout = r.pl};
-      VkPipeline pipe = VK_NULL_HANDLE;
       VkResult pr = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe);
-      if (pr != VK_SUCCESS) { g_fail = 1; return 0; }
+      if (pr != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
       /* the earlier submission: the source pass (CLEAR blue), and its layout transition to sampled */
       for (int sub = 0; sub < 2; sub++) {
          VkCommandBuffer cb;
          VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = r.pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
-         if (AllocateCommandBuffers(dev, &cbi, &cb) != VK_SUCCESS) { g_fail = 1; return 0; }
+         if (AllocateCommandBuffers(dev, &cbi, &cb) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
          VkCommandBufferBeginInfo bi2 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-         BeginCommandBuffer(cb, &bi2);
-         if (!br_pass(&r, cb, sub == 0, pipe, v)) return 0;
+         if (BeginCommandBuffer(cb, &bi2) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         if (!br_pass(&r, cb, sub == 0, pipe, v)) { ok = 0; goto row_out; }
          if (sub == 0) {
             VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1133,7 +1152,18 @@ test_blitreplay(void)
                .pImageMemoryBarriers = &ib};
             CmdPipelineBarrier2(cb, &dp);
          }
-         EndCommandBuffer(cb);
+         if (sub == 1) {
+            /* the readback below reads the destination's colour writes through the mapping: colour-attachment writes
+             * are not visible to the host by themselves and a fence wait is not a memory dependency */
+            VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+               .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+            VkDependencyInfo hdp = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+               .pMemoryBarriers = &hb};
+            CmdPipelineBarrier2(cb, &hdp);
+         }
+         if (EndCommandBuffer(cb) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
          VkCommandBuffer cbs2[2] = {cb, VK_NULL_HANDLE};
          unsigned ncb = 1;
          if (sub == 1) {   /* the frame's submit is ncbs=2: its draw cb plus a sync cb (barriers only) */
@@ -1148,41 +1178,55 @@ test_blitreplay(void)
             }
          }
          VkSubmitInfo si2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = ncb, .pCommandBuffers = cbs2};
-         if (QueueSubmit(queue, 1, &si2, f) != VK_SUCCESS) { g_fail = 1; return 0; }
-         WaitForFences(dev, 1, &f, VK_TRUE, UINT64_MAX);
-         ResetFences(dev, 1, &f);
+         if (QueueSubmit(queue, 1, &si2, f) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         /* bounded like scene_draw: a failed wait must not be reset and must not be followed by a pixel read */
+         const VkResult wr = WaitForFences(dev, 1, &f, VK_TRUE, 2000000000ull);
+         if (wr != VK_SUCCESS) {
+            if (wr == VK_TIMEOUT) WaitForFences(dev, 1, &f, VK_TRUE, UINT64_MAX);
+            g_fail = 1; ok = 0; goto row_out;
+         }
+         if (ResetFences(dev, 1, &f) != VK_SUCCESS) { g_fail = 1; ok = 0; goto row_out; }
+         if (sub == 1) {
+            /* the readback memory is only asked to be HOST_VISIBLE (br_img's memtype): invalidate the mapping before the
+             * host reads it, which the spec requires unless the type is HOST_COHERENT (the call is a no-op there) */
+            VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = r.dstm,
+               .offset = 0, .size = VK_WHOLE_SIZE};
+            InvalidateMappedMemoryRanges(dev, 1, &mmr);
+         }
       }
       if (g_fake) {
          printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n",
                 v, g_brname[v]);
       } else {
+         /* the destination pass keeps the frame's LOAD_OP_DONT_CARE, so the pixels the draw does not write are
+          * undefined: the statistics cover the footprint every row draws (the fan's (0,1,2)+(0,2,3), which leaves the
+          * right-hand wedge -x < y < x, x > 0 untouched), never the whole 800x600 */
          double mr = 0, mg = 0, mb = 0;
-         uint32_t cov = 0;
+         uint32_t cov = 0, area = 0;
          for (int y = 0; y < BR_H; y++)
             for (int x = 0; x < BR_W; x++) {
+               const double nx = (x + 0.5) / BR_W * 2.0 - 1.0, ny = (y + 0.5) / BR_H * 2.0 - 1.0;   /* NDC */
+               if (nx > 0.0 && ny > -nx && ny < nx) continue;   /* the fan's uncovered wedge: undefined contents */
                const uint8_t *p = r.dpx + y * r.dpitch + x * 4;
                mr += p[2], mg += p[1], mb += p[0];   /* fmt 44 = B8G8R8A8_UNORM */
                cov += p[3] != 0;
+               area++;
             }
-         mr /= (double)BR_W * BR_H, mg /= (double)BR_W * BR_H, mb /= (double)BR_W * BR_H;
+         mr /= (double)area, mg /= (double)area, mb /= (double)area;
          const uint8_t *c = r.dpx + (BR_H / 2) * r.dpitch + (BR_W / 2) * 4;
          printf("{\"test\":\"blitreplay\",\"variant\":%d,\"name\":\"%s\",\"mean\":\"%.1f/255\",\"rgb\":\"%.1f,%.1f,%.1f\","
-                "\"centre\":\"%u,%u,%u,%u\",\"coverage\":%u,\"ok\":true}\n",
-                v, g_brname[v], (mr + mg + mb) / 3.0, mr, mg, mb, c[2], c[1], c[0], c[3], cov);
+                "\"centre\":\"%u,%u,%u,%u\",\"coverage\":%u,\"area\":%u,\"ok\":true}\n",
+                v, g_brname[v], (mr + mg + mb) / 3.0, mr, mg, mb, c[2], c[1], c[0], c[3], cov, area);
       }
+   row_out:   /* success and every failure: one place, so a failed row cannot leave a module, fence or pool live */
       DeviceWaitIdle(dev);
-      DestroyPipeline(dev, pipe, NULL);
-      DestroyPipelineLayout(dev, r.pl, NULL);
-      r.pl = VK_NULL_HANDLE;
-      for (int k = 0; k < 3; k++) { DestroyDescriptorSetLayout(dev, r.dsl[k], NULL); r.dsl[k] = VK_NULL_HANDLE; }
-      DestroyDescriptorPool(dev, r.dp, NULL);
-      r.dp = VK_NULL_HANDLE;   /* br_destroy guards on the rest */
-      VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
-      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
-         .poolSizeCount = 1, .pPoolSizes = &ps};
-      CreateDescriptorPool(dev, &dpi, NULL, &r.dp);
-      DestroyShaderModule(dev, vs, NULL);
-      DestroyShaderModule(dev, fs, NULL);
+      if (pipe) DestroyPipeline(dev, pipe, NULL);
+      if (r.pl) { DestroyPipelineLayout(dev, r.pl, NULL); r.pl = VK_NULL_HANDLE; }
+      for (int k = 0; k < 3; k++) if (r.dsl[k]) { DestroyDescriptorSetLayout(dev, r.dsl[k], NULL); r.dsl[k] = VK_NULL_HANDLE; }
+      if (r.dp) { DestroyDescriptorPool(dev, r.dp, NULL); r.dp = VK_NULL_HANDLE; }
+      if (vs) DestroyShaderModule(dev, vs, NULL);
+      if (fs) DestroyShaderModule(dev, fs, NULL);
+      if (!ok) break;
    }
    br_destroy(&r);
    DestroyFence(dev, f, NULL);
@@ -2656,6 +2700,10 @@ main(int argc, char **argv)
    const char *dce_ext[] = {"VK_EXT_depth_clip_enable", "VK_EXT_extended_dynamic_state3"};
    const char *en_ext[2];
    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+   /* blitreplay records vkCmdPipelineBarrier2 and vkCmdBeginRendering: the 1.3 core commands are only legal with these
+    * two feature bits enabled, not merely with a 1.3 physical device */
+   VkPhysicalDeviceVulkan13Features v13_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+   VkPhysicalDeviceVulkan13Features v13_en = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    {
       PFN_vkGetPhysicalDeviceFeatures2 GPF2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
       PFN_vkEnumerateDeviceExtensionProperties EDE = (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
@@ -2669,15 +2717,26 @@ main(int argc, char **argv)
          has |= !strcmp(eps[i].extensionName, dce_ext[0]);
          has3 |= !strcmp(eps[i].extensionName, dce_ext[1]);
       }
+      v13_f.pNext = &dce_f;
       dce_f.pNext = &eds3_f;
-      VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dce_f};
+      VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v13_f};
       GPF2(pd, &f2);
+      if (!v13_f.synchronization2 || !v13_f.dynamicRendering) {
+         printf("{\"fail\":\"no synchronization2/dynamicRendering\"}\n");
+         return 1;
+      }
+      VkPhysicalDeviceVulkan13Features v13_en_local = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+         .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE};
+      v13_en = v13_en_local;   /* di.pNext is read after this block: the struct has to outlive it */
       void *chain = NULL;
-      if (has3 && eds3_f.extendedDynamicState3PolygonMode) {
-         g_have_eds3 = 1;
-         /* enable polygonMode only: the other bits are not what this test exercises */
+      if (has3 && (eds3_f.extendedDynamicState3PolygonMode || eds3_f.extendedDynamicState3DepthClipEnable)) {
+         /* enable only the two bits blitreplay sets dynamically; its depthClipEnable setter needs its own bit, which is
+          * not what g_have_dclip (the static VK_EXT_depth_clip_enable path) tracks */
+         g_have_eds3 = eds3_f.extendedDynamicState3PolygonMode;
+         g_have_dyn_dclip = eds3_f.extendedDynamicState3DepthClipEnable;
          VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
-                                                               .extendedDynamicState3PolygonMode = VK_TRUE};
+                                                               .extendedDynamicState3PolygonMode = (VkBool32)!!g_have_eds3,
+                                                               .extendedDynamicState3DepthClipEnable = (VkBool32)!!g_have_dyn_dclip};
          eds3_f = e3;
          eds3_f.pNext = NULL;
          en_ext[di.enabledExtensionCount++] = dce_ext[1];
@@ -2689,7 +2748,8 @@ main(int argc, char **argv)
          chain = &dce_f;
          en_ext[di.enabledExtensionCount++] = dce_ext[0];
       }
-      di.pNext = chain;
+      v13_en.pNext = chain;
+      di.pNext = &v13_en;
       di.ppEnabledExtensionNames = en_ext;
    }
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
@@ -2697,7 +2757,7 @@ main(int argc, char **argv)
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
    CmdSetPolygonModeEXT_ = (PFN_vkCmdSetPolygonModeEXT)GDPA(dev, "vkCmdSetPolygonModeEXT");
-   CmdSetDepthClipEnableEXT_ = g_have_dclip ? (PFN_vkCmdSetDepthClipEnableEXT)GDPA(dev, "vkCmdSetDepthClipEnableEXT") : NULL;
+   CmdSetDepthClipEnableEXT_ = g_have_dyn_dclip ? (PFN_vkCmdSetDepthClipEnableEXT)GDPA(dev, "vkCmdSetDepthClipEnableEXT") : NULL;
    if (g_have_eds3 && !CmdSetPolygonModeEXT_) { printf("{\"fail\":\"missing vkCmdSetPolygonModeEXT\"}\n"); return 1; }
    GetDeviceQueue(dev, 0, 0, &queue);
 
