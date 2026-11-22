@@ -14,7 +14,7 @@ void main(){
   uvec4 au = uvec4(round(a * 255.0));
   uvec4 cu = uvec4(round(c * 255.0));
   uvec4 nu = uvec4(round(n * 255.0));
-  if (gl_FragCoord.x < 2.0 && gl_FragCoord.y < 2.0) {
+  if (gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0) {   /* one fragment: the writes are not needed from the others */
     b.oob[0] = au.r; b.oob[1] = au.g; b.oob[2] = au.b; b.oob[3] = au.a;
     b.ib[0] = cu.r; b.ib[1] = cu.g; b.ib[2] = cu.b; b.ib[3] = cu.a;
     b.neg[0] = nu.r; b.neg[1] = nu.g; b.neg[2] = nu.b; b.neg[3] = nu.a;

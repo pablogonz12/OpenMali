@@ -3286,8 +3286,10 @@ test_robustimg(void)
       printf("{\"test\":\"robustimg\",\"oob\":[%u,%u,%u,%u],\"inbounds\":[%u,%u,%u,%u],\"neg\":[%u,%u,%u,%u],\"forced\":%s}\n",
              r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], forced ? "true" : "false");
       CHECK(r[4] == 0x7f && r[5] == 0 && r[6] == 0 && r[7] == 255, "robustimg: in-bounds load %u,%u,%u,%u, the clear wrote 127,0,0,255", r[4], r[5], r[6], r[7]);
-      CHECK(r[0] == 0 && r[1] == 0 && r[2] == 0 && r[3] == 255, "robustimg: out-of-bounds imageLoad returned %u,%u,%u,%u, the spec value is 0,0,0,255", r[0], r[1], r[2], r[3]);
-      CHECK(r[8] == 0 && r[9] == 0 && r[10] == 0 && r[11] == 255, "robustimg: negative imageLoad returned %u,%u,%u,%u, the spec value is 0,0,0,255", r[8], r[9], r[10], r[11]);
+      /* robustImageAccess fixes RGB to 0 for an out-of-bounds load and leaves A as either 0 or 1 — an R8_UNORM image has
+       * no alpha, so requiring 255 here rejected a conforming (0,0,0,0) (alpha 1 is a robustImageAccess2 guarantee) */
+      CHECK(r[0] == 0 && r[1] == 0 && r[2] == 0 && (r[3] == 0 || r[3] == 255), "robustimg: out-of-bounds imageLoad returned %u,%u,%u,%u, the spec value is 0,0,0,{0|255}", r[0], r[1], r[2], r[3]);
+      CHECK(r[8] == 0 && r[9] == 0 && r[10] == 0 && (r[11] == 0 || r[11] == 255), "robustimg: negative imageLoad returned %u,%u,%u,%u, the spec value is 0,0,0,{0|255}", r[8], r[9], r[10], r[11]);
       printf("{\"test\":\"robustimg_ok\",\"ok\":true}\n");
    } else printf("{\"test\":\"robustimg\",\"skipped\":\"pixels+memory: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
