@@ -198,9 +198,11 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
 static bool
 robust_filter(const nir_intrinsic_instr *i, const void *d)
 {
-   switch (i->intrinsic) {   /* descriptor-backed accesses only (not shared memory) */
-   case nir_intrinsic_load_ubo:
-   case nir_intrinsic_load_ssbo:
+   /* Loads are NOT given to nir_lower_robust_access: for them it only rewrites the offset to 0 (lower_buffer_load ->
+    * rewrite_offset), which returns the buffer's first element - legal for robustBufferAccess's undefined-value rule, wrong for
+    * robustness2, where an out-of-bounds read must give zero (CTS zero-pads the reference data to
+    * robust{Uniform,Storage}BufferAccessSizeAlignment, vktRobustnessExtsTests.cpp:1049-1057). lower_load_bounds below does them. */
+   switch (i->intrinsic) {   /* writes/atomics/original image intrinsics only */
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
@@ -220,6 +222,34 @@ robust_filter(const nir_intrinsic_instr *i, const void *d)
  * at slot * MALI_DESC_SLOT_SIZE + 4. Same lowering as PanVK's v9+ path
  * (third_party/mesa/src/panfrost/vulkan/panvk_vX_shader.c:607-630 valhall_lower_get_ssbo_size, citing pan_nir.h:63-73). A null
  * descriptor is the all-zero slot (mali_descriptor.c:423-430), so its size reads 0 and every access is discarded. */
+/* robustness2 buffer loads: zero when [offset, offset + access_size) leaves the descriptor's size, otherwise the load. Same
+ * nir_if shape the store/atomic half gets from Mesa (predicate_offset -> wrap_in_if, nir_lower_robust_access.c:95-114), so it is
+ * a construct the backend already turns into predication on the hardware (the store/atomic discard works on the G610). The size
+ * is the get_ssbo_size/get_ubo_size that lower_size_query turns into a read of descriptor dw1; run this first so it does. */
+static bool
+lower_load_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_load_ssbo && i->intrinsic != nir_intrinsic_load_ubo)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[0].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *size = i->intrinsic == nir_intrinsic_load_ubo ? nir_get_ubo_size(b, 32, h) : nir_get_ssbo_size(b, 32, h);
+   const unsigned access = i->def.num_components * i->def.bit_size / 8;
+   nir_def *max_off = nir_iadd_imm(b, i->src[1].ssa, access - 1);
+   nir_def *valid = nir_ult(b, max_off, size);
+   nir_def *zero = nir_imm_zero(b, i->def.num_components, i->def.bit_size);
+   nir_push_if(b, valid);
+   nir_intrinsic_instr *cl = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &i->instr));
+   nir_builder_instr_insert(b, &cl->instr);
+   nir_def *res = &cl->def;
+   nir_pop_if(b, NULL);
+   nir_def_rewrite_uses(&i->def, nir_if_phi(b, res, zero));
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
 static bool
 lower_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
@@ -260,7 +290,9 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
       NIR_PASS(_, nir, nir_lower_non_uniform_access, &opts);
    }
    /* after the waterfall: a divergent size query has become per-lane loads by now (PanVK runs it in the same place) */
-   if (layout->robust_access)
+   if (layout->robust_access) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_bounds, nir_metadata_control_flow, NULL);
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size_query, nir_metadata_control_flow, NULL);
+   }
    return true;
 }

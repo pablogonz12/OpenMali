@@ -459,10 +459,10 @@ main(int argc, char **argv)
             "message names the feature: %s", msg);
    }
    /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. robustBufferAccess2
-    * is still unadvertised (its OOB load clamp is missing, notes/robustness2.md); robustImageAccess2 is the other half. */
+    * is advertised now (robustness2, t_vk_feat robust2), so the unsupported half of the same struct is robustImageAccess2. */
    {
       VkPhysicalDeviceRobustness2FeaturesEXT r2 = {
-         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustBufferAccess2 = VK_TRUE};
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustImageAccess2 = VK_TRUE};
       VkDeviceCreateInfo d3 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
                                .pQueueCreateInfos = &qci, .pNext = &r2};
       VkDevice d = NULL;
@@ -481,8 +481,8 @@ main(int argc, char **argv)
          msg[n] = 0;
          fclose(cap);
       }
-      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustBufferAccess2 must be rejected (%d)", rr);
-      CHECK(strstr(msg, "unsupported feature robustBufferAccess2") != NULL, "message names the chain feature: %s", msg);
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustImageAccess2 must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature robustImageAccess2") != NULL, "message names the chain feature: %s", msg);
    }
 
 #define D(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)
