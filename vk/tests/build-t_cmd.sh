@@ -30,7 +30,7 @@ LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[
 CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 
 ICD="mali_instance mali_physical_device mali_device mali_memory mali_dmabuf mali_sync mali_queue mali_fprof mali_backend_fake mali_backend_kbase
- mali_format mali_image mali_buffer mali_sampler mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_compile mali_gs mali_resources mali_soft"
+ mali_format mali_image mali_buffer mali_sampler mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_compile mali_gs mali_poly mali_tess mali_resources mali_soft"
 M8="mali_cs_emit mali_blend mali_render mali_cmd mali_pipeline mali_wsi mali_meta mali_bc mali_meta_vk mali_query mali_query_core mali_event mali_event_vk"
 W="-Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -I$GEN -I$V/src -I$KB/include"
 # Objects are rebuilt when a source/header is newer (the compile line is long; a full rebuild takes ~20 s on 4 cores).
@@ -61,6 +61,10 @@ LIBS="$PANLIBS src/vulkan/util/libvulkan_util.a src/compiler/nir/libnir.a src/co
       src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/util/libxmlconfig.a"
 for l in src/loader/libloader_wayland_helper.a src/x11/libloader_x11.a src/loader/libloader.a; do [ -f "$l" ] && LIBS="$LIBS $l"; done   # WSI trees (wayland/x11) need the loader archives; absent in the default tree
 for l in src/util/libmesa_util_clflush.a src/util/libmesa_util_clflushopt.a; do [ -f "$l" ] && LIBS="$LIBS $l"; done
+# Mesa's src/poly lowering (GS + tess): mali_poly.o refers to it, so this white-box link needs the same archive vk/build.sh
+# links (vk/poly.sh -> out/<target>/poly/libpoly_nir.a; built by build.sh, which runs before this script).
+POLY=$OUT/../poly/libpoly_nir.a
+[ -f "$POLY" ] && LIBS="$LIBS $POLY"
 OBJS=""; for f in $ICD $M8; do OBJS="$OBJS $OUT/$f.o"; done
 for f in ctx bo queue sync heap fb draw draw_v13 backend_fake; do OBJS="$OBJS $OUT/kb_$f.o"; done
 for a in 11 13; do

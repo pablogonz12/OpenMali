@@ -53,6 +53,25 @@ int mali_poly_lower_gs(unsigned arch, const uint32_t *spirv, uint32_t nwords, co
 /* Provenance of the linked library, for logs and the t_gs_lower line: never empty. */
 const char *mali_poly_provenance(void);
 
+/* ---- the tessellation half of the same library (notes/tess-design.md, lane T1) ----
+ * poly_nir_lower_tes(tes, to_hw_vs) as one call, for the smoke test that proves Mesa's tess lowering is linked and runs
+ * (t_tess_lower). T1's *draw* does not use it: a provable pass-through tess at levels 1.0 is compiled away (mali_tess.c),
+ * exactly like lane 1's pass-through GS, and the tessellator chain that needs it is our T2. */
+struct mali_poly_tes {
+   uint32_t ok;
+   uint32_t nir_valid;
+   uint32_t lowered;          /* 1 = poly_nir_lower_tes returned true */
+   uint32_t stage;            /* afterwards: VERTEX when to_hw_vs is set, else TESS_EVAL */
+};
+int mali_poly_lower_tes(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry, int to_hw_vs,
+                        struct mali_poly_tes *out, char *err, size_t errsz);
+
+/* ---- shared with mali_tess.c: SPIR-V -> NIR with this driver's options, then the standard preprocessing (the list is in
+ * mali_poly.c and is the one AgX hands poly). Both return NULL on failure with the reason in err. */
+void *mali_poly_nir_from_spirv(unsigned arch, const uint32_t *spirv, uint32_t nwords, unsigned stage, const char *entry,
+                               char *err, size_t errsz);
+void mali_poly_preprocess(void *nir);
+
 #ifdef __cplusplus
 }
 #endif
