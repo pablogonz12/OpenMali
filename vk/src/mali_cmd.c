@@ -468,7 +468,7 @@ apilog_att(struct mali_cmd_buffer *cmd, unsigned i, bool depth, const VkRenderin
 
 /* ===== THROWAWAY chardump (notes/character-replay.md): MALI_CHARDUMP=<dir> ===== */
 #include <sys/stat.h>
-struct cd_img { const uint8_t *p; uint64_t size; uint32_t row, w, h, fmt, ifmt, bs, level, layer, levels, layers, bc, set, slot, type; uint64_t view, shadow_base, plane_off, slice_off; char file[64]; };
+struct cd_img { const uint8_t *p; uint64_t size; uint32_t row, w, h, fmt, ifmt, bs, level, layer, levels, layers, bc, set, slot, type; uint64_t view, shadow_base, plane_off, slice_off; char file[64]; uint64_t imgh; uint32_t nlv; uint64_t lvoff[10], lvsz[10]; uint32_t lvrow[10]; const uint8_t *mbase; };
 struct cd_rec { uint8_t vbd[4][1024]; uint32_t seq, count, inst, first, indexed, nimg, vbsz[4]; uint64_t pipe, vbva[4]; const uint8_t *vbp[4]; uint32_t vbstride[4]; struct cd_img img[40]; };
 static const char *cd_dir(void) { static const char *d; static int init; if (!init) { init = 1; d = getenv("MALI_CHARDUMP"); if (d && !*d) d = NULL; if (d) mkdir(d, 0777); } return d; }
 #define CD_MAXREC 200000
@@ -476,7 +476,16 @@ static struct cd_rec *g_cd_pend; static unsigned g_cd_npend, g_cd_total;
 static uint64_t g_cd_keys[CD_MAXREC]; static unsigned g_cd_nkeys;
 static const uint8_t *g_cd_seen[4096]; static unsigned g_cd_nseen;
 static unsigned g_cd_present;
+void mali_cd_printf(const char *fmt, ...);
 static FILE *cd_log(void) { static FILE *f; const char *d = cd_dir(); if (!f && d) { char p[512]; snprintf(p, sizeof p, "%s/draws.log", d); f = fopen(p, "a"); if (f) setvbuf(f, NULL, _IOLBF, 0); } return f; }
+#include <stdarg.h>
+void
+mali_cd_printf(const char *fmt, ...)
+{
+   FILE *f = cd_log();
+   if (!f) return;
+   va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+}
 uint32_t
 mali_cd_spv(const uint32_t *code, uint32_t words)
 {
@@ -519,6 +528,12 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
          c->p = (const uint8_t *)img->mem->bo.cpu + off;
          c->row = sl->row_stride; c->w = vl->d.extent.width >> lv ? vl->d.extent.width >> lv : 1; c->h = vl->d.extent.height >> lv ? vl->d.extent.height >> lv : 1;
          c->fmt = v->vd.format; c->ifmt = img->vk.format; c->bs = vl->plane[0].bs; c->level = lv; c->layer = v->vd.base_layer;
+         c->imgh = (uint64_t)img;
+         if (!img->bc && vl->d.levels >= 9 && v->vd.format == 57 && vl->d.extent.width == 256) {
+            c->nlv = vl->d.levels > 10 ? 10 : vl->d.levels;
+            c->mbase = (const uint8_t *)img->mem->bo.cpu + img->mem_off + vl->plane[0].offset + (uint64_t)v->vd.base_layer * vl->plane[0].array_stride;
+            for (unsigned k = 0; k < c->nlv; k++) { c->lvoff[k] = vl->plane[0].slice[k].offset; c->lvsz[k] = vl->plane[0].slice[k].size; c->lvrow[k] = vl->plane[0].slice[k].row_stride; }
+         }
          c->levels = vl->d.levels; c->layers = vl->d.layers; c->bc = img->bc; c->set = s; c->slot = e[i].key - 1; c->type = e[i].type; c->view = e[i].view;
          key = (key ^ e[i].view ^ ((uint64_t)s << 56)) * 1099511628211ull;
       }
@@ -553,6 +568,19 @@ mali_cd_flush(void)
       }
       for (unsigned i = 0; i < r->nimg; i++) {
          struct cd_img *c = &r->img[i];
+         if (c->nlv) {
+            static uint64_t mk_[256]; static unsigned nmk; uint64_t kk = c->imgh * 1000 + g_cd_present / 20; unsigned q;
+            for (q = 0; q < nmk; q++) if (mk_[q] == kk) break;
+            if (q == nmk && nmk < 256) {
+               mk_[nmk++] = kk;
+               for (unsigned L = 0; L < c->nlv; L++) {
+                  unsigned lw = 256 >> L ? 256 >> L : 1;
+                  char p[512]; snprintf(p, sizeof p, "%s/mip_%llx_p%u_L%u_%ux%u_s%u.raw", cd_dir(), (unsigned long long)c->imgh, g_cd_present, L, lw, lw, c->lvrow[L]);
+                  FILE *o = fopen(p, "wb"); if (o) { fwrite(c->mbase + c->lvoff[L], 1, c->lvsz[L], o); fclose(o); }
+               }
+               fprintf(f, "  MIPDUMP img=0x%llx present=%u levels=%u (draw #%u)\n", (unsigned long long)c->imgh, g_cd_present, c->nlv, r->seq);
+            }
+         }
          unsigned k; for (k = 0; k < g_cd_nseen; k++) if (g_cd_seen[k] == c->p) break;
          char nm[96]; snprintf(nm, sizeof nm, "img%u_%ux%u_f%u_b%u_s%u.raw", k, c->w, c->h, c->fmt, c->bs, c->row);
          if (k == g_cd_nseen && g_cd_nseen < 4096) {

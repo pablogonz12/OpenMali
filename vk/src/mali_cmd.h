@@ -65,6 +65,7 @@ unsigned mali_apilog_seq(void);   /* ++ while on, 0 while off */
 uint32_t mali_cd_spv(const uint32_t *code, uint32_t words);
 void mali_cd_pipe(const void *pipe, uint32_t vs, uint32_t fs);
 void mali_cd_flush(void);
+void mali_cd_printf(const char *fmt, ...);
 const uint8_t *mali_cd_lookup(uint64_t va, uint64_t *avail);
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;

@@ -257,6 +257,9 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
       fprintf(stderr, "mali_apilog: COPYIMG seq=%u cb=%p src=0x%llx dst=0x%llx nreg=%u ext0=%ux%u\n", mali_apilog_seq(),
               (void *)h, (unsigned long long)ci->srcImage, (unsigned long long)ci->dstImage, ci->regionCount,
               ci->regionCount ? ci->pRegions[0].extent.width : 0, ci->regionCount ? ci->pRegions[0].extent.height : 0);
+   if (di && di->vk.format == 57)
+      for (uint32_t i = 0; i < ci->regionCount; i++)
+         mali_cd_printf("WRITE img2img dst=0x%llx dmip=%u src=0x%llx smip=%u ext=%ux%u\n", (unsigned long long)(uintptr_t)di, ci->pRegions[i].dstSubresource.mipLevel, (unsigned long long)(uintptr_t)si, ci->pRegions[i].srcSubresource.mipLevel, ci->pRegions[i].extent.width, ci->pRegions[i].extent.height);
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkImageCopy2 *g = &ci->pRegions[i];
@@ -300,6 +303,9 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
    struct mali_image *img = mali_image_from_handle(ci->dstImage);
    struct mali_meta_list l = { 0 };
    int r = 0;
+   if (img && img->vk.format == 57)
+      for (uint32_t i = 0; i < ci->regionCount; i++)
+         mali_cd_printf("WRITE buf2img dst=0x%llx dfmt=%d dmip=%u dlayer=%u ext=%ux%u boff=%llu\n", (unsigned long long)(uintptr_t)img, (int)img->vk.format, ci->pRegions[i].imageSubresource.mipLevel, ci->pRegions[i].imageSubresource.baseArrayLayer, ci->pRegions[i].imageExtent.width, ci->pRegions[i].imageExtent.height, (unsigned long long)ci->pRegions[i].bufferOffset);
    mark_dst_img(cmd, img);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
@@ -599,6 +605,11 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
               mali_apilog_seq(), (void *)h, (unsigned long long)ci->srcImage, si ? (int)si->vk.format : -1,
               si ? (unsigned long long)si->va : 0ULL, (unsigned long long)ci->dstImage, di ? (int)di->vk.format : -1,
               di ? (unsigned long long)di->va : 0ULL, ci->regionCount, (int)ci->filter);
+   if (di && di->vk.format == 57)
+      for (uint32_t i = 0; i < ci->regionCount; i++) {
+         const VkImageBlit2 *g = &ci->pRegions[i];
+         mali_cd_printf("WRITE blit dst=0x%llx dfmt=%d dmip=%u dlayer=%u dext=%d,%d-%d,%d src=0x%llx sfmt=%d smip=%u sext=%d,%d-%d,%d filter=%d\n", (unsigned long long)(uintptr_t)di, (int)di->vk.format, g->dstSubresource.mipLevel, g->dstSubresource.baseArrayLayer, g->dstOffsets[0].x, g->dstOffsets[0].y, g->dstOffsets[1].x, g->dstOffsets[1].y, (unsigned long long)(uintptr_t)si, si ? (int)si->vk.format : -1, g->srcSubresource.mipLevel, g->srcOffsets[0].x, g->srcOffsets[0].y, g->srcOffsets[1].x, g->srcOffsets[1].y, (int)ci->filter);
+      }
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);
