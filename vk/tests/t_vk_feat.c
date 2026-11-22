@@ -3519,7 +3519,7 @@ test_gs_limits(void)
 {
    const VkPhysicalDeviceLimits *l = &g_props.limits;
    const char *e = getenv("MALI_EXPERIMENTAL_GS");
-   const int gate = e && e[0] == '1';
+   const int gate = e && !strcmp(e, "1");   /* the driver'"'"'s exact predicate: "1x"/"12" are off */
    CHECK(!g_feat.geometryShader, "geometryShader is advertised: the pass-through subset is not the feature (notes/gs-design.md §7)");
    /* Vulkan's Required Limits table: maxGeometryShaderInvocations 0/32, maxGeometryInputComponents 0/64,
     * maxGeometryOutputComponents 0/64, maxGeometryOutputVertices 0/256, maxGeometryTotalOutputComponents 0/1024

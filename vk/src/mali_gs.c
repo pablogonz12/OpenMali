@@ -26,7 +26,7 @@ enum {
    OP_FUNCTION = 54, OP_FUNCTION_END = 56,
    OP_VARIABLE = 59, OP_LOAD = 61, OP_STORE = 62,
    OP_ACCESS_CHAIN = 65, OP_IN_BOUNDS_ACCESS_CHAIN = 66, OP_PTR_ACCESS_CHAIN = 67,
-   OP_DECORATE = 71, OP_MEMBER_DECORATE = 72,
+   OP_DECORATE = 71, OP_MEMBER_DECORATE = 72, OP_DECORATION_GROUP = 73, OP_GROUP_DECORATE = 74,
    OP_EMIT_VERTEX = 218, OP_END_PRIMITIVE = 219, OP_EMIT_STREAM_VERTEX = 220, OP_END_STREAM_PRIMITIVE = 222,
    OP_LOOP_MERGE = 246, OP_SELECTION_MERGE = 247, OP_LABEL = 248, OP_BRANCH = 249,
    OP_BRANCH_CONDITIONAL = 250, OP_SWITCH = 251, OP_RETURN = 253, OP_RETURN_VALUE = 254,
@@ -49,7 +49,7 @@ enum { EXEC_MODEL_GEOMETRY = 3 };   /* ExecutionModel: Vertex 0, TessControl 1, 
 #define GS_IDX_UNKNOWN 0xffffffffu
 
 struct gs_type { uint16_t kind; uint32_t a, b; };
-struct gs_deco { int16_t builtin, location; uint8_t block, has; };
+struct gs_deco { int16_t builtin, location; uint8_t block, has, has_builtin, has_loc; };
 struct gs_mdeco { uint32_t type; uint8_t member; int16_t builtin; };
 /* one whole pointer: the base id (a global variable) and the index path. n < 0 = a path with a non-constant index. */
 struct gs_chain { int32_t base; int8_t n; uint8_t storage; uint32_t pointee; uint32_t idx[GS_MAX_PATH]; };
@@ -114,7 +114,7 @@ key_of(const struct gs_chain *c, int is_input, const struct gs_chain *chains, co
       *skip = is_input ? 2 : 1;
       return 1;
    }
-   if (deco[c->base].builtin) {   /* a plain builtin variable (gl_PrimitiveID and friends) */
+   if (deco[c->base].has_builtin) {   /* a plain builtin variable (gl_PrimitiveID and friends) */
       *kind = 1;
       *val = deco[c->base].builtin;
       *skip = 1;
@@ -199,9 +199,26 @@ mali_gs_passthrough(const uint32_t *w, uint32_t nwords, const char *entry, unsig
          if (wc >= 3 && w[i + 1] < bound) {
             struct gs_deco *d = &deco[w[i + 1]];
             d->has = 1;
-            if (w[i + 2] == DEC_BUILTIN && wc >= 4) d->builtin = (int16_t)w[i + 3];
-            if (w[i + 2] == DEC_LOCATION && wc >= 4) d->location = (int16_t)w[i + 3];
+            /* presence is tracked separately: BuiltIn 0 (gl_Position) and Location 0 are real values, not "absent" */
+            if (w[i + 2] == DEC_BUILTIN && wc >= 4) d->builtin = (int16_t)w[i + 3], d->has_builtin = 1;
+            if (w[i + 2] == DEC_LOCATION && wc >= 4) d->location = (int16_t)w[i + 3], d->has_loc = 1;
             if (w[i + 2] == DEC_BLOCK) d->block = 1;
+         }
+         break;
+      case OP_DECORATION_GROUP:   /* its OpDecorates are already collected against the group id */
+         break;
+      case OP_GROUP_DECORATE:     /* OpGroupDecorate %group %t...: SPIR-V applies the group's decorations to each target */
+         if (wc >= 3 && w[i + 1] < bound && deco[w[i + 1]].has) {
+            const struct gs_deco g = deco[w[i + 1]];
+            for (unsigned k = 2; k < wc; k++) {
+               if (w[i + k] >= bound)
+                  continue;
+               struct gs_deco *t = &deco[w[i + k]];
+               t->has = 1;
+               if (g.has_builtin && !t->has_builtin) t->builtin = g.builtin, t->has_builtin = 1;
+               if (g.has_loc && !t->has_loc) t->location = g.location, t->has_loc = 1;
+               if (g.block) t->block = 1;
+            }
          }
          break;
       case OP_MEMBER_DECORATE:
@@ -393,7 +410,7 @@ mali_gs_passthrough(const uint32_t *w, uint32_t nwords, const char *entry, unsig
                /* Per-primitive builtins exist only inside a geometry stage, and glslang declares gl_PrimitiveID as an
                 * *output* variable it also reads, so this is checked before the storage class: our compiled program is the
                 * vertex shader, which has no per-primitive input to read. */
-               if (c->base >= 0 && (deco[c->base].builtin == BI_PRIMITIVEID || deco[c->base].builtin == BI_INVOCATIONID)) {
+               if (c->base >= 0 && deco[c->base].has_builtin && (deco[c->base].builtin == BI_PRIMITIVEID || deco[c->base].builtin == BI_INVOCATIONID)) {
                   rc = refuse(why, whysz, "reads gl_%s: a vertex program has no per-primitive input",
                               deco[c->base].builtin == BI_PRIMITIVEID ? "PrimitiveID" : "InvocationID");
                   goto done;
@@ -546,11 +563,11 @@ mali_gs_passthrough(const uint32_t *w, uint32_t nwords, const char *entry, unsig
       }
       /* outputs ⊇ inputs: every Location the GS reads must also be written, or the fragment stage loses it */
       for (uint32_t v = 0; v < bound; v++) {
-         if (chain[v].base != (int32_t)v || chain[v].storage != SC_INPUT || !deco[v].has || deco[v].builtin || deco[v].block)
+         if (chain[v].base != (int32_t)v || chain[v].storage != SC_INPUT || !deco[v].has || deco[v].has_builtin || deco[v].block)
             continue;
          int found = 0;
          for (uint32_t o = 0; o < bound && !found; o++)
-            if (chain[o].base == (int32_t)o && chain[o].storage == SC_OUTPUT && deco[o].has && !deco[o].builtin &&
+            if (chain[o].base == (int32_t)o && chain[o].storage == SC_OUTPUT && deco[o].has && !deco[o].has_builtin &&
                 deco[o].location == deco[v].location)
                found = 1;
          if (!found) {
