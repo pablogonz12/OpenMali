@@ -12,6 +12,7 @@
 #include "vk_sync.h"
 #include "vk_sync_timeline.h"
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "mali_backend.h"
 #include "wsi_common.h"
@@ -73,6 +74,10 @@ struct mali_device {
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
    int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
+   atomic_bool host_write_pending; /* a host write happened since the last submission: the next frames clean+invalidate L2/LSC
+                                    * at their head, so a GPU read of that memory cannot hit a stale clean line (PanVK does the
+                                    * same per submission, collect_cache_flush_info). Exchanged atomically at submit. */
+   bool host_write_owed;      /* this command buffer took the marker: give it back if nothing reaches the GPU */
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
