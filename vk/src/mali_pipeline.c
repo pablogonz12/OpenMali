@@ -229,6 +229,14 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.spirv = vcode;
    o.spirv_words = vwords;
    o.entry = vss->pName;
+   /* The VS code depends on the FS's interpolants (noperspective mask): hand it the FS module that will be linked.
+    * fss == NULL only when the pipeline has no fragment stage (rasterizerDiscardEnable), which also writes no
+    * interpolants; the mask is then 0. There is no path in this driver that compiles the stages in separate
+    * invocations (no VK_EXT_shader_object, no VK_KHR_pipeline_library: they are not in the device's extension list),
+    * so every VS compile that can have interpolants has its FS here. */
+   o.fs_spirv = fss ? fcode : NULL;
+   o.fs_spirv_words = fss ? fwords : 0;
+   o.fs_entry = fss ? fss->pName : NULL;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
    int vcr = mali_compile(&o, &p->vs, err, sizeof err);
    if (vcr) {
