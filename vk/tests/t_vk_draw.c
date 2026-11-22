@@ -1817,6 +1817,8 @@ test_mrt(const char *name, int nrt)
    VkFence fence = VK_NULL_HANDLE;
    int ok = 0;
    unsigned bad = 0;
+   int badat[4] = {0};
+   unsigned nbadat = 0;
 #define MRT_CHECK(c, ...) do { if (!(c)) { printf("{\"fail\":\"%s:%d\",\"expr\":\"%s\",\"detail\":\"", __FILE__, __LINE__, #c); printf(__VA_ARGS__); printf("\"}\n"); g_fail = 1; goto out; } } while (0)
    MRT_CHECK(vs && fs, "shaders");
    for (int i = 0; i < nrt; i++) {
@@ -1959,11 +1961,15 @@ test_mrt(const char *name, int nrt)
             if (g_mrt32) printf("%s%.3f", i ? "," : "", got);
             else printf("%s%u", i ? "," : "", q[0]);
             if (check && fabsf(got - want) > (g_mrt32 ? 0.01f : 2.0f / 255.0f)) {
-               if (bad < 4)
-                  printf("BAD%d", i);
+               /* the array stays numeric so the line is JSON: failing targets go into "badat" */
+               if (bad < 4 && nbadat < 4)
+                  badat[nbadat++] = (int)i;
                bad++;
             }
          }
+      printf("],\"badat\":[");
+      for (unsigned k = 0; k < nbadat; k++)
+         printf("%s%d", k ? "," : "", badat[k]);
       printf("]}\n");
       ok = bad == 0;
    }
