@@ -423,8 +423,19 @@ cs_dump(const uint64_t *cs, unsigned n, struct mali_hwctx *h, const char *why)
    fprintf(f, "CSDUMP note=following CS pointers masked to 56/48 bits, 24 regions\n");
    /* follow every CS word that looks like a GPU VA, one level deep */
    unsigned budget = 24;
-   for (unsigned i = 0; i < n && budget; i++)
-      cs_follow(h, f, "PTR", cs[i], 16, 1, &budget);
+   for (unsigned i = 0; i < n && budget; i++) {
+      uint64_t v = cs[i];
+      uint64_t cand[3] = { v, v & 0x00ffffffffffffffull, v & 0x0000ffffffffffffull };
+      for (unsigned c = 0; c < 3; c++) {
+         if (cand[c] < 0x100000000ull || cand[c] >= 0x0001000000000000ull)
+            continue;
+         if (!hw_va_cpu(h, cand[c], 8))
+            continue;
+         fprintf(f, "CSPTR word=%03u cand=%016llx (mask %u)\n", i, (unsigned long long)cand[c], c);
+         cs_follow(h, f, "PTR", cand[c], 16, 1, &budget);
+         break;
+      }
+   }
    fprintf(f, "CSDUMP end budget_left=%u\n", budget);
    fflush(f);
    if (f != stderr)
