@@ -1339,6 +1339,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 void
 mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 {
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: deferred resolve region %dx%d at %d,%d\n", f->area[2], f->area[3], f->area[0], f->area[1]);
    const int32_t *ar = f->area;
    const uint32_t x = ar[2] ? (uint32_t)ar[0] : 0, y = ar[3] ? (uint32_t)ar[1] : 0;
    memset(r, 0, sizeof *r);
@@ -1361,6 +1363,11 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   /* Snapshot the finished frame: the deferred resolve below needs its render area and attachment extents, and
+    * cmd->cur is wiped by the push. Reading the wiped frame gave a 0x0 region, blit_one returned early on
+    * b.clamp[2] <= b.clamp[0] (mali_meta_vk.c:493-501) and the resolve image was never written - the vacuous
+    * "0 == 0" MSAA store tests in M/notes/msaa-store.md. */
+   const struct mali_frame done = cmd->cur;
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
@@ -1369,7 +1376,7 @@ mali_CmdEndRendering(VkCommandBuffer h)
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
       VkImageResolve2 rr;
-      mali_resolve_region(&cmd->cur, &rr);
+      mali_resolve_region(&done, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
                                 .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

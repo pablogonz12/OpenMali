@@ -2069,6 +2069,9 @@ load_roundtrip(const char *name)
    uint32_t c1 = 0, c2 = 0;
    if (ok) ok = scene_draw(&s, 1, AB, f);          /* pass 1: clear + A, stored and resolved */
    if (ok) c1 = count_cov(&s);
+   /* The deferred resolve (storeOp STORE + resolve attachment) used to read a 0x0 region and copy nothing, so c1 was
+    * 0 and the c1==c2==c3 compares below were 0 == 0. A pass that rendered nothing is a failure, not a match. */
+   CHECK(c1 > 1000, "%s: coverage %u - the MSAA store/resolve path produced no pixels (vacuous compare)", name, c1);
    if (!g_fake) alpha_hist("after_pass1", &s);
    s.second = 1;
    if (ok) ok = scene_draw(&s, 0, AB, f);          /* pass 2: LOAD, no draws, store + resolve */
