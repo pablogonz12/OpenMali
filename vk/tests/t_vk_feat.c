@@ -79,7 +79,7 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CreateBufferView) X(DestroyBufferView) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
-   X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges)
+   X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -3262,6 +3262,11 @@ test_vsstore(void)
    struct hbuf sb;
    if (!hbuf_create(&sb, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
    memset(sb.p, 0, N * 4);
+   {   /* hbuf_create only requires HOST_VISIBLE: on a non-coherent type this CPU initialization would not reach the GPU,
+        * and the atomics would start from whatever the allocation held */
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)FlushMappedMemoryRanges(dev, 1, &mmr);
+   }
    VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
                                       .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
    VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
