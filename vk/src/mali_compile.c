@@ -962,6 +962,10 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          d->ncomps = s->ncomps;
          d->offset = s->offset;
          d->alu_type = s->alu_type;
+         if (getenv("MALI_CULL_DBG"))
+            fprintf(stderr, "mali_cull: %s layout[%u] loc %u section %u ncomps %u offset %u alu %x (generic_size_B %u)\n",
+                    stage == MESA_SHADER_VERTEX ? "VS" : "FS", i, d->location, d->section, d->ncomps, d->offset,
+                    d->alu_type, (unsigned)L->generic_size_B);
       }
    }
    ralloc_free(nir);

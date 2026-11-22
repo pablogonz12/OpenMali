@@ -793,6 +793,29 @@ run_compute_instr(unsigned task_incr, unsigned axis)
    return ((uint64_t)4 << 56) | (task_incr & 0x3fff) | ((uint64_t)(axis & 3) << 14);
 }
 
+/* TLS spill (panvk GENX(pan_emit_tls), PAN_ARCH >= 9: packed addressing, base >> 8). Size as pan_get_total_stack_size().
+ * Fills TSD words 0, 2, 3 for a shader that needs `tls_size` bytes per thread (compute, and graphics: a VS whose constant array
+ * is indexed dynamically spills it to scratch, e.g. t_vk_feat cull.vert's 18-entry vec2 table: scratch 144). */
+static int
+tls_fill(const struct mali_hw *hw, const struct mali_env *env, uint32_t *tsd, unsigned tls_size)
+{
+   unsigned per = tls_size < 16 ? 16 : (tls_size + 15) & ~15u, pot = 1, shift = 0;
+   while (pot < per)
+      pot <<= 1;
+   while ((16u << shift) < tls_size)
+      shift++;
+   if (!hw->tls || !env->tls_threads || !env->core_id_range)
+      return -ENOTSUP;
+   uint64_t total = (uint64_t)pot * env->tls_threads * env->core_id_range, va_tls = 0;
+   void *tp = hw->tls(hw->user, (size_t)((total + 4095) & ~4095ull), &va_tls);
+   if (!tp || (va_tls & 4095))
+      return -ENOMEM;
+   tsd[0] = shift;
+   tsd[2] = (uint32_t)(va_tls >> 8);
+   tsd[3] = (uint32_t)(va_tls >> 40) | (1u << 28);
+   return 0;
+}
+
 static int
 build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **out, unsigned *nout)
 {
@@ -861,21 +884,9 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
 
    if (cs->tls_size) {
-      /* TLS spill (panvk GENX(pan_emit_tls), PAN_ARCH >= 9: packed addressing, base >> 8). Size as pan_get_total_stack_size(). */
-      unsigned per = cs->tls_size < 16 ? 16 : (cs->tls_size + 15) & ~15u, pot = 1, shift = 0;
-      while (pot < per)
-         pot <<= 1;
-      while ((16u << shift) < cs->tls_size)
-         shift++;
-      if (!hw->tls || !env->tls_threads || !env->core_id_range)
-         return -ENOTSUP;
-      uint64_t total = (uint64_t)pot * env->tls_threads * env->core_id_range, va_tls = 0;
-      void *tp = hw->tls(hw->user, (size_t)((total + 4095) & ~4095ull), &va_tls);
-      if (!tp || (va_tls & 4095))
-         return -ENOMEM;
-      tsd[0] = shift;
-      tsd[2] = (uint32_t)(va_tls >> 8);
-      tsd[3] = (uint32_t)(va_tls >> 40) | (1u << 28);
+      int trc = tls_fill(hw, env, tsd, cs->tls_size);
+      if (trc)
+         return trc;
    }
 
    kb_draw_resource(srt, va_set, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
@@ -1000,6 +1011,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    struct mali_draw mod;           /* polygonMode LINE/POINT draw rewritten to a list */
    int rc = 0;
    uint64_t va_smp = 0, va_tctx = 0, va_fbd = 0, va_tsd = 0;
+   unsigned tls_have = 0;
 
    if (f->nops)
       return mali_ops_build(env, f->ops, f->nops, out, nout);
@@ -1082,6 +1094,17 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
          struct mali_draw *dr = &x;
+         {
+            /* one TSD for the frame (TSD_0 of every draw): grow its TLS to the largest spill of any shader drawn so far */
+            unsigned need = 0;
+            if (dr->gfx.vs) need = dr->gfx.vs->tls_size;
+            if (dr->gfx.fs && dr->gfx.fs->tls_size > need) need = dr->gfx.fs->tls_size;
+            if (need > tls_have) {
+               if ((rc = tls_fill(hw, env, tsd, need)))
+                  goto out;
+               tls_have = need;
+            }
+         }
          if (dr->gfx.poly_mode) {
             if ((rc = poly_lines(hw, dr, &mod)))
                goto out;
