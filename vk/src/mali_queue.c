@@ -368,7 +368,11 @@ hw_va_cpu(void *u, uint64_t va, size_t size)
 {
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
-   return be->va_cpu ? be->va_cpu(h->dev->kdev, va, size) : NULL;
+   if (be->va_cpu)
+      return be->va_cpu(h->dev->kdev, va, size);
+   /* kbase has no va_cpu op, but every BO is CPU mapped: resolve through the live-BO registry (mali_memory.c) so
+    * cs_dump can follow the CS's pointers on the phone. */
+   return mali_mem_lookup(va, size);
 }
 
 /* One level of pointer following for a dumped submit: a CS word that maps as a live BO is read back (16 words), and
@@ -620,6 +624,7 @@ mali_hw_init(struct mali_device *dev)
       hw.soft = hw_soft;
       hw.va_cpu = hw_va_cpu;
    }
+   mali_fault_ctx_note(h->arena.gpu_va, h->arena.size, h->geo.gpu_va, h->heap.first_chunk_va);
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    h->hw = hw;
    h->md = (struct mali_meta_dev){.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};

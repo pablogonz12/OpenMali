@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "mali_dmabuf.h"
 #include "mali_entrypoints.h"
@@ -18,6 +19,116 @@
 
 #define MALI_MEM_TYPE_COUNT 2
 #define MALI_MAX_ALLOCS 4096
+
+/* ---- live-BO registry: the VA -> CPU resolver the fault diagnostics need, and the addresses the fault map compares.
+ * Every BO is CPU mapped (mali_backend.h: "always CPU mapped"), so a VA that lands in one can be read back from the
+ * user side without the backend and without touching the GPU. Flat array, linear scan: diagnostics only, off unless
+ * MALI_CSDUMP / MALI_FAULT_MAP asks. ---- */
+static struct mali_bo *g_live_bo[MALI_MAX_ALLOCS];
+static int g_n_live_bo;
+static pthread_mutex_t g_live_bo_lock = PTHREAD_MUTEX_INITIALIZER;
+/* the three VAs a dropped base shows up against, filled at device init (mali_queue.c, MALI_PIPE_DBG's arena line) */
+static uint64_t g_fault_arena_va, g_fault_geo_va, g_fault_heap_first;
+static size_t g_fault_arena_size;
+
+void
+mali_fault_ctx_note(uint64_t arena_va, size_t arena_size, uint64_t geo_va, uint64_t heap_first_va)
+{
+   g_fault_arena_va = arena_va;
+   g_fault_arena_size = arena_size;
+   g_fault_geo_va = geo_va;
+   g_fault_heap_first = heap_first_va;
+}
+
+static void
+live_bo_add(struct mali_bo *bo)
+{
+   pthread_mutex_lock(&g_live_bo_lock);
+   if (g_n_live_bo < MALI_MAX_ALLOCS)
+      g_live_bo[g_n_live_bo++] = bo;
+   pthread_mutex_unlock(&g_live_bo_lock);
+}
+
+static void
+live_bo_remove(struct mali_bo *bo)
+{
+   pthread_mutex_lock(&g_live_bo_lock);
+   for (int i = 0; i < g_n_live_bo; i++)
+      if (g_live_bo[i] == bo) {
+         g_live_bo[i] = g_live_bo[--g_n_live_bo];
+         break;
+      }
+   pthread_mutex_unlock(&g_live_bo_lock);
+}
+
+/* CPU pointer of the live BO range that contains [va, va+size), or NULL. This is what hw_va_cpu falls back to when the
+ * backend has no va_cpu op (kbase: cs_dump's pointer following used to print nothing on the phone because of that). */
+void *
+mali_mem_lookup(uint64_t va, size_t size)
+{
+   void *out = NULL;
+   pthread_mutex_lock(&g_live_bo_lock);
+   for (int i = 0; i < g_n_live_bo; i++) {
+      struct mali_bo *b = g_live_bo[i];
+      if (b->cpu && va >= b->gpu_va && va + size <= b->gpu_va + b->size) {
+         out = (char *)b->cpu + (va - b->gpu_va);
+         break;
+      }
+   }
+   pthread_mutex_unlock(&g_live_bo_lock);
+   return out;
+}
+
+/* One line at the fatal notification: is the reported fault address a CPU pointer, a BO offset with its base dropped,
+ * or nothing we own? Pure user space (a /proc/self/maps read and the registry above), no GPU access. */
+void
+mali_mem_fault_map(uint64_t fva, uint32_t status, const char *path)
+{
+   FILE *f = fopen(path, "a");
+   if (!f)
+      return;
+   char maps_line[192] = "none";
+   FILE *m = fopen("/proc/self/maps", "r");
+   if (m) {
+      char line[256];
+      while (fgets(line, sizeof line, m)) {
+         unsigned long long lo, hi;
+         if (sscanf(line, "%llx-%llx", &lo, &hi) == 2 && fva >= lo && fva < hi) {
+            line[strcspn(line, "\n")] = 0;
+            snprintf(maps_line, sizeof maps_line, "%s", line);
+            break;
+         }
+      }
+      fclose(m);
+   }
+   pthread_mutex_lock(&g_live_bo_lock);
+   const struct mali_bo *hit = NULL, *base0 = NULL;
+   for (int i = 0; i < g_n_live_bo; i++) {
+      const struct mali_bo *b = g_live_bo[i];
+      if (!hit && fva >= b->gpu_va && fva < b->gpu_va + b->size)
+         hit = b;
+      if (!base0 && b->size > fva && (fva & 0xfff) == 0)
+         base0 = b;
+   }
+   fprintf(f, "FAULTMAP fva=0x%llx status=0x%08x cpu_map=%s\n", (unsigned long long)fva, status, maps_line);
+   fprintf(f, "FAULTMAP   va_hit=%s arena_va=0x%llx+0x%zx geo=0x%llx heap_first=0x%llx\n",
+           hit ? "BO" : "none", (unsigned long long)g_fault_arena_va, g_fault_arena_size,
+           (unsigned long long)g_fault_geo_va, (unsigned long long)g_fault_heap_first);
+   if (hit)
+      fprintf(f, "FAULTMAP   hit bo va=0x%llx size=0x%zx flags=0x%x\n", (unsigned long long)hit->gpu_va, hit->size,
+              hit->flags);
+   fprintf(f, "FAULTMAP   arena_hit=%s geo_hit=%s heap_hit=%s base0_hit=%s\n",
+           mali_mem_lookup(g_fault_arena_va + fva, 8) ? "BO" : "none",
+           mali_mem_lookup(g_fault_geo_va + fva, 8) ? "BO" : "none",
+           mali_mem_lookup(g_fault_heap_first + fva, 8) ? "BO" : "none",
+           base0 ? "BO" : "none");
+   if (base0)
+      fprintf(f, "FAULTMAP   base0 bo va=0x%llx size=0x%zx flags=0x%x (size > fva, fva page aligned)\n",
+              (unsigned long long)base0->gpu_va, base0->size, base0->flags);
+   pthread_mutex_unlock(&g_live_bo_lock);
+   fflush(f);
+   fclose(f);
+}
 #define MALI_LINE 64 /* nonCoherentAtomSize */
 #define MALI_PAGE 4096 /* what the backend commits for: bo_alloc rounds every request up to a page */
 
@@ -178,6 +289,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    /* mem_used was reserved before the allocation (mem_reserve); it must not be added again here. */
+   live_bo_add(&mem->bo);
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
 }
@@ -190,6 +302,7 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
+   live_bo_remove(&mem->bo);
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    /* A BO the kbase pool kept is still committed (kbase_bo_free only moves it to the free list), so its charge stays
     * until the pool really frees it or hands it to the next allocation; that is the pool's release callback. */

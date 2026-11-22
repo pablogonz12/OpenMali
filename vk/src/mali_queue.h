@@ -53,4 +53,11 @@ struct mali_memory {
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_memory, vk.base, VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
 
+/* vk/src/mali_memory.c: the live-BO registry behind the fault diagnostics. Every BO is CPU mapped, so VA -> CPU needs no
+ * backend op; MALI_CSDUMP uses mali_mem_lookup, MALI_FAULT_MAP uses mali_mem_fault_map (a /proc/self/maps read plus the
+ * registry, no GPU access). */
+void *mali_mem_lookup(uint64_t va, size_t size);
+void mali_fault_ctx_note(uint64_t arena_va, size_t arena_size, uint64_t geo_va, uint64_t heap_first_va);
+void mali_mem_fault_map(uint64_t fva, uint32_t status, const char *path);
+
 #endif

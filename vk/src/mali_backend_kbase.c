@@ -20,9 +20,16 @@
 
 /* MALI_FAULT_LOG=<path>: one line per fatal notification (the two fields the uapi fills, kbase_uapi.h:182-183),
  * appended to a file so it survives the dead session. Plain file, no signal handlers, no GPU access. */
+/* vk/src/mali_memory.c (declared in mali_queue.h, which this file must not include: it pulls the vk runtime headers
+ * into the libkbase test builds). */
+__attribute__((weak)) void mali_mem_fault_map(uint64_t fva, uint32_t status, const char *path);
+
 static void
 fault_note(const struct kb_event *ev)
 {
+   const char *fm = getenv("MALI_FAULT_MAP");
+   if (fm && *fm && mali_mem_fault_map)   /* weak: the libkbase test binaries link this file without mali_memory.c */
+      mali_mem_fault_map(ev->sideband, ev->status, fm);   /* the reported fault address, classified (no GPU access) */
    const char *p = getenv("MALI_FAULT_LOG");
    if (!p || !*p)
       return;
