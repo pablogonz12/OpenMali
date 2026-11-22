@@ -3319,8 +3319,17 @@ test_robustimg(void)
    CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
    CmdDraw(cb, 6, 1, 0, 0);
    CmdEndRenderPass(cb);
+   {   /* the fragment shader writes sb: make that visible to the host before the readback (a fence says the submission
+        * finished, not that the writes are visible to the host) */
+      VkBufferMemoryBarrier hb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = sb.b, .offset = 0, .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+   }
    if (!cb_submit(&t, cb)) return 0;
    if (!g_fake) {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)InvalidateMappedMemoryRanges(dev, 1, &mmr);   /* no-op on a coherent type */
       const uint32_t *r = (const uint32_t *)(const void *)sb.p;
       printf("{\"test\":\"robustimg\",\"oob\":[%u,%u,%u,%u],\"inbounds\":[%u,%u,%u,%u],\"neg\":[%u,%u,%u,%u],\"forced\":%s}\n",
              r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], forced ? "true" : "false");
