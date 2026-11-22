@@ -219,14 +219,19 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const int grc = (gsp && mali_gs_poly_compile && gcode && gwords)
                             ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, vcode, vwords, vss->pName, gsp, gsmsg, sizeof gsmsg) : -1;
          if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: geometry shader refused as a pass-through: %s | lane 2: %s\n", why,
+            fprintf(stderr, "mali_vk: geometry shader refused: %s | lane 2 step (ii): %s\n", why,
                     grc ? gsmsg : (mali_gs_programs_report ? mali_gs_programs_report(gsp, rep, sizeof rep) : "compiled"));
          /* step (iii) covers exactly one draw shape: triangle-list input, direct draw, no XFB, no counts program use, VS
           * attributes of 32-bit components. Everything else is refused by name here, not at draw time. */
          const char *why_not = NULL;
-         if (grc)
+         /* the draw is behind a second development knob: until it is proven on a device a real GS is still refused by name,
+          * and every row of t_vk_draw --only gs_reject keeps meaning what it says */
+         const char *pd = getenv("MALI_GS_POLY_DRAW");
+         if (!pd || strcmp(pd, "1"))
+            why_not = "the poly draw path is off (MALI_GS_POLY_DRAW=1 enables it)";
+         else if (grc)
             why_not = "poly/backend refused the geometry shader";
-         else if (!gsp->has_main || !gsp->has_copy || !gsp->has_vs)
+         else if (!gsp->main.bin_size || !gsp->copy.bin_size || !gsp->vs.bin_size)
             why_not = "poly produced no main/copy/vs program";
          else if (gsp->info.xfb || gsp->info.prefix_sum || gsp->info.multistream)
             why_not = "geometry shader with transform feedback or several streams";

@@ -60,6 +60,10 @@ struct mali_hw {
    void *(*tls)(void *user, size_t size, uint64_t *va);   /* persistent 4 KiB-aligned thread-local storage (grows; never shrinks) */
    int (*submit_multi)(void *user, const uint64_t *cs, unsigned ninstr, unsigned nframes);   /* nframes concatenated frame streams, one kick */
    void (*drain)(void *user);   /* wait until every submitted frame has retired */
+   /* The poly heap (compute-in-pass.md "Scratch"): zeroed GPU memory for what poly's kernels write and read (vertex-output arena, GS index
+    * buffer, tessellator output, their parameter blocks). Separate from the 32 MiB descriptor arena, sized by need (up to 512 MiB), and
+    * kept alive until the submission that used it has retired, so frames in flight never see it reused. NULL = not provided (tests). */
+   void *(*poly_alloc)(void *user, size_t size, size_t align, uint64_t *va);
    void (*bo_wrote)(void *user, struct mali_bo *bo);   /* M15: per-BO GPU-write mark (NULL bo = sweep everything next sync) */
    /* Desktop software rasteriser (mali_soft.c, MALI_SOFT=1): when `soft` is set, a frame is rendered on the CPU from its
     * record instead of being encoded into a command stream, and `va_cpu` resolves the record's GPU VAs to CPU memory. */
@@ -218,6 +222,7 @@ struct mali_rec {
    bool ind_nodrain;                      /* control (MALI_IND_CPU=1): the arguments are read from the mapping at submit with
                                            * no drain first, i.e. a compute job's write in this submission is invisible */
    unsigned occ_mode;
+   struct mali_gsdraw *gs;                /* a geometry-shader draw (index_va and dyn_desc[31] are resolved at build) */
 };
 
 /* A compute dispatch (M11): one per frame record, executed with RUN_COMPUTE. */
@@ -318,6 +323,8 @@ int mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint6
 int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
 
 /* polygonMode LINE (mode 1: 6 indices per triangle) / POINT (mode 2: 3) from the assembled triangles of a list (8) / strip (10) / fan (12); see mali_cs_emit.c. out: 6 * n entries. */
+/* poly heap allocation for kernels (GS now, tessellation next): hw->poly_alloc when the backend has it, else the descriptor arena. */
+void *mali_hw_poly_alloc(const struct mali_hw *hw, size_t size, size_t align, uint64_t *va);
 size_t mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const uint32_t *v, uint32_t n, uint32_t *out);
 
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
