@@ -29,7 +29,7 @@ static VkPhysicalDeviceMemoryProperties mp;
 static VkCommandPool pool;
 static int g_fail;
 static const char *g_spv = "shader";
-static int g_ramp, g_probe;
+static int g_ramp, g_probe, g_deriv2;
 
 #define FNS(X) \
    X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) X(vkFreeMemory) \
@@ -502,6 +502,89 @@ static void create_probe(void)
          }
 }
 
+
+/* ---- --deriv2: what the quad's lanes see, one fact per draw, into an RGBA32F target ---- */
+static void deriv2_all(void)
+{
+   struct img T;
+   if (img_new(&T, RT, RT, 1, VK_FORMAT_R32G32B32A32_SFLOAT,
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+      printf("{\"fail\":\"deriv2 target\"}\n");
+      return;
+   }
+   struct buf rb;
+   if (buf_new(&rb, (VkDeviceSize)RT * RT * 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+      printf("{\"fail\":\"deriv2 buffer\"}\n");
+      return;
+   }
+   VkAttachmentDescription att = {.format = VK_FORMAT_R32G32B32A32_SFLOAT, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                  .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &att,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp;
+   vkCreateRenderPass(dev, &rci, NULL, &rp);
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = T.i, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R32G32B32A32_SFLOAT, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView tv;
+   vkCreateImageView(dev, &vci, NULL, &tv);
+   VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1,
+                                  .pAttachments = &tv, .width = RT, .height = RT, .layers = 1};
+   VkFramebuffer fb;
+   vkCreateFramebuffer(dev, &fci, NULL, &fb);
+
+   VkDescriptorSetLayoutBinding dslb = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &dslb};
+   VkDescriptorSetLayout dsl;
+   vkCreateDescriptorSetLayout(dev, &dli, NULL, &dsl);
+   VkPushConstantRange pcr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 2 * sizeof(float)};
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+                                     .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
+   VkPipelineLayout pl;
+   vkCreatePipelineLayout(dev, &pli, NULL, &pl);
+   VkPipelineShaderStageCreateInfo st[2] = {
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = shader("mipderiv2.vert"), .pName = "main"},
+      {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = shader("mipderiv2.frag"), .pName = "main"}};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkViewport vp = {0, 0, RT, RT, 0, 1};
+   VkRect2D sc = {{0, 0}, {RT, RT}};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .pViewports = &vp,
+                                            .scissorCount = 1, .pScissors = &sc};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL,
+                                                .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+   VkGraphicsPipelineCreateInfo gpci = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                        .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vps,
+                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                        .layout = pl, .renderPass = rp};
+   VkPipeline pipe;
+   if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe) != VK_SUCCESS) { printf("{\"fail\":\"deriv2 pipeline\"}\n"); return; }
+
+   for (int row = 0; row < 8; row++) {
+      VkCommandBuffer cb = cb_begin();
+      VkClearValue clear = {.color = {{0.0f, 0.0f, 0.0f, 1.0f}}};
+      VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                                  .renderArea = {{0, 0}, {RT, RT}}, .clearValueCount = 1, .pClearValues = &clear};
+      vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      const float pcs[2] = {(float)row, 0.0f};
+      vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pcs, pcs);
+      vkCmdDraw(cb, 3, 1, 0, 0);
+      vkCmdEndRenderPass(cb);
+      VkBufferImageCopy cp = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {RT, RT, 1}};
+      vkCmdCopyImageToBuffer(cb, T.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb.b, 1, &cp);
+      cb_submit(cb);
+      const float *f = (const float *)((const uint8_t *)rb.p + ((size_t)(RT / 2) * RT + RT / 2) * 16);
+      printf("{\"row\":%d,\"v\":[%.6f,%.6f,%.6f,%.6f]}\n", row, f[0], f[1], f[2], f[3]);
+   }
+}
+
 int main(int argc, char **argv)
 {
    const char *icd = NULL;
@@ -512,6 +595,7 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
       else if (!strcmp(argv[i], "--ramp")) g_ramp = 1;
       else if (!strcmp(argv[i], "--create-probe")) g_probe = 1;
+      else if (!strcmp(argv[i], "--deriv2")) g_deriv2 = 1;
       else { fprintf(stderr, "usage: t_vk_mip --direct icd.so --spv-dir dir\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
@@ -638,6 +722,7 @@ int main(int argc, char **argv)
       printf("{\"fail\":\"readback buffer\"}\n"); return 1;
    }
 
+   if (g_deriv2) { deriv2_all(); printf("{\"done\":true}\n"); return 0; }
    if (g_probe) { create_probe(); printf("{\"done\":true}\n"); return 0; }
    if (g_ramp) { ramp_all(&g); printf("{\"done\":true}\n"); return 0; }
 
