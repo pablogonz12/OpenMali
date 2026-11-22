@@ -172,7 +172,10 @@ done
 # VkPhysicalDeviceFeatures::geometryShader is false, which is the state every application sees (DXVK keeps refusing at
 # init). The refusal reasons are checked by name: a bare VK_ERROR_FEATURE_NOT_PRESENT is not evidence of a decision.
 for g in v11 v13; do
+   # both halves of the Required Limits rule: 0 for every maxGeometry* while the feature is unsupported (gate off),
+   # the would-be numbers while the development gate is on -- and geometryShader is false either way
    run "vk_feat gs_limits $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_limits
+   run "vk_feat gs_limits $g gate off" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_limits
    run "vk_draw gs_passthrough $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_passthrough
    run "vk_draw gs_reject $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_reject
 done

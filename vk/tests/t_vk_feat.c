@@ -3518,22 +3518,32 @@ static int
 test_gs_limits(void)
 {
    const VkPhysicalDeviceLimits *l = &g_props.limits;
+   const char *e = getenv("MALI_EXPERIMENTAL_GS");
+   const int gate = e && e[0] == '1';
    CHECK(!g_feat.geometryShader, "geometryShader is advertised: the pass-through subset is not the feature (notes/gs-design.md §7)");
-   CHECK(l->maxGeometryShaderInvocations == 32 && l->maxGeometryInputComponents == 128 &&
-         l->maxGeometryOutputComponents == 128 && l->maxGeometryOutputVertices == 256 &&
-         l->maxGeometryTotalOutputComponents == 1024,
-         "geometry limits %u/%u/%u/%u/%u", l->maxGeometryShaderInvocations, l->maxGeometryInputComponents,
-         l->maxGeometryOutputComponents, l->maxGeometryOutputVertices, l->maxGeometryTotalOutputComponents);
+   /* Vulkan's Required Limits table: maxGeometryShaderInvocations 0/32, maxGeometryInputComponents 0/64,
+    * maxGeometryOutputComponents 0/64, maxGeometryOutputVertices 0/256, maxGeometryTotalOutputComponents 0/1024
+    * ("Unsupported Limit" / "Supported Limit"). The bit is false, so with the gate off every one of them must be 0;
+    * MALI_EXPERIMENTAL_GS=1 only lets *pipeline creation* accept a provable pass-through GS, and while it is on the
+    * driver reports the numbers it would advertise with the feature (all at or above the supported minimums). */
+   const uint32_t inv = gate ? 32u : 0u, in = gate ? 128u : 0u, out = gate ? 128u : 0u;
+   const uint32_t vo = gate ? 256u : 0u, tot = gate ? 1024u : 0u;
+   CHECK(l->maxGeometryShaderInvocations == inv && l->maxGeometryInputComponents == in &&
+         l->maxGeometryOutputComponents == out && l->maxGeometryOutputVertices == vo &&
+         l->maxGeometryTotalOutputComponents == tot,
+         "geometry limits %u/%u/%u/%u/%u with the gate %s (want %u/%u/%u/%u/%u)", l->maxGeometryShaderInvocations,
+         l->maxGeometryInputComponents, l->maxGeometryOutputComponents, l->maxGeometryOutputVertices,
+         l->maxGeometryTotalOutputComponents, gate ? "on" : "off", inv, in, out, vo, tot);
    /* §1c's sixth row (maxGeometryStreams) has no core field to assert: Vulkan 1.4 removed it from
     * VkPhysicalDeviceLimits, and the stream count now lives in VK_EXT_transform_feedback's geometryStreams, which our
     * TF path leaves false. One stream is therefore the only shape this driver can express. */
    printf("{\"test\":\"gs_limits\",\"geometryShader\":%s,\"gate\":\"%s\",\"limits\":[%u,%u,%u,%u,%u],\"ok\":true}\n",
-          g_feat.geometryShader ? "true" : "false",
-          getenv("MALI_EXPERIMENTAL_GS") ? "on" : "off",
+          g_feat.geometryShader ? "true" : "false", gate ? "on" : "off",
           l->maxGeometryShaderInvocations, l->maxGeometryInputComponents, l->maxGeometryOutputComponents,
           l->maxGeometryOutputVertices, l->maxGeometryTotalOutputComponents);
    return 1;
 }
+
 
 int
 main(int argc, char **argv)

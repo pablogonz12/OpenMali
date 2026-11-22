@@ -4,6 +4,7 @@
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_gs.h"
 #include "mali_compile.h"
 
 #include <dirent.h>
@@ -96,16 +97,19 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxVertexInputAttributeOffset = 2047,
       .maxVertexInputBindingStride = 2048,
       .maxVertexOutputComponents = 64,
-      /* Geometry: lane 1 of notes/gs-design.md §4 only runs a pass-through GS (1-in/1-out, one stream, one invocation),
-       * so these are the numbers step 6 will advertise. They are published now because Vulkan's limits are a device
-       * property, not a promise about a feature that is off: VkPhysicalDeviceFeatures::geometryShader stays FALSE
-       * until the compute pre-pass lands (notes/gs-design.md §7), so no application reaches geometry pipelines at all
-       * (t_vk_feat gs_limits asserts both halves). */
-      .maxGeometryShaderInvocations = 32,
-      .maxGeometryInputComponents = 128,
-      .maxGeometryOutputComponents = 128,
-      .maxGeometryOutputVertices = 256,
-      .maxGeometryTotalOutputComponents = 1024,
+      /* Geometry: Vulkan's Required Limits table (Required_Limits, "Unsupported Limit" / "Supported Limit") requires
+       * 0 for every maxGeometry* while the geometryShader feature is unsupported, and 32/64/64/256/1024 when it is
+       * supported. The bit stays false until lane 2 (notes/gs-design.md §7), so the honest report is 0 -- which is
+       * also what our pinned upstream does with the feature off (panvk_vX_physical_device.c:942-946) and what
+       * dEQP-VK.api.info.device.limits checks. MALI_EXPERIMENTAL_GS=1 is the *development gate* that lets pipeline
+       * creation accept a provable pass-through GS (mali_gs.h); while it is on, the numbers this driver would
+       * advertise with the feature are reported (all at or above the supported minimums: 128 >= 64, 1024 = 1024).
+       * It is never set by the driver itself, never in a fleet build, and it does not advertise the bit. */
+      .maxGeometryShaderInvocations = mali_experimental_gs() ? 32 : 0,
+      .maxGeometryInputComponents = mali_experimental_gs() ? 128 : 0,
+      .maxGeometryOutputComponents = mali_experimental_gs() ? 128 : 0,
+      .maxGeometryOutputVertices = mali_experimental_gs() ? 256 : 0,
+      .maxGeometryTotalOutputComponents = mali_experimental_gs() ? 1024 : 0,
       /* no maxGeometryStreams: Vulkan 1.4 removed it from VkPhysicalDeviceLimits; the stream count is the
        * geometryStreams feature, which stays false (D3D11 has no multi-stream GS). */
       .maxFragmentInputComponents = 64,
