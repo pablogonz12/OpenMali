@@ -6,6 +6,8 @@
  *   colour storeOp      -> DONT_CARE/NONE: RT Write Enable off (unless an MSAA resolve writes through it); STORE: Clean Tile Write on;
  *   depth loadOp CLEAR  -> Z clear value; depth storeOp DONT_CARE/NONE -> Z write enable off (zs_no_store).
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
+#include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <math.h>
 #include <string.h>
@@ -220,7 +222,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    }
    if (f->has_colour && f->ncolour > 1) {
       /* Internal Buffer Offset of RT n = bytes of the tile colour buffer used by RTs 0..n-1 (alloc = bytes per pixel) */
-      const unsigned tpx = env->arch == 13 ? 1u << env->tile_log2 : 1024u;
+      const unsigned tpx = f->tile_log2 ? 1u << f->tile_log2 : 1024u;   /* the effective tile the FBD advertises (mali_cmd shrinks it for big RT totals) */
       unsigned off = (f->colour.rt ? f->colour.rt->alloc : 4u) * tpx;
       p.rt_extra_count = f->ncolour - 1;
       for (unsigned n = 0; n < p.rt_extra_count && n < 3; n++) {
@@ -243,7 +245,13 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
          }
          off += (a->rt ? a->rt->alloc : 4u) * tpx;
       }
-      p.rt_alloc = off / tpx;   /* every arch: the FBD tile allocation covers all targets, not RT0 only */
+      /* Color Buffer Allocation is bytes >> 10 (v10.xml 11:24 shr(10)), the *whole* tile colour buffer of all
+       * targets, rounded up to a power of two >= 1024 as PanVK does (pan_desc.c:658 ALIGN_POT(bytes_per_pixel *
+       * tile_size, 1024)). 'off' is exactly that byte total after the loop. */
+      unsigned alloc = 1024;
+      while (alloc < off)
+         alloc <<= 1;
+      p.rt_alloc = alloc >> 10;
    }
    p.rt_none = !f->has_colour;
    /* storeOp DONT_CARE/NONE: Write Enable off, the tile is never written back. A resolve writes through the same RT, so it keeps the write. */
@@ -288,6 +296,18 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    }
    p.arch = env->arch == 13 ? 13 : 0;
    int rc = kb_fb_pack(out, &p);
+   if (getenv("MALI_PIPE_DBG") && f->ncolour > 1) {
+      /* MALI_PIPE_DBG: the render-target descriptors actually handed to the hardware (v10.xml "RGB Render Target":
+       * Internal Buffer Offset 0:4 shr(4), Internal Format 0:26, Write Enable 1:0, base at 8:0, row stride 10:0). */
+      const uint32_t *w = (const uint32_t *)out;
+      const uint32_t *q = (const uint32_t *)out + (KB_FB_FBD_SIZE + (f->has_zs || f->has_st ? KB_FB_ZSEXT_SIZE : 0)) / 4;
+      fprintf(stderr, "FBD hdr11=%08x (rt_count-1=%u tile_log2=%u) n=%u\n", w[11], (w[11] >> 19) & 0xf, (w[11] >> 9) & 0xf, f->ncolour);
+      for (unsigned n = 0; n <= p.rt_extra_count && n < 4; n++)
+         fprintf(stderr, "  rt%u w0=%08x (ibo=%u int=%u) w1=%08x (wr=%u wb=%u blk=%u sw=%03x) va=%08x%08x rs=%u ss=%u\n",
+                 n, q[16 * n], ((q[16 * n] >> 4) & 0xfff) * 16, (q[16 * n] >> 26) & 0x3f,
+                 q[16 * n + 1], q[16 * n + 1] & 1u, (q[16 * n + 1] >> 3) & 0x1f, (q[16 * n + 1] >> 8) & 0xf,
+                 (q[16 * n + 1] >> 16) & 0xfff, q[16 * n + 9], q[16 * n + 8], q[16 * n + 10], q[16 * n + 11]);
+   }
    if (rc)
       return rc;
    if (env->arch == 13) {

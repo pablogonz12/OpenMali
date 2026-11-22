@@ -1245,11 +1245,14 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
        * and derives the tiler's smallest bin from that tile (pan_choose_hierarchy_mask, pan_tiler.c:300: the mask is
        * log2(w/16) | log2(h/16)<<6). 32x32 holds up to 16 B/px, 16x16 up to 64 B/px, which is all four advertised
        * colour attachments can ask for (4 x RGBA32F). Shrink rather than refuse. */
+      /* Budget: PanVK uses pan_query_optimal_tib_size() = tib_size / 2 for pipelining (pan_props.h:47-56), i.e.
+       * 8 KiB on this part, and then tile_size = budget >> log2(bytes_per_pixel) (pan_desc.c:626). So 32x32 holds
+       * 8 B/px, 16x16 holds 32 B/px, 8x8 holds 128 B/px. */
       unsigned bpp_tot = bpp * (f->samples > 1 ? 4u : 1u);
-      if (bpp_tot > 64) {
-         unsupported(cmd, "colour attachments exceed the 16 KiB tile buffer (more than 64 bytes per pixel)");
-         return;
-      }
+      /* 16 KiB: 32x32 holds up to 16 B/px, 16x16 up to 64 B/px. NOT smaller: on arch 10 the tiler context
+       * (kb_draw_tiler_ctx, libkbase/src/draw.c:57) has no effective-tile field -- only v13's has one
+       * (kb_v13_tiler_ctx, draw_v13.c:9) -- so shrinking the FBD tile below the tiler's bins makes geometry and
+       * fragments disagree (measured: 16 bpp at 16x16 draws almost nothing). */
       f->tile_log2 = bpp_tot <= 16 ? 10u : 8u;
       f->hmask = bpp_tot <= 16 ? 0xfeu : 0xffu;
    }
