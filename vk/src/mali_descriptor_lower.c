@@ -299,7 +299,9 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
       /* this pass inserts an if and new blocks, so block indices and dominance are stale afterwards: Mesa passes
        * nir_metadata_none for its own robustness pass (nir_lower_robust_access.c:335) */
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_bounds, nir_metadata_none, NULL);
-      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size_query, nir_metadata_control_flow, NULL);
    }
+   /* get_ssbo_size/get_ubo_size exist in SPIR-V whether or not robust access is on, and Valhall has no such
+    * instruction at all: the size query has to be lowered for every shader, not only the robust ones */
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size_query, nir_metadata_control_flow, NULL);
    return true;
 }

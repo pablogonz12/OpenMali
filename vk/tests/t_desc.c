@@ -575,12 +575,16 @@ test_compile(unsigned arch)
       struct mali_compiled cr, cn;
       o.layout = &rl;
       err[0] = 0;
-      CHECK(mali_compile(&o, &cr, err, sizeof err) == 0, "robust compute with SSBO/UBO must compile (size query lowered): %s", err);
+      int r1 = mali_compile(&o, &cr, err, sizeof err);
+      CHECK(r1 == 0, "robust compute with SSBO/UBO must compile (size query lowered): %s", err);
       o.layout = &fl.c;
-      CHECK(mali_compile(&o, &cn, err, sizeof err) == 0, "default (robust off) compute still compiles: %s", err);
-      CHECK(cr.bin_size != cn.bin_size || memcmp(cr.bin, cn.bin, cr.bin_size), "robust access must change the code (bounds-checked loads)");
-      mali_compiled_free(&cr);
-      mali_compiled_free(&cn);
+      int r2 = mali_compile(&o, &cn, err, sizeof err);
+      CHECK(r2 == 0, "default (robust off) compute still compiles: %s", err);
+      if (r1 == 0 && r2 == 0) {   /* a failed compile leaves cr/cn unset: comparing or freeing them reads nothing valid */
+         CHECK(cr.bin_size != cn.bin_size || memcmp(cr.bin, cn.bin, cr.bin_size), "robust access must change the code (bounds-checked loads)");
+         mali_compiled_free(&cr);
+         mali_compiled_free(&cn);
+      }
    }
    /* without layout the old descriptor-free path still compiles the plain shaders */
    free(fs.w); free(cs.w);
