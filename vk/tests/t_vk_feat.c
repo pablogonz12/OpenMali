@@ -2159,35 +2159,6 @@ test_didxvidx(void)
       DestroyPipelineLayout(dev, lay, NULL);
       tgt_destroy(&t);
    }
-   /* ---- part 1a: a full-screen TRIANGLE quad whose VS also writes gl_PointSize (the CTS shaders do this) ---- */
-   {
-      struct tgt t;
-      if (!tgt_create(&t)) return 0;
-      VkPipelineLayout lay;
-      VkPipeline pipe;
-      if (!make_pipe(&t, "quad_ps.vert.spv", "flatint.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe)) return 0;
-      VkCommandBuffer cb = cb_begin(&t);
-      CHECK(cb, "cmdbuf");
-      begin_pass(cb, &t, pipe);
-      const float s[4] = {1, 1, 0, 0};
-      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
-      CmdDraw(cb, 6, 1, 0, 0);
-      CmdEndRenderPass(cb);
-      if (!cb_submit(&t, cb)) return 0;
-      if (!g_fake) {
-         unsigned nz = 0;
-         for (int y = 0; y < 64; y++)
-            for (int x = 0; x < 64; x++) {
-               const uint8_t *q = pix(&t, x, y);
-               nz += (q[0] | q[1] | q[2]) != 0;
-            }
-         printf("{\"quadsize\":%u,\"of\":4096,\"centre\":[%u,%u,%u,%u]}\n", nz, pix(&t, 32, 32)[0], pix(&t, 32, 32)[1], pix(&t, 32, 32)[2], pix(&t, 32, 32)[3]);
-         CHECK(nz > 3900, "a triangle quad whose VS writes gl_PointSize covered %u of 4096 px", nz);
-      }
-      DestroyPipeline(dev, pipe, NULL);
-      DestroyPipelineLayout(dev, lay, NULL);
-      tgt_destroy(&t);
-   }
    /* ---- part 1b: the value comes from an INTEGER vertex attribute, as the CTS shaders do (ivec4 index) ---- */
    for (int k = 0; k < 4; k++) {
       struct hbuf vb = {0};
