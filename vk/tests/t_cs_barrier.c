@@ -118,6 +118,48 @@ main(int argc, char **argv)
    printf(",\"ok\":true}\n");
    mali_compiled_free(&s);
 
+   /* 3. T2 step 2: control shaders, compiled as compute through poly (notes/tcs-compute-pipeline.md). Non-identity on
+    * purpose: `tess_levels` writes levels that subdivide the patch and `bar` reads its neighbour after barrier(), which is
+    * the one primitive the compute form must preserve. The numbers are the note's: stride 120 B (3 control points x
+    * (position + one vec4)), per-vertex mask 0x100000001, workgroup = the control points — without
+    * nir_shader_gather_info before poly they were 24 B and 1, i.e. every invocation storing to one address. WLS 0 and
+    * merge 1 are what bifrost reports for poly's SCOPE_SUBGROUP barrier (a subgroup barrier is bi_nop + scheduling,
+    * bifrost_compile.c:1662-1675); the device row is what proves the ordering is enough for a 3-lane patch. */
+   static const char *const tcs_files[] = {"tess_tri.tesc.spv", "tess_levels.tesc.spv", "bar.tesc.spv"};
+   for (unsigned f = 0; f < ARRAY_SIZE(tcs_files); f++) {
+      uint32_t nwords = 0;
+      uint32_t *spirv = read_spv(tcs_files[f], &nwords);
+      if (!spirv) return 1;
+      struct mali_compile_layout clay = {.nsets = 0};
+      struct mali_compile_opts co = {.arch = g_arch, .stage = MALI_STAGE_TESS_CTRL, .spirv = spirv,
+                                     .spirv_words = nwords, .layout = &clay, .cache_dir = ""};
+      struct mali_compiled t;
+      char terr[256] = "";
+      const int trc = mali_compile(&co, &t, terr, sizeof terr);
+      free(spirv);
+      if (trc) {
+         printf("{\"test\":\"cs_barrier\",\"tcs\":\"%s\",\"arch\":%u,\"ok\":false,\"error\":\"%s\"}\n", tcs_files[f], g_arch,
+                terr);
+         return 1;
+      }
+      const char *twhy = NULL;
+      if (t.tcs_vertices_out != 3) twhy = "control points per patch is not 3";
+      else if (t.local_size[0] != 3) twhy = "the workgroup is not one invocation per control point";
+      else if (t.tcs_output_stride != 120) twhy = "the TCS output stride is not 120 B (3 x position + vec4)";
+      else if (t.tcs_per_vertex_outputs != 0x100000001ull) twhy = "the per-vertex mask is not 0x100000001 (position + location 0)";
+      else if (t.bin_size == 0) twhy = "no program was produced";
+      else if (t.wls_size != 0) twhy = "poly's subgroup barrier must not need workgroup shared memory";
+      else if (!t.allow_merge) twhy = "a subgroup barrier does not stop workgroup merging (valhall_can_merge_workgroups)";
+      printf("{\"test\":\"cs_barrier\",\"tcs\":\"%s\",\"arch\":%u,\"local_size\":[%u,%u,%u],\"tcs_vertices_out\":%u,"
+             "\"tcs_output_stride\":%u,\"tcs_per_vertex_outputs\":%llu,\"wls_size\":%u,\"allow_merge\":%u,\"bin_size\":%u,"
+             "\"tess\":[%u,%u,%u,%u]", tcs_files[f], g_arch, t.local_size[0], t.local_size[1], t.local_size[2],
+             t.tcs_vertices_out, t.tcs_output_stride, (unsigned long long)t.tcs_per_vertex_outputs, t.wls_size,
+             t.allow_merge, t.bin_size, t.tess_mode, t.tess_spacing, t.tess_ccw, t.tess_point_mode);
+      if (twhy) { printf(",\"ok\":false,\"why\":\"%s\"}\n", twhy); mali_compiled_free(&t); return 1; }
+      printf(",\"ok\":true}\n");
+      mali_compiled_free(&t);
+   }
+
    printf("{\"test\":\"cs_barrier\",\"arch\":%u,\"ok\":true}\n", g_arch);
    (void)g_fail;
    return 0;

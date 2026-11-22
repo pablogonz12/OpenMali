@@ -16,10 +16,11 @@
 #define MALI_DUMMY_SAMPLER_IDX   16u    /* table 0: all-zero sampler for texelFetch / sampler-less sampling (between the attributes 0..15 and the vertex buffers 17..) */
 #define MALI_DYN_TABLE           9u     /* resource table 9 (user sets use 1..8): the dynamic-buffer Buffer descriptors, a small table of its own */
 #define MALI_DYN_BUF_START       0u     /* index of the first dynamic-buffer descriptor in table MALI_DYN_TABLE */
-/* Table 9, index 31: poly's tessellation blob (struct poly_tess_params + coord/alloc/count buffers, 136 B of header —
- * src/poly/tessellator.h). A *driver* descriptor, one per tess draw, written by mali_cmd.c; the shaders reach it through
- * nir_intrinsic_load_tess_param_buffer_poly, which mali_descriptor_lower.c turns into this handle. Kept away from the
- * dynamic-buffer range (index 0..) so a large number of dynamic buffers cannot collide with it. */
+/* Table 9, index 31: the tessellation header poly's lowered stages read (32 B, written per tess draw by mali_cmd.c):
+ * { u64 tess_blob, u64 vertex_blob, u64 vs_outputs_arena, u64 rsv }. poly addresses its blob with 64-bit global addresses,
+ * and a shader cannot invent one, so the driver supplies it here; mali_descriptor_lower.c:lower_poly_sysvals() turns
+ * load_{tess,vertex}_param_buffer_poly and load_vs_outputs_poly into 64-bit loads of this header. A *driver* descriptor,
+ * kept away from the dynamic-buffer range (index 0..) so a large number of dynamic buffers cannot collide with it. */
 #define MALI_TESS_TABLE          9u
 #define MALI_TESS_PARAM_IDX      31u
 /* 256 B = 64 FAU words, DXVK 3.1.x needs >= 256 (dxvk_limits.h). The Bifrost/Valhall FAU has 64 slots (PAN_MAX_PUSH = 128 words,

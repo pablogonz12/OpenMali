@@ -96,6 +96,26 @@ mali_poly_lower_tes(unsigned arch, const uint32_t *spirv, uint32_t nwords, const
    return out->ok;
 }
 
+bool
+mali_poly_lower_tcs_nir(void *nir_p, struct mali_poly_tcs_meta *m)
+{
+   nir_shader *nir = nir_p;
+   memset(m, 0, sizeof *m);
+   if (nir->info.stage != MESA_SHADER_TESS_CTRL)
+      return false;
+   mali_poly_preprocess(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   m->vertices_out = nir->info.tess.tcs_vertices_out;
+   m->stride = poly_tcs_output_stride(nir);
+   m->per_vertex_outputs = poly_tcs_per_vertex_outputs(nir);
+   m->wls_size = nir->info.shared_size;
+   m->tess_mode = (uint32_t)nir->info.tess._primitive_mode;
+   m->tess_spacing = nir->info.tess.spacing;
+   m->tess_ccw = nir->info.tess.ccw != 0;
+   m->tess_point_mode = nir->info.tess.point_mode != 0;
+   return poly_nir_lower_tcs(nir, false);
+}
+
 int
 mali_poly_lower_tcs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
                     struct mali_poly_tcs *out, char *err, size_t errsz)
@@ -116,9 +136,14 @@ mali_poly_lower_tcs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const
       return 0;
    }
    mali_poly_preprocess(tcs);
+   /* poly reads outputs_written / patch_outputs_written, which are only set once the stores are intrinsics: without the
+    * gather, poly_tcs_per_vertex_outputs() is 0 and the stride is 24 B instead of 120 B, i.e. every invocation would write
+    * to the same address (PanVK: panvk_vX_shader.c:976; KosmicKrisp: kk_shader.c:1008). */
+   nir_shader_gather_info(tcs, nir_shader_get_entrypoint(tcs));
    out->lowered = poly_nir_lower_tcs(tcs, false) ? 1 : 0;
    out->stride = poly_tcs_output_stride(tcs);
-   out->per_vertex_outputs = (uint32_t)poly_tcs_per_vertex_outputs(tcs);
+   out->per_vertex_outputs = poly_tcs_per_vertex_outputs(tcs);
+
    out->vertices_out = tcs->info.tess.tcs_vertices_out;
    out->shared_size = tcs->info.shared_size;
    out->ok = out->lowered;

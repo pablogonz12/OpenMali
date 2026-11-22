@@ -3071,6 +3071,66 @@ out:
    return ok;
 }
 
+/* T2's barrier row: bar.tesc writes its own control point's colour, barrier(), then takes the *next* control point's colour
+ * as its own. tess_rot.tesc computes the same rotation straight from the patch inputs, with no barrier and no dependency
+ * between invocations — so the two frames must be identical pixel for pixel. This is the only test of poly's rewritten
+ * barrier (a SCOPE_SUBGROUP barrier, bifrost_compile.c:1662-1675), and it also fails if the TCS's three invocations write
+ * to one address (the stride-24 bug: then the read sees its own write and every vertex gets its own colour). */
+static int
+test_tess_bar(void)
+{
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{1, 0, 0, 0.5f}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   int ok = 0;
+   g_gs = NULL;
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+
+   g_tesc = "bar.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   if (!scene_create(&a, 0))
+      goto out;
+   g_tesc = "tess_rot.tesc.spv";
+   if (!scene_create(&b, 0))
+      goto out;
+   if (g_fake) {
+      printf("{\"test\":\"tess_bar\",\"cover\":\"pipelines only (fake backend)\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0, maxd = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            int d = 0;
+            for (int c = 0; c < 4; c++) {
+               const int e = abs((int)p[c] - (int)q[c]);
+               if (e > d) d = e;
+            }
+            if (d) diff++;
+            if (d > (int)maxd) maxd = (uint32_t)d;
+         }
+      printf("{\"test\":\"tess_bar\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"ok\":%s}\n", cov_a, cov_b, diff,
+             maxd, (cov_a == cov_b && cov_b == 8192 && diff == 0) ? "true" : "false");
+      ok = cov_a == cov_b && cov_b == 8192 && diff == 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_tesc = g_tese = NULL;
+   return ok;
+}
+
 /* Every tessellation pipeline T1 does not accept must be refused at pipeline creation with a named reason: the gate off,
  * levels above 1.0, a TCS that moves a vertex, a non-identity TES, and quads. check.sh greps each reason. */
 static const struct { const char *tesc, *tese; int gate_off; const char *why; } g_tess_rejects[] = {
@@ -3364,6 +3424,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("gs_passthrough")) ok &= test_gs_passthrough();
    if (ok && g_only && CASE_ON("gs_reject")) ok &= test_gs_reject();
    if (ok && g_only && CASE_ON("tess_tri")) ok &= test_tess_tri();
+   if (ok && g_only && CASE_ON("tess_bar")) ok &= test_tess_bar();
    if (ok && g_only && CASE_ON("tess_reject")) ok &= test_tess_reject();
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();

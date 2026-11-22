@@ -309,18 +309,34 @@ lower_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
    return true;
 }
 
-/* poly's tessellation blob (poly_nir_lower_tcs/lower_tes turn the tess stages into shaders that read one descriptor):
- * the intrinsic yields the buffer handle, which is the driver's fixed slot in table 9. No app layout is involved, so this
- * runs whatever the pipeline layout is — a tess shader has exactly one such buffer. */
+/* poly's sysvals (notes/tcs-compute-pipeline.md step 7). The tess stages are lowered by poly into shaders that address
+ * the tessellation blob with 64-bit *global* addresses (it predates descriptors: `poly_tcs_out_address()` returns a raw
+ * address, then `store_global`). A shader cannot invent such an address, so the driver passes it in a small header it
+ * writes per tess draw, at table 9 index 31 (MALI_TESS_TABLE/MALI_TESS_PARAM_IDX):
+ *
+ *   0:  <u64> tessellation blob (struct poly_tess_params, src/poly/tessellator.h)
+ *   8:  <u64> same blob, for the vertex side of the chain (vertex_param_buffer_poly)
+ *   16: <u64> VS-output arena the vertex pre-pass wrote (vs_outputs_poly; T2 step 4)
+ *
+ * That is exactly how KosmicKrisp does it (kk_nir_lower_descriptors.c:814-822 lowers vs_outputs_poly,
+ * vertex_param_buffer_poly, tess_param_buffer_poly, index_size_poly to loads from its per-draw block), and it keeps poly's
+ * address arithmetic untouched. None of these are application bindings, so this runs whatever the pipeline layout is. */
 static bool
-lower_tess_param(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+lower_poly_sysvals(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    (void)data;
-   if (intr->intrinsic != nir_intrinsic_load_tess_param_buffer_poly)
+   unsigned off;
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_tess_param_buffer_poly:   off = 0;  break;
+   case nir_intrinsic_load_vertex_param_buffer_poly: off = 8;  break;
+   case nir_intrinsic_load_vs_outputs_poly:          off = 16; break;
+   default:
       return false;
+   }
    b->cursor = nir_before_instr(&intr->instr);
-   nir_def *h = nir_vec2(b, nir_imm_int(b, pan_res_handle(MALI_TESS_TABLE, MALI_TESS_PARAM_IDX)), nir_imm_int(b, 0));
-   nir_def_replace(&intr->def, h);
+   nir_def *addr = nir_load_ubo(b, 1, 64, nir_imm_int(b, pan_res_handle(MALI_TESS_TABLE, MALI_TESS_PARAM_IDX)),
+                                nir_imm_int(b, off), .range = ~0u, .align_mul = 8);
+   nir_def_replace(&intr->def, addr);
    return true;
 }
 
@@ -329,7 +345,7 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
 {
    struct ctx c = { .l = layout, .err = err, .errsz = errsz };
    NIR_PASS(_, nir, nir_shader_instructions_pass, lower_instr, nir_metadata_control_flow, &c);
-   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_tess_param, nir_metadata_control_flow, NULL);
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_poly_sysvals, nir_metadata_control_flow, NULL);
    if (c.failed)
       return false;
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);

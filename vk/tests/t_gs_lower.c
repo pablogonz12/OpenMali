@@ -151,8 +151,9 @@ case_tcs(const char *file, unsigned want_stride, unsigned want_verts)
     * predicted: the assertion is that it is a non-zero multiple of 4 bytes for a shader that does write varyings. */
    else if (tcs.stride < want_stride || (tcs.stride & 3)) why = "the TCS output stride is not a sane buffer stride";
    printf("{\"test\":\"gs_lower\",\"tcs\":\"%s\",\"arch\":%u,\"ok\":%s,\"stride\":%u,\"vertices_out\":%u,"
-          "\"per_vertex_outputs\":%u,\"shared_size\":%u%s%s}\n", file, g_arch, why ? "false" : "true", tcs.stride,
-          tcs.vertices_out, tcs.per_vertex_outputs, tcs.shared_size, why ? ",\"why\":\"" : "", why ? why : "");
+          "\"per_vertex_outputs\":%llu,\"shared_size\":%u%s%s}\n", file, g_arch, why ? "false" : "true", tcs.stride,
+          tcs.vertices_out, (unsigned long long)tcs.per_vertex_outputs, tcs.shared_size, why ? ",\"why\":\"" : "",
+          why ? why : "");
    if (why) { g_fail = 1; return 1; }
    return 0;
 }

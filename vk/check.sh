@@ -256,6 +256,9 @@ else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "g
 for g in v11 v13; do
    run "vk_draw tess_tri $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_tri
    run "vk_draw tess_reject $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject
+   # T2's device falsifier is t_vk_draw --only tess_bar (bar.tesc against the barrier-free rotation tess_rot.tesc). It has no
+   # row yet on purpose: a non-identity TCS is still refused by T1's classifier, so its pipeline cannot be created until T2
+   # step 3 wires the compute dispatch (notes/tess-design.md § T2). The compile half is covered by the cs_barrier rows above.
 done
 out=$(MALI_EXPERIMENTAL_TESS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject 2>&1)
 tess_rc=$?

@@ -7,6 +7,7 @@
  * draw shape needs (main/count compute, a rast vertex program that pulls the arena, a pre-GS compute patch-up); turning
  * those into panfrost programs and recording the jobs is step (ii)/(iii), listed in the plan in notes/gs-design.md. */
 #pragma once
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -74,12 +75,25 @@ struct mali_poly_tcs {
    uint32_t nir_valid;
    uint32_t lowered;          /* 1 = poly_nir_lower_tcs returned true */
    uint32_t stride;           /* poly_tcs_output_stride(): bytes per patch in the TCS output buffer */
-   uint32_t per_vertex_outputs; /* poly_tcs_per_vertex_outputs(): bitmask of varyings written per control point */
+   uint64_t per_vertex_outputs; /* poly_tcs_per_vertex_outputs(): bitmask of varyings written per control point */
    uint32_t vertices_out;     /* nir->info.tess.tcs_vertices_out */
    uint32_t shared_size;      /* nir->info.shared_size after lowering (the barrier check's input) */
 };
 int mali_poly_lower_tcs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
                         struct mali_poly_tcs *out, char *err, size_t errsz);
+
+/* T2 step 2's in-driver shape: the already-parsed TCS, through poly, plus what the record side needs. mali_compile.c calls
+ * this through a *weak* symbol, so a white-box test that links mali_compile.c without the poly library still links (and
+ * then fails only if it actually compiles a TCS, with a named reason). Flipping the shader to compute afterwards stays in
+ * mali_compile.c, because that is where the subgroup width and the workgroup size are decided. */
+struct mali_poly_tcs_meta {
+   uint32_t vertices_out;         /* nir->info.tess.tcs_vertices_out: control points per patch = the compute workgroup */
+   uint32_t stride;               /* poly_tcs_output_stride(): bytes per patch in the TCS output buffer */
+   uint64_t per_vertex_outputs;   /* poly_tcs_per_vertex_outputs() */
+   uint32_t wls_size;             /* nir->info.shared_size: what the barrier costs, read before the stage flip */
+   uint32_t tess_mode, tess_spacing, tess_ccw, tess_point_mode;
+};
+bool mali_poly_lower_tcs_nir(void *nir, struct mali_poly_tcs_meta *out) __attribute__((weak));
 
 /* ---- shared with mali_tess.c: SPIR-V -> NIR with this driver's options, then the standard preprocessing (the list is in
  * mali_poly.c and is the one AgX hands poly). Both return NULL on failure with the reason in err. */
