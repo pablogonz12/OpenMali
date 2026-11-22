@@ -2718,13 +2718,15 @@ vfmt_run(const char *name, VkFormat imgfmt, VkFormat viewfmt, VkFormat texfmt, V
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    static const float grey[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+   static const float qclear[4] = {0.25f, 0.25f, 0.25f, 0.25f};   /* the sampled cases: 0x40 in every channel, a value
+                                                                  * they never draw (55, 128), so a missing draw cannot pass */
    static const float quarter[4] = {0.25f, 0.25f, 0.25f, 1.0f};   /* the draw's colour: differs from the clear, so a
                                                                    * missing render-target write cannot pass as the clear */
    g_colfmt = imgfmt;
    g_vfmt = viewfmt;
    g_texfmt = texfmt;
    g_texvfmt = texvfmt;
-   g_clear_f = grey;
+   g_clear_f = texfmt ? qclear : grey;
    memcpy(g_pcfs, quarter, sizeof g_pcfs);
    g_hostread = 1;
    if (texfmt) s.mode = MODE_TEX;
@@ -2767,7 +2769,8 @@ test_view_format(void)
    /* SRGB image, UNORM view: the 0.25 draw stays 64 (the bug renders 137) */
    ok &= vfmt_run("view_unorm_over_srgb", VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM,
                   VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 64);
-   /* sampled: texel 128 through an SRGB view decodes to linear and lands as 55 in the UNORM target; a UNORM view gives 128 */
+   /* sampled: texel 128 through an SRGB view decodes to linear and lands as 55 in the UNORM target; a UNORM view gives
+    * 128. These clear to 0.25 grey (0x40), so a missing draw reads 64 and fails (see vfmt_run's qclear). */
    ok &= vfmt_run("view_sample_srgb", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
                   VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, 55);
    ok &= vfmt_run("view_sample_unorm", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
