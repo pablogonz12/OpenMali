@@ -3,8 +3,11 @@
  *   Event       one u32 word in zeroed, CPU-mapped, uncached device memory (mali_meta device seam), so host and CS see the same word.
  *   CmdSetEvent2/ResetEvent2/WaitEvents2   ops frames (mali_event.c: SYNC_SET32 / SYNC_WAIT32), pushed with mali_cmd_push_ops
  *                                          (deferred to after the render pass frame when recorded inside one).
- *   CmdPipelineBarrier2 (mali_pipeline.c)  no-op: frames are serialised, each one flushes L2/LSC before it signals the retire counter and the
- *                                          queue waits for it, so every barrier is already satisfied (R3-PLAN.md M13). Layouts are no-ops.
+ *   CmdPipelineBarrier2 (mali_pipeline.c)  no-op, and NOT because submissions are serialised (one submission carries every frame of the
+ *                                          command buffer). The ordering comes from the retire rule: the retire word is only added after every
+ *                                          scoreboard slot of the frame has drained (kb_cs_sync_add64_wait(..., 0xffff), the PanVK
+ *                                          finish_cs rule), and every compute/meta job head cleans+invalidates L2/LSC before a reader
+ *                                          starts. Layouts are no-ops (one memory model, vk/MEMORY.md).
  * Also: the IndexedEXT query entrypoints the runtime's vkCmdBeginQuery/EndQuery wrappers dispatch to (index 0 only). */
 #include <stdatomic.h>
 

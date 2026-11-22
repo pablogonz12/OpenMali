@@ -26,6 +26,9 @@
 #include "kbase_fb.h"
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
+
+/* free scoreboard slot (0 = LS, 3 = endpoint jobs) for the fragment job's completion signal */
+#define MALI_SLOT_FRAGMENT 4
 #include "mali_event.h"
 #include "mali_blend.h"
 
@@ -768,7 +771,8 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
    if (geometry) {
       E(c, kb_cs_load_multiple(10, R->tctx_copy, 0xf, 40));
       E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
-      E(c, kb_cs_finish_fragment_heap(true, 10, 12));
+      /* signal slot 4 (free: 0 = LS, 3 = endpoint jobs) so the tail flush can wait on the fragment job itself */
+      E(c, kb_cs_finish_fragment_heap_signal(true, 10, 12, MALI_SLOT_FRAGMENT, 0));
    }
    E(c, kb_cs_req_res(0));
 }
@@ -905,6 +909,13 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      /* This job READS memory an earlier frame of the same submission may have written (the CTS's copy, a render->sample or
+       * render->compute chain, a LOAD preload). Waiting only the LS slot lets the read run before the previous frame's tiler
+       * and fragment (tile writeback) have finished, so a sub-rectangle render followed by an image read returned only the
+       * current area. Wait every slot: frames do not overlap here, so this is the stall the fence already implies.
+       * MALI_NOHEADWAIT=1 disables it for A/B. */
+      if (!getenv("MALI_NOHEADWAIT"))
+         E(&c, kb_cs_wait(0xffff));
    }
    M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
    M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
@@ -977,7 +988,8 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
-   E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
+   /* same rule as the graphics retire: the fence must not signal before every slot of this frame has drained */
+   E(&c, kb_cs_sync_add64_wait(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM, 0xffff));
    if (c.err) {
       free(c.v);
       return c.err;
@@ -1129,12 +1141,18 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
    if (geometry && !getenv("MALI_NOTF")) {
       M32(&c, R->flush_id, 0);
+      E(&c, kb_cs_wait(1u << MALI_SLOT_FRAGMENT));   /* the fragment job and its tile writeback */
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
-   E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
+   /* The retire word is what the CPU's fence waits on, so it must only change once EVERY asynchronous job of this frame has
+    * completed - the tiler, the fragment (tile writeback) and the cache flushes. wait_mask 0 (the old kb_cs_sync_add64) let
+    * the add run immediately, i.e. every fence signalled before the fragment writeback: a readback or a reused buffer read
+    * after the fence could see stale data. 0xffff waits every scoreboard slot, the PanVK finish_cs rule
+    * (panfrost/vulkan/csf/panvk_vX_cmd_buffer.c:109 cs_wait_slots(b, dev->csf.sb.all_mask) right before SYNC_ADD64). */
+   E(&c, kb_cs_sync_add64_wait(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM, 0xffff));
    rc = c.err;
 out:
    if (rc) {
