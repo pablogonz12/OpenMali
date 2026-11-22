@@ -762,8 +762,10 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
    M48(c, 40, kb_fb_pointer_ex(va_fbd, 1, f->has_zs || f->has_st));
    M32(c, 42, kb_fb_bbox_min(x0, y0));
    M32(c, 43, kb_fb_bbox_max(x1, y1));
-   if (geometry)
-      M48(c, R->tctx_copy, va_tctx);
+   /* Both paths: the FINISH_FRAGMENT below reads its heap chunk words through this register, and a clear-only frame has no
+    * tiler context of its own (zeroed), but the register must still point at it - an unset register is whatever the previous
+    * frame left, i.e. a stale tiler context or a garbage address. */
+   M48(c, R->tctx_copy, va_tctx);
    M48(c, 44, 0);   /* FRAGMENT TEM_POINTER / ROW_STRIDE alias the IDVS depth clamps / viewport regs: zero */
    M32(c, 46, 0);
    E(c, kb_cs_run_fragment(0));
@@ -909,9 +911,10 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    E(&c, kb_cs_nop());
    if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    {
-      /* 0x002 = other-cache invalidate only, same rule as the graphics head (see there); MALI_CHF=<hex> overrides */
-      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x002); 0 = none */
-      int hf = e ? (int)strtol(e, NULL, 16) : 0x002;
+      /* 0x002 = other-cache invalidate only, same rule as the graphics head (see there: a frame after a host write needs the
+       * L2/LSC invalidate, f->host_write). MALI_CHF=<hex> overrides (0 = no flush) */
+      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x002 / 0x332) */
+      int hf = e ? (int)strtol(e, NULL, 16) : (f->host_write ? 0x332 : 0x002);
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
@@ -1085,20 +1088,16 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    /* head: flush stale descriptor lines, WAIT for it (async), then registers */
    E(&c, kb_cs_nop());
    {
-      static int hf = -1;
-      /* Other-cache invalidate only (0x002 = texture/RO-L1). The old 0x332 also CLEAN+INVALIDATED L2 and LSC at the head of
-       * every frame, which discards a previous frame's tile writeback still dirty in L2: that is why a render pass followed by
-       * an image read in the same submission returned only the newest area. PanVK clean+invalidates L2/LSC only for host writes
-       * (panfrost/vulkan/csf/panvk_vX_cmd_buffer.c:365-404, collect_cache_flush_info); a host write is not affected by this:
-       * our host-visible allocations are mapped uncached (MALI_MAP_UNCACHED in mali_memory.c / the backend's mmap), so the
-       * CPU's bytes are already in memory before the submit and need no device-side clean. MALI_HF=<hex> overrides for A/B. */
-      if (hf < 0) {
-         const char *e = getenv("MALI_HF");
-         /* a frame after a host write keeps the old clean+invalidate head (0x332): the CPU bytes are in memory, but a clean
-          * L2 line for that address is stale, and only an invalidate drops it. Every other frame invalidates the other cache
-          * only, which is what leaves a previous frame's dirty tile writeback in L2. */
-         hf = e ? (int)strtol(e, NULL, 16) : (f->host_write ? 0x332 : 0x002);
-      }
+      /* Other-cache invalidate only (0x002 = texture/RO-L1) is the default. A frame after a host write (f->host_write) keeps
+       * the old 0x332 CLEAN+INVALIDATE of L2 and LSC instead: the CPU bytes are in memory, but a clean L2 line for that address
+       * is stale and only an invalidate drops it. Cleaning+invalidating L2 at the head of every frame was the bug: it discards
+       * a previous frame's tile writeback still dirty in L2, so a render pass followed by an image read in the same submission
+       * returned only the newest area (PanVK clean+invalidates L2/LSC only for host writes,
+       * panfrost/vulkan/csf/panvk_vX_cmd_buffer.c:365-404 collect_cache_flush_info). MALI_HF=<hex> overrides for A/B; only
+       * that override is cached, the default is recomputed for every frame from its own f->host_write. */
+      static int hf_env = -2;
+      if (hf_env == -2) { const char *e = getenv("MALI_HF"); hf_env = e ? (int)strtol(e, NULL, 16) : -1; }
+      const int hf = hf_env >= 0 ? hf_env : (f->host_write ? 0x332 : 0x002);
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));

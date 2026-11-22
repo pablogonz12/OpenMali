@@ -154,8 +154,10 @@ def retire_norm(seq):
     for i, w in enumerate(seq):
         op = (w >> 56) & 0xff
         nxt = (seq[i + 1] >> 56) & 0xff if i + 1 < len(seq) else None
-        if op == 11:                                   # FINISH_FRAGMENT: fold wait mask (31:16) and signal slot (51:48)
-            w &= ~((0xffff << 16) | (0xf << 48))
+        if op == 11:                                   # FINISH_FRAGMENT: fold wait mask (31:16) and signal slot (51:48), but
+            m, sl = (w >> 16) & 0xffff, (w >> 48) & 0xf   # only the two legal shapes: the reference's (mask 0, slot 0) or
+            if (m, sl) in ((0, 0), (0x0008, 4)):          # ours (endpoint wait, slot 4). A self-dependent mask (slot 4 in
+                w &= ~((0xffff << 16) | (0xf << 48))      # the wait mask) stays and is compared, so it cannot hide here
         if op == 36 and not head_flush_seen:             # the HEAD flush compares its "others" field only
             w = (w & ~0xfff) | (w & 0xf00)               # (head is now others-invalidate only, 0x200 vs 0x233)
             head_flush_seen = True                       # a tail flush keeps its full mode: 0x011 vs 0x000 must differ
@@ -175,6 +177,18 @@ def retire_norm(seq):
 
 
 
+def retire_drain_missing(seq_raw):
+    """Our stream must drain every scoreboard slot before the retire SYNC_ADD64 (frame-ordering.md): without the WAIT the
+    add runs immediately and the fence signals before the fragment writeback. Checked before retire_norm, which drops it."""
+    for i, w in enumerate(seq_raw):
+        if (w >> 56) & 0xff != 51:
+            continue
+        p = seq_raw[i - 1] if i else 0
+        if (p >> 56) & 0xff != 3 or (p >> 16) & 0xffff != 0xffff:
+            return i
+    return None
+
+
 fails = []
 for arch in (11, 13):
     for scene in (1, 2):
@@ -192,7 +206,11 @@ for arch in (11, 13):
             fails.append('%s: no reference dump' % name)
             continue
         sa, sb = ds.load_ours(od), ds.load_ours(rd)
-        oa, qa = retire_norm(trace(sa, arch)[0]), trace(sa, arch)[1]
+        raw_a = trace(sa, arch)[0]
+        miss = retire_drain_missing(raw_a)
+        if miss is not None:
+            fails.append('%s: our stream has no WAIT(0xffff) before the retire SYNC_ADD64 at word %d' % (name, miss))
+        oa, qa = retire_norm(raw_a), trace(sa, arch)[1]
         ob, qb = retire_norm(trace(sb, arch)[0]), trace(sb, arch)[1]
         nd = 0
         if BREAK:
