@@ -220,6 +220,13 @@ test_layout(unsigned arch)
    CHECK(mali_image_layout_init(arch, &ds, &l) == 0, "ds layout");
    CHECK(l.nplanes == 2 && l.plane[1].offset >= l.plane[0].size, "ds planes %u", l.nplanes);
 
+   /* the largest tiled image the limits allow: R8 at 16384x16384 is 256 MiB of whole 16x16 tiles, no stride wrap anywhere
+    * (16384/16 = 1024 tile columns * 16 B/clump). t_vk_feat imgmax is the device half: it creates, clears and samples it. */
+   struct mali_image_desc b2 = { VK_FORMAT_R8_UNORM, VK_IMAGE_TYPE_2D, { MALI_MAX_DIM_2D, MALI_MAX_DIM_2D, 1 }, 1, 1, 1, true };
+   CHECK(mali_image_layout_init(arch, &b2, &l) == 0, "max 2d tiled layout");
+   CHECK(l.size == (uint64_t)MALI_MAX_DIM_2D * MALI_MAX_DIM_2D, "max 2d size %llu", (unsigned long long)l.size);
+   CHECK(l.plane[0].array_stride == 1ull << 28, "max 2d array stride %llu", (unsigned long long)l.plane[0].array_stride);
+
    /* out of range */
    struct mali_image_desc big = { VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, { MALI_MAX_DIM_2D + 1, 8, 1 }, 1, 1, 1, false };
    CHECK(mali_image_layout_init(arch, &big, &l) != 0, "oversize accepted");
@@ -319,7 +326,8 @@ test_format_table(unsigned arch)
    VkImageFormatProperties p;
    CHECK(mali_image_format_properties(arch, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &p) == VK_SUCCESS, "rgba8 props");
-   CHECK(p.maxExtent.width == MALI_MAX_DIM_2D && p.maxArrayLayers == MALI_MAX_LAYERS && p.maxMipLevels == 13 && p.maxMipLevels <= MALI_MAX_MIPS, "rgba8 limits");
+   /* maxMipLevels = log2(maxImageDimension) + 1: 15 for the 16384-wide 2D limit (13 while it was 4096) */
+   CHECK(p.maxExtent.width == MALI_MAX_DIM_2D && p.maxArrayLayers == MALI_MAX_LAYERS && p.maxMipLevels == 15 && p.maxMipLevels <= MALI_MAX_MIPS, "rgba8 limits");
    CHECK(mali_image_format_properties(arch, VK_FORMAT_UNDEFINED, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, 0, &p) ==
             VK_ERROR_FORMAT_NOT_SUPPORTED, "undefined format accepted");
    CHECK(mali_image_format_properties(arch, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
