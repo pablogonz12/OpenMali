@@ -29,7 +29,7 @@ static VkPhysicalDeviceMemoryProperties mp;
 static VkCommandPool pool;
 static int g_fail;
 static const char *g_spv = "shader";
-static int g_ramp, g_probe, g_deriv2;
+static int g_ramp, g_probe, g_deriv2, g_bisect;
 
 #define FNS(X) \
    X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) X(vkFreeMemory) \
@@ -328,7 +328,7 @@ static int sample_level(struct gfx *g, struct img *im, float lod, uint8_t want[4
    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g->pl, 0, 1, &g->ds, 0, NULL);
    const float pcs[2] = {lod, 0.0f};
    vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pcs, pcs);
-   vkCmdDraw(cb, 3, 1, 0, 0);
+   vkCmdDraw(cb, 6, 1, 0, 0);
    vkCmdEndRenderPass(cb);
    VkImageMemoryBarrier b2 = b;
    b2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -368,7 +368,7 @@ static void ramp_draw(struct gfx *g, VkPipeline pipe, float scale)
    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g->pl, 0, 1, &g->ds, 0, NULL);
    const float pcs[2] = {0.0f, scale};
    vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pcs, pcs);
-   vkCmdDraw(cb, 3, 1, 0, 0);
+   vkCmdDraw(cb, 6, 1, 0, 0);
    vkCmdEndRenderPass(cb);
    VkImageMemoryBarrier b2 = b;
    b2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -585,6 +585,92 @@ static void deriv2_all(void)
    }
 }
 
+
+/* ---- --bisect: which setup difference makes the interpolated varying half ---- */
+static void bisect_all(void)
+{
+   static const struct { const char *name, *vs, *fs; int verts; } V[] = {
+      {"ov 3v loc0 f32", "bis_ov.vert", "bis0.frag", 3},
+      {"ov 3v loc1", "bis_ov.vert", "bis1.frag", 3},
+      {"ov 1v loc0", "bis_1v.vert", "bis0.frag", 3},
+      {"quad exact", "bis_quad.vert", "bis0.frag", 6},
+      {"tri sweep-shape", "bis_tri.vert", "bis0.frag", 3},
+      {"ov mediump", "bis_med.vert", "bis_med.frag", 3},
+   };
+   const VkFormat fmts[2] = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM};
+   for (int fi = 0; fi < 2; fi++) {
+      struct img T;
+      if (img_new(&T, RT, RT, 1, fmts[fi], VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+         printf("{\"fail\":\"bisect target\"}\n");
+         return;
+      }
+      const uint32_t bpp = fmts[fi] == VK_FORMAT_R8G8B8A8_UNORM ? 4 : 16;
+      struct buf rb;
+      if (buf_new(&rb, (VkDeviceSize)RT * RT * bpp, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+         printf("{\"fail\":\"bisect buffer\"}\n");
+         return;
+      }
+      VkAttachmentDescription att = {.format = fmts[fi], .samples = VK_SAMPLE_COUNT_1_BIT,
+                                     .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                     .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL};
+      VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+      VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ar};
+      VkRenderPassCreateInfo rci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &att,
+                                    .subpassCount = 1, .pSubpasses = &sp};
+      VkRenderPass rp;
+      vkCreateRenderPass(dev, &rci, NULL, &rp);
+      VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = T.i, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                   .format = fmts[fi], .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      VkImageView tv;
+      vkCreateImageView(dev, &vci, NULL, &tv);
+      VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1,
+                                     .pAttachments = &tv, .width = RT, .height = RT, .layers = 1};
+      VkFramebuffer fb;
+      vkCreateFramebuffer(dev, &fci, NULL, &fb);
+      for (unsigned v = 0; v < sizeof V / sizeof V[0]; v++) {
+         VkPipelineShaderStageCreateInfo st[2] = {
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = shader(V[v].vs), .pName = "main"},
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = shader(V[v].fs), .pName = "main"}};
+         VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+         VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+         VkViewport vp = {0, 0, RT, RT, 0, 1};
+         VkRect2D sc = {{0, 0}, {RT, RT}};
+         VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .pViewports = &vp,
+                                                  .scissorCount = 1, .pScissors = &sc};
+         VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL,
+                                                      .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+         VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+         VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+         VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba};
+         VkGraphicsPipelineCreateInfo gpci = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                              .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vps,
+                                              .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                              .layout = VK_NULL_HANDLE, .renderPass = rp};
+         VkPipeline pipe;
+         if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe) != VK_SUCCESS) { printf("{\"fail\":\"bisect pipeline\"}\n"); return; }
+         VkCommandBuffer cb = cb_begin();
+         VkClearValue clear = {.color = {{0.0f, 0.0f, 0.0f, 1.0f}}};
+         VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                                     .renderArea = {{0, 0}, {RT, RT}}, .clearValueCount = 1, .pClearValues = &clear};
+         vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         vkCmdDraw(cb, (uint32_t)V[v].verts, 1, 0, 0);
+         vkCmdEndRenderPass(cb);
+         VkBufferImageCopy cp = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {RT, RT, 1}};
+         vkCmdCopyImageToBuffer(cb, T.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb.b, 1, &cp);
+         cb_submit(cb);
+         const uint8_t *px = (const uint8_t *)rb.p + ((size_t)(RT / 2) * RT + RT / 2) * bpp;
+         double u, du;
+         if (bpp == 4) { u = px[0] / 255.0; du = px[1] / 255.0; }
+         else { const float *f = (const float *)px; u = f[0]; du = f[1]; }
+         printf("{\"fmt\":\"%s\",\"variant\":\"%s\",\"u\":%.6f,\"dudx\":%.6f}\n",
+                bpp == 4 ? "rgba8" : "rgba32f", V[v].name, u, du);
+         vkDestroyPipeline(dev, pipe, NULL);
+      }
+   }
+}
+
 int main(int argc, char **argv)
 {
    const char *icd = NULL;
@@ -596,6 +682,7 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--ramp")) g_ramp = 1;
       else if (!strcmp(argv[i], "--create-probe")) g_probe = 1;
       else if (!strcmp(argv[i], "--deriv2")) g_deriv2 = 1;
+      else if (!strcmp(argv[i], "--bisect")) g_bisect = 1;
       else { fprintf(stderr, "usage: t_vk_mip --direct icd.so --spv-dir dir\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
@@ -704,7 +791,7 @@ int main(int argc, char **argv)
    printf("{\"stage\":\"pipeline\"}\n");
    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &g.pipe) != VK_SUCCESS) { printf("{\"fail\":\"pipeline\"}\n"); return 1; }
    /* the three LOD twins of --ramp: implicit texture(), textureGrad with analytic gradients, textureLod with the same number */
-   VkShaderModule rvs = shader("mipramp.vert");
+   VkShaderModule rvs = shader("mipramp_q.vert");
    VkShaderModule rfs = shader("mipramp.frag"), gfs = shader("mipgrad.frag"), lfs = shader("mipramplod.frag"),
                  g2fs = shader("mipgrad2.frag"),
                  dvfs = shader("mipderiv.frag");
@@ -722,6 +809,7 @@ int main(int argc, char **argv)
       printf("{\"fail\":\"readback buffer\"}\n"); return 1;
    }
 
+   if (g_bisect) { bisect_all(); printf("{\"done\":true}\n"); return 0; }
    if (g_deriv2) { deriv2_all(); printf("{\"done\":true}\n"); return 0; }
    if (g_probe) { create_probe(); printf("{\"done\":true}\n"); return 0; }
    if (g_ramp) { ramp_all(&g); printf("{\"done\":true}\n"); return 0; }
