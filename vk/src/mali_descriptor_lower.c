@@ -182,7 +182,8 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
-   case nir_intrinsic_get_ssbo_size: src = 0; break;
+   case nir_intrinsic_get_ssbo_size:
+   case nir_intrinsic_get_ubo_size: src = 0; break;
    case nir_intrinsic_store_ssbo: src = 1; break;
    default: return false;
    }
@@ -197,10 +198,11 @@ pack_buf_idx(nir_builder *b, nir_intrinsic_instr *i, void *data)
 static bool
 robust_filter(const nir_intrinsic_instr *i, const void *d)
 {
-   switch (i->intrinsic) {   /* descriptor-backed accesses only (not shared memory) */
-   case nir_intrinsic_load_ubo:
-   case nir_intrinsic_load_ssbo:
-   case nir_intrinsic_store_ssbo:
+   /* Loads are NOT given to nir_lower_robust_access: for them it only rewrites the offset to 0 (lower_buffer_load ->
+    * rewrite_offset), which returns the buffer's first element - legal for robustBufferAccess's undefined-value rule, wrong for
+    * robustness2, where an out-of-bounds read must give zero (CTS zero-pads the reference data to
+    * robust{Uniform,Storage}BufferAccessSizeAlignment, vktRobustnessExtsTests.cpp:1049-1057). lower_load_bounds below does them. */
+   switch (i->intrinsic) {   /* atomics/original image intrinsics only: stores are bounded by lower_store_bounds */
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
    case nir_intrinsic_image_load:
@@ -213,11 +215,98 @@ robust_filter(const nir_intrinsic_instr *i, const void *d)
    }
 }
 
-/* Returns true (as "progress") when a buffer size query is present; changes nothing. */
+/* robustness2 buffer bounds: nir_lower_robust_access asks the buffer for its size with get_ssbo_size/get_ubo_size, which the
+ * Valhall backend does not have. The bound is dw1 of the 32-byte hardware Buffer descriptor, and the hardware exposes the
+ * descriptor-table memory as resource "table 62" (index = table id, offset = bytes into that table), so the size is a UBO load
+ * at slot * MALI_DESC_SLOT_SIZE + 4. Same lowering as PanVK's v9+ path
+ * (third_party/mesa/src/panfrost/vulkan/panvk_vX_shader.c:607-630 valhall_lower_get_ssbo_size, citing pan_nir.h:63-73). A null
+ * descriptor is the all-zero slot (mali_descriptor.c:423-430), so its size reads 0 and every access is discarded. */
+/* robustness2 buffer loads: zero when [offset, offset + access_size) leaves the descriptor's size, otherwise the load. Same
+ * nir_if shape the store/atomic half gets from Mesa (predicate_offset -> wrap_in_if, nir_lower_robust_access.c:95-114), so it is
+ * a construct the backend already turns into predication on the hardware (the store/atomic discard works on the G610). The size
+ * is the get_ssbo_size/get_ubo_size that lower_size_query turns into a read of descriptor dw1; run this first so it does. */
 static bool
-has_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
+lower_load_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
-   return i->intrinsic == nir_intrinsic_get_ssbo_size || i->intrinsic == nir_intrinsic_get_ubo_size;
+   if (i->intrinsic != nir_intrinsic_load_ssbo && i->intrinsic != nir_intrinsic_load_ubo)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[0].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *size = i->intrinsic == nir_intrinsic_load_ubo ? nir_get_ubo_size(b, 32, h) : nir_get_ssbo_size(b, 32, h);
+   const unsigned access = i->def.num_components * i->def.bit_size / 8;
+   nir_def *off = i->src[1].ssa;
+   if (off->bit_size < 32)
+      off = nir_u2u32(b, off);
+   nir_def *max_off = nir_iadd_imm(b, off, access - 1);
+   /* `off + access - 1` is a 32-bit sum and can wrap (offset 0xfffffff4, access 4 -> 3, which would pass the size
+    * test and run the very load this lowering exists to drop): the wrapped end is below the start, so require both */
+   nir_def *valid = nir_iand(b, nir_ult(b, max_off, size), nir_uge(b, max_off, off));
+   nir_def *zero = nir_imm_zero(b, i->def.num_components, i->def.bit_size);
+   nir_push_if(b, valid);
+   nir_intrinsic_instr *cl = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &i->instr));
+   nir_builder_instr_insert(b, &cl->instr);
+   nir_def *res = &cl->def;
+   nir_pop_if(b, NULL);
+   nir_def_rewrite_uses(&i->def, nir_if_phi(b, res, zero));
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
+/* robustness2 buffer stores: Mesa's pass accepts the store when "offset + access_size - 1 < size", and that sum is 32-bit.
+ * With scalarBlockLayout a vec4 may sit at a 4-byte-aligned offset, so offset 0xfffffff4 + 15 wraps to 3, the store passes
+ * the test and writes past the descriptor. Same shape as lower_load_bounds, with the wrap made impossible. */
+static bool
+lower_store_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_store_ssbo)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[1].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *size = nir_get_ssbo_size(b, 32, h);
+   /* only the components the write mask actually writes: a masked store may start at a nonzero component */
+   const unsigned wmask = nir_intrinsic_write_mask(i);
+   const unsigned comp0 = wmask ? (unsigned)__builtin_ctz(wmask) : 0;
+   /* the span is lowest..highest written component: a sparse mask (0x5) leaves a gap that still occupies bytes, so
+    * counting the enabled components would underestimate what the store touches */
+   const unsigned hi = wmask ? 31u - (unsigned)__builtin_clz(wmask) : nir_src_num_components(i->src[0]) - 1;
+   const unsigned esz = nir_src_bit_size(i->src[0]) / 8;
+   const unsigned access = (hi - comp0 + 1) * esz;
+   nir_def *off = i->src[2].ssa;
+   if (off->bit_size < 32)
+      off = nir_u2u32(b, off);
+   nir_def *off0 = off;
+   if (comp0)
+      off = nir_iadd_imm(b, off, comp0 * esz);
+   nir_def *max_off = nir_iadd_imm(b, off, access - 1);
+   /* three wraps to reject: the component offset, the end offset, and an end below the start */
+   nir_def *valid = nir_iand(b, nir_ult(b, max_off, size),
+                             nir_iand(b, nir_uge(b, max_off, off), nir_uge(b, off, off0)));
+   nir_push_if(b, valid);
+   nir_intrinsic_instr *cl = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &i->instr));
+   nir_builder_instr_insert(b, &cl->instr);
+   nir_pop_if(b, NULL);
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
+static bool
+lower_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_get_ssbo_size && i->intrinsic != nir_intrinsic_get_ubo_size)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[0].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *table = nir_ior_imm(b, nir_ushr_imm(b, h, 24), pan_res_handle(62, 0));
+   nir_def *off = nir_iadd_imm(b, nir_imul_imm(b, nir_iand_imm(b, h, BITFIELD_MASK(24)), MALI_DESC_SLOT_SIZE), 4);
+   nir_def *size = nir_load_ubo(b, 1, 32, table, off, .range = ~0u, .align_mul = MALI_DESC_SLOT_SIZE, .align_offset = 4);
+   nir_def_replace(&i->def, size);
+   return true;
 }
 
 bool
@@ -230,15 +319,8 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo, MALI_DESC_BUFFER_ADDR_FORMAT);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pack_buf_idx, nir_metadata_control_flow, NULL);
-   if (layout->robust_access) {   /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
+   if (layout->robust_access)    /* needs scalar buffer handles (packed above) and the rewritten image intrinsics (lower_intr) */
       NIR_PASS(_, nir, nir_lower_robust_access, robust_filter, NULL);
-      /* TODO(robustness2): the Bifrost/Valhall backend has no get_ssbo_size/get_ubo_size (PanVK reads the size from its descriptor
-       * table); until the driver lowers it, refuse instead of letting the backend assert. Keeps robustBufferAccess2 unadvertised. */
-      if (nir_shader_intrinsics_pass(nir, has_size_query, nir_metadata_all, NULL)) {
-         if (err && errsz) snprintf(err, errsz, "robust buffer access: get_ssbo_size/get_ubo_size not supported by the backend yet");
-         return false;
-      }
-   }
    /* nonuniformEXT() indices: the hardware takes one resource handle per warp, so divergent handles become a waterfall loop
     * (same set of types as PanVK; runs after the UBO/SSBO IO lowering). */
    const enum nir_lower_non_uniform_access_type types =
@@ -250,5 +332,15 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
       struct nir_lower_non_uniform_access_options opts = { .types = types };
       NIR_PASS(_, nir, nir_lower_non_uniform_access, &opts);
    }
+   /* after the waterfall: a divergent size query has become per-lane loads by now (PanVK runs it in the same place) */
+   if (layout->robust_access) {
+      /* this pass inserts an if and new blocks, so block indices and dominance are stale afterwards: Mesa passes
+       * nir_metadata_none for its own robustness pass (nir_lower_robust_access.c:335) */
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_bounds, nir_metadata_none, NULL);
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_store_bounds, nir_metadata_none, NULL);
+   }
+   /* get_ssbo_size/get_ubo_size exist in SPIR-V whether or not robust access is on, and Valhall has no such
+    * instruction at all: the size query has to be lowered for every shader, not only the robust ones */
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size_query, nir_metadata_control_flow, NULL);
    return true;
 }

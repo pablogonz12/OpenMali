@@ -82,6 +82,8 @@ def derive_dxvk():
     reqsrc = re.sub(r"^\s*#.*$", "", reqsrc, flags=re.M)  # drop the #define / #undef lines
     req = [("core." + m, m) for m in re.findall(r"\bC\((\w+)\)", reqsrc)]
     req += [(f"{a}.{b}", b) for a, b in re.findall(r"\bV\((\d+),\s*(\w+)\)", reqsrc)]
+    # extension-feature rows written by hand (they are not f11/f12/f13 members): {"robustness2.robustBufferAccess2", fr2.x}
+    req += [(f"robustness2.{m}", m) for m in re.findall(r'\{"robustness2\.(\w+)",', reqsrc)]
     exts = re.findall(r'"(VK_\w+)"', caps[caps.index("dxvk_exts[]"):caps.index("int\nmain")])
     if not req or not exts:
         die("could not parse t_dxvk_caps.c")

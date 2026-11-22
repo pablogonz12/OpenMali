@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 33 /* 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table */
+#define MALI_COMPILE_VERSION 42 /* 42: xfb/xfb_pc are part of the cache key and MALI_XFB_PLAIN (an XFB shader that stores nothing) is a legal compile instead of a cache-hit copy of the STORES binary, so an XFB vertex program's code differs from 41 ; 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -162,7 +162,7 @@ type_size(const struct glsl_type *t, bool bindless)
 /* ---- cache ---- */
 
 struct opts_key {   /* everything besides the SPIR-V that changes the output */
-   uint32_t version, arch, stage, fau_reserved, push_base, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
+   uint32_t version, arch, stage, fau_reserved, push_base, xfb, xfb_pc, vs_layout_size, sizeof_compiled, strip_psiz, clip_distances, sample_shading;
    uint32_t subgroup_size;   /* required subgroup size (0 = arch default): a requested 8/32 must not reuse a 16-wide binary */
    /* The resource-handle layout the descriptor lowering bakes into the code (mali_descriptor_lower.c): a changed constant must miss the cache */
    uint32_t max_sets, dyn_table, dyn_buf_start, dummy_sampler_idx, max_push_bytes;
@@ -179,6 +179,9 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    k.stage = o->stage;
    k.fau_reserved = fau_reserved;
    k.push_base = push_base;
+   k.xfb = o->xfb;   /* STORES vs PLAIN is a different program (see mali_compile.h); it used to be missing here, so the second
+                      * compile of an XFB pipeline was served the first one's binary from the cache */
+   k.xfb_pc = o->xfb_pc;
    k.strip_psiz = o->strip_psiz != 0;
    k.clip_distances = o->clip_distances;
    k.sample_shading = o->sample_shading != 0;
@@ -196,6 +199,13 @@ mkey(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_bas
    blake3_hasher_update(&h, &k, sizeof k);
    if (o->link_vs && o->link_vs->size)
       blake3_hasher_update(&h, o->link_vs->data, o->link_vs->size);
+   /* The VS code now depends on the FS's interpolation qualifiers (noperspective mask): hash the module, not the mask,
+    * so a cache hit needs no parse of the FS at all and a changed FS can never reuse a VS. */
+   if (o->fs_spirv && o->fs_spirv_words) {
+      blake3_hasher_update(&h, o->fs_spirv, o->fs_spirv_words * 4);
+      const char *fe = o->fs_entry ? o->fs_entry : "main";
+      blake3_hasher_update(&h, fe, strlen(fe) + 1);
+   }
    if (o->layout) {
       const struct mali_compile_layout *L = o->layout;
       blake3_hasher_update(&h, &L->nsets, sizeof L->nsets);
@@ -388,6 +398,45 @@ gcm_enabled(nir_shader *nir)
    return true;
 }
 
+/* The fragment shader's noperspective varying bitfield (VARYING_SLOT_VAR0 upward), i.e. the value
+ * nir_intrinsic_load_noperspective_varyings_pan must return in the VS. PanVK inlines it at
+ * panfrost/vulkan/panvk_vX_shader.c:1019 (collected once from the FS, pan_nir_collect_varyings.c:218). Our pipeline
+ * compiles the VS first and only passes it the varying layout (mali_compile.h link_vs), so the VS had no way to know:
+ * the backend still multiplied nothing (pan_nir_lower_noperspective.c:68) while the FS divided by gl_FragCoord.w
+ * (pan_nir_lower_fs_inputs.c:167), which renders c/w instead of the affine value. Collecting here, from the same NIR
+ * pass PanVK uses, makes the two stages agree by construction: one FS module, one bitfield, both stages.
+ * Returns 0 on success and sets *mask; -1 on a parse failure (the FS compile will fail with the same shader). */
+static int
+fs_noperspective_mask(unsigned arch, const struct mali_compile_opts *o, uint32_t *mask, char *err, size_t errsz)
+{
+   const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, MESA_SHADER_FRAGMENT, false);
+   struct vtn_diag diag = {{0}};
+   struct spirv_to_nir_options so = {
+      .environment = NIR_SPIRV_VULKAN,
+      .debug = {.func = vtn_diag_cb, .private_data = &diag},
+      .skip_os_break_in_debug_build = true,
+      /* the same address formats as the FS compile below, or a descriptor-heavy FS would parse differently here */
+      .ubo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_32bit_index_offset,
+      .ssbo_addr_format = o->layout ? MALI_DESC_BUFFER_ADDR_FORMAT : nir_address_format_64bit_global_32bit_offset,
+      .phys_ssbo_addr_format = nir_address_format_64bit_global,
+      .shared_addr_format = nir_address_format_32bit_offset,
+      .min_ubo_alignment = 16, .min_ssbo_alignment = 16,
+      .push_const_addr_format = nir_address_format_32bit_offset,
+   };
+   /* Specialization constants do not select an interpolation qualifier (SPIR-V decorations are outside the module's
+    * spec-constant work), so the default values are enough to collect the mask. */
+   nir_shader *fs = spirv_to_nir(o->fs_spirv, o->fs_spirv_words, NULL, MESA_SHADER_FRAGMENT,
+                                 o->fs_entry ? o->fs_entry : "main", &so, opts);
+   if (!fs) {
+      if (diag.msg[0] && err && errsz) snprintf(err, errsz, "linked fragment shader: %s", diag.msg);
+      else if (err && errsz) snprintf(err, errsz, "linked fragment shader does not parse");
+      return -1;
+   }
+   *mask = pan_nir_collect_noperspective_varyings_fs(fs);
+   ralloc_free(fs);
+   return 0;
+}
+
 static int
 do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, struct mali_compiled *out,
            char *err, size_t errsz)
@@ -472,12 +521,21 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       if (has_clip)
          NIR_PASS(_, nir, nir_split_per_member_structs);   /* gl_PerVertex block: one variable per member (ClipDistance) */
    }
-   if (o->strip_psiz && stage == MESA_SHADER_VERTEX)
+   if (o->strip_psiz && stage == MESA_SHADER_VERTEX) {
+      bool psiz = false;
       nir_foreach_shader_out_variable(var, nir)
          if (var->data.location == VARYING_SLOT_PSIZ) {
             var->data.mode = nir_var_shader_temp;
             var->data.location = 0;
+            psiz = true;
          }
+      /* The stores to it were parsed with deref modes shader_out: without this the deref keeps mode shader_out while the
+       * variable is shader_temp and nir_validate aborts ("instr->modes == instr->var->data.mode", nir_validate.c:343), so
+       * EVERY pipeline whose vertex shader writes gl_PointSize under a non-point topology failed to create. Engines and
+       * D3D->Vulkan layers write it unconditionally; dEQP's descriptor_indexing shaders do (hence 50/50 there). */
+      if (psiz)
+         NIR_PASS(_, nir, nir_fixup_deref_modes);
+   }
    NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);   /* shader_temp: DXVK/dxc Private globals with initializers (lower_global_vars_to_local keeps them, vars_to_ssa asserts) */
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
@@ -519,6 +577,13 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       /* load_local_invocation_index (and the id generated by the zero-init pass) must be lowered after IO lowering */
       NIR_PASS(_, nir, nir_lower_compute_system_values, NULL);
    } else {
+      /* After IO lowering and before pan_postprocess_nir, where PanVK runs it (panvk_vX_shader.c:976 ends
+       * panvk_lower_nir with it, and panvk_vX_shader.c:1596 runs it for compute before valhall_can_merge_workgroups):
+       * it fills info.outputs_written (from the store_output intrinsics), outputs_read, num_inputs/outputs,
+       * writes_memory and the clip/cull sizes. Without it pan_nir_lower_fs_outputs only saw the colour bits and
+       * pan_nir_lower_noperspective_vs bailed on an empty gl_Position bit, which two hand-written scans below used to
+       * patch by looking for those stores themselves. */
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
       if (stage == MESA_SHADER_VERTEX) {
          /* gl_ClipDistance: written as ordinary varyings (VARYING_SLOT_CLIP_DIST0/1); the FS kills where it is < 0 (nir_lower_clip_fs) */
          nir_gather_clip_cull_distance_sizes_from_vars(nir);
@@ -547,7 +612,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          ralloc_free(nir);
          return fail(err, errsz, "transform feedback varyings without a reserved push-constant area");
       }
-      if (stage == MESA_SHADER_VERTEX && o->xfb && nir->info.has_transform_feedback_varyings) {
+      if (stage == MESA_SHADER_VERTEX && o->xfb == MALI_XFB_STORES && nir->info.has_transform_feedback_varyings) {
          /* The lowered stores index their buffer with instance_id * num_vertices + raw_vertex_id
           * (nir_lower_xfb_to_stores.c:44-46) and read the base with load_xfb_address. Panfrost answers those from
           * driver sysvals (pan_cmdstream.c PAN_SYSVAL_NUM_VERTICES / PAN_SYSVAL_XFB); this driver has no sysval for
@@ -617,18 +682,6 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          in.varying_layout = &vl;
          vs_layout = &vl;
       } else {
-         /* nir_shader_gather_info is never run here, so info.outputs_written is empty and pan_nir_lower_fs_outputs only adds the colour
-          * bits. Record gl_FragDepth / stencil-export writes before that pass turns them into zs_emit_pan (which nothing gathers):
-          * the compiler derives fs.writes_depth/writes_stencil (and can_early_z/can_fpk) from these bits. Without them the draw is
-          * emitted with fixed-function depth and early ZS, and the shader's depth/stencil never reaches the tile buffer. */
-         nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
-            nir_foreach_instr(ins, blk) {
-               if (ins->type != nir_instr_type_intrinsic || nir_instr_as_intrinsic(ins)->intrinsic != nir_intrinsic_store_output)
-                  continue;
-               unsigned loc = nir_intrinsic_io_semantics(nir_instr_as_intrinsic(ins)).location;
-               if (loc == FRAG_RESULT_DEPTH || loc == FRAG_RESULT_STENCIL)
-                  nir->info.outputs_written |= BITFIELD64_BIT(loc);
-            }
          NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false, 0);
          if (o->link_vs && o->link_vs->size == sizeof vl) {
             memcpy(&vl, o->link_vs->data, sizeof vl);
@@ -661,6 +714,31 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_opt_dce);
    }
    pan_postprocess_nir(nir, &in, &info);
+   /* pan_postprocess_nir -> bifrost_nir.c:884 has just wrapped every non-special output store in
+    * "mask ? v * w : v" (pan_nir_lower_noperspective.c:68) with the mask loaded from the sysval; inline the FS's
+    * bitfield before lower_sysvals (which has no answer for this sysval) and before the backend emits IDVS words. */
+   uint32_t nv_mask = 0, nv_loads = 0;
+   if (stage == MESA_SHADER_VERTEX) {
+      /* One sysval load per output store the pass wrapped: it is the multiplier this inline selects, so 0 means the
+       * pass still bailed (that is what a missing outputs_written POS bit did) even with the mask right. */
+      nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+         nir_foreach_instr(ins, blk)
+            if (ins->type == nir_instr_type_intrinsic &&
+                nir_instr_as_intrinsic(ins)->intrinsic == nir_intrinsic_load_noperspective_varyings_pan)
+               nv_loads++;
+      if (o->fs_spirv && o->fs_spirv_words &&
+          fs_noperspective_mask(arch, o, &nv_mask, err, errsz)) {
+         ralloc_free(nir);   /* err already names the reason */
+         return -1;
+      }
+      NIR_PASS(_, nir, nir_inline_sysval, nir_intrinsic_load_noperspective_varyings_pan, nv_mask);
+   } else if (stage == MESA_SHADER_FRAGMENT) {
+      nv_mask = info.varyings.noperspective;
+   }
+   if (getenv("MALI_INTERP_DBG"))
+      fprintf(stderr, "mali_interp: stage=%s mask=%08x inlined=%d sel=%u\n",
+              stage == MESA_SHADER_VERTEX ? "VS" : stage == MESA_SHADER_FRAGMENT ? "FS" : "CS", nv_mask,
+              stage == MESA_SHADER_VERTEX && o->fs_spirv ? 1 : 0, nv_loads);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
    in.fau.reserved = fau_reserved;
@@ -673,6 +751,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    memset(out, 0, sizeof *out);
    out->arch = arch;
    out->stage = o->stage;
+   out->noperspective_mask = nv_mask;
    out->bin_size = util_dynarray_num_elements(&bin, uint8_t);
    out->bin = malloc(out->bin_size ? out->bin_size : 1);
    if (!out->bin) {
