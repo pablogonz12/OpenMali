@@ -779,6 +779,20 @@ res_image_view(VkImageView h, struct mali_cmd_target *out)
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
    int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer,
                      v->vk.view_type == VK_IMAGE_VIEW_TYPE_3D, out);
+   /* VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT: an SRGB view of a UNORM image (zink paints the window that way: notes/apilog.md,
+    * vfmt=50 over ifmt=44) or the reverse renders with the VIEW's encoding, and target_of() above resolved the image's.
+    * PanVK takes the colour attachment format from the image view (panvk_vX_cmd_draw.c:159,171; the blend conversion
+    * format at :794 comes from that same VkFormat), and its texture descriptor likewise (panvk_vX_image_view.c:344). */
+   if (!r && !out->is_zs && v->vk.view_format && v->vk.view_format != img->vk.format) {
+      bool ok;
+      const struct mali_rtfmt *vrt = mali_rtfmt_lookup(v->vk.view_format, &ok);
+      if (!ok) {
+         fprintf(stderr, "mali_vk: render target view format %s is not renderable (%d)\n",
+                 vk_Format_to_str(v->vk.view_format), (int)v->vk.view_format);
+         return -EINVAL;
+      }
+      out->rt = vrt;   /* also what the LOAD preload's conversion words (mali_cmd.c) and the blend format word use */
+   }
    if (r)
       fprintf(stderr, "mali_vk: image view rejected rc=%d: format %s (%d) image type %s view type %d aspects 0x%x "
               "view aspect 0x%x usage 0x%x samples %u level %u/%u layer %u/%u\n", r, vk_Format_to_str(img->vk.format),

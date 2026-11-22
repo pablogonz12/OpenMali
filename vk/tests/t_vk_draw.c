@@ -26,9 +26,13 @@
 
 static VkFormat g_depfmt = VK_FORMAT_D32_SFLOAT;
 static VkFormat g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;   /* colour attachment format (4 or 8 bytes per texel) */
+static VkFormat g_vfmt;   /* view (and render pass attachment) format when it differs from g_colfmt: MUTABLE_FORMAT image; 0 = same */
 static unsigned g_colbpp = 4;
+static float g_pcfs[4] = {0.75f, 0.25f, 0.5f, 1.0f};   /* MODE_PUSHFS fragment colour (linear); tests override it */
+static VkFormat g_texfmt, g_texvfmt;   /* MODE_TEX source image / view format (0 = R8G8B8A8_UNORM; differs = MUTABLE_FORMAT) */
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
+static int g_hostread;  /* record the colour-write -> HOST_READ dependency: the test reads the image through its mapping */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
 static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
@@ -263,11 +267,14 @@ scene_create(struct scene *s, int depth)
    }
    CHECK(CreatePipelineLayout(dev, &pli, NULL, &s->layout) == VK_SUCCESS, "pipeline layout");
 
-   /* colour image: linear RGBA8, host visible so the test can read it back */
+   /* colour image: linear RGBA8, host visible so the test can read it back. g_vfmt: the view format differs from the
+    * image format (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT), as zink presents an SRGB view of a UNORM swapchain image. */
+   const VkFormat colvfmt = g_vfmt ? g_vfmt : g_colfmt;
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                            .format = g_colfmt, .extent = {W, H, 1}, .mipLevels = 1,
                            .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                           .flags = colvfmt != g_colfmt ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    CHECK(CreateImage(dev, &ii, NULL, &s->col) == VK_SUCCESS, "colour image");
    VkMemoryRequirements mr;
@@ -285,7 +292,7 @@ scene_create(struct scene *s, int depth)
    s->pitch = (uint32_t)sl.rowPitch;
    s->px += sl.offset;
    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = s->col,
-                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = g_colfmt,
+                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = g_vfmt ? g_vfmt : g_colfmt,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    CHECK(CreateImageView(dev, &vi, NULL, &s->colv) == VK_SUCCESS, "colour view");
 
@@ -329,7 +336,7 @@ scene_create(struct scene *s, int depth)
    }
 
    VkAttachmentDescription ad[2] = {
-      {.format = g_colfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
+      {.format = colvfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL},
@@ -460,9 +467,12 @@ scene_create(struct scene *s, int depth)
    }
    if (mode == MODE_TEX) {
       /* 8x8 RGBA8 linear texture, texel (i,j) = (i*32, j*32, 128, 255) */
+      const VkFormat tfmt = g_texfmt ? g_texfmt : VK_FORMAT_R8G8B8A8_UNORM;
+      const VkFormat tvfmt = g_texvfmt ? g_texvfmt : tfmt;
       VkImageCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                              .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {8, 8, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .format = tfmt, .extent = {8, 8, 1}, .mipLevels = 1, .arrayLayers = 1,
                               .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .flags = tvfmt != tfmt ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
                               .usage = VK_IMAGE_USAGE_SAMPLED_BIT, .initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED};
       CHECK(CreateImage(dev, &ti, NULL, &s->tim) == VK_SUCCESS, "texture image");
       GetImageMemoryRequirements(dev, s->tim, &mr);
@@ -482,6 +492,7 @@ scene_create(struct scene *s, int depth)
       UnmapMemory(dev, s->timem);
       VkImageViewCreateInfo tv = vi;
       tv.image = s->tim;
+      tv.format = tvfmt;
       CHECK(CreateImageView(dev, &tv, NULL, &s->tiv) == VK_SUCCESS, "tex view");
       VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
                                 .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
@@ -762,7 +773,7 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdSetScissor(cb, 0, 1, &sci);
       }
       if (s->mode == MODE_PUSHFS) {
-         float pc[8] = {rot[i][0], rot[i][1], rot[i][2], rot[i][3], 0.75f, 0.25f, 0.5f, 1.0f};
+         float pc[8] = {rot[i][0], rot[i][1], rot[i][2], rot[i][3], g_pcfs[0], g_pcfs[1], g_pcfs[2], g_pcfs[3]};
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
       } else {
          CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, rot[i]);
@@ -793,6 +804,15 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdClearAttachments(cb, g_clearzs && s->depth ? 2 : 1, cas, 1, &cr);
    }
    CmdEndRenderPass(cb);
+   /* the mapped colour image is read on the host after the fence wait: colour-attachment writes are not visible to the
+    * host by themselves and a fence wait is not a memory dependency (g_hostread: the view-format test reads pixels) */
+   if (g_hostread) {
+      VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+      VkDependencyInfo hd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &hb};
+      CmdPipelineBarrier2(cb, &hd);
+   }
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    g_t_rec += now_us() - t_rec0;
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
@@ -2683,6 +2703,82 @@ test_quad(const char *name, int mode)
    return 1;
 }
 
+/* Mutable-format views (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT): the view's format decides the encoding. zink presents the
+ * window through an SRGB view of a UNORM swapchain image (notes/apilog.md: vfmt=50 over ifmt=44), so a linear 0.5 grey
+ * written through an SRGB view must be encoded on write (188, not 128), and the reverse (SRGB image, UNORM view) must
+ * not be (128, not 188). Sampling: the same texel 128 through an SRGB view decodes to linear (55 in a UNORM target),
+ * through a UNORM view it stays 128.
+ * The render pass' attachment format is the VIEW format (Vulkan requires the framebuffer view to match it); the image
+ * keeps its own format plus VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT. */
+static int
+vfmt_run(const char *name, VkFormat imgfmt, VkFormat viewfmt, VkFormat texfmt, VkFormat texvfmt, unsigned want)
+{
+   struct scene s = {.mode = MODE_PUSHFS};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   static const float grey[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+   static const float qclear[4] = {0.25f, 0.25f, 0.25f, 0.25f};   /* the sampled cases: 0x40 in every channel, a value
+                                                                  * they never draw (55, 128), so a missing draw cannot pass */
+   static const float quarter[4] = {0.25f, 0.25f, 0.25f, 1.0f};   /* the draw's colour: differs from the clear, so a
+                                                                   * missing render-target write cannot pass as the clear */
+   g_colfmt = imgfmt;
+   g_vfmt = viewfmt;
+   g_texfmt = texfmt;
+   g_texvfmt = texvfmt;
+   g_clear_f = texfmt ? qclear : grey;
+   memcpy(g_pcfs, quarter, sizeof g_pcfs);
+   g_hostread = 1;
+   if (texfmt) s.mode = MODE_TEX;
+   int ok = scene_create(&s, 0);
+   float one[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, one, f);
+   g_hostread = 0;
+   uint32_t got = 0;
+   /* the pixel checks are hardware-only: the fake backend renders nothing, and the MALI_SOFT CPU rasteriser renders only
+    * pipelines the test registers CPU programs for (view_format registers none), so it is not a verdict either */
+   const int pixels = ok && !g_fake;
+   if (pixels) {
+      /* the allocation is HOST_VISIBLE (not necessarily HOST_COHERENT): invalidate before the host reads the mapping */
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0,
+                                 .size = VK_WHOLE_SIZE};
+      InvalidateMappedMemoryRanges(dev, 1, &mmr);
+      got = px_at(&s, W / 2, H / 2) & 0xff;
+      ok = got + 2 >= want && got <= want + 2;
+   }
+   printf("{\"test\":\"%s\",\"image\":%d,\"view\":%d,\"px\":%u,\"want\":%u,\"ok\":%s%s}\n", name, (int)imgfmt,
+          (int)viewfmt, got, want, ok ? "true" : "false",
+          pixels ? "" : g_fake ? ",\"skipped\":\"fake backend\"" : ",\"skipped\":\"no pixels\"");
+   CHECK(ok, "%s: pixel %u want %u", name, got, want);
+   g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;
+   g_vfmt = VK_FORMAT_UNDEFINED;
+   g_texfmt = g_texvfmt = VK_FORMAT_UNDEFINED;
+   g_clear_f = NULL;
+   memcpy(g_pcfs, (const float[4]){0.75f, 0.25f, 0.5f, 1.0f}, sizeof g_pcfs);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+static int
+test_view_format(void)
+{
+   int ok = 1;
+   /* UNORM image, SRGB view: the 0.25 linear draw (clear stays 0.5 grey) -> sRGB 137 (the bug renders 64) */
+   ok &= vfmt_run("view_srgb_over_unorm", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
+                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 137);
+   /* SRGB image, UNORM view: the 0.25 draw stays 64 (the bug renders 137) */
+   ok &= vfmt_run("view_unorm_over_srgb", VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM,
+                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 64);
+   /* sampled: texel 128 through an SRGB view decodes to linear and lands as 55 in the UNORM target; a UNORM view gives
+    * 128. These clear to 0.25 grey (0x40), so a missing draw reads 64 and fails (see vfmt_run's qclear). */
+   ok &= vfmt_run("view_sample_srgb", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
+                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, 55);
+   ok &= vfmt_run("view_sample_unorm", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
+                  VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, 128);
+   return ok;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2899,6 +2995,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
+   if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
 

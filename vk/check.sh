@@ -226,6 +226,20 @@ for g in v11 v13; do
    golden vk_feat $g --spv-dir "$V/shader"
    GOLD_MSAA=1 golden vk_meta $g
 done
+# Mutable-format views (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT): a render pass renders with the VIEW's format, not the image's.
+# PanVK takes the colour attachment format from the image view (panvk_vX_cmd_draw.c:159,171) and its blend conversion format
+# from that (:794). The fake backend has no shader interpreter, so t_vk_draw's pixel checks are hardware-only; what it does
+# emit is the RT descriptor, whose clear-value words carry the conversion. Frame 1 (R8G8B8A8_UNORM image, SRGB view, 0.5
+# linear grey) must hold the sRGB encoding 0xbc, not 0x80; frame 2 (SRGB image, UNORM view) 0x80, not 0xbc.
+for g in v10 v11 v13; do
+   name=vfmt-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
+   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=$g timeout -k 5 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only view_format 2>&1); rc=$?
+   out2=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); grc=$?
+   if [ $rc -ne 0 ]; then echo "FAIL  view_format $g (test exit $rc)"; echo "$out" | tail -8 | sed 's/^/        /'; fail=1
+   elif [ $grc -ne 0 ]; then echo "FAIL  rules view_format $g"; echo "$out2" | head -20 | sed 's/^/        /'; fail=1
+   elif out=$(python3 -I "$V/tests/vfmt-words.py" "$GDIR/$name.txt" 2>&1); then echo "ok    view_format $g ($out)"
+   else echo "FAIL  view_format $g: $out"; fail=1; fi
+done
 # share_idx (tests/check_share_idx.py): the frame-build fast path skips the per-draw register packing when nothing differs
 # (mali_cs_emit.c same_draw_words). vkCmdBindIndexBuffer sets no dirty bit, so the index-buffer VA is only protected by being part
 # of that key: four draws with identical per-draw words and the index buffer alternating A B A B (an identical pipeline rebind
