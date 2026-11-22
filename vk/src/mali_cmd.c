@@ -14,6 +14,7 @@
 
 #include "mali_cmd.h"
 #include "kbase.h"
+#include "kbase_fb.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
 #include "mali_image.h"
@@ -54,6 +55,37 @@ unsupported(struct mali_cmd_buffer *cmd, const char *what)
    if (getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+/* The tile buffer this GPU actually has, in bytes per tile, and the share of it a colour tile may use.
+ * PanVK's per-model sizes (third_party/mesa/src/panfrost/model/pan_model.c, MODEL_TB_SIZES) are
+ *    G610 (arch 10) 32768 / 16384,  G615 (arch 11) 32768 / 16384,  G925 (arch 13) 65536 / 65536,
+ * and pan_query_optimal_tib_size() (pan_props.h:47-56) halves the colour size for pipelining:
+ * "On V5, as well as V7 and later, we can disable pipelining to gain some extra tib memory", so half is the
+ * budget one tile may take. The FBD then holds tile_size = budget >> log2(bytes_per_pixel) (pan_select_tile_size,
+ * pan_desc.c:618-660). Sizing this by hand as "16 KiB" (and then by a 4 KiB measured cap) shrank every frame to
+ * 32x32 or less: RGBA8 went 64x64 (the driver's own default, mali_queue.c env.tile_log2 = 12) to 32x32, and an
+ * HDR RGBA16F frame to 16x16 -- 4x the tiles and the 18-20 % the CMF bisect measured (M/notes/cmf-next14.md). */
+static void
+tile_budget(unsigned *cbudget, unsigned *zbudget)
+{
+   const unsigned arch = g_hw_set ? g_hw.env.arch : 11;
+   unsigned c, z;
+   switch (arch) {
+   case 10: c = 32768; z = 16384; break;   /* G610 (pan_model.c:95) */
+   case 13: c = 65536; z = 65536; break;   /* G925 (pan_model.c:127) */
+   default: c = 32768; z = 16384; break;   /* G615 (pan_model.c:116) */
+   }
+   if (getenv("MALI_TILE_BUDGET")) {
+      /* a diagnostic override: it may only LOWER the architecture's budget. Raising it admits tiles whose per-target byte
+       * offset and total exceed the 12-bit ">> 4" / ">> 10" fields (a 64x64 tile with four 16 B-per-pixel targets starts
+       * RT1 at 65536, and a 256 KiB allocation, both of which encode as zero). */
+      const int v = atoi(getenv("MALI_TILE_BUDGET"));
+      if (v > 0 && (unsigned)v < c)
+         c = (unsigned)v;
+   }
+   *cbudget = c;
+   *zbudget = z;
 }
 
 /* M15: record a GPU write against this command buffer so the platform layer only CSYNCs BOs that changed
@@ -588,11 +620,44 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+      /* colour attachments 1..3: per-attachment blend state (each gets its own blend descriptor) */
+      for (unsigned i = 1; i < 4 && i < fr->ncolour; i++) {
+         const struct vk_color_blend_attachment_state *ci = &dyn->cb.attachments[i];
+         struct mali_rtblend *r = &x->rtb[i - 1];
+         r->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && ci->blend_enable;
+         r->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? ci->write_mask : 0xf;
+         if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << i)))
+            r->wmask = 0;
+         r->src_c = ci->src_color_blend_factor; r->dst_c = ci->dst_color_blend_factor;
+         r->src_a = ci->src_alpha_blend_factor; r->dst_a = ci->dst_alpha_blend_factor;
+         r->op_c = ci->color_blend_op; r->op_a = ci->alpha_blend_op;
+         /* a target that is never written — zero write mask, or a fragment shader that has no output for it — keeps
+          * its state unjudged: independentBlend allows any equation behind an inactive output */
+         /* fs_colour_mask == 0 means "no colour output" for a bound fragment shader too (a depth-only FS):
+          * only the no-FS case (discard pipelines) leaves every target's state unjudged */
+         const uint32_t cmask = bp->gfx.fs ? bp->gfx.fs->fs_colour_mask : 0;
+         const bool written = !bp->gfx.fs ? true : (cmask & (1u << i)) != 0;
+         if (r->blend_en && r->wmask && written) {
+            struct mali_fixed t = *x;
+            t.blend_en = true; t.wmask = r->wmask; t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
+            t.op_c = r->op_c; t.op_a = r->op_a;
+            uint32_t eq; unsigned cm;
+            if (mali_blend_equation(&t, &eq, &cm))
+               unsupported(cmd, "blend equation (fixed function)");
+         }
+      }
+      /* a blend shader (logic op, dual-source) writes RT0 only in our encoder: refuse it for a multi-target frame
+       * whatever enables it, not only when the dynamic logicOp happens to be on */
+      if (fr->ncolour > 1 && bp->gfx.blend_va)
+         unsupported(cmd, "blend shader with several colour attachments");
       /* vk_graphics_state keeps the previous pass' logic_op_enable when a pipeline without colour blending is bound:
        * a depth-only pass must ignore it, not fail the command buffer on retained state */
       if (dyn->cb.logic_op_enable && cmd->cur.has_colour) {
-         if (bp->gfx.blend_va)
+         if (bp->gfx.blend_va) {
             x->blend_en = true;   /* the pipeline's blend shader does the logic op (mali_pipeline.c); it reads the destination */
+            if (fr->ncolour > 1)
+               unsupported(cmd, "blend shader (logic op / dual source) with several colour attachments");
+         }
          else if (!bp->gfx.logic_inert)
             unsupported(cmd, "dynamic logic op");
       }
@@ -1046,10 +1111,15 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    bool no_col = true;
    for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
       if (ri->pColorAttachments[i].imageView) no_col = false;
-   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
-      unsupported(cmd, "need exactly one colour attachment");
+   if (!no_col && (ri->colorAttachmentCount > 4 || !ri->pColorAttachments[0].imageView)) {
+      unsupported(cmd, "more than 4 colour attachments / null first colour attachment");
       return;
    }
+   for (uint32_t i = 1; !no_col && i < ri->colorAttachmentCount; i++)
+      if (!ri->pColorAttachments[i].imageView) {
+         unsupported(cmd, "null colour attachment between used ones");
+         return;
+      }
    const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
    bool load = false;
    struct mali_preload_src psrc;
@@ -1066,9 +1136,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "colour attachment view");
       return;
    }
-   /* M15: the colour target is GPU-written in this frame */
-   if (!no_col && g_res.image_view_mem)
+   /* M15: every colour target of this frame is GPU-written, not just RT0 */
+   if (!no_col && g_res.image_view_mem) {
       mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
+      for (uint32_t i = 1; i < ri->colorAttachmentCount; i++)
+         if (ri->pColorAttachments[i].imageView)
+            mali_cmd_mark_written(cmd, g_res.image_view_mem(ri->pColorAttachments[i].imageView));
+   }
    if (!no_col)
       load = is_load_op(ca->loadOp);
    if (load) {
@@ -1176,6 +1250,96 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
+   }
+   f->ncolour = ri->colorAttachmentCount;
+   if (f->ncolour > 1) {
+      /* colour attachments 1..3: same size, single sampled, no LOAD / resolve (not wired for RT>0); the tile colour buffer holds the
+       * sum of the targets' bytes per pixel, capped at the largest single-RT total proven on hardware (16 B) */
+      unsigned bpp = t.rt ? t.rt->alloc : 4u;
+      if (f->samples != 1) {
+         unsupported(cmd, "several colour attachments with MSAA");
+         return;
+      }
+      for (uint32_t i = 1; i < f->ncolour; i++) {
+         const VkRenderingAttachmentInfo *cx = &ri->pColorAttachments[i];
+         struct mali_cmd_target tx;
+         memset(&tx, 0, sizeof tx);
+         /* the view must COVER the render area, not match attachment 0's extent: a 128x128 RT0 and a 64x64 RT1 rendering a
+          * 64x64 area are legal (each target keeps its own row stride) */
+         const int32_t ax = f->area[0], ay = f->area[1];
+         const uint32_t aw = f->area[2] > 0 ? (uint32_t)f->area[2] : 1u, ah = f->area[3] > 0 ? (uint32_t)f->area[3] : 1u;
+         if (g_res.image_view(cx->imageView, &tx) || tx.is_zs || tx.samples > 1 || ax < 0 || ay < 0 ||
+             (uint32_t)ax + aw > tx.width || (uint32_t)ay + ah > tx.height) {
+            unsupported(cmd, "colour attachment view (smaller than the render area / samples must match attachment 0)");
+            return;
+         }
+         if (is_load_op(cx->loadOp)) {
+            unsupported(cmd, "colour loadOp LOAD on colour attachment > 0");
+            return;
+         }
+         if (cx->resolveMode != VK_RESOLVE_MODE_NONE) {
+            unsupported(cmd, "resolve of colour attachment > 0");
+            return;
+         }
+         struct mali_att *x = &f->colour_x[i - 1];
+         x->va = tx.va;
+         x->rt = tx.rt;
+         x->row_stride = tx.row_stride;
+         x->clear = cx->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+         x->store = cx->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+         if (x->clear)
+            memcpy(x->clear_color, cx->clearValue.color.float32, sizeof x->clear_color);
+         bpp += tx.rt ? tx.rt->alloc : 4u;
+      }
+      /* Effective tile: as large as this GPU's tile buffer allows, shrunk in square steps (the FBD field is log2
+       * of the tile's PIXEL count, so an odd log2 is not a square). 64x64 is what the driver uses when it does not
+       * shrink at all (mali_queue.c env.tile_log2 = 12), so it is the ceiling. */
+      unsigned cbudget, zbudget;
+      tile_budget(&cbudget, &zbudget);
+      if (f->ncolour > 1 && (g_hw_set ? g_hw.env.arch : 11) == 10) {
+         /* Arch 10 exception, measured on G610 (X4): with several targets our per-RT tile slots must end below
+          * 4 KiB of tile colour (2xRGBA8 at 32x32 = 8 KiB collapsed to the last fragment output; the same frames
+          * are per-RT exact at 16x16). Single-target frames are unaffected -- they run at 64x64 on this part. */
+         if (cbudget > 4096)
+            cbudget = 4096;
+      }
+      /* Arch 11 and later keep the architecture budget (32 KiB on G615, 64 KiB on G925) for multi-target frames too: the
+       * 4 KiB figure above is a G610 measurement, and there is no measurement on an 11/13 part that shows a collapse, so a
+       * 2xRGBA8 frame on arch 11 selects 64x64 (32 KiB) rather than the 16x16 the G610 rule would pick. If a device run
+       * ever shows the same loss there, the cap belongs next to this comment with the number and the part. */
+      unsigned zpp = 0;
+      if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
+         struct mali_cmd_target zt;
+         if (!g_res.image_view(ri->pDepthAttachment->imageView, &zt) && zt.zs_format)
+            zpp = zt.zs_format == KB_ZS_D16 ? 2u : 4u;
+      }
+      const unsigned spp = f->samples > 1 ? f->samples : 1u;
+      unsigned bpp_tot = bpp * spp, zpp_tot = zpp * spp;
+      unsigned tl = 12;
+      while (tl > 4 && ((1u << tl) * bpp_tot) > cbudget)
+         tl -= 2;
+      while (tl > 4 && zpp_tot && ((1u << tl) * zpp_tot) > zbudget)
+         tl -= 2;
+      if (((1u << tl) * bpp_tot) > cbudget || (zpp_tot && ((1u << tl) * zpp_tot) > zbudget)) {
+         unsupported(cmd, "colour/depth attachments exceed the tile buffer even at 4x4");
+         return;
+      }
+      f->tile_log2 = tl;
+      f->hmask = tl >= 10 ? 0xfeu : 0xffu;   /* the tiler's smallest bin is 16x16; 8x8/4x4 keep it (the FBD sets the tile) */
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_cmd: tile %ux%u (%u B/px colour + %u depth, %u samples, budget %u colour/%u depth, %u targets)\n",
+                 1u << (tl / 2), 1u << (tl / 2), bpp_tot, zpp_tot, spp, cbudget, zbudget, f->ncolour);
+      if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
+         const int want = atoi(getenv("MALI_TILE_LOG2"));
+         if (want < 4 || want > 12 || ((1u << want) * bpp_tot) > cbudget) {
+            /* a tile smaller than 16 pixels makes the per-target bytes no multiple of 16, and the FBD packs Internal Buffer
+             * Offset >> 4: two targets (four per tile with 1-byte formats at tile_log2=2) would share an offset */
+            unsupported(cmd, "MALI_TILE_LOG2 does not fit the tile colour budget (4..12, (1<<n)*bpp <= budget)");
+            return;
+         }
+         f->tile_log2 = (unsigned)want;
+         f->hmask = f->tile_log2 >= 10 ? 0xfeu : 0xffu;
+      }
    }
    }
    struct mali_preload_src zsrc;

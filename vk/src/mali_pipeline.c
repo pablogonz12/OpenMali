@@ -95,6 +95,23 @@ set_spec(struct mali_compile_opts *o, struct mali_spec_entry *buf, const VkSpeci
 }
 
 
+/* Logic ops are defined for integer and fixed-point colour formats; a floating-point or sRGB target passes the fragment colour
+ * through unchanged, so a write to it never needs a logic-op path */
+static bool
+is_float_or_srgb(VkFormat f)
+{
+   switch (f) {
+   case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R16G16B16A16_SFLOAT:
+   case VK_FORMAT_R16G16B16_SFLOAT: case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R16_SFLOAT:
+   case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+   case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32: case VK_FORMAT_R64G64B64A64_SFLOAT: case VK_FORMAT_R64G64B64_SFLOAT:
+   case VK_FORMAT_R64G64_SFLOAT: case VK_FORMAT_R64_SFLOAT:
+      return true;
+   default:
+      return false;
+   }
+}
+
 /* Empty fragment shader (void main() {}): a pipeline without a fragment stage that is not rasterizer-discarded still has depth/stencil
  * effects (dEQP pipeline.monolithic.{stencil,depth}.nocolor: no FS, no colour attachment), so its draws run with this shader. */
 static const uint32_t null_fs_spv[] = {
@@ -293,9 +310,27 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       /* logicOp (static state; zink uses it statically as extendedDynamicState2LogicOp is not advertised): colour logic op in the blend shader */
       /* a logic op can only change the output when colour output 0 is written and attachment 0 is writable; otherwise the pipeline is
        * accepted without a blend shader and the draw-time check (gfx.logic_inert) lets it through */
-      const bool logic_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
-                               st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
-                               (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      /* a write-masked RT0 makes the logic op inert only when no OTHER attachment writes: the later attachments keep their
+       * own blend state and would silently skip the logic operation (the blend shader writes RT0 alone) */
+      bool other_writes = false;
+      if (st.rp && st.rp->color_attachment_count > 1) {
+         other_writes = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS);
+         for (unsigned i = 1; !other_writes && i < st.rp->color_attachment_count && i < 4; i++) {
+            /* the shader must write that output too: a depth-only FS with two bound attachments writes no colour, so
+             * the logic op is still inert there and the pipeline must stay accepted */
+            /* and the format must be one a logic op applies to at all: Vulkan leaves float (and sRGB) colour formats out,
+             * the fragment colour passes through, so such a write does not need the blend shader either */
+            const VkFormat fmt = st.rp->color_attachment_formats[i];
+            const bool numeric = fmt != VK_FORMAT_UNDEFINED && !is_float_or_srgb(fmt);
+            other_writes = numeric && (a[i].write_mask & 0xf) != 0 && (p->fs.fs_colour_mask & (1u << i));
+         }
+      }
+      const bool rt0_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
+                             st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+                             (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      /* a later writer keeps the logic op live: the blend shader writes RT0 alone, so it must be requested and then
+       * refused at draw time, never silently dropped */
+      const bool logic_inert = rt0_inert && !other_writes;
       const bool logic = st.cb->logic_op_enable && !logic_inert;
       p->gfx.logic_inert = st.cb->logic_op_enable && logic_inert;
       if (logic)

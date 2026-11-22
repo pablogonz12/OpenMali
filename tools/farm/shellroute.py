@@ -11,12 +11,14 @@ import argparse, json, glob, hashlib, os, re, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import farmlib as L  # noqa: E402
+import json  # noqa: E402
 import gate  # noqa: E402
 
 G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sysroot libs, ld.so, shim, deqp-vk, vulkan/ data
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
-ONLY_DRAW = "many_draws share triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture".split()
+ONLY_DRAW = "many_draws share triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture mrt2 mrt4".split()
 ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
+DRAW_ALIAS = {"rot": ("triangle",), "ring": ("ring3",)}   # selector -> result records its scene prints instead
 ONLY_FEAT = ["storfmt_nf", "ycbcr", "spec", "linerast", "divisor"]               # t_vk_feat cases of the smoke set (Steam-session features); linerast/divisor: pixel tests of the line-rasterization and vertex-divisor patches (skip until advertised); same list as FEAT in vk/tests/valguest.sh
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 SERIAL = os.environ.get("ANDROID_SERIAL", "")
@@ -489,6 +491,11 @@ def daily(a):
 
 
 def smoke(a):
+    # before anything is staged: an explicit selection with no case names must not wipe the run dir, push artifacts or
+    # start a boot record (a push failure would then be reported instead of the input error)
+    if a.only is not None and not any(c for c in a.only.split(",")):
+        print("--only given with no case names; refusing to report an empty run as a pass", flush=True)
+        return 2
     d = f"{V}/{a.run}"
     adb("shell", f"rm -rf {d}; mkdir -p {d}/s", timeout=30)
     out = os.path.join(a.tree, "vk", "out", "a64-bionic")
@@ -511,8 +518,14 @@ def smoke(a):
     except OSError:
         feat_bin = b""
     feat = [c for c in ONLY_FEAT if c.encode() + b"\0" in feat_bin]
+    # the draw cases are static, but a tree built before a case existed has no CASE_ON for it: ask the binary
+    try:
+        draw_bin = open(os.path.join(out, "t_vk_draw"), "rb").read()
+    except OSError:
+        draw_bin = b""
+    draw_cases = [c for c in ONLY_DRAW if c.encode() + b"\0" in draw_bin] or ONLY_DRAW
     for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", ""), ("t_vk_feat", "")):
-        if not a.only:
+        if a.only is None:
             if n == "t_vk_feat":
                 runs.extend((n, f"--only {c}", c) for c in feat)
             else:
@@ -521,8 +534,19 @@ def smoke(a):
                 runs.append((n, "--only many_draws", "many_draws"))   # 3k/10k/50k draws in one frame (arena overflow, was DEVICE_LOST)
             continue
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
-            if c in (ONLY_DRAW if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
+            # each binary owns its own case list: the compute binary has no meta case (a --only buf run must not be
+            # scheduled there, or it would exit 0 with no record and the not-run check would fail a passing run)
+            owned = draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META if n == "t_vk_meta" else []
+            if c in owned:
                 runs.append((n, f"{extra} --only {c}", c))
+    if a.only is not None:   # a requested case this route does not schedule must be reported, not silently skipped
+        ran = {oc for _, _, oc in runs if oc}
+        missing = [c for c in a.only.split(",") if c and c not in ran]
+        if missing:
+            print("unscheduled --only case(s): " + ",".join(re.sub(r"[\r\n]", "?", c) for c in missing), flush=True)
+            # farmd counts failures from JSON records: a plain line would leave the run reported as clean
+            print(json.dumps({"test": "schedule", "missing": missing, "ok": False}), flush=True)
+            ok = False
     for n, extra, oc in runs:
         if gated(a.lock):
             sys.exit(75)
@@ -553,6 +577,14 @@ def smoke(a):
             print("verdict: memory_cap rc=134 in %s: the smoke run hit its memory bound; shard smaller" % n, flush=True)
             sys.exit(83)
         ok = ok and r == 0
+        if oc:   # --env MALI_SKIP_CASES=<case> (and a feature-gated skip) prints no record: the case did not run
+            names = re.findall(r'\{"test":"([a-z0-9_]+)"', log)
+            # a few selectors run a scene that reports its own names (rot -> triangle/triangle_loop, ring -> ring3,
+            # share -> share_push...); the run counts only if some record belongs to the selector
+            alt = DRAW_ALIAS.get(oc, ())
+            if not any(nm == oc or nm.startswith(oc) or any(nm.startswith(a) for a in alt) for nm in names):
+                print(json.dumps({"test": "schedule", "not_run": oc, "ok": False}), flush=True)
+                ok = False
         print('{"test":"%s","rc":%d,"fail_lines":%d,"pass_lines":%d}' % (n, r, len(fl), log.count('"pass":true')), flush=True)
     print('{"test":"summary","ok":%s}' % ("true" if ok else "false"), flush=True)
     print(f"SO_ON_PHONE {d}/libvulkan_mali.so", flush=True)
@@ -566,7 +598,7 @@ def main():
     ap.add_argument("--sha", default="")
     ap.add_argument("--run", default="undim")
     ap.add_argument("--list")
-    ap.add_argument("--only", default="")
+    ap.add_argument("--only", default=None)   # None = the whole suite; "" is an explicit (empty) selection
     ap.add_argument("--out")
     ap.add_argument("--chunk", type=int, default=100)
     ap.add_argument("--wall", type=int, default=250)
@@ -585,11 +617,11 @@ def main():
     if not nodim:
         dim()
     try:
-        {"smoke": smoke, "daily": daily}[a.mode](a)
+        return {"smoke": smoke, "daily": daily}[a.mode](a)
     finally:
         if not nodim and not os.environ.get("SHELLROUTE_KEEP_DIM"):            # the idle sweep keeps the screen dark between chunks; farmd undims when it stops
             undim()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
