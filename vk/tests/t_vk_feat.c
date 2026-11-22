@@ -2273,7 +2273,8 @@ test_robust2(void)
    DestroyShaderModule(dev, m, NULL);
    CHECK(r == VK_SUCCESS, "robust2 compute pipeline (bounds-checked size loads): %d", r);
    int pass = 0, n = 6;
-   static const uint32_t want[6] = {0, 0, 0x44444444u, 0, 0, 0};
+   /* the OOB atomic's *return value* is undefined (only its memory effect must be discarded), so index 1 is a don't-care */
+   static const uint32_t want[6] = {0, 0xFFFFFFFFu, 0x44444444u, 0, 0, 0};
    if (r == VK_SUCCESS) {
       VkCommandBuffer cb = cb_begin(&t);
       CHECK(cb, "cmdbuf");
@@ -2289,7 +2290,7 @@ test_robust2(void)
          InvalidateMappedMemoryRanges(dev, 1, &mr);
          const uint32_t *got = (const uint32_t *)out.p;
          for (int i = 0; i < n; i++) {
-            if (got[i] != want[i]) printf("{\"robust2\":\"r[%d]\",\"got\":%u,\"want\":%u}\n", i, got[i], want[i]);
+            if (want[i] != 0xFFFFFFFFu && got[i] != want[i]) printf("{\"robust2\":\"r[%d]\",\"got\":%u,\"want\":%u}\n", i, got[i], want[i]);
             else pass++;
          }
          /* the store and the atomic past the 64-byte range must not have touched the guard half of the same allocation */
