@@ -217,6 +217,9 @@ hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
    if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
       return hw_alloc_ovf(h, n, al, va, zero);
    void *p = kb_arena_alloc_nz(&h->ar, n, al, va);
+   if (getenv("MALI_PIPE_DBG") && n >= 65536)
+      fprintf(stderr, "DBG alloc n=%zu al=%zu p=%p va=%llx arena=%llx+%zx off=%zx\n", n, al, p,
+              (unsigned long long)(p ? *va : 0), (unsigned long long)h->ar.bo.gpu_va, h->ar.bo.size, h->ar.off);
    if (!p && h->nfl) {
       /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
       hw_retire(h, 0);
