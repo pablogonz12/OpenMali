@@ -166,13 +166,22 @@ def retire_norm(seq):
                 head_flush_seen = True                   # any other mode is compared as-is; a tail flush keeps its full mode
         if op == 3:
             m = (w >> 16) & 0xffff
+            # Every ordering WAIT this PR adds (and the reference's own waits of the same form) is a wait on the slots a
+            # frame signals - LS 0, endpoint 3, fragment 4. Dropped on BOTH streams: the ordering itself is checked by the
+            # decode rules (WAIT mask fits the arch, no fragment-slot wait without FINISH_FRAGMENT) and by
+            # tail_slot4_wait_missing() on the raw stream.
+            if not (m & ~0x19):
+                last_wait = m
+                continue
             last_wait = m   # remembered even when the wait itself is dropped below
             # the two fragment-ordering waits the two streams express differently: the reference's endpoint wait right
             # after RUN_FRAGMENT, and our wait on the deferred FINISH_FRAGMENT slot (4) before the tail flush. A WAIT on
             # those masks anywhere else - the one after FINISH_TILING - is compared like every other instruction.
             if (m == 0x0008 and prev == 7) or (m == 0x0010 and nxt == 36):
                 continue
-            if m == 0xffff and nxt == 51:                 # our retire drain: WAIT all slots, then the retire SYNC_ADD64
+            # our retire drain: a WAIT on the slots this frame signals (LS 0, endpoint 3, fragment 4) right before the
+            # retire SYNC_ADD64 - the reference has no drain there at all
+            if (m & ~0x19) == 0 and nxt == 51:
                 continue
         out.append(w)
         prev = op
@@ -216,7 +225,10 @@ def retire_drain_missing(seq_raw):
         if (w >> 16) & 0xffff:
             return i
         p = seq_raw[i - 1] if i else 0
-        if (p >> 56) & 0xff != 3 or (p >> 16) & 0xffff != 0xffff:
+        # the WAIT before the add must name the slots this frame signals (LS 0, endpoint 3, fragment 4) and nothing else -
+        # 0xffff/0xff on the old form waited slots that are never signalled, which never completes (fence timeout)
+        mask = (p >> 16) & 0xffff
+        if (p >> 56) & 0xff != 3 or not (mask & 0x19) or (mask & ~0x19):
             return i
     return None
 
@@ -241,7 +253,7 @@ for arch in (11, 13):
         raw_a = raw_words(sa)
         miss = retire_drain_missing(raw_a)
         if miss is not None:
-            fails.append('%s: our stream has no WAIT(0xffff) before the retire SYNC_ADD64 at word %d' % (name, miss))
+            fails.append("%s: our stream has no WAIT on the frame's slots (0x19) before the retire SYNC_ADD64 at word %d" % (name, miss))
         miss = tail_slot4_wait_missing(raw_a)
         if miss is not None:
             fails.append('%s: FINISH_FRAGMENT at word %d signals slot 4 with no WAIT(0x0010) before the tail FLUSH_CACHE2' % (name, miss))

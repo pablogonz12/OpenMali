@@ -722,6 +722,9 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
  * (mali_cs_emit.c, kb_cs_wait(0xffff) + kb_cs_sync_add64), and the head of every frame invalidates the other caches (0x002)
  * after waiting them; a frame that follows a host write additionally cleans+invalidates L2 and LSC (0x332, see
  * mali_cmd.c's host_write_pending), which is what a reader of an earlier frame's writes needs.
+ * The rule covers the frame paths that use it: a draw/compute frame is built by mali_cs_emit.c (graphics) or build_compute,
+ * and ends with that drain. An event/timestamp ops frame (mali_ops_build, mali_event.c) posts its own SYNC_ADD64 without a
+ * scoreboard drain and carries no rendering work, so the guarantee above is not a claim about ops frames.
  * Keep that invariant if you touch either side.
  *
  * Limitation, stated so it is not mistaken for a guarantee: this covers the dependencies between frames. A barrier between

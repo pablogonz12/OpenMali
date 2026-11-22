@@ -206,6 +206,7 @@ def rules(side, events, arch):
     pend_frag = None  # a RUN_FRAGMENT whose FINISH_FRAGMENT has not been seen yet (see the rule below)
     pend_store = {}   # STORE_STATE (op 40, async, signal slot 51:48): its result is only valid after WAIT on that slot
     sb_needed = False
+    saw_run_frag = saw_finish_frag = False
     if not events: errs.append('no instructions were checked (empty ring dump?)')
     for e in events:
         op = e['op']; w = e['w']
@@ -226,6 +227,21 @@ def rules(side, events, arch):
             pend_frag = None
         if op == 11 and (w >> 48) & 0xf and not (w >> 16) & 0xffff:
             errs.append('%s: FINISH_FRAGMENT signals slot %u with wait mask 0: the signal slot is dropped, nothing can wait on it' % (where, (w >> 48) & 0xf))
+        # A WAIT on a scoreboard slot that nothing in this kick signals never completes: the retire never increments, the
+        # fence times out and the app gets VK_ERROR_DEVICE_LOST. Two shapes seen in the field: a clear-only frame waiting the
+        # fragment slot (only FINISH_FRAGMENT increments it, and a frame without draws does not emit one), and a mask that
+        # names slots the architecture does not have (Mali-G610/v10 has 8, a 0xffff mask waits slots 8..15 forever).
+        if op == 3:
+            mask = (w >> 16) & 0xffff
+            nsb = 8 if arch == 10 else 16
+            if mask & ~((1 << nsb) - 1):
+                errs.append('%s: WAIT mask 0x%x names slot(s) >= %d, which arch %d does not have: it never completes'
+                            % (where, mask, nsb, arch))
+            if (mask & 0x10) and saw_run_frag and not saw_finish_frag:
+                errs.append('%s: WAIT on the fragment slot 4 but this kick ran a fragment job without FINISH_FRAGMENT '
+                            '(clear-only frame): slot 4 never increments' % where)
+        if op == 7: saw_run_frag = True
+        if op == 11: saw_finish_frag = True
         if op == 36: pend_flush[(w >> 48) & 15] = where
         elif op == 40: pend_store[(w >> 48) & 15] = where
         elif op == 3:

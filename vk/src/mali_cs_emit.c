@@ -926,7 +926,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
        * current area. Wait every slot: frames do not overlap here, so this is the stall the fence already implies.
        * MALI_NOHEADWAIT=1 disables it for A/B. */
       if (!getenv("MALI_NOHEADWAIT"))
-         E(&c, kb_cs_wait(0xffff));
+         E(&c, kb_cs_wait((1u << KB_CS_SLOT_LS) | (1u << env->slot) | (1u << MALI_SLOT_FRAGMENT)));
    }
    M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
    M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
@@ -999,9 +999,10 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
-   /* same rule as the graphics retire: the fence must not signal before every slot of this frame has drained. Drain with
-    * a WAIT, then the ordinary add - a wait mask on the add would include the add's own slot and never complete */
-   E(&c, KB_CS_RETIRE_DRAIN);
+   /* same rule as the graphics retire: the fence must not signal before this frame's asynchronous jobs have drained. Drain
+    * with a separate WAIT (never a wait mask on the add itself: it would include the add's own signal slot and never
+    * complete), and only on slots this frame signals - a WAIT on a slot nothing ever increments does not complete. */
+   E(&c, kb_cs_wait((1u << KB_CS_SLOT_LS) | (1u << env->slot)));
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    if (c.err) {
       free(c.v);
@@ -1162,7 +1163,11 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
    if (!getenv("MALI_NOTF")) {
       M32(&c, R->flush_id, 0);
-      E(&c, kb_cs_wait(1u << MALI_SLOT_FRAGMENT));   /* the fragment job and its tile writeback */
+      /* Wait the job that actually ran: slot 4 is only incremented by FINISH_FRAGMENT, which is emitted for a frame with
+       * geometry. A clear-only frame (no draws) has no FINISH_FRAGMENT - waiting slot 4 there never completes, which is the
+       * device loss a real compositor workload sees (its clear-only and WSI blit submits). Such a frame's fragment job is
+       * tracked by the endpoint slot RUN_FRAGMENT increments. */
+      E(&c, kb_cs_wait(geometry ? (1u << MALI_SLOT_FRAGMENT) : (1u << env->slot)));
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
@@ -1174,7 +1179,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
     * reused buffer read after the fence could see stale data. The drain is a separate WAIT on every scoreboard slot and
     * then the add, the PanVK finish_cs order (panvk_vX_cmd_buffer.c:109 cs_wait_slots(b, all_mask) before SYNC_ADD64);
     * putting 0xffff in the add's own wait mask would make it wait on its own signal slot and never complete. */
-   E(&c, KB_CS_RETIRE_DRAIN);
+   E(&c, kb_cs_wait((1u << KB_CS_SLOT_LS) | (1u << env->slot) | (geometry ? (1u << MALI_SLOT_FRAGMENT) : 0u)));
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    rc = c.err;
 out:
