@@ -237,6 +237,15 @@ if [ $gs_rc -ne 0 ]; then echo "FAIL  gs refusal diagnostic exited $gs_rc (want 
 elif [ $gs_n -eq 6 ]; then echo "ok    gs refusals name their reason (6/6)"
 else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "geometry shader refused" | sed 's/^/        /'; fail=1; fi
 
+# GS lane 2, step (i) (notes/gs-design.md §5(i)): Mesa's src/poly geometry lowering, linked into the driver as an
+# unmodified library (vk/poly.sh -> out/<target>/poly/libpoly_nir.a) and called through mali_poly.c, i.e. the same object
+# that is in libvulkan_mali.so. Host-only and white-box: four GS modules through poly_nir_lower_gs(), each checked for the
+# programs it must produce (copy = our vertex program, pre_gs = compute), its index stride and its count words; plus a
+# vertex module, which must be refused with the stage named.
+for g in v11 v13; do
+   run "gs_lower $g" 0 "$OUT/t_gs_lower" --spv-dir "$V/shader" --arch "${g#v}"
+done
+
 # Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
 # colour attachment read back by vkCmdCopyImageToBuffer. The fake backend executes nothing, so this is the record-side gate
 # that keeps the client honest; the RADV reference run and the phone comparison are documented commands, not check.sh cases.

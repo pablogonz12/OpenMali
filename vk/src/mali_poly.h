@@ -14,10 +14,13 @@
 extern "C" {
 #endif
 
-/* Mirror of the two Mesa enums this API reports, named so a caller needs no Mesa header. mali_poly.c static-asserts
- * every value (shader_enums.h:1334 enum mesa_prim, geometry.h:22 enum poly_gs_shape); `mode` is always a *decomposed*
- * primitive, because poly_nir_lower_gs() decomposes the output mode itself (poly_nir_lower_gs.c:1149). */
-enum mali_poly_prim { MALI_POLY_PRIM_POINTS = 0, MALI_POLY_PRIM_LINES = 1, MALI_POLY_PRIM_TRIANGLES = 4 };
+/* Mirror of the two Mesa enums this API reports, named so a caller needs no Mesa header. mali_poly.c static-asserts every
+ * value (shader_enums.h:1334 enum mesa_prim, geometry.h:22 enum poly_gs_shape). `mode` is the GS's declared output
+ * primitive: a strip stays a strip when the index buffer is dynamic (POLY_GS_SHAPE_DYNAMIC_INDEXED, the index buffer
+ * supplies the primitives), and only becomes a decomposed list when poly could bake a static topology
+ * (poly_nir_lower_gs.c:1149 runs u_decomposed_prim() inside optimize_static_topology). */
+enum mali_poly_prim { MALI_POLY_PRIM_POINTS = 0, MALI_POLY_PRIM_LINES = 1, MALI_POLY_PRIM_TRIANGLES = 4,
+                      MALI_POLY_PRIM_TRIANGLE_STRIP = 5 };
 enum mali_poly_shape {
    MALI_POLY_SHAPE_DYNAMIC_INDEXED = 0,    /* index buffer the count shader writes, hardware instancing unused */
    MALI_POLY_SHAPE_STATIC_INDEXED = 1,     /* static index buffer, instance count = input primitives */
@@ -26,7 +29,7 @@ enum mali_poly_shape {
 };
 
 /* What poly_nir_lower_gs() produced, in plain integers (Mesa's enum values, not our own: `mode` is enum mesa_prim —
- * a decomposed primitive, i.e. strips and fans come back as triangles/lines — and `shape` is enum poly_gs_shape). */
+ * an enum mesa_prim value, not our own — and `shape` is enum poly_gs_shape). */
 struct mali_poly_gs {
    uint32_t ok;              /* 1 = the lowering returned true */
    uint32_t mode;            /* enum mesa_prim: output primitive of the rasterization draw */

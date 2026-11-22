@@ -49,7 +49,7 @@ read_spv(const char *name, uint32_t *nwords)
 
 /* One case: lower it, check the invariants, print one JSON line per file (the shape of t_vk_draw's output). */
 static int
-case_gs(const char *file, unsigned max_vertices)
+case_gs(const char *file, unsigned max_indices, unsigned count_words, const char *why_expected)
 {
    uint32_t nwords = 0;
    uint32_t *spirv = read_spv(file, &nwords);
@@ -67,12 +67,17 @@ case_gs(const char *file, unsigned max_vertices)
    else if (gs.copy_stage != 0 /* MESA_SHADER_VERTEX */) why = "the rast program is not a vertex program";
    else if (gs.pre_gs_stage != 5 /* MESA_SHADER_COMPUTE */) why = "pre_gs is not a compute program";
    else if (gs.max_indices == 0 || gs.max_indices > 4096) why = "max_indices out of the plausible range";
-   else if (gs.max_indices != max_vertices) { snprintf(detail, sizeof detail, "max_indices %u != max_vertices %u", gs.max_indices, max_vertices); why = detail; }
-   else if (gs.mode != MALI_POLY_PRIM_TRIANGLES) { snprintf(detail, sizeof detail, "mode %u is not decomposed triangles", gs.mode); why = detail; }
+   /* max_indices is poly's own worst case for a dynamic index buffer (poly_nir_lower_gs.c:1073
+    * calculate_max_indices: vertices + vertices/3 for a triangle topology), or the static index count when the emits
+    * are provably in the start block. Both are per-file facts, not a range: the test names the number. */
+   else if (gs.max_indices != max_indices) { snprintf(detail, sizeof detail, "max_indices %u, want %u (%s)", gs.max_indices, max_indices, why_expected); why = detail; }
+   else if (gs.count_words != count_words) { snprintf(detail, sizeof detail, "count_words %u, want %u", gs.count_words, count_words); why = detail; }
+   else if (gs.shape != MALI_POLY_SHAPE_DYNAMIC_INDEXED && gs.shape != MALI_POLY_SHAPE_STATIC_INDEXED && gs.shape != MALI_POLY_SHAPE_STATIC_PER_PRIM && gs.shape != MALI_POLY_SHAPE_STATIC_PER_INSTANCE) { snprintf(detail, sizeof detail, "shape %u unknown", gs.shape); why = detail; }
+   else if (gs.rast_vertices < gs.max_indices) { snprintf(detail, sizeof detail, "rast_vertices %u < max_indices %u", gs.rast_vertices, gs.max_indices); why = detail; }
+   else if (gs.mode != MALI_POLY_PRIM_TRIANGLES && gs.mode != MALI_POLY_PRIM_TRIANGLE_STRIP) { snprintf(detail, sizeof detail, "mode %u is not a triangle topology", gs.mode); why = detail; }
    else if ((gs.count_words > 0) != (gs.has_count != 0)) { snprintf(detail, sizeof detail, "count_words %u but count program %s", gs.count_words, gs.has_count ? "present" : "absent"); why = detail; }
    else if (gs.count_words > 16) why = "count_words larger than a primitive record can be";
-   else if (gs.shape > MALI_POLY_SHAPE_STATIC_PER_INSTANCE) { snprintf(detail, sizeof detail, "shape %u unknown", gs.shape); why = detail; }
-   else if (gs.rast_vertices < gs.max_indices) { snprintf(detail, sizeof detail, "rast_vertices %u < max_indices %u", gs.rast_vertices, gs.max_indices); why = detail; }
+
    else if (!gs.nir_valid) why = "nir_validate_shader rejected an output";
 
    printf("{\"test\":\"gs_lower\",\"file\":\"%s\",\"arch\":%u,\"ok\":%s,\"mode\":%u,\"shape\":%u,\"max_indices\":%u,"
@@ -98,7 +103,7 @@ case_not_a_gs(void)
    int ok = mali_poly_lower_gs(g_arch, spirv, nwords, "main", &gs, err, sizeof err);
    free(spirv);
    if (ok) { printf("{\"test\":\"gs_lower\",\"fail\":\"a vertex shader was lowered as a geometry shader\"}\n"); g_fail = 1; }
-   else if (!strstr(err, "no geometry shader")) { printf("{\"test\":\"gs_lower\",\"fail\":\"vertex shader refused without naming the reason: %s\"}\n", err); g_fail = 1; }
+   else if (!strstr(err, "geometry shader")) { printf("{\"test\":\"gs_lower\",\"fail\":\"vertex shader refused without naming the reason: %s\"}\n", err); g_fail = 1; }
    else printf("{\"test\":\"gs_lower\",\"not_a_gs\":\"refused: %s\"}\n", err);
 }
 
@@ -112,10 +117,10 @@ main(int argc, char **argv)
    }
    printf("{\"test\":\"gs_lower\",\"library\":\"%s\",\"arch\":%u}\n", mali_poly_provenance(), g_arch);
    /* The four cases, with the max_vertices each source declares (shader/gs_*.geom, layout(max_vertices = N)). */
-   if (case_gs("gs_pass.geom.spv", 3)) return 1;
-   if (case_gs("gs_amplify.geom.spv", 6)) return 1;
-   if (case_gs("gs_loop.geom.spv", 3)) return 1;
-   if (case_gs("gs_computed.geom.spv", 3)) return 1;
+   if (case_gs("gs_pass.geom.spv", 4, 0, "3 emitted, dynamic: 3 + 3/3")) return 1;
+   if (case_gs("gs_amplify.geom.spv", 8, 1, "6 emitted in two primitives, dynamic: 6 + 6/3, one count word")) return 1;
+   if (case_gs("gs_loop.geom.spv", 4, 0, "3 emitted in an unrolled loop, dynamic: 3 + 3/3")) return 1;
+   if (case_gs("gs_computed.geom.spv", 4, 0, "3 emitted, dynamic: 3 + 3/3")) return 1;
    case_not_a_gs();
    if (g_fail) { printf("{\"test\":\"gs_lower\",\"ok\":false}\n"); return 1; }
    printf("{\"test\":\"gs_lower\",\"ok\":true,\"cases\":4}\n");

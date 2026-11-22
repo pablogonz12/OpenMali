@@ -36,6 +36,15 @@ _Static_assert((int)MALI_POLY_SHAPE_STATIC_PER_INSTANCE == (int)POLY_GS_SHAPE_ST
 
 /* nir_validate's message sink and spirv_to_nir's: one buffer, because a bad module must fail with a name, not abort. */
 struct poly_diag { char msg[256]; };
+
+/* spirv_to_nir's diagnostic is multi-line ("SPIR-V parsing FAILED:\n In file ...\n line"); the callers put the message in
+ * a JSON line, so keep the first line and drop the rest. */
+static void
+one_line(char *s)
+{
+   for (char *p = s; *p; p++)
+      if (*p == '\n' || *p == '\r' || *p == '"') *p = (*p == '"') ? '\'' : ' ';
+}
 static void
 poly_diag_cb(void *priv, enum nir_spirv_debug_level level, size_t offset, const char *message)
 {
@@ -85,9 +94,11 @@ mali_poly_lower_gs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const 
    glsl_type_singleton_init_or_ref();
    /* The same options object mali_compile() uses for a stage's NIR (pan_compiler.c:116 ignores the stage except for the
     * workgroup-merge flag), and the same descriptor-free address formats (mali_compile.c:463-475): a GS module without a
-    * pipeline layout is parsed exactly like a CS/VS one. */
-   const nir_shader_compiler_options *opts =
-      pan_get_nir_shader_compiler_options(arch == 10 ? 10 : arch, MESA_SHADER_GEOMETRY, false);
+    * pipeline layout is parsed exactly like a CS/VS one. The one thing that must go is pan's `lower_mediump_io` hook
+    * (bifrost_compile.h:167 -> pan_compiler.c:476), which supports only VS/FS and asserts on anything else; poly's
+    * precondition (below) runs the generic hooks and keeps IO in the form poly lowers itself. */
+   nir_shader_compiler_options opts = *pan_get_nir_shader_compiler_options(arch == 10 ? 10 : arch, MESA_SHADER_GEOMETRY, false);
+   opts.lower_mediump_io = NULL;
    struct poly_diag diag = {{0}};
    struct spirv_to_nir_options so = {
       .environment = NIR_SPIRV_VULKAN,
@@ -100,9 +111,9 @@ mali_poly_lower_gs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const 
       .min_ubo_alignment = 16, .min_ssbo_alignment = 16,
       .push_const_addr_format = nir_address_format_32bit_offset,
    };
-   nir_shader *gs = spirv_to_nir(spirv, nwords, NULL, MESA_SHADER_GEOMETRY, entry ? entry : "main", &so, opts);
+   nir_shader *gs = spirv_to_nir(spirv, nwords, NULL, MESA_SHADER_GEOMETRY, entry ? entry : "main", &so, &opts);
    if (!gs) {
-      if (err && errsz) snprintf(err, errsz, "spirv_to_nir: %s", diag.msg[0] ? diag.msg : "does not parse");
+      if (err && errsz) { snprintf(err, errsz, "spirv_to_nir: %s", diag.msg[0] ? diag.msg : "does not parse"); one_line(err); }
       glsl_type_singleton_decref();
       return 0;
    }
@@ -113,17 +124,25 @@ mali_poly_lower_gs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const 
       return 0;
    }
 
-   const char *pp = getenv("MALI_POLY_PREPASS");
-   if (pp && strstr(pp, "iopass")) nir_lower_io_passes(gs, false);
-   if (pp && strstr(pp, "dce")) NIR_PASS(_, gs, nir_opt_dce);
-   if (pp && strstr(pp, "returns")) NIR_PASS(_, gs, nir_lower_returns);
-   if (pp && strstr(pp, "optif")) NIR_PASS(_, gs, nir_opt_if, nir_opt_if_optimize_phi_true_false | nir_opt_if_avoid_64bit_phis);
-   if (getenv("MALI_POLY_DBG")) {
-      nir_function_impl *impl = nir_shader_get_entrypoint(gs);
-      nir_instr *last = nir_block_last_instr(nir_impl_last_block(impl));
-      fprintf(stderr, "poly dbg: pre=%s tailtype=%d lastcf=%d ninstr=%u\n", pp ? pp : "-", last ? (int)last->type : -1,
-              (int)nir_impl_last_block(impl)->cf_node.type, (unsigned)exec_list_length(&impl->body));
-   }
+   /* poly's precondition: the shader as AgX hands it over, i.e. after the standard preprocessing that every NIR consumer
+    * runs before a driver's own passes (hk_shader.c:1314-1321 only calls hk_lower_nir when !nir->info.io_lowered, and
+    * poly_nir_lower_gs is reached from hk_compile_nir:1373 on *that* NIR). The steps are the ones our own compile path
+    * already runs for VS/FS (mali_compile.c:536-546), in the same order, then the generic IO lowering
+    * (nir_lower_io_passes, nir_lower_io.c:1419) that sets info.io_lowered. Without at least
+    * nir_lower_io_vars_to_temporaries the GS body still ends in a bare nir_jump and poly's first insert at
+    * nir_after_impl (poly_nir_lower_gs.c:121, nir.c:1284) is illegal NIR. */
+   NIR_PASS(_, gs, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);
+   NIR_PASS(_, gs, nir_lower_returns);
+   NIR_PASS(_, gs, nir_inline_functions);
+   nir_remove_non_entrypoints(gs);
+   NIR_PASS(_, gs, nir_opt_copy_prop);
+   NIR_PASS(_, gs, nir_lower_global_vars_to_local);
+   NIR_PASS(_, gs, nir_lower_vars_to_ssa);
+   NIR_PASS(_, gs, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(gs), nir_var_shader_out);
+   NIR_PASS(_, gs, nir_split_var_copies);
+   NIR_PASS(_, gs, nir_lower_system_values);
+   nir_lower_io_passes(gs, false);
+
    nir_shader *count = NULL, *copy = NULL, *pre_gs = NULL;
    struct poly_gs_info info;
    bool ok = poly_nir_lower_gs(gs, &count, &copy, &pre_gs, &info);
