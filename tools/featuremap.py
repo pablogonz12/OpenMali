@@ -251,7 +251,10 @@ class Caps:
                     self.limits[k] = int(v.split()[0])
                 except ValueError:
                     pass
-            elif "Features" in section and v in ("true", "false"):
+            elif v in ("true", "false"):
+                # Boolean members of any section, not only *Features: requirements read
+                # transformFeedbackQueries from a VkPhysicalDevice...PropertiesEXT section, and a
+                # Boolean dropped here is reported MISSING however the device answers.
                 self.features.setdefault(k, (v == "true", section))
         self.version = _ver(self.props.get("apiVersion", ""))
 
@@ -459,6 +462,11 @@ def evaluate(row, caps_by_phone, bridge, ann, reg, tests, args):
     if fam == "constant":
         row.ours = sp.get("value")
         row.ours_txt = "%s (consumer hardcodes it)" % (str(row.ours).lower())
+        # a hardcoded true is met by construction: without a status the row and everything derived
+        # from it printed "?" and a dependent row counted a non-blocker as a blocker.
+        optional = not sp.get("required", True)
+        row.status = ("OK(opt)" if optional else "OK") if row.ours else \
+            ("MISS(opt)" if optional else "MISSING")
     elif fam == "gl_version":
         got, src = gl_version(args.phone)
         row.ours = got
@@ -848,7 +856,7 @@ def _dump_time(caps):
 
 
 def render(res, args):
-    lock, rows = res["lock"], res["rows"]
+    lock, rows = res["lock"], [r for r in res["rows"] if not r.dropped]
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     try:
         commit = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"],

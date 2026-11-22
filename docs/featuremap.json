@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-22T01:51:24+00:00",
+ "generated": "2026-11-22T02:03:53+00:00",
  "generator": "tools/featuremap.py v1",
- "commit": "3035aa5a76cdb4e1ccaeb1b5350f7bf704f1d20d",
+ "commit": "1a525fa179e1378f1f74be07fc7b1a29071912d3",
  "sources": [
   {
    "id": "vk.xml",
@@ -5333,9 +5333,9 @@
     "verified": true,
     "drift": false
    },
-   "ours": null,
-   "ours_text": "x8=none",
-   "bridge": null,
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
    "hardware": "emulated",
    "cost_days": "3-5",
    "unlocks": "vkd3d-proton device creation",
@@ -5801,7 +5801,7 @@
     "verified": true,
     "drift": false
    },
-   "ours": "?",
+   "ours": "OK",
    "ours_text": "via zink-ARB_draw_indirect",
    "bridge": null,
    "hardware": "unknown",
@@ -5811,7 +5811,7 @@
    "tests": [
     "t_vk_feat"
    ],
-   "status": "?",
+   "status": "OK",
    "games_unlocked": 0,
    "caveats": []
   },
@@ -6362,7 +6362,7 @@
    "tests": [
     "t_vk_feat"
    ],
-   "status": "?",
+   "status": "OK",
    "games_unlocked": 0,
    "caveats": []
   },
