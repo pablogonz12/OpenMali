@@ -32,7 +32,10 @@ mali_image_layout_init(unsigned arch, const struct mali_image_desc *d, struct ma
    struct mali_fmt f;
    if (!mali_format_get(arch, d->format, &f)) return -EINVAL;
    if (!d->extent.width || !d->extent.height || !d->extent.depth || !d->levels || !d->layers) return -EINVAL;
-   if (d->samples != 1 && d->samples != 4) return -EINVAL;
+   /* A sample count the device does not advertise must not be accepted: the limits, VkImageFormatProperties and pipeline
+    * creation all read mali_experimental_msaa(), so an image created at 4x while 1x is advertised lets an app (zink/CEF)
+    * build a 4x attachment and hit a refusal later, in the middle of a render pass (notes/ms-stencil-load.md). */
+   if (d->samples != 1 && (d->samples != 4 || !mali_experimental_msaa())) return -EINVAL;
    if (f.ycbcr && (d->type != VK_IMAGE_TYPE_2D || d->samples != 1 || d->levels != 1 || d->layers != 1 || (d->extent.width | d->extent.height) & 1))
       return -EINVAL;   /* NV12: 2D, one level and layer, even extent (4:2:0) */
    if (d->type == VK_IMAGE_TYPE_1D && (d->extent.height != 1 || d->extent.depth != 1)) return -EINVAL;
