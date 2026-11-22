@@ -75,7 +75,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
 	put(f, 11, 19, 4, 0);                                    /* Render Target Count - 1 */
 	put(f, 11, 24, 8, p->rt_internal && p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
-	put(f, 12, 29, 1, 1);                                    /* Empty Tile Write Enable (PanVK sets bits 31:28 of word 12) */
+	/* Empty Tile Write Enable (v13.xml:2321, 12:29) and Empty Tile Read Enable (12:28) stay OFF: they are part of the CRC /
+	 * Empty Tile Elimination state (CRC Read/Write Enable 12:30-31 are off here and we have no CRC or flush-id state), and
+	 * PanVK only enables them with it (panfrost/lib/pan_desc.c:1296-1310 pan_crc_has_empty_tile_elimination). Enabled
+	 * without that state, the tiler writes back tiles the frame never drew in, from an unloaded tile buffer. */
+	put(f, 12, 29, 1, 0);                                    /* Empty Tile Write Enable */
+	put(f, 12, 28, 1, 0);                                    /* Empty Tile Read Enable */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
 	put(f, 12, 16, 2, !zs ? 1 : p->zs_format == KB_ZS_D32F ? 2 : p->zs_format == KB_ZS_D24X8 ? 1 : 0);
 	if (ext) put(f, 12, 21, 1, 1);                           /* Has ZS CRC Extension */
