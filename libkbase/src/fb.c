@@ -140,7 +140,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		uint32_t c = kb_fb_clear_word(p->clear_r, p->clear_g, p->clear_b, p->clear_a);
 		for (unsigned i = 0; i < 4; i++)
 			/* an extra target has its own clear words; only RT0 without them falls back to the byte clear value */
-			put(q, 12 + i, 0, 32, (i == 0 && !in) ? c : cl[i]);   /* Clear colour */
+			put(q, 12 + i, 0, 32, (n == 0 && !in) ? c : cl[i]);   /* Clear colour: RT0 without an internal format replicates the byte clear into all four words */
 	}
 	return 0;
 }
