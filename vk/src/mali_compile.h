@@ -40,7 +40,10 @@ struct mali_compile_opts {
    size_t spirv_words;
    const char *entry;             /* NULL = "main" */
    unsigned xfb_pc;               /* VS only: push-constant offset of the 4 XFB buffer addresses (app push size) */
-   unsigned xfb;                  /* VS only: the pipeline layout reserves 32 B at xfb_pc for them (0 = no XFB) */
+   unsigned xfb;                  /* VS only: 0 = no XFB; MALI_XFB_STORES = lower the declared XFB outputs to global stores at the
+                                   * 4 buffer addresses in the reserved push-constant area; MALI_XFB_PLAIN = the same XFB-declaring
+                                   * shader compiled so that it stores nothing (the variant a draw outside a capture range runs,
+                                   * mali_pipeline.c) */
    unsigned fau_reserved;         /* 32-bit FAU words owned by the driver; 0 = default (VS 24, FS 8, CS 8) */
    unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */
@@ -123,6 +126,11 @@ int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *ou
  * VK_ERROR_FEATURE_NOT_PRESENT rather than VK_ERROR_INVALID_SHADER_NV). */
 #define MALI_COMPILE_UNSUPPORTED (-2)
 
+/* mali_compile_opts.xfb modes. Two different binaries come out of ONE XFB-declaring vertex shader: STORES (capture range
+ * open: store the recorded outputs at the 4 buffer addresses) and PLAIN (no range open: store nothing). Both are legal
+ * inputs, so neither may be refused, and the cache key must separate them. */
+#define MALI_XFB_STORES 1u
+#define MALI_XFB_PLAIN  2u
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the
