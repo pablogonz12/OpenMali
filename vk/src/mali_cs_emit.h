@@ -163,6 +163,8 @@ struct mali_draw {
    const uint8_t *ind;                    /* indirect draw: CPU view of the VkDraw*IndirectCommand array (expanded at submit, mali_cmd.c) */
    const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* indirect draw read on the GPU: VA of one VkDraw*IndirectCommand; count/instance_count/first_*
+                                           * are then written by the CS LOAD_MULTIPLE, not by the CPU (ind stays NULL) */
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
@@ -191,6 +193,7 @@ struct mali_rec {
    const uint8_t *ind;
    const uint32_t *ind_count;
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* != 0: this draw's arguments live at this VA, loaded by the CS at execution time */
    unsigned occ_mode;
 };
 
@@ -258,9 +261,11 @@ struct mali_frame {
    unsigned ndraws, cap;
    struct mali_pool *pool;                /* state blocks of the recorded draws (freed with the frame) */
    /* Submit-time facts accumulated as the records come in (mali_frame_note_rec), so mali_cmd_submit does not have to walk
-    * every record of the frame again: any_ind = some record is an indirect draw; poly_cpu = some record's effective
-    * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
-   bool any_ind, poly_cpu;
+    * every record of the frame again: any_ind = some record is an indirect draw; any_ind_cpu = some record's arguments are
+    * read through the CPU mapping at submit (the software rasteriser, DrawIndirectCount, polygonMode LINE/POINT, transform
+    * feedback: those need a drain, a GPU-read draw does not); poly_cpu = some record's effective pipeline is polygonMode
+    * LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
+   bool any_ind, any_ind_cpu, poly_cpu;
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
 };
 

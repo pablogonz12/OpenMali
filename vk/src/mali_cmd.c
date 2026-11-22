@@ -673,8 +673,10 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    mali_frame_note_rec(&cmd->cur, sl);
 }
 
-/* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
- * earlier write to the buffer has retired) and expanded into plain draws (expand_indirect). */
+/* Indirect draws: the command array is either read through the CPU mapping when the frame is submitted (frames are serialised,
+ * so every earlier write to the buffer has retired) and expanded into plain draws (expand_indirect), or - the default - handed
+ * to the command stream as one record per command and loaded into the IDVS registers at execution time (emit_draw_regs), which
+ * is the only way a descriptor a compute job wrote can drive the draw. */
 static const uint8_t *
 buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
 {
@@ -700,13 +702,25 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       stride = sz;
    if (!n)
       return;
-   const uint8_t *p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   /* The arguments are read by the CS at execution time (`va`) unless something needs them on the CPU: a count buffer (no
+    * CS control flow yet), the software rasteriser, transform feedback's single-instance check, and polygonMode
+    * LINE/POINT's index assembly. Those keep reading the CPU mapping, which is provably what they did before; every other
+    * indirect draw is the one that must NOT read it, because the mapping still holds what the host wrote even after a
+    * compute job rewrote the descriptor. The shaderDrawParameters sysvals are not in this list: the FAU words they read are
+    * patched from the loaded registers by the command stream (mali_cs_emit.c emit_indirect_args). */
+   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || getenv("MALI_IND_CPU");   /* MALI_IND_CPU=1: control, the pre-rung-2 behaviour (read the mapping at submit) */
+   const uint8_t *p = NULL;
    const uint32_t *cp = NULL;
+   uint64_t va = 0;
    if (cb && !(cp = (const uint32_t *)buffer_cpu(cb, coff, 4))) {
       unsupported(cmd, "indirect count buffer");
       return;
    }
-   if (!p) {
+   if (cpu_args)
+      p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   else
+      va = vk_buffer_address(vk_buffer_from_handle(b), off);
+   if (!p && !va) {
       unsupported(cmd, "indirect buffer (no CPU mapping)");
       return;
    }
@@ -722,6 +736,7 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       d.index_size = cmd->ib_size;
    }
    d.ind = p;
+   d.ind_va = va;
    d.ind_count = cp;
    d.ind_n = n;
    d.ind_stride = stride;
@@ -764,12 +779,12 @@ expand_indirect(struct mali_frame *f)
    for (unsigned i = 0; i < f->ndraws; i++) {
       const struct mali_rec *d = &f->draws[i];
       int rc = 0;
-      if (!d->ind) {
+      if (!d->ind && !d->ind_va) {
          struct mali_rec e = *d;
          e.dirty |= carry;
          carry = 0;
          rc = mali_frame_add_rec(&o, &e);
-      } else {
+      } else if (d->ind) {
          uint32_t n = d->ind_n;
          if (d->ind_count && *d->ind_count < n)
             n = *d->ind_count;
@@ -798,6 +813,20 @@ expand_indirect(struct mali_frame *f)
                rc = mali_frame_add_rec(&o, &e);
             } else
                carry |= e.dirty;
+         }
+      } else {
+         /* GPU-read descriptor: one record per command, each carrying its own VA; the count/instance/first_* words stay
+          * unknown here and the command stream loads them (emit_draw_regs). Nothing is skipped as empty: the CPU cannot
+          * see the values, and a skipped descriptor would leave the frame's dirty mask behind. */
+         for (uint32_t k = 0; k < d->ind_n && !rc; k++) {
+            struct mali_rec e = *d;
+            if (k)
+               e.dirty = 0;
+            e.ind_va = d->ind_va + (uint64_t)k * d->ind_stride;
+            e.draw_id = k;
+            e.dirty |= carry;
+            carry = 0;
+            rc = mali_frame_add_rec(&o, &e);
          }
       }
       if (rc) {
@@ -1594,10 +1623,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
-      /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
-      bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
-      if ((ind || poly_cpu) && g_hw.drain) {
-         /* indirect args and polygon-mode index contents are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
+      /* any_ind / any_ind_cpu / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
+      bool ind = fr.any_ind, ind_cpu = fr.any_ind_cpu, poly_cpu = fr.poly_cpu;
+      if ((ind_cpu || poly_cpu) && g_hw.drain) {
+         /* CPU-read indirect args and polygon-mode index contents: every earlier frame (also those of this command buffer) must have retired.
+          * A GPU-read indirect draw is NOT in this set: the command stream loads it after the producing job, so a drain here would serialize
+          * exactly the GPU-driven case this exists for. */
          if (nall) {
             kb_wmb();
             if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
@@ -1608,7 +1639,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          }
          g_hw.drain(g_hw.user);
       }
-      if (ind && g_hw.soft) {
+      if (ind_cpu && g_hw.soft) {
          /* MALI_SOFT=1: the rasteriser rejects an indirect draw on the frame record, and expansion below would
           * erase that origin before it ever sees it. Reject here, while the record still says "indirect". */
          res = VK_ERROR_FEATURE_NOT_PRESENT;
