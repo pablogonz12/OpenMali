@@ -2184,6 +2184,74 @@ test_ctsidx(void)
    return 1;
 }
 
+/* twotile: the smallest form of the parked bug. Two LOAD passes in one command buffer, no copies recorded inside it:
+ * pass 1 draws in area A = (0,0,16,16) (tile 0,0), pass 2 in area B = (32,32,16,16) (a DIFFERENT 32x32 tile). Read the
+ * whole 64x64 image after the fence: does A survive pass 2? (2026-11-22, X8 G925 screen off: B 256, A 0 - A does not.) */
+static int
+test_twotile(void)
+{
+   struct tgt t;
+   if (!tgt_create_wh(&t, 64, 64)) return 0;
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription spd = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &spd};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = 64, .height = 64, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer (LOAD)");
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_small.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   const int areas[2][2] = {{0, 0}, {32, 32}};
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   for (int k = 0; k < 2; k++) {
+      VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                                  .renderArea = {{areas[k][0], areas[k][1]}, {16, 16}}, .clearValueCount = 1, .pClearValues = &cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkViewport vp = {0, 0, 64, 64, 0.0f, 1.0f};
+      CmdSetViewport(cb, 0, 1, &vp);
+      VkRect2D sc = {{areas[k][0], areas[k][1]}, {16, 16}};
+      CmdSetScissor(cb, 0, 1, &sc);
+      const float s4[4] = {1, 64, 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s4);
+      CmdDraw(cb, 4096, 1, 0, 0);
+      CmdEndRenderPass(cb);
+   }
+   if (!cb_submit(&t, cb)) return 0;   /* one submit, no copy inside the command buffer */
+   if (!g_fake) {
+      unsigned a = 0, b = 0;
+      for (int y = 0; y < 16; y++)
+         for (int x = 0; x < 16; x++) {
+            const uint8_t *q = t.px + (size_t)y * t.pitch + (size_t)x * 4;
+            a += (q[0] | q[1] | q[2]) != 0;
+            const uint8_t *r2 = t.px + (size_t)(32 + y) * t.pitch + (size_t)(32 + x) * 4;
+            b += (r2[0] | r2[1] | r2[2]) != 0;
+         }
+      printf("{\"twotile\":\"areas\",\"A\":%u,\"B\":%u,\"want\":256}\n", a, b);
+   } else {
+      printf("{\"test\":\"twotile\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* smallpass: the CTS's own geometry - a 64x64 target and sixteen 16x16 renderAreas, smaller than the 32x32 tile we use
  * and not tile-aligned for half of them - each pass in its own command buffer with its own submit, 4096 one-pixel points
  * (64x64 grid, positions from gl_VertexIndex scaled to 64x64). Every pass must keep the 256 points that fall in its area. */
@@ -4550,6 +4618,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("mpasssubmit")) ok &= test_mpasssubmit();
    if (ok && g_only && CASE_ON("ctsidx")) ok &= test_ctsidx();
    if (ok && g_only && CASE_ON("smallpass")) ok &= test_smallpass();
+   if (ok && g_only && CASE_ON("twotile")) ok &= test_twotile();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("robust2")) ok &= test_robust2();
