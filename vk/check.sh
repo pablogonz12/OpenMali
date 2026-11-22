@@ -56,6 +56,14 @@ run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --di
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# RUNG2 state sweep (samplers / blend / depth-stencil). The fake backend executes nothing, so the host side checks that
+# every case builds its Vulkan state, sampler and pipeline and that the case table is complete; the pixel verdicts are
+# hardware-only (vk/tests/build-t_state_sweep.sh native; notes/state-sweep.md).
+if [ -x "$V/out/t_state_sweep-native" ]; then
+   for g in v11 v13; do run "state sweep fake $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$V/out/t_state_sweep-native" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"; done
+else
+   echo "skip  state sweep (no vk/out/t_state_sweep-native: tests/build-t_state_sweep.sh native)"
+fi
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
 for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
 for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done
