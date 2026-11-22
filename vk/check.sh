@@ -247,6 +247,27 @@ if [ $gs_rc -ne 0 ]; then echo "FAIL  gs refusal diagnostic exited $gs_rc (want 
 elif [ $gs_n -eq 6 ]; then echo "ok    gs refusals name their reason (6/6)"
 else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "geometry shader refused" | sed 's/^/        /'; fail=1; fi
 
+# Tessellation lane T1 (notes/tess-design.md §"Lane T1"): the tessellation stages reach the driver as a *named refusal* — the
+# gate (tessellationShader is not advertised, the state every application sees) and, with MALI_EXPERIMENTAL_TESS=1, each
+# classifier reason (levels above 1.0, a non-identity TCS, a computed TES output, quads). tess_tri asserts the whole T1
+# claim: refused without the gate, ACCEPTED with it (the TCS is proved from SPIR-V words in mali_tcs.c and the TES by
+# folding gl_TessCoord at the three unit coordinates in mali_tess.c), and on a device its frame must equal the plain
+# scene's pixel for pixel. t_gs_lower also links Mesa's poly_nir_lower_tes and lowers the TES with it.
+for g in v11 v13; do
+   run "vk_draw tess_tri $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_tri
+   run "vk_draw tess_reject $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject
+done
+out=$(MALI_EXPERIMENTAL_TESS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject 2>&1)
+tess_rc=$?
+tess_n=0
+for r in "gl_TessLevelOuter is 2, not 1.0" "an output is computed, not copied from the patch input" \
+         "an output that is not a copy of a patch input (at gl_TessCoord = e0)" "only triangles patches are accepted"; do
+   echo "$out" | grep -qF "tessellation refused: $r" && tess_n=$((tess_n+1))
+done
+if [ $tess_rc -ne 0 ]; then echo "FAIL  tess refusal diagnostic exited $tess_rc (want 0)"; echo "$out" | tail -5 | sed 's/^/        /'; fail=1
+elif [ $tess_n -eq 4 ]; then echo "ok    tess refusals name their reason (4/4)"
+else echo "FAIL  tess refusals name their reason ($tess_n/4)"; echo "$out" | grep "tessellation refused" | sed 's/^/        /'; fail=1; fi
+
 # GS lane 2, step (i) (notes/gs-design.md §5(i)): Mesa's src/poly geometry lowering, linked into the driver as an
 # unmodified library (vk/poly.sh -> out/<target>/poly/libpoly_nir.a) and called through mali_poly.c, i.e. the same object
 # that is in libvulkan_mali.so. Host-only and white-box: four GS modules through poly_nir_lower_gs(), each checked for the

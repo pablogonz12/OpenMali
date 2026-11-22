@@ -107,6 +107,30 @@ case_not_a_gs(void)
    else printf("{\"test\":\"gs_lower\",\"not_a_gs\":\"refused: %s\"}\n", err);
 }
 
+/* The tessellation half of the same library (notes/tess-design.md, lane T1): poly_nir_lower_tes() must accept a TES and
+ * produce a shader, both as the T2 "hardware VS" form and in place. This is the library-link proof T1 needs; the level-1
+ * *draw* is mali_tess.c's classifier and t_vk_draw's tess_tri row. */
+static int
+case_tes(const char *file)
+{
+   uint32_t nwords = 0;
+   uint32_t *spirv = read_spv(file, &nwords);
+   if (!spirv) return 1;
+   struct mali_poly_tes tes;
+   char err[256] = "";
+   int ok = mali_poly_lower_tes(g_arch, spirv, nwords, "main", 1 /* to_hw_vs */, &tes, err, sizeof err);
+   free(spirv);
+   if (!ok) { printf("{\"test\":\"gs_lower\",\"tes\":\"%s\",\"ok\":false,\"error\":\"%s\"}\n", file, err); return 1; }
+   const char *why = NULL;
+   if (!tes.lowered) why = "poly_nir_lower_tes returned false";
+   else if (!tes.nir_valid) why = "the lowered shader failed nir_validate";
+   else if (tes.stage != 0 /* MESA_SHADER_VERTEX */) why = "to_hw_vs did not turn it into a vertex shader";
+   printf("{\"test\":\"gs_lower\",\"tes\":\"%s\",\"arch\":%u,\"ok\":%s,\"lowered\":%u,\"stage\":%u%s%s}\n",
+          file, g_arch, why ? "false" : "true", tes.lowered, tes.stage, why ? ",\"why\":\"" : "", why ? why : "");
+   if (why) { g_fail = 1; return 1; }
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -121,6 +145,7 @@ main(int argc, char **argv)
    if (case_gs("gs_amplify.geom.spv", 8, 1, "6 emitted in two primitives, dynamic: 6 + 6/3, one count word")) return 1;
    if (case_gs("gs_loop.geom.spv", 4, 0, "3 emitted in an unrolled loop, dynamic: 3 + 3/3")) return 1;
    if (case_gs("gs_computed.geom.spv", 4, 0, "3 emitted, dynamic: 3 + 3/3")) return 1;
+   if (case_tes("tess_tri.tese.spv")) return 1;
    case_not_a_gs();
    if (g_fail) { printf("{\"test\":\"gs_lower\",\"ok\":false}\n"); return 1; }
    printf("{\"test\":\"gs_lower\",\"ok\":true,\"cases\":4}\n");
