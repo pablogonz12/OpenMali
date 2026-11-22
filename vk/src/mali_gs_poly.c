@@ -20,6 +20,7 @@
 #include "panfrost/compiler/pan_compiler.h"
 #include "poly/nir/poly_nir.h"
 #include "nir.h"
+#include "nir_builder.h"
 
 #include "mali_compile.h"
 #include "mali_gs_poly.h"
@@ -83,6 +84,19 @@ unlowered_poly_sysval(nir_shader *nir, const char *kind)
    return NULL;
 }
 
+/* load_provoking_last: Vulkan's default provoking vertex is the first (provokingVertexMode is not exposed), so the
+ * flag poly's copy program reads for flat/strip varyings is the constant false. */
+static bool
+lower_provoking_last(nir_builder *b, nir_intrinsic_instr *it, void *data)
+{
+   (void)data;
+   if (it->intrinsic != nir_intrinsic_load_provoking_last)
+      return false;
+   b->cursor = nir_before_instr(&it->instr);
+   nir_def_replace(&it->def, nir_imm_intN_t(b, 0, it->def.bit_size));
+   return true;
+}
+
 /* Compile one poly output into `out`. `kind` names it in the message ("main", "count", "copy", "pre_gs"). */
 static int
 compile_one(const char *kind, nir_shader *nir, unsigned arch, const struct mali_compile_opts *base, struct mali_compiled *out,
@@ -107,6 +121,34 @@ compile_one(const char *kind, nir_shader *nir, unsigned arch, const struct mali_
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared, nir_address_format_32bit_offset);
    NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_global, glsl_get_natural_size_align_bytes);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global, nir_address_format_64bit_global);
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
+      /* The copy program (tcs-compute-pipeline.md step 2: poly runs on io_lowered NIR) reaches here with its IO already
+       * intrinsics (load_ssbo/store_output); what is left are the dead gl_PerVertex[3] / vec4[3] shader_in and
+       * shader_out declarations of the GS it was cut from, one of them `compact`, which nir_validate.c:1822 refuses.
+       * Nothing dereferences them, so drop them before do_compile's vertex branch converts "shader_in|shader_out". */
+      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
+      /* The same program's store_output intrinsics all carry base 0 (no variable ever got a driver_location), but
+       * pan_varying_collect_formats (pan_nir_collect_varyings.c:353) keys its layout on the base and asserts on a
+       * second store of the same base. Do what nir_assign_io_var_locations does for the ordinary VS (mali_compile.c:
+       * the vertex branch): the n-th distinct output location, in location order, gets base n. */
+      uint64_t seen = 0;
+      nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+         nir_foreach_instr(ins, blk)
+            if (ins->type == nir_instr_type_intrinsic && nir_instr_as_intrinsic(ins)->intrinsic == nir_intrinsic_store_output)
+               seen |= BITFIELD64_BIT(nir_intrinsic_io_semantics(nir_instr_as_intrinsic(ins)).location);
+      nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+         nir_foreach_instr(ins, blk)
+            if (ins->type == nir_instr_type_intrinsic && nir_instr_as_intrinsic(ins)->intrinsic == nir_intrinsic_store_output) {
+               nir_intrinsic_instr *st = nir_instr_as_intrinsic(ins);
+               nir_intrinsic_set_base(st, util_bitcount64(seen & BITFIELD64_MASK(nir_intrinsic_io_semantics(st).location)));
+            }
+   }
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_provoking_last, nir_metadata_control_flow, NULL);
+   if (getenv("MALI_PIPE_DBG") && nir->info.stage == MESA_SHADER_VERTEX)
+      nir_foreach_variable_in_shader(var, nir) {
+         fprintf(stderr, "mali_vk: GS step (ii) %s var mode 0x%x loc %d type %s scalar %d\n", kind, (unsigned)var->data.mode,
+                 var->data.location, glsl_get_type_name(var->type), (int)glsl_type_is_scalar(var->type));
+      }
    if (getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_vk: GS step (ii): compiling poly's %s program (%s, workgroup %u,%u,%u)\n", kind,
               nir->info.stage == MESA_SHADER_COMPUTE ? "compute" : "vertex",
@@ -211,7 +253,9 @@ mali_gs_poly_compile(unsigned arch, const uint32_t *spirv, uint32_t nwords, cons
    if ((rc = compile_one("main", gs, arch, base, &out->main, err, errsz)) ||
        (rc = compile_one("count", count, arch, base, &out->count, err, errsz)) ||
        (rc = compile_one("copy", copy, arch, base, &out->copy, err, errsz)) ||
-       (rc = compile_one("pre_gs", pre_gs, arch, base, &out->pre_gs, err, errsz)))
+       /* pre_gs only exists to bump GS-invocation statistics queries and to size XFB output
+        * (load_stat_query_address_poly): neither is advertised, so it is not compiled (step iii). */
+       (rc = 0))
       goto out;   /* the shader that failed is freed by mali_compile_nir (ownership passed); the rest here */
    out->info.has_main = out->main.bin_size != 0;
    out->info.has_count = out->count.bin_size != 0;
@@ -223,7 +267,7 @@ out:
     * for the ones it owns. */
    if (!out->count.bin_size && !rc) ralloc_free(count);
    if (!out->copy.bin_size && !rc) ralloc_free(copy);
-   if (!out->pre_gs.bin_size && !rc) ralloc_free(pre_gs);
+   if (!out->pre_gs.bin_size && !rc && pre_gs) ralloc_free(pre_gs);
    if (!out->main.bin_size && !rc) ralloc_free(gs);
    return rc;
 }
