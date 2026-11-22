@@ -370,6 +370,16 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       }
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
       /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */
+      /* shaderCullDistance is a fragment-side discard on per-vertex flags: after the rewrite below each point/line
+       * carries only its own vertices' flags, so the points of a vertex with a negative distance are dropped even
+       * when the triangle as a whole is kept (the rule is triangle-level). Refuse instead of drawing it wrong:
+       * DXVK and wined3d never combine cull distances with POINT/LINE, and there is no triangle-level stage here. */
+      if (p->vs.vs_cull_distances && st.rs && g->prim >= 8 && st.rs->polygon_mode != VK_POLYGON_MODE_FILL) {
+         fprintf(stderr, "mali_vk: shaderCullDistance with polygonMode %u refused: the cull test is per vertex, the rule is per triangle\n",
+                 st.rs->polygon_mode);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
       if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_POINT) {
          g->poly_mode = 2; g->poly_prim = g->prim; g->prim = 1;   /* prim_restart stays: the rewrite uses it to split strips */
       } else if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_LINE) {
