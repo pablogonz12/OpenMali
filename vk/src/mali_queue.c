@@ -485,7 +485,13 @@ mali_hw_init(struct mali_device *dev)
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const struct mali_backend_ops *be = pdev->backend;
    struct mali_hwctx *h = calloc(1, sizeof *h);
-   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
+   unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
+   /* MALI_FORCE_ARCH: run another arch's descriptor packing on this GPU, so an arch-specific fault can be
+    * reproduced on a phone that has the screen available. Diagnosis only. */
+   if (getenv("MALI_FORCE_ARCH")) {
+      arch = (unsigned)atoi(getenv("MALI_FORCE_ARCH"));
+      fprintf(stderr, "mali_vk: arch forced to %u (GPU reports %u)\n", arch, pdev->gpu.arch_major);
+   }
    kb_v10 = arch == 10;   /* libkbase: SET_SB_ENTRY scoreboard select, ZSD bit 21 (see kbase_cs.h) */
 
    if (!h)
