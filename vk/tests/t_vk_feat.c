@@ -2798,7 +2798,10 @@ test_samplecnt(void)
       VkPhysicalDeviceImageFormatInfo2 pi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = q[i].f,
                                              .type = VK_IMAGE_TYPE_2D, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u};
       VkImageFormatProperties2 ip = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
-      if (g_ifp2(g_pd, &pi, &ip) != VK_SUCCESS || (ip.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_4_BIT)) continue;
+      const VkResult qr = g_ifp2(g_pd, &pi, &ip);
+      CHECK(qr == VK_SUCCESS, "imageFormatProperties2(%s) (%d)", q[i].n, qr);
+      if (qr != VK_SUCCESS) continue;   /* an unexpected error is not "4x unsupported": fail, do not skip the row */
+      if (ip.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_4_BIT) continue;
       VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = q[i].f,
                               .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_4_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
