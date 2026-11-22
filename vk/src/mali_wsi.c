@@ -10,7 +10,7 @@
 #include "mali_queue.h"
 
 #include "wsi_common_private.h"   /* struct wsi_interface (pdev->wsi.wsi[]) */
-#include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below */
+#include "vk_fence.h"             /* VkSwapchainPresentFenceInfoEXT in the shm shortcut below (#325) */
 
 #include <pthread.h>   /* the per-call wsi mode and the X11 chain table are process-wide (CR #323 T4/T5) */
 
@@ -42,18 +42,25 @@ VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceWaylandPresentationSupportKH
 VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice, uint32_t,
                                                                               Display *, VisualID);
 #endif
+VKAPI_ATTR VkResult VKAPI_CALL wsi_WaitForPresentKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t presentId,
+                                                    uint64_t timeout);
 
 #include "vk_alloc.h"
 #include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
 #include "vk_semaphore.h"  /* struct vk_semaphore -> &sem->sync */
+#include "vk_fence.h"      /* VkSwapchainPresentFenceInfoEXT in the shm shortcut (#325) */
 #include "vk_log.h"
 #include "vk_util.h"
 
+#include <pthread.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <poll.h>
 #include <string.h>
 
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 #include <xcb/xcb.h>
+#include <xcb/xcbext.h>   /* xcb_poll_for_reply: the non-blocking gate drain */
 #include <xcb/shm.h>
 #endif
 #if defined(__linux__)
@@ -67,7 +74,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL wsi_GetPhysicalDeviceXlibPresentationSupportKHR(V
 struct mali_x11_shm;
 static void mali_x11_shm_destroy(VkSwapchainKHR sc);
 static struct mali_x11_shm *mali_x11_shm_find(VkSwapchainKHR sc);
-static bool mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index);
+static bool mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index, bool *gated);
+static void mali_x11_shm_drain(struct mali_x11_shm *st, bool force);
 
 #define MALI_DRM_FORMAT_MOD_LINEAR 0ull
 const uint64_t mali_wsi_modifier = MALI_DRM_FORMAT_MOD_LINEAR;
@@ -122,7 +130,7 @@ mali_wsi_use_sw(const struct mali_physical_device *pdev)
    const char *e = getenv("MALI_WSI");
    if (e && !strcmp(e, "sw"))
       return true;
-   if (e && !strcmp(e, "dmabuf"))
+   if (e && (!strcmp(e, "dmabuf") || !strcmp(e, "dmabuf-strict")))
       return false;
    /* MALI_WSI=hw: pretend to be hardware on the fake backend - start on the dma-buf path and let the per-surface
     * decision (mali_wsi_x11_maybe_sw) fall back where the server cannot serve it. Host test hook for
@@ -229,7 +237,7 @@ static bool
 mali_wsi_x11_forced_dmabuf(void)
 {
    const char *e = getenv("MALI_WSI");
-   return e && !strcmp(e, "dmabuf");
+   return e && (!strcmp(e, "dmabuf") || !strcmp(e, "dmabuf-strict"));
 }
 
 /* The X11 present path is a device-wide decision (wsi_device->sw), and it has to be taken at the *first* surface
@@ -243,6 +251,11 @@ mali_wsi_x11_forced_dmabuf(void)
  * Untouched when the server has DRI3 *and* Present (the dma-buf path, which the CMF and X8 use), and
  * MALI_WSI=dmabuf still forces dma-buf everywhere. */
 static bool mali_wsi_x11_sw_decided(const struct mali_physical_device *pdev, uintptr_t conn, int platform);
+static void mali_wsi_info_add(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, const VkSwapchainCreateInfoKHR *ci,
+                              struct wsi_swapchain *chain, bool sw);
+static void mali_wsi_info_remove(VkSwapchainKHR sc);   /* #329: the MALI_WSI_DUMP / MALI_WSI_DEBUG chain table */
+static void mali_wsi_present_trace(struct mali_device *dev, VkSwapchainKHR handle, struct wsi_swapchain *chain,
+                                   uint32_t image_index);
 static bool mali_wsi_x11_sw_record(struct mali_physical_device *pdev, uintptr_t conn, int platform);
 static uintptr_t mali_wsi_x11_conn(VkIcdSurfaceBase *surface);
 
@@ -354,6 +367,28 @@ static bool mali_wsi_x11_chain_mode(VkSwapchainKHR sc, bool *sw);
  * measurement when IMMEDIATE is really offered: with FIFO/MAILBOX the producer rate equals the displayed rate by
  * construction, which is what hid the GPU headroom (1600x720 and 2400x1080 both 118 fps). IMMEDIATE is additive,
  * FIFO/MAILBOX stay first and unchanged for real apps. */
+static void mali_wsi_present_id_set(VkSwapchainKHR sc, uint64_t id);
+static uint64_t mali_wsi_present_id_take(VkSwapchainKHR sc);
+
+/* An X11 software (MIT-SHM or PutImage) chain cannot ever complete a present id in wsi_common_x11: the software
+ * present sends xcb_put_image/xcb_shm_put_image and no Present request, so there is no PresentCompleteNotify event to
+ * run x11_present_complete() (wsi_common_x11.c:1702), the only place chain->present_id advances
+ * (wsi_common_x11.c:1444), and x11_wait_for_present() loops on present_progress_cond until its timeout
+ * (wsi_common_x11.c:3075). An app that enables VK_KHR_present_wait - DXVK's frame limiter, gamescope - would pay its
+ * whole wait timeout on every frame presented on this path and never see a completed present. The frame is already on
+ * the server when our present returns (copy + xcb_flush), so report it as presented: a false VK_TIMEOUT blocks the
+ * client on every frame. Every other chain keeps Mesa's own wait. */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_wait_for_present(VkDevice device, VkSwapchainKHR swapchain, uint64_t present_id, uint64_t timeout)
+{
+   /* #323 records the instance each X11 chain was created on (mali_wsi_sw_enter_value), so this is the chain's own
+    * decision, not the device-wide one: a dma-buf chain on the same connection keeps Mesa's real present wait. */
+   bool sw = false;
+   if (mali_wsi_x11_chain_mode(swapchain, &sw) && sw)
+      return VK_SUCCESS;
+   return wsi_WaitForPresentKHR(device, swapchain, present_id, timeout);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *alloc)
 {
@@ -365,6 +400,15 @@ mali_wsi_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAl
    struct mali_wsi_mode saved = {0};
    if (is_x11)
       saved = mali_wsi_sw_enter_value(mali_device_pdev(mali_device_from_handle(device)), chain_sw);
+   /* CR #288: the one place the presentation feedback of the last frame must be pumped. wsi_common_wayland asserts
+    * that no present id is still queued while it frees the chain (wsi_common_wayland.c:3782, :2779), and an app that
+    * presents its last frame never pumps it again. Bounded (20 ms ns cap), once per chain and outside the frame
+    * loop - instead of the 20 ms wait per present this used to be (see struct mali_wsi_present_id). Runs before
+    * wsi_DestroySwapchainKHR because the chain, its queue and wait_for_present2 are Mesa's and die with it. */
+   VK_FROM_HANDLE(wsi_swapchain, chain, swapchain);
+   const uint64_t last_id = mali_wsi_present_id_take(swapchain);
+   if (chain && last_id && chain->present_wait_enabled && chain->wait_for_present2)
+      chain->wait_for_present2(chain, last_id, 20ull * 1000 * 1000);   /* ns, bounded */
    /* Drop the record first: wsi_DestroySwapchainKHR runs Mesa's cleanup, which frees the chain before it returns, and
     * another thread creating a chain could be handed that address and register it - a later remove would then clear
     * the new chain's entry (CR #323 N3). */
@@ -791,9 +835,22 @@ mali_wsi_xlib_presentation_support(VkPhysicalDevice physicalDevice, uint32_t que
  * and nothing has to be copied twice. The whole segment is attached once per swapchain and released with
  * shmdt + shmctl(IPC_RMID) on destroy; a leaked segment is pinned memory that survives the process.
  * MALI_WSI=xput forces the old PutImage path (A/B). */
+/* A present whose image may not be rewritten yet (design-shm.md A). After each PutImage we queue a GetGeometry on the
+ * same connection; X answers in order, so the reply proves the server has processed our PutImage. The image is
+ * released only then, which is what stops the app from acquiring it and memcpy-ing over a region the server is still
+ * reading (Mesa's own acquire fence is not created for this chain shape: wsi_common_x11.c:2807). */
+struct mali_x11_shm_gate {
+   uint32_t image_index;
+   unsigned int seq;    /* xcb_get_geometry cookie sequence, 0 when the slot is free */
+};
+
 struct mali_x11_shm {
    VkSwapchainKHR swapchain;
    bool active;
+   struct mali_x11_shm_gate *gates;   /* n_images + 1 entries, FIFO */
+   uint32_t gate_count, gate_head, gate_tail;
+   unsigned gate_hold;                /* MALI_WSI_SHM_HOLD: test hook, replies to keep outstanding */
+   unsigned reused_pending;           /* diagnostics: image reused while its gate was still open (must stay 0) */
    void *conn;          /* xcb_connection_t *: opaque so this file also compiles without XCB (t_cmd) */
    uint32_t window;
    uint32_t gc;
@@ -824,17 +881,18 @@ mali_x11_shm_destroy(VkSwapchainKHR sc)
    if (!st)
       return;
 #if defined(VK_USE_PLATFORM_XCB_KHR)
+   mali_x11_shm_drain(st, true);   /* discard the gate cookies: never block, never release a dying chain */
    xcb_shm_detach((xcb_connection_t *)st->conn, st->seg);
    if (st->gc)
       xcb_free_gc((xcb_connection_t *)st->conn, st->gc);   /* created per swapchain in mali_x11_shm_create */
    xcb_flush((xcb_connection_t *)st->conn);
 #endif
    if (st->addr && st->addr != MALI_SHM_FAILED)
-      shmdt(st->addr);
-   if (st->shmid >= 0)
-      shmctl(st->shmid, IPC_RMID, NULL);
+      shmdt(st->addr);   /* the segment was already unlinked at attach; this is the last detach that frees it */
    if (mali_wsi_debug())
-      fprintf(stderr, "mali_vk: x11 shm: released %zu B segment (shmid %d)\n", st->size, st->shmid);
+      fprintf(stderr, "mali_vk: x11 shm: released %zu B segment (shmid %d, %u region(s) reused with completion "
+                      "pending)\n", st->size, st->shmid, st->reused_pending);
+   free(st->gates);
    memset(st, 0, sizeof(*st));
    st->shmid = -1;
 }
@@ -896,11 +954,33 @@ mali_x11_shm_create(VkSwapchainKHR sc, VkIcdSurfaceBase *surface, struct wsi_swa
       shmctl(shmid, IPC_RMID, NULL);
       return;
    }
+   /* Unlink the segment now, not at destroy (CR #288/#289/#307, design-shm.md B): IPC_RMID only marks it, the pages
+    * live until the last detach - ours at destroy and the server's own attach until it processes our xcb_shm_detach,
+    * which is queued behind every PutImage on this connection. So the kernel reclaims a segment whose client is
+    * SIGKILLed or calls exit() without vkDestroySwapchainKHR (today that leaks 196 KB at 128x96 to ~6 MB at 800x600
+    * until reboot), and destroy-with-a-present-in-flight can no longer pull pages from under the server. */
+   if (shmctl(shmid, IPC_RMID, NULL) == 0 && mali_wsi_debug())
+      fprintf(stderr, "mali_vk: x11 shm: segment unlinked at attach (shmid %d, %zu B), reclaimed at our last detach\n",
+              shmid, size);
+   /* The gate ring is what makes a present safe: without it the slot would present and release an image the server
+    * may still be reading. An allocation failure therefore unwinds the whole SHM setup (the present then falls back
+    * to wsi's own PutImage) instead of publishing an ungated slot (CR thread, k vk/src/mali_wsi.c:969). */
+   struct mali_x11_shm_gate *gates = calloc((size_t)chain->image_count + 1, sizeof *gates);
+   if (!gates) {
+      fprintf(stderr, "mali_vk: x11 present: shm=0 putimage=1 (no memory for %u gate slots)\n",
+              chain->image_count + 1);
+      xcb_shm_detach(s->connection, seg);
+      shmdt(addr);
+      shmctl(shmid, IPC_RMID, NULL);
+      xcb_flush(s->connection);
+      return;
+   }
    const xcb_gcontext_t gc = xcb_generate_id(s->connection);
    xcb_create_gc(s->connection, gc, s->window, XCB_GC_GRAPHICS_EXPOSURES, (uint32_t []){0});
    xcb_flush(s->connection);
 
-   *st = (struct mali_x11_shm){.swapchain = sc, .active = true, .conn = s->connection, .window = s->window,
+   *st = (struct mali_x11_shm){.gates = gates,
+                              .swapchain = sc, .active = true, .conn = s->connection, .window = s->window,
                               .gc = gc, .depth = depth, .width = w, .height = h, .stride = stride,
                               .n_images = chain->image_count, .seg = seg, .shmid = shmid, .addr = addr,
                               .size = size};
@@ -964,11 +1044,106 @@ present_wait_submit_fence(struct mali_device *dev, uint32_t image_index)
    return true;
 }
 
+/* Release every presented image whose GetGeometry reply has already arrived. Non-blocking by contract: present calls
+ * it at the top, so a present never waits for the server (the reply is normally there long before the next frame);
+ * anything still outstanding is left in the ring. `force` (destroy) discards without releasing - the chain is dying. */
+static void
+mali_x11_shm_drain(struct mali_x11_shm *st, bool force)
+{
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   if (!st || !st->active || !st->gates)
+      return;
+   xcb_connection_t *c = (xcb_connection_t *)st->conn;
+   VK_FROM_HANDLE(wsi_swapchain, chain, st->swapchain);
+   const char *hold_env = getenv("MALI_WSI_SHM_HOLD");
+   st->gate_hold = hold_env ? (unsigned)strtoul(hold_env, NULL, 0) : 0;
+   while (st->gate_count > 0) {
+      struct mali_x11_shm_gate *g = &st->gates[st->gate_head % (st->n_images + 1)];
+      if (!g->seq)
+         break;
+      if (force) {
+         xcb_discard_reply(c, g->seq);
+      } else {
+         /* Keep the newest `gate_hold` replies open (test hook): the ring then behaves as a server that is behind. */
+         if (st->gate_count <= st->gate_hold)
+            break;
+         xcb_generic_error_t *err = NULL;
+         void *reply = NULL;
+         /* Poll only: a 0 return with no error means "not answered yet". xcb_poll_for_reply frees the reply itself;
+          * we only need to know that the PutImage before it was processed. */
+         if (!xcb_poll_for_reply(c, g->seq, &reply, &err) && !err)
+            break;   /* not answered yet: leave it and everything after it in the ring */
+         free(reply);
+         free(err);
+         if (chain) {
+            const uint32_t idx = g->image_index;
+            struct wsi_image *img = chain->get_wsi_image(chain, idx);
+            if (img) {
+               img->acquired = false;
+               img->present_serial = ++chain->present_serial;
+            }
+            if (chain->release_images)
+               chain->release_images(chain, 1, &idx);
+         }
+      }
+      g->seq = 0;
+      st->gate_head++;
+      st->gate_count--;
+   }
+#else
+   (void)st; (void)force;
+#endif
+}
+
+/* The one place that may wait on the server, and only because the app is asking for an image it would otherwise
+ * reuse while the server is reading it: poll the connection and drain answered gates until the oldest one is in (or
+ * the budget is spent). Bounded per call; -1 means the connection is gone. Never called from present. */
+static int
+mali_x11_shm_wait_gate(struct mali_x11_shm *st, uint64_t timeout_ns)
+{
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   if (!st || !st->active || !st->gates || !st->gate_count)
+      return 0;
+   xcb_connection_t *c = (xcb_connection_t *)st->conn;
+   const int fd = xcb_get_file_descriptor(c);
+   uint64_t budget = timeout_ns == UINT64_MAX ? 1000000000ull : timeout_ns;   /* ns */
+   if (budget > 1000000000ull)
+      budget = 1000000000ull;   /* one call never sleeps longer than this; the caller repeats it against its own timeout */
+   struct timespec t0;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   while (st->gate_count > 0) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      const uint64_t spent = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000000ull +
+                             (uint64_t)(now.tv_nsec - t0.tv_nsec);
+      if (spent >= budget)
+         break;
+      uint64_t left_ms = (budget - spent + 999999) / 1000000;   /* never more than what is left */
+      if (left_ms > 20)
+         left_ms = 20;
+      if (xcb_connection_has_error(c))
+         return -1;
+      struct pollfd p = {.fd = fd, .events = POLLIN};
+      const int pr = poll(&p, 1, (int)left_ms);
+      if (pr < 0 && errno != EINTR)
+         return -1;
+      /* EINTR is not an answer and not free: the clock, not a fixed 20 ms, accounts for it (CR thread, :1103). */
+      mali_x11_shm_drain(st, false);
+   }
+   return st->gate_count == 0 ? 1 : 0;
+#else
+   (void)st; (void)timeout_ns;
+   return 0;
+#endif
+}
+
 /* Present one image through the shared segment. Returns false when the image cannot be copied (no CPU map), in
  * which case the caller falls back to wsi's PutImage present. */
 static bool
-mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index, bool *gated)
 {
+   if (gated)
+      *gated = false;
 #if !defined(VK_USE_PLATFORM_XCB_KHR)
    (void)chain; (void)image_index;
    return false;   /* built without XCB: wsi_common_x11's PutImage present handles it */
@@ -990,6 +1165,35 @@ mali_x11_shm_present(struct mali_device *dev, struct wsi_swapchain *chain, uint3
    const uint16_t total_w = (uint16_t)(st->stride / 4);
    xcb_shm_put_image((xcb_connection_t *)st->conn, st->window, st->gc, total_w, st->height, 0, 0, st->width, st->height,
                      0, 0, st->depth, XCB_IMAGE_FORMAT_Z_PIXMAP, 0 /* send_event */, st->seg, off);
+   /* Gate only the modes that promise a non-tearing, ordered presentation. IMMEDIATE is the A/B measurement path and
+    * its contract allows tearing, so it keeps the immediate release (and the zero cost). MALI_WSI_SHM_GATE=0 is the
+    * escape hatch to the old behaviour. */
+   const char *gate_env = getenv("MALI_WSI_SHM_GATE");
+   const bool gate_off = gate_env && gate_env[0] == '0';
+   if (!gate_off && st->gates && chain->present_mode != VK_PRESENT_MODE_IMMEDIATE_KHR) {
+      const uint32_t cap = st->n_images + 1;
+      if (st->gate_count >= cap)
+         mali_x11_shm_drain(st, false);
+      if (st->gate_count >= cap) {   /* still full: the oldest image is about to be reused unchecked */
+         struct mali_x11_shm_gate *g = &st->gates[st->gate_head % cap];
+         xcb_discard_reply((xcb_connection_t *)st->conn, g->seq);
+         g->seq = 0;
+         st->gate_head++;
+         st->gate_count--;
+         st->reused_pending++;
+         if (mali_wsi_debug())
+            fprintf(stderr, "mali_vk: x11 shm: region reused with completion pending (image %u) - the server is "
+                            "%u frames behind\n", g->image_index, cap);
+      }
+      struct mali_x11_shm_gate *g = &st->gates[st->gate_tail % cap];
+      g->image_index = image_index;
+      /* 16-byte request, in the buffer xcb_flush writes: no extra syscall. The reply is read in a later drain. */
+      g->seq = xcb_get_geometry((xcb_connection_t *)st->conn, st->window).sequence;
+      st->gate_tail++;
+      st->gate_count++;
+      if (gated)
+         *gated = true;
+   }
    xcb_flush((xcb_connection_t *)st->conn);
    return true;
 #endif
@@ -1036,7 +1240,9 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
     * never by acquire. Holding the process-wide wsi lock across it starved every other thread of the same device:
     * surface queries, swapchain creation and present on another swapchain all waited behind the blocked acquire,
     * which on a multi-threaded client (Steam's client + web helper) looks like a frozen UI (CR #323 N4). */
-   const VkAcquireNextImageInfoKHR ai = {
+   struct mali_x11_shm *st = mali_x11_shm_find(swapchain);
+   mali_x11_shm_drain(st, false);   /* release what the server has already read: never blocks */
+   VkAcquireNextImageInfoKHR ai = {
       .sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR,
       .swapchain = swapchain,
       .timeout = timeout,
@@ -1044,7 +1250,46 @@ mali_wsi_acquire_next_image(VkDevice device, VkSwapchainKHR swapchain, uint64_t 
       .fence = fence,
       .deviceMask = 0,
    };
+   /* A pending gate means an image may be about to come free through the server's reply, and Mesa's own acquire
+    * queue is only refilled by wsi's release_images - a GetGeometry reply alone does not refill it. Entering that
+    * wait with every image gated would therefore block for the whole `timeout` (forever for UINT64_MAX) and never
+    * reach the gate wait that frees one. So probe with timeout 0 first and wait on the gates instead (CR thread,
+    * vk/src/mali_wsi.c:1233). */
+   const bool gated = st && st->gate_count && timeout != 0;
+   if (gated)
+      ai.timeout = 0;
    VkResult r = mali_wsi_acquire_next_image2(device, &ai, image_index);
+   if (gated && (r == VK_NOT_READY || r == VK_TIMEOUT)) {
+      struct timespec t0;
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      for (;;) {
+         uint64_t remain = UINT64_MAX;
+         if (timeout != UINT64_MAX) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const uint64_t spent = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000000ull +
+                                   (uint64_t)(now.tv_nsec - t0.tv_nsec);
+            if (spent >= timeout) {
+               r = VK_TIMEOUT;
+               break;
+            }
+            remain = timeout - spent;
+         }
+         /* No image is free because every one of them is still being read by the server: that is the only wait in
+          * this design, and it is bounded by what is left of the caller's own timeout (design-shm.md A). */
+         const int wr = mali_x11_shm_wait_gate(st, remain);
+         if (wr < 0)
+            return VK_ERROR_SURFACE_LOST_KHR;
+         ai.timeout = 0;
+         r = mali_wsi_acquire_next_image2(device, &ai, image_index);
+         if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)
+            break;
+         if (!(r == VK_NOT_READY || r == VK_TIMEOUT))
+            break;
+         if (st->gate_count == 0)
+            break;   /* nothing left to wait for: hand Mesa's own answer back */
+      }
+   }
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: wsi acquire #%llu -> %s image=%u\n", (unsigned long long)n,
               vk_Result_to_str(r), r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR ? *image_index : 0);
@@ -1537,6 +1782,9 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       if (sc)
          mali_wsi_present_trace(dev, info->pSwapchains[i], sc, info->pImageIndices[i]);
    }
+   /* Release the images of the previous presents whose GetGeometry reply has arrived: never blocks (design-shm.md A). */
+   for (uint32_t i = 0; i < info->swapchainCount; i++)
+      mali_x11_shm_drain(mali_x11_shm_find(info->pSwapchains[i]), false);
    /* Software present through our own shared segment: memcpy + XShmPutImage, no image bytes on the socket. */
    {
       bool all_shm = info->swapchainCount > 0;
@@ -1571,13 +1819,17 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       for (uint32_t i = 0; all_shm && i < info->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
          const uint32_t idx = info->pImageIndices[i];
-         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) && mali_x11_shm_present(dev, sc, idx);
+         bool gated = false;
+         const bool shm = sc && mali_x11_shm_find(info->pSwapchains[i]) &&
+                          mali_x11_shm_present(dev, sc, idx, &gated);
          if (mali_wsi_debug() && sc)
-            mali_wsi_debug_present(dev, sc, idx, shm ? "shm" : "dma-buf", VK_SUCCESS);
+            mali_wsi_debug_present(dev, sc, idx, shm ? (gated ? "shm+gated" : "shm") : "dma-buf", VK_SUCCESS);
          if (!shm) {
             all_shm = false;
             break;
          }
+         if (gated)
+            continue;   /* released by mali_x11_shm_drain() once the server has read the region (design-shm.md A) */
          struct wsi_image *img = sc->get_wsi_image(sc, idx);
          img->acquired = false;
          img->present_serial = ++sc->present_serial;
@@ -1590,8 +1842,9 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
                info->pResults[i] = VK_SUCCESS;   /* the caller asked for per-swapchain results */
          /* VK_EXT_swapchain_maintenance1 present fences: wsi_common signals them at the end of the per-image GPU
           * work (wsi_common.c:2679), which this shortcut never reaches - the frame is copied and the XShmPutImage
-          * is queued here, so signal them here too. Without it a client that waits a present fence (the pattern
-          * t_wsi_maint.c:453 checks) hangs until its timeout on the X11 shm path. */
+          * is queued here, so signal them here too (#325). Without it a client that waits a present fence (the
+          * pattern t_wsi_maint.c:453 checks) times out on the X11 shm path. Signalled exactly once: this is the only
+          * place in the driver that touches SWAPCHAIN_PRESENT_FENCE_INFO_EXT. */
          const VkSwapchainPresentFenceInfoEXT *pf =
             vk_find_struct_const(info->pNext, SWAPCHAIN_PRESENT_FENCE_INFO_EXT);
          if (pf && pf->pFences) {
@@ -1682,9 +1935,8 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    if (r == VK_SUCCESS && ids) {
       for (uint32_t i = 0; i < info->swapchainCount && i < ids->swapchainCount; i++) {
          VK_FROM_HANDLE(wsi_swapchain, chain, info->pSwapchains[i]);
-         if (chain && chain->present_wait_enabled && chain->wait_for_present2 && ids->pPresentIds &&
-             ids->pPresentIds[i])
-            chain->wait_for_present2(chain, ids->pPresentIds[i], 20ull * 1000 * 1000);   /* ns, bounded */
+         if (chain && chain->present_wait_enabled && ids->pPresentIds && ids->pPresentIds[i])
+            mali_wsi_present_id_set(info->pSwapchains[i], ids->pPresentIds[i]);
       }
    }
    /* SUBOPTIMAL/OUT_OF_DATE are normal swapchain states, not errors: one line per frame would be noise. */
@@ -1692,6 +1944,50 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    if (mali_wsi_debug() || !quiet)
       fprintf(stderr, "mali_vk: wsi present #%llu -> %s (%d)\n", (unsigned long long)n, vk_Result_to_str(r), (int)r);
    return r;
+}
+
+/* The last VkPresentIdKHR seen per swapchain. Present records it and returns - waiting for the compositor's
+ * presentation feedback here (the 20 ms vkWaitForPresentKHR cap this used to call on every successful present) cost
+ * up to 20 ms per frame whenever the compositor was late, i.e. a 50 fps ceiling enforced by our own present path on
+ * a client that passes present ids (Steam/gamescope do). The only place that feedback has to be pumped is
+ * vkDestroySwapchainKHR: wsi_common_wayland asserts (!chain->present_ids.dispatch_in_progress) while freeing
+ * (wsi_common_wayland.c:3782, :2779) and the queue is otherwise pumped by the next present. */
+struct mali_wsi_present_id {
+   VkSwapchainKHR sc;
+   uint64_t last;
+};
+static struct mali_wsi_present_id mali_wsi_present_ids[16];
+/* Its own lock: the table is written by the app's present thread and read by destroy. */
+static pthread_mutex_t mali_wsi_present_id_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void
+mali_wsi_present_id_set(VkSwapchainKHR sc, uint64_t id)
+{
+   pthread_mutex_lock(&mali_wsi_present_id_lock);
+   unsigned n = sizeof(mali_wsi_present_ids) / sizeof(mali_wsi_present_ids[0]);
+   unsigned free_slot = n;
+   for (unsigned i = 0; i < n; i++) {
+      if (mali_wsi_present_ids[i].sc == sc) { mali_wsi_present_ids[i].last = id; pthread_mutex_unlock(&mali_wsi_present_id_lock); return; }
+      if (!mali_wsi_present_ids[i].sc && free_slot == n) free_slot = i;
+   }
+   if (free_slot < n)
+      mali_wsi_present_ids[free_slot] = (struct mali_wsi_present_id){.sc = sc, .last = id};
+   pthread_mutex_unlock(&mali_wsi_present_id_lock);
+}
+
+static uint64_t
+mali_wsi_present_id_take(VkSwapchainKHR sc)
+{
+   uint64_t id = 0;
+   pthread_mutex_lock(&mali_wsi_present_id_lock);
+   for (unsigned i = 0; i < sizeof(mali_wsi_present_ids) / sizeof(mali_wsi_present_ids[0]); i++)
+      if (mali_wsi_present_ids[i].sc == sc) {
+         id = mali_wsi_present_ids[i].last;
+         mali_wsi_present_ids[i] = (struct mali_wsi_present_id){0};
+         break;
+      }
+   pthread_mutex_unlock(&mali_wsi_present_id_lock);
+   return id;
 }
 
 /* Device entrypoint (installed in mali_device.c) in front of wsi_CreateSwapchainKHR: it only observes and, for an
@@ -1720,7 +2016,7 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    /* The chain is created on the instance its surface's path needs, and wsi_CreateSwapchainKHR stores that pointer in
     * chain->base.wsi: from here on the chain's mode is immutable, for the async present queue manager
     * (wsi_common_x11.c:2235 -> :2101) and for destroy (:2807) alike (CR #323 T7). */
-   const struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface, sw_now);
+   struct mali_wsi_mode saved_sw = mali_wsi_sw_enter(pdev, surface, sw_now);   /* reassigned by #328's retry */
 
    if (mali_wsi_debug() && surface->platform != VK_ICD_WSI_PLATFORM_WAYLAND)
       fprintf(stderr, "mali_vk: wsi hooks: GetSemaphoreFdKHR=%s GetMemoryFdKHR=%s cached_sync_file=%u (dma_buf_sync=%d)\n",
@@ -1735,12 +2031,23 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
    VkResult r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
    const bool x11_surface = surface->platform == VK_ICD_WSI_PLATFORM_XCB ||
                             surface->platform == VK_ICD_WSI_PLATFORM_XLIB;
-   /* The mode the chain was created on is the *selected* instance's sw (pdev->vk.wsi_device), not &pdev->wsi's:
-    * for a no-DRI3 X11 surface mali_wsi_sw_enter() picked pdev->wsi_sw_dev, whose sw is true while &pdev->wsi keeps
-    * the device's own value. Reading the wrong one registered the chain as dma-buf and skipped its SHM slot
-    * (CodeRabbit body finding, vk/src/mali_wsi.c:1257-1307). */
-   const bool chain_sw = pdev->vk.wsi_device->sw;
-   if (r == VK_SUCCESS && x11_surface && !mali_wsi_x11_chain_add(*out, chain_sw)) {
+   const char *wsi_env = getenv("MALI_WSI");
+   const bool strict_dmabuf = wsi_env && !strcmp(wsi_env, "dmabuf-strict");   /* same run without the retry (A/B) */
+   if (r != VK_SUCCESS && !pdev->vk.wsi_device->sw && x11_surface && !mali_wsi_x11_forced_shm() && !strict_dmabuf) {
+      /* #328: the server advertised DRI3 and Present and still refused every image (xcb_dri3_pixmap_from_buffer of
+       * our dma-buf fails), so the whole vkCreateSwapchainKHR returns VK_ERROR_INITIALIZATION_FAILED and zink reports
+       * "could not create swapchain". Retry the same chain once on the software device through #323's switch. This is
+       * a per-chain fact, not a per-connection one: the connection's decision is NOT recorded as software, so another
+       * chain on the same connection still starts on dma-buf (CR #323 N2). MALI_WSI=dmabuf (dma-buf first) retries;
+       * MALI_WSI=dmabuf-strict keeps the loud failure for diagnostics. */
+      fprintf(stderr, "mali_vk: wsi: %s surface: dma-buf swapchain failed (%s), retrying on the software "
+                      "(MIT-SHM/PutImage) present path\n",
+              mali_wsi_platform_name(surface->platform), vk_Result_to_str(r));
+      mali_wsi_sw_leave(pdev, saved_sw);
+      saved_sw = mali_wsi_sw_enter_value(pdev, true);
+      r = wsi_CreateSwapchainKHR(device, ci, alloc, out);
+   }
+   if (r == VK_SUCCESS && x11_surface && !mali_wsi_x11_chain_add(*out, pdev->vk.wsi_device->sw)) {
       /* The table is full: an untracked X11 chain would be presented as a Wayland one (sw=false, dma-buf) with no
        * fallback, so refuse the creation and destroy the chain wsi just built (CR #323 T3). */
       wsi_DestroySwapchainKHR(device, *out, alloc);
@@ -1749,9 +2056,16 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       fprintf(stderr, "mali_vk: wsi: no free X11 chain slot (%u); swapchain creation refused\n",
               (unsigned)(sizeof(mali_wsi_x11_chains) / sizeof(mali_wsi_x11_chains[0])));
    }
-   if (r == VK_SUCCESS && chain_sw) {
+   if (r == VK_SUCCESS && pdev->vk.wsi_device->sw) {
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       mali_x11_shm_create(*out, surface, chain, ci);
+   }
+   struct wsi_swapchain *created = NULL;
+   if (r == VK_SUCCESS) {
+      /* #329: struct wsi_swapchain carries neither the surface nor the requested format back to vkQueuePresentKHR. */
+      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
+      created = chain;
+      mali_wsi_info_add(*out, surface, ci, chain, pdev->vk.wsi_device->sw);
    }
    if (r == VK_SUCCESS && !wsi_dev->sw && !wsi_dev->GetMemoryFdKHR) {
       /* Refuse cleanly instead of crashing later: this device's wsi callbacks were fetched for the software path
