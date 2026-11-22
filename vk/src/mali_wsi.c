@@ -2060,13 +2060,6 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       mali_x11_shm_create(*out, surface, chain, ci);
    }
-   struct wsi_swapchain *created = NULL;
-   if (r == VK_SUCCESS) {
-      /* #329: struct wsi_swapchain carries neither the surface nor the requested format back to vkQueuePresentKHR. */
-      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
-      created = chain;
-      mali_wsi_info_add(*out, surface, ci, chain, pdev->vk.wsi_device->sw);
-   }
    if (r == VK_SUCCESS && !wsi_dev->sw && !wsi_dev->GetMemoryFdKHR) {
       /* Refuse cleanly instead of crashing later: this device's wsi callbacks were fetched for the software path
        * (wsi_common.c:221), so a dma-buf chain cannot present - wsi_common_x11 dereferences the NULL export
