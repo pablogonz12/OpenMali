@@ -487,6 +487,14 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * null descriptors are the all-zero slot (mali_descriptor.c:423), so they read 0 and drop writes. Probed by
        * t_vk_feat robust2 (X4 G610 2026-11-22: 6/6). robustImageAccess2 stays false: it needs the OOB image value emulation
        * (zenithblue patches 181/184) and DXVK does not require it. */
+      /* robustImageAccess (Vk 1.3 core; zink's GL 4.3 route B, notes/zink-gl-version.md:50-56): the value of an imageLoad
+       * outside the image is zero with the missing components filled (0,0,1), i.e. (0,0,0,1) for R8/RG/RGB formats.
+       * Measured, not assumed: t_vk_feat robustimg loads (1000,1000) and (-5,-5) of a cleared 64x64 R8 storage image and
+       * reads back 0,0,0,255 while the in-bounds (3,3) load reads 127,0,0,255 (X8 G925 2026-11-22; the fake backends only
+       * check the flag). The clamp is the extent the descriptor carries, so it is one bound for every coordinate; a 2D
+       * array layer or a mip level out of range is not separately measured. Writes stay undefined, as the feature says.
+       * robustImageAccess2 stays false (it also wants OOB stores dropped, and no DXVK requirement). */
+      .robustImageAccess = true,
       .robustBufferAccess2 = true,
       .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
