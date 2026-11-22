@@ -13,6 +13,7 @@
 #include "nir_builder.h"
 
 #include "mali_poly.h"
+#include "mali_tcs.h"
 #include "mali_tess.h"
 
 #include <stdarg.h>
@@ -45,6 +46,10 @@ struct coord_key { float x, y, z; };
 static bool
 replace_coord(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   if (getenv("MALI_TESS_DBG"))
+      fprintf(stderr, "mali_tess: coord-intr %u (want %u) value=(%g,%g,%g)\n", (unsigned)intr->intrinsic,
+              (unsigned)nir_intrinsic_load_tess_coord, ((const struct coord_key *)data)->x,
+              ((const struct coord_key *)data)->y, ((const struct coord_key *)data)->z);
    if (intr->intrinsic != nir_intrinsic_load_tess_coord)
       return false;
    const struct coord_key *k = data;
@@ -76,6 +81,18 @@ collect_stores(nir_shader *nir, struct store *out, unsigned max)
             .from_vertex = -1,
          };
          nir_src *v = &st->src[0];
+         /* the folded select leaves movs behind: a copy of a copy is still a copy */
+         for (int guard = 0; guard < 8 && v->ssa; guard++) {
+            nir_instr *in = nir_def_instr(v->ssa);
+            if (in->type != nir_instr_type_alu)
+               break;
+            nir_alu_instr *alu = nir_instr_as_alu(in);
+            if (getenv("MALI_TESS_DBG"))
+               fprintf(stderr, "mali_tess: value alu op=%u\n", (unsigned)alu->op);
+            if (alu->op != nir_op_mov || !alu->src[0].src.ssa)
+               break;
+            *v = alu->src[0].src;
+         }
          if (v->ssa && nir_def_instr(v->ssa)->type == nir_instr_type_intrinsic) {
             nir_intrinsic_instr *ld = nir_instr_as_intrinsic(nir_def_instr(v->ssa));
             if (ld->intrinsic == nir_intrinsic_load_per_vertex_input) {
@@ -93,142 +110,14 @@ collect_stores(nir_shader *nir, struct store *out, unsigned max)
    return n;
 }
 
-/* Every tess level is the constant 1.0 (see the file comment): both slots are TCS outputs in Vulkan, so this is where the
- * levels come from. A level written from a value (or above 1.0) would subdivide the patch. */
+/* The control shader is checked from its words (`mali_tcs.c`): the generic IO lowering leaves a gl_out store with a
+ * temp-variable vertex index and the matching gl_in load with a constant one, so no per-invocation identity is provable
+ * from the lowered NIR (this file's first attempt, PR #385). The TES below is still folded in NIR because there the
+ * constant actually propagates — and because that is what the note asks for. */
 static int
-check_levels(nir_shader *tcs, char *why, size_t whysz)
+check_tcs(const uint32_t *words, uint32_t nwords, const char *entry, char *why, size_t whysz)
 {
-   unsigned outer_mask = 0, inner_mask = 0;
-   nir_function_impl *impl = nir_shader_get_entrypoint(tcs);
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         if (instr->type != nir_instr_type_intrinsic)
-            continue;
-         nir_intrinsic_instr *st = nir_instr_as_intrinsic(instr);
-         /* the levels are *patch* outputs: after IO lowering they are plain store_output, not per-vertex ones */
-         if (st->intrinsic != nir_intrinsic_store_output && st->intrinsic != nir_intrinsic_store_per_vertex_output)
-            continue;
-         const gl_varying_slot loc = nir_intrinsic_io_semantics(st).location;
-         const bool outer = loc == VARYING_SLOT_TESS_LEVEL_OUTER;
-         if (!outer && loc != VARYING_SLOT_TESS_LEVEL_INNER)
-            continue;
-         if (!nir_src_is_const(st->src[0]))
-            return refuse(why, whysz, "gl_TessLevel%s is written from a value, not the constant 1.0", outer ? "Outer" : "Inner");
-         const nir_const_value *c = nir_src_as_const_value(st->src[0]);
-         for (unsigned i = 0; i < st->src[0].ssa->num_components; i++)
-            if (c[i].f32 != 1.0f)
-               return refuse(why, whysz, "gl_TessLevel%s[%u] is %g, not 1.0", outer ? "Outer" : "Inner", i, c[i].f32);
-         /* IO lowering may split an array store into scalar ones: what matters is that every component 0..3 / 0..1 is
-          * written, each with the constant 1.0. */
-         const unsigned comp = nir_intrinsic_component(st);
-         for (unsigned k = 0; k < st->src[0].ssa->num_components; k++) {
-            if (outer) outer_mask |= 1u << (comp + k);
-            else inner_mask |= 1u << (comp + k);
-         }
-      }
-   }
-   if (outer_mask != 0xf)
-      return refuse(why, whysz, "gl_TessLevelOuter is not written as 4 components of 1.0 (mask 0x%x)", outer_mask);
-   if (inner_mask != 0x3)
-      return refuse(why, whysz, "gl_TessLevelInner is not written as 2 components of 1.0 (mask 0x%x)", inner_mask);
-   return 1;
-}
-
-/* gl_InvocationID, however the preprocessing left it: an intrinsic, or a constant per invocation later. For a TCS the
- * invocation id *is* the control point, so this is the canonical "same control point" answer. */
-static bool
-is_invocation_id(nir_src s)
-{
-   if (!s.ssa)
-      return false;
-   nir_instr *instr = nir_def_instr(s.ssa);
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
-   return nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_invocation_id;
-}
-
-/* gl_InvocationID -> the constant invocation, so an identity TCS folds to constant per-control-point copies before the
- * preprocessing runs (the same trick as the TES coord: evaluate, do not pattern-match). */
-static bool
-replace_invocation(nir_builder *b, nir_intrinsic_instr *intr, void *data)
-{
-   if (intr->intrinsic != nir_intrinsic_load_invocation_id)
-      return false;
-   b->cursor = nir_before_instr(&intr->instr);
-   nir_def_rewrite_uses(&intr->def, nir_imm_int(b, (int)(intptr_t)data));
-   nir_instr_remove(&intr->instr);
-   return true;
-}
-
-/* The TCS must be the identity patch: at every invocation i, every per-vertex output is the per-vertex input of the *same*
- * varying from control point i. Anything else (a TCS that moves a vertex, adds a varying or reorders control points)
- * changes the stream the VS wrote, and needs T2/T3. */
-static int
-check_tcs_identity(nir_shader *tcs_raw, char *why, size_t whysz)
-{
-   unsigned n = 0;
-   for (unsigned i = 0; i < 3; i++) {
-   nir_shader *tcs = nir_shader_clone(NULL, tcs_raw);
-   NIR_PASS(_, tcs, nir_shader_intrinsics_pass, replace_invocation, nir_metadata_control_flow, (void *)(intptr_t)i);
-   mali_poly_preprocess(tcs);
-   nir_function_impl *impl = nir_shader_get_entrypoint(tcs);
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         if (instr->type != nir_instr_type_intrinsic)
-            continue;
-         nir_intrinsic_instr *st = nir_instr_as_intrinsic(instr);
-         if (st->intrinsic != nir_intrinsic_store_per_vertex_output)
-            continue;
-         const gl_varying_slot loc = nir_intrinsic_io_semantics(st).location;
-         if (loc == VARYING_SLOT_TESS_LEVEL_OUTER || loc == VARYING_SLOT_TESS_LEVEL_INNER)
-            continue;   /* the level slots are T1's own business (check_levels) */
-         n++;
-         if (getenv("MALI_TESS_DBG"))
-            fprintf(stderr, "mali_tess: store loc=%u base=%u comp=%u ncomp=%u vert=%d\n", (unsigned)loc,
-                    nir_intrinsic_base(st), nir_intrinsic_component(st), st->src[0].ssa->num_components,
-                    nir_src_is_const(st->src[1]) ? (int)nir_src_as_uint(st->src[1]) : -1);
-         nir_intrinsic_instr *ld = NULL;
-         if (st->src[0].ssa && nir_def_instr(st->src[0].ssa)->type == nir_instr_type_intrinsic) {
-            nir_intrinsic_instr *cand = nir_instr_as_intrinsic(nir_def_instr(st->src[0].ssa));
-            if (cand->intrinsic == nir_intrinsic_load_per_vertex_input)
-               ld = cand;
-         }
-         if (!ld)
-            return refuse(why, whysz, "a tessellation control output that is not a copy of the patch input");
-         if (nir_intrinsic_io_semantics(ld).location != loc || nir_intrinsic_base(ld) != nir_intrinsic_base(st) ||
-             nir_intrinsic_component(ld) != nir_intrinsic_component(st) ||
-             ld->def.num_components != st->src[0].ssa->num_components || ld->def.bit_size != st->src[0].ssa->bit_size)
-            return refuse(why, whysz, "a tessellation control output copied from a different varying than the one it writes");
-         /* the same control point: the same index value, whether a loop variable or a constant */
-         const bool same_index = ld->src[1].ssa == st->src[1].ssa ||
-            (nir_src_is_const(ld->src[1]) && nir_src_is_const(st->src[1]) &&
-             nir_src_as_uint(ld->src[1]) == nir_src_as_uint(st->src[1])) ||
-            (is_invocation_id(ld->src[1]) && is_invocation_id(st->src[1]));
-         if (getenv("MALI_TESS_DBG")) {
-            nir_instr *a = nir_def_instr(ld->src[1].ssa), *b = nir_def_instr(st->src[1].ssa);
-            fprintf(stderr, "mali_tess: load loc=%u base=%u comp=%u ncomp=%u ; idx load type=%d op=%d const=%d ; store type=%d op=%d const=%d\n",
-                    (unsigned)nir_intrinsic_io_semantics(ld).location, nir_intrinsic_base(ld), nir_intrinsic_component(ld), ld->def.num_components,
-                    (int)a->type, a->type == nir_instr_type_intrinsic ? (int)nir_instr_as_intrinsic(a)->intrinsic : -1,
-                    (int)(nir_src_is_const(ld->src[1]) ? nir_src_as_uint(ld->src[1]) : 9999),
-                    (int)b->type, b->type == nir_instr_type_intrinsic ? (int)nir_instr_as_intrinsic(b)->intrinsic : -1,
-                    (int)(nir_src_is_const(st->src[1]) ? nir_src_as_uint(st->src[1]) : 9999));
-         }
-         const bool at_this_invocation = (nir_src_is_const(st->src[1]) && nir_src_as_uint(st->src[1]) == i);
-         if (!same_index || !at_this_invocation) {
-            if (getenv("MALI_TESS_DBG"))
-               fprintf(stderr, "mali_tess: invocation %u: same=%d at=%d\n", i, same_index, at_this_invocation);
-            ralloc_free(tcs);
-            return refuse(why, whysz, "a tessellation control output that is not the identity patch at invocation %u", i);
-         }
-      }
-   }
-   ralloc_free(tcs);
-   }
-   if (getenv("MALI_TESS_DBG"))
-      fprintf(stderr, "mali_tess: tcs per-vertex stores = %u\n", n);
-   if (!n)
-      return refuse(why, whysz, "the tessellation control shader writes no per-vertex output");
-   return 1;
+   return mali_tcs_passthrough(words, nwords, entry, why, whysz);
 }
 
 int
@@ -260,34 +149,28 @@ mali_tess_passthrough(unsigned arch, const uint32_t *tcs_words, uint32_t ntcs, c
       return 0;
    }
 
-   nir_shader *tcs = mali_poly_nir_from_spirv(arch, tcs_words, ntcs, MESA_SHADER_TESS_CTRL, tcs_entry, err, sizeof err);
-   if (!tcs)
-      return refuse(why, whysz, "tessellation control shader: %s", err[0] ? err : "does not parse");
-   if (tcs->info.tess.tcs_vertices_out != 3) {
-      refuse(why, whysz, "the tessellation control shader declares %u output vertices, T1 accepts 3",
-             tcs->info.tess.tcs_vertices_out);
-      ralloc_free(tcs);
+   if (!check_tcs(tcs_words, ntcs, tcs_entry, why, whysz))
       return 0;
-   }
-   /* the levels are checked on a preprocessed copy, the body on one clone per invocation (the fold must happen before the
-    * preprocessing, or the invocation id is already gone) */
-   nir_shader *levels = nir_shader_clone(NULL, tcs);
-   mali_poly_preprocess(levels);
-   const int levels_ok = check_levels(levels, why, whysz);
-   ralloc_free(levels);
-   if (!levels_ok || !check_tcs_identity(tcs, why, whysz)) {
-      ralloc_free(tcs);
-      return 0;
-   }
-   ralloc_free(tcs);
 
    /* Three output vertices: at each, the TES body must be the identity copy of the matching patch vertex. */
    static const struct coord_key coords[3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
    int rc = 0;
    for (unsigned i = 0; i < 3; i++) {
-      nir_shader *clone = nir_shader_clone(NULL, tes);
+      char err2[192] = "";
+      nir_shader *clone = mali_poly_nir_from_spirv(arch, tes_words, ntes, MESA_SHADER_TESS_EVAL, tes_entry, err2, sizeof err2);
+      if (!clone) {
+         refuse(why, whysz, "tessellation evaluation shader: %s", err2[0] ? err2 : "does not parse");
+         goto done;
+      }
+      /* gl_TessCoord is still a builtin *variable* load at this point (spirv_to_nir emits the intrinsic only when the
+       * system values are lowered), so lower them first — otherwise there is no intrinsic to replace and every clone
+       * silently keeps the shader's default path (which reads control point 0 and looked like a pass at e0). */
+      NIR_PASS(_, clone, nir_lower_system_values);
       struct coord_key k = coords[i];
       NIR_PASS(_, clone, nir_shader_intrinsics_pass, replace_coord, nir_metadata_control_flow, &k);
+      /* glslang keeps `vec3 c = gl_TessCoord` in a local variable: without SSA the coordinate is a load_deref and nothing
+       * folds, which is how e0 "passed" while e1 and e2 still read control point 0. */
+      NIR_PASS(_, clone, nir_lower_vars_to_ssa);
       /* Fold the constant through the body, then lower IO so the copy shows up as store_output <- load_per_vertex_input. */
       bool progress;
       do {
@@ -301,6 +184,10 @@ mali_tess_passthrough(unsigned arch, const uint32_t *tcs_words, uint32_t ntcs, c
          NIR_PASS(progress, clone, nir_opt_if,
                   nir_opt_if_optimize_phi_true_false | nir_opt_if_avoid_64bit_phis);
       } while (progress);
+      if (getenv("MALI_TESS_NIR")) {
+         fprintf(stderr, "--- TES at e%u after the fold ---\n", i);
+         nir_print_shader(clone, stderr);
+      }
       mali_poly_preprocess(clone);
 
       struct store st[64];
@@ -313,6 +200,10 @@ mali_tess_passthrough(unsigned arch, const uint32_t *tcs_words, uint32_t ntcs, c
          else if (st[s].from_vertex != (int)i) bad = "an output copied from the wrong patch vertex";
          if (st[s].location == VARYING_SLOT_POS && !bad) seen_pos = 1;
       }
+      if (getenv("MALI_TESS_DBG"))
+         for (unsigned k = 0; k < n; k++)
+            fprintf(stderr, "mali_tess: tes e%u store loc=%u base=%u comp=%u ncomp=%u from=%d same=%d\n", i,
+                    (unsigned)st[k].location, st[k].base, st[k].component, st[k].ncomp, st[k].from_vertex, st[k].same);
       if (!bad && !n) bad = "no outputs at all";
       if (!bad && !seen_pos) bad = "no gl_Position";
       ralloc_free(clone);
