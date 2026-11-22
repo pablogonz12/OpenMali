@@ -175,6 +175,12 @@ eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-functi
 $CXX -o "$OUT/t_gs_lower" $OBJ/t_gs_lower.o $OBJS \
    -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
+# 4e. t_cs_barrier: the compute path's WLS + barrier metadata (T2 step 3's blocker), white-box like t_gs_lower.
+eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_cs_barrier.o -c $V/tests/t_cs_barrier.c"
+# shellcheck disable=SC2086
+$CXX -o "$OUT/t_cs_barrier" $OBJ/t_cs_barrier.o $OBJS \
+   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+
 # 5. Loader manifest + test.
 cat > "$OUT/mali_icd.json" <<J
 {"file_format_version":"1.0.1","ICD":{"library_path":"$OUT/libvulkan_mali.so","api_version":"1.3.0"}}

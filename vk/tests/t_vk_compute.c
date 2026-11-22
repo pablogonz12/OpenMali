@@ -125,7 +125,7 @@ rmbuf(struct buf *o)
    if (o->m) FreeMemory(dev, o->m, NULL);
 }
 
-enum { K_SAXPY, K_SCAN, K_ATOMIC };
+enum { K_SAXPY, K_SCAN, K_ATOMIC, K_BARRIER };
 
 /* One case: kind, shader, local size, dispatch (direct or indirect), repeated g_loop times. */
 static int
@@ -193,6 +193,10 @@ run_case(const char *name, int kind, const char *spv, unsigned local, unsigned g
          uint32_t *s = b[0].p;
          for (unsigned i = 0; i < N; i++) s[i] = (i * 2654435761u >> 20) & 15;
          memset(b[1].p, 0xee, (size_t)N * 4);
+      } else if (kind == K_BARRIER) {
+         uint32_t *s = b[0].p;
+         for (unsigned i = 0; i < N; i++) s[i] = i * 7u + 3u;
+         memset(b[1].p, 0xee, (size_t)N * 4);
       } else {
          memset(b[0].p, 0, 4096);
       }
@@ -237,6 +241,18 @@ run_case(const char *name, int kind, const char *spv, unsigned local, unsigned g
                }
             }
             CHECK(bad == 0, "scan: %u of %u wrong, first at %u: got %u", bad, N, first, d[first]);
+         } else if (kind == K_BARRIER) {
+            /* without the barrier this read races the shared writes; with it every workgroup's 64 values are the
+             * neighbour-32 rotation of its own source block */
+            uint32_t *s = b[0].p, *d = b[1].p;
+            unsigned bad = 0, first = 0;
+            for (unsigned g = 0; g < groups; g++)
+               for (unsigned l = 0; l < 64; l++) {
+                  const uint32_t want = s[g * 64 + ((l + 32u) % 64u)];
+                  if (d[g * 64 + l] != want) { if (!bad) first = g * 64 + l; bad++; }
+               }
+            CHECK(bad == 0, "barrier: %u of %u wrong, first at %u: got %u want %u", bad, N, first, d[first],
+                  s[(first & ~63u) + (((first & 63u) + 32u) % 64u)]);
          } else {
             uint32_t *c = b[0].p;
             uint64_t tot = (uint64_t)groups * local;
@@ -491,6 +507,8 @@ main(int argc, char **argv)
    if (ok && CASE_ON("atomic256")) ok &= run_case("atomic256", K_ATOMIC, "atomic256.comp.spv", 256, 37, 0);
    if (ok && CASE_ON("atomic_ind")) ok &= run_case("atomic_ind", K_ATOMIC, "atomic.comp.spv", 64, 100, 1);
    if (ok && CASE_ON("scan")) ok &= run_case("scan", K_SCAN, "scan.comp.spv", 256, 64, 0);
+   /* T2 step 3's blocker: a 64-wide workgroup whose result needs shared memory *and* a workgroup barrier. */
+   if (ok && CASE_ON("barrier")) ok &= run_case("barrier", K_BARRIER, "barrier.comp.spv", 64, 64, 0);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

@@ -201,6 +201,16 @@ for g in v11 v13; do
    run "frameprof $g unset" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_frameprof" --direct "$OUT/libvulkan_mali.so" --off
 done
 
+# Compute path: shared memory + a workgroup barrier (T2 step 3's blocker, notes/tess-design.md § T2). White-box: the
+# compiler must report the 256 B of WLS the shader needs and must NOT claim mergeable workgroups — PanVK's rule
+# (valhall_can_merge_workgroups, bifrost_nir.c:517 via panvk_vX_shader.c:1598) and what mali_cs_emit.c:837-914 consumes.
+# The control (saxpy) must report zero WLS and the merge bit, so neither value is a constant.
+for g in v11 v13; do run "cs_barrier $g" 0 "$OUT/t_cs_barrier" --spv-dir "$V/shader" --arch "${g#v}"; done
+# ... and the same shader dispatched through the ICD (fake backend records it; a device run checks the values).
+for g in v11 v13; do
+   run "vk_compute barrier $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only barrier
+done
+
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
 
