@@ -2735,8 +2735,9 @@ vfmt_run(const char *name, VkFormat imgfmt, VkFormat viewfmt, VkFormat texfmt, V
    if (ok) ok = scene_draw(&s, 1, one, f);
    g_hostread = 0;
    uint32_t got = 0;
-   /* the CPU rasteriser renders on the fake backend (MALI_SOFT=1) but samples no textures */
-   const int pixels = ok && (!g_fake || getenv("MALI_SOFT")) && !(texfmt && getenv("MALI_SOFT"));
+   /* the pixel checks are hardware-only: the fake backend renders nothing, and the MALI_SOFT CPU rasteriser renders only
+    * pipelines the test registers CPU programs for (view_format registers none), so it is not a verdict either */
+   const int pixels = ok && !g_fake;
    if (pixels) {
       /* the allocation is HOST_VISIBLE (not necessarily HOST_COHERENT): invalidate before the host reads the mapping */
       VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0,
@@ -2745,9 +2746,9 @@ vfmt_run(const char *name, VkFormat imgfmt, VkFormat viewfmt, VkFormat texfmt, V
       got = px_at(&s, W / 2, H / 2) & 0xff;
       ok = got + 2 >= want && got <= want + 2;
    }
-   printf("{\"test\":\"%s\",\"image\":%d,\"view\":%d,\"px\":%u,\"want\":%u,\"ok\":%s%s%s}\n", name, (int)imgfmt,
+   printf("{\"test\":\"%s\",\"image\":%d,\"view\":%d,\"px\":%u,\"want\":%u,\"ok\":%s%s}\n", name, (int)imgfmt,
           (int)viewfmt, got, want, ok ? "true" : "false",
-          pixels ? "" : ",\"skipped\":\"", pixels ? "" : g_fake ? "fake backend\"" : "CPU path samples no textures\"");
+          pixels ? "" : g_fake ? ",\"skipped\":\"fake backend\"" : ",\"skipped\":\"no pixels\"");
    CHECK(ok, "%s: pixel %u want %u", name, got, want);
    g_colfmt = VK_FORMAT_R8G8B8A8_UNORM;
    g_vfmt = VK_FORMAT_UNDEFINED;
