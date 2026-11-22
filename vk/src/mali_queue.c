@@ -495,7 +495,10 @@ mali_hw_init(struct mali_device *dev)
    if (be->bo_alloc(dev->kdev, ARENA_BYTES, MALI_BO_HOT, &h->arena))
       goto fail;
    h->arena_live = true;
-   if (be->bo_alloc(dev->kdev, 4096 + 65536, MALI_BO_COH, &h->geo)   /* tiler heap descriptor: the tiler updates it from several cores; coverage 0 at random without COHERENT_LOCAL (arch 11) */)
+   /* TEST ONLY (MALI_TEST_TILER_COPY, notes/gs-design.md §6): the falsifier copies the geometry (varying) buffer into a second,
+    * identically sized one in the same BO. Default: one 64 KiB geometry buffer, byte-for-byte the old allocation. */
+   const bool vcopy = getenv("MALI_TEST_TILER_COPY") != NULL;
+   if (be->bo_alloc(dev->kdev, 4096 + (vcopy ? 2 : 1) * 65536, MALI_BO_COH, &h->geo)   /* tiler heap descriptor: the tiler updates it from several cores; coverage 0 at random without COHERENT_LOCAL (arch 11) */)
       goto fail;
    h->geo_live = true;
    if (be->bo_alloc(dev->kdev, 4096, MALI_BO_EVENT, &h->sync))
@@ -520,6 +523,7 @@ mali_hw_init(struct mali_device *dev)
                               .heap_chunk_size = h->heap.chunk_size,
                               .geo_cpu = h->geo.cpu,
                               .geo_va = h->geo.gpu_va,
+                              .geo2_va = vcopy ? h->geo.gpu_va + 4096 + 65536 : 0,
                               .sync_va = h->sync.gpu_va,
                               .light_pending = &h->light_pending,
                               .core_id_range = pdev->gpu.core_id_range,

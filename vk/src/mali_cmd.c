@@ -1303,6 +1303,49 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
    r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
+/* TEST ONLY: the GS design's falsifier (notes/gs-design.md §6). MALI_TEST_TILER_COPY=<k> numbers the command buffer's draw
+ * frames (1, 2, ...). After frame k a compute job copies the geometry (varying) buffer into the second one (env.geo2_va) —
+ * the copy is the only thing that writes it. After frame k+1 it copies again, from a 16-byte-shifted source, so the second
+ * copy is provably not what the vertex job wrote. Frames k+1..k+2 then run with the tiler context pointed at that copy and
+ * with no vertex job at all (mali_cs_emit.c), so the picture says whether the tiler/fragment job reads the varying buffer the
+ * compute job wrote. Without the env this is a no-op and the draw path is unchanged. */
+static void
+test_tiler_copy_hook(struct mali_cmd_buffer *cmd)
+{
+   static int k = -1;         /* parsed MALI_TEST_TILER_COPY: 0 = hook off */
+   static unsigned ndrawframe;   /* draw frames recorded so far (a frame with at least one draw) */
+   if (k < 0) { const char *e = getenv("MALI_TEST_TILER_COPY"); k = e ? atoi(e) : 0; }
+   if (!k || !g_hw_set || !g_hw.env.geo2_va || !cmd->nframes)
+      return;
+   /* MALI_TEST_TILER_COPY=-k: the same three frames, but the tiler-only frames keep the *normal* geometry buffer (no
+    * re-point). That is the control for "blank because the copy is wrong" vs "blank because a frame without a vertex job
+    * tiles nothing". */
+   const unsigned ak = (unsigned)(k > 0 ? k : -k);
+   const int repoint = k > 0;
+   struct mali_frame *last = &cmd->frames[cmd->nframes - 1];
+   if (last->compute || last->nops || !last->ndraws)
+      return;   /* not a draw frame: the hook's numbering counts draws only */
+   ndrawframe++;
+   /* After frame k the geometry buffer is copied exactly; after frame k+1 it is copied again from a 16-byte shifted source,
+    * so the second copy is provably not what the vertex job wrote. Frames k+1 and k+2 draw with no vertex job at all. */
+   if (ndrawframe == ak || ndrawframe == ak + 1) {
+      struct mali_meta_list l = { 0 };
+      struct mali_meta_surf d = { .va = g_hw.env.geo2_va, .size = 65536 },
+                           src = { .va = g_hw.env.geo_va + 4096 + (ndrawframe == ak ? 0 : 16), .size = 65536 };
+      int r = mali_meta_plan_buffer_copy(&l, &d, &src, 65536);
+      if (getenv("MALI_TEST_TILER_COPY_DBG"))
+         fprintf(stderr, "mali_vk: test_tiler_copy: frame %u copies geo %" PRIx64 " -> %" PRIx64 " (%u jobs, r=%d)\n", ndrawframe,
+                 src.va, d.va, l.n, r);
+      mali_meta_vk_emit(cmd, &l, r);
+   }
+   if (ndrawframe >= ak + 1) {
+      last->tiler_geom_va = repoint ? g_hw.env.geo2_va : 0;
+      last->tiler_only = true;
+      if (getenv("MALI_TEST_TILER_COPY_DBG"))
+         fprintf(stderr, "mali_vk: test_tiler_copy: frame %u tiler-only, geometry buffer %" PRIx64 "\n", ndrawframe, last->tiler_geom_va);
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1347,6 +1390,7 @@ mali_CmdEndRendering(VkCommandBuffer h)
    free(cmd->def_frames);
    cmd->def_frames = NULL;
    cmd->ndef_frames = cmd->capdef_frames = 0;
+   test_tiler_copy_hook(cmd);
 }
 
 /* ---- M13 hooks ---- */

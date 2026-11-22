@@ -864,6 +864,76 @@ report(const char *name, struct scene *s, double expect, double tolpct, int exac
    return 1;
 }
 
+/* ------------------------------------------------------------- gs_tiler_reads_compute */
+/* notes/gs-design.md §6, the design's one load-bearing bet: the tiler job can draw from a varying (geometry) buffer that the
+ * vertex job did not write, i.e. one a COMPUTE job filled — which is what makes a geometry shader a compute pre-pass instead
+ * of a hardware stage. The experiment lives in the driver, behind MALI_TEST_TILER_COPY=k (mali_cmd.c test_tiler_copy_hook):
+ * the k-th draw frame is normal; after it a compute job copies the geometry buffer (env.geo_va + 4096, the 64 KiB buffer the
+ * tiler context names as its "Geometry buffer") to a second one (env.geo2_va), twice: exactly after frame k, and from a
+ * 16-byte shifted source after frame k+1 (so the second copy is provably not the vertex job's data). Frames k+1 and k+2 then
+ * record NO vertex job at all and point the tiler context at the copy. Three frames here, each a full submission:
+ *   1 normal (its varyings are the ones copied), 2 from the exact copy, 3 from the shifted copy.
+ * Frame 2 identical to frame 1 while frame 3 differs = YES (the tiler/fragment job reads the compute-written buffer; frame 2
+ * cannot have read anything else). Frame 2 different, or frame 3 also identical = NO: the tiler does not read that buffer. */
+static int
+test_tiler_copy(void)
+{
+   static const float rot[3][4] = {{1, 0, -0.5f, 0}, {1, 0, 0.5f, 0}, {1, 0, 0.5f, 0}};   /* (cos, sin, offset.x, offset.y) */
+   if (!getenv("MALI_TEST_TILER_COPY")) {
+      printf("{\"test\":\"gs_tiler_reads_compute\",\"skipped\":\"set MALI_TEST_TILER_COPY=1: the hook is in the driver, not the test\",\"ok\":true}\n");
+      return 1;
+   }
+   if (g_fake) {
+      printf("{\"test\":\"gs_tiler_reads_compute\",\"skipped\":\"fake backend\",\"ok\":true}\n");
+      return 1;
+   }
+   struct scene s;
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   memset(&s, 0, sizeof s);
+   s.mode = MODE_TRI;
+   if (!scene_create(&s, 0)) return 0;
+   uint8_t *img[3] = {0};
+   uint32_t cov[3] = {0};
+   int ok = 1;
+   for (int i = 0; i < 3 && ok; i++) {
+      if (!(ok = scene_draw(&s, 1, (const float (*)[4])&rot[i], f)))
+         break;
+      cov[i] = count_cov(&s);
+      img[i] = malloc((size_t)W * H * 4);
+      if (!img[i]) { ok = 0; break; }
+      for (int y = 0; y < H; y++)
+         memcpy(img[i] + (size_t)y * W * 4, s.px + (size_t)y * s.pitch, W * 4);
+   }
+   DestroyFence(dev, f, NULL);
+   scene_destroy(&s);
+   if (!ok) {
+      for (int i = 0; i < 3; i++) free(img[i]);
+      return 0;
+   }
+   /* full-image compare: differing pixels (any channel off by more than 2, the fx cases' fuzz), the largest channel
+    * difference, and the mean absolute difference over all four channels */
+   unsigned diff[2] = {0}, maxd[2] = {0};
+   double mad[2] = {0};
+   for (int c = 0; c < 2; c++)
+      for (size_t k = 0; k < (size_t)W * H * 4; k++) {
+         int d = abs((int)img[0][k] - (int)img[c + 1][k]);
+         mad[c] += d;
+         if (d > (int)maxd[c]) maxd[c] = (unsigned)d;
+         if (d > 2 && (k & 3) == 0)
+            diff[c]++;
+      }
+   for (int c = 0; c < 2; c++) mad[c] /= (double)W * H * 4;
+   const int yes = maxd[0] <= 2 && cov[1] > 0 && maxd[1] > 8;
+   const char *verdict = yes ? "YES" : cov[1] == 0 ? "NO_blank" : maxd[1] <= 2 ? "NO_reads_elsewhere" : "NO_copy_differs";
+   printf("{\"test\":\"gs_tiler_reads_compute\",\"cov\":[%u,%u,%u],\"normal_vs_copy_diff_px\":%u,\"normal_vs_copy_max\":%u,"
+          "\"normal_vs_copy_mad\":%.4f,\"normal_vs_shifted_diff_px\":%u,\"normal_vs_shifted_max\":%u,\"normal_vs_shifted_mad\":%.4f,"
+          "\"verdict\":\"%s\"}\n", cov[0], cov[1], cov[2], diff[0], maxd[0], mad[0], diff[1], maxd[1], mad[1], verdict);
+   for (int i = 0; i < 3; i++) free(img[i]);
+   return 1;
+}
+
 /* ------------------------------------------------------------- blitreplay */
 /* notes/blitreplay.md: the black glBlitFramebuffer frame of notes/apilog.md (its "two call sequences", seq 11-19) issued
  * as literally as that log allows by our own Vulkan test, so the black has a reproduction without zink. One pass, one
@@ -2988,6 +3058,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("share")) ok &= test_share_inst();
    if (ok && CASE_ON("share")) ok &= test_share_dirty();
    if (ok && g_only && CASE_ON("share_idx")) ok &= test_share_idx();   /* explicit only: not in the goldens */
+   if (ok && g_only && CASE_ON("gs_tiler_reads_compute")) ok &= test_tiler_copy();   /* explicit only: needs the driver-side MALI_TEST_TILER_COPY hook */
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);

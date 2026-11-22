@@ -42,6 +42,7 @@ struct mali_env {
    bool heap_desc_ready;          /* heap descriptor already written by the queue (never rewrite it per frame) */
    void *geo_cpu;                 /* geometry BO: 4 KiB heap descriptor page, then a 64 KiB geometry buffer */
    uint64_t geo_va;
+   uint64_t geo2_va;              /* TEST ONLY (MALI_TEST_TILER_COPY): a second 64 KiB geometry-variying buffer in the same BO, the destination of the falsifier's compute copy. 0 = not allocated */
    uint64_t sync_va;              /* CQS word the frame increments (SYNC_ADD64) when it retires */
    int *light_pending;            /* per-device flag: a light ops frame was built, the next submit_signal of this device must not be skipped */
    unsigned core_id_range, tls_threads;   /* compute TLS sizing (BC6H/BC7 spill); 0 = TLS shaders unsupported */
@@ -251,6 +252,11 @@ struct mali_frame {
    unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
    struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
+   /* TEST ONLY (MALI_TEST_TILER_COPY, notes/gs-design.md §6): the falsifier's pre-transformed draw. tiler_only skips the
+    * vertex job (RUN_IDVS) and tiler_geom_va points the tiler context's geometry (varying) buffer at the compute job's copy.
+    * Both zero on every normal path. */
+   bool tiler_only;
+   uint64_t tiler_geom_va;
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
    unsigned nops;

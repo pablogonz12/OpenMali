@@ -1106,7 +1106,10 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
        * while firmware owns grown chunks: the second frame that needed heap growth (>~600 draws) TRANSLATION_FAULTed on v11. */
       if (!env->heap_desc_ready)
          kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
-      uint64_t geom = (env->geo_va + 4096) | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
+      /* TEST ONLY (MALI_TEST_TILER_COPY): the falsifier's pre-transformed draw points the tiler's geometry (varying) buffer at
+       * the compute job's copy instead of at the area the vertex job writes. f->tiler_geom_va is 0 on every normal path. */
+      uint64_t geom_base = f->tiler_geom_va ? f->tiler_geom_va : env->geo_va + 4096;
+      uint64_t geom = geom_base | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
       if (v13)
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
@@ -1140,6 +1143,17 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       memset(&dd_prev, 0, sizeof dd_prev);
       struct dwp dwp_prev, dwp_cur;
       bool have_dwp = false;
+      if (f->tiler_only) {
+         /* TEST ONLY (MALI_TEST_TILER_COPY, notes/gs-design.md §6): the falsifier's pre-transformed draw runs NO vertex job.
+          * The tiler/fragment job then consumes whatever the compute job left in the geometry buffer f->tiler_geom_va points
+          * at, which is the question the experiment answers. Every normal frame has tiler_only false. */
+         M48(&c, R->heap, env->heap_ctx_va);
+         E(&c, kb_cs_heap_set(R->heap));
+         E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
+         E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_OTHER, KB_CS_SLOT_LS));
+         E(&c, kb_cs_req_res(KB_CS_RES_IDVS | KB_CS_RES_TILER));
+         E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_STARTED));
+      } else
       for (unsigned i = 0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
          struct mali_draw *dr = &x;
