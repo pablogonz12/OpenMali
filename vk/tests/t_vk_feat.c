@@ -2765,6 +2765,73 @@ test_demote(void)
 
 /* sampleRateShading with 1-sample rasterisation (always supported): sample shading is a no-op, gl_SampleID is 0 and gl_SamplePosition the
  * pixel centre. Shader uses the `sample` qualifier, gl_SampleID and gl_SamplePosition (SPIR-V SampleRateShading). Red = ok. */
+/* Every query that can tell an app which sample counts exist must agree with the advertised limits (and with each
+ * other): the physical-device limits and vkGetPhysicalDeviceImageFormatProperties(2).sampleCounts per attachment format,
+ * and vkCreateImage itself. On a fleet build (no MALI_EXPERIMENTAL_MSAA) 4x is not advertised, so an attachment format
+ * must report 1x and creating a 4x attachment must fail - otherwise zink/CEF can make a 4x stencil attachment and begin
+ * a pass with it (the CMF Steam compositing failure, notes/ms-stencil-load.md). */
+static int
+test_samplecnt(void)
+{
+   const VkPhysicalDeviceLimits *l = &g_props.limits;
+   const struct { const char *n; VkFormat f; VkImageUsageFlags u; VkSampleCountFlags lim; } q[] = {
+      {"rgba8", VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferColorSampleCounts},
+      {"d24s8", VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferDepthSampleCounts},
+      {"s8", VK_FORMAT_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferStencilSampleCounts},
+      {"d32s8", VK_FORMAT_D32_SFLOAT_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferDepthSampleCounts},
+   };
+   int ok = 1;
+   for (unsigned i = 0; i < sizeof q / sizeof *q; i++) {
+      VkPhysicalDeviceImageFormatInfo2 pi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = q[i].f,
+                                             .type = VK_IMAGE_TYPE_2D, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u};
+      VkImageFormatProperties2 ip = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+      VkResult r = g_ifp2(g_pd, &pi, &ip);
+      const VkSampleCountFlags got = r == VK_SUCCESS ? ip.imageFormatProperties.sampleCounts : 0;
+      printf("{\"test\":\"samplecnt_query\",\"format\":\"%s\",\"ifp\":%u,\"limits\":%u}\n", q[i].n, got, q[i].lim);
+      if (got & ~q[i].lim) {
+         printf("{\"fail\":\"samplecnt %s: imageFormatProperties sampleCounts 0x%x offers what the limits (0x%x) do not\"}\n", q[i].n, got, q[i].lim);
+         ok = 0;
+      }
+   }
+   /* the same question asked of image creation: a sample count the app was not offered must not be silently accepted */
+   for (int i = 1; ok && i < 3; i++) {   /* d24s8, s8: the attachments zink/CEF use */
+      VkPhysicalDeviceImageFormatInfo2 pi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = q[i].f,
+                                             .type = VK_IMAGE_TYPE_2D, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u};
+      VkImageFormatProperties2 ip = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+      const VkResult qr = g_ifp2(g_pd, &pi, &ip);
+      CHECK(qr == VK_SUCCESS, "imageFormatProperties2(%s) (%d)", q[i].n, qr);
+      if (qr != VK_SUCCESS) continue;   /* an unexpected error is not "4x unsupported": fail, do not skip the row */
+      const VkBool32 adv4 = (ip.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_4_BIT) != 0;
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = q[i].f,
+                              .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_4_BIT,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      VkImage img = VK_NULL_HANDLE;
+      VkResult r = CreateImage(dev, &ii, NULL, &img);
+      if (r == VK_SUCCESS) DestroyImage(dev, img, NULL);
+      printf("{\"test\":\"samplecnt_create4x\",\"format\":\"%s\",\"result\":%d}\n", q[i].n, r);
+      if (adv4 && r != VK_SUCCESS) {
+         /* the advertised case is tested too: a format that reports 4x must be creatable, or the advertisement lies */
+         printf("{\"fail\":\"samplecnt %s: imageFormatProperties offered 4x (0x%x) but vkCreateImage returned %d\"}\n", q[i].n,
+                ip.imageFormatProperties.sampleCounts, r);
+         ok = 0;
+      } else if (!adv4 && r == VK_SUCCESS) {
+         printf("{\"fail\":\"samplecnt %s: vkCreateImage accepted 4x although imageFormatProperties offered 0x%x\"}\n", q[i].n, ip.imageFormatProperties.sampleCounts);
+         ok = 0;
+      } else if (!adv4 && r != VK_ERROR_FORMAT_NOT_SUPPORTED) {
+         /* any other error (out of memory, an invalid-handle mistake) is not the refusal this row is about: it must
+          * name the expected result, or a broken run would read as a pass */
+         printf("{\"fail\":\"samplecnt %s: vkCreateImage(4x) returned %d, want VK_ERROR_FORMAT_NOT_SUPPORTED (%d)\"}\n", q[i].n, r,
+                VK_ERROR_FORMAT_NOT_SUPPORTED);
+         ok = 0;
+      }
+   }
+   printf("{\"test\":\"samplecnt\",\"limits\":{\"fbColor\":%u,\"fbDepth\":%u,\"fbStencil\":%u,\"fbNoAtt\":%u,\"smpColor\":%u,\"smpDepth\":%u,\"smpStencil\":%u,\"storage\":%u},\"ok\":%s}\n",
+          l->framebufferColorSampleCounts, l->framebufferDepthSampleCounts, l->framebufferStencilSampleCounts,
+          l->framebufferNoAttachmentsSampleCounts, l->sampledImageColorSampleCounts, l->sampledImageDepthSampleCounts,
+          l->sampledImageStencilSampleCounts, l->storageImageSampleCounts, ok ? "true" : "false");
+   return ok;
+}
+
 static int
 test_samplerate(void)
 {
@@ -3731,6 +3798,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("provoking")) ok &= test_provoking();
    if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
+   if (ok && CASE_ON("samplecnt")) ok &= test_samplecnt();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();

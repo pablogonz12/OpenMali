@@ -126,6 +126,11 @@ rm -rf "$DRMR" "$DRMB" "$DRMX"
 for g in v11 v13; do run "dxvk_caps $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING_MSAA"; done
 for g in v11 v13; do run "vk_info $g msaa gate" 0 MALI_EXPERIMENTAL_MSAA=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# Every sample-count query must agree, and image creation must refuse a count the device did not offer: with =0 the
+# 4x counts are gone from the limits and from VkImageFormatProperties, so vkCreateImage(samples=4) must return
+# VK_ERROR_FORMAT_NOT_SUPPORTED (it succeeded before this case existed: an app could build a 4x attachment and hit a
+# refusal inside a render pass, notes/ms-stencil-load.md).
+for g in v11 v13; do for e in 0 1; do run "vk_feat samplecnt $g msaa=$e" 0 MALI_EXPERIMENTAL_MSAA=$e MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only samplecnt; done; done
 # VK_EXT_transform_feedback is ON by default (MALI_EXPERIMENTAL_TF=0 is the legacy opt-out, which also drops the UBO
 # counts back to 12/72: the two must never be mixed, see mali_physical_device.c). The extension, the feature bit, the
 # properties and the XFB lowering follow that one switch.
