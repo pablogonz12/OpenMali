@@ -62,10 +62,10 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	 * frame shader DCDs: unused (0). */
 	put(f, 8, 0, 16, p->width - 1);                          /* Width - 1 */
 	put(f, 8, 16, 16, p->height - 1);                        /* Height - 1 */
-	put(f, 9, 0, 16, 0);                                     /* Bound Min X */
-	put(f, 9, 16, 16, 0);                                    /* Bound Min Y */
-	put(f, 10, 0, 16, p->width - 1);                         /* Bound Max X (inclusive) */
-	put(f, 10, 16, 16, p->height - 1);                       /* Bound Max Y (inclusive) */
+	put(f, 9, 0, 16, p->bound_set ? p->bound_x0 : 0);        /* Bound Min X */
+	put(f, 9, 16, 16, p->bound_set ? p->bound_y0 : 0);       /* Bound Min Y */
+	put(f, 10, 0, 16, p->bound_set ? p->bound_x1 : p->width - 1);    /* Bound Max X (inclusive) */
+	put(f, 10, 16, 16, p->bound_set ? p->bound_y1 : p->height - 1);  /* Bound Max Y (inclusive) */
 	/* word 11 */
 	put(f, 11, 0, 3, p->samples_log2);                       /* Sample Count log2 */
 	put(f, 11, 3, 3, p->sample_pattern);                     /* Sample Pattern (0 single, 2 rotated 4x) */

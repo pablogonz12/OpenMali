@@ -236,6 +236,22 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
    p.rt_no_store = f->has_colour && !f->colour.store && !f->colour.resolve_va;
    if (p.rt_none)
       p.row_stride = 0;
+   /* The fragment job's tile range (FBD Bound Min/Max): the render area rounded OUTWARD to 32x32 tiles. Left at the whole
+    * attachment, the tiler processes every tile, and the tiles the render area does not cover are written back from an
+    * unloaded tile buffer - the dEQP-VK.descriptor_indexing shape (sixteen 16x16 LOAD passes on a 64x64 image) and any
+    * partial-update render. PanVK: bound min/max from the frame bounding box (panfrost/lib/pan_desc.c:1501-1502), which
+    * is the render area rounded to tiles (pan_fb.c:106 pan_fb_bbox_align), and FRAGMENT BOUNDING BOX from the same box
+    * (panvk_vX_cmd_draw.c:4418-4427). */
+   if (f->area[2] > 0 && f->area[3] > 0) {
+      int32_t x0 = f->area[0] < 0 ? 0 : f->area[0], y0 = f->area[1] < 0 ? 0 : f->area[1];
+      int32_t x1 = x0 + (f->area[2] > 1 ? f->area[2] : 1) - 1, y1 = y0 + (f->area[3] > 1 ? f->area[3] : 1) - 1;
+      x0 &= ~31; y0 &= ~31; x1 |= 31; y1 |= 31;
+      if (x1 > (int32_t)f->width - 1) x1 = (int32_t)f->width - 1;
+      if (y1 > (int32_t)f->height - 1) y1 = (int32_t)f->height - 1;
+      p.bound_x0 = (unsigned)x0; p.bound_y0 = (unsigned)y0;
+      p.bound_x1 = (unsigned)x1; p.bound_y1 = (unsigned)y1;
+      p.bound_set = 1;
+   }
    p.tiler_va = tiler_ctx_va;
    p.provoking_last = f->provoking_last;
    p.sample_locations_va = sample_locations_va;

@@ -25,6 +25,12 @@ unsigned kb_zs_bytes_per_pixel(enum kb_zs_format f);
 struct kb_fb_params {
 	unsigned provoking_last;      /* 1: clear FBD word 11 bit 14 (last vertex provokes); 0 (default): first vertex, the Vulkan default */
 	unsigned width, height;       /* pixels, 1..65536 */
+	/* Bound Min/Max (FBD words 9..10, inclusive pixels): the tile range the FRAGMENT job processes. PanVK packs it from the
+	 * frame bounding box (panfrost/lib/pan_desc.c:1501-1502) and the draw's bounding box from the render area rounded to
+	 * tiles (panvk_vX_cmd_draw.c:4418-4427). Default 0 = the whole attachment. If it is the whole attachment, the fragment
+	 * job writes back tiles the frame never drew in - from an unloaded tile buffer - which erases them. */
+	unsigned bound_x0, bound_y0, bound_x1, bound_y1;   /* 0,0,width-1,height-1 when all zero */
+	unsigned bound_set;           /* 1: use the bound_* fields above */
 	unsigned rt_none;             /* no colour attachment: the render target is declared but Write Enable is off, no buffer */
 	unsigned rt_no_store;         /* 1: colour buffer exists but is not written back (storeOp DONT_CARE/NONE): RT Write Enable off, no tile write traffic */
 	uint64_t rt_gpu_va;           /* colour buffer, 64-byte aligned */
