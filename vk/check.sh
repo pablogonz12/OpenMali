@@ -38,9 +38,10 @@ export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time
 # Number of DXVK-required core/1.1-1.3/robustness2 features still false (of 49); lower it only with a passing test for the new feature.
 # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws.
 # 2026-11-22 robustness2: the list grew 47 -> 49 because robustness2.robustBufferAccess2/nullDescriptor are DXVK 3.1.1
-# requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted; robustBufferAccess2 is advertised now (vk_feat robust2),
-# so the honest count is unchanged at 3 while one real gap closed (main's 47-item list would have read 4/49).
-DXVK_MISSING=3
+# requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted, so the honest count is 4 (main's 47-row list read 3 because it
+# never looked at them). robustBufferAccess2 stays false until an out-of-bounds buffer *load* is clamped on hardware
+# (notes/robustness2.md, X4 2026-11-22).
+DXVK_MISSING=4
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
