@@ -1172,6 +1172,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
             pv.first_instance = dr->first_instance;
             pv.first_vertex = dr->first_vertex;
             pv.draw_id = dr->draw_id;
+            /* the predecessor snapshot must remember that this draw was indirect: the next draw's s1 asks !pd->ind_va, and
+             * without the field the direct draw after an indirect one would reuse the patched FAU block */
+            pv.ind_va = dr->ind_va;
          }
          dd_prev = dd;
       }

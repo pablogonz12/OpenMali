@@ -128,7 +128,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -662,6 +662,12 @@ scene_create(struct scene *s, int depth)
       CHECK(AllocateMemory(dev, &aai, NULL, &s->argsmem) == VK_SUCCESS, "args mem");
       CHECK(MapMemory(dev, s->argsmem, 0, VK_WHOLE_SIZE, 0, (void **)&s->argsp) == VK_SUCCESS, "map args");
       memset(s->argsp, 0, 64);
+      {   /* only HOST_VISIBLE was required: without a flush a non-coherent allocation may not have the zeros the GPU is
+           * meant to start from (the record-time zero check and the compute's read both depend on them) */
+         VkMappedMemoryRange mr0 = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->argsmem, .offset = 0,
+                                    .size = 64};
+         FlushMappedMemoryRanges(dev, 1, &mr0);
+      }
       CHECK(BindBufferMemory(dev, s->args, s->argsmem, 0) == VK_SUCCESS, "bind args");
 
       s->csm = load_spv("indargs.comp.spv");
