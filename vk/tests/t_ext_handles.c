@@ -362,7 +362,7 @@ main(int argc, char **argv)
       VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
    };
    for (size_t i = 0; pGetExternalSemaphoreProperties && i < 2; i++) {
-      memset(&esp, 0, sizeof esp);
+      esp = (VkExternalSemaphoreProperties){.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
       esi.handleType = sem_handle_types[i];
       pGetExternalSemaphoreProperties(pd, &esi, &esp);
       int transfer = (esp.externalSemaphoreFeatures &
@@ -384,7 +384,7 @@ main(int argc, char **argv)
       VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT, VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
    };
    for (size_t i = 0; pGetExternalFenceProperties && i < 2; i++) {
-      memset(&efp, 0, sizeof efp);
+      efp = (VkExternalFenceProperties){.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES};
       efi.handleType = fence_handle_types[i];
       pGetExternalFenceProperties(pd, &efi, &efp);
       int transfer = (efp.externalFenceFeatures &
@@ -449,9 +449,12 @@ main(int argc, char **argv)
                                  .semaphore = a,
                                  .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT}, &fd);
          CHECK(r == VK_SUCCESS, "vkGetSemaphoreFdKHR(SYNC_FD) on a signalled binary semaphore (%d)", r);
-         NOTE("%-6s sync fd from semaphore: %d (%s)", fd >= 0 ? "ok" : "FAIL", fd,
-              fd >= 0 ? fd_kind(fd) : "no fd");
-         CHECK(fd >= 0, "SYNC_FD export returned no fd");
+         /* SYNC_FD export of a semaphore that has already signalled legitimately answers -1: a successful
+          * export with nothing left to wait on, not a missing fd. */
+         int already = r == VK_SUCCESS && fd == -1;
+         NOTE("%-6s sync fd from semaphore: %d (%s)", fd >= 0 || already ? "ok" : "FAIL", fd,
+              fd >= 0 ? fd_kind(fd) : already ? "already signalled" : "no fd");
+         CHECK(fd >= 0 || already, "SYNC_FD export returned no fd (%d)", r);
          if (fd >= 0) {
             CHECK(fd_ready(fd, 2000), "exported sync fd is not readable");
             r = pImportSemaphoreFd(c.dev, &(VkImportSemaphoreFdInfoKHR){
@@ -469,6 +472,8 @@ main(int argc, char **argv)
                r = pWaitForFences(c.dev, 1, &f, VK_TRUE, 2000000000ull);
                CHECK(r == VK_SUCCESS, "the submit that waited on the imported semaphore completed (%d)", r);
             }
+         } else if (already) {
+            NOTE("skip  semaphore import arm: exported fd is -1 (already signalled, nothing to import)");
          }
       }
       if (f) pDestroyFence(c.dev, f, NULL);
@@ -482,7 +487,13 @@ main(int argc, char **argv)
    /* 7. fence, SYNC_FD round trip: signal -> export -> poll -> import -> wait */
    if (device_ext(pd, "VK_KHR_external_fence_fd") && pGetFenceFd && pImportFenceFd) {
       VkFence f1 = VK_NULL_HANDLE, f2 = VK_NULL_HANDLE;
-      VkResult r = pCreateFence(c.dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &f1);
+      /* f1 is the exported one: the handle type must be in its creation-time export mask. */
+      VkExportFenceCreateInfo efci = {
+         .sType = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO,
+         .handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+      };
+      VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = &efci};
+      VkResult r = pCreateFence(c.dev, &fci, NULL, &f1);
       CHECK(r == VK_SUCCESS, "create fence 1 (%d)", r);
       r = pCreateFence(c.dev, &(VkFenceCreateInfo){.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}, NULL, &f2);
       CHECK(r == VK_SUCCESS, "create fence 2 (%d)", r);
@@ -496,9 +507,10 @@ main(int argc, char **argv)
                                .fence = f1,
                                .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT}, &fd);
          CHECK(r == VK_SUCCESS, "vkGetFenceFdKHR(SYNC_FD) on a signalled fence (%d)", r);
-         NOTE("%-6s sync fd from fence: %d (%s)", fd >= 0 ? "ok" : "FAIL", fd,
-              fd >= 0 ? fd_kind(fd) : "no fd");
-         CHECK(fd >= 0, "fence SYNC_FD export returned no fd");
+         int already = r == VK_SUCCESS && fd == -1;
+         NOTE("%-6s sync fd from fence: %d (%s)", fd >= 0 || already ? "ok" : "FAIL", fd,
+              fd >= 0 ? fd_kind(fd) : already ? "already signalled" : "no fd");
+         CHECK(fd >= 0 || already, "fence SYNC_FD export returned no fd (%d)", r);
          if (fd >= 0) {
             CHECK(fd_ready(fd, 2000), "exported fence fd is not readable");
             r = pImportFenceFd(c.dev, &(VkImportFenceFdInfoKHR){
@@ -512,6 +524,8 @@ main(int argc, char **argv)
             if (r == VK_SUCCESS)
                CHECK(pWaitForFences(c.dev, 1, &f2, VK_TRUE, 2000000000ull) == VK_SUCCESS,
                      "the imported fence signalled");
+         } else if (already) {
+            NOTE("skip  fence import arm: exported fd is -1 (already signalled, nothing to import)");
          }
       }
       if (f1) pDestroyFence(c.dev, f1, NULL);
@@ -585,7 +599,9 @@ main(int argc, char **argv)
             if (mem_a) {
                CHECK(pBindBufferMemory(c.dev, buf_a, mem_a, 0) == VK_SUCCESS, "bind exportable buffer");
                void *p = NULL;
-               if (pMapMemory(c.dev, mem_a, 0, VK_WHOLE_SIZE, 0, &p) == VK_SUCCESS && p) {
+               r = pMapMemory(c.dev, mem_a, 0, VK_WHOLE_SIZE, 0, &p);
+               CHECK(r == VK_SUCCESS && p != NULL, "map the exportable memory for the pattern write (%d)", r);
+               if (r == VK_SUCCESS && p) {
                   memset(p, 0x5a, size);
                   pUnmapMemory(c.dev, mem_a);
                }
@@ -624,7 +640,9 @@ main(int argc, char **argv)
                         if (buf_b) {
                            CHECK(pBindBufferMemory(c.dev, buf_b, mem_b, 0) == VK_SUCCESS, "bind the importing buffer");
                            void *q = NULL;
-                           if (pMapMemory(c.dev, mem_b, 0, VK_WHOLE_SIZE, 0, &q) == VK_SUCCESS && q) {
+                           r = pMapMemory(c.dev, mem_b, 0, VK_WHOLE_SIZE, 0, &q);
+                           CHECK(r == VK_SUCCESS && q != NULL, "map the imported memory (%d)", r);
+                           if (r == VK_SUCCESS && q) {
                               CHECK(((unsigned char *)q)[0] == 0x5a && ((unsigned char *)q)[size - 1] == 0x5a,
                                     "the imported buffer does not show the exported bytes (0x%02x..0x%02x)",
                                     ((unsigned char *)q)[0], ((unsigned char *)q)[size - 1]);
