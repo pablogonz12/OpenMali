@@ -131,7 +131,7 @@ case_skipped(const char *n)
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
    X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
-   X(CmdClearAttachments) X(CmdCopyBufferToImage) X(FlushMappedMemoryRanges) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
+   X(CmdClearAttachments) X(CmdCopyBufferToImage) X(CmdCopyImageToBuffer) X(FlushMappedMemoryRanges) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
    X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults) \
@@ -3070,8 +3070,10 @@ static PFN_vkGetPhysicalDeviceFormatProperties GetFmtProps;
 
 struct fsw {
    VkImage img;
-   VkDeviceMemory mem;
+   VkDeviceMemory mem;        /* the colour attachment (OPTIMAL tiling: Mali does not render to a linear image reliably) */
    VkImageView view;
+   VkBuffer rb;               /* readback buffer: the image is copied here at the end */
+   VkDeviceMemory rbmem;
    uint8_t *px;
    uint32_t pitch;
    VkCommandPool pool;
@@ -3093,24 +3095,32 @@ fsw_init(struct fsw *f)
    memset(f, 0, sizeof *f);
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
       .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
-      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
-      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    CHECK(CreateImage(dev, &ii, NULL, &f->img) == VK_SUCCESS, "fsw image");
    VkMemoryRequirements mr;
    GetImageMemoryRequirements(dev, f->img, &mr);
-   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-   CHECK(mt >= 0, "fsw memory type");
+   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+   if (mt < 0) mt = memtype(mr.memoryTypeBits, 0);
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
    CHECK(AllocateMemory(dev, &ai, NULL, &f->mem) == VK_SUCCESS, "fsw image memory");
    CHECK(BindImageMemory(dev, f->img, f->mem, 0) == VK_SUCCESS, "fsw bind");
+   /* the readback buffer: tightly packed RGBA8 rows */
+   VkBufferCreateInfo rbci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)W * H * 4,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+   CHECK(CreateBuffer(dev, &rbci, NULL, &f->rb) == VK_SUCCESS, "fsw readback buffer");
+   VkMemoryRequirements rmr;
+   GetBufferMemoryRequirements(dev, f->rb, &rmr);
+   int rmt = memtype(rmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+   CHECK(rmt >= 0, "fsw readback memory type");
+   VkMemoryAllocateInfo rai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = rmr.size, .memoryTypeIndex = rmt};
+   CHECK(AllocateMemory(dev, &rai, NULL, &f->rbmem) == VK_SUCCESS, "fsw readback memory");
+   CHECK(BindBufferMemory(dev, f->rb, f->rbmem, 0) == VK_SUCCESS, "fsw readback bind");
    uint8_t *map;
-   CHECK(MapMemory(dev, f->mem, 0, VK_WHOLE_SIZE, 0, (void **)&map) == VK_SUCCESS, "fsw map");
-   VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
-   VkSubresourceLayout sl;
-   GetImageSubresourceLayout(dev, f->img, &sr, &sl);
-   f->pitch = (uint32_t)sl.rowPitch;
-   f->px = map + sl.offset;
+   CHECK(MapMemory(dev, f->rbmem, 0, VK_WHOLE_SIZE, 0, (void **)&map) == VK_SUCCESS, "fsw map");
+   f->pitch = W * 4;
+   f->px = map;
    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = f->img,
       .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
       .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -3129,7 +3139,7 @@ fsw_init(struct fsw *f)
       .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
       .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
       .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
       .image = f->img, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
    CmdPipelineBarrier2(f->cb, &dep);
@@ -3141,7 +3151,7 @@ fsw_cell_begin(struct fsw *f, int row)
 {
    VkRect2D a = fsw_rect(row);
    VkRenderingAttachmentInfo att = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = f->view,
-      .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .resolveMode = VK_RESOLVE_MODE_NONE,
+      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .resolveMode = VK_RESOLVE_MODE_NONE,
       .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
    att.clearValue.color.float32[0] = 0.5f;   /* a drawn cell must overwrite this, and it sets alpha = 0 (the "drawn" mark) */
    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = a, .layerCount = 1,
@@ -3159,12 +3169,23 @@ fsw_cell_end(struct fsw *f)
 static int
 fsw_submit(struct fsw *f)
 {
+   /* colour attachment -> TRANSFER_SRC, copy the whole image into the readback buffer, then hand it to the host */
+   VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+      .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .image = f->img, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+   CmdPipelineBarrier2(f->cb, &dep);
+   VkBufferImageCopy reg = {.bufferOffset = 0, .bufferRowLength = 0, .bufferImageHeight = 0,
+      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {W, H, 1}};
+   CmdCopyImageToBuffer(f->cb, f->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, f->rb, 1, &reg);
    CHECK(EndCommandBuffer(f->cb) == VK_SUCCESS, "fsw end");
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &f->cb};
    CHECK(QueueSubmit(queue, 1, &si, f->fence) == VK_SUCCESS, "fsw submit");
    CHECK(WaitForFences(dev, 1, &f->fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS, "fsw wait");
    DeviceWaitIdle(dev);
-   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = f->mem, .offset = 0, .size = VK_WHOLE_SIZE};
+   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = f->rbmem, .offset = 0, .size = VK_WHOLE_SIZE};
    InvalidateMappedMemoryRanges(dev, 1, &mr);
    return 1;
 }
@@ -3190,6 +3211,8 @@ fsw_destroy(struct fsw *f)
    if (f->view) DestroyImageView(dev, f->view, NULL);
    if (f->img) DestroyImage(dev, f->img, NULL);
    if (f->mem) FreeMemory(dev, f->mem, NULL);
+   if (f->rb) DestroyBuffer(dev, f->rb, NULL);
+   if (f->rbmem) FreeMemory(dev, f->rbmem, NULL);
    memset(f, 0, sizeof *f);
 }
 
@@ -3211,9 +3234,11 @@ test_vtxfmt(void)
    static int sel[512], stride_[512], baseA[512], baseB[512];
    int nf = 0, trunc = 0;
    /* 1. the advertised vertex formats, with a stride larger than the element */
+   const char *only = getenv("FMTSW_ONLY");
    for (int i = 0; i < nall; i++) {
       VkFormatProperties fp;
       GetFmtProps(g_pd, g_fmts[i].fmt, &fp);
+      if (only && strcmp(only, g_fmts[i].name)) continue;
       if (g_fmts[i].kind == K_SRGB) continue;   /* no sRGB vertex format exists */
       if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) continue;
       if (nf == 256) { trunc = 1; break; }
@@ -3224,48 +3249,50 @@ test_vtxfmt(void)
    printf("{\"test\":\"vtxfmt\",\"formats\":%d%s}\n", nf, trunc ? ",\"truncated\":true" : "");
    if (!nf) return 1;
 
-   /* 2. the vertex data: one buffer, stream A at offset 4 of each vertex, stream B at offset 8 */
+   /* 2. the vertex data: ONE BUFFER PER STREAM (one buffer bound at two different offsets to bindings 0 and 1 made the
+    * driver fetch the second offset's bytes for BOTH attributes -- notes/format-sweep.md). Stream A carries the attribute
+    * at offset 4 of each vertex, stream B its own bytes at offset 8, with different values so a mix-up shows. */
+   VkBuffer vb[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+   VkDeviceMemory vmem[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+   uint8_t *bp[2] = {NULL, NULL};
    VkDeviceSize tot = 16;
-   for (int k = 0; k < nf; k++) tot += 2 * (16 + 6 * (VkDeviceSize)stride_[k]);
-   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = tot,
-      .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
-   VkBuffer vb;
-   CHECK(CreateBuffer(dev, &bci, NULL, &vb) == VK_SUCCESS, "vtxfmt buffer");
-   VkMemoryRequirements vmr;
-   GetBufferMemoryRequirements(dev, vb, &vmr);
-   int vmt = memtype(vmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-   CHECK(vmt >= 0, "vtxfmt memory type");
-   VkMemoryAllocateInfo vai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = vmr.size, .memoryTypeIndex = vmt};
-   VkDeviceMemory vmem;
-   CHECK(AllocateMemory(dev, &vai, NULL, &vmem) == VK_SUCCESS, "vtxfmt memory");
-   CHECK(BindBufferMemory(dev, vb, vmem, 0) == VK_SUCCESS, "vtxfmt bind");
-   uint8_t *bp;
-   CHECK(MapMemory(dev, vmem, 0, VK_WHOLE_SIZE, 0, (void **)&bp) == VK_SUCCESS, "vtxfmt map");
-   memset(bp, 0, (size_t)tot);
-   {
+   for (int k = 0; k < nf; k++) tot += 16 + 6 * (VkDeviceSize)stride_[k];
+   for (int sd = 0; sd < 2; sd++) {
+      VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = tot,
+         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+      CHECK(CreateBuffer(dev, &bci, NULL, &vb[sd]) == VK_SUCCESS, "vtxfmt buffer %d", sd);
+      VkMemoryRequirements vmr;
+      GetBufferMemoryRequirements(dev, vb[sd], &vmr);
+      int vmt = memtype(vmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      CHECK(vmt >= 0, "vtxfmt memory type");
+      VkMemoryAllocateInfo vai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = vmr.size,
+         .memoryTypeIndex = vmt};
+      CHECK(AllocateMemory(dev, &vai, NULL, &vmem[sd]) == VK_SUCCESS, "vtxfmt memory");
+      CHECK(BindBufferMemory(dev, vb[sd], vmem[sd], 0) == VK_SUCCESS, "vtxfmt bind");
+      CHECK(MapMemory(dev, vmem[sd], 0, VK_WHOLE_SIZE, 0, (void **)&bp[sd]) == VK_SUCCESS, "vtxfmt map");
+      memset(bp[sd], 0, (size_t)tot);
       VkDeviceSize off = 16;
       for (int k = 0; k < nf; k++) {
-         const struct fd *d = &g_fmts[sel[k]];
-         baseA[k] = (int)off;
+         if (sd == 0) baseA[k] = (int)off; else baseB[k] = (int)off;
+         for (int v = 0; v < 6; v++)
+            fmt_encode(&g_fmts[sel[k]], sd, bp[sd] + off + (sd ? 8 : 4) + v * stride_[k]);
          off += 16 + 6 * (VkDeviceSize)stride_[k];
-         baseB[k] = (int)off;
-         off += 16 + 6 * (VkDeviceSize)stride_[k];
-         for (int v = 0; v < 6; v++) {
-            fmt_encode(d, 0, bp + baseA[k] + 4 + v * stride_[k]);
-            fmt_encode(d, 1, bp + baseB[k] + 8 + v * stride_[k]);
-         }
       }
+      VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = vmem[sd], .offset = 0,
+         .size = VK_WHOLE_SIZE};
+      FlushMappedMemoryRanges(dev, 1, &flush);
    }
-   VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = vmem, .offset = 0, .size = VK_WHOLE_SIZE};
-   FlushMappedMemoryRanges(dev, 1, &flush);
 
    /* 3. shaders + pipeline layout (16 B scale, 16 B bias, 16 B selector) */
-   VkShaderModule vsm[3], fsm;
-   vsm[0] = load_spv("fmtsw.vert.spv");
-   vsm[1] = load_spv("fmtsw_u.vert.spv");
-   vsm[2] = load_spv("fmtsw_s.vert.spv");
+   /* [width][class]: the width is the shader's own attribute type, so one pipeline asks for exactly 2 or 4 components */
+   VkShaderModule vsm[2][3], fsm;
+   for (int w = 0; w < 2; w++) {
+      vsm[w][0] = load_spv(w ? "fmtsw2.vert.spv" : "fmtsw4.vert.spv");
+      vsm[w][1] = load_spv(w ? "fmtsw2_u.vert.spv" : "fmtsw4_u.vert.spv");
+      vsm[w][2] = load_spv(w ? "fmtsw2_s.vert.spv" : "fmtsw4_s.vert.spv");
+   }
    fsm = load_spv("fmtsw.frag.spv");
-   CHECK(vsm[0] && vsm[1] && vsm[2] && fsm, "vtxfmt shader modules");
+   CHECK(vsm[0][0] && vsm[0][1] && vsm[0][2] && vsm[1][0] && vsm[1][1] && vsm[1][2] && fsm, "vtxfmt shader modules");
    VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .size = sizeof(struct vtxpc)};
    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1,
       .pPushConstantRanges = &pcr};
@@ -3276,19 +3303,20 @@ test_vtxfmt(void)
    struct fsw f;
    if (!fsw_init(&f)) return 0;
    int bad = 0, nrow = 0, npix = 0;
-   static VkPipeline pipes[256];
+   static VkPipeline pipes[512];
    for (int k = 0; k < nf; k++) {
       const struct fd *d = &g_fmts[sel[k]];
       const int nc = fmt_class(d);
       VkVertexInputBindingDescription bd[2] = {{.binding = 0, .stride = (uint32_t)stride_[k], .inputRate = VK_VERTEX_INPUT_RATE_VERTEX},
                                                {.binding = 1, .stride = (uint32_t)stride_[k], .inputRate = VK_VERTEX_INPUT_RATE_VERTEX}};
-      VkVertexInputAttributeDescription ad[4] = {{.location = 0, .binding = 0, .format = d->fmt, .offset = 4},
-                                                 {.location = 1, .binding = 1, .format = d->fmt, .offset = 8},
-                                                 {.location = 2, .binding = 0, .format = d->fmt, .offset = 4},
-                                                 {.location = 3, .binding = 1, .format = d->fmt, .offset = 8}};
+      VkVertexInputAttributeDescription ad[2] = {{.location = 0, .binding = 0, .format = d->fmt, .offset = 4},
+                                                 {.location = 1, .binding = 1, .format = d->fmt, .offset = 8}};
+      /* ONE attribute, from ONE binding. Binding both streams at once made the driver fetch the LAST binding's bytes
+       * for the attribute (notes/format-sweep.md), which says nothing about the format; a stream is selected by the
+       * binding index, so stream B is still a real second stream at binding 1. */
       VkPipelineVertexInputStateCreateInfo vin = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-         .vertexBindingDescriptionCount = 2, .pVertexBindingDescriptions = bd,
-         .vertexAttributeDescriptionCount = 4, .pVertexAttributeDescriptions = ad};
+         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bd[0],
+         .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &ad[0]};
       VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
          .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
       VkViewport vpv = {0.0f, 0.0f, (float)W, (float)H, 0.0f, 1.0f};
@@ -3307,63 +3335,77 @@ test_vtxfmt(void)
          .colorAttachmentCount = 1, .pColorAttachmentFormats = (VkFormat[]){VK_FORMAT_R8G8B8A8_UNORM}};
       VkPipelineShaderStageCreateInfo st[2] = {
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
-          .module = vsm[nc], .pName = "main"},
+          .module = vsm[0][nc], .pName = "main"},
          {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
           .module = fsm, .pName = "main"}};
       VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
          .stageCount = 2, .pStages = st, .pVertexInputState = &vin, .pInputAssemblyState = &ia, .pViewportState = &vp,
          .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .layout = pl};
-      VkPipeline pipe = VK_NULL_HANDLE;
-      if (CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &pipe) != VK_SUCCESS) {
+      double sc[4], bi[4];
+      fmt_scale(d, sc, bi);
+      int piped = 1;
+      for (int w2 = 0; w2 < 2 && piped; w2++)    /* w2 = 0: the attribute declared vec4; w2 = 1: declared vec2 */
+         for (int sd = 0; sd < 2; sd++) {         /* sd = which stream the attribute is fetched from */
+            bd[0].binding = (uint32_t)sd;
+            bd[0].stride = (uint32_t)stride_[k];
+            ad[0].binding = (uint32_t)sd;
+            ad[0].format = d->fmt;
+            ad[0].offset = sd ? 8 : 4;
+            VkPipelineShaderStageCreateInfo st2[2] = {st[0], st[1]};
+            st2[0].module = vsm[w2][nc];
+            VkGraphicsPipelineCreateInfo gp2 = gp;
+            gp2.pStages = st2;
+            VkPipeline pipe = VK_NULL_HANDLE;
+            if (CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp2, NULL, &pipe) != VK_SUCCESS) { piped = 0; break; }
+            pipes[k * 4 + w2 * 2 + sd] = pipe;
+            if (g_fake) continue;
+            const int row = k * 4 + w2 * 2 + sd;
+            nrow = row + 1;
+            fsw_cell_begin(&f, row);
+            CmdBindPipeline(f.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            /* the stream's own non-zero binding offset; the attribute offset (4 or 8) is inside each vertex */
+            const VkDeviceSize off = (VkDeviceSize)(sd ? baseB[k] : baseA[k]);
+            CmdBindVertexBuffers(f.cb, (uint32_t)sd, 1, &vb[sd], &off);
+            struct vtxpc pc = {.c = {0, 0, 0, 0}};
+            for (int i = 0; i < 4; i++) {
+               pc.scale[i] = (float)sc[i];
+               pc.bias[i] = (float)bi[i];
+            }
+            CmdPushConstants(f.cb, pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+            CmdDraw(f.cb, 6, 1, 0, 0);
+            fsw_cell_end(&f);
+         }
+      if (!piped) {
          printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"skipped\":\"pipeline\",\"ok\":false}\n", d->name);
          bad++;
          continue;
       }
-      pipes[k] = pipe;
       if (g_fake) {
          /* the fake backend renders nothing: the host can still assert that every advertised vertex format builds a pipeline */
          printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"feat\":\"vb\",\"skipped\":\"fake backend renders nothing\",\"ok\":true}\n", d->name);
          continue;
       }
-      double sc[4], bi[4];
-      fmt_scale(d, sc, bi);
-      for (int w = 0; w < 4; w++) {
-         const int row = nrow++;
-         fsw_cell_begin(&f, row);
-         CmdBindPipeline(f.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-         VkBuffer b[2] = {vb, vb};
-         /* the binding offsets are the streams' own non-zero starts; the attribute offsets 4 and 8 are inside each vertex */
-         VkDeviceSize offs[2] = {(VkDeviceSize)baseA[k], (VkDeviceSize)baseB[k]};
-         CmdBindVertexBuffers(f.cb, 0, 2, b, offs);
-         struct vtxpc pc = {.c = {w, 0, 0, 0}};
-         for (int i = 0; i < 4; i++) {
-            pc.scale[i] = (float)sc[i];
-            pc.bias[i] = (float)bi[i];
-         }
-         CmdPushConstants(f.cb, pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-         CmdDraw(f.cb, 6, 1, 0, 0);
-         fsw_cell_end(&f);
-      }
    }
    if (g_fake) {
-      for (int k = 0; k < nf; k++) if (pipes[k]) DestroyPipeline(dev, pipes[k], NULL);
+      for (int k = 0; k < 4 * nf; k++) if (pipes[k]) DestroyPipeline(dev, pipes[k], NULL);
       DestroyPipelineLayout(dev, pl, NULL);
-      DestroyShaderModule(dev, vsm[0], NULL); DestroyShaderModule(dev, vsm[1], NULL);
-      DestroyShaderModule(dev, vsm[2], NULL); DestroyShaderModule(dev, fsm, NULL);
-      DestroyBuffer(dev, vb, NULL); FreeMemory(dev, vmem, NULL);
+      for (int w = 0; w < 2; w++)
+         for (int c = 0; c < 3; c++) DestroyShaderModule(dev, vsm[w][c], NULL);
+      DestroyShaderModule(dev, fsm, NULL);
+      DestroyBuffer(dev, vb[0], NULL); FreeMemory(dev, vmem[0], NULL);
+      DestroyBuffer(dev, vb[1], NULL); FreeMemory(dev, vmem[1], NULL);
       fsw_destroy(&f);
       return bad == 0;
    }
    if (!fsw_submit(&f)) return 0;
    /* 5. one line per format: the four rows' expectations against the readback */
-   nrow = 0;
    for (int k = 0; k < nf; k++) {
       const struct fd *d = &g_fmts[sel[k]];
       double sc[4], bi[4];
       fmt_scale(d, sc, bi);
       int fmtbad = 0, first_row = -1, first_ch = -1, want0 = -1, got0 = -1;
       for (int w = 0; w < 4; w++) {
-         const int row = nrow++;
+         const int row = k * 4 + w;   /* w = w2 * 2 + which: width 4 then width 2, stream A then stream B */
          double ex[4];
          fmt_expect(d, w & 1, w >= 2 ? 2 : 4, ex);
          int rgb[3], got[3], want[3];
@@ -3382,6 +3424,17 @@ test_vtxfmt(void)
             if (abs(got[i] - want[i]) > 1) fmtbad++;
          }
       }
+      if (getenv("FMTSW_DUMP")) {
+         int r2 = k * 4;
+         for (int w = 0; w < 4; w++) {
+            double e2[4];
+            int g2[3] = {-1, -1, -1};
+            fmt_expect(d, w & 1, w >= 2 ? 2 : 4, e2);
+            fsw_read(&f, r2 + w, g2);
+            printf("{\"dump\":\"vtxfmt\",\"fmt\":\"%s\",\"which\":%d,\"got\":\"%d,%d,%d\",\"val\":\"%.4f,%.4f,%.4f\"}\n",
+                   d->name, w, g2[0], g2[1], g2[2], e2[0], e2[1], e2[2]);
+         }
+      }
       if (fmtbad) {
          bad++;
          printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"kind\":\"%s\",\"feat\":\"vb\",\"ok\":false,\"row\":%d,\"ch\":%d,\"expected\":%d,\"got\":%d}\n",
@@ -3390,11 +3443,13 @@ test_vtxfmt(void)
          printf("{\"test\":\"vtxfmt\",\"fmt\":\"%s\",\"feat\":\"vb\",\"ok\":true}\n", d->name);
       }
    }
-   for (int k = 0; k < nf; k++) if (pipes[k]) DestroyPipeline(dev, pipes[k], NULL);
+   for (int k = 0; k < 4 * nf; k++) if (pipes[k]) DestroyPipeline(dev, pipes[k], NULL);
    DestroyPipelineLayout(dev, pl, NULL);
-   DestroyShaderModule(dev, vsm[0], NULL); DestroyShaderModule(dev, vsm[1], NULL);
-   DestroyShaderModule(dev, vsm[2], NULL); DestroyShaderModule(dev, fsm, NULL);
-   DestroyBuffer(dev, vb, NULL); FreeMemory(dev, vmem, NULL);
+   for (int w = 0; w < 2; w++)
+      for (int c = 0; c < 3; c++) DestroyShaderModule(dev, vsm[w][c], NULL);
+   DestroyShaderModule(dev, fsm, NULL);
+   DestroyBuffer(dev, vb[0], NULL); FreeMemory(dev, vmem[0], NULL);
+   DestroyBuffer(dev, vb[1], NULL); FreeMemory(dev, vmem[1], NULL);
    fsw_destroy(&f);
    printf("{\"test\":\"vtxfmt\",\"result\":\"%s\",\"formats\":%d,\"rows\":%d,\"pixels\":%d}\n",
           bad ? "FAIL" : "PASS", nf, nrow, npix);

@@ -1,12 +1,15 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# GLSL -> SPIR-V for the format sweep (notes/format-sweep.md). Three vertex modules (float / uint / sint attribute
-# classes) and three fragment modules (the same classes for the sampled-format rows).
+# GLSL -> SPIR-V for the format sweep (notes/format-sweep.md): the attribute vertex stage in three numeric classes and
+# two widths, plus the fragment stages (attributes, and the sampled-format fetches).
 set -e; cd "$(dirname "$0")"
 V="glslangValidator -V --target-env vulkan1.1"
-$V fmtsw.vert -o fmtsw.vert.spv >/dev/null                                        # vec4/uvec4/ivec4 class: float
-$V -DVT=uvec4 -DV2T=uvec2 fmtsw.vert -o fmtsw_u.vert.spv >/dev/null               # unsigned integer attributes
-$V -DVT=ivec4 -DV2T=ivec2 fmtsw.vert -o fmtsw_s.vert.spv >/dev/null               # signed integer attributes
+for w in 4 2; do
+   [ $w = 2 ] && D="-DVEC2"
+   $V $D                 fmtsw.vert -o fmtsw$w.vert.spv >/dev/null
+   $V $D -DVT=uvec4 -DVT2=uvec2 fmtsw.vert -o fmtsw${w}_u.vert.spv >/dev/null
+   $V $D -DVT=ivec4 -DVT2=ivec2 fmtsw.vert -o fmtsw${w}_s.vert.spv >/dev/null
+done
 $V fmtsw.frag -o fmtsw.frag.spv >/dev/null
 $V fmtsw_quad.vert -o fmtsw_quad.vert.spv >/dev/null
 $V fmtsw_tex.frag -o fmtsw_tex.frag.spv >/dev/null
