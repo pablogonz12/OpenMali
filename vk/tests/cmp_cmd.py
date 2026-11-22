@@ -120,7 +120,10 @@ def trace(side, arch):
         op = e['op']
         if op in (0, 1, 2):
             continue
-        ops.append(e['w'] & ~MASK48 if op in (51, 52, 38) else e['w'])
+        w = e['w']
+        if op == 11:   # FINISH_FRAGMENT: fold the wait mask / signal slot (#375 chains it through slots 4/5; the hand-built
+            w &= ~((0xffff << 16) | (0xf << 48))    # reference keeps the synchronous form, mask 0, slot 0)
+        ops.append(w & ~MASK48 if op in (51, 52, 38) else w)
         if op in ds.RUNS:
             k = n[op] = n.get(op, 0) + 1
             tag = '%s#%d' % (e['name'], k)

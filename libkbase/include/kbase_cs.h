@@ -159,6 +159,18 @@ static inline uint64_t kb_cs_load_multiple(unsigned first_reg, unsigned addr_reg
 { return kb_cs_raw(KB_CS_OP_LOAD_MULTIPLE, ((uint64_t)first_reg << 48) | ((uint64_t)addr_reg << 40) | ((uint64_t)(reg_mask & 0xffff) << 16) | (uint16_t)byte_off); }
 static inline uint64_t kb_cs_finish_fragment_heap(bool incr, unsigned first_chunk_reg, unsigned last_chunk_reg)
 { return kb_cs_raw(KB_CS_OP_FINISH_FRAGMENT, (incr ? 1u : 0u) | ((uint64_t)last_chunk_reg << 32) | ((uint64_t)first_chunk_reg << 40)); }
+/* The same, deferred: waits the scoreboard slots in wait_mask and signals signal_slot (bits 51:48). A FINISH_FRAGMENT with
+ * wait mask 0 is a synchronous instruction and the packer drops its signal slot (Mesa cs_apply_async, genxml/cs_builder.h:866),
+ * so nothing can be ordered after the chunk release it performs. PanVK chains successive FINISH_FRAGMENTs through an
+ * alternating scoreboard slot exactly for this reason: "each iteration signals the next one, so the next FINISH_FRAGMENT
+ * cannot start before the previous one completed (required to guarantee that used heap chunks won't be released
+ * prematurely)" (panfrost/vulkan/csf/panvk_vX_cmd_draw.c:4633-4650, cs_iter_sb_update). */
+static inline uint64_t kb_cs_finish_fragment_heap_signal(bool incr, unsigned first_chunk_reg, unsigned last_chunk_reg,
+                                                        unsigned signal_slot, unsigned wait_mask)
+{
+	return kb_cs_raw(KB_CS_OP_FINISH_FRAGMENT, (incr ? 1u : 0u) | ((uint64_t)(signal_slot & 0xf) << 48) |
+			 ((uint64_t)(wait_mask & 0xffff) << 16) | ((uint64_t)last_chunk_reg << 32) | ((uint64_t)first_chunk_reg << 40));
+}
 
 /* A deliberately undefined opcode (opcodes above 53 are unassigned in v10/v11); the CSF firmware reports CS_INVALID_INSTRUCTION. */
 static inline uint64_t kb_cs_invalid(void) { return kb_cs_raw(0xfe, 0x1234); }
