@@ -599,8 +599,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          r->src_c = ci->src_color_blend_factor; r->dst_c = ci->dst_color_blend_factor;
          r->src_a = ci->src_alpha_blend_factor; r->dst_a = ci->dst_alpha_blend_factor;
          r->op_c = ci->color_blend_op; r->op_a = ci->alpha_blend_op;
-         /* a target whose effective write mask is zero is never written: its equation must not fail the buffer */
-         if (r->blend_en && r->wmask) {
+         /* a target that is never written — zero write mask, or a fragment shader that has no output for it — keeps
+          * its state unjudged: independentBlend allows any equation behind an inactive output */
+         const uint32_t cmask = bp->gfx.fs ? bp->gfx.fs->fs_colour_mask : 0;
+         const bool written = !cmask || (cmask & (1u << i));
+         if (r->blend_en && r->wmask && written) {
             struct mali_fixed t = *x;
             t.blend_en = true; t.wmask = r->wmask; t.src_c = r->src_c; t.dst_c = r->dst_c; t.src_a = r->src_a; t.dst_a = r->dst_a;
             t.op_c = r->op_c; t.op_a = r->op_a;

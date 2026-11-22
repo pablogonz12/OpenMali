@@ -680,11 +680,13 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    if (!f->has_colour && f->has_st && d->fx.set && d->fx.st_test)
       dop.allow_fpk = 0;
    uint32_t dcd_extra = 0, pf_clear = 0;
+   /* the preload helper leaves fx.set false, so this guard cannot live inside the block: with two attachments and a
+    * preload shader that writes only some of them the forward pixel kill must still be off */
+   if (fs_skips_target)
+      dop.allow_fpk = 0;
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
       if (d->fx.blend_en || d->fx.wmask != 0xf)
-         dop.allow_fpk = 0;
-      if (fs_skips_target)
          dop.allow_fpk = 0;
       for (unsigned i = 1; i < nrt; i++)
          if (d->fx.rtb[i - 1].blend_en || d->fx.rtb[i - 1].wmask != 0xf)
