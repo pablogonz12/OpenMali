@@ -1904,7 +1904,7 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
               (int)qpdev->wsi.sw);
    }
    /* MALI_WSI_DUMP and the per-chain MALI_WSI_DEBUG summary, for every kind of swapchain (Wayland dma-buf and X11
-    * DRI3 included): after the present semaphores are waited on, before wsi_common is handed the frame (#329). */
+    * DRI3 included): after the present semaphores are waited on, before wsi_common is handed the frame (#329, #343). */
    for (uint32_t i = 0; i < info->swapchainCount; i++) {
       VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
       if (sc)
@@ -2219,13 +2219,6 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
          mali_x11_shm_create(*out, surface, chain, ci);
       }
    }
-   struct wsi_swapchain *created = NULL;
-   if (r == VK_SUCCESS) {
-      /* #329: struct wsi_swapchain carries neither the surface nor the requested format back to vkQueuePresentKHR. */
-      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
-      created = chain;
-      mali_wsi_info_add(*out, surface, ci, chain, pdev->vk.wsi_device->sw);
-   }
    if (r == VK_SUCCESS && !wsi_dev->sw && !wsi_dev->GetMemoryFdKHR) {
       /* Refuse cleanly instead of crashing later: this device's wsi callbacks were fetched for the software path
        * (wsi_common.c:221), so a dma-buf chain cannot present - wsi_common_x11 dereferences the NULL export
@@ -2238,6 +2231,18 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       wsi_DestroySwapchainKHR(device, *out, alloc);
       *out = VK_NULL_HANDLE;
       r = VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   struct wsi_swapchain *created = NULL;
+   if (r == VK_SUCCESS) {
+      /* Record what a present of this chain must be able to name: struct wsi_swapchain carries neither the surface
+       * nor the requested format back to vkQueuePresentKHR. */
+      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
+      created = chain;
+      /* The *selected* instance's sw (pdev->vk.wsi_device), not wsi_dev's: a no-DRI3 X11 surface is created on the
+       * software instance, and recording &pdev->wsi's base mode made every summary of it say sw=0
+       * (CR thread, vk/src/mali_wsi.c:1740). */
+      mali_wsi_info_add(*out, surface, ci, chain, pdev->vk.wsi_device->sw);
    }
 
    if (mali_wsi_debug() || r != VK_SUCCESS) {
