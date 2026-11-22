@@ -288,6 +288,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       vst = Anz(hw, res_alloc + dyn_alloc, 64, &o->vst);
       if (!vst)
          return -ENOMEM;
+      /* ... except the entries the 4-entry rounding adds past nres: the hardware never reads them, but a recycled arena page
+       * can still hold a previous draw's user-set entry there, i.e. a GPU pointer into a BO that has been freed since. It is
+       * a dump/audit problem (golden.py R-VA), not a hardware one, and at most 3 entries * 32 B to clear. */
+      memset((uint8_t *)vst + nres * KB_RES_SIZE, 0, (((nres + 3) & ~3u) - nres) * KB_RES_SIZE);
       o->fst = o->vst;
       if (dyn_alloc) {
          dyn = (uint32_t *)((uint8_t *)vst + res_alloc);
