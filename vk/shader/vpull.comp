@@ -1,0 +1,14 @@
+#version 450
+// notes/gs-design.md §6, the design that survives: the GS/rast pre-pass is a compute job that writes the post-transform
+// vertices (clip position + varyings) into a storage buffer, and an ordinary vertex shader pulls them by gl_VertexIndex.
+// This one copies the host-written source vertex records (set 0, binding 0) into the buffer the draw reads (binding 1),
+// one invocation per vertex: the compute job is what wrote every byte the VS sees.
+struct V { vec4 clip; vec4 col; };
+layout(local_size_x = 4) in;
+layout(set = 0, binding = 0) readonly buffer Src { V v[]; } src;
+layout(set = 0, binding = 1) writeonly buffer Dst { V v[]; } dst;
+void main() {
+   uint i = gl_GlobalInvocationID.x;
+   if (i < 3u)
+      dst.v[i] = src.v[i];
+}

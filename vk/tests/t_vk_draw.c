@@ -139,7 +139,8 @@ case_skipped(const char *n)
    X(CmdSetScissorWithCount) X(CmdSetLineWidth) X(CmdSetDepthBoundsTestEnable) X(CmdSetPrimitiveTopology)    \
    X(CmdSetDepthTestEnable) X(CmdSetDepthWriteEnable) X(CmdSetDepthCompareOp)                      \
    X(CmdSetStencilTestEnable) X(CmdSetStencilOp)                                                   \
-   X(CmdSetRasterizerDiscardEnable) X(CmdSetDepthBiasEnable) X(CmdSetPrimitiveRestartEnable)
+   X(CmdSetRasterizerDiscardEnable) X(CmdSetDepthBiasEnable) X(CmdSetPrimitiveRestartEnable) \
+   X(CreateComputePipelines) X(CmdDispatch)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -932,6 +933,240 @@ test_tiler_copy(void)
           "\"verdict\":\"%s\"}\n", cov[0], cov[1], cov[2], diff[0], maxd[0], mad[0], diff[1], maxd[1], mad[1], verdict);
    for (int i = 0; i < 3; i++) free(img[i]);
    return 1;
+}
+
+/* ------------------------------------------------------------- gs_vertex_pull */
+/* notes/gs-design.md §6, the shape the design actually needs (and the one poly/Asahi use): the GS "rast" stage is an ordinary
+ * vertex shader that pulls its per-vertex data from a storage buffer a COMPUTE job wrote, inside a normal IDVS draw — no
+ * driver-side hook, no foreign varying buffer. Two frames, each its own submission:
+ *   1 the reference draw (rot.vert + the triangle's vertex buffers, the same clip positions and colours),
+ *   2 a compute dispatch (vpull.comp) writing the 3 post-transform vertices into an SSBO, then a draw with vertexCount 3,
+ *     NO vertex buffers bound, whose VS (vpull.vert) reads that SSBO by gl_VertexIndex.
+ * The pictures must be identical. The same run then times 200 such compute+draw pairs against 200 plain draw frames, which is
+ * the µs/draw the brief's 3.4 µs bar is measured against. */
+static int
+test_vertex_pull(void)
+{
+   static const float vpos[3][4] = {{-0.5f, -0.5f, 0.5f, 1}, {0.5f, -0.5f, 0.5f, 1}, {0, 0.5f, 0.5f, 1}};   /* rot.vert with rot = identity */
+   static const float vcol[3][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}};
+   if (g_fake) {
+      printf("{\"test\":\"gs_vertex_pull\",\"skipped\":\"fake backend\",\"ok\":true}\n");
+      return 1;
+   }
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fci, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+
+   /* two 96-byte host-visible SSBOs: binding 0 = the source records the host fills, binding 1 = what the compute job writes and the
+    * vertex shader reads (the same buffer is both, so "the VS reads compute output" cannot be a stale host write) */
+   VkBuffer bo[2];
+   VkDeviceMemory bm[2];
+   uint8_t *bp[2] = {0};
+   VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 3 * 32,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+   for (int i = 0; i < 2; i++) {
+      CHECK(CreateBuffer(dev, &bci, NULL, &bo[i]) == VK_SUCCESS, "ssbo");
+      VkMemoryRequirements mr;
+      GetBufferMemoryRequirements(dev, bo[i], &mr);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                 .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+      CHECK(AllocateMemory(dev, &ai, NULL, &bm[i]) == VK_SUCCESS, "ssbo mem");
+      CHECK(BindBufferMemory(dev, bo[i], bm[i], 0) == VK_SUCCESS, "bind ssbo");
+      CHECK(MapMemory(dev, bm[i], 0, VK_WHOLE_SIZE, 0, (void **)&bp[i]) == VK_SUCCESS, "map ssbo");
+   }
+   for (int v = 0; v < 3; v++) {
+      memcpy(bp[0] + v * 32, vpos[v], 16);
+      memcpy(bp[0] + v * 32 + 16, vcol[v], 16);
+      memset(bp[1] + v * 32, 0, 32);   /* zero: anything the pictures show came from the compute job */
+   }
+   /* frame 1: the reference, recorded and drawn before anything writes the SSBO */
+   float rot[4] = {1, 0, 0, 0};
+   if (!scene_draw(&s, 1, (const float (*)[4])&rot, f)) return 0;
+   const uint32_t cov_ref = count_cov(&s);
+   uint8_t *ref = malloc((size_t)W * H * 4);
+   CHECK(ref != NULL, "ref image");
+   for (int y = 0; y < H; y++) memcpy(ref + (size_t)y * W * 4, s.px + (size_t)y * s.pitch, W * 4);
+
+   /* descriptor set: the compute job's source and destination */
+   VkDescriptorSetLayoutBinding lb[2] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+                                         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dpool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dpool) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dpool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet dset;
+   CHECK(AllocateDescriptorSets(dev, &dai, &dset) == VK_SUCCESS, "dset");
+   VkDescriptorBufferInfo bi[2];
+   memset(bi, 0, sizeof bi);
+   for (int i = 0; i < 2; i++) { bi[i].buffer = bo[i]; bi[i].range = VK_WHOLE_SIZE; }
+   VkWriteDescriptorSet wr[2];
+   memset(wr, 0, sizeof wr);
+   for (int i = 0; i < 2; i++) {
+      wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      wr[i].dstSet = dset;
+      wr[i].dstBinding = i;
+      wr[i].descriptorCount = 1;
+      wr[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      wr[i].pBufferInfo = &bi[i];
+   }
+   UpdateDescriptorSets(dev, 2, wr, 0, NULL);
+
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout layout;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &layout) == VK_SUCCESS, "pipeline layout");
+   VkShaderModule csm = load_spv("vpull.comp.spv"), vsm = load_spv("vpull.vert.spv"), fsm = load_spv("var.frag.spv");
+   CHECK(csm && vsm && fsm, "shader modules");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = layout,
+                                      .stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, csm, "main"}};
+   VkPipeline cpipe;
+   CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &cpipe) == VK_SUCCESS, "compute pipeline");
+
+   /* the vertex-pull graphics pipeline: no vertex input, no vertex buffers, one descriptor set the VS reads */
+   VkPipelineShaderStageCreateInfo st[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, vsm, "main"},
+                                            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fsm, "main"}};
+   VkPipelineVertexInputStateCreateInfo vin = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+   VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+   VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+   VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+                                                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+   VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                              .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+   VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
+   VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = 1, .pAttachments = &cba};
+   VkDynamicState dyns[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyns};
+   VkGraphicsPipelineCreateInfo gpi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
+                                       .pVertexInputState = &vin, .pInputAssemblyState = &ia, .pViewportState = &vps,
+                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
+                                       .pDynamicState = &dys, .layout = layout, .renderPass = s.rp, .subpass = 0};
+   VkPipeline gpipe;
+   CHECK(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &gpipe) == VK_SUCCESS, "graphics pipeline (vertex pull)");
+
+   /* one compute+draw frame: dispatch (the compute job writes the 3 vertices), barrier, then the vertex-pull draw */
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   VkClearValue clr = {.color = {{0, 0, 0, 0}}};
+   int ok = 1;
+   for (int rep = 0; ok && rep < 3; rep++) {   /* rep 0 supplies the picture; all three are timed with the clean-cache loop below */
+      VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBuffer cb;
+      CHECK(AllocateCommandBuffers(dev, &cai, &cb) == VK_SUCCESS, "cmdbuf");
+      VkCommandBufferBeginInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      CHECK(BeginCommandBuffer(cb, &cbi) == VK_SUCCESS, "begin");
+      if (rep == 0) {
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cpipe);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &dset, 0, NULL);
+         CmdDispatch(cb, 1, 1, 1);
+         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT};
+         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+         CmdPipelineBarrier2(cb, &di);
+      }
+      CmdBeginRenderPass(cb, &(VkRenderPassBeginInfo){.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp,
+                         .framebuffer = s.fb, .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &clr},
+                         VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, gpipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &dset, 0, NULL);
+      CmdSetViewport(cb, 0, 1, &vp);
+      CmdSetScissor(cb, 0, 1, &sc);
+      CmdDraw(cb, 3, 1, 0, 0);   /* no vertex buffers bound: every attribute is the compute job's SSBO */
+      CmdEndRenderPass(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      VkResult r = QueueSubmit(queue, 1, &si, f);
+      CHECK(r == VK_SUCCESS, "submit = %d", r);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+      ResetFences(dev, 1, &f);
+      FreeCommandBuffers(dev, s.pool, 1, &cb);
+   }
+   const uint32_t cov_pull = count_cov(&s);
+   uint8_t *pull = malloc((size_t)W * H * 4);
+   CHECK(pull != NULL, "pull image");
+   for (int y = 0; y < H; y++) memcpy(pull + (size_t)y * W * 4, s.px + (size_t)y * s.pitch, W * 4);
+   unsigned diff = 0, maxd = 0;
+   double mad = 0;
+   for (size_t k = 0; k < (size_t)W * H * 4; k++) {
+      int d = abs((int)ref[k] - (int)pull[k]);
+      mad += d;
+      if (d > (int)maxd) maxd = (unsigned)d;
+      if (d > 2 && (k & 3) == 0) diff++;
+   }
+   mad /= (double)W * H * 4;
+
+   /* timing: 200 compute+draw frames and 200 plain draw frames in the same process (the plain one is the same 1.2–1.4 µs/draw
+    * baseline drawcost.md measures), record and submit separately */
+   double pair_us = 0, plain_us = 0;
+   {
+      const int nrep = 200;
+      for (int i = 0; i < nrep; i++)   /* the same frame scene_draw records for one draw: the baseline the pair is compared to */
+         if (!scene_draw(&s, 1, (const float (*)[4])&rot, f)) { ok = 0; break; }
+      plain_us = g_t_rec / nrep + g_t_sub / nrep;
+      g_t_rec = g_t_sub = 0;
+      double t_all = now_us();
+      for (int i = 0; ok && i < nrep; i++) {
+         VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+         VkCommandBuffer cb;
+         if (AllocateCommandBuffers(dev, &cai, &cb) != VK_SUCCESS) { ok = 0; break; }
+         VkCommandBufferBeginInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+         double r0 = now_us();
+         BeginCommandBuffer(cb, &cbi);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cpipe);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &dset, 0, NULL);
+         CmdDispatch(cb, 1, 1, 1);
+         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT};
+         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+         CmdPipelineBarrier2(cb, &di);
+         CmdBeginRenderPass(cb, &(VkRenderPassBeginInfo){.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp,
+                            .framebuffer = s.fb, .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &clr},
+                            VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, gpipe);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &dset, 0, NULL);
+         CmdSetViewport(cb, 0, 1, &vp);
+         CmdSetScissor(cb, 0, 1, &sc);
+         CmdDraw(cb, 3, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         EndCommandBuffer(cb);
+         g_t_rec += now_us() - r0;
+         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+         double s0 = now_us();
+         QueueSubmit(queue, 1, &si, f);
+         g_t_sub += now_us() - s0;
+         WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull);
+         ResetFences(dev, 1, &f);
+         FreeCommandBuffers(dev, s.pool, 1, &cb);
+      }
+      pair_us = (now_us() - t_all) / nrep;
+   }
+   printf("{\"test\":\"gs_vertex_pull\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"mad\":%.4f,"
+          "\"us_per_pair_wall\":%.3f,\"us_rec_sub_pair\":%.3f,\"us_rec_sub_plain\":%.3f,\"differs\":%s,\"ok\":%s}\n", cov_ref, cov_pull,
+          diff, maxd, mad, pair_us, (g_t_rec + g_t_sub) / 200.0, plain_us, maxd > 2 ? "true" : "false",
+          ok && maxd <= 2 && cov_pull == cov_ref ? "true" : "false");
+   free(ref);
+   free(pull);
+   DestroyPipeline(dev, gpipe, NULL);
+   DestroyPipeline(dev, cpipe, NULL);
+   DestroyPipelineLayout(dev, layout, NULL);
+   DestroyDescriptorPool(dev, dpool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 2; i++) { DestroyBuffer(dev, bo[i], NULL); FreeMemory(dev, bm[i], NULL); }
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok && maxd <= 2 && cov_pull == cov_ref;
 }
 
 /* ------------------------------------------------------------- blitreplay */
@@ -3059,6 +3294,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("share")) ok &= test_share_dirty();
    if (ok && g_only && CASE_ON("share_idx")) ok &= test_share_idx();   /* explicit only: not in the goldens */
    if (ok && g_only && CASE_ON("gs_tiler_reads_compute")) ok &= test_tiler_copy();   /* explicit only: needs the driver-side MALI_TEST_TILER_COPY hook */
+   if (ok && g_only && CASE_ON("gs_vertex_pull")) ok &= test_vertex_pull();   /* explicit only: the surviving design's draw shape (compute job + vertex pull) */
    if (ok && CASE_ON("ring")) ok &= test_ring();
    if (ok && CASE_ON("occlusion")) ok &= test_occ();
    if (ok && CASE_ON("pushfs")) ok &= test_quad("pushfs", MODE_PUSHFS);
