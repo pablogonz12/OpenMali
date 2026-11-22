@@ -458,14 +458,20 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
          float w1 = ((sx[0] - sx[2]) * (py - sy[2]) - (sy[0] - sy[2]) * (px - sx[2])) * s;
          float w2 = ((sx[1] - sx[0]) * (py - sy[0]) - (sy[1] - sy[0]) * (px - sx[0])) * s;
          w0 *= iarea; w1 *= iarea; w2 *= iarea;
-         if (w0 < 0 || w1 < 0 || w2 < 0)
+         /* A weight this close to zero is "on the edge", whether the rounding gave it 0 or a few ulps either side:
+          * the two triangles of a shared edge evaluate that edge from different base vertices, so one can see -1e-8
+          * where the other sees exactly 0 - rejecting the first on its sign and the second on the top-left rule left
+          * the sample covered by neither (CR thread, vk/src/mali_soft.c:468). Every on-edge sample then goes through
+          * the top-left rule below, which is complementary for the two windings, so exactly one triangle keeps it. */
+         const float weps = 1e-6f;
+         if (w0 < -weps || w1 < -weps || w2 < -weps)
             continue;
          /* Vulkan's fill rule: a sample exactly on an edge is covered only when that edge is a top or left edge, so
           * two triangles sharing a diagonal cover the seam exactly once instead of both (with blending that is a
           * line along every shared edge; with the depth test on the second write usually hid it). */
-         if ((w0 == 0 && !edge_is_top_left((sx[2] - sx[1]) * s, (sy[2] - sy[1]) * s)) ||
-             (w1 == 0 && !edge_is_top_left((sx[0] - sx[2]) * s, (sy[0] - sy[2]) * s)) ||
-             (w2 == 0 && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
+         if ((fabsf(w0) <= weps && !edge_is_top_left((sx[2] - sx[1]) * s, (sy[2] - sy[1]) * s)) ||
+             (fabsf(w1) <= weps && !edge_is_top_left((sx[0] - sx[2]) * s, (sy[0] - sy[2]) * s)) ||
+             (fabsf(w2) <= weps && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
             continue;
          const float zn = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];   /* NDC depth, clipped against [0, 1] */
          if (depth_clip && (zn < 0.0f || zn > 1.0f))
