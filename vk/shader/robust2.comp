@@ -9,7 +9,7 @@ layout(set = 0, binding = 0, std430) buffer Out { uint r[]; };
 layout(set = 0, binding = 1, std430) buffer S { uint s[]; };
 layout(set = 0, binding = 2, std140) uniform U { uvec4 u[4]; };
 layout(set = 0, binding = 3, std430) buffer N { uint n[]; };
-layout(set = 0, binding = 4) uniform samplerBuffer T;
+layout(set = 0, binding = 4) uniform usamplerBuffer T;   /* R32_UINT view: the numeric type must match */
 void main()
 {
    uint i = 0;
@@ -19,7 +19,7 @@ void main()
    r[i++] = u[3].x;                         /* ubo load in bounds (word 48 of 64) -> 0x33333333 */
    uint j = 4u;                             /* dynamic: an OOB UBO index is a runtime index, not a compile error */
    r[i++] = u[j].x;                         /* ubo load OOB -> 0 */
-   r[i++] = floatBitsToUint(texelFetch(T, 4).x);   /* texel fetch OOB -> 0 */
+   r[i++] = texelFetch(T, 4).x;             /* texel fetch OOB -> 0 */
    r[i++] = n[0];                           /* null descriptor read -> 0 */
    n[0] = 1u;                               /* null descriptor write -> discarded */
 }

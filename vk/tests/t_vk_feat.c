@@ -2282,6 +2282,11 @@ test_robust2(void)
       CmdDispatch(cb, 1, 1, 1);
       if (!cb_submit(&t, cb)) return 0;
       if (!g_fake) {
+         /* fence wait is not host visibility: make the shader's writes visible before reading them (and before the guard read) */
+         VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = out.m, .offset = 0, .size = VK_WHOLE_SIZE};
+         InvalidateMappedMemoryRanges(dev, 1, &mr);
+         mr.memory = sb.m;
+         InvalidateMappedMemoryRanges(dev, 1, &mr);
          const uint32_t *got = (const uint32_t *)out.p;
          for (int i = 0; i < n; i++) {
             if (got[i] != want[i]) printf("{\"robust2\":\"r[%d]\",\"got\":%u,\"want\":%u}\n", i, got[i], want[i]);
