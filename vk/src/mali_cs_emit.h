@@ -147,6 +147,7 @@ struct mali_draw {
    float vp[6];                           /* x, y, w, h, minDepth, maxDepth */
    int32_t sc[4];                         /* scissor x, y, w, h */
    bool sc_set;                           /* a scissor was set: an empty one clips everything, unset means render area */
+   bool preload;                          /* the loadOp LOAD preload draw: it covers the whole tile-aligned render area */
    unsigned nsets;                        /* bound descriptor sets, appear as SRT entries 1.. (entry 0 = driver set) */
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
@@ -250,6 +251,8 @@ struct mali_frame {
    struct mali_att colour, zs, st;
    unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
    struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
+   bool preload_all;                      /* loadOp LOAD: the LOAD preload restores the whole tile-aligned render area, so the
+                                           * frame bbox is that box and every draw is clipped to the render area */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */

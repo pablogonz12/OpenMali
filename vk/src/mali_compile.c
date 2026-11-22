@@ -19,6 +19,7 @@
 #include "vk_nir_convert_ycbcr.h"
 #include "vk_ycbcr_conversion.h"
 
+#include "mali_apilog.h"
 #include "mali_compile.h"
 #include "mali_descriptor_lower.h"
 
@@ -872,6 +873,18 @@ mali_spirv_has_xfb(const uint32_t *w, uint32_t nwords)
 int
 mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz)
 {
+   /* MALI_API_LOG: dump the exact SPIR-V being compiled (one file per module) so a failing workload can be replayed */
+   {
+      static int seq;
+      const char *dir = mali_apilog_dir();
+      if (dir && o->spirv && o->spirv_words) {
+         int id = __atomic_fetch_add(&seq, 1, __ATOMIC_RELAXED);
+         char nm[64];
+         snprintf(nm, sizeof nm, "sh%d_%s.spv", id, o->stage == MALI_STAGE_VERTEX ? "vs" : o->stage == MALI_STAGE_FRAGMENT ? "fs" : "cs");
+         mali_apilog_dump(nm, o->spirv, (size_t)o->spirv_words * 4);
+         mali_apilog("ShaderModule id=%d stage=%d file=%s words=%zu", id, (int)o->stage, nm, (size_t)o->spirv_words);
+      }
+   }
    if (!o || !out || !o->spirv || !o->spirv_words)
       return fail(err, errsz, "bad arguments");
    /* spirv_to_nir dereferences a NULL builder option on a bad header: check it ourselves */

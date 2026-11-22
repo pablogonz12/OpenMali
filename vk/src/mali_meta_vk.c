@@ -15,6 +15,7 @@
 #include "mali_cmd.h"
 #include "mali_image.h"
 #include "mali_meta.h"
+#include "mali_apilog.h"
 #include "mali_meta_vk.h"
 #include "mali_bc.h"
 
@@ -321,6 +322,7 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci)
 {
+   mali_apilog("CopyImageToBuffer cb=%p regions=%u", (void *)h, ci->regionCount);
    CMD(h);
    struct mali_image *img = mali_image_from_handle(ci->srcImage);
    struct vk_buffer *buf = vk_buffer_from_handle(ci->dstBuffer);
