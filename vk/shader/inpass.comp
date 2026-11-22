@@ -1,0 +1,34 @@
+#version 450
+// SPDX-License-Identifier: MIT
+// t_vk_draw --only inpass_compute: a kernel that runs INSIDE a render pass (compute-in-pass.md, the pre block) and writes what
+// the draw after it reads: the vertex positions (binding 1) and the VkDrawIndirectCommand (binding 0, slot `ai`).
+// mode 0: triangle A {(-.5,-.5),(.5,-.5),(0,.5)} = the "triangle" case (8192 px at 256x256); args {3,1,0,0}
+// mode 1: A then B {(-1,-1),(-.5,-1),(-1,-.5)} (2048 px, no overlap); args {6,1,0,0}
+// mode 2: a triangle in the left half  {(-.9,-.5),(-.1,-.5),(-.5,.5)}  (6554 px); args {3,1,0,0}
+// mode 3: the same in the right half (x + 1)
+// mode 9: writes nothing (the control: zero args draw nothing)
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer Args { uvec4 cmd[]; };
+layout(std430, binding = 1) buffer Verts { vec4 v[]; };
+layout(push_constant) uniform P { uint mode; uint vbase; uint ai; } pc;
+void main()
+{
+   uint b = pc.vbase;
+   if (pc.mode == 0u || pc.mode == 1u) {
+      v[b + 0u] = vec4(-.5, -.5, 0, 1);
+      v[b + 1u] = vec4(.5, -.5, 0, 1);
+      v[b + 2u] = vec4(0, .5, 0, 1);
+      if (pc.mode == 1u) {
+         v[b + 3u] = vec4(-1, -1, 0, 1);
+         v[b + 4u] = vec4(-.5, -1, 0, 1);
+         v[b + 5u] = vec4(-1, -.5, 0, 1);
+      }
+      cmd[pc.ai] = uvec4(pc.mode == 1u ? 6u : 3u, 1u, 0u, 0u);
+   } else if (pc.mode == 2u || pc.mode == 3u) {
+      float dx = pc.mode == 3u ? 1.0 : 0.0;
+      v[b + 0u] = vec4(-.9 + dx, -.5, 0, 1);
+      v[b + 1u] = vec4(-.1 + dx, -.5, 0, 1);
+      v[b + 2u] = vec4(-.5 + dx, .5, 0, 1);
+      cmd[pc.ai] = uvec4(3u, 1u, 0u, 0u);
+   }
+}

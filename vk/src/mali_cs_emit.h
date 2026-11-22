@@ -258,6 +258,11 @@ struct mali_frame {
    struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
    bool compute;                          /* a single compute dispatch instead of a render pass: disp is used */
    struct mali_dispatch disp;
+   /* The pre block (compute-in-pass.md; mali_cmd_pre_dispatch): kernels that run at the head of this frame, before draw 0, in
+    * ascending `wave` order (one wait per non-empty wave). `sync_cs`: a later wave loads a job size this kernel writes, so a flush +
+    * WAIT LS follows its wave. Owned by the frame (mali_frame_finish frees it). */
+   struct mali_pre { struct mali_dispatch d; uint8_t wave; bool sync_cs; } *pre;
+   unsigned npre, cappre;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
    unsigned nops;
    struct mali_rec *draws;
