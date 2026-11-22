@@ -171,9 +171,115 @@ compile_one(const char *kind, nir_shader *nir, unsigned arch, const struct mali_
    return r;
 }
 
+
+/* ---- the vertex shader as a compute pre-pass (GS step iii) ----
+ * poly runs the application's VS ahead of the GS as one compute kernel, (vertices, instances, 1), that stores every output to
+ * the vertex-output arena (poly_nir_lower_vs_before_gs, poly_nir_lower_gs.c:1499; hk_shader.c:1146, kk_shader.c:1025 do the same).
+ * Compute has no vertex fetch, so inputs are pulled from the bound vertex buffers. The block the kernel reads is the poly
+ * *vertex param block* (struct poly_vertex_params, 64 B) with this driver's pull table appended at MALI_GS_VP_EXTRA:
+ *   +0 u32 first_vertex, +4 u32 first_instance, +16 + 16*n { u64 va of attribute n (binding base + offset), u32 stride,
+ *   u32 per_instance }  (mali_cmd.c fills it per draw). Only 32-bit-component formats are pulled; anything else is refused by
+ * name at pipeline creation (mali_gs_vs_attr_ok). */
+static bool
+lower_vs_cs_ids_inputs(nir_builder *b, nir_intrinsic_instr *it, void *data)
+{
+   (void)data;
+   switch (it->intrinsic) {
+   case nir_intrinsic_load_vertex_id_zero_base:
+   case nir_intrinsic_load_vertex_id:
+   case nir_intrinsic_load_first_vertex:
+   case nir_intrinsic_load_base_vertex:
+   case nir_intrinsic_load_instance_id:
+   case nir_intrinsic_load_base_instance:
+   case nir_intrinsic_load_input:
+      break;
+   default:
+      return false;
+   }
+   b->cursor = nir_before_instr(&it->instr);
+   nir_def *vp = nir_load_vertex_param_buffer_poly(b);
+   nir_def *gid = nir_load_global_invocation_id(b, 32);
+   nir_def *fv = nir_load_global(b, 1, 32, nir_iadd_imm(b, vp, MALI_GS_VP_EXTRA), .align_mul = 4);
+   nir_def *fi = nir_load_global(b, 1, 32, nir_iadd_imm(b, vp, MALI_GS_VP_EXTRA + 4), .align_mul = 4);
+   nir_def *r;
+   switch (it->intrinsic) {
+   case nir_intrinsic_load_vertex_id_zero_base: r = nir_channel(b, gid, 0); break;
+   case nir_intrinsic_load_vertex_id:           r = nir_iadd(b, nir_channel(b, gid, 0), fv); break;
+   case nir_intrinsic_load_first_vertex:
+   case nir_intrinsic_load_base_vertex:         r = fv; break;
+   case nir_intrinsic_load_instance_id:         r = nir_channel(b, gid, 1); break;
+   case nir_intrinsic_load_base_instance:       r = fi; break;
+   default: {   /* load_input: pull attribute n */
+      const unsigned n = nir_intrinsic_io_semantics(it).location - VERT_ATTRIB_GENERIC0;
+      const unsigned comp = nir_intrinsic_component(it);
+      nir_def *ent = nir_iadd_imm(b, vp, MALI_GS_VP_EXTRA + 16 + 16 * n);
+      nir_def *base = nir_load_global(b, 1, 64, ent, .align_mul = 8);
+      nir_def *stride = nir_load_global(b, 1, 32, nir_iadd_imm(b, ent, 8), .align_mul = 4);
+      nir_def *inst = nir_load_global(b, 1, 32, nir_iadd_imm(b, ent, 12), .align_mul = 4);
+      nir_def *idx = nir_bcsel(b, nir_ine_imm(b, inst, 0), nir_iadd(b, nir_channel(b, gid, 1), fi),
+                               nir_iadd(b, nir_channel(b, gid, 0), fv));
+      nir_def *addr = nir_iadd(b, base, nir_u2u64(b, nir_imul(b, idx, stride)));
+      addr = nir_iadd_imm(b, addr, comp * 4);
+      r = nir_load_global(b, it->def.num_components, it->def.bit_size, addr, .align_mul = 4);
+      break;
+   }
+   }
+   nir_def_replace(&it->def, r);
+   return true;
+}
+
+static int
+compile_vs_cs(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry, const struct mali_compile_opts *base,
+              struct mali_compiled *out, uint64_t *outputs, char *err, size_t errsz)
+{
+   struct gs_diag diag = {{0}};
+   nir_shader_compiler_options nopts = *pan_get_nir_shader_compiler_options(arch, MESA_SHADER_VERTEX, false);
+   nopts.lower_mediump_io = NULL;
+   struct spirv_to_nir_options so = {
+      .environment = NIR_SPIRV_VULKAN,
+      .debug = {.func = gs_diag_cb, .private_data = &diag},
+      .skip_os_break_in_debug_build = true,
+      .ubo_addr_format = nir_address_format_32bit_index_offset,
+      .ssbo_addr_format = nir_address_format_64bit_global_32bit_offset,
+      .phys_ssbo_addr_format = nir_address_format_64bit_global,
+      .shared_addr_format = nir_address_format_32bit_offset,
+      .min_ubo_alignment = 16, .min_ssbo_alignment = 16,
+      .push_const_addr_format = nir_address_format_32bit_offset,
+   };
+   nir_shader *vs = spirv_to_nir(spirv, nwords, NULL, MESA_SHADER_VERTEX, entry ? entry : "main", &so, &nopts);
+   if (!vs) {
+      snprintf(err, errsz, "vertex stage spirv_to_nir: %.200s", diag.msg[0] ? diag.msg : "does not parse");
+      one_line(err);
+      return -1;
+   }
+   NIR_PASS(_, vs, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp | nir_var_shader_out);
+   NIR_PASS(_, vs, nir_lower_returns);
+   NIR_PASS(_, vs, nir_inline_functions);
+   nir_remove_non_entrypoints(vs);
+   NIR_PASS(_, vs, nir_opt_copy_prop);
+   NIR_PASS(_, vs, nir_lower_global_vars_to_local);
+   NIR_PASS(_, vs, nir_lower_vars_to_ssa);
+   NIR_PASS(_, vs, nir_lower_io_vars_to_temporaries, nir_shader_get_entrypoint(vs), nir_var_shader_out);
+   NIR_PASS(_, vs, nir_split_var_copies);
+   NIR_PASS(_, vs, nir_lower_system_values);
+   nir_lower_io_passes(vs, false);
+   /* poly's lowering addresses every output by 32-bit scalar slot */
+   NIR_PASS(_, vs, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
+   nir_shader_gather_info(vs, nir_shader_get_entrypoint(vs));
+   *outputs = vs->info.outputs_written;
+   NIR_PASS(_, vs, poly_nir_lower_vs_before_gs);
+   vs->info.stage = MESA_SHADER_COMPUTE;
+   memset(&vs->info.cs, 0, sizeof vs->info.cs);
+   vs->xfb_info = NULL;
+   vs->info.workgroup_size[0] = vs->info.workgroup_size[1] = vs->info.workgroup_size[2] = 1;
+   NIR_PASS(_, vs, nir_shader_intrinsics_pass, lower_vs_cs_ids_inputs, nir_metadata_control_flow, NULL);
+   return compile_one("vs", vs, arch, base, out, err, errsz);
+}
+
 int
 mali_gs_poly_compile(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
-                     const struct mali_compile_opts *base, struct mali_gs_programs *out, char *err, size_t errsz)
+                     const struct mali_compile_opts *base, const uint32_t *vs_spirv, uint32_t vs_words, const char *vs_entry,
+                     struct mali_gs_programs *out, char *err, size_t errsz)
 {
    memset(out, 0, sizeof *out);
    struct gs_diag diag = {{0}};
@@ -257,6 +363,12 @@ mali_gs_poly_compile(unsigned arch, const uint32_t *spirv, uint32_t nwords, cons
         * (load_stat_query_address_poly): neither is advertised, so it is not compiled (step iii). */
        (rc = 0))
       goto out;   /* the shader that failed is freed by mali_compile_nir (ownership passed); the rest here */
+   if (vs_spirv && vs_words) {
+      rc = compile_vs_cs(arch, vs_spirv, vs_words, vs_entry, base, &out->vs, &out->vs_outputs, err, errsz);
+      if (rc)
+         goto out;
+      out->has_vs = out->vs.bin_size != 0;
+   }
    out->info.has_main = out->main.bin_size != 0;
    out->info.has_count = out->count.bin_size != 0;
    out->info.has_copy = out->copy.bin_size != 0;
@@ -282,6 +394,7 @@ mali_gs_programs_free(struct mali_gs_programs *p)
    mali_compiled_free(&p->count);
    mali_compiled_free(&p->copy);
    mali_compiled_free(&p->pre_gs);
+   mali_compiled_free(&p->vs);
    memset(p, 0, sizeof *p);
 }
 

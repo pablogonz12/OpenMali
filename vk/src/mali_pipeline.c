@@ -19,7 +19,8 @@
 /* vk/tests/build-t_cmd.sh links this file without the poly archive (it has no GS pipelines to create): there the step-(ii)
  * hook is simply absent (weak symbols resolve to 0), which is why every call below is guarded. */
 extern int mali_gs_poly_compile(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
-                                const struct mali_compile_opts *base, struct mali_gs_programs *out, char *err, size_t errsz) __attribute__((weak));
+                                const struct mali_compile_opts *base, const uint32_t *vs_spirv, uint32_t vs_words, const char *vs_entry,
+                                struct mali_gs_programs *out, char *err, size_t errsz) __attribute__((weak));
 extern void mali_gs_programs_free(struct mali_gs_programs *p) __attribute__((weak));
 extern const char *mali_gs_programs_report(const struct mali_gs_programs *p, char *buf, size_t n) __attribute__((weak));
 #include "mali_pipeline_layout.h"
@@ -200,7 +201,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          const int gfrc = glayout ? mali_pipeline_layout_flatten(glayout, &gflat) : -1;
          struct mali_compile_opts go = {.arch = arch, .layout = gfrc == 0 ? &gflat.c : NULL};
          const int grc = (mali_gs_poly_compile && gcode && gwords)
-                            ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, &gsp, gsmsg, sizeof gsmsg) : -1;
+                            ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, vcode, vwords, vss->pName, &gsp, gsmsg, sizeof gsmsg) : -1;
          if (getenv("MALI_PIPE_DBG"))
             fprintf(stderr, "mali_vk: geometry shader refused: %s | lane 2 step (ii): %s\n", why,
                     grc ? gsmsg : (mali_gs_programs_report ? mali_gs_programs_report(&gsp, rep, sizeof rep) : "compiled"));
