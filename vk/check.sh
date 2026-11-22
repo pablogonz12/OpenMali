@@ -113,6 +113,10 @@ for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_B
 # counts back to 12/72: the two must never be mixed, see mali_physical_device.c). The extension, the feature bit, the
 # properties and the XFB lowering follow that one switch.
 for g in v11 v13; do run "vk_feat tf_default $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+# Interpolation qualifiers (smooth/noperspective/flat x plain/centroid/sample, invariant on and off, forward and reversed
+# winding): the fake devices create every pipeline (SPIR-V compile, varying setup, record) and skip the pixels; the
+# pixel comparison is hardware-only and is the X4 sweep (notes/interp-sweep.md).
+for g in v10 v11 v13; do run "vk_interp $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_interp" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"; done
 for g in v11 v13; do run "vk_info $g tf opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_feat tf_default $g opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
 for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
