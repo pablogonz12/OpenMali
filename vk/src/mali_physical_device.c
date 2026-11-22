@@ -516,10 +516,12 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * t_vk_feat vsstore (X8 G925, arch 13, 2026-11-22). PanVK gates it on PAN_ARCH >= 13 for the same reason we can have it:
        * before v13 the hardware speculatively references invalid indices (panvk_vX_physical_device.c:336-339). Not exercised on
        * v10/v11 (the fake backends there only check the flag). */
-      /* vertexPipelineStoresAndAtomics stays FALSE: t_vk_feat vsstore on the X8 (G925, arch 13) stores and atomically bumps
-       * an SSBO from the vertex stage twice per draw (atomicAdd counter 12 for a 6-vertex draw), so the side effects of an
-       * IDVS vertex program are duplicated between the vertex job and the per-tile varying program. Advertising it would give
-       * every VS store and atomic double effect on a real app; the test is kept so the day that stops being true it flips. */
+      /* vertexPipelineStoresAndAtomics stays FALSE: the guard is written (mali_compile.c lower_vs_side_effects wraps every
+       * VS SSBO/image store and "fire and forget" atomic in the FAU SHADER_OUTPUT position|attribute test, so the per-tile
+       * IDVS varying instance no longer repeats the side effect - PanVK's bifrost_nir_lower_vs_atomics does the same for
+       * atomics), but it is NOT proven on a GPU yet: t_vk_feat vsstore must read counter 6 instead of 12
+       * (MALI_EXPERIMENTAL_VSSTORE=1 on the X8, screen off) before this bit flips. PanVK gates it on PAN_ARCH >= 13 +
+       * a drirc switch (panvk_vX_physical_device.c:336, panvk_drirc_gen.py:32). */
       .vertexPipelineStoresAndAtomics = false,
       .fragmentStoresAndAtomics = true,                                 /* t_vk_feat fsstore */
       .vulkanMemoryModel = true, .vulkanMemoryModelDeviceScope = true,  /* t_vk_feat memmodel */

@@ -3245,12 +3245,15 @@ test_gather(void)
 /* vertexPipelineStoresAndAtomics (zink GL 4.2 gate, notes/zink-gl-version.md:44): the vertex stage stores i+1 into an SSBO and
  * does atomicAdd/atomicMax on it, keeping what each atomic returned (oldc[]). The binding is VK_SHADER_STAGE_VERTEX_BIT only and
  * vsstore.frag just passes the colour through, so whatever lands in the buffer came from the vertex stage. Stores and atomics
- * share the one feature bit, so both are checked: an atomic that quietly returned 0 would still leave data[] correct. */
+ * share the one feature bit, so both are checked: an atomic that quietly returned 0 would still leave data[] correct.
+ * The counter is an exact count, not a lower bound: an IDVS vertex program runs once per vertex in the vertex job and again
+ * per tile in the varying job, and mali_compile.c lower_vs_side_effects puts every VS store/atomic behind the FAU
+ * SHADER_OUTPUT position test so only the first instance acts. A counter of 12 is that guard missing (PR #372). */
 static int
 test_vsstore(void)
 {
-   /* The feature is not advertised (mali_physical_device.c: the X8 duplicates VS side effects), so MALI_EXPERIMENTAL_VSSTORE=1 is
-    * how the falsifier is re-run after a driver change. No validation layer checks the bit, so the pipeline runs either way. */
+   /* Advertised on arch >= 13 (mali_physical_device.c); on the older fake/newer arch the bit is false and MALI_EXPERIMENTAL_VSSTORE=1
+    * is how the falsifier is re-run anyway. No validation layer checks the bit, so the pipeline runs either way. */
    const int forced = getenv("MALI_EXPERIMENTAL_VSSTORE") != NULL;
    if (!g_feat.vertexPipelineStoresAndAtomics && !forced) {
       printf("{\"test\":\"vsstore\",\"skipped\":\"vertexPipelineStoresAndAtomics not advertised (MALI_EXPERIMENTAL_VSSTORE=1 runs it anyway)\",\"ok\":true}\n");
@@ -3258,10 +3261,11 @@ test_vsstore(void)
    }
    struct tgt t;
    if (!tgt_create(&t)) return 0;
-   enum { N = 18 };   /* count, maxi, data[8], oldc[8] (vsstore.vert) */
+   enum { N = 26 };   /* count, maxi, data[8], oldc[8], oldm[8] (vsstore.vert) */
    struct hbuf sb;
    if (!hbuf_create(&sb, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
    memset(sb.p, 0, N * 4);
+   ((uint32_t *)(void *)sb.p)[1] = 3;   /* maxi starts at 3: atomicMax(maxi, 5) must return that 3 once, not 0 */
    {   /* hbuf_create only requires HOST_VISIBLE: on a non-coherent type this CPU initialization would not reach the GPU,
         * and the atomics would start from whatever the allocation held */
       VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
@@ -3307,11 +3311,21 @@ test_vsstore(void)
    }
    if (!g_fake) {
       const uint32_t *b = (const uint32_t *)(const void *)sb.p;
-      /* the spec requires at least one vertex-shader execution per vertex and leaves more permitted, so the counter is
-       * accepted as any positive multiple of 6; the value says how many times the shader ran (see the PR body: 12 on the
-       * X8 is the IDVS position+varying split, which is why the feature stays false) */
-      CHECK(b[0] >= 6 && b[0] % 6 == 0, "vsstore: atomicAdd counter %u is not a positive multiple of 6", b[0]);
+      /* The spec only requires at least one execution per vertex, but the driver's contract here is exactly one: the
+       * position|attribute IDVS instance runs the store and the atomic, the per-tile varying instance skips them
+       * (mali_compile.c lower_vs_side_effects). 12 was the bug of #372, so the count is exact. */
+      CHECK(b[0] == 6, "vsstore: atomicAdd counter %u, expected exactly 6 (an IDVS instance repeated the VS side effect)", b[0]);
       CHECK(b[1] == 5, "vsstore: atomicMax %u expected 5", b[1]);
+      {   /* the return values: the first atomicMax saw the initialized 3, every other one 5. A driver that updates maxi
+           * correctly but returns 0 would leave no 3 here and still pass the final-maximum check. */
+         unsigned n3 = 0, n5 = 0;
+         for (uint32_t i = 0; i < 6; i++) {
+            n3 += b[18 + i] == 3;
+            n5 += b[18 + i] == 5;
+            CHECK(b[18 + i] == 3 || b[18 + i] == 5, "vsstore: atomicMax returned %u for vertex %u, expected 3 (first) or 5", b[18 + i], i);
+         }
+         CHECK(n3 >= 1 && n3 + n5 == 6, "vsstore: atomicMax returns %u x 3 and %u x 5 for 6 vertices", n3, n5);
+      }
       for (uint32_t i = 0; i < 6; i++) CHECK(b[2 + i] == i + 1, "vsstore: data[%u] = %u expected %u", i, b[2 + i], i + 1);
       uint32_t seen = 0;
       for (uint32_t i = 0; i < 6; i++) {
@@ -3320,7 +3334,7 @@ test_vsstore(void)
       }
       CHECK(seen == 0x3f, "vsstore: the six atomicAdd returns are not 0..5 (0x%x)", seen);
       printf("{\"test\":\"vsstore\",\"count\":%u,\"vs_runs_per_vertex\":%u,\"max\":%u,\"forced\":%s,\"ok\":true}\n",
-             b[0], b[0] / 6, b[1], forced ? "true" : "false");
+             b[0], b[0] / 6, b[1], forced ? "true" : "false");   /* vs_runs_per_vertex must read 1 */
    } else printf("{\"test\":\"vsstore\",\"skipped\":\"pixels+memory: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
