@@ -316,6 +316,8 @@ static struct {
    uint64_t va;
 } g_sh[MALI_META_NSHADERS];
 
+static void preload_reset_locked(void);   /* defined with the preload slots below */
+
 void
 mali_meta_set_dev(const struct mali_meta_dev *dev)
 {
@@ -337,6 +339,9 @@ mali_meta_set_dev(const struct mali_meta_dev *dev)
          mali_compiled_free(&g_sh[i].c);
          g_sh[i].ok = false;
       }
+   /* the graphics preload slots keep a VA uploaded through the old device's allocator: a draw recorded for the new
+    * device would read the previous device's memory (g_pre was never cleared before this) */
+   preload_reset_locked();
    g_dev_set = dev != NULL;
    if (dev)
       g_dev = *dev;
@@ -594,6 +599,21 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
 
 static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[PRE_SLOTS];
 static struct { bool ok; struct mali_compiled vs; uint64_t vs_va; } g_pre_vs;
+
+/* caller holds g_lock; the binaries are freed like g_sh's, the old device's VAs go with the device */
+static void
+preload_reset_locked(void)
+{
+   for (int i = 0; i < PRE_SLOTS; i++)
+      if (g_pre[i].ok) {
+         mali_compiled_free(&g_pre[i].fs);
+         g_pre[i].ok = false;
+      }
+   if (g_pre_vs.ok) {
+      mali_compiled_free(&g_pre_vs.vs);
+      g_pre_vs.ok = false;
+   }
+}
 
 static int
 preload_compile(unsigned slot)   /* one of PRE_SLOT_* (the enum kinds are slots of their own) */

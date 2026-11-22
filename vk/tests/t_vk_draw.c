@@ -2026,12 +2026,17 @@ test_msaa_stencil_load(const char *name, int kind)
    if (ok) ok = scene_draw(&s, 1, A, f);
    if (ok) { cov_ref = count_cov(&s); px_ref = px_at(&s, 128, 128); }
    scene_destroy(&s);
+   /* the first scene's handles are dead: clear them, or a failed control skips scene_create() below and the second
+    * scene_destroy() would free them again (and pass 2 would read a dangling s.mode) */
+   memset(&s, 0, sizeof s);
+   s.mode = MODE_TRI;
    /* pass 1 marks (EQUAL 0 -> INCREMENT), pass 2 LOADs and reads (EQUAL 1 -> KEEP, no write) */
    g_load = 1;
    g_nocolour_load = 1;
    g_st2 = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
                              .pass = VK_STENCIL_OP_KEEP, .cmask = 0xff, .wmask = 0, .ref = 1};
-   ok = ok && scene_create(&s, 1);
+   int have2 = 0;
+   if (ok) ok = have2 = scene_create(&s, 1);
    g_load = 0;
    g_nocolour_load = 0;
    if (ok) ok = scene_draw(&s, 1, A, f);          /* pass 1: stencil CLEAR, A marks the samples it covers */
@@ -2061,7 +2066,8 @@ test_msaa_stencil_load(const char *name, int kind)
                 name, sfx, cov_got, cov_ref, px_got, ok ? "true" : "false");
       }
    }
-   scene_destroy(&s);
+   if (have2)
+      scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
 }
