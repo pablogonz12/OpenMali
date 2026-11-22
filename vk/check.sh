@@ -114,6 +114,23 @@ for g in v11 v13; do run "vk_info $g msaa off" 0 MALI_EXPERIMENTAL_MSAA=0 MALI_B
 # counts back to 12/72: the two must never be mixed, see mali_physical_device.c). The extension, the feature bit, the
 # properties and the XFB lowering follow that one switch.
 for g in v11 v13; do run "vk_feat tf_default $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
+# Interpolation qualifiers (smooth/noperspective/flat x plain/centroid/sample, invariant on and off, forward and reversed
+# winding): the fake devices create every pipeline (SPIR-V compile, varying setup, record) and skip the pixels; the
+# pixel comparison is hardware-only and is the X4 sweep (notes/interp-sweep.md).
+for g in v10 v11 v13; do run "vk_interp $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_interp" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"; done
+# noperspective (the 12 hardware FAILs in notes/interp-sweep.md): the VS must inline the FS's bitfield, not 0. Assert on
+# the compiled stages, since the fake backend rasterises nothing: MALI_INTERP_DBG prints the mask each stage compiled with,
+# and both must be 1 (varying location 0 of t_interp's noperspective shaders) - a VS with 0 renders c/w on the phone.
+# sel=1 is the backend's own "mask ? v * w : v" select around the output store: with the mask 0 the multiply exists but is
+# not selected, so a VS that passes this line emits the multiply on the phone (12/12, notes/interp-sweep.md).
+# MALI_SHADER_CACHE= : the rows above already cached these modules, and a cache hit compiles nothing to print.
+out=$(MALI_BACKEND=fake MALI_FAKE_GPU=v10 MALI_INTERP_DBG=1 MALI_SHADER_CACHE= "$OUT/t_interp" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only noperspective 2>&1)
+if echo "$out" | grep -q 'mali_interp: stage=VS mask=00000001 inlined=1 sel=1' &&
+   echo "$out" | grep -q 'mali_interp: stage=FS mask=00000001'; then
+   echo "ok    vk_interp noperspective mask v10"
+else
+   echo "FAIL  vk_interp noperspective mask v10"; echo "$out" | grep -E 'mali_interp|FAIL|fail' | head -5 | sed 's/^/        /'; fail=1
+fi
 for g in v11 v13; do run "vk_info $g tf opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "vk_feat tf_default $g opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
 for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done

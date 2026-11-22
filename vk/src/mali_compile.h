@@ -45,6 +45,12 @@ struct mali_compile_opts {
    unsigned push_base;            /* byte offset of the API push constant block inside the FAU table; VS default 40 (words 0-5 viewport, 6 BaseVertex, 7 BaseInstance, 8 DrawIndex), else 0 */
    int push_base_set;             /* 0: use the default above */
    const struct mali_varying_blob *link_vs;   /* FS: layout produced by the VS compile; NULL = attribute-descriptor varyings */
+   /* VS: the fragment shader that consumes the outputs, so the noperspective bitfield the backend asks for
+    * (nir_intrinsic_load_noperspective_varyings_pan, inlined by pan_nir_lower_noperspective_vs) is the one the FS
+    * actually interpolates with. NULL = no FS (rasterizer discard, meta shaders): mask 0. */
+   const uint32_t *fs_spirv;
+   size_t fs_spirv_words;
+   const char *fs_entry;
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
    int sample_shading;            /* FS: pipeline sampleShadingEnable with minSampleShading * samples > 1 (PanVK: nir->info.fs.uses_sample_shading) */
@@ -78,6 +84,7 @@ struct mali_compiled {
    uint32_t vs_writes_point_size, vs_secondary_enable, vs_secondary_offset, vs_secondary_work_reg_count;
    uint64_t vs_secondary_preload;
    uint32_t vs_clip_distances;    /* VS: gl_ClipDistance array size (0 = none) */
+   uint32_t noperspective_mask;   /* VS: FS's noperspective bitfield inlined into the code; FS: the bitfield its inputs use */
    uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
    uint32_t nvarying;
    struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */
