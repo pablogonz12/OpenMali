@@ -1927,7 +1927,7 @@ test_mrt(const char *name, int nrt)
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    MRT_CHECK(r == VK_SUCCESS, "wait = %d", r);
    ok = 1;
-   if (!g_fake) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
+   if (!g_fake && !map) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
       for (int i = 0; i < nrt; i++)
          for (int y = 8; y < H; y += 40)
             for (int h = 0; h < 2; h++) {
@@ -1942,15 +1942,25 @@ test_mrt(const char *name, int nrt)
                   }
             }
       ok = bad == 0;
-      if (map) {   /* 0.1/0.2/0.3/0.4 in RGBA8 are 26/51/77/102: a permuted mapping shows up as a permuted byte */
+   }
+   if (!g_fake && map) {   /* output i = (i+1)/10 * gl_FragCoord.x/W, so target i must hold (i+1)/10 * 32/W at x = 32 */
          printf("{\"map\":[");
          for (int i = 0; i < nrt; i++) {
             const uint8_t *q = px[i] + (size_t)48 * pitch[i] + 32u * 4u;
-            if (g_mrt32) printf("%s%.2f", i ? "," : "", *(const float *)q);
+            const float want = (float)(i + 1) * 0.1f * 32.5f / (float)W;   /* 0.1*(i+1)*gl_FragCoord.x/W at the sampled pixel */
+            const float got = g_mrt32 ? *(const float *)q : (float)q[0] / 255.0f;
+            const int check = (!strcmp(name, "mrtmap") || !strcmp(name, "mrtmapb")) ||   /* mrtmap32f only prints (float readback, not a product path) */
+                              (!strcmp(name, "mrtmap1") && i == 0);   /* the single-output probes only print */
+            if (g_mrt32) printf("%s%.3f", i ? "," : "", got);
             else printf("%s%u", i ? "," : "", q[0]);
+            if (check && fabsf(got - want) > (g_mrt32 ? 0.01f : 2.0f / 255.0f)) {
+               if (bad < 4)
+                  printf("BAD%d", i);
+               bad++;
+            }
          }
-         printf("],\"want\":[26,51,77,102]}\n");
-      }
+      printf("]}\n");
+      ok = bad == 0;
    }
    printf("{\"test\":\"%s\",\"rts\":%d,\"bad\":%u,\"ok\":%s%s}\n", name, nrt, bad, ok ? "true" : "false", g_fake ? ",\"skipped\":\"pixels: fake backend\"" : "");
    if (!ok) g_fail = 1;
