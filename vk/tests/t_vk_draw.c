@@ -680,7 +680,9 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    const int lop = g_fx.on && g_fx.logic;   /* logic-op cases need a nonzero destination: (51,102,153,204) */
-   VkClearValue cv[2] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   VkClearValue cv[3] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}},
+                         {.depthStencil = {1.0f, g_st.clear}},
+                         {.depthStencil = {1.0f, g_st.clear}}};   /* [2]: the 4x depth/stencil attachment (g_msds) */
    if (g_clear_f)
       memcpy(cv[0].color.float32, g_clear_f, 16);
    if (g_nocol)
@@ -689,7 +691,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       cv[0].color.uint32[0] = 200, cv[0].color.uint32[1] = 100, cv[0].color.uint32[2] = 50, cv[0].color.uint32[3] = 7;
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
-                               .clearValueCount = g_nocol ? 1 : s->depth ? 2 : 1, .pClearValues = cv};
+                               .clearValueCount = g_nocol ? 1 : g_msds ? 3 : s->depth ? 2 : 1,
+                               .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->second && g_st2.on && s->pipe2 ? s->pipe2 : s->pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
