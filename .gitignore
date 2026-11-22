@@ -5,7 +5,9 @@ vk/deqp/out
 runs/
 vk/out/
 vk/deqp/*/
+!vk/deqp/tools/
 vk/deqp/*.log
+vk/deqp/covdb.sqlite
 vk/package/dist/
 **/build/
 **/out/

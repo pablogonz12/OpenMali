@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""covdb: one SQLite answer to "does case X pass on driver commit Y on phone Z".
+
+Every dEQP-VK result the repo already has goes into one file, `<repo>/vk/deqp/covdb.sqlite`
+(gitignored, rebuildable from the imported files in seconds). Python 3 stdlib only.
+
+  covdb import <file|dir> [--phone P] [--date YYYY-MM-DD] [--commit C] [--sha256 S]
+                          [--gpu-class G] [--notes TEXT] [--tool T] [--source S] [--force]
+  covdb status  <case|prefix>          every run's result for that case, newest run first
+  covdb failing [--group REGEX] [--phone P] [--since C|DATE] [--limit N]
+                                       latest non-PASS result per case, grouped by the 3-part
+                                       test prefix, fail counts per group
+  covdb summary                        runs, cases, per-group pass rate, worst ten groups
+  covdb regress [--good-notes good]    PASS now, not PASS in an older run marked good
+  covdb runs                           the run table
+  covdb groups                         per-group totals of the newest result per case
+
+Formats are sniffed (no per-file flags):
+  * qdeqp TSV   `case<TAB>status<TAB>time_or_note[<TAB>note]`  (runs/qdeqp/<phone>-<icd>-<list>.tsv)
+  * host TSV    `gpu<TAB>case<TAB>status<TAB>signature`         (host-baseline.tsv)
+  * group CSV   `group,total,pass,fail,notsupported,crash,other,notrun,...`
+                Only rows with total == 1 name a single case and are imported; the rest are
+                aggregates and are reported as skipped (the per-case TSV of the same run has them).
+
+Status normalisation (the harness's own mapping, qdeqp.py:norm):
+  PASS         Pass, QualityWarning, CompatibilityWarning
+  FAIL         Fail, ResourceHog, ResourceError, InternalError, Other:<error>
+  CRASH        Crash (qdeqp records hang and "no QPA" as Crash too)
+  TIMEOUT      Timeout
+  NOTSUPPORTED NotSupported
+  SKIP         Skip, NotRun, empty
+  OTHER        anything else (counted as not passing, never as PASS)
+
+Run identity for de-duplication: (source, phone, driver_commit, date). `--force` re-imports.
+`notes` text `good` on an import marks that run as a blessed baseline for `covdb regress`.
+"""
+import argparse
+import csv
+import hashlib
+import os
+import re
+import sqlite3
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DB = os.environ.get("COVDB") or os.path.join(os.path.dirname(HERE), "covdb.sqlite")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS run(
+  id INTEGER PRIMARY KEY,
+  date TEXT, phone TEXT, gpu_class TEXT, driver_commit TEXT, driver_sha256 TEXT,
+  source TEXT, tool TEXT, notes TEXT);
+CREATE TABLE IF NOT EXISTS \"case\"(
+  run_id INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, status TEXT NOT NULL, signature TEXT, time_ms REAL);
+CREATE INDEX IF NOT EXISTS case_run ON \"case\"(run_id);
+CREATE INDEX IF NOT EXISTS case_name ON \"case\"(name);
+CREATE TABLE IF NOT EXISTS skipped(
+  source TEXT, reason TEXT, sample TEXT);
+"""
+
+PASS = {"pass", "passed", "qualitywarning", "compatibilitywarning"}
+NOTSUP = {"notsupported", "unsupported"}
+CRASH = {"crash", "crashed"}
+TIMEOUT = {"timeout", "timeout_"}
+SKIP = {"skip", "skipped", "notrun", "not_run", "", "none", "not supported"}
+FAIL = {"fail", "failed", "resourcehog", "resourceerror", "internalerror", "internal_error",
+        "wrongresult", "wrong_result", "noresult"}
+
+
+def norm(raw):
+    s = (raw or "").strip()
+    low = s.lower()
+    if low in PASS:
+        return "PASS"
+    if low in NOTSUP:
+        return "NOTSUPPORTED"
+    if low in CRASH:
+        return "CRASH"
+    if low in TIMEOUT:
+        return "TIMEOUT"
+    if low == "other:resourceerror" or low == "other:resourcehog":
+        return "FAIL"
+    if low in SKIP:
+        return "SKIP"
+    if low in FAIL:
+        return "FAIL"
+    if s.startswith("Other:") or s.startswith("other:"):
+        return "FAIL"
+    return "OTHER"
+
+
+def classify_note(note):
+    """A `case<TAB>note` export (farm --notes) records only the cases dEQP printed a note for."""
+    low = (note or "").lower()
+    if "crash out:" in low:
+        return "CRASH"
+    if "no queue family" in low:
+        return "NOTSUPPORTED"
+    if "not supported" in low or "unsupported" in low or "not_present" in low or "not present" in low:
+        return "NOTSUPPORTED"
+    if "incorrect" in low or "mismatch" in low or "fail" in low or "error" in low:
+        return "FAIL"
+    return "OTHER"
+
+
+PHONE_MAP = {"poco": "x8", "poco-x8": "x8", "x8": "x8", "pocox8": "x8",
+             "cmf": "cmf", "poco-x4": "x4", "x4": "x4", "host": "host", "v11": "host", "v13": "host"}
+SOC = {"x8": "g925", "cmf": "g615", "x4": "g610"}
+
+
+def sniff_phone(text):
+    t = (text or "").lower()
+    for k in ("poco-x8", "poco-x4", "poco", "cmf", "x8", "x4"):
+        if k in t:
+            return PHONE_MAP[k]
+    return None
+
+
+DATE_RE = re.compile(r"^(20\d{6})-(\d{2})(\d{2})(\d{2})-([0-9a-f]{6,40})(?:-\d+)?")
+DATE_PLAIN = re.compile(r"^(20\d{4})")
+
+
+def sniff_date_commit(path):
+    """Farm logs and qdeqp results: `20261117-131716-8c62f66b-2-cmf-daily.tsv`."""
+    base = os.path.basename(path)
+    m = DATE_RE.match(base)
+    if m:
+        d = m.group(1)
+        return (f"{d[0:4]}-{d[4:6]}-{d[6:8]} {m.group(2)}:{m.group(3)}:{m.group(4)}", m.group(5))
+    m = DATE_PLAIN.match(base)
+    if m:
+        d = m.group(1)
+        return f"{d[0:4]}-{d[4:6]}-{d[6:8]}", None
+    return None, None
+
+
+def db(path):
+    con = sqlite3.connect(path)
+    con.executescript(SCHEMA)
+    con.execute("PRAGMA foreign_keys=ON")
+    return con
+
+
+def read_rows(path):
+    with open(path, "r", errors="replace") as f:
+        text = f.read()
+    lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    if not lines:
+        return "empty", [], []
+    first = lines[0]
+    if "," in first and "\t" not in first and not first.startswith("dEQP-"):
+        return "csv", list(csv.reader(lines)), []
+    rows = []
+    skipped = []
+    for ln in lines:
+        parts = ln.split("\t")
+        if len(parts) >= 4 and parts[1].startswith("dEQP-"):
+            rows.append(("host", parts[0], parts[1], parts[2], parts[3]))
+        elif len(parts) == 2 and parts[0].startswith("dEQP-") and norm(parts[1]) == "OTHER":
+            # `case<TAB>note` (farm --notes export): the note replaces the status column
+            rows.append(("notes", "", parts[0], classify_note(parts[1]), parts[1].strip(), ""))
+        elif len(parts) >= 2 and parts[0].startswith("dEQP-"):
+            rest = parts[2:] if len(parts) > 2 else [""]
+            sig = next((p for p in rest[1:] if p.strip()), "")
+            rows.append(("plain", "", parts[0], parts[1], sig, rest[0]))
+        else:
+            skipped.append(ln)
+            continue
+    kinds = {r[0] for r in rows}
+    kind = "host" if kinds == {"host"} else "notes" if kinds == {"notes"} else "plain"
+    return kind, rows, skipped
+
+
+def import_file(con, path, args):
+    kind, rows, skipped = read_rows(path)
+    if kind in ("empty",):
+        print(f"skip {path}: empty")
+        return
+    name = os.path.basename(path)
+    d, c = sniff_date_commit(path)
+    date = args.date or d or git_file_date(path) or time_iso(os.path.getmtime(path))[0]
+    commit = args.commit or c
+    phone_arg = args.phone
+    gpu_arg = args.gpu_class
+    src = args.source or short_source(path)
+
+    if kind == "csv":
+        hdr = [h.strip() for h in rows[0]]
+        want = {"group", "total", "pass", "fail", "notsupported", "crash"}
+        if not want.issubset(set(hdr)):
+            print(f"skip {path}: csv header not a qdeqp group summary: {','.join(hdr)[:120]}")
+            return
+        idx = {h: i for i, h in enumerate(hdr)}
+        cases, agg = [], 0
+        for r in rows[1:]:
+            if len(r) < len(hdr):
+                continue
+            try:
+                total = int(r[idx["total"]])
+            except ValueError:
+                continue
+            if total != 1:
+                agg += 1
+                continue
+            for col, st in (("pass", "PASS"), ("fail", "FAIL"), ("notsupported", "NOTSUPPORTED"),
+                            ("crash", "CRASH"), ("other", "FAIL"), ("notrun", "SKIP")):
+                if col in idx and r[idx[col]].strip() == "1":
+                    cases.append((r[idx["group"]].strip(), st, "", None))
+                    break
+            else:
+                cases.append((r[idx["group"]].strip(), "OTHER", "", None))
+        if agg:
+            con.execute("INSERT INTO skipped VALUES(?,?,?)",
+                        (src, f"{agg} aggregate group rows (total>1), per-case TSV of the same run carries them",
+                         f"{rows[1][0]},{','.join(rows[1][1:])}" if len(rows) > 1 else ""))
+        rows_clean = [(n, st, sg, tm) for n, st, sg, tm in cases]
+    elif kind == "host":
+        by_gpu = {}
+        for _, gpu, case, st, sig in rows:
+            by_gpu.setdefault(gpu, []).append((case, norm(st), sig, None))
+        for gpu, cs in by_gpu.items():
+            add_run(con, args, src, phone_arg or "host", date, commit,
+                    gpu_arg or gpu, "host-run.sh", cs, path)
+        return
+    else:
+        rows_clean = []
+        for _, _, case, st, sig, tm in rows:
+            ms = None
+            try:
+                v = float(tm)
+                if v >= 0:
+                    ms = v * 1000.0
+            except ValueError:
+                pass
+            rows_clean.append((case, norm(st), sig, ms))
+        if skipped:
+            con.execute("INSERT INTO skipped VALUES(?,?,?)",
+                        (src, f"{len(skipped)} lines with unrecognised columns", skipped[0][:200]))
+
+    if not rows_clean:
+        sample = (skipped[0][:160] if skipped else "")
+        con.execute("INSERT INTO skipped VALUES(?,?,?)", (src, "no case line recognised", sample))
+        print(f"skip {src}: no case line recognised (sample: {sample!r})")
+        return
+    phone = phone_arg or sniff_phone(name) or sniff_phone(src) or "unknown"
+    if kind == "notes":
+        default_tool = "qdeqp-notes"
+        notes = args.notes or ("notes-only export: records only the cases with a dEQP note (NotSupported/Fail), "
+                               "PASS cases are absent, so its pass rate is meaningless; kept for its signatures")
+    else:
+        default_tool = "qdeqp"
+        notes = args.notes or ""
+    add_run(con, args, src, phone, date, commit, gpu_arg or SOC.get(phone, ""),
+            args.tool or default_tool, rows_clean, path, notes=notes)
+
+
+SHA_MAP = {}
+
+
+def add_run(con, args, src, phone, date, commit, gpu_class, tool, cases, path, sha_map=None, notes=None):
+    q = ("SELECT id FROM run WHERE source=? AND phone=? AND IFNULL(driver_commit,'')=? AND IFNULL(date,'')=?"
+         " AND IFNULL(gpu_class,'')=?")
+    hit = con.execute(q, (src, phone, commit or "", date or "", gpu_class or "")).fetchone()
+    if hit and not args.force:
+        print(f"already imported: id {hit[0]}  {src} {phone} {commit or '-'} {date or '-'}  (--force to redo)")
+        return
+    if hit:
+        con.execute("DELETE FROM run WHERE id=?", (hit[0],))
+    cur = con.execute(
+        "INSERT INTO run(date,phone,gpu_class,driver_commit,driver_sha256,source,tool,notes) VALUES(?,?,?,?,?,?,?,?)",
+        (date, phone, gpu_class or "", commit,
+         args.sha256 or SHA_MAP.get(commit or "", ""), src, tool,
+         args.notes or notes or ""))
+    rid = cur.lastrowid
+    con.executemany('INSERT INTO "case"(run_id,name,status,signature,time_ms) VALUES(?,?,?,?,?)',
+                    [(rid, n, s, g or "", tm) for n, s, g, tm in cases])
+    con.commit()
+    tally = {}
+    for _, s, _, _ in cases:
+        tally[s] = tally.get(s, 0) + 1
+    pretty = " ".join(f"{k.lower()}={tally[k]}" for k in sorted(tally))
+    sh = con.execute("SELECT driver_sha256 FROM run WHERE id=?", (rid,)).fetchone()[0]
+    print(f"run {rid}: {phone} {commit or '-'}{' sha ' + sh[:12] if sh else ''} {date or '-'} "
+          f"{len(cases)} cases  {pretty}  <- {os.path.basename(path)}")
+
+
+def time_iso(ts):
+    import datetime
+    dt = datetime.datetime.fromtimestamp(ts)
+    return dt.strftime("%Y-%m-%d"), dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def repo_root():
+    p = HERE
+    while p != "/":
+        if os.path.isdir(os.path.join(p, ".git")) or os.path.exists(os.path.join(p, ".git")):
+            return p
+        p = os.path.dirname(p)
+    return os.getcwd()
+
+
+def group_of(name, depth=3):
+    return ".".join(name.split(".")[:depth])
+
+
+def run_order_sql(alias="r"):
+    """Newest first: date (farm names carry the time), then insertion id."""
+    return f"{alias}.date DESC, {alias}.id DESC"
+
+
+# ---------------------------------------------------------------- subcommands
+def cmd_import(con, args):
+    paths = []
+    for p in args.paths:
+        if os.path.isdir(p):
+            for root, _, files in os.walk(p):
+                for f in sorted(files):
+                    if f.endswith((".tsv", ".csv")):
+                        paths.append(os.path.join(root, f))
+        else:
+            paths.append(p)
+    if not paths:
+        sys.exit("nothing to import")
+    global SHA_MAP
+    SHA_MAP = farm_sha_map()
+    for p in paths:
+        import_file(con, p, args)
+    con.commit()
+
+
+def cmd_status(con, args):
+    case = args.case
+    exact = con.execute("SELECT COUNT(*) FROM \"case\" WHERE name=?", (case,)).fetchone()[0]
+    like = case if exact else case.rstrip("*") + "%"
+    q = f"""SELECT r.date, r.id, r.phone, r.gpu_class, IFNULL(r.driver_commit,'-'), c.name, c.status,
+                   IFNULL(c.signature,''), r.source
+            FROM \"case\" c JOIN run r ON r.id=c.run_id
+            WHERE c.name {'=' if exact else 'LIKE'} ?
+            ORDER BY {run_order_sql()}, c.name"""
+    rows = con.execute(q, (case if exact else like,)).fetchall()
+    if not rows:
+        print(f"no result for {case}")
+        return
+    for d, rid, ph, gpu, cm, n, st, sig, src in rows[:args.limit]:
+        extra = f"  {sig}" if sig else ""
+        print(f"{d or '-'}  run{rid:<3} {ph:<4} {gpu or '-':<4} {cm:<9} {st:<12} {n}{extra}")
+    if len(rows) > args.limit:
+        print(f"… {len(rows) - args.limit} more (--limit)")
+
+
+def scope_clause(args):
+    """Reference runs (PanVK baseline) are not our driver: excluded unless --all."""
+    clauses = ["1=1"] if args.all else ["IFNULL(r.tool,'') NOT LIKE 'panvk%'",
+                                        "IFNULL(r.tool,'') NOT LIKE '%notes%'"]
+    if getattr(args, "phone", None):
+        clauses.append("r.phone='" + args.phone + "'")
+    return " AND ".join(clauses)
+
+
+def cmd_failing(con, args):
+    where = [scope_clause(args)]
+    params = []
+    if args.phone:
+        where.append("r.phone=?")
+        params.append(args.phone)
+    if args.since:
+        if re.match(r"^20\d\d-\d\d-\d\d$", args.since):
+            where.append("r.date>=?")
+            params.append(args.since)
+        else:
+            d = git_date(args.since)
+            if not d:
+                sys.exit(f"--since {args.since}: not a date and not a commit in the repo")
+            where.append("r.date>=?")
+            params.append(d)
+    if args.group:
+        where.append("c.name LIKE ?")
+        params.append("%" + args.group.replace("*", "") + "%")
+    sql = f"""SELECT c.name, c.status, r.date, r.id, r.phone FROM \"case\" c JOIN run r ON r.id=c.run_id
+              WHERE {' AND '.join(where)}
+              ORDER BY c.name, {run_order_sql()}"""
+    latest = {}
+    for name, st, d, rid, ph in con.execute(sql, params):
+        if name not in latest:
+            latest[name] = (st, d, rid, ph)
+    bad = {n: v for n, v in latest.items() if v[0] != "PASS"}
+    groups = {}
+    for n, (st, d, rid, ph) in bad.items():
+        g = groups.setdefault(group_of(n), {})
+        g[st] = g.get(st, 0) + 1
+    scope = "all runs" if args.all else "our driver only (PanVK reference run excluded, --all to include)"
+    print(f"{len(bad)} case(s) not PASS in their newest run, in {len(groups)} group(s) — {scope}")
+    out = sorted(groups.items(), key=lambda kv: -sum(kv[1].values()))
+    shown = 0
+    for g, tally in out:
+        n = sum(tally.values())
+        det = " ".join(f"{k.lower()}={tally[k]}" for k in sorted(tally))
+        print(f"{n:5d}  {g:<52} {det}")
+        shown += 1
+        if args.detail:
+            for name, (st, d, rid, ph) in sorted(bad.items()):
+                if group_of(name) == g:
+                    print(f"       {st:<12} {ph:<4} {d or '-'}  {name}")
+    if shown > len(out):
+        pass
+
+
+def cmd_summary(con, args):
+    runs = con.execute("SELECT COUNT(*) FROM run").fetchone()[0]
+    withrun = con.execute("SELECT COUNT(DISTINCT run_id) FROM \"case\"").fetchone()[0]
+    names = con.execute("SELECT COUNT(DISTINCT name) FROM \"case\"").fetchone()[0]
+    if not runs:
+        print("empty db")
+        return
+    first, last = con.execute("SELECT MIN(substr(date,1,10)), MAX(substr(date,1,10)) FROM run").fetchone()
+    print(f"covdb {args.db}")
+    print(f"runs={runs} (with results {withrun})  cases={names}  dates={first}..{last}")
+    per = con.execute("SELECT phone, COUNT(*), MIN(date), MAX(date) FROM run GROUP BY phone ORDER BY phone").fetchall()
+    print("  phone  runs  first             last")
+    for ph, n, a, b in per:
+        print(f"  {ph:<6} {n:5d}  {(a or '-')[:16]:16}  {(b or '-')[:16]}")
+    # newest result per case, across all runs
+    sql = f"""SELECT c.name, c.status, r.date, r.id, r.phone FROM \"case\" c JOIN run r ON r.id=c.run_id
+              WHERE {scope_clause(args)} ORDER BY c.name, {run_order_sql()}"""
+    latest = {}
+    for name, st, d, rid, ph in con.execute(sql):
+        if name not in latest:
+            latest[name] = st
+    groups = {}
+    for n, st in latest.items():
+        g = groups.setdefault(group_of(n), {})
+        g[st] = g.get(st, 0) + 1
+    scope = "all runs" if args.all else "our driver only, PanVK reference baseline excluded (--all to include)"
+    print(f"\nlatest result per case across runs, {len(latest)} case(s) in {len(groups)} groups — {scope}")
+    print("  newest run per phone (same scope)")
+    rows = con.execute(f"SELECT r.id, r.phone, r.date, IFNULL(r.driver_commit,'-') FROM run r "
+                       f"WHERE {scope_clause(args)} ORDER BY r.phone, {run_order_sql()}").fetchall()
+    seen = {}
+    for rid, ph, d, cm in rows:
+        seen.setdefault(ph, (rid, d, cm))
+    for ph in sorted(seen):
+        rid, d, cm = seen[ph]
+        t = dict(con.execute('SELECT status, COUNT(*) FROM "case" WHERE run_id=? GROUP BY status', (rid,)).fetchall())
+        tot = sum(t.values())
+        supp = tot - t.get("NOTSUPPORTED", 0)
+        print(f"  {ph:<5} run{rid:<4} {(d or '-'):19} {cm:<9} {tot:5d} cases  pass={t.get('PASS',0)} "
+              f"fail={t.get('FAIL',0)} ns={t.get('NOTSUPPORTED',0)} crash={t.get('CRASH',0)} "
+              f"pass%supp={100.0 * t.get('PASS', 0) / supp if supp else 0:.1f}")
+    print(f"  {'group':<52} {'total':>5} {'pass':>5} {'fail':>5} {'ns':>5} {'crash':>5} {'%supp':>6}")
+    rows = []
+    for g, t in groups.items():
+        total = sum(t.values())
+        p = t.get("PASS", 0)
+        ns = t.get("NOTSUPPORTED", 0)
+        supp = total - ns
+        pct = 100.0 * p / supp if supp else 0.0
+        rows.append((g, total, p, t, pct))
+    for g, total, p, t, pct in sorted(rows, key=lambda r: r[0]):
+        print(f"  {g:<52} {total:5d} {p:5d} {t.get('FAIL',0):5d} {t.get('NOTSUPPORTED',0):5d} "
+              f"{t.get('CRASH',0):5d} {pct:5.1f}%")
+    # a failure is FAIL/CRASH/TIMEOUT/OTHER; NOTSUPPORTED is a missing feature, counted apart
+    def bad_of(t):
+        return sum(v for k, v in t.items() if k not in ("PASS", "NOTSUPPORTED"))
+
+    worst = sorted(rows, key=lambda r: -bad_of(r[3]))
+    print("\nten groups with the most failures (FAIL/CRASH/TIMEOUT, NOTSUPPORTED not counted)")
+    for g, total, p, t, pct in worst[:10]:
+        print(f"  {bad_of(t):5d} bad, {t.get('NOTSUPPORTED',0):5d} unsupported of {total:5d} "
+              f"({pct:5.1f}% pass of supported)  {g}")
+
+
+def cmd_regress(con, args):
+    """Compare each phone's newest run with an older run flagged good (--good-run ID, or notes like 'good')."""
+    phones = [r[0] for r in con.execute("SELECT DISTINCT phone FROM run ORDER BY phone")]
+    found = 0
+    for ph in phones:
+        if args.phone and ph != args.phone:
+            continue
+        newest = con.execute(
+            f"SELECT id,date,IFNULL(driver_commit,'-') FROM run WHERE phone=? ORDER BY {run_order_sql('run')} LIMIT 1",
+            (ph,)).fetchone()
+        if not newest:
+            continue
+        rid, ndate, ncommit = newest
+        if args.good_run:
+            good = con.execute("SELECT id,date,IFNULL(driver_commit,'-') FROM run WHERE id=?", (args.good_run,)).fetchall()
+        else:
+            good = con.execute("SELECT id,date,IFNULL(driver_commit,'-') FROM run WHERE phone=? AND id<>? AND notes LIKE ? "
+                               "ORDER BY date DESC", (ph, rid, "%" + args.good_notes + "%")).fetchall()
+        if not good:
+            print(f"{ph}: no run flagged good (import with --notes good, or pass --good-run ID); newest is "
+                  f"run{rid} {ndate} {ncommit}")
+            continue
+        gid, gdate, gcommit = good[0]
+        old = dict(con.execute('SELECT name, status FROM "case" WHERE run_id=?', (gid,)))
+        new = dict(con.execute('SELECT name, status FROM "case" WHERE run_id=?', (rid,)))
+        fixed = sorted(n for n in new if new[n] == "PASS" and old.get(n, "PASS") != "PASS")
+        lost = sorted(n for n in new if n in old and old[n] == "PASS" and new[n] != "PASS")
+        print(f"{ph}: good run{gid} {gdate} {gcommit} -> newest run{rid} {ndate} {ncommit}: "
+              f"{len(lost)} PASS lost, {len(fixed)} gained")
+        for n in lost[:args.limit]:
+            print(f"  REGRESSION {new[n]:<12} {n}")
+        for n in fixed[:args.limit]:
+            print(f"  fixed      {n}")
+        if len(lost) > args.limit:
+            print(f"  … {len(lost) - args.limit} more regressions (--limit)")
+        found += len(lost)
+    if not found:
+        print("0 regression: no case that passed in a run flagged good fails in the newest run of its phone")
+
+
+def cmd_runs(con, args):
+    for rid, d, ph, gpu, cm, sha, src, notes in con.execute(
+            "SELECT id,date,phone,gpu_class,IFNULL(driver_commit,'-'),IFNULL(driver_sha256,'-'),source,notes FROM run ORDER BY date,id"):
+        n = con.execute("SELECT COUNT(*) FROM \"case\" WHERE run_id=?", (rid,)).fetchone()[0]
+        print(f"run{rid:<4} {d or '-':<10} {ph:<4} {gpu or '-':<4} {cm:<9} {n:6d} cases  {src}{'  [' + notes + ']' if notes else ''}")
+
+
+def cmd_groups(con, args):
+    sql = f"""SELECT c.name, c.status FROM \"case\" c JOIN run r ON r.id=c.run_id
+              WHERE {scope_clause(args)} ORDER BY c.name, {run_order_sql()}"""
+    latest = {}
+    for name, st in con.execute(sql):
+        latest.setdefault(name, st)
+    groups = {}
+    for n, st in latest.items():
+        groups.setdefault(group_of(n), {}).setdefault(st, 0)
+        groups[group_of(n)][st] += 1
+    for g in sorted(groups):
+        t = groups[g]
+        print(f"{sum(t.values()):6d} {g:<52} " + " ".join(f"{k.lower()}={t[k]}" for k in sorted(t)))
+
+
+def farm_sha_map():
+    """driver_sha256 per commit, from the farm's job records (MALI_FARM_STATE/jobs/*.json: so_sha256)."""
+    import json
+    import glob
+    state = os.environ.get("MALI_FARM_STATE") or os.path.join(os.path.expanduser("~"), ".local/state/mali-farm")
+    out = {}
+    for f in glob.glob(os.path.join(state, "jobs", "*.json")):
+        try:
+            j = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if isinstance(j, dict) and j.get("commit") and j.get("so_sha256"):
+            c = str(j["commit"])
+            out.setdefault(c[:8], j["so_sha256"])
+            out.setdefault(c[:12], j["so_sha256"])
+            out.setdefault(c, j["so_sha256"])
+    return out
+
+
+def short_source(path):
+    rel = os.path.relpath(os.path.abspath(path), repo_root())
+    if rel.startswith(".."):
+        return os.path.basename(os.path.dirname(os.path.abspath(path))) + "/" + os.path.basename(path)
+    return rel
+
+
+def git_file_date(path):
+    """Commit date of the last commit that touched a tracked file (the file's own date, not the checkout's)."""
+    import subprocess
+    try:
+        rel = os.path.relpath(os.path.abspath(path), repo_root())
+    except ValueError:
+        return None
+    try:
+        out = subprocess.run(["git", "-C", repo_root(), "log", "-1", "--format=%ad", "--date=short", "--", rel],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None
+
+
+def git_date(commit):
+    import subprocess
+    for cmd in (["git", "-C", repo_root(), "log", "-1", "--format=%ad", "--date=short", commit],
+                ["git", "-C", repo_root(), "show", "-s", "--format=%ad", "--date=short", commit]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    return None
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="covdb", description=__doc__.splitlines()[0])
+    ap.add_argument("--db", default=DEFAULT_DB)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("import", help="import qdeqp TSV, host TSV or group CSV")
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--phone")
+    p.add_argument("--date")
+    p.add_argument("--commit")
+    p.add_argument("--sha256", default="")
+    p.add_argument("--gpu-class")
+    p.add_argument("--notes", default="")
+    p.add_argument("--tool")
+    p.add_argument("--source")
+    p.add_argument("--force", action="store_true")
+
+    p = sub.add_parser("status", help="every run's result for a case (or prefix)")
+    p.add_argument("case")
+    p.add_argument("--limit", type=int, default=40)
+
+    p = sub.add_parser("failing", help="latest non-PASS result per case, grouped")
+    p.add_argument("--group")
+    p.add_argument("--phone")
+    p.add_argument("--since")
+    p.add_argument("--detail", action="store_true")
+    p.add_argument("--all", action="store_true", help="include reference (PanVK) runs")
+
+    p = sub.add_parser("summary", help="runs, cases, per-group pass rate")
+    p.add_argument("--all", action="store_true", help="include reference (PanVK) runs")
+    p.add_argument("--phone")
+    p = sub.add_parser("regress", help="PASS in an older run flagged good, not PASS in the newest run")
+    p.add_argument("--good-notes", default="good", help="run notes containing this mark a blessed baseline")
+    p.add_argument("--good-run", type=int)
+    p.add_argument("--phone")
+    p.add_argument("--limit", type=int, default=40)
+    sub.add_parser("runs", help="the run table")
+    p = sub.add_parser("groups", help="per-group totals of the newest result per case")
+    p.add_argument("--all", action="store_true", help="include reference (PanVK) runs")
+
+    args = ap.parse_args(argv)
+    con = db(args.db)
+    {"import": cmd_import, "status": cmd_status, "failing": cmd_failing, "summary": cmd_summary,
+     "regress": cmd_regress, "runs": cmd_runs, "groups": cmd_groups}[args.cmd](con, args)
+    con.close()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

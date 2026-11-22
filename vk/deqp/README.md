@@ -33,3 +33,15 @@ Crash/Timeout/NotSupported against `host-baseline.tsv`, printing NEW ones by nam
 
 ## Candidate case lists (non-gating)
 `gen-caselists.py <mustpass vk-default dir>` regenerates `cases-small.txt` (1531: draw sample, dynamic-state, clipping, fragment-operations, depth; proposed for the gated daily) and `cases-deep.txt` (6884: sampled rasterization/compute/ssbo/ubo/texture/query-pool/memory/..., never a gate). Both are only for `farm submit --suite cases --case ...`; `lists/daily-sample.txt` and `SUITE_CASES` are untouched until every GPU class has a baseline.
+
+## Results database (`tools/covdb`)
+Every result file this repo and this laptop already have goes into one SQLite file, `covdb.sqlite` (gitignored, rebuildable):
+`tools/covdb-import-all [--fresh]` imports `baseline-poco.tsv` (marked as the PanVK reference, not our driver), `host-baseline.tsv`,
+the tracked `ours-daily-sample-*.tsv`, the group CSVs and every `~/.local/state/mali-farm/logs/*-daily.tsv`; `*notes.tsv` exports
+(case + dEQP note, no PASS rows) and `sweep-v*-notes.tsv` are imported by hand for their signatures. Tables are
+`run(id,date,phone,gpu_class,driver_commit,driver_sha256,source,tool,notes)` and `case(run_id,name,status,signature,time_ms)`.
+A run's commit comes from the file name (`…-<commit>-<phone>-daily.tsv`) and its `driver_sha256` from the farm's `jobs/*.json`
+(`so_sha256`); the tracked TSVs carry no commit at all. Queries:
+`tools/covdb summary [--phone P]`, `tools/covdb failing [--group RE] [--phone P] [--since C]`, `tools/covdb status <case|prefix>`,
+`tools/covdb regress [--good-run ID]`, `tools/covdb runs`. `tools/covdb import <file>` sniffs qdeqp TSV, host TSV, group CSV and
+note-TSV. Inventory, current numbers and the coverage plan are in `~/.config/opencode/mali-orchestrator/notes/covdb.md`.
