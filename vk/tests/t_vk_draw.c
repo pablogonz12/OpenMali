@@ -2806,7 +2806,8 @@ test_view_format(void)
 static int
 test_gs_passthrough(void)
 {
-   if (!getenv("MALI_EXPERIMENTAL_GS")) {
+   const char *gse = getenv("MALI_EXPERIMENTAL_GS");
+   if (!gse || strcmp(gse, "1")) {   /* the driver'"'"'s exact predicate: "0" or "1x" is the gate off */
       printf("{\"test\":\"gs_passthrough\",\"skipped\":\"MALI_EXPERIMENTAL_GS not set (geometryShader is not advertised)\",\"ok\":true}\n");
       return 1;
    }
@@ -2868,7 +2869,7 @@ static const struct { const char *geom; VkPrimitiveTopology topo; int gate_off; 
    {"gs_amplify.geom.spv",  VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "max_vertices 6 is not 3"},
    {"gs_loop.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "control flow (opcode"},
    {"gs_primid.geom.spv",   VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, "gl_PrimitiveID"},
-   {"gs_pass.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, "strip topology"},
+   {"gs_pass.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, "pass-through GS needs a triangle list topology"},
    {"gs_pass.geom.spv",     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  1, "geometryShader is not advertised"},
 };
 
