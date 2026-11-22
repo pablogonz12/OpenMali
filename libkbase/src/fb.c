@@ -139,7 +139,8 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(q, 11, 0, 32, ss ? ss : rs * p->height);         /* Surface stride */
 		uint32_t c = kb_fb_clear_word(p->clear_r, p->clear_g, p->clear_b, p->clear_a);
 		for (unsigned i = 0; i < 4; i++)
-			put(q, 12 + i, 0, 32, in ? cl[i] : c);           /* Clear colour */
+			/* an extra target has its own clear words; only RT0 without them falls back to the byte clear value */
+			put(q, 12 + i, 0, 32, (i == 0 && !in) ? c : cl[i]);   /* Clear colour */
 	}
 	return 0;
 }
