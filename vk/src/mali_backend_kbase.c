@@ -808,8 +808,10 @@ kbase_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t tar
       if (pthread_mutex_trylock(&k->wait_lock) == 0) {
          struct kb_event ev;
          while (kb_event_read(k->ctx, &ev, 0) > 0)
-            if (ev.fatal)
+            if (ev.fatal) {
+               fault_note(&ev);   /* the drain that prints "group N FATAL: …" verbatim: the map/log hooks live here */
                fprintf(stderr, "mali_vk: %s\n", ev.text);
+            }
          pthread_mutex_unlock(&k->wait_lock);
       }
       if (k->lost || kb_queue_faulted(&k->queue)) {

@@ -61,6 +61,14 @@ live_bo_remove(struct mali_bo *bo)
    pthread_mutex_unlock(&g_live_bo_lock);
 }
 
+/* Track a BO the driver allocates itself (arena, geo, sync, TLS, overflow, meta shaders): they never pass through
+ * mali_AllocateMemory, and the per-draw descriptors live in the arena. */
+void
+mali_mem_bo_track(struct mali_bo *bo)
+{
+   live_bo_add(bo);
+}
+
 /* CPU pointer of the live BO range that contains [va, va+size), or NULL. This is what hw_va_cpu falls back to when the
  * backend has no va_cpu op (kbase: cs_dump's pointer following used to print nothing on the phone because of that). */
 void *

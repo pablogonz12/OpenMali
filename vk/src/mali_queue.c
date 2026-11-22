@@ -625,6 +625,12 @@ mali_hw_init(struct mali_device *dev)
       hw.va_cpu = hw_va_cpu;
    }
    mali_fault_ctx_note(h->arena.gpu_va, h->arena.size, h->geo.gpu_va, h->heap.first_chunk_va);
+   /* the driver's own BOs are not VkDeviceMemory: register them so a faulting CS pointer inside the arena resolves */
+   mali_mem_bo_track(&h->arena);
+   mali_mem_bo_track(&h->geo);
+   mali_mem_bo_track(&h->sync);
+   if (h->tls_live)
+      mali_mem_bo_track(&h->tls);
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    h->hw = hw;
    h->md = (struct mali_meta_dev){.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};
