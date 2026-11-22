@@ -983,7 +983,9 @@ def render(res, args):
     ]
     w("| level / route | gated by | met? | blocked rows (what to buy next) |")
     w("|---|---|---|---|")
-    idx = {r.id: r for r in rows}
+    # the summary counts every row the level names, dropped ones included: a row whose source disappeared is
+    # "unmet", not "not listed", or the table would claim a level is unlocked by a shrinking denominator
+    idx = {r.id: r for r in res["rows"]}
     for lvl, ids in levels:
         have = [idx[i] for i in ids if i in idx]
         okn = sum(1 for r in have if status_cell(r) in ("OK", "OK(opt)"))

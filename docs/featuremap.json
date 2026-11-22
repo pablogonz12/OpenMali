@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-22T02:05:59+00:00",
+ "generated": "2026-11-22T03:22:33+00:00",
  "generator": "tools/featuremap.py v1",
- "commit": "b9069eb2d2cd8007bdd237ce8a1a374346215f08",
+ "commit": "51e1a814eef6881e0cdb9ee86c2b3d6b15e02784",
  "sources": [
   {
    "id": "vk.xml",
@@ -5241,10 +5241,10 @@
    "source": {
     "ref": "self",
     "file": "vk/src/mali_pipeline.c",
-    "line": 786,
+    "line": 794,
     "match": "v->vk.view_format && v->vk.view_format != img->vk.format",
     "verified": true,
-    "drift": false
+    "drift": true
    },
    "ours": true,
    "ours_text": "in tree (line verified)",
@@ -5258,7 +5258,9 @@
    ],
    "status": "OK",
    "games_unlocked": 1,
-   "caveats": []
+   "caveats": [
+    "line re-pinned 794 (upstream moved)"
+   ]
   },
   {
    "id": "icd-max-workgroup-invocations",
