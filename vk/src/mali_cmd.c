@@ -611,11 +611,13 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          default: unsupported(cmd, "polygon mode");
          }
       }
-      /* colour attachment 0 blend */
-      const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
+      /* the colour attachment this frame renders: index 0 unless the pass's leading slots are null (then slot 1, ...), so
+       * the blend and colour-write state must be read for that slot, not for slot 0 the view may not exist for */
+      const unsigned cs = cmd->cur.has_colour ? (cmd->cur.colour_slot & 7u) : 0u;
+      const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[cs];
       x->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cb->blend_enable;
       x->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cb->write_mask : 0xf;
-      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & 1))
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << cs)))
          x->wmask = 0;
       x->src_c = cb->src_color_blend_factor; x->dst_c = cb->dst_color_blend_factor;
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
