@@ -40,7 +40,8 @@ export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time
 # 2026-11-22 robustness2: the list grew 47 -> 49 because robustness2.robustBufferAccess2/nullDescriptor are DXVK 3.1.1
 # requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted; robustBufferAccess2 is advertised now (vk_feat robust2,
 # X4 6/6), so the honest count is 3/49 where main's 47-row list read 3.
-DXVK_MISSING=3
+DXVK_MISSING=2
+# 2026-11-22 #350 merged here: shaderCullDistance is advertised (t_vk_feat cull), so the honest count is 2/49.
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
@@ -258,6 +259,18 @@ done
 # fake-backend gate cannot silently drop it. Its pixel assertion only runs on hardware (FIRST=red, LAST=blue).
 for g in v11 v13; do
    run "vk_feat provoking $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only provoking
+done
+
+# shaderCullDistance, named so the gate cannot drop it: cull.vert (three thirds) separates the cull rule from the clip
+# rule - all three vertices negative vanishes, ONE negative vertex is drawn whole, and a clip distance in the same
+# shader still clips. The pixel assertion runs on hardware; the fake backend compiles and submits the draw, and the
+# case's limits assertion (maxCullDistances 8, combined >= clip) runs on both.
+for g in v11 v13; do
+   run "vk_feat cull $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull
+   # slot > 0: 3 clip + 3 cull distances (6 components), the cull decision made on the second slot. The FS reads the
+   # flags at the varying the VS reports; a load that counts the slot twice, or takes the base from the FS's
+   # num_inputs, makes the two stages disagree and mali_pipeline refuses the pipeline (this case fails, no pixels needed).
+   run "vk_feat cull2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull2
 done
 
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).

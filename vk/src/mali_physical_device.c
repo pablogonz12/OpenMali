@@ -157,7 +157,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
       .maxClipDistances = 8,                 /* shaderClipDistance: VARYING_SLOT_CLIP_DIST0/1 (t_vk_feat clip8) */
-      .maxCullDistances = 0,                 /* shaderCullDistance stays off: no cull lowering */
+      .maxCullDistances = 8,                 /* shaderCullDistance: the VS writes d>=0 as 1 into the merged clip array, the FS discards where one interpolates to 0 (t_vk_feat cull) */
       .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
@@ -511,6 +511,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderDrawParameters = true,                                     /* t_vk_feat dparams */
       .samplerYcbcrConversion = true,                                   /* t_vk_feat ycbcr (NV12 only; pixels on hardware, smoke) */
       .shaderClipDistance = true,                                       /* t_vk_feat clip */
+      .shaderCullDistance = true,                                       /* t_vk_feat cull: per-primitive test emulated with a 0/1 varying + FS discard */
       .shaderImageGatherExtended = true,                                /* t_vk_feat gather */
       .fragmentStoresAndAtomics = true,                                 /* t_vk_feat fsstore */
       .vulkanMemoryModel = true, .vulkanMemoryModelDeviceScope = true,  /* t_vk_feat memmodel */

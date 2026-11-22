@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -50,6 +50,7 @@ static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
+static VkPolygonMode g_poly;    /* make_pipe polygonMode (0 = VK_POLYGON_MODE_FILL) */
 static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must be refused, with a message naming TF */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
@@ -265,7 +266,7 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                                  .topology = g_topo};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+                                                .polygonMode = g_poly, .cullMode = VK_CULL_MODE_NONE,
                                                 .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = g_lw, .pNext = g_rs_next};
    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
@@ -3123,6 +3124,64 @@ test_clip8(void)
    return 1;
 }
 
+/* shaderCullDistance (t_vk_draw-style draw case): cull.vert draws three full-height thirds.
+ *   A (x < W/3):     cull[0] = -1 at ALL three vertices -> the primitive must vanish
+ *   B (W/3..2W/3):   cull[0] = -1 at ONE vertex only    -> drawn whole; a cull-as-clip lowering loses about half
+ *   C (x > 2W/3):    cull[0] = +1, clip[0] = ndc.x-0.5  -> ordinary clipping keeps x >= 3W/4
+ * Both distances are in one shader (one merged VARYING_SLOT_CLIP_DIST0 array), so a FS that reads the clip half as
+ * "interpolated < 0" and the cull half as "interpolated == 0" has to be right for both at once. */
+static int
+test_cull(void)
+{
+   if (!g_feat.shaderCullDistance) {
+      /* Deliberately not a skip (every other feature case skips): the lane that added the cull lowering also advertises
+       * the bit, so a build without the bit is a regression. A skip would let the feature and its test disappear
+       * together, and vk/check.sh's DXVK_MISSING counts only t_dxvk_caps. */
+      CHECK(0, "shaderCullDistance is not advertised (maxCullDistances %u, maxCombinedClipAndCullDistances %u): cull.vert is the draw test for it", g_props.limits.maxCullDistances, g_props.limits.maxCombinedClipAndCullDistances);
+      printf("{\"test\":\"cull\",\"failed\":\"shaderCullDistance not advertised\",\"limits\":[%u,%u],\"ok\":false}\n", g_props.limits.maxClipDistances, g_props.limits.maxCullDistances);
+      return 0;
+   }
+   /* 0 = off; with the feature on, the limit pair is 8/8/8 (t_vk_info checks the floor, this the value the VS/FS use) */
+   const VkPhysicalDeviceLimits *L = &g_props.limits;
+   CHECK(L->maxCullDistances == 8 && L->maxCombinedClipAndCullDistances >= L->maxClipDistances, "cull limits %u clip %u combined %u", L->maxCullDistances, L->maxClipDistances, L->maxCombinedClipAndCullDistances);
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "cull.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 18, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      const int b1 = W / 3, b2 = 2 * W / 3, bclip = 3 * W / 4;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - b1) <= 3 || abs(x - b2) <= 3 || abs(x - bclip) <= 3) continue;   /* rasterisation/plane edges */
+            int want;
+            if (x < b1) want = 0;              /* A: every vertex negative -> culled */
+            else if (x < b2) want = 1;         /* B: one negative vertex -> kept whole */
+            else want = x >= bclip;            /* C: clip distance only */
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            bad += want ? !near(p, 255, 0, 0, 255, 2) : p[3] != 0;
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (A %u,%u,%u,%u  B %u,%u,%u,%u  C-left %u,%u,%u,%u  C-right %u,%u,%u,%u)", bad, n,
+            pix(&t, b1 / 2, H / 2)[0], pix(&t, b1 / 2, H / 2)[1], pix(&t, b1 / 2, H / 2)[2], pix(&t, b1 / 2, H / 2)[3],
+            pix(&t, (b1 + b2) / 2, H / 2)[0], pix(&t, (b1 + b2) / 2, H / 2)[1], pix(&t, (b1 + b2) / 2, H / 2)[2], pix(&t, (b1 + b2) / 2, H / 2)[3],
+            pix(&t, (b2 + bclip) / 2, H / 2)[0], pix(&t, (b2 + bclip) / 2, H / 2)[1], pix(&t, (b2 + bclip) / 2, H / 2)[2], pix(&t, (b2 + bclip) / 2, H / 2)[3],
+            pix(&t, (bclip + W) / 2, H / 2)[0], pix(&t, (bclip + W) / 2, H / 2)[1], pix(&t, (bclip + W) / 2, H / 2)[2], pix(&t, (bclip + W) / 2, H / 2)[3]);
+      printf("{\"test\":\"cull\",\"pixels\":%d,\"bad\":%d,\"limits\":[%u,%u],\"ok\":true}\n", n, bad, L->maxClipDistances, L->maxCullDistances);
+   } else printf("{\"test\":\"cull\",\"skipped\":\"pixels: fake backend\",\"limits\":[%u,%u],\"ok\":true}\n", L->maxClipDistances, L->maxCullDistances);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderDrawParameters: see dparams.vert. Triangles A0..A2 (columns 0..2, indirect multi-draw), B (column 3), C (column 0, row 1). */
 static int g_dparams;
 static int
@@ -3992,6 +4051,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
    if (ok && CASE_ON("samplecnt")) ok &= test_samplecnt();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
+   if (ok && CASE_ON("cull")) ok &= test_cull();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
