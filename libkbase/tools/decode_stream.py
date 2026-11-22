@@ -211,6 +211,13 @@ def rules(side, events, arch):
         where = 'ins %d(%s)' % (e['i'], e['name'])
         if op in (38, 39, 51) and (pend_flush or pend_store):
             errs.append('%s: sync op before WAIT on async FLUSH_CACHE2/STORE_STATE slot(s) %s (INTERMITTENT.md)' % (where, sorted(set(pend_flush) | set(pend_store))))
+        # Frame-ordering.md § Round 2, the bug round 1 shipped: a FINISH_FRAGMENT with wait mask 0 is a synchronous
+        # instruction, so the packer drops its signal slot and the slot never increments (Mesa cs_apply_async,
+        # cs_builder.h:866-889) - every wait on that slot, including the tail flush wait and the retire, is then vacuous
+        # and the fence can signal before the fragment/tile writeback. (A mask-0 SYNC_ADD64 is not flagged on its own:
+        # the ops/event path legitimately posts its own adds in a kick that also carries a fragment job.)
+        if op == 11 and (w >> 48) & 0xf and not (w >> 16) & 0xffff:
+            errs.append('%s: FINISH_FRAGMENT signals slot %u with wait mask 0: the signal slot is dropped, nothing can wait on it' % (where, (w >> 48) & 0xf))
         if op == 36: pend_flush[(w >> 48) & 15] = where
         elif op == 40: pend_store[(w >> 48) & 15] = where
         elif op == 3:
