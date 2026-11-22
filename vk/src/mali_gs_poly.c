@@ -406,3 +406,44 @@ mali_gs_programs_report(const struct mali_gs_programs *p, char *buf, size_t n)
             p->main.bin_size, p->count.bin_size, p->copy.bin_size, p->pre_gs.bin_size);
    return buf;
 }
+
+#include "poly/geometry.h"
+
+void
+mali_gs_draw_counts(uint32_t max_indices, uint32_t shape, uint32_t vcount, uint32_t icount, uint32_t *nprims,
+                    uint32_t *index_count, uint32_t *instance_count)
+{
+   const uint32_t per_inst = u_decomposed_prims_for_vertices(MESA_PRIM_TRIANGLES, vcount);
+   *nprims = per_inst;
+   *index_count = poly_gs_rast_vertices((enum poly_gs_shape)shape, max_indices, per_inst, icount);
+   *instance_count = poly_gs_rast_instances((enum poly_gs_shape)shape, max_indices, per_inst, icount);
+}
+
+void
+mali_gs_fill_params(void *vp_, void *gp_, uint32_t max_indices, uint32_t shape, uint32_t count_words, uint32_t vcount,
+                    uint32_t icount, uint64_t vs_outputs, uint64_t arena_va, uint64_t index_va, uint64_t count_va,
+                    uint64_t scratch_va)
+{
+   static const uint32_t wg[3] = {1, 1, 1};   /* the programs are compiled with a 1x1x1 workgroup: grid == threads */
+   struct poly_vertex_params *vp = vp_;
+   struct poly_geometry_params *gp = gp_;
+   poly_vertex_params_init(vp, vs_outputs, wg);
+   poly_vertex_params_set_draw(vp, vcount, icount);
+   vp->output_buffer = arena_va;
+   poly_geometry_params_init(gp, MESA_PRIM_TRIANGLES, wg);
+   poly_geometry_params_set_draw(gp, MESA_PRIM_TRIANGLES, (enum poly_gs_shape)shape, max_indices, vcount, icount);
+   gp->count_buffer = count_va;
+   gp->count_buffer_stride = count_words * 4;
+   gp->output_index_buffer = index_va;
+   for (unsigned i = 0; i < POLY_MAX_VERTEX_STREAMS; i++) {
+      gp->prims_generated_counter[i] = scratch_va;
+      gp->xfb_prims_generated_counter[i] = scratch_va;
+      gp->xfb_overflow[i] = scratch_va;
+   }
+   gp->xfb_any_overflow = scratch_va;
+   for (unsigned i = 0; i < POLY_MAX_SO_BUFFERS; i++) {
+      gp->xfb_offs_ptrs[i] = scratch_va;
+      gp->xfb_base_original[i] = scratch_va;
+      gp->xfb_base[i] = scratch_va;
+   }
+}

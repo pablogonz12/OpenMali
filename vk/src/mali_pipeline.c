@@ -42,6 +42,7 @@ struct mali_pipeline {
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
    struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
    struct mali_compiled vs_plain;            /* XFB programs: the same VS without the XFB lowering (mali_tf.h) */
+   struct mali_gs_programs *gsp;             /* GS lane 2 step (iii): poly's programs; vs is the rast (copy) program, the compute ones are in code */
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -59,6 +60,11 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   if (p->gsp) {
+      if (mali_gs_programs_free)
+         mali_gs_programs_free(p->gsp);
+      free(p->gsp);
+   }
    mali_compiled_free(&p->vs_plain);   /* the XFB pipeline's side-effect-free vertex variant; the fail: path frees through here too */
    vk_object_free(&dev->vk, alloc, p);
 }
@@ -191,7 +197,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
           * dispatches, the rast draw — is step (iii) and does not exist, so the pipeline is still refused; the refusal
           * now carries the compile's verdict instead of only the classifier's, which is what t_vk_draw --only gs_amplify
           * quotes and what step (iii) starts from. MALI_EXPERIMENTAL_GS=1 is required above: nothing here is advertised. */
-         struct mali_gs_programs gsp;
+         struct mali_gs_programs *gsp = calloc(1, sizeof *gsp);
          char gsmsg[384] = "", rep[288] = "";
          /* The layout is what makes the descriptor lowering run at all: with layout NULL the compile keeps the plain
           * NIR path, poly's sysvals survive, and Mesa's divergence analysis aborts the process. Flatten it here (the
@@ -200,17 +206,38 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          VK_FROM_HANDLE(vk_pipeline_layout, glayout, ci->layout);
          const int gfrc = glayout ? mali_pipeline_layout_flatten(glayout, &gflat) : -1;
          struct mali_compile_opts go = {.arch = arch, .layout = gfrc == 0 ? &gflat.c : NULL};
-         const int grc = (mali_gs_poly_compile && gcode && gwords)
-                            ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, vcode, vwords, vss->pName, &gsp, gsmsg, sizeof gsmsg) : -1;
+         const int grc = (gsp && mali_gs_poly_compile && gcode && gwords)
+                            ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, vcode, vwords, vss->pName, gsp, gsmsg, sizeof gsmsg) : -1;
          if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: geometry shader refused: %s | lane 2 step (ii): %s\n", why,
-                    grc ? gsmsg : (mali_gs_programs_report ? mali_gs_programs_report(&gsp, rep, sizeof rep) : "compiled"));
-         if (!grc && mali_gs_programs_free)
-            mali_gs_programs_free(&gsp);
-         res = VK_ERROR_FEATURE_NOT_PRESENT;
-         goto fail;
+            fprintf(stderr, "mali_vk: geometry shader refused as a pass-through: %s | lane 2: %s\n", why,
+                    grc ? gsmsg : (mali_gs_programs_report ? mali_gs_programs_report(gsp, rep, sizeof rep) : "compiled"));
+         /* step (iii) covers exactly one draw shape: triangle-list input, direct draw, no XFB, no counts program use, VS
+          * attributes of 32-bit components. Everything else is refused by name here, not at draw time. */
+         const char *why_not = NULL;
+         if (grc)
+            why_not = "poly/backend refused the geometry shader";
+         else if (!gsp->has_main || !gsp->has_copy || !gsp->has_vs)
+            why_not = "poly produced no main/copy/vs program";
+         else if (gsp->info.xfb || gsp->info.prefix_sum || gsp->info.multistream)
+            why_not = "geometry shader with transform feedback or several streams";
+         else if (gsp->info.shape != MALI_POLY_SHAPE_DYNAMIC_INDEXED)
+            why_not = "geometry shader whose rasterisation draw is not the dynamic-indexed strip shape";
+         else if (!ci->pInputAssemblyState || ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+            why_not = "geometry shader input other than a triangle list";
+         else if (gsp->info.mode != 5 /* MESA_PRIM_TRIANGLE_STRIP */)
+            why_not = "geometry shader output other than triangle_strip";
+         if (why_not) {
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: geometry shader refused: %s\n", why_not);
+            if (gsp && mali_gs_programs_free)
+               mali_gs_programs_free(gsp);
+            free(gsp);
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         p->gsp = gsp;
       }
-      if (getenv("MALI_PIPE_DBG"))
+      if (gs_prims && getenv("MALI_PIPE_DBG"))
          fprintf(stderr, "mali_vk: geometry shader accepted as a pass-through (%u-in/1-out, compiled as the vertex program)\n",
                  gs_prims);
    }
@@ -267,7 +294,14 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.fs_spirv_words = fss ? fwords : 0;
    o.fs_entry = fss ? fss->pName : NULL;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   int vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   int vcr = 0;
+   if (p->gsp) {
+      /* GS: the program the hardware runs as "the vertex shader" is poly's rast (copy) program; the application VS runs as
+       * the compute pre-pass (p->gsp->vs). The FS below links against the copy program's varying layout. */
+      p->vs = p->gsp->copy;
+      memset(&p->gsp->copy, 0, sizeof p->gsp->copy);
+   } else
+      vcr = mali_compile(&o, &p->vs, err, sizeof err);
    if (vcr) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
       res = vcr == MALI_COMPILE_UNSUPPORTED ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV;
@@ -374,6 +408,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    size_t pl_off = (fs_off + p->fs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);   /* non-XFB VS variant of an XFB program */
    size_t bl_off = (pl_off + p->vs_plain.bin_size + 15) & ~(size_t)15;
    size_t code_sz = has_blend ? bl_off + p->blend.bin_size : pl_off + p->vs_plain.bin_size;
+   size_t gv_off = 0, gm_off = 0;
+   if (p->gsp) {   /* the two compute programs of a GS pipeline follow everything else, 256-byte aligned */
+      gv_off = (code_sz + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+      gm_off = (gv_off + p->gsp->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+      code_sz = gm_off + p->gsp->main.bin_size;
+   }
    if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
@@ -387,7 +427,20 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    if (has_blend)
       memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
+   if (p->gsp) {
+      memcpy((char *)p->code.cpu + gv_off, p->gsp->vs.bin, p->gsp->vs.bin_size);
+      memcpy((char *)p->code.cpu + gm_off, p->gsp->main.bin, p->gsp->main.bin_size);
+   }
    struct mali_gfx_state *g = &p->gfx;
+   if (p->gsp) {
+      g->gs.on = true;
+      g->gs.vs_cs = &p->gsp->vs;
+      g->gs.vs_cs_va = p->code.gpu_va + gv_off;
+      g->gs.main = &p->gsp->main;
+      g->gs.main_va = p->code.gpu_va + gm_off;
+      g->gs.max_indices = p->gsp->info.max_indices;
+      g->gs.vs_outputs = p->gsp->vs_outputs;
+   }
    if (has_blend)
       g->blend_va = p->code.gpu_va + bl_off;
    g->vs = &p->vs;

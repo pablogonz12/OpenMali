@@ -36,6 +36,21 @@ void mali_gs_programs_free(struct mali_gs_programs *p);
 /* One line for a log or a refusal reason: shapes and the four program sizes. Returns buf. */
 const char *mali_gs_programs_report(const struct mali_gs_programs *p, char *buf, size_t n);
 
+/* Direct, triangle-list-input draw: the rasterisation draw's counts (poly_geometry_params_set_draw). */
+void mali_gs_draw_counts(uint32_t max_indices, uint32_t shape, uint32_t vcount, uint32_t icount, uint32_t *nprims,
+                         uint32_t *index_count, uint32_t *instance_count);
+
+/* Fill poly's two parameter blocks for one draw: `vp` (struct poly_vertex_params, 64 B) and `gp` (struct
+ * poly_geometry_params, 316 B). Addresses are the GPU VAs of the vertex-output arena, the output index buffer, a 16 B zero
+ * count buffer and `scratch` (an 8-byte-aligned writable 64 B block every XFB/query pointer points at: nothing without XFB
+ * stores through them). */
+void mali_gs_fill_params(void *vp, void *gp, uint32_t max_indices, uint32_t shape, uint32_t count_words, uint32_t vcount,
+                         uint32_t icount, uint64_t vs_outputs, uint64_t arena_va, uint64_t index_va, uint64_t count_va,
+                         uint64_t scratch_va);
+
+#define MALI_GS_VP_BYTES 64u
+#define MALI_GS_GP_BYTES 316u
+
 #ifdef __cplusplus
 }
 #endif
