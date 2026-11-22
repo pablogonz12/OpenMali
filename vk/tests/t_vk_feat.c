@@ -2059,13 +2059,13 @@ test_quadsize(void)
    if (!cb_submit(&t, cb)) return 0;
    if (!g_fake) {
       unsigned nz = 0;
-      for (int y = 0; y < 64; y++)
-         for (int x = 0; x < 64; x++) {
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
             const uint8_t *q = pix(&t, x, y);
             nz += (q[0] | q[1] | q[2]) != 0;
          }
-      printf("{\"test\":\"quadsize\",\"covered\":%u,\"of\":4096}\n", nz);
-      CHECK(nz > 3900, "a triangle quad whose VS writes gl_PointSize covered %u of 4096 px", nz);
+      printf("{\"test\":\"quadsize\",\"covered\":%u,\"of\":%d}\n", nz, W * H);
+      CHECK(nz > (unsigned)(W * H) * 95 / 100, "a triangle quad whose VS writes gl_PointSize covered %u of %d px", nz, W * H);
    } else {
       printf("{\"test\":\"quadsize\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
