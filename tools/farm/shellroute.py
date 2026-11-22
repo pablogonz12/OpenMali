@@ -511,6 +511,12 @@ def smoke(a):
     except OSError:
         feat_bin = b""
     feat = [c for c in ONLY_FEAT if c.encode() + b"\0" in feat_bin]
+    # the draw cases are static, but a tree built before a case existed has no CASE_ON for it: ask the binary
+    try:
+        draw_bin = open(os.path.join(out, "t_vk_draw"), "rb").read()
+    except OSError:
+        draw_bin = b""
+    draw_cases = [c for c in ONLY_DRAW if c.encode() + b"\0" in draw_bin] or ONLY_DRAW
     for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", ""), ("t_vk_feat", "")):
         if not a.only:
             if n == "t_vk_feat":
@@ -521,8 +527,11 @@ def smoke(a):
                 runs.append((n, "--only many_draws", "many_draws"))   # 3k/10k/50k draws in one frame (arena overflow, was DEVICE_LOST)
             continue
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
-            if c in (ONLY_DRAW if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
+            if c in (draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
                 runs.append((n, f"{extra} --only {c}", c))
+    if a.only and not any(c for c in a.only.split(",")):
+        print("--only given with no case names; refusing to report an empty run as a pass", flush=True)
+        return 2
     if a.only:   # a requested case this route does not schedule must be reported, not silently skipped
         ran = {oc for _, _, oc in runs if oc}
         missing = [c for c in a.only.split(",") if c and c not in ran]

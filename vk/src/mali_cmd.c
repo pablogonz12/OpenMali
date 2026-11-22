@@ -1282,7 +1282,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->tile_log2 = tl;
       f->hmask = tl >= 10 ? 0xfeu : 0xffu;   /* the tiler's smallest bin is 16x16; 8x8/4x4 keep it (the FBD sets the tile) */
       if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
-         f->tile_log2 = (unsigned)atoi(getenv("MALI_TILE_LOG2"));
+         const int want = atoi(getenv("MALI_TILE_LOG2"));
+         if (want < 2 || want > 12) {   /* a bigger tile overflows the colour total and the allocation loops forever */
+            unsupported(cmd, "MALI_TILE_LOG2 out of range (2..12)");
+            return;
+         }
+         f->tile_log2 = (unsigned)want;
          f->hmask = f->tile_log2 >= 10 ? 0xfeu : 0xffu;
       }
    }

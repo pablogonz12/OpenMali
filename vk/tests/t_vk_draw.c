@@ -1982,7 +1982,8 @@ test_mrt(const char *name, int nrt)
    if (!g_fake)   /* the allocations are HOST_VISIBLE, not necessarily HOST_COHERENT: invalidate before reading */
       for (int i = 0; i < nrt; i++) {
          VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = mem[i], .offset = 0, .size = VK_WHOLE_SIZE};
-         InvalidateMappedMemoryRanges(dev, 1, &mmr);
+         /* a failed invalidate leaves the mapping stale: the pixel verdict would describe bytes we never rendered */
+         MRT_CHECK(InvalidateMappedMemoryRanges(dev, 1, &mmr) == VK_SUCCESS, "invalidate rt%d", i);
       }
    ok = 1;
    if (!g_fake && !map) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
