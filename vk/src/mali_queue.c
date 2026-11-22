@@ -371,12 +371,45 @@ hw_va_cpu(void *u, uint64_t va, size_t size)
    return be->va_cpu ? be->va_cpu(h->dev->kdev, va, size) : NULL;
 }
 
+static void
+cs_dump(const uint64_t *cs, unsigned n, struct mali_hwctx *h, const char *why)
+{
+   const char *p = getenv("MALI_CSDUMP_FILE");
+   FILE *f = (p && *p) ? fopen(p, "a") : stderr;
+   if (!f)
+      return;
+   fprintf(f, "CSDUMP why=%s n=%u arena_off=%zx arena_start=%zx va_arena=0x%llx heap_first=0x%llx geo=0x%llx\n", why, n,
+           h->ar.off, h->ar.start, (unsigned long long)h->arena.gpu_va, (unsigned long long)h->heap.first_chunk_va,
+           (unsigned long long)h->geo.gpu_va);
+   for (unsigned i = 0; i < n; i++)
+      fprintf(f, "CS %03u %016llx\n", i, (unsigned long long)cs[i]);
+   fflush(f);
+   if (f != stderr)
+      fclose(f);
+}
+
 static int
 hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
 {
    struct mali_hwctx *h = u;
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
-   if (getenv("MALI_CSDUMP") && n == 27) { for (unsigned i = 0; i < n; i++) fprintf(stderr, "CS %02u %016llx\n", i, (unsigned long long)cs[i]); }
+   /* MALI_CSDUMP=<n>   dump the submit whose instruction count is n (the old test hook, kept as n == 27)
+    * MALI_CSDUMP=fault dump the submit that came back failed (the faulting one), after the submit returned
+    * MALI_CSDUMP_FILE=<path>  the dump goes to that file (appended) instead of stderr: a file survives a dead session
+    * Both are plain file writes: no signal handlers, no GPU access. */
+   const char *cd = getenv("MALI_CSDUMP");
+   static int cd_mode;      /* 0 unparsed, 1 = n match, 2 = fault */
+   static unsigned cd_n;
+   if (cd && !cd_mode) {
+      if (!strcmp(cd, "fault"))
+         cd_mode = 2;
+      else {
+         cd_mode = 1;
+         cd_n = (unsigned)atoi(cd);
+      }
+   }
+   if (cd_mode == 1 && cd_n == n)
+      cs_dump(cs, n, h, "n");
    {
       const char *sf = getenv("MALI_ALLOC_STATS");
       FILE *fp = sf ? fopen(sf, "w") : NULL;
@@ -393,6 +426,8 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
+   if (cd_mode == 2 && r)
+      cs_dump(cs, n, h, "fault");
    if (h->fp.on && r == 0)
       mali_fprof_kicked(&h->fp, prof_now() - q0);
    if (getenv("MALI_PROF")) {

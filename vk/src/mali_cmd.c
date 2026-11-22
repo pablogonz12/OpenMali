@@ -287,7 +287,11 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
                return;
             }
             struct mali_hw_desc hd;
-            mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], dyn[used++]);
+            uint32_t doff = dyn[used++];
+            mali_desc_logf("bindset set=%p set_index=%u ndyn=%u start=%u k=%u dyn_off=0x%x dyn_va=0x%llx size=0x%llx "
+                           "-> addr=0x%llx", (void *)ds, s, ndyn, start, k, doff, (unsigned long long)ds->dyn[k].va,
+                           (unsigned long long)ds->dyn[k].size, (unsigned long long)(ds->dyn[k].va + doff));
+            mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], doff);
             if (memcmp(cmd->dyn_desc[start + k], hd.w, sizeof hd.w)) {
                memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
                cmd->dirty |= MALI_D_DYNBUF;

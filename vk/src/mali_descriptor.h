@@ -7,6 +7,7 @@
 #include "vk_descriptor_set_layout.h"
 #include "vk_descriptor_update_template.h"
 #include "vk_device.h"
+#include <stdio.h>
 #include "vk_ycbcr_conversion.h"
 #include "mali_pipeline_layout_flat.h"
 
@@ -90,6 +91,11 @@ void mali_dset_write(struct mali_dset *set, const VkWriteDescriptorSet *w);
 void mali_dset_mark_write(struct mali_dset *set, struct mali_memory *mem);
 void mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src);
 void mali_dset_update_template(struct mali_dset *set, const struct vk_descriptor_update_template *t, const void *data);
+/* MALI_DESC_LOG=<path>: append one line per buffer-descriptor write / dynamic-offset pack (diagnostics only; no-op
+ * when the env is unset). Used by the command-buffer side too, so the dynamic offsets and the pack land in one file. */
+FILE *mali_desc_log_file(void);
+void mali_desc_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 /* Hardware Buffer descriptor of dynamic buffer i of the set with the dynamic offset applied (written by CmdBindDescriptorSets). */
 void mali_dyn_buf_pack(unsigned arch, struct mali_hw_desc *d, const struct mali_dyn_buf *b, uint32_t dyn_offset);
 

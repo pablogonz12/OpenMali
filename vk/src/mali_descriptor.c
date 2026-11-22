@@ -8,8 +8,41 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* MALI_DESC_LOG=<path>: diagnostics for the buffer-descriptor path, off unless the env names a file. Every line is
+ * appended to that file (a plain file: no signal handlers, no GPU access, nothing on the driver's hot path beyond an
+ * fflush per line). Call sites pass the path that produced the write as the first field, so a line reads
+ *   desc path=write set=0x… binding=3 elem=0 buffer=0x… dev_va=0x0 offset=0x95a00 range=0x1000
+ * The writer that names device_address = 0 for a non-null buffer is the one that puts an app offset where a GPU address
+ * belongs (va += bi->offset in mali_dset_write's UBO/SSBO case). */
+FILE *mali_desc_log_file(void)
+{
+   static FILE *f;
+   static int tried;
+   if (!tried) {
+      const char *p = getenv("MALI_DESC_LOG");
+      tried = 1;
+      if (p && *p)
+         f = fopen(p, "a");
+   }
+   return f;
+}
+
+void mali_desc_logf(const char *fmt, ...)
+{
+   FILE *f = mali_desc_log_file();
+   if (!f)
+      return;
+   va_list ap;
+   va_start(ap, fmt);
+   vfprintf(f, fmt, ap);
+   va_end(ap);
+   fputc('\n', f);
+   fflush(f);
+}
 
 /* ---- hardware descriptor packers: same fields as libkbase/src/draw.c (hardware-proven on v11 and v13) ---- */
 
@@ -415,8 +448,8 @@ mali_dset_mark_write(struct mali_dset *s, struct mali_memory *mem)
 }
 
 static void
-write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDescriptorType type, const VkDescriptorImageInfo *ii,
-          const VkDescriptorBufferInfo *bi, const VkBufferView *bv)
+write_one(const char *path, struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDescriptorType type,
+          const VkDescriptorImageInfo *ii, const VkDescriptorBufferInfo *bi, const VkBufferView *bv)
 {
    if (!g_res) return;
    struct mali_hw_desc hw;
@@ -472,8 +505,11 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
       if (!bi->buffer) {
          if (b->stride) *slot_at(s, b->slot + idx) = null_hw;
          else s->dyn[b->dyn_idx + idx] = (struct mali_dyn_buf){ 0, 0 };
+         mali_desc_logf("desc path=%s set=%p binding=%u elem=%u type=%d buffer=NULL", path, (void *)s, b->slot, idx,
+                        (int)type);
       } else if (g_res->buffer(bi->buffer, &va, &size) == 0) {
          uint64_t range = bi->range == VK_WHOLE_SIZE ? size - bi->offset : bi->range;
+         uint64_t dev_va = va;
          va += bi->offset;
          if (b->stride) {
             mali_pack_buffer(s->arch, &hw, va, (uint32_t)range);
@@ -481,6 +517,11 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
          } else {
             s->dyn[b->dyn_idx + idx] = (struct mali_dyn_buf){ va, range };
          }
+         mali_desc_logf("desc path=%s set=%p binding=%u elem=%u type=%d buffer=%p dev_va=0x%llx offset=0x%llx "
+                        "range=0x%llx static=%d addr=0x%llx%s", path, (void *)s, b->slot, idx, (int)type,
+                        (void *)bi->buffer, (unsigned long long)dev_va, (unsigned long long)bi->offset,
+                        (unsigned long long)range, b->stride != 0, (unsigned long long)va,
+                        dev_va ? "" : " BASE_ZERO");
       }
       break;
    }
@@ -488,8 +529,8 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
    }
 }
 
-void
-mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
+static void
+dset_write_path(const char *path, struct mali_dset *s, const VkWriteDescriptorSet *w)
 {
    const struct mali_dsl *l = s->layout;
    uint32_t binding = w->dstBinding, elem = w->dstArrayElement;
@@ -510,11 +551,17 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       if (binding >= l->nbindings) return;
       const struct mali_lbinding *b = &l->b[binding];
       if (b->type == MALI_DT_NONE) return;
-      write_one(s, b, elem, w->descriptorType,
+      write_one(path, s, b, elem, w->descriptorType,
                 w->pImageInfo ? &w->pImageInfo[i] : NULL, w->pBufferInfo ? &w->pBufferInfo[i] : NULL,
                 w->pTexelBufferView ? &w->pTexelBufferView[i] : NULL);
       elem++;
    }
+}
+
+void
+mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
+{
+   dset_write_path("write", s, w);
 }
 
 void
@@ -552,8 +599,12 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
       if (sb->stride && db->stride)
          memcpy(slot_at(dst, db->slot + de * db->stride), slot_at(src, sb->slot + se * sb->stride),
                 MIN2(sb->stride, db->stride) * MALI_DESC_SLOT_SIZE);
-      else if (!sb->stride && !db->stride)
+      else if (!sb->stride && !db->stride) {
          dst->dyn[db->dyn_idx + de] = src->dyn[sb->dyn_idx + se];
+         mali_desc_logf("desc path=copy dst=%p binding=%u elem=%u src=%p src_binding=%u dyn_va=0x%llx size=0x%llx",
+                        (void *)dst, db->slot, de, (void *)src, sb->slot, (unsigned long long)src->dyn[sb->dyn_idx + se].va,
+                        (unsigned long long)src->dyn[sb->dyn_idx + se].size);
+      }
       se++;
       de++;
    }
@@ -573,6 +624,9 @@ mali_dset_update_template(struct mali_dset *s, const struct vk_descriptor_update
 {
    for (uint32_t e = 0; e < t->entry_count; e++) {
       const struct vk_descriptor_template_entry *en = &t->entries[e];
+      if (mali_desc_log_file())
+         mali_desc_logf("tentry type=%d binding=%u elem=%u count=%u offset=%zu stride=%zu", (int)en->type, en->binding,
+                        en->array_element, en->array_count, (size_t)en->offset, (size_t)en->stride);
       if (en->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
          VkWriteDescriptorSetInlineUniformBlock ib = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK,
                                                        .dataSize = en->array_count, .pData = (const char *)data + en->offset };
@@ -597,7 +651,7 @@ mali_dset_update_template(struct mali_dset *s, const struct vk_descriptor_update
          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: w.pTexelBufferView = (const void *)p; break;
          default: w.pBufferInfo = (const void *)p; break;
          }
-         mali_dset_write(s, &w);
+         dset_write_path("template", s, &w);
          w.pImageInfo = NULL; w.pTexelBufferView = NULL; w.pBufferInfo = NULL;
       }
    }
@@ -612,6 +666,12 @@ mali_update_descriptor_set_with_template(struct vk_device *dev, VkDescriptorSet 
 void
 mali_dyn_buf_pack(unsigned arch, struct mali_hw_desc *d, const struct mali_dyn_buf *b, uint32_t dyn_offset)
 {
-   if (!b->va) { memset(d, 0, sizeof *d); return; }   /* null dynamic buffer stays a Null Descriptor */
+   if (!b->va) {
+      memset(d, 0, sizeof *d);   /* null dynamic buffer stays a Null Descriptor */
+      mali_desc_logf("pack va=0 dyn_offset=0x%x -> Null", dyn_offset);
+      return;
+   }
    mali_pack_buffer(arch, d, b->va + dyn_offset, (uint32_t)(b->size));
+   mali_desc_logf("pack va=0x%llx dyn_offset=0x%x size=0x%llx -> addr=0x%llx", (unsigned long long)b->va, dyn_offset,
+                  (unsigned long long)b->size, (unsigned long long)(b->va + dyn_offset));
 }
