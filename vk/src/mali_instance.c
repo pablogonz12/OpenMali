@@ -246,9 +246,20 @@ mali_trace_init(void)
        * replacement changes behaviour: a read() the program expected to restart would return EINTR, and a handler
        * that needs the alternate stack would run on a possibly exhausted one */
       mali_trace_have_prev[i] = sigaction(mali_trace_sigs[i], NULL, &mali_trace_prev[i]) == 0;
+      /* a signal the program deliberately ignores stays ignored: a wrapper would turn it into a handler call and the
+       * resulting EINTR is not something SA_RESTART can undo for poll()/select() */
+      if (mali_trace_have_prev[i] && mali_trace_prev[i].sa_handler == SIG_IGN) {
+         mali_trace_have_prev[i] = false;
+         continue;
+      }
       struct sigaction sa = { .sa_sigaction = mali_trace_fatal,
                               .sa_flags = SA_SIGINFO | SA_NODEFER |
-                                          (mali_trace_prev[i].sa_flags & (SA_RESTART | SA_ONSTACK)) };
+                                          (mali_trace_prev[i].sa_flags &
+                                           (SA_RESTART | SA_ONSTACK
+#ifdef SA_EXPOSE_TAGBITS
+                                            | SA_EXPOSE_TAGBITS
+#endif
+                                           )) };
       sigemptyset(&sa.sa_mask);
       if (sigaction(mali_trace_sigs[i], &sa, NULL) != 0)
          mali_trace_have_prev[i] = false;
