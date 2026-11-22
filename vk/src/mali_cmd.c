@@ -471,7 +471,7 @@ apilog_att(struct mali_cmd_buffer *cmd, unsigned i, bool depth, const VkRenderin
 struct cd_img { const uint8_t *p; uint64_t size; uint32_t row, w, h, fmt, ifmt, bs, level, layer, levels, layers, bc, set, slot, type; uint64_t view, shadow_base, plane_off, slice_off; char file[64]; };
 struct cd_rec { uint8_t vbd[4][1024]; uint32_t seq, count, inst, first, indexed, nimg, vbsz[4]; uint64_t pipe, vbva[4]; const uint8_t *vbp[4]; uint32_t vbstride[4]; struct cd_img img[40]; };
 static const char *cd_dir(void) { static const char *d; static int init; if (!init) { init = 1; d = getenv("MALI_CHARDUMP"); if (d && !*d) d = NULL; if (d) mkdir(d, 0777); } return d; }
-#define CD_MAXREC 700
+#define CD_MAXREC 200000
 static struct cd_rec *g_cd_pend; static unsigned g_cd_npend, g_cd_total;
 static uint64_t g_cd_keys[CD_MAXREC]; static unsigned g_cd_nkeys;
 static const uint8_t *g_cd_seen[4096]; static unsigned g_cd_nseen;
@@ -506,7 +506,7 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
          if (!e[i].key || !e[i].view) continue;
          struct mali_image_view *v = mali_image_view_from_handle((VkImageView)e[i].view);
          struct mali_image *img = v ? container_of(v->vk.image, struct mali_image, vk) : NULL;
-         if (!img || !img->mem || !img->mem->bo.cpu) continue;
+         if (!img || !img->mem || !img->mem->bo.cpu) { FILE *lf = cd_log(); if (lf) fprintf(lf, "SKIP draw_pending set=%u slot=%u reason=%s view=0x%llx\n", s, e[i].key - 1, !img ? "noimg" : !img->mem ? "nomem" : "nocpu", (unsigned long long)e[i].view); continue; }
          const struct mali_image_layout *vl = img->bc && !img->native_view ? &img->sh_lay : &img->lay;
          struct cd_img *c = &r.img[r.nimg++];
          unsigned lv = v->vd.base_level < MALI_MAX_MIPS ? v->vd.base_level : 0;
@@ -515,7 +515,7 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
          c->plane_off = vl->plane[0].offset; c->slice_off = sl->offset;
          uint64_t off = img->mem_off + c->shadow_base + c->plane_off + sl->offset + (uint64_t)v->vd.base_layer * vl->plane[0].array_stride;
          c->size = sl->size > (4u << 20) ? (4u << 20) : sl->size;
-         if (off + c->size > img->mem->bo.size) { r.nimg--; continue; }
+         if (off + c->size > img->mem->bo.size) { FILE *lf = cd_log(); if (lf) fprintf(lf, "SKIP set=%u slot=%u reason=oob view=0x%llx ifmt=%u vfmt=%u bc=%u off=%llu size=%llu bo=%zu\n", s, (unsigned)(e[i].key - 1), (unsigned long long)e[i].view, (unsigned)img->vk.format, (unsigned)v->vd.format, (unsigned)img->bc, (unsigned long long)off, (unsigned long long)c->size, (size_t)img->mem->bo.size); r.nimg--; continue; }
          c->p = (const uint8_t *)img->mem->bo.cpu + off;
          c->row = sl->row_stride; c->w = vl->d.extent.width >> lv ? vl->d.extent.width >> lv : 1; c->h = vl->d.extent.height >> lv ? vl->d.extent.height >> lv : 1;
          c->fmt = v->vd.format; c->ifmt = img->vk.format; c->bs = vl->plane[0].bs; c->level = lv; c->layer = v->vd.base_layer;
@@ -523,11 +523,11 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
          key = (key ^ e[i].view ^ ((uint64_t)s << 56)) * 1099511628211ull;
       }
    }
-   for (unsigned i = 0; i < g_cd_nkeys; i++) if (g_cd_keys[i] == key) return;
-   g_cd_keys[g_cd_nkeys++] = key;
-   r.seq = ++g_cd_total; r.count = count; r.inst = inst; r.first = first; r.indexed = indexed; r.pipe = cmd->cd_pipe;
+   (void)key;
+   r.indexed = cmd->ib_va ? 1 : 0;
+   r.seq = ++g_cd_total; r.count = count; r.inst = inst; r.first = first; (void)indexed; r.pipe = cmd->cd_pipe;
    for (unsigned b = 0; b < 4; b++) {
-      uint64_t av = 0; const uint8_t *p = cmd->vb_va[b] ? mali_cd_lookup(cmd->vb_va[b], &av) : NULL;
+      uint64_t av = 0; const uint8_t *p = (cmd->vb_va[b] && count >= 100) ? mali_cd_lookup(cmd->vb_va[b], &av) : NULL;
       r.vbsz[b] = cmd->vb_size[b]; r.vbva[b] = cmd->vb_va[b]; r.vbstride[b] = cmd->vb_stride[b];
       if (p) { uint64_t n = av < 1024 ? av : 1024; if (n > cmd->vb_size[b]) n = cmd->vb_size[b]; memcpy(r.vbd[b], p, n); r.vbp[b] = r.vbd[b]; r.vbsz[b] = (uint32_t)n; r.vbstride[b] = cmd->vb_stride[b]; }
    }
@@ -545,6 +545,7 @@ mali_cd_flush(void)
       fprintf(f, "DRAW #%u present=%u pipe=0x%llx count=%u inst=%u first=%u indexed=%u\n", r->seq, g_cd_present, (unsigned long long)r->pipe, r->count, r->inst, r->first, r->indexed);
       for (unsigned b = 0; b < 4; b++) {
          if (!r->vbp[b] || !r->vbsz[b]) continue;
+         { static uint64_t vk_[8192]; static unsigned nvk; uint64_t kk = (r->pipe * 31 + r->count) * 31 + r->vbva[b] + b + 1; unsigned q; for (q = 0; q < nvk; q++) if (vk_[q] == kk) break; if (q < nvk) continue; if (nvk < 8192) vk_[nvk++] = kk; }
          uint32_t nb = r->vbsz[b] < 1024 ? r->vbsz[b] : 1024;
          char p[512]; snprintf(p, sizeof p, "%s/d%u_vb%u.bin", cd_dir(), r->seq, b);
          FILE *o = fopen(p, "wb"); if (o) { fwrite(r->vbd[b], 1, nb, o); fclose(o); }
