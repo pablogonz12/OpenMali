@@ -2224,9 +2224,13 @@ test_smallpass(void)
          CHECK(cb, "cmdbuf");
          VkClearValue cv = {.color = {{0, 0, 0, 0}}};
          int first = qx == 0 && qy == 0;
+         /* MALI_SP_FULLAREA=1: renderArea is the whole image (scissor still limits the draw to this pass's 16x16), so the
+          * frame's bbox covers everything: separates "a sub-rect renderArea loses the rest of the image" from "the copy
+          * reads only part of it". */
+         VkRect2D ra = getenv("MALI_SP_FULLAREA") ? (VkRect2D){{0, 0}, {64, 64}} : (VkRect2D){{qx * 16, qy * 16}, {16, 16}};
          VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
                                      .framebuffer = first ? t.fb : fb2,
-                                     .renderArea = {{qx * 16, qy * 16}, {16, 16}}, .clearValueCount = 1, .pClearValues = &cv};
+                                     .renderArea = ra, .clearValueCount = 1, .pClearValues = &cv};
          CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
          VkViewport vp = {0, 0, 64, 64, 0.0f, 1.0f};
@@ -2239,8 +2243,12 @@ test_smallpass(void)
          CmdEndRenderPass(cb);
          /* exactly what the CTS does (collectBeforeSubmit=true): copy the WHOLE image inside the same command buffer,
           * before the submit, and read that back */
-         VkBufferImageCopy rgn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 64, 1}};
-         CmdCopyImageToBuffer(cb, t.img, VK_IMAGE_LAYOUT_GENERAL, rb2.b, 1, &rgn);
+         /* MALI_SP_LASTCOPY=1: copy only in the last pass, so the earlier passes are already submitted+fenced - tells an
+          * intra-submission ordering bug from a missing writeback. */
+         if (!getenv("MALI_SP_LASTCOPY") || (qx == 3 && qy == 3)) {
+            VkBufferImageCopy rgn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 64, 1}};
+            CmdCopyImageToBuffer(cb, t.img, VK_IMAGE_LAYOUT_GENERAL, rb2.b, 1, &rgn);
+         }
          if (!cb_submit(&t, cb)) return 0;
          if (!g_fake) {
             unsigned ina = 0;
@@ -2257,7 +2265,29 @@ test_smallpass(void)
                const uint8_t *q = rb2.p + (size_t)k * 4;
                inrb += (q[0] | q[1] | q[2]) != 0;
             }
-            printf("{\"smallpassload\":\"pass%d\",\"inarea\":%u,\"in_readback\":%u}\n", qy * 4 + qx, ina, inrb);
+            unsigned whole = 0;
+            for (int k = 0; k < 64 * 64; k++) {
+               const uint8_t *q = t.px + (size_t)(k / 64) * t.pitch + (size_t)(k % 64) * 4;
+               whole += (q[0] | q[1] | q[2]) != 0;
+            }
+            printf("{\"smallpassload\":\"pass%d\",\"inarea\":%u,\"in_readback\":%u,\"image_whole\":%u}\n",
+                   qy * 4 + qx, ina, inrb, whole);
+            if (getenv("MALI_SP_MAP") && (qy * 4 + qx) == atoi(getenv("MALI_SP_MAP"))) {
+               for (int my = 0; my < 8; my++) {
+                  char row[9];
+                  for (int mx = 0; mx < 8; mx++) {
+                     unsigned any = 0;
+                     for (int y = my * 8; y < my * 8 + 8; y++)
+                        for (int x = mx * 8; x < mx * 8 + 8; x++) {
+                           const uint8_t *q = rb2.p + ((size_t)y * 64 + (size_t)x) * 4;
+                           any |= (q[0] | q[1] | q[2]) != 0;
+                        }
+                     row[mx] = any ? '#' : '.';
+                  }
+                  row[8] = 0;
+                  fprintf(stderr, "map %s\n", row);
+               }
+            }
          }
       }
    if (!g_fake) {
