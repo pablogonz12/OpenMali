@@ -3128,7 +3128,8 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading,
+                                   .multiDrawIndirect = g_feat.multiDrawIndirect};   /* the frame-bound case records drawCount 2 */
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
