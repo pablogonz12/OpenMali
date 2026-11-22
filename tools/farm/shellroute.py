@@ -490,6 +490,11 @@ def daily(a):
 
 
 def smoke(a):
+    # before anything is staged: an explicit selection with no case names must not wipe the run dir, push artifacts or
+    # start a boot record (a push failure would then be reported instead of the input error)
+    if a.only is not None and not any(c for c in a.only.split(",")):
+        print("--only given with no case names; refusing to report an empty run as a pass", flush=True)
+        return 2
     d = f"{V}/{a.run}"
     adb("shell", f"rm -rf {d}; mkdir -p {d}/s", timeout=30)
     out = os.path.join(a.tree, "vk", "out", "a64-bionic")
@@ -530,9 +535,6 @@ def smoke(a):
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
             if c in (draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
                 runs.append((n, f"{extra} --only {c}", c))
-    if a.only is not None and not any(c for c in a.only.split(",")):
-        print("--only given with no case names; refusing to report an empty run as a pass", flush=True)
-        return 2
     if a.only is not None:   # a requested case this route does not schedule must be reported, not silently skipped
         ran = {oc for _, _, oc in runs if oc}
         missing = [c for c in a.only.split(",") if c and c not in ran]
@@ -571,6 +573,9 @@ def smoke(a):
             print("verdict: memory_cap rc=134 in %s: the smoke run hit its memory bound; shard smaller" % n, flush=True)
             sys.exit(83)
         ok = ok and r == 0
+        if oc and ('"test":"%s"' % oc) not in log:   # --env MALI_SKIP_CASES=<case> (and a feature-gated skip) prints no record
+            print(json.dumps({"test": "schedule", "not_run": oc, "ok": False}), flush=True)
+            ok = False
         print('{"test":"%s","rc":%d,"fail_lines":%d,"pass_lines":%d}' % (n, r, len(fl), log.count('"pass":true')), flush=True)
     print('{"test":"summary","ok":%s}' % ("true" if ok else "false"), flush=True)
     print(f"SO_ON_PHONE {d}/libvulkan_mali.so", flush=True)

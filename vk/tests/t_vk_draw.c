@@ -3606,9 +3606,9 @@ main(int argc, char **argv)
    VkPhysicalDevice pd;
    uint32_t cnt = 1;
    VkResult r = EPD(inst, &cnt, &pd);
-   g_phys = pd;
-   g_gfp = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    if ((r != VK_SUCCESS && r != VK_INCOMPLETE) || cnt < 1) { printf("{\"fail\":\"no device\"}\n"); return 1; }
+   g_phys = pd;   /* after the guard: a failed enumeration writes no handle */
+   g_gfp = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    VkPhysicalDeviceProperties pp;
    GPP(pd, &pp);
    GMP(pd, &memprops);
@@ -3784,28 +3784,34 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
-   /* the MRT cases build vertex+fragment pipelines only: a --gs request would be silently ignored, so refuse it
-    * for every MRT dispatch name, and fail the process (not just g_fail) */
+   /* the MRT cases build vertex+fragment pipelines only, so a --gs request would be silently ignored: refuse it when it
+    * selects an MRT case explicitly (the process fails), and skip the whole MRT group in an unfiltered --gs run, whose
+    * verdict is about the other cases */
+   static const char *const mrt_names[] = {"mrt2", "mrt4", "mrtmix", "mrtmap", "mrtmapo0", "mrtmapo2",
+                                           "mrtmap1", "mrtmapb", "mrtmap32f", "bigmrt"};
+   int mrt_ok = 1;
    if (ok && g_gs) {
-      static const char *const mrt_names[] = {"mrt2", "mrt4", "mrtmix", "mrtmap", "mrtmapo0", "mrtmapo2",
-                                              "mrtmap1", "mrtmapb", "mrtmap32f", "bigmrt"};
       for (unsigned i = 0; i < sizeof mrt_names / sizeof *mrt_names; i++)
-         if (CASE_ON(mrt_names[i])) {
+         if (g_only && CASE_ON(mrt_names[i])) {
             printf("{\"fail\":\"--gs %s given, but %s does not bind a geometry shader\"}\n", g_gs, mrt_names[i]);
             g_fail = 1;
             return 1;
          }
+      if (!g_only) {
+         printf("{\"test\":\"mrt\",\"skipped\":\"--gs %s: the MRT cases bind no geometry shader\",\"ok\":true}\n", g_gs);
+         mrt_ok = 0;
+      }
    }
-   if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
-   if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
-   if (ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");
-   if (ok && CASE_ON("bigmrt")) ok &= test_mrt_big("bigmrt");   /* last: its large allocations must not shift the other cases' BO ids */
-   if (ok && CASE_ON("mrtmap")) ok &= test_mrt("mrtmap", 4);
-   if (ok && CASE_ON("mrtmapo0")) ok &= test_mrt("mrtmapo0", 4);
-   if (ok && CASE_ON("mrtmapo2")) ok &= test_mrt("mrtmapo2", 4);
-   if (ok && CASE_ON("mrtmap1")) ok &= test_mrt("mrtmap1", 1);
-   if (ok && CASE_ON("mrtmapb")) { g_mrtblend = 1; ok &= test_mrt("mrtmapb", 4); g_mrtblend = 0; }
-   if (ok && CASE_ON("mrtmap32f")) { g_mrt32 = 1; ok &= test_mrt("mrtmap32f", 4); g_mrt32 = 0; }   /* permutation probe: prints the R byte each target received */   /* mixed formats, per-attachment blend and write mask */
+   if (ok && mrt_ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
+   if (ok && mrt_ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
+   if (ok && mrt_ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");
+   if (ok && mrt_ok && CASE_ON("bigmrt")) ok &= test_mrt_big("bigmrt");   /* last: its large allocations must not shift the other cases' BO ids */
+   if (ok && mrt_ok && CASE_ON("mrtmap")) ok &= test_mrt("mrtmap", 4);
+   if (ok && mrt_ok && CASE_ON("mrtmapo0")) ok &= test_mrt("mrtmapo0", 4);
+   if (ok && mrt_ok && CASE_ON("mrtmapo2")) ok &= test_mrt("mrtmapo2", 4);
+   if (ok && mrt_ok && CASE_ON("mrtmap1")) ok &= test_mrt("mrtmap1", 1);
+   if (ok && mrt_ok && CASE_ON("mrtmapb")) { g_mrtblend = 1; ok &= test_mrt("mrtmapb", 4); g_mrtblend = 0; }
+   if (ok && mrt_ok && CASE_ON("mrtmap32f")) { g_mrt32 = 1; ok &= test_mrt("mrtmap32f", 4); g_mrt32 = 0; }   /* permutation probe: prints the R byte each target received */   /* mixed formats, per-attachment blend and write mask */
    if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
