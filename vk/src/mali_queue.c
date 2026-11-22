@@ -217,6 +217,9 @@ hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
    if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
       return hw_alloc_ovf(h, n, al, va, zero);
    void *p = kb_arena_alloc_nz(&h->ar, n, al, va);
+   if (getenv("MALI_PIPE_DBG") && n >= 65536)
+      fprintf(stderr, "DBG alloc n=%zu al=%zu p=%p va=%llx arena=%llx+%zx off=%zx\n", n, al, p,
+              (unsigned long long)(p && va ? *va : 0), (unsigned long long)h->ar.bo.gpu_va, h->ar.bo.size, h->ar.off);
    if (!p && h->nfl) {
       /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
       hw_retire(h, 0);
@@ -482,7 +485,13 @@ mali_hw_init(struct mali_device *dev)
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const struct mali_backend_ops *be = pdev->backend;
    struct mali_hwctx *h = calloc(1, sizeof *h);
-   const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
+   unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
+   /* MALI_FORCE_ARCH: run another arch's descriptor packing on this GPU, so an arch-specific fault can be
+    * reproduced on a phone that has the screen available. Diagnosis only. */
+   if (getenv("MALI_FORCE_ARCH")) {
+      arch = (unsigned)atoi(getenv("MALI_FORCE_ARCH"));
+      fprintf(stderr, "mali_vk: arch forced to %u (GPU reports %u)\n", arch, pdev->gpu.arch_major);
+   }
    kb_v10 = arch == 10;   /* libkbase: SET_SB_ENTRY scoreboard select, ZSD bit 21 (see kbase_cs.h) */
 
    if (!h)
