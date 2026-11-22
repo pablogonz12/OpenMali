@@ -55,7 +55,10 @@ replace_coord(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    const struct coord_key *k = data;
    b->cursor = nir_before_instr(&intr->instr);
    nir_def_rewrite_uses(&intr->def, nir_imm_vec3(b, k->x, k->y, k->z));
-   nir_instr_remove(&intr->instr);
+   /* Do NOT remove the instruction here: a module can load gl_TessCoord more than once (glslang emits one load per
+    * component read) and removing during the intrinsics walk made the second load survive, so the classification
+    * silently kept whatever the *old* value folded to. Rewriting the uses is enough: the load has no side effects and
+    * nir_opt_dce deletes it. */
    return true;
 }
 
@@ -118,6 +121,85 @@ static int
 check_tcs(const uint32_t *words, uint32_t nwords, const char *entry, char *why, size_t whysz)
 {
    return mali_tcs_passthrough(words, nwords, entry, why, whysz);
+}
+
+/* One store in the folded body, in deref form: the output varying, and the per-vertex input varying + control point its
+ * value was loaded from (-1 = the value is not a plain load of a patch input). */
+struct dstore { gl_varying_slot out_loc, in_loc; int ctrl; unsigned out_npath, npath; };
+
+static int
+deref_slot(nir_deref_instr *d, unsigned *npath, int *ctrl, unsigned *first_index)
+{
+   *ctrl = -1;
+   *npath = 0;
+   bool seen_array = false;
+   for (nir_deref_instr *p = d; p; p = nir_deref_instr_parent(p)) {
+      if (p->deref_type == nir_deref_type_array) {
+         if (!seen_array && nir_src_is_const(p->arr.index)) {
+            /* the first (innermost to the variable) array index is the patch control point */
+            *ctrl = (int)nir_src_as_uint(p->arr.index);
+            seen_array = true;
+            if (first_index && *first_index == 0)
+               *first_index = 1;
+         } else if (nir_src_is_const(p->arr.index)) {
+            (*npath)++;
+         } else {
+            return 0;   /* a non-constant element index: not a copy of one element */
+         }
+      } else if (p->deref_type == nir_deref_type_struct) {
+         (*npath)++;
+      }
+      if (!nir_deref_instr_parent(p))
+         return 1;
+   }
+   return 1;
+}
+
+static unsigned
+collect_deref_stores(nir_shader *nir, struct dstore *out, unsigned max)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   unsigned n = 0;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *st = nir_instr_as_intrinsic(instr);
+         if (st->intrinsic != nir_intrinsic_store_deref || n >= max)
+            continue;
+         nir_deref_instr *od = nir_src_as_deref(st->src[0]);
+         if (!od)
+            continue;
+         nir_variable *ovar = nir_deref_instr_get_variable(od);
+         if (!ovar)
+            continue;
+         struct dstore s = {.out_loc = ovar->data.location, .in_loc = 0, .ctrl = -1, .out_npath = 0, .npath = 0};
+         {
+            int c = -1; unsigned np = 0; unsigned fi = 0;
+            if (!deref_slot(od, &np, &c, &fi))
+               continue;      /* a non-constant output index: refused (ctrl stays -1) */
+            s.out_npath = np;
+         }
+         /* the value: a plain load_deref of a patch input, or nothing */
+         if (st->src[1].ssa && nir_def_instr(st->src[1].ssa)->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr *ld = nir_instr_as_intrinsic(nir_def_instr(st->src[1].ssa));
+            if (ld->intrinsic == nir_intrinsic_load_deref) {
+               nir_deref_instr *id = nir_src_as_deref(ld->src[0]);
+               nir_variable *ivar = id ? nir_deref_instr_get_variable(id) : NULL;
+               if (ivar) {
+                  int ctrl = -1; unsigned np = 0; unsigned fi = 0;
+                  if (deref_slot(id, &np, &ctrl, &fi)) {
+                     s.in_loc = ivar->data.location;
+                     s.ctrl = ctrl;
+                     s.npath = np;
+                  }
+               }
+            }
+         }
+         out[n++] = s;
+      }
+   }
+   return n;
 }
 
 int
@@ -188,22 +270,22 @@ mali_tess_passthrough(unsigned arch, const uint32_t *tcs_words, uint32_t ntcs, c
          fprintf(stderr, "--- TES at e%u after the fold ---\n", i);
          nir_print_shader(clone, stderr);
       }
-      mali_poly_preprocess(clone);
-
-      struct store st[64];
-      const unsigned n = collect_stores(clone, st, 64);
+      /* No nir_lower_io_passes here on purpose: in the *deref* form the control point is still an explicit constant array
+       * index (deref_array &gl_in[1]), while after IO lowering it moves into the varying base and src[1] reads 0 — which is
+       * exactly the trap that made e1/e2 look like e0. The folded body is inspected as it stands. */
+      struct dstore st[64];
+      const unsigned n = collect_deref_stores(clone, st, 64);
       unsigned seen_pos = 0;
       const char *bad = NULL;
       for (unsigned s = 0; s < n && !bad; s++) {
-         if (st[s].from_vertex < 0) bad = "an output that is not a copy of a patch input";
-         else if (!st[s].same) bad = "an output copied from a different varying than the one it writes";
-         else if (st[s].from_vertex != (int)i) bad = "an output copied from the wrong patch vertex";
-         if (st[s].location == VARYING_SLOT_POS && !bad) seen_pos = 1;
+         if (getenv("MALI_TESS_DBG"))
+            fprintf(stderr, "mali_tess: tes e%u store loc=%u -> in loc=%u ctrl=%d npath=%u\n", i,
+                    (unsigned)st[s].out_loc, (unsigned)st[s].in_loc, st[s].ctrl, st[s].npath);
+         if (st[s].ctrl < 0) bad = "an output that is not a copy of a patch input";
+         else if (st[s].in_loc != st[s].out_loc || st[s].npath != st[s].out_npath) bad = "an output copied from a different varying than the one it writes";
+         else if (st[s].ctrl != (int)i) bad = "an output copied from the wrong patch vertex";
+         if (st[s].out_loc == VARYING_SLOT_POS && !bad) seen_pos = 1;
       }
-      if (getenv("MALI_TESS_DBG"))
-         for (unsigned k = 0; k < n; k++)
-            fprintf(stderr, "mali_tess: tes e%u store loc=%u base=%u comp=%u ncomp=%u from=%d same=%d\n", i,
-                    (unsigned)st[k].location, st[k].base, st[k].component, st[k].ncomp, st[k].from_vertex, st[k].same);
       if (!bad && !n) bad = "no outputs at all";
       if (!bad && !seen_pos) bad = "no gl_Position";
       ralloc_free(clone);

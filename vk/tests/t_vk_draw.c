@@ -2996,38 +2996,79 @@ out:
 static int
 test_tess_tri(void)
 {
-   /* The t_vk_draw row T1 is specified by. It asserts the two halves that exist today: the gate (without
-    * MALI_EXPERIMENTAL_TESS a tess pipeline is refused because tessellationShader is not advertised — the state every
-    * application sees) and, with the gate on, that the *classifier* runs and refuses with its own named reason rather than
-    * a generic FEATURE_NOT_PRESENT. A pixel verdict needs the TCS identity check that T1 does not have yet: see
-    * notes/tess-design.md § "T1 implementation" (the missing primitive is the per-invocation fold of the TCS, which the
-    * generic preprocessing destroys). Printing the reason is what keeps this row honest: it cannot pass by accident. */
-   struct scene s;
-   memset(&s, 0, sizeof s);
-   s.mode = MODE_TRI;
+   /* The row T1 is specified by. Without MALI_EXPERIMENTAL_TESS the pipeline must be refused (tessellationShader is not
+    * advertised — the state every application sees). With the gate on the identity-TCS + pass-through-TES pipeline is
+    * accepted, and the frame it draws must be identical to the same scene without the two tessellation stages: at level
+    * 1.0 a triangle patch tessellates to exactly its three control points, so the VS alone produces the same stream.
+    * On the fake backend there is no rasteriser, so the case stops after pipeline creation (the host half of the gate)
+    * and says so; the pixel half runs on a device. */
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{1, 0, 0, 0.5f}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   int ok = 0;
    g_gs = NULL;
+
+   /* gate off: refused, by design */
    g_tesc = "tess_tri.tesc.spv";
    g_tese = "tess_tri.tese.spv";
-
    unsetenv("MALI_EXPERIMENTAL_TESS");
    g_gs_expect_fail = 1;
-   const int refused_gate_off = scene_create(&s, 0);
-   scene_destroy(&s);
-
-   memset(&s, 0, sizeof s);
-   s.mode = MODE_TRI;
-   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
-   const int refused_gate_on = scene_create(&s, 0);
+   struct scene g;
+   memset(&g, 0, sizeof g);
+   g.mode = MODE_TRI;
+   const int refused_gate_off = scene_create(&g, 0);
    g_gs_expect_fail = 0;
-   scene_destroy(&s);
+   scene_destroy(&g);
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+   if (!refused_gate_off) {
+      printf("{\"test\":\"tess_tri\",\"fail\":\"accepted without MALI_EXPERIMENTAL_TESS\"}\n");
+      goto out;
+   }
+
+   g_tesc = g_tese = NULL;
+   if (!scene_create(&a, 0))          /* the plain scene, same VS: the reference */
+      goto out;
+   g_tesc = "tess_tri.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   if (!scene_create(&b, 0))          /* the same scene plus the identity tessellation stages */
+      goto out;
+   if (g_fake) {
+      printf("{\"test\":\"tess_tri\",\"gate_off_refused\":true,\"accepted\":true,\"cover\":\"pipelines only (fake backend)\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0, maxd = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            int d = 0;
+            for (int c = 0; c < 4; c++) {
+               const int e = abs((int)p[c] - (int)q[c]);
+               if (e > d) d = e;
+            }
+            if (d) diff++;
+            if (d > (int)maxd) maxd = (uint32_t)d;
+         }
+      printf("{\"test\":\"tess_tri\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"ok\":%s}\n",
+             cov_a, cov_b, diff, maxd, (cov_a == cov_b && cov_b == 8192 && diff == 0) ? "true" : "false");
+      ok = cov_a == cov_b && cov_b == 8192 && diff == 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
    g_tesc = g_tese = NULL;
    setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
-
-   printf("{\"test\":\"tess_tri\",\"gate_off_refused\":%s,\"gate_on_refused\":%s,\"classifier\":\"%s\",\"ok\":%s}\n",
-          refused_gate_off ? "true" : "false", refused_gate_on ? "true" : "false",
-          "TCS identity needs the per-invocation fold (notes/tess-design.md T1 implementation)",
-          (refused_gate_off && refused_gate_on) ? "true" : "false");
-   return refused_gate_off && refused_gate_on;
+   return ok;
 }
 
 /* Every tessellation pipeline T1 does not accept must be refused at pipeline creation with a named reason: the gate off,

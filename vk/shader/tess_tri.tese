@@ -9,8 +9,9 @@ layout(triangles, equal_spacing, ccw) in;
 layout(location=0) in vec4 v_col[];
 layout(location=0) out vec4 f_col;
 void main(){
-  vec3 c = gl_TessCoord;
-  int i = int(c.y + 2.0 * c.z + 0.5);   /* e0 -> 0, e1 -> 1, e2 -> 2: a constant-foldable index, no select */
+  /* No local: gl_TessCoord is read straight into the index expression, so the classifier's constant substitute lands in
+   * the arithmetic itself (a `vec3 c = gl_TessCoord;` local goes through a temporary the fold cannot see through). */
+  int i = int(gl_TessCoord.y + 2.0 * gl_TessCoord.z + 0.5);   /* e0 -> 0, e1 -> 1, e2 -> 2 */
   gl_Position = gl_in[i].gl_Position;
   f_col = v_col[i];
 }

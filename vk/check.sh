@@ -239,12 +239,12 @@ else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "g
 
 # Tessellation lane T1 (notes/tess-design.md §"Lane T1"): the tessellation stages reach the driver as a *named refusal* — the
 # gate (tessellationShader is not advertised, the state every application sees) and, with MALI_EXPERIMENTAL_TESS=1, each
-# classifier reason (levels above 1.0, a non-identity TCS, a computed TES output, quads). tess_tri prints the reason the
-# canonical level-1 pipeline is refused today: the control shader is now proved from SPIR-V words (mali_tcs.c, so the
-# TCS half is done) and the evaluation shader's NIR fold is the one still refused. t_gs_lower also links Mesa's
-# poly_nir_lower_tes and lowers the TES with it.
+# classifier reason (levels above 1.0, a non-identity TCS, a computed TES output, quads). tess_tri asserts the whole T1
+# claim: refused without the gate, ACCEPTED with it (the TCS is proved from SPIR-V words in mali_tcs.c and the TES by
+# folding gl_TessCoord at the three unit coordinates in mali_tess.c), and on a device its frame must equal the plain
+# scene's pixel for pixel. t_gs_lower also links Mesa's poly_nir_lower_tes and lowers the TES with it.
 for g in v11 v13; do
-   run "vk_draw tess_tri $g" 0 -u MALI_EXPERIMENTAL_TESS MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_tri
+   run "vk_draw tess_tri $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_tri
    run "vk_draw tess_reject $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject
 done
 out=$(MALI_EXPERIMENTAL_TESS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject 2>&1)
