@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-22T02:04:38+00:00",
+ "generated": "2026-11-22T02:05:12+00:00",
  "generator": "tools/featuremap.py v1",
- "commit": "fc55ca006be75e3ca8e802673d03ed38269cd182",
+ "commit": "b48640ce4ef28c42bbaaef87627b2cef96acd101",
  "sources": [
   {
    "id": "vk.xml",
@@ -5756,6 +5756,37 @@
    "status": "OK",
    "games_unlocked": 0,
    "caveats": []
+  },
+  {
+   "id": "wined3d-fl10_0-sampler-objects",
+   "consumer": "wined3d-gl",
+   "family": "gl_version",
+   "vk": null,
+   "gl_ext": "ARB_sampler_objects",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1254,
+    "match": "ARB_SAMPLER_OBJECTS",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "3.3",
+   "ours_text": "3.3 (smoke gl line)",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": [
+    "from .config/opencode/mali-orchestrator/phones/x8/smoke-latest.json"
+   ]
   },
   {
    "id": "wined3d-fl10_0-polygon-offset-clamp",

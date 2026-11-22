@@ -958,15 +958,19 @@ def render(res, args):
     w("")
     levels = [
         ("D3D9 (9_1/9_2/9_3)", ["wined3d-gl32-context"]),
-        ("D3D10 / 10_0", ["wined3d-gl32-context", "wined3d-fl10_0-polygon-offset-clamp"]),
+        ("D3D10 / 10_0", ["wined3d-gl32-context", "wined3d-fl10_0-polygon-offset-clamp",
+                          "wined3d-fl10_0-sampler-objects"]),
         ("D3D10.1", ["wined3d-gl32-context", "wined3d-fl10_0-polygon-offset-clamp",
+                     "wined3d-fl10_0-sampler-objects",
                      "wined3d-fl10_1-cube-map-array", "wined3d-fl10_1-draw-buffers-blend"]),
         ("D3D11 FL 10_0 (GAME PATH TODAY)", ["wined3d-gl32-context",
                                              "wined3d-fl10_0-polygon-offset-clamp",
+                                             "wined3d-fl10_0-sampler-objects",
                                              "wined3d-fl10_1-cube-map-array",
                                              "wined3d-fl10_1-draw-buffers-blend"]),
         ("D3D11 FL 11_0 → 11_1 (GL route ceiling of the 4-branch)", [
             "wined3d-gl32-context", "wined3d-fl10_0-polygon-offset-clamp",
+            "wined3d-fl10_0-sampler-objects",
             "wined3d-fl11_1-draw-indirect", "wined3d-fl11_1-bptc", "wined3d-sm5-compute",
             "wined3d-sm5-cull-distance", "wined3d-sm5-tessellation"]),
         ("D3D11 via DXVK (Vulkan native, no GL)", ["dxvk-geometryShader", "dxvk-shaderCullDistance",

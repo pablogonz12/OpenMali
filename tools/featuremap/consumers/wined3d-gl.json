@@ -43,6 +43,17 @@
       "unlocks": "D3D feature level 10_1"
     },
     {
+      "id": "wined3d-fl10_0-sampler-objects",
+      "family": "gl_version",
+      "gl_ext": "ARB_sampler_objects",
+      "need": "3.3",
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1254,
+      "match": "ARB_SAMPLER_OBJECTS",
+      "unlocks": "the FL 10_0 branch (with GL 3.2 and polygon offset clamp)"
+    },
+    {
       "id": "wined3d-fl10_0-polygon-offset-clamp",
       "family": "derived",
       "gl_ext": "ARB_polygon_offset_clamp",
