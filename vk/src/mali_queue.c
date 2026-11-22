@@ -371,6 +371,35 @@ hw_va_cpu(void *u, uint64_t va, size_t size)
    return be->va_cpu ? be->va_cpu(h->dev->kdev, va, size) : NULL;
 }
 
+/* One level of pointer following for a dumped submit: a CS word that maps as a live BO is read back (16 words), and
+ * each word inside it that maps as well is read back once more (8 words). MALI_CSDUMP_FILE only; host-side reads of
+ * BOs we own, no GPU access, no signal handlers. Capped so a big frame cannot flood the file. */
+static void
+cs_follow(struct mali_hwctx *h, FILE *f, const char *tag, uint64_t va, unsigned words, unsigned depth, unsigned *budget)
+{
+   if (!va || !words || !budget || *budget == 0)
+      return;
+   void *cpu = hw_va_cpu(h, va, (size_t)words * 8);
+   if (!cpu) {
+      fprintf(f, "%s va=0x%llx UNMAPPED\n", tag, (unsigned long long)va);
+      return;
+   }
+   const uint64_t *w = cpu;
+   fprintf(f, "%s va=0x%llx n=%u words:", tag, (unsigned long long)va, words);
+   for (unsigned i = 0; i < words; i++)
+      fprintf(f, " %016llx", (unsigned long long)w[i]);
+   fputc('\n', f);
+   (*budget)--;
+   if (depth >= 2)
+      return;
+   for (unsigned i = 0; i < words && *budget; i++) {
+      uint64_t v = w[i];
+      if (v < 0x10000ull || (v >> 40) != 0)   /* GPU VAs on this SoC are 0x5f…/0x60…: top bits set, not a small int */
+         continue;
+      cs_follow(h, f, depth == 1 ? "  PTR2" : " PTR", v, depth == 1 ? 8 : 16, depth + 1, budget);
+   }
+}
+
 static void
 cs_dump(const uint64_t *cs, unsigned n, struct mali_hwctx *h, const char *why)
 {
@@ -383,6 +412,11 @@ cs_dump(const uint64_t *cs, unsigned n, struct mali_hwctx *h, const char *why)
            (unsigned long long)h->geo.gpu_va);
    for (unsigned i = 0; i < n; i++)
       fprintf(f, "CS %03u %016llx\n", i, (unsigned long long)cs[i]);
+   /* follow every CS word that looks like a GPU VA, one level deep */
+   unsigned budget = 24;
+   for (unsigned i = 0; i < n && budget; i++)
+      cs_follow(h, f, "PTR", cs[i], 16, 1, &budget);
+   fprintf(f, "CSDUMP end budget_left=%u\n", budget);
    fflush(f);
    if (f != stderr)
       fclose(f);

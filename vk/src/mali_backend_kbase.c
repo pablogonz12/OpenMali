@@ -17,6 +17,22 @@
 
 #include "kbase.h"
 #include "kbase_cs.h"
+
+/* MALI_FAULT_LOG=<path>: one line per fatal notification (the two fields the uapi fills, kbase_uapi.h:182-183),
+ * appended to a file so it survives the dead session. Plain file, no signal handlers, no GPU access. */
+static void
+fault_note(const struct kb_event *ev)
+{
+   const char *p = getenv("MALI_FAULT_LOG");
+   if (!p || !*p)
+      return;
+   FILE *f = fopen(p, "a");
+   if (!f)
+      return;
+   fprintf(f, "FAULT group=%d status=0x%08x sideband=0x%llx text=\"%s\"\n", ev->group, ev->status,
+           (unsigned long long)ev->sideband, ev->text);
+   fclose(f);
+}
 #include "kbase_uapi.h"
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
@@ -513,9 +529,12 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
    for (int i = 0; i < 200000; i++) { /* ~10 s */
       if (pthread_mutex_trylock(&k->wait_lock) == 0) {
          struct kb_event ev;
-         while (kb_event_read(k->ctx, &ev, 0) > 0)
+         while (kb_event_read(k->ctx, &ev, 0) > 0) {
+            if (ev.fatal)
+               fault_note(&ev);
             if (ev.fatal || getenv("MALI_PIPE_DBG"))
                fprintf(stderr, "mali_vk: %sevent: %s\n", ev.fatal ? "FATAL " : "", ev.text);
+         }
          pthread_mutex_unlock(&k->wait_lock);
       }
       if (kb_queue_faulted(&k->queue))
@@ -661,8 +680,11 @@ kbase_device_lost(struct mali_kdev *k)
    if (l && getenv("MALI_PIPE_DBG")) {
       struct kb_event ev;
       fprintf(stderr, "mali_vk: device lost (lost=%d faulted=%d)\n", (int)k->lost, (int)(k->queue_live && kb_queue_faulted(&k->queue)));
-      while (kb_event_read(k->ctx, &ev, 0) > 0)
+      while (kb_event_read(k->ctx, &ev, 0) > 0) {
+         if (ev.fatal)
+            fault_note(&ev);
          fprintf(stderr, "mali_vk: event: %s\n", ev.text);
+      }
    }
    return l;
 }
