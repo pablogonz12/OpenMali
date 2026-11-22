@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -76,7 +76,7 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed)            \
    X(CmdBindIndexBuffer) X(CmdDrawIndirect) X(CmdDrawIndexedIndirect) X(CreateDescriptorSetLayout)                  \
    X(DestroyDescriptorSetLayout) X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets)         \
-   X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
+   X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CreateBufferView) X(DestroyBufferView) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
    X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges)
@@ -2131,6 +2131,10 @@ test_didx(void)
 
 /* robustness2 nullDescriptor: a VK_NULL_HANDLE descriptor must read as zero and swallow writes (no fault, no stray write). */
 static VkBool32 g_null;
+/* robustness2 buffer bounds (t_vk_feat robust2): advertised, and enabled at device creation only for --robust2 so the
+ * other cases keep their recorded command streams (robustBufferAccess2 turns nir_lower_robust_access on for every shader). */
+static VkBool32 g_rb2;
+static int g_rb2_enable;
 struct nd_case { const char *name; VkDescriptorType type; };
 static int
 nulld_one(struct tgt *t, const struct nd_case *c, VkSampler smp)
@@ -2196,6 +2200,115 @@ nulld_one(struct tgt *t, const struct nd_case *c, VkSampler smp)
    DestroyDescriptorSetLayout(dev, dsl, NULL);
    hbuf_destroy(&ob);
    return ok;
+}
+
+/* robustness2 buffer bounds (robustBufferAccess2): each access in shader/robust2.comp sits exactly one element past the end of
+ * its descriptor - offset == size, the boundary the spec calls out of bounds - plus a null descriptor. The loads must read 0,
+ * the store and the atomic must be discarded (the atomic returns 0), and the texel fetch past the view's 4 texels returns 0.
+ * fake backend: the dispatch is recorded and its command stream checked (no execution), so the comparison is hardware-only;
+ * the row still fails when the pipelines cannot be created at all, which is what main (size query unlowered) does. */
+static int
+test_robust2(void)
+{
+   if (!g_rb2_enable) {   /* the golden run (no flag) keeps its recorded stream: robustBufferAccess2 changes every shader */
+      printf("{\"test\":\"robust2\",\"skipped\":\"run with --robust2\",\"ok\":true}\n");
+      return 1;
+   }
+   if (!g_rb2) {   /* --robust2 asks for the feature: this is main's line, i.e. the failing-first row */
+      printf("{\"test\":\"robust2\",\"fail\":\"robustBufferAccess2 not advertised\",\"ok\":false}\n");
+      return 0;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf out, sb, ub, tb;
+   /* 64 B descriptor ranges; the guard half of sb (bytes 64..127) proves the OOB store and atomic were discarded. */
+   if (!hbuf_create(&out, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&sb, 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+       !hbuf_create(&ub, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+       !hbuf_create(&tb, 16, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT)) return 0;
+   memset(out.p, 0xCC, 64);
+   memset(sb.p, 0xA5, 128);
+   for (int i = 0; i < 4; i++) ((uint32_t *)ub.p)[i * 4] = 0x11111111u * (uint32_t)(i + 1);   /* u[i].x, u[3].x = 0x44444444 */
+   for (int i = 0; i < 4; i++) ((uint32_t *)tb.p)[i] = (uint32_t)(i + 1);
+   VkBufferViewCreateInfo bvi = {.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = tb.b,
+                                 .format = VK_FORMAT_R32_UINT, .offset = 0, .range = 16};
+   VkBufferView bv;
+   CHECK(CreateBufferView(dev, &bvi, NULL, &bv) == VK_SUCCESS, "texel buffer view");
+   VkDescriptorSetLayoutBinding b[5] = {
+      {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+      {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+      {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+      {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+      {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 5, .pBindings = b};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkDescriptorBufferInfo dbi[4] = {{out.b, 0, 64}, {sb.b, 0, 64}, {ub.b, 0, 64}, {VK_NULL_HANDLE, 0, VK_WHOLE_SIZE}};
+   VkWriteDescriptorSet w[5] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &dbi[0]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &dbi[1]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 2, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &dbi[2]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &dbi[3]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 4, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .pTexelBufferView = &bv}};
+   UpdateDescriptorSets(dev, 5, w, 0, NULL);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("robust2.comp.spv");
+   CHECK(m, "shader robust2.comp.spv");
+   if (!m) return 0;
+   VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 16};
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = g_sgctl ? &rss : NULL,
+                .flags = g_sgctl ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "robust2 compute pipeline (bounds-checked size loads): %d", r);
+   int pass = 0, n = 6;
+   /* the OOB atomic's *return value* is undefined (only its memory effect must be discarded), so index 1 is a don't-care */
+   static const uint32_t want[6] = {0, 0xFFFFFFFFu, 0x44444444u, 0, 0, 0};
+   if (r == VK_SUCCESS) {
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);
+      CmdDispatch(cb, 1, 1, 1);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         /* fence wait is not host visibility: make the shader's writes visible before reading them (and before the guard read) */
+         VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = out.m, .offset = 0, .size = VK_WHOLE_SIZE};
+         InvalidateMappedMemoryRanges(dev, 1, &mr);
+         mr.memory = sb.m;
+         InvalidateMappedMemoryRanges(dev, 1, &mr);
+         const uint32_t *got = (const uint32_t *)out.p;
+         for (int i = 0; i < n; i++) {
+            if (want[i] != 0xFFFFFFFFu && got[i] != want[i]) printf("{\"robust2\":\"r[%d]\",\"got\":%u,\"want\":%u}\n", i, got[i], want[i]);
+            else pass++;
+         }
+         /* the store and the atomic past the 64-byte range must not have touched the guard half of the same allocation */
+         uint32_t guard = *(const uint32_t *)(sb.p + 64);
+         CHECK(guard == 0xA5A5A5A5u, "OOB store/atomic wrote past the range: guard 0x%08x", guard);
+      } else {
+         pass = n;
+      }
+      DestroyPipeline(dev, pipe, NULL);
+   }
+   printf("{\"test\":\"robust2\",\"cases\":%d,\"passed\":%d,\"ok\":%s}\n", n, pass, pass == n ? "true" : "false");
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyBufferView(dev, bv, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   hbuf_destroy(&out); hbuf_destroy(&sb); hbuf_destroy(&ub); hbuf_destroy(&tb);
+   tgt_destroy(&t);
+   return pass == n;
 }
 
 static int
@@ -2765,6 +2878,73 @@ test_demote(void)
 
 /* sampleRateShading with 1-sample rasterisation (always supported): sample shading is a no-op, gl_SampleID is 0 and gl_SamplePosition the
  * pixel centre. Shader uses the `sample` qualifier, gl_SampleID and gl_SamplePosition (SPIR-V SampleRateShading). Red = ok. */
+/* Every query that can tell an app which sample counts exist must agree with the advertised limits (and with each
+ * other): the physical-device limits and vkGetPhysicalDeviceImageFormatProperties(2).sampleCounts per attachment format,
+ * and vkCreateImage itself. On a fleet build (no MALI_EXPERIMENTAL_MSAA) 4x is not advertised, so an attachment format
+ * must report 1x and creating a 4x attachment must fail - otherwise zink/CEF can make a 4x stencil attachment and begin
+ * a pass with it (the CMF Steam compositing failure, notes/ms-stencil-load.md). */
+static int
+test_samplecnt(void)
+{
+   const VkPhysicalDeviceLimits *l = &g_props.limits;
+   const struct { const char *n; VkFormat f; VkImageUsageFlags u; VkSampleCountFlags lim; } q[] = {
+      {"rgba8", VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferColorSampleCounts},
+      {"d24s8", VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferDepthSampleCounts},
+      {"s8", VK_FORMAT_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferStencilSampleCounts},
+      {"d32s8", VK_FORMAT_D32_SFLOAT_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, l->framebufferDepthSampleCounts},
+   };
+   int ok = 1;
+   for (unsigned i = 0; i < sizeof q / sizeof *q; i++) {
+      VkPhysicalDeviceImageFormatInfo2 pi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = q[i].f,
+                                             .type = VK_IMAGE_TYPE_2D, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u};
+      VkImageFormatProperties2 ip = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+      VkResult r = g_ifp2(g_pd, &pi, &ip);
+      const VkSampleCountFlags got = r == VK_SUCCESS ? ip.imageFormatProperties.sampleCounts : 0;
+      printf("{\"test\":\"samplecnt_query\",\"format\":\"%s\",\"ifp\":%u,\"limits\":%u}\n", q[i].n, got, q[i].lim);
+      if (got & ~q[i].lim) {
+         printf("{\"fail\":\"samplecnt %s: imageFormatProperties sampleCounts 0x%x offers what the limits (0x%x) do not\"}\n", q[i].n, got, q[i].lim);
+         ok = 0;
+      }
+   }
+   /* the same question asked of image creation: a sample count the app was not offered must not be silently accepted */
+   for (int i = 1; ok && i < 3; i++) {   /* d24s8, s8: the attachments zink/CEF use */
+      VkPhysicalDeviceImageFormatInfo2 pi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = q[i].f,
+                                             .type = VK_IMAGE_TYPE_2D, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u};
+      VkImageFormatProperties2 ip = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+      const VkResult qr = g_ifp2(g_pd, &pi, &ip);
+      CHECK(qr == VK_SUCCESS, "imageFormatProperties2(%s) (%d)", q[i].n, qr);
+      if (qr != VK_SUCCESS) continue;   /* an unexpected error is not "4x unsupported": fail, do not skip the row */
+      const VkBool32 adv4 = (ip.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_4_BIT) != 0;
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = q[i].f,
+                              .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_4_BIT,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = q[i].u, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      VkImage img = VK_NULL_HANDLE;
+      VkResult r = CreateImage(dev, &ii, NULL, &img);
+      if (r == VK_SUCCESS) DestroyImage(dev, img, NULL);
+      printf("{\"test\":\"samplecnt_create4x\",\"format\":\"%s\",\"result\":%d}\n", q[i].n, r);
+      if (adv4 && r != VK_SUCCESS) {
+         /* the advertised case is tested too: a format that reports 4x must be creatable, or the advertisement lies */
+         printf("{\"fail\":\"samplecnt %s: imageFormatProperties offered 4x (0x%x) but vkCreateImage returned %d\"}\n", q[i].n,
+                ip.imageFormatProperties.sampleCounts, r);
+         ok = 0;
+      } else if (!adv4 && r == VK_SUCCESS) {
+         printf("{\"fail\":\"samplecnt %s: vkCreateImage accepted 4x although imageFormatProperties offered 0x%x\"}\n", q[i].n, ip.imageFormatProperties.sampleCounts);
+         ok = 0;
+      } else if (!adv4 && r != VK_ERROR_FORMAT_NOT_SUPPORTED) {
+         /* any other error (out of memory, an invalid-handle mistake) is not the refusal this row is about: it must
+          * name the expected result, or a broken run would read as a pass */
+         printf("{\"fail\":\"samplecnt %s: vkCreateImage(4x) returned %d, want VK_ERROR_FORMAT_NOT_SUPPORTED (%d)\"}\n", q[i].n, r,
+                VK_ERROR_FORMAT_NOT_SUPPORTED);
+         ok = 0;
+      }
+   }
+   printf("{\"test\":\"samplecnt\",\"limits\":{\"fbColor\":%u,\"fbDepth\":%u,\"fbStencil\":%u,\"fbNoAtt\":%u,\"smpColor\":%u,\"smpDepth\":%u,\"smpStencil\":%u,\"storage\":%u},\"ok\":%s}\n",
+          l->framebufferColorSampleCounts, l->framebufferDepthSampleCounts, l->framebufferStencilSampleCounts,
+          l->framebufferNoAttachmentsSampleCounts, l->sampledImageColorSampleCounts, l->sampledImageDepthSampleCounts,
+          l->sampledImageStencilSampleCounts, l->storageImageSampleCounts, ok ? "true" : "false");
+   return ok;
+}
+
 static int
 test_samplerate(void)
 {
@@ -3509,6 +3689,42 @@ test_int64(void)
    return 1;
 }
 
+/* Lane 1 of notes/gs-design.md §4: geometry shaders. The *limits* are published (step 6 will advertise the feature with
+ * them), but VkPhysicalDeviceFeatures::geometryShader stays FALSE -- including with MALI_EXPERIMENTAL_GS=1 in the
+ * environment, which is what this case is run under. That env only lets *pipeline creation* accept a provable
+ * pass-through GS; it advertises nothing, so DXVK still refuses the device at init exactly as before and no application
+ * can discover the path. The refusal itself is t_vk_draw --only gs_reject. */
+static int
+test_gs_limits(void)
+{
+   const VkPhysicalDeviceLimits *l = &g_props.limits;
+   const char *e = getenv("MALI_EXPERIMENTAL_GS");
+   const int gate = e && !strcmp(e, "1");   /* the driver'"'"'s exact predicate: "1x"/"12" are off */
+   CHECK(!g_feat.geometryShader, "geometryShader is advertised: the pass-through subset is not the feature (notes/gs-design.md §7)");
+   /* Vulkan's Required Limits table: maxGeometryShaderInvocations 0/32, maxGeometryInputComponents 0/64,
+    * maxGeometryOutputComponents 0/64, maxGeometryOutputVertices 0/256, maxGeometryTotalOutputComponents 0/1024
+    * ("Unsupported Limit" / "Supported Limit"). The bit is false, so with the gate off every one of them must be 0;
+    * MALI_EXPERIMENTAL_GS=1 only lets *pipeline creation* accept a provable pass-through GS, and while it is on the
+    * driver reports the numbers it would advertise with the feature (all at or above the supported minimums). */
+   const uint32_t inv = gate ? 32u : 0u, in = gate ? 128u : 0u, out = gate ? 128u : 0u;
+   const uint32_t vo = gate ? 256u : 0u, tot = gate ? 1024u : 0u;
+   CHECK(l->maxGeometryShaderInvocations == inv && l->maxGeometryInputComponents == in &&
+         l->maxGeometryOutputComponents == out && l->maxGeometryOutputVertices == vo &&
+         l->maxGeometryTotalOutputComponents == tot,
+         "geometry limits %u/%u/%u/%u/%u with the gate %s (want %u/%u/%u/%u/%u)", l->maxGeometryShaderInvocations,
+         l->maxGeometryInputComponents, l->maxGeometryOutputComponents, l->maxGeometryOutputVertices,
+         l->maxGeometryTotalOutputComponents, gate ? "on" : "off", inv, in, out, vo, tot);
+   /* §1c's sixth row (maxGeometryStreams) has no core field to assert: Vulkan 1.4 removed it from
+    * VkPhysicalDeviceLimits, and the stream count now lives in VK_EXT_transform_feedback's geometryStreams, which our
+    * TF path leaves false. One stream is therefore the only shape this driver can express. */
+   printf("{\"test\":\"gs_limits\",\"geometryShader\":%s,\"gate\":\"%s\",\"limits\":[%u,%u,%u,%u,%u],\"ok\":true}\n",
+          g_feat.geometryShader ? "true" : "false", gate ? "on" : "off",
+          l->maxGeometryShaderInvocations, l->maxGeometryInputComponents, l->maxGeometryOutputComponents,
+          l->maxGeometryOutputVertices, l->maxGeometryTotalOutputComponents);
+   return 1;
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -3517,6 +3733,7 @@ main(int argc, char **argv)
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
+      else if (!strcmp(argv[i], "--robust2")) g_rb2_enable = 1;
       else { fprintf(stderr, "usage: t_vk_feat --direct icd.so [--spv-dir dir] [--only case]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
@@ -3574,6 +3791,7 @@ main(int argc, char **argv)
    }
    g_m5 = fm5.maintenance5;
    g_null = rb2.nullDescriptor;
+   g_rb2 = rb2.robustBufferAccess2;
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
    f11.pNext = &f13;
    GetPhysicalDeviceFeatures2(pd, &f2);
@@ -3621,7 +3839,8 @@ main(int argc, char **argv)
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
    e12.shaderInt8 = f12.shaderInt8; e12.storageBuffer8BitAccess = f12.storageBuffer8BitAccess;
    VkPhysicalDeviceMaintenance5FeaturesKHR em5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .pNext = &e11, .maintenance5 = g_m5};
-   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor};
+   VkPhysicalDeviceRobustness2FeaturesEXT er2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .pNext = &em5, .nullDescriptor = rb2.nullDescriptor,
+      .robustBufferAccess2 = rb2.robustBufferAccess2 && g_rb2_enable};
    VkPhysicalDeviceFeatures2 e2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &er2, .features = g_feat};
    VkPhysicalDeviceCustomBorderColorFeaturesEXT ecb = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = e2.pNext,
                                                        .customBorderColors = fcb.customBorderColors, .customBorderColorWithoutFormat = fcb.customBorderColorWithoutFormat};
@@ -3697,6 +3916,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("arrtex")) ok &= test_arrtex();
    if (ok && CASE_ON("wide")) ok &= test_wide();
    if (ok && CASE_ON("linerast")) ok &= test_linerast();
+   if (ok && g_only && CASE_ON("gs_limits")) ok &= test_gs_limits();
    if (ok && g_only && CASE_ON("tf_reject")) ok &= test_tf_reject();   /* explicit only: keeps the golden BO/address sequence */
    if (ok && g_only && CASE_ON("tf_record")) ok &= test_tf_record();
    if (ok && g_only && CASE_ON("tf_write")) ok &= test_tf_write();   /* stage 4: the data must land in the bound buffers */   /* stage 2: the commands record; the draw still refuses */
@@ -3716,6 +3936,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
+   if (ok && CASE_ON("robust2")) ok &= test_robust2();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();
    if (ok && CASE_ON("inlineub")) ok &= test_inlineub();
    if (ok && CASE_ON("push256")) ok &= test_push256();
@@ -3731,6 +3952,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("clip")) ok &= test_clip();
    if (ok && CASE_ON("provoking")) ok &= test_provoking();
    if (ok && CASE_ON("samplerate")) ok &= test_samplerate();
+   if (ok && CASE_ON("samplecnt")) ok &= test_samplecnt();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();

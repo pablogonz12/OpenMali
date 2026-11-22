@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <stdarg.h>
@@ -56,7 +57,8 @@ static const struct vk_instance_extension_table mali_instance_extensions = {
 
 /* MALI_TRACE=<file>: opt-in post-mortem trace for processes whose stderr nobody reads (a browser's GPU process, a game under a launcher).
  * One line per event, appended with O_APPEND (safe across processes): load/unload (pid, process name), vkCreateInstance / vkCreateDevice
- * (what was asked, what came back) and fatal signals (with a backtrace on glibc). Unset = nothing is opened, no handler installed. */
+ * (what was asked, what came back) and fatal signals (with a backtrace on glibc, only when the signal is really fatal: the handler
+ * chains to the one the program installed, see mali_trace_fatal). Unset = nothing is opened, no handler installed. */
 static int mali_trace_fd = -1;
 
 void
@@ -116,11 +118,41 @@ mali_trace_addr(const char *what, uintptr_t a)
 
 /* The faulting frame itself: glibc's backtrace() from inside the handler stops at the signal trampoline, so it never names the code that
  * crashed. PC/LR/SP from the ucontext, then a frame-pointer walk (aarch64, bounded, strictly rising, 16-aligned). */
+
+/* What the program had installed before us, one slot per watched signal: this handler observes and then CHAINS, it never decides the
+ * outcome. A previous handler is called with the same arguments, SIG_IGN stays "ignored", and only SIG_DFL (nobody else handled the
+ * signal) means the process is really dying: then the default is restored and the signal re-raised. SA_RESETHAND is wrong here: it
+ * drops the program's own handler after the first fault, and the program's handler is often doing routine work, not reporting a crash
+ * (FEX, the x86 emulator, handles SIGBUS for unaligned atomics and SIGSEGV for self-modifying code: replacing them killed the game with
+ * "FATAL signal 7 code=1 BUS_ADRALN" in [anon:FEXMemJIT] right after vkCreateDevice). A diagnostic must not change behaviour. */
+static const int mali_trace_sigs[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
+#define MALI_TRACE_NSIG ((int)(sizeof(mali_trace_sigs) / sizeof(mali_trace_sigs[0])))
+static struct sigaction mali_trace_prev[MALI_TRACE_NSIG];
+static bool mali_trace_have_prev[MALI_TRACE_NSIG];
+static volatile sig_atomic_t mali_trace_in_handler;
+
+static int
+mali_trace_slot(int sig)
+{
+   for (int i = 0; i < MALI_TRACE_NSIG; i++)
+      if (mali_trace_sigs[i] == sig)
+         return i;
+   return -1;
+}
+
 static void
 mali_trace_fatal(int sig, siginfo_t *si, void *ucv)
 {
    ucontext_t *uc = ucv;
+   int slot = mali_trace_slot(sig);
+   struct sigaction *prev = slot >= 0 && mali_trace_have_prev[slot] ? &mali_trace_prev[slot] : NULL;
+   /* the interrupted code sees the errno it had before the fault, not ENOSPC/EIO from this diagnostic's own writes */
+   const int entry_errno = errno;
 
+   /* a fault inside the logging (a damaged stack, an unmapped trace buffer) re-enters here: log nothing more, just chain */
+   if (mali_trace_in_handler)
+      goto chain;
+   mali_trace_in_handler = 1;
    mali_trace("FATAL signal %d code=%d addr=%p", sig, si ? si->si_code : 0, si ? si->si_addr : NULL);
 #if defined(__aarch64__)
    if (uc) {
@@ -143,6 +175,40 @@ mali_trace_fatal(int sig, siginfo_t *si, void *ucv)
       mali_trace("  sp=0x%lx", (unsigned long)uc->uc_mcontext.gregs[REG_RSP]);
    }
 #endif
+   mali_trace_in_handler = 0;
+
+chain:
+   mali_trace_in_handler = 0;
+   /* the program's own handler: same arguments, same effect, and its return just returns */
+   if (prev && prev->sa_handler != SIG_DFL) {
+      if (prev->sa_handler == SIG_IGN) {
+         errno = entry_errno;
+         return;
+      }
+      /* the kernel's protections for the previous handler are not applied to a handler we call ourselves: block its
+       * mask (and the signal itself unless it asked for SA_NODEFER) for the duration of the call */
+      struct sigaction p = *prev;
+      sigset_t block = p.sa_mask, old;
+      if (!(p.sa_flags & SA_NODEFER))
+         sigaddset(&block, sig);
+      sigprocmask(SIG_BLOCK, &block, &old);
+      /* a one-shot previous handler has already had its disposition reset by the kernel in the normal case: consume
+       * it here, or a re-raise inside it would call it again instead of taking the default action */
+      if (p.sa_flags & SA_RESETHAND) {
+         struct sigaction dfl = {.sa_handler = SIG_DFL};
+         sigemptyset(&dfl.sa_mask);
+         sigaction(sig, &dfl, NULL);
+         mali_trace_have_prev[slot] = false;
+      }
+      errno = entry_errno;
+      if (p.sa_flags & SA_SIGINFO)
+         p.sa_sigaction(sig, si, ucv);
+      else
+         p.sa_handler(sig);
+      sigprocmask(SIG_SETMASK, &old, NULL);
+      return;
+   }
+   /* SIG_DFL: nothing else wanted this signal, so this one is fatal. backtrace() is not async-signal-safe, hence only here. */
 #ifdef __GLIBC__
    void *bt[40];
    int cnt = backtrace(bt, 40);
@@ -175,10 +241,28 @@ mali_trace_init(void)
       close(fd);
    }
    mali_trace("load %s", name);
-   static const int sigs[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
-   for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
-      struct sigaction sa = { .sa_sigaction = mali_trace_fatal, .sa_flags = SA_SIGINFO | SA_RESETHAND | SA_NODEFER };
-      sigaction(sigs[i], &sa, NULL);
+   for (int i = 0; i < MALI_TRACE_NSIG; i++) {
+      /* SA_RESTART/SA_ONSTACK are properties of the installed action, so they have to be carried over or the
+       * replacement changes behaviour: a read() the program expected to restart would return EINTR, and a handler
+       * that needs the alternate stack would run on a possibly exhausted one */
+      mali_trace_have_prev[i] = sigaction(mali_trace_sigs[i], NULL, &mali_trace_prev[i]) == 0;
+      /* a signal the program deliberately ignores stays ignored: a wrapper would turn it into a handler call and the
+       * resulting EINTR is not something SA_RESTART can undo for poll()/select() */
+      if (mali_trace_have_prev[i] && mali_trace_prev[i].sa_handler == SIG_IGN) {
+         mali_trace_have_prev[i] = false;
+         continue;
+      }
+      struct sigaction sa = { .sa_sigaction = mali_trace_fatal,
+                              .sa_flags = SA_SIGINFO | SA_NODEFER |
+                                          (mali_trace_prev[i].sa_flags &
+                                           (SA_RESTART | SA_ONSTACK
+#ifdef SA_EXPOSE_TAGBITS
+                                            | SA_EXPOSE_TAGBITS
+#endif
+                                           )) };
+      sigemptyset(&sa.sa_mask);
+      if (sigaction(mali_trace_sigs[i], &sa, NULL) != 0)
+         mali_trace_have_prev[i] = false;
    }
 }
 
@@ -186,6 +270,19 @@ __attribute__((destructor)) static void
 mali_trace_fini(void)
 {
    mali_trace("unload");
+   /* leave the process with the actions it had before this library loaded */
+   for (int i = 0; i < MALI_TRACE_NSIG; i++) {
+      if (!mali_trace_have_prev[i])
+         continue;
+      /* only while the disposition is still ours: a handler the program installed after dlopen() must survive */
+      struct sigaction cur;
+      if (sigaction(mali_trace_sigs[i], NULL, &cur) == 0 && cur.sa_sigaction != mali_trace_fatal) {
+         mali_trace_have_prev[i] = false;
+         continue;
+      }
+      sigaction(mali_trace_sigs[i], &mali_trace_prev[i], NULL);
+      mali_trace_have_prev[i] = false;
+   }
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

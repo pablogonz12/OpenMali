@@ -4,7 +4,7 @@
 Pure decision functions (no network) are unit-tested in test_farm.py; fetch_* shell out to gh/git."""
 import json, os, subprocess
 
-REPO_DEFAULT = "pgm1207/mali-open"
+REPO_DEFAULT = "pablogonz12/mali-open"
 BAD_PATHS = ("third_party", "vk/deqp/lists", "vk/deqp/out")
 
 
