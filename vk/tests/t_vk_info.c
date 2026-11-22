@@ -295,6 +295,7 @@ main(int argc, char **argv)
       static const size_t tested[] = {
          offsetof(VkPhysicalDeviceFeatures, robustBufferAccess),       /* Vulkan 1.0 mandatory (zink: vk_device.c:211); the device below is created with it enabled */
          offsetof(VkPhysicalDeviceFeatures, shaderClipDistance),       /* t_vk_feat clip */
+         offsetof(VkPhysicalDeviceFeatures, shaderCullDistance),       /* t_vk_feat cull (three thirds: all-negative vanishes, one negative is kept whole) */
          offsetof(VkPhysicalDeviceFeatures, shaderImageGatherExtended), /* t_vk_feat gather */
          offsetof(VkPhysicalDeviceFeatures, fragmentStoresAndAtomics), /* t_vk_feat fsstore */
          offsetof(VkPhysicalDeviceFeatures, shaderInt64),              /* t_vk_feat int64 */

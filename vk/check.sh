@@ -36,7 +36,7 @@ fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
 # Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=3            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
+DXVK_MISSING=2            # measured with t_dxvk_caps. shaderCullDistance landed (t_vk_feat cull). sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
@@ -183,6 +183,14 @@ done
 # fake-backend gate cannot silently drop it. Its pixel assertion only runs on hardware (FIRST=red, LAST=blue).
 for g in v11 v13; do
    run "vk_feat provoking $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only provoking
+done
+
+# shaderCullDistance, named so the gate cannot drop it: cull.vert (three thirds) separates the cull rule from the clip
+# rule - all three vertices negative vanishes, ONE negative vertex is drawn whole, and a clip distance in the same
+# shader still clips. The pixel assertion runs on hardware; the fake backend compiles and submits the draw, and the
+# case's limits assertion (maxCullDistances 8, combined >= clip) runs on both.
+for g in v11 v13; do
+   run "vk_feat cull $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull
 done
 
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
