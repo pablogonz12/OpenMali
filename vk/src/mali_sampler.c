@@ -42,6 +42,24 @@ mali_border_color_unswizzle(const VkComponentMapping *m, const uint32_t want[4],
    memcpy(out, tmp, sizeof tmp);
 }
 
+/* The sampler's compare runs the other way round: the hardware compares the reference against the texel where Vulkan defines
+ * "texel <compareOp> reference", so LESS and GREATER (and LEQUAL/GEQUAL) swap before encoding. Mesa says so in as many words
+ * (pan_encoder.h:161-175 pan_flip_compare_func, "The hardware compares in the wrong order, so we have to flip before encoding.
+ * Yes, really.") and applies it to the sampler at pan_cmdstream.c:147-152 and panvk_vX_sampler.c:55-61/165. NEVER/EQUAL/
+ * NOT_EQUAL/ALWAYS are their own inverse and pass through; compareEnable FALSE is NEVER (panvk_translate_sampler_compare_func
+ * panvk_vX_sampler.c:57-58), which is also the genxml default, so the field stays 0. */
+static uint32_t
+sampler_compare_func(VkCompareOp op)
+{
+   switch (op) {
+   case VK_COMPARE_OP_LESS: return 4;              /* GREATER */
+   case VK_COMPARE_OP_GREATER: return 1;           /* LESS */
+   case VK_COMPARE_OP_LESS_OR_EQUAL: return 6;     /* GEQUAL */
+   case VK_COMPARE_OP_GREATER_OR_EQUAL: return 3;  /* LEQUAL */
+   default: return (uint32_t)op & 7u;
+   }
+}
+
 void
 mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_sampler *s, struct mali_hw_desc *o)
 {
@@ -49,8 +67,14 @@ mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_
    memset(o, 0, sizeof *o);
    /* genxml Sampler: Wrap Mode R = bits 8, T = 12, S = 16; Vulkan U -> S, V -> T, W -> R (as panvk_vX_sampler.c). Unnormalised coordinates ignore W. */
    uint32_t wr = ci->unnormalizedCoordinates ? mali_wrap_mode(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) : mali_wrap_mode(ci->addressModeW);
+   /* bit 21 round-to-nearest-even, 23 seamless cube, 25 Normalized Coordinates, 26 Clamp integer array indices (panvk_vX_sampler.c:117-118):
+    * unnormalizedCoordinates clears 25 (otherwise the HW normalises texel coordinates to [0,1]); 26 is never set, so an out-of-range
+    * integer array index reads as zero instead of clamping to the edge layer; 21 is cleared for NEAREST/NEAREST because the
+    * round-to-nearest-even conversion rounds the upper 2^-9 of every texel up into the next one (panvk_vX_sampler.c:112-137, CTS 5547). */
    uint32_t w0 = 1u | (wr << 8) | (mali_wrap_mode(ci->addressModeV) << 12) |
-                 (mali_wrap_mode(ci->addressModeU) << 16) | (1u << 21) | (1u << 23) | (1u << 25) | (1u << 26);
+                 (mali_wrap_mode(ci->addressModeU) << 16) | (1u << 23);
+   if (ci->unnormalizedCoordinates == VK_FALSE) w0 |= 1u << 25;
+   if (ci->minFilter != VK_FILTER_NEAREST || ci->magFilter != VK_FILTER_NEAREST) w0 |= 1u << 21;
    if (ci->minFilter == VK_FILTER_NEAREST) w0 |= 1u << 27;
    if (ci->magFilter == VK_FILTER_NEAREST) w0 |= 1u << 28;
    if (ci->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR) w0 |= 3u << 30;
@@ -59,7 +83,7 @@ mali_sampler_pack(unsigned arch, const VkSamplerCreateInfo *ci, const struct vk_
    o->w[0] = w0;
 
    uint32_t w1 = 0;
-   if (ci->compareEnable) w1 |= ((uint32_t)ci->compareOp & 7u) << 13;
+   if (ci->compareEnable) w1 |= sampler_compare_func(ci->compareOp) << 13;
    w1 |= lod_fixed(ci->minLod, 0x1fffu);   /* genxml Sampler "Minimum LOD": word 1 bits 0:12, 8.8 fixed (the view's min_lod is a separate clamp) */
    w1 |= lod_fixed(ci->maxLod, 0x1fffu) << 16;
    o->w[1] = w1;
