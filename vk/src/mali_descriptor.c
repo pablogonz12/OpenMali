@@ -2,6 +2,8 @@
 /* M7 descriptor sets over the Vulkan runtime. See mali_descriptor.h. */
 #include "mali_descriptor.h"
 #include "mali_format.h"
+#include "mali_descidx.h"
+#include "mali_desctable.h"
 #include "mali_image.h"
 
 #include "vk_alloc.h"
@@ -86,6 +88,7 @@ mem_free(struct vk_device *dev, void *p, size_t size)
 
 /* ---- set layout ---- */
 
+
 static bool
 type_ok(VkDescriptorType t)
 {
@@ -102,6 +105,7 @@ dsl_destroy(struct vk_device *dev, struct vk_descriptor_set_layout *l)
 {
    struct mali_dsl *d = container_of(l, struct mali_dsl, vk);
    vk_free(&dev->alloc, d->b);
+   vk_free(&dev->alloc, d->bflags);
    vk_free(&dev->alloc, d->imm);
    vk_free(&dev->alloc, d->ycbcr);
    vk_object_free(dev, NULL, d);
@@ -117,8 +121,12 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
       nb = MAX2(nb, b->binding + 1);
       if (b->pImmutableSamplers) nimm += b->descriptorCount;
    }
+   bool uab_pool = false;
+   VkResult cr = mali_descidx_check_layout(ci, NULL, &uab_pool);
+   if (cr != VK_SUCCESS) return cr;
    struct mali_dsl *d = vk_descriptor_set_layout_zalloc(dev, sizeof *d, ci);
    if (!d) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   d->uab_pool = uab_pool;
    d->vk.destroy = dsl_destroy;
    d->b = vk_zalloc(&dev->alloc, (nb ? nb : 1) * sizeof *d->b, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    d->imm = vk_zalloc(&dev->alloc, (nimm ? nimm : 1) * sizeof *d->imm, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
@@ -128,6 +136,9 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
    d->nbindings = nb;
+   d->var_binding = -1;
+   const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
+      vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
    for (uint32_t i = 0; i < nb; i++)
       d->b[i].type = MALI_DT_NONE;
    /* Slots are assigned in binding-number order so that the layout does not depend on the order in pBindings. */
@@ -151,6 +162,18 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
          b->stride = 1 + inline_slots(src->descriptorCount);
       }
       b->imm_off = MALI_NO_IMM_SAMPLER;
+      if (bf && bf->bindingCount && bf->pBindingFlags && bf->bindingCount == ci->bindingCount) {   /* bindingCount 0: every flag is zero, the array is not read */
+         if (!d->bflags) d->bflags = vk_zalloc(&dev->alloc, nb * sizeof *d->bflags, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         if (!d->bflags) {
+            dsl_destroy(dev, &d->vk);
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+         }
+         d->bflags[n] = bf->pBindingFlags[src - ci->pBindings];
+         b->bflags = d->bflags[n];
+      }
+      if (bf && bf->bindingCount && bf->pBindingFlags && (bf->pBindingFlags[src - ci->pBindings] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) &&
+          n == nb - 1)   /* spec: only the highest-numbered binding; its slots are last in the set */
+         d->var_binding = n;
       /* Immutable samplers with a YCbCr conversion: the element holds one texture descriptor per image plane, then the sampler. */
       if (b->type == MALI_DT_COMBINED_IMAGE_SAMPLER && src->pImmutableSamplers && g_res && g_res->sampler_ycbcr) {
          uint32_t first = nycbcr;
@@ -216,7 +239,27 @@ mali_get_descriptor_set_layout_support(const VkDescriptorSetLayoutCreateInfo *ci
          ok &= b->descriptorCount <= MALI_MAX_INLINE_BYTES && !(b->descriptorCount & 3);
       else slots += (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
    }
+   if (ok) ok = mali_descidx_check_layout(ci, NULL, NULL) == VK_SUCCESS;
    s->supported = ok && slots < (1u << 20);
+   VkDescriptorSetVariableDescriptorCountLayoutSupport *vs =
+      vk_find_struct(s->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);
+   if (vs) {   /* allocate-time count sizing is implemented; the feature itself stays unadvertised (see docs/descidx-plan.md) */
+      const VkDescriptorSetLayoutBindingFlagsCreateInfo *bf =
+         vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+      vs->maxVariableDescriptorCount = 0;
+      if (bf && bf->bindingCount && bf->pBindingFlags && ci->bindingCount) {
+         uint32_t hi = 0;
+         for (uint32_t i = 1; i < ci->bindingCount; i++)
+            if (ci->pBindings[i].binding > ci->pBindings[hi].binding) hi = i;
+         const VkDescriptorSetLayoutBinding *b = &ci->pBindings[hi];
+         if ((bf->pBindingFlags[hi] & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) && type_ok(b->descriptorType) &&
+             b->descriptorType != VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK && mali_desc_stride(b->descriptorType)) {
+            uint64_t fixed = slots - (uint64_t)mali_desc_stride(b->descriptorType) * b->descriptorCount;
+            uint64_t room = (1u << 20) - 1 - fixed;
+            vs->maxVariableDescriptorCount = (uint32_t)(room / mali_desc_stride(b->descriptorType));
+         }
+      }
+   }
 }
 
 /* ---- pools and sets ---- */
@@ -298,7 +341,10 @@ write_immutable(struct mali_dset *s)
    for (uint32_t n = 0; n < l->nbindings; n++) {
       const struct mali_lbinding *b = &l->b[n];
       if (b->type == MALI_DT_NONE || b->imm_off == MALI_NO_IMM_SAMPLER || !g_res) continue;
-      for (uint32_t k = 0; k < b->count; k++) {
+      /* A variable binding may have been shrunk at allocation time (alloc_set, s->var_count): initialising it to the
+       * layout count would write descriptors past the end of this set's slots, into the next set or past the pool. */
+      const uint32_t cnt = l->var_binding >= 0 && (uint32_t)l->var_binding == n ? s->var_count : b->count;
+      for (uint32_t k = 0; k < cnt; k++) {
          unsigned sub = b->type == MALI_DT_COMBINED_IMAGE_SAMPLER ? (b->ycbcr_planes ? b->ycbcr_planes : 1) : 0;
          struct mali_hw_desc hw;
          if (g_res->sampler(l->imm[b->imm_off + k], &hw) == 0)
@@ -309,10 +355,17 @@ write_immutable(struct mali_dset *s)
 
 /* first fit between the sets (list sorted by offset) */
 static VkResult
-alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struct mali_dset **out)
+alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, uint32_t var_count, struct mali_dset **out)
 {
-   uint32_t bytes = l->slot_count * MALI_DESC_SLOT_SIZE;
+   uint32_t slots = l->slot_count;
+   if (l->var_binding >= 0) {   /* the variable binding is last: shrink it from count to var_count elements */
+      const struct mali_lbinding *vb = &l->b[l->var_binding];
+      if (var_count > vb->count) return VK_ERROR_OUT_OF_POOL_MEMORY;
+      slots -= (vb->count - var_count) * vb->stride;
+   }
+   uint32_t bytes = slots * MALI_DESC_SLOT_SIZE;
    if (p->nsets >= p->max_sets) return VK_ERROR_OUT_OF_POOL_MEMORY;
+   if (!mali_descidx_pool_ok(l->uab_pool, p->flags)) return VK_ERROR_OUT_OF_POOL_MEMORY;
    struct mali_dset **link = &p->sets;
    uint32_t at = 0;
    while (*link && (*link)->off - at < bytes) {
@@ -337,6 +390,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
    s->cpu = p->cpu ? p->cpu + at : NULL;
    s->va = p->va + at;
    s->arch = p->arch;
+   if (l->var_binding >= 0) s->var_count = var_count;
    if (bytes) memset(s->cpu, 0, bytes);   /* zero-capacity pool: s->cpu is NULL (memset(NULL, 0, 0) is UB) */
    write_immutable(s);
    for (uint32_t n = 0; n < l->nbindings; n++) {
@@ -359,9 +413,12 @@ mali_allocate_descriptor_sets(struct vk_device *dev, const VkDescriptorSetAlloca
    struct mali_dpool *p = mali_dpool_from_handle(ai->descriptorPool);
    uint32_t i;
    VkResult r = VK_SUCCESS;
+   const VkDescriptorSetVariableDescriptorCountAllocateInfo *vc =
+      vk_find_struct_const(ai->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO);
    for (i = 0; i < ai->descriptorSetCount; i++) {
       struct mali_dset *s;
-      r = alloc_set(dev, p, mali_dsl_from_handle(ai->pSetLayouts[i]), &s);
+      uint32_t n = vc && vc->pDescriptorCounts && i < vc->descriptorSetCount ? vc->pDescriptorCounts[i] : 0;
+      r = alloc_set(dev, p, mali_dsl_from_handle(ai->pSetLayouts[i]), n, &s);
       if (r != VK_SUCCESS) break;
       out[i] = mali_dset_to_handle(s);
    }
@@ -488,6 +545,50 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
    }
 }
 
+/* Is a write to `binding` of a set that a pending submission uses illegal? Counted, then dropped by the caller. */
+static bool
+write_denied(struct mali_dset *s, uint32_t binding)
+{
+   if (s->in_use <= 0 || !s->layout->bflags) return false;
+   if (mali_dtab_write_allowed(binding < s->layout->nbindings ? s->layout->bflags[binding] : 0, true)) return false;
+   s->denied_writes++;
+   return true;
+}
+
+void
+mali_dset_use(struct mali_dset *s, int delta)
+{
+   s->in_use += delta;
+}
+
+uint32_t
+mali_dset_dtab(const struct mali_dset *s, struct mali_dtab_entry *out, uint32_t cap)
+{
+   const struct mali_dsl *l = s->layout;
+   if (cap < l->nbindings) return 0;
+   for (uint32_t n = 0; n < l->nbindings; n++) {
+      const struct mali_lbinding *b = &l->b[n];
+      out[n] = (struct mali_dtab_entry){ .slot = b->slot, .stride = b->stride, .count = b->count,
+                                         .flags = l->bflags ? l->bflags[n] : 0,
+                                         .present = b->type != MALI_DT_NONE && b->stride != 0 };
+      if ((int32_t)n == l->var_binding) out[n].count = s->var_count;
+   }
+   return l->nbindings;
+}
+
+bool
+mali_dset_binding_va(const struct mali_dset *s, uint32_t binding, uint32_t idx, uint64_t *va)
+{
+   uint32_t cap = s->layout->nbindings, slot = 0;
+   struct mali_dtab_entry *t = cap ? malloc(cap * sizeof *t) : NULL;
+   if (!t) return false;
+   uint32_t n = mali_dset_dtab(s, t, cap);
+   bool ok = n && mali_dtab_slot(t, n, binding, idx, &slot) == MALI_DTAB_OK;
+   free(t);
+   if (ok) *va = s->va + (uint64_t)slot * MALI_DESC_SLOT_SIZE;
+   return ok;
+}
+
 void
 mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
 {
@@ -497,6 +598,7 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       const VkWriteDescriptorSetInlineUniformBlock *ib = vk_find_struct_const(w->pNext, WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
       if (!ib || binding >= l->nbindings || !l->b[binding].inline_bytes) return;
       const struct mali_lbinding *b = &l->b[binding];
+      if (write_denied(s, binding)) return;
       if (elem > b->inline_bytes || w->descriptorCount > b->inline_bytes - elem) return;
       memcpy(s->cpu + (size_t)(b->slot + 1) * MALI_DESC_SLOT_SIZE + elem, ib->pData, w->descriptorCount);
       return;
@@ -510,6 +612,7 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       if (binding >= l->nbindings) return;
       const struct mali_lbinding *b = &l->b[binding];
       if (b->type == MALI_DT_NONE) return;
+      if (write_denied(s, binding)) { elem++; continue; }
       write_one(s, b, elem, w->descriptorType,
                 w->pImageInfo ? &w->pImageInfo[i] : NULL, w->pBufferInfo ? &w->pBufferInfo[i] : NULL,
                 w->pTexelBufferView ? &w->pTexelBufferView[i] : NULL);
@@ -526,6 +629,7 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
    if (src->wrote_full)
       dst->wrote_full = true;
    const struct mali_lbinding *sb = &src->layout->b[c->srcBinding], *db = &dst->layout->b[c->dstBinding];
+   if ((sb->inline_bytes || db->inline_bytes) && write_denied(dst, c->dstBinding)) return;
    if (sb->inline_bytes || db->inline_bytes) {   /* inline block: dstArrayElement/srcArrayElement are byte offsets, descriptorCount bytes */
       if (!sb->inline_bytes || !db->inline_bytes || c->srcArrayElement > sb->inline_bytes || c->dstArrayElement > db->inline_bytes ||
           c->descriptorCount > sb->inline_bytes - c->srcArrayElement || c->descriptorCount > db->inline_bytes - c->dstArrayElement)
@@ -534,6 +638,7 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
               src->cpu + (size_t)(sb->slot + 1) * MALI_DESC_SLOT_SIZE + c->srcArrayElement, c->descriptorCount);
       return;
    }
+   if (write_denied(dst, c->dstBinding)) return;   /* descidx: a non-UAB destination set in use drops the copy */
    /* spec: a copy that runs past the end of a binding continues into the next consecutive binding, on both sides */
    uint32_t sbi = c->srcBinding, dbi = c->dstBinding, se = c->srcArrayElement, de = c->dstArrayElement;
    for (uint32_t i = 0; i < c->descriptorCount; i++) {
