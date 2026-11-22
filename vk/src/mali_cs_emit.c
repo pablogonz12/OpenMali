@@ -131,6 +131,9 @@ apply_blend(uint32_t *bl, const struct mali_fixed *fx)
       return 0;
    if (mali_blend_equation(fx, &eq, &cm))
       return -1;
+   /* only the channels the target writes are compared: a target that writes red alone may hold different green/blue
+    * constants (the descriptor's single constant is the red one, which is the only one it can affect) */
+   cm &= fx->wmask & 0xf;
    float cv = 0.0f;
    bool first = true;
    for (unsigned i = 0; i < 4; i++) {
@@ -379,14 +382,17 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          }
          /* a target this draw does not write keeps its descriptor disabled below: validating its blend equation
           * would refuse the draw for state the hardware never sees (independentBlend allows any state on it) */
-         const bool inactive = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) ||
-                                     (d->fx.set && d->fx.rtb[i - 1].wmask == 0));
+         /* also RT0, but only on an MRT draw: there a fragment shader without an output for location 0 leaves RT0
+          * unwritten just like the later ones, and its state must not fail the draw */
+         const bool inactive = (i || nrt > 1) && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) ||
+                                                  (d->fx.set && (i ? d->fx.rtb[i - 1].wmask : d->fx.wmask) == 0));
          if (!inactive && apply_blend(b, &t))
             return -EINVAL;
       }
       /* A target this draw does not write must not be written at all: disable its blend descriptor (PanVK
        * panvk_vX_blend.c:127-130: loc unused or equation.color_mask == 0 -> enable = false, mode OFF). */
-      const bool unused = i && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) || (d->fx.set && i && d->fx.rtb[i - 1].wmask == 0));
+      const bool unused = (i || nrt > 1) && ((g->fs && !(g->fs->fs_colour_mask & (1u << i))) ||
+                                             (d->fx.set && (i ? d->fx.rtb[i - 1].wmask : d->fx.wmask) == 0));
       if (unused) {
          b[0] = 0;                       /* Load Destination, Alpha To One, Enable = 0 */
          b[2] = 3 | (i << 16);           /* Internal Blend Mode: Off, Fixed-Function RT = i (as the enabled ones) */
@@ -1095,8 +1101,14 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          tctx[2] &= ~(1u << 18);   /* First provoking vertex off = last vertex (v11 word 2 bit 18, v13.xml:2636 same) */
       if (f->samples == 4)
          tctx[2] |= 2u << 13;   /* Sample Pattern (15:13) rotated 4x; v13 additionally has Effective Tile Size at 23:20 (tile_log2 - 2 below) */
-      if (f->samples == 4 && v13)
-         tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
+      if (f->samples == 4 && v13) {
+         /* The Effective Tile Size must be the tile the FBD header advertises: with 4x samples that is the same byte total,
+          * i.e. one quarter of the pixels - so when the tile was shrunk for the colour budget (f->tile_log2 set, and the
+          * header uses it) the tiler has to be told that shrunk tile - 2, not the un-shrunk env->tile_log2 - 2. */
+         const unsigned base = f->tile_log2 ? f->tile_log2 : env->tile_log2;
+         const unsigned etl = base > 2 ? base - 2 : 0;
+         tctx[2] = (tctx[2] & ~(0xfu << 20)) | ((etl & 0xfu) << 20);
+      }
    }
    if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))
       goto out;

@@ -76,8 +76,14 @@ tile_budget(unsigned *cbudget, unsigned *zbudget)
    case 13: c = 65536; z = 65536; break;   /* G925 (pan_model.c:127) */
    default: c = 32768; z = 16384; break;   /* G615 (pan_model.c:116) */
    }
-   if (getenv("MALI_TILE_BUDGET"))
-      c = (unsigned)atoi(getenv("MALI_TILE_BUDGET"));
+   if (getenv("MALI_TILE_BUDGET")) {
+      /* a diagnostic override: it may only LOWER the architecture's budget. Raising it admits tiles whose per-target byte
+       * offset and total exceed the 12-bit ">> 4" / ">> 10" fields (a 64x64 tile with four 16 B-per-pixel targets starts
+       * RT1 at 65536, and a 256 KiB allocation, both of which encode as zero). */
+      const int v = atoi(getenv("MALI_TILE_BUDGET"));
+      if (v > 0 && (unsigned)v < c)
+         c = (unsigned)v;
+   }
    *cbudget = c;
    *zbudget = z;
 }
@@ -1292,6 +1298,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          if (cbudget > 4096)
             cbudget = 4096;
       }
+      /* Arch 11 and later keep the architecture budget (32 KiB on G615, 64 KiB on G925) for multi-target frames too: the
+       * 4 KiB figure above is a G610 measurement, and there is no measurement on an 11/13 part that shows a collapse, so a
+       * 2xRGBA8 frame on arch 11 selects 64x64 (32 KiB) rather than the 16x16 the G610 rule would pick. If a device run
+       * ever shows the same loss there, the cap belongs next to this comment with the number and the part. */
       unsigned zpp = 0;
       if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
          struct mali_cmd_target zt;
