@@ -2,7 +2,7 @@
 version 41
 sha256 ae6831433bf083abc0d55e02d84353dbf07f15aeb6479b5b7aa4d795640f9628
 =======
-version 35
-sha256 ffac521b7d8d6cad5a2b40436800ad9a207c90ed05503046c8ab2cda03907128
->>>>>>> 31e91a1655ad19f93872e9d4d4ef441ba27e82f6
+version 40
+sha256 439436543c69ef97b09fcba0eb4e8d93f54b95416c41de4b29e89e8765dc9972
+>>>>>>> c4880fd3baa33bbd12e1db4f7b3233d8e5fe1528
 files src/mali_compile.c src/mali_descriptor_lower.c src/mali_descriptor_lower.h src/mali_pipeline_layout_flat.h
