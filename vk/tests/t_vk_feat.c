@@ -2073,7 +2073,9 @@ test_pointgrid(void)
          printf("{\"test\":\"pointgrid\",\"size\":%g,\"points\":256,\"covered\":%u}\n", (double)sizes[k], nz);
          /* both sizes must give 1 px per point: the advertised pointSizeRange is {1, 1} (mali_physical_device.c:148) and
           * mali_cs_emit.c sizes a point draw from that fixed value, so a larger gl_PointSize is clamped by contract. */
-         CHECK(nz >= 240 && nz <= 320, "256 points of gl_PointSize %g covered %u px, wanted 256 (pointSizeRange {1,1})", (double)sizes[k], nz);
+         /* One pixel per point at both sizes: the size is clamped to the advertised pointSizeRange {1, 1}
+          * (mali_physical_device.c). Widening it needs the per-vertex size to reach the tiler - see the commit message. */
+         CHECK(nz >= 240 && nz <= 320, "256 points of gl_PointSize %g covered %u px, wanted 256", (double)sizes[k], nz);
       } else {
          printf("{\"test\":\"pointgrid\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
       }
