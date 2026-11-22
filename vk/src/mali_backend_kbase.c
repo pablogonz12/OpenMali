@@ -378,8 +378,15 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    } else if (flags & MALI_BO_EXEC) {
       r = kb_bo_alloc(k->ctx, size, KB_BO_GPU_RD | KB_BO_GPU_EX, bo);
    } else {
-      r = kb_bo_alloc(k->ctx, size,
-                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) | ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0), bo);
+      uint32_t kflags = KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) |
+                        ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0);
+      /* Host-visible device memory (memory type 0 is HOST_VISIBLE|HOST_COHERENT) is written by the CPU with no flush at all;
+       * a GPU-cached mapping would then let a clean L2 line serve the stale bytes (a CPU DC CIVAC does not touch the GPU's
+       * L2). Such BOs bypass the GPU cache, so the read is always the memory the CPU wrote - for flushed and unflushed
+       * writes alike. MALI_BO_HOSTLAZY marks VkDeviceMemory (driver-internal BOs do not carry it). */
+      if ((flags & MALI_BO_HOSTLAZY) && !(flags & MALI_BO_CACHED))
+         kflags |= KB_BO_GPU_UNCACHED;
+      r = kb_bo_alloc(k->ctx, size, kflags, bo);
    }
    if (r != 0) {
       free(bo);
