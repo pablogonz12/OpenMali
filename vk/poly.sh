@@ -65,6 +65,22 @@ CXXFLAGS=$(sed -E 's#-std=(c|gnu)[0-9a-z]+#-std=c++17#; s#-Werror=(implicit-func
 CXXFLAGS="$CXXFLAGS -I$MESA/src -I$POLY_BUILD/src -Wno-invalid-offsetof ${POLY_EXTRA_CFLAGS:-}"
 AR=$(command -v llvm-ar || command -v gcc-ar || command -v ar)
 
+# 2b. Our tessellator kernels (T2 step 1, src/mali_tess.cl): the three KERNEL(64) wrappers around Mesa's
+#     poly_tess_*_process(), compiled by the host mesa_clc that the configure above just built, against the same
+#     unmodified src/poly headers as libpoly. Output: out/<target>/poly/mali_tess.spv (one module, three kernels).
+CL=$V/src/mali_tess.cl
+if [ -f "$CL" ]; then
+   mkdir -p "$OUT"
+   t0=$SECONDS
+   # The flags are Mesa's own cl_args (meson.build:67): CL 2.0 and the builtins the tessellator uses.
+   "$POLY_BUILD/src/compiler/clc/mesa_clc" -o "$OUT/mali_tess.spv" "$CL" -- \
+      -I"$MESA/include" -I"$MESA/src/compiler/libcl" -I"$MESA/src" \
+      -cl-std=cl2.0 -D__OPENCL_VERSION__=200 -DHAVE___BUILTIN_FFS -DHAVE___BUILTIN_CLZ \
+      >"$OUT/mali_tess.log" 2>&1 \
+      || { echo "poly.sh: mesa_clc failed on $CL (see $OUT/mali_tess.log)"; tail -5 "$OUT/mali_tess.log" | sed 's/^/    /'; exit 1; }
+   echo "poly: mali_tess.spv $(stat -c %s "$OUT/mali_tess.spv") B ($((SECONDS - t0)) s): mali_tess_{isoline,tri,quad}"
+fi
+
 # 3. Compile the unmodified sources for this target and archive them. Idempotent: nothing is redone when the archive is
 #    newer than its inputs, so a repeated vk/build.sh costs one stat.
 SRC="$MESA/src/poly/nir/poly_nir_lower_gs.c $MESA/src/poly/nir/poly_nir_lower_sysvals.c
