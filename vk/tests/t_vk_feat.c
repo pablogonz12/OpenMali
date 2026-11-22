@@ -2135,6 +2135,8 @@ test_didx(void)
 static int
 test_didxvidx(void)
 {
+   /* part 2 puts the descriptor array back, so the row needs the same subfeatures didx does */
+   if (!g_didx) { printf("{\"test\":\"didxvidx\",\"skipped\":\"descriptor indexing not advertised\",\"ok\":true}\n"); return 1; }
    static const uint8_t col[4][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}};
    /* ---- part 1: flat int varying, no descriptors ---- */
    for (int k = 0; k < 4; k++) {
