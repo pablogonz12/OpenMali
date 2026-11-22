@@ -355,7 +355,14 @@ main(int argc, char **argv)
          CHECK(!b[i] || i == imgl || i == tl || i == hq || i == mc || i == bda || i == vmm || i == vmd || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == didx || i == sbl || i == ubs || i == s8 || i == i8, "vk12 feature #%u advertised without a test", i);
       /* descriptorIndexing: the umbrella is true only because every advertised sub-feature is implemented; everything the driver
        * does not implement (variable count, buffer/storage-image/texel non-uniform indexing and UAB) must stay false. */
-      CHECK(f12.descriptorIndexing, "descriptorIndexing advertised");
+      /* 2026-11-22: the umbrella is NOT advertised. dEQP-VK.descriptor_indexing.* on hardware (X8 G925) fails all 50
+       * sampled-image / sampler / combined-image-sampler cases (one of four array rows renders, the rest read zero), so
+       * advertising it would be a claim dEQP refutes. The five sub-feature lines below are main's, unchanged: withdrawing
+       * them as well would satisfy VUID-03830 but costs 5 t_dxvk_caps rows (DXVK_MISSING 3 -> 8). */
+      CHECK(!f12.descriptorIndexing, "descriptorIndexing not advertised (dEQP hardware: 0/50 sampled-image cases)");
+      CHECK(f12.runtimeDescriptorArray && f12.descriptorBindingPartiallyBound && f12.descriptorBindingSampledImageUpdateAfterBind &&
+            f12.descriptorBindingUpdateUnusedWhilePending && f12.shaderSampledImageArrayNonUniformIndexing,
+            "the pre-existing sub-feature claims are unchanged (VUID-03830 deviation, see the note)");
       CHECK(!f12.descriptorBindingVariableDescriptorCount, "variableDescriptorCount withheld (no per-set count plumbing)");
       CHECK(!b[dnu0] && !b[dnu1] && !b[dnu2] && !b[dnu3] && !b[dnu4], "non-uniform indexing withheld for every non-sampled-image type");
       CHECK(!b[duab1] && !b[duab2] && !b[duab3] && !b[duab4], "UAB withheld for storage buffers/images and texel buffers");
