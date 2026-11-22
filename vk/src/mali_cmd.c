@@ -513,7 +513,7 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
          const struct mali_slice *sl = &vl->plane[0].slice[lv];
          c->shadow_base = img->bc && !img->native_view ? img->bc_lay.shadow.base : 0;
          c->plane_off = vl->plane[0].offset; c->slice_off = sl->offset;
-         uint64_t off = img->mem_off + c->shadow_base + c->plane_off + sl->offset + (uint64_t)v->vd.base_layer * vl->plane[0].array_stride;
+         uint64_t off = img->mem_off + (c->shadow_base ? c->shadow_base : c->plane_off) + sl->offset + (uint64_t)v->vd.base_layer * vl->plane[0].array_stride;
          c->size = sl->size > (4u << 20) ? (4u << 20) : sl->size;
          if (off + c->size > img->mem->bo.size) { FILE *lf = cd_log(); if (lf) fprintf(lf, "SKIP set=%u slot=%u reason=oob view=0x%llx ifmt=%u vfmt=%u bc=%u off=%llu size=%llu bo=%zu\n", s, (unsigned)(e[i].key - 1), (unsigned long long)e[i].view, (unsigned)img->vk.format, (unsigned)v->vd.format, (unsigned)img->bc, (unsigned long long)off, (unsigned long long)c->size, (size_t)img->mem->bo.size); r.nimg--; continue; }
          c->p = (const uint8_t *)img->mem->bo.cpu + off;
