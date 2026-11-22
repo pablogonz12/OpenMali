@@ -205,12 +205,27 @@ def rules(side, events, arch):
     pend_flush, since_req, saw_run = {}, None, False
     pend_store = {}   # STORE_STATE (op 40, async, signal slot 51:48): its result is only valid after WAIT on that slot
     sb_needed = False
+    fin_prev = None      # signal slot of the previous FINISH_FRAGMENT in this stream
     if not events: errs.append('no instructions were checked (empty ring dump?)')
     for e in events:
         op = e['op']; w = e['w']
         where = 'ins %d(%s)' % (e['i'], e['name'])
         if op in (38, 39, 51) and (pend_flush or pend_store):
             errs.append('%s: sync op before WAIT on async FLUSH_CACHE2/STORE_STATE slot(s) %s (INTERMITTENT.md)' % (where, sorted(set(pend_flush) | set(pend_store))))
+        # #375: FINISH_FRAGMENT performs the tiler heap chunk release. With wait mask 0 it is synchronous and its signal slot is
+        # dropped, so nothing orders it against the previous frame's release and a chunk still holding an in-flight tile can go
+        # back on the free list. PanVK chains them through an alternating scoreboard slot (panvk_vX_cmd_draw.c:4633-4650), so
+        # consecutive FINISH_FRAGMENTs must alternate: each waits the slot the previous one signalled.
+        if op == 11:
+            mask, sig = (w >> 16) & 0xffff, (w >> 48) & 0xf
+            if not mask:
+                errs.append('%s: FINISH_FRAGMENT with wait mask 0 is synchronous: its chunk release cannot be ordered '
+                            'against the previous frame (#375, PanVK panvk_vX_cmd_draw.c:4633-4650)' % where)
+            elif fin_prev is not None and mask != (1 << fin_prev) and sig:
+                errs.append('%s: FINISH_FRAGMENT waits 0x%x but the previous one signalled slot %d: the chunk-release chain '
+                            'is broken (#375)' % (where, mask, fin_prev))
+            if sig:
+                fin_prev = sig
         if op == 36: pend_flush[(w >> 48) & 15] = where
         elif op == 40: pend_store[(w >> 48) & 15] = where
         elif op == 3:

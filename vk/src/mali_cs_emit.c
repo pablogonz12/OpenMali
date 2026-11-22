@@ -746,6 +746,11 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    }
 }
 
+/* Alternating FINISH_FRAGMENT slots (see the chain there): two slots are enough, as in PanVK's SB_ITER ping-pong. */
+#define MALI_SLOT_FIN0 4
+#define MALI_SLOT_FIN1 5
+static unsigned g_fin_iter;
+
 static void
 emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct regs *R, uint64_t va_fbd,
               uint64_t va_tctx, bool geometry)
@@ -768,7 +773,15 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
    if (geometry) {
       E(c, kb_cs_load_multiple(10, R->tctx_copy, 0xf, 40));
       E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
-      E(c, kb_cs_finish_fragment_heap(true, 10, 12));
+      /* The chunk release this instruction performs (the range the tiler wrote to tiler-context words 40..43) must not run
+       * before the previous frame's FINISH_FRAGMENT completed, or a chunk still holding a tile in flight is returned to the
+       * free list and the next frame re-uses it mid-flight - tiles then stop reaching memory. PanVK chains the FINISH
+       * instructions through an alternating scoreboard slot for exactly this (panvk_vX_cmd_draw.c:4633-4650): each waits the
+       * previous iteration's slot and signals its own, so they cannot overlap while still being deferred. Slots 4/5 (free:
+       * 0 = load/store, 3 = endpoint jobs). */
+      unsigned it = g_fin_iter++;
+      unsigned cur = MALI_SLOT_FIN0 + (it & 1u), prev = MALI_SLOT_FIN0 + ((it + 1u) & 1u);
+      E(c, kb_cs_finish_fragment_heap_signal(true, 10, 12, cur, it ? (1u << prev) : (1u << slot)));
    }
    E(c, kb_cs_req_res(0));
 }
