@@ -2038,6 +2038,204 @@ test_bda(void)
 /* descriptor indexing (sampled images): a PARTIALLY_BOUND | UPDATE_AFTER_BIND | UPDATE_UNUSED_WHILE_PENDING array of 8 sampled
  * images with only 0..3 (and 5) bound, indexed non-uniformly (per pixel of a 2x2 quad) through a runtime array in the shader.
  * Slot 2 is rewritten AFTER the descriptor set was bound in the command buffer and before submit. */
+/* ptbisect: which variable makes a large POINT_LIST draw lose vertices? One test per variant, counts
+ * 256/1024/4096/16384, all 1-px points on a 256x256 target: covered px must equal the vertex count.
+ *   base    positions from gl_VertexIndex, no varyings, no vertex buffer      (known good)
+ *   intvar  + an integer flat varying                                          (the CTS descriptorIndexing pattern)
+ *   attr    position and index from a 16-byte vertex buffer (ivec4 at location 1, the CTS layout)
+ *   attrpts same, TRIANGLE_LIST (2 tris per 4 vertices, just as a control)
+ * Run with --only ptbisect. */
+/* mpass: 16 render passes over ONE linear colour attachment, each with its own renderArea offset (16x16 quadrant,
+ * CLEAR) and the matching scissor, each drawing the same 4096 one-pixel points (64x64 grid) - the structure of
+ * dEQP-VK.descriptor_indexing's iterate(). Every quadrant must keep its own 256 points. */
+/* mpassload: the same 16 passes as mpass, but passes 2..16 use a LOAD render pass (the CTS's iterate() does exactly
+ * this: LOAD what the previous pass stored). Every quadrant must still hold its own 256 points. */
+static int
+test_mpassload(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp2 = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp2, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb2 = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb2) == VK_SUCCESS, "framebuffer (LOAD)");
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_base.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);   /* one command buffer + submit per pass, like the CTS's iterate() */
+         CHECK(cb, "cmdbuf");
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         int first = qx == 0 && qy == 0;
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
+                                     .framebuffer = first ? t.fb : fb2,
+                                     .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         const float ss[4] = {1, 64, 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ss);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+      }
+   if (!g_fake) {
+      unsigned quad[16] = {0}, nz = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = pix(&t, x, y);
+            if (p[0] | p[1] | p[2]) { nz++; quad[(y / 64) * 4 + x / 64]++; }
+         }
+      printf("{\"mpassload\":\"total\",\"covered\":%u}\n", nz);
+      for (int i = 0; i < 16; i++) printf("{\"mpassload\":\"q%d\",\"covered\":%u}\n", i, quad[i]);
+   } else {
+      printf("{\"test\":\"mpassload\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyFramebuffer(dev, fb2, NULL);
+   DestroyRenderPass(dev, rp2, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_mpass(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_base.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t.rp, .framebuffer = t.fb,
+                                     .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         const float s[4] = {1, 64, 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+      }
+   if (!g_fake) {
+      unsigned quad[16] = {0};
+      unsigned nz = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = pix(&t, x, y);
+            if (p[0] | p[1] | p[2]) { nz++; quad[(y / 64) * 4 + x / 64]++; }
+         }
+      printf("{\"mpass\":\"total\",\"covered\":%u}\n", nz);
+      for (int i = 0; i < 16; i++) printf("{\"mpass\":\"q%d\",\"covered\":%u}\n", i, quad[i]);
+   } else {
+      printf("{\"test\":\"mpass\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_ptbisect(void)
+{
+   static const unsigned counts[4] = {256, 1024, 4096, 16384};
+   static const int dims[4] = {16, 32, 64, 128};
+   for (int v = 0; v < 3; v++) {
+      for (int c = 0; c < 4; c++) {
+         struct tgt t;
+         if (!tgt_create(&t)) return 0;
+         struct hbuf vb = {0};
+         VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+         VkVertexInputBindingDescription vbd[2] = {{0, 16, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_VERTEX}};
+         VkVertexInputAttributeDescription vad[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SINT, 0}};
+         if (v == 2) {
+            int n = (int)counts[c];
+            size_t sz = (size_t)n * 32;
+            if (!hbuf_create(&vb, sz, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+            float *pos = (float *)vb.p;
+            int32_t *idx = (int32_t *)((uint8_t *)vb.p + (size_t)n * 16);
+            for (int i = 0; i < n; i++) {
+               int d = dims[c];
+               pos[i * 4 + 0] = (float)(i % d) / (float)d * 2.0f - 1.0f + 1.0f / (float)d;
+               pos[i * 4 + 1] = (float)(i / d) / (float)d * 2.0f - 1.0f + 1.0f / (float)d;
+               pos[i * 4 + 2] = 0.5f; pos[i * 4 + 3] = 1.0f;
+               idx[i * 4 + 0] = i & 15; idx[i * 4 + 1] = 0; idx[i * 4 + 2] = 0; idx[i * 4 + 3] = 0;
+            }
+            vi.vertexBindingDescriptionCount = 2; vi.pVertexBindingDescriptions = vbd;
+            vi.vertexAttributeDescriptionCount = 2; vi.pVertexAttributeDescriptions = vad;
+         }
+         VkPipelineLayout lay;
+         VkPipeline pipe;
+         g_vi = (v == 2) ? &vi : NULL;
+         const char *vs = v == 0 ? "ptg_base.vert.spv" : v == 1 ? "ptg_intvar.vert.spv" : "ptg_attr.vert.spv";
+         const char *fs = v == 1 ? "ptg_intvar.frag.spv" : "ptg_solid.frag.spv";
+         g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+         int okp = make_pipe(&t, vs, fs, VK_NULL_HANDLE, 16, &lay, &pipe);
+         g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+         g_vi = NULL;
+         if (!okp) return 0;
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         begin_pass(cb, &t, pipe);
+         const float s[4] = {1, (float)dims[c], 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+         if (v == 2) {
+            VkDeviceSize off[2] = {0, (VkDeviceSize)counts[c] * 16};
+            VkBuffer bufs[2] = {vb.b, vb.b};
+            CmdBindVertexBuffers(cb, 0, 2, bufs, off);
+         }
+         CmdDraw(cb, counts[c], 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         if (!g_fake) {
+            unsigned nz = 0;
+            for (int y = 0; y < H; y++)
+               for (int x = 0; x < W; x++) {
+                  const uint8_t *q = pix(&t, x, y);
+                  nz += (q[0] | q[1] | q[2]) != 0;
+               }
+            printf("{\"ptbisect\":\"%s\",\"count\":%u,\"covered\":%u}\n", v == 0 ? "base" : v == 1 ? "intvar" : "attr", counts[c], nz);
+         }
+         DestroyPipeline(dev, pipe, NULL);
+         DestroyPipelineLayout(dev, lay, NULL);
+         if (v == 2) hbuf_destroy(&vb);
+         tgt_destroy(&t);
+      }
+   }
+   if (g_fake) printf("{\"test\":\"ptbisect\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   return 1;
+}
+
 static int
 test_didx(void)
 {
@@ -3934,6 +4132,9 @@ main(int argc, char **argv)
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
+   if (ok && g_only && CASE_ON("ptbisect")) ok &= test_ptbisect();
+   if (ok && g_only && CASE_ON("mpass")) ok &= test_mpass();
+   if (ok && g_only && CASE_ON("mpassload")) ok &= test_mpassload();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("robust2")) ok &= test_robust2();
