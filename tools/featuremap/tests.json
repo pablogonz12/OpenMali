@@ -1,0 +1,27 @@
+{
+  "comment": "requirement id -> test ids. A test id is either a vk/check.sh case name (checked to exist in that file) or a test source/test binary name (checked to exist as vk/tests/<id>.c or vk/tests/build-<id>.sh). `consumer:<name>` sets the default for every row of that consumer. A row with no test shows `-` and is listed under Gaps.",
+  "consumer": {
+    "dxvk": ["dxvk_caps"],
+    "vkd3d-proton": ["dxvk_caps"],
+    "wined3d-gl": ["t_vk_feat"],
+    "wined3d-vk": ["t_vk_feat"],
+    "zink": ["t_vk_feat"],
+    "icd-own": ["t_vk_feat"]
+  },
+  "requirement": {
+    "icd-txf-combined-sampler": ["txf", "txf_cc"],
+    "icd-view-format-target": ["view_format"],
+    "zink-ARB_cull_distance": ["t_vk_feat"],
+    "zink-ARB_compute_shader-max-threads": ["t_vk_feat"],
+    "dxvk-geometryShader": ["dxvk_caps"],
+    "dxvk-shaderCullDistance": ["dxvk_caps"],
+    "dxvk-descriptorIndexing": ["dxvk_caps"],
+    "vkd3d-xfb-queries": ["t_dxvk_caps"],
+    "vkd3d-texel-offset-single": ["t_dxvk_caps"],
+    "vkd3d-uniform-texel-offset-single": ["t_dxvk_caps"],
+    "vkd3d-push-descriptor": ["t_dxvk_caps"],
+    "vkd3d-robustness2-buffer": ["t_dxvk_caps"]
+  },
+  "cases_file": "vk/check.sh",
+  "tests_dir": "vk/tests"
+}

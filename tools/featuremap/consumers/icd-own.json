@@ -1,0 +1,68 @@
+{
+  "consumer": "icd-own",
+  "title": "our own ICD \u2014 the capabilities the driver itself must get right, independent of any consumer",
+  "ref": "self",
+  "kind": "internal",
+  "note": "Two kinds of rows: (a) an internal correctness fix that a consumer's requirement depends on (the source match proves the fix is in the tree, the test id proves it is checked); (b) the limits and features we advertise, which appear in every other consumer's `ours` column. Rows here have a source line in *our* tree \u2014 the same anti-guess rule applies.",
+  "explicit": [
+    {
+      "id": "icd-txf-combined-sampler",
+      "family": "internal",
+      "file": "vk/src/mali_descriptor_lower.c",
+      "line": 76,
+      "match": "lower_tex",
+      "expect_present": [
+        "vk/tests/build-t_txf.sh:txf",
+        "vk/src/mali_descriptor_lower.c:lower_tex"
+      ],
+      "unlocks": "a texelFetch of a combined image sampler paints (before: read the all-zero dummy sampler)",
+      "note": "M/notes/txf-fix.md (\u00a71-\u00a72): the handle is right, the sampler field was the dummy; fixed in lower_tex(), MALI_COMPILE_VERSION 33",
+      "test": [
+        "txf"
+      ]
+    },
+    {
+      "id": "icd-view-format-target",
+      "family": "internal",
+      "file": "vk/src/mali_pipeline.c",
+      "line": 786,
+      "match": "v->vk.view_format && v->vk.view_format != img->vk.format",
+      "expect_present": [
+        "vk/src/mali_pipeline.c:mali_rtfmt_lookup"
+      ],
+      "unlocks": "a colour attachment with a mutable-format view renders with the VIEW format (zink's sRGB window)",
+      "note": "M/notes/view-format.md: res_image_view() took img->vk.format, so LOAD/blend/clear words lost the sRGB bit; fixed at :786-798",
+      "test": [
+        "view_format"
+      ]
+    },
+    {
+      "id": "icd-max-workgroup-invocations",
+      "family": "limit",
+      "vk": "maxComputeWorkGroupInvocations",
+      "need": 128,
+      "required": true,
+      "file": "vk/src/mali_physical_device.c",
+      "line": 105,
+      "match": "maxComputeWorkGroupInvocations",
+      "unlocks": "compute at all; >=1024 is what zink needs for ARB_compute_shader",
+      "note": "M/notes/feature-level.md row 10; PanVK oracle 1024"
+    },
+    {
+      "id": "icd-cull-distances",
+      "family": "limit",
+      "vk": "maxCullDistances",
+      "need": 0,
+      "op": "==",
+      "required": false,
+      "file": "vk/src/mali_physical_device.c",
+      "line": 140,
+      "match": "maxCullDistances",
+      "unlocks": "VK_EXT_shader_cull_distance emulation (nir_lower_clip_cull_distance)",
+      "note": "M/notes/route-decision-2.md \u00a7C: .maxCullDistances = 0 while shaderCullDistance stays off"
+    }
+  ],
+  "default_test": [
+    "t_vk_feat"
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "consumer": "zink",
+  "title": "zink \u2014 Mesa's GL-on-Vulkan (the only GL the games see; every wined3d-GL row goes through it)",
+  "ref": "mesa",
+  "kind": "vulkan",
+  "note": "One row per GL extension (or GL limit) zink exposes, tied to the Vulkan feature it is conditioned on in zink_screen.c / st_extensions.c. These rows are the middle of the chain wined3d -> GL ext -> zink -> Vk feature -> our caps.",
+  "explicit": [
+    {
+      "id": "zink-ARB_cull_distance",
+      "family": "feature",
+      "vk": "shaderCullDistance",
+      "gl_ext": "ARB_cull_distance",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 1130,
+      "match": "caps->cull_distance = screen->info.feats.features.shaderCullDistance",
+      "unlocks": "ARB_cull_distance -> wined3d SM5 (D3D11 FL 11_0 gate)"
+    },
+    {
+      "id": "zink-ARB_polygon_offset_clamp",
+      "family": "feature",
+      "vk": "depthBiasClamp",
+      "gl_ext": "ARB_polygon_offset_clamp",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 865,
+      "match": "caps->polygon_offset_clamp = screen->info.feats.features.depthBiasClamp",
+      "unlocks": "ARB_polygon_offset_clamp -> wined3d FL 10_0 branch"
+    },
+    {
+      "id": "zink-ARB_shader_image_load_store",
+      "family": "feature",
+      "vk": "shaderStorageImageWriteWithoutFormat",
+      "gl_ext": "ARB_shader_image_load_store",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 1066,
+      "match": "caps->image_store_formatted =",
+      "unlocks": "ARB_shader_image_load_store -> wined3d SM5"
+    },
+    {
+      "id": "zink-ARB_texture_gather",
+      "family": "feature",
+      "vk": "shaderImageGatherExtended",
+      "gl_ext": "ARB_texture_gather",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 1076,
+      "match": "caps->max_texture_gather_components = 4",
+      "unlocks": "ARB_texture_gather -> wined3d SM5"
+    },
+    {
+      "id": "zink-ARB_sample_shading",
+      "family": "feature",
+      "vk": "sampleRateShading",
+      "gl_ext": "ARB_sample_shading",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 934,
+      "match": "caps->sample_shading = screen->info.feats.features.sampleRateShading",
+      "unlocks": "ARB_sample_shading -> GL 4.0 ladder"
+    },
+    {
+      "id": "zink-ARB_texture_cube_map_array",
+      "family": "feature",
+      "vk": "imageCubeArray",
+      "gl_ext": "ARB_texture_cube_map_array",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 1029,
+      "match": "caps->cube_map_array = screen->info.feats.features.imageCubeArray",
+      "unlocks": "ARB_texture_cube_map_array -> wined3d FL 10_1"
+    },
+    {
+      "id": "zink-ARB_draw_buffers_blend",
+      "family": "feature",
+      "vk": "independentBlend",
+      "gl_ext": "ARB_draw_buffers_blend",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 984,
+      "match": "caps->indep_blend_func = screen->info.feats.features.independentBlend",
+      "unlocks": "ARB_draw_buffers_blend -> wined3d FL 10_1"
+    },
+    {
+      "id": "zink-ARB_transform_feedback3",
+      "family": "extension",
+      "vk": "VK_EXT_transform_feedback",
+      "gl_ext": "ARB_transform_feedback3",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 992,
+      "match": "caps->stream_output_interleave_buffers = screen->info.have_EXT_transform_feedback",
+      "unlocks": "ARB_transform_feedback3 -> wined3d SM5 + D3D11 stream output"
+    },
+    {
+      "id": "zink-ARB_draw_indirect",
+      "family": "constant",
+      "vk": "multiDrawIndirect",
+      "gl_ext": "ARB_draw_indirect",
+      "required": true,
+      "file": "src/gallium/drivers/zink/zink_screen.c",
+      "line": 823,
+      "match": "caps->draw_indirect = true",
+      "value": true,
+      "provenance": "zink hardcodes it: a source fact, not a caps dump",
+      "unlocks": "ARB_draw_indirect -> wined3d FL 11_1 test"
+    },
+    {
+      "id": "zink-ARB_compute_shader-max-threads",
+      "family": "limit",
+      "vk": "maxComputeWorkGroupInvocations",
+      "gl_ext": "ARB_compute_shader",
+      "need": 1024,
+      "required": true,
+      "file": "src/mesa/state_tracker/st_extensions.c",
+      "line": 1750,
+      "match": "screen->compute_caps.max_threads_per_block >= 1024",
+      "unlocks": "ARB_compute_shader (zink only exposes it at >= 1024 threads/block) -> wined3d SM5, GL 4.0+"
+    },
+    {
+      "id": "zink-ARB_tessellation_shader",
+      "family": "feature",
+      "vk": "tessellationShader",
+      "gl_ext": "ARB_tessellation_shader",
+      "required": true,
+      "file": "src/mesa/state_tracker/st_extensions.c",
+      "line": 1386,
+      "match": "tessellation_shader",
+      "unlocks": "ARB_tessellation_shader -> GL 4.0, wined3d SM5, D3D11 FL 11_0"
+    }
+  ],
+  "default_test": [
+    "t_vk_feat"
+  ]
+}

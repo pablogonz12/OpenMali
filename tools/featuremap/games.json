@@ -1,0 +1,28 @@
+{
+  "comment": "The games we have evidence for, the consumer that runs them, and the requirement the notes say blocks them. This is what 'games unlocked' is counted from: a row unlocks a game only if the game's consumer treats that row as a hard requirement. Nothing is invented — each game names the note that says it runs/fails.",
+  "games": [
+    {
+      "id": "megabonk",
+      "title": "Megabonk (Unity)",
+      "consumer": "wined3d-gl",
+      "also": ["dxvk"],
+      "d3d_level": "10_1",
+      "blocked_by": ["wined3d-sm5-compute", "icd-view-format-target"],
+      "evidence": "notes/feature-level.md §1-2; notes/view-format.md (the sRGB window view is zink's present path); notes/cr-bodies.md:79 (PROTON_USE_WINED3D=1 -> 60.8 displayed fps, black game area)"
+    },
+    {
+      "id": "hl2",
+      "title": "Half-Life 2",
+      "consumer": "dxvk",
+      "blocked_by": ["dxvk-geometryShader"],
+      "evidence": "notes/route-decision-2.md (HL2 tiled-image fatal in LESSONS.md:117); the game runs on the DXVK D3D9 path"
+    },
+    {
+      "id": "stardew-valley",
+      "title": "Stardew Valley (FNA -> desktop GL)",
+      "consumer": "zink",
+      "blocked_by": ["zink-ARB_compute_shader-max-threads"],
+      "evidence": "notes/integration-next11.md:45 (in the owner's recent shelf); FNA uses desktop GL through SDL, so it reaches our ICD through zink only"
+    }
+  ]
+}
