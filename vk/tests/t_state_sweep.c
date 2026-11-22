@@ -465,7 +465,10 @@ st_case(int face, VkStencilOp op, const char *id, uint32_t wmask)
    c->d.sfail[0] = c->d.sfail[1] = VK_STENCIL_OP_KEEP;
    c->d.sdfail[0] = c->d.sdfail[1] = VK_STENCIL_OP_KEEP;
    c->d.spass[0] = c->d.spass[1] = VK_STENCIL_OP_KEEP;
-   c->d.spass[face] = op;
+   /* the op goes into passOp, depthFailOp and failOp of BOTH faces: the state that has to reach the hardware is the
+    * stencil-op field itself, and which of the three paths a fragment takes must not decide the case */
+   c->d.sfail[0] = c->d.sfail[1] = c->d.sdfail[0] = c->d.sdfail[1] = op;
+   c->d.spass[0] = c->d.spass[1] = op;
    c->d.sref = 0x5a;
    c->d.swmask = wmask;
    c->d.scmpmask = 0xff;
@@ -581,6 +584,7 @@ build_cases(void)
       struct scase *c = newcase(G_SAMP, "s_aniso_%d_ratio2", (int)an);
       c->img = I_FLAT;
       c->shader = SH_IMPL;
+      c->s.mu = c->s.mv = VK_SAMPLER_ADDRESS_MODE_REPEAT;   /* no clamped coordinate: the LOD is uniform */
       c->s.aniso = an;
       c->s.lvl0 = a == 0 ? 1 : 0;
       c->tu0 = 4, c->tustep = 16, c->tv0 = 4, c->tvstep = 8;
@@ -591,6 +595,7 @@ build_cases(void)
       struct scase *c = newcase(G_SAMP, "s_aniso_%d_iso", (int)an);
       c->img = I_FLAT;
       c->shader = SH_IMPL;
+      c->s.mu = c->s.mv = VK_SAMPLER_ADDRESS_MODE_REPEAT;
       c->s.aniso = an;
       c->s.lvl0 = 1;   /* 2 texels per pixel on both axes -> lod log2(2) = 1 -> level 1, green */
       c->tu0 = 8, c->tustep = 16, c->tv0 = 8, c->tvstep = 16;
@@ -1567,6 +1572,7 @@ main(int argc, char **argv)
          ref_blend(c, e);
          for (int ch = 0; ch < 4; ch++)
             exp8[ch] = (uint8_t)e[ch];
+         memcpy(got8, &col[(ty * FW + tx) * 4], 4);   /* report the tile's first pixel, also for a PASS */
          for (int py = 0; py < TW && !bad; py++)
             for (int px = 0; px < TW && !bad; px++) {
                const uint8_t *q = &col[((ty + py) * FW + tx + px) * 4];
@@ -1585,6 +1591,15 @@ main(int argc, char **argv)
          if (c->d.stencil) {
             gotd = depb[(ty * FW + tx)] & 0xffffffu;
             gots = stc[ty * FW + tx];
+            if (getenv("MALI_SS_DBG")) {
+               fprintf(stderr, "dbg %s tile stencil:", c->id);
+               for (int q = 0; q < TW; q++)
+                  fprintf(stderr, " %02x", stc[(ty + q) * FW + tx + q]);
+               fprintf(stderr, "  row0:");
+               for (int q = 0; q < TW; q++)
+                  fprintf(stderr, " %02x", stc[ty * FW + tx + q]);
+               fprintf(stderr, "\n");
+            }
             int B = 0x33;   /* the render pass clears the stencil to 0x33 */
             exps = (uint32_t)B;
             VkStencilOp op = c->d.spass[c->d.cw];
@@ -1602,6 +1617,12 @@ main(int argc, char **argv)
                case VK_STENCIL_OP_DECREMENT_AND_WRAP: exps = (B - 1) & 0xff; break;
                default: exps = B; break;
                }
+            }
+            if (!cmp_ok) {   /* failOp is the same op: REPLACE writes the reference, the colour is not written */
+               VkStencilOp fop = c->d.sfail[c->d.cw];
+               exps = fop == VK_STENCIL_OP_REPLACE ? ((c->d.sref & c->d.swmask) | (B & ~c->d.swmask))
+                     : fop == VK_STENCIL_OP_KEEP    ? (uint32_t)B
+                                                    : exps;
             }
             if (cmp_ok)
                memcpy(exp8, c->test8, 4);
