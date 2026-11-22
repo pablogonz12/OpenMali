@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <unistd.h>
@@ -46,11 +47,23 @@ expect(int fd, bool want, const char *what)
       g_fail = 1;
 }
 
+/* memfd_create has no libc wrapper below API 30 (the bionic build of this test would otherwise fail to compile:
+ * "call to undeclared function 'memfd_create'"), the same reason vk/src/mali_backend_fake.c:299 goes through syscall(). */
+static int
+test_memfd_create(const char *name, unsigned int flags)
+{
+#ifdef __BIONIC__
+   return (int)syscall(SYS_memfd_create, name, flags);
+#else
+   return memfd_create(name, flags);
+#endif
+}
+
 /* A real dma-buf: udmabuf over a sealed memfd (the host's /dev/udmabuf), else the system dma-heap. */
 static int
 make_dmabuf(char *why, size_t whylen)
 {
-   int memfd = memfd_create("t_dmabuf", MFD_ALLOW_SEALING | MFD_CLOEXEC);
+   int memfd = test_memfd_create("t_dmabuf", MFD_ALLOW_SEALING | MFD_CLOEXEC);
    if (memfd < 0) {
       snprintf(why, whylen, "memfd_create");
       return -1;
@@ -99,7 +112,7 @@ main(void)
    close(closed);
    expect(closed, false, "closed fd");
 
-   int memfd = memfd_create("plain", MFD_CLOEXEC);
+   int memfd = test_memfd_create("plain", MFD_CLOEXEC);
    expect(memfd, false, "memfd");
    int p[2];
    CHECK(pipe(p) == 0, "pipe");
