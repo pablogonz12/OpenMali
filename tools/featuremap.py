@@ -207,7 +207,8 @@ class GLRegistry:
 class Caps:
     def __init__(self, path, label):
         self.label = label
-        self.path = path
+        self.path = path            # with ~, never expanded: the docs are committed
+        self.real = os.path.expanduser(path)
         self.present = False
         self.api = ""
         self.features = {}     # member -> (bool, section)
@@ -216,11 +217,11 @@ class Caps:
         self.extensions = set()
         self.ext_known = False      # the dump lists names, not just revision lines
         self.ext_blank = 0
-        if not path or not os.path.exists(path):
+        if not path or not os.path.exists(self.real):
             return
         self.present = True
         section = ""
-        for raw in open(path, "r", encoding="utf-8", errors="replace"):
+        for raw in open(self.real, "r", encoding="utf-8", errors="replace"):
             line = raw.rstrip("\n")
             if not line.strip():
                 continue
@@ -608,10 +609,10 @@ def build(args):
     caps_conf = lock["caps"]
     caps_by_phone, bridges = {}, {}
     for ph in caps_conf["phones"]:
-        caps_by_phone[ph] = Caps(os.path.expanduser(caps_conf["driver"].format(phone=ph)), ph)
+        caps_by_phone[ph] = Caps(caps_conf["driver"].format(phone=ph), ph)
     bridge = None
     for ph in caps_conf["phones"]:
-        cand = Caps(os.path.expanduser(caps_conf["bridge"].format(phone=ph)), ph)
+        cand = Caps(caps_conf["bridge"].format(phone=ph), ph)
         if cand.present:
             bridge = cand
             break
@@ -893,12 +894,12 @@ def render(res, args):
     if res["src"].failed:
         w("**Unavailable this run:** " + "; ".join("%s/%s (%s)" % f for f in res["src"].failed) + ".")
         w("")
-    w("Our own data: " + ", ".join("`%s` (%s)" % (os.path.relpath(c.path, os.path.expanduser("~")),
+    w("Our own data: " + ", ".join("`%s` (%s)" % (c.path.replace("~/.config/", "M/"),
                                                  c.api or "no apiVersion")
                                   for c in res["caps"].values()) +
       " (dumped %s); bridge `%s`%s." % (datetime.datetime.fromtimestamp(
-          max(os.path.getmtime(c.path) for c in res["caps"].values() if os.path.exists(c.path)))
-          .strftime("%Y-%m-%d %H:%M"), os.path.relpath(res["bridge"].path, os.path.expanduser("~"))
+          max(os.path.getmtime(c.real) for c in res["caps"].values() if os.path.exists(c.real)))
+          .strftime("%Y-%m-%d %H:%M"), res["bridge"].path
                             if res["bridge"].present else "-",
                             "" if res["bridge"].present else " (absent: bridge column empty)"))
     w("")

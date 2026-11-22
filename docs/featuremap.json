@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-22T01:50:15+00:00",
+ "generated": "2026-11-22T01:50:55+00:00",
  "generator": "tools/featuremap.py v1",
- "commit": "ef6dc779e852b1b5dcaa79d622d7a66cda1b9be4",
+ "commit": "ef442c2a0c34e9a512f97f22673264124eb8672d",
  "sources": [
   {
    "id": "vk.xml",
@@ -54,18 +54,18 @@
  ],
  "caps": {
   "x8": {
-   "path": "/home/pgm1207/.config/opencode/mali-orchestrator/phones/x8/caps-driver.txt",
+   "path": "~/.config/opencode/mali-orchestrator/phones/x8/caps-driver.txt",
    "api": "1.3.363 (4206955)",
    "present": true
   },
   "cmf": {
-   "path": "/home/pgm1207/.config/opencode/mali-orchestrator/phones/cmf/caps-driver.txt",
+   "path": "~/.config/opencode/mali-orchestrator/phones/cmf/caps-driver.txt",
    "api": "1.3.363 (4206955)",
    "present": true
   }
  },
  "bridge": {
-  "path": "/home/pgm1207/.config/opencode/mali-orchestrator/phones/cmf/caps-bridge.txt",
+  "path": "~/.config/opencode/mali-orchestrator/phones/cmf/caps-bridge.txt",
   "present": true
  },
  "covdb": true,
