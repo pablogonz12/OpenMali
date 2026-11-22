@@ -153,14 +153,15 @@ struct tgt {
    VkImage img; VkDeviceMemory mem; VkImageView view; VkRenderPass rp; VkFramebuffer fb;
    uint8_t *px; uint32_t pitch;
    VkCommandPool pool; VkFence fence;
+   uint32_t w, h;
 };
 
 static int
-tgt_create(struct tgt *t)
+tgt_create_wh(struct tgt *t, uint32_t tw, uint32_t th)
 {
    memset(t, 0, sizeof *t);
    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                           .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {W, H, 1}, .mipLevels = 1, .arrayLayers = 1,
+                           .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {tw, th, 1}, .mipLevels = 1, .arrayLayers = 1,
                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -191,13 +192,21 @@ tgt_create(struct tgt *t)
                                  .subpassCount = 1, .pSubpasses = &sp};
    CHECK(CreateRenderPass(dev, &rpi, NULL, &t->rp) == VK_SUCCESS, "render pass");
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->rp, .attachmentCount = 1,
-                                  .pAttachments = &t->view, .width = W, .height = H, .layers = 1};
+                                  .pAttachments = &t->view, .width = tw, .height = th, .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &t->fb) == VK_SUCCESS, "framebuffer");
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &t->pool) == VK_SUCCESS, "pool");
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &t->fence) == VK_SUCCESS, "fence");
+   t->w = tw;
+   t->h = th;
    return 1;
+}
+
+static int
+tgt_create(struct tgt *t)
+{
+   return tgt_create_wh(t, W, H);
 }
 
 static void
@@ -2171,6 +2180,64 @@ test_ctsidx(void)
    DestroyDescriptorPool(dev, dp, NULL);
    DestroyDescriptorSetLayout(dev, dsl, NULL);
    for (int i = 0; i < 16; i++) tex_destroy(&x[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* smallpass: the CTS's own geometry - a 64x64 target and sixteen 16x16 renderAreas, smaller than the 32x32 tile we use
+ * and not tile-aligned for half of them - each pass in its own command buffer with its own submit, 4096 one-pixel points
+ * (64x64 grid, positions from gl_VertexIndex scaled to 64x64). Every pass must keep the 256 points that fall in its area. */
+static int
+test_smallpass(void)
+{
+   struct tgt t;
+   if (!tgt_create_wh(&t, 64, 64)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   const float sm[4] = {1, 64, 0, 0};
+   (void)sm;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_small.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   unsigned total = 0;
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t.rp, .framebuffer = t.fb,
+                                     .renderArea = {{qx * 16, qy * 16}, {16, 16}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, 64, 64, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 16, qy * 16}, {16, 16}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         const float s4[4] = {1, 64, 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s4);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         if (!g_fake) {
+            unsigned ina = 0;
+            for (int y = qy * 16; y < qy * 16 + 16; y++)
+               for (int x = qx * 16; x < qx * 16 + 16; x++) {
+                  const uint8_t *q = t.px + (size_t)y * t.pitch + (size_t)x * 4;
+                  ina += (q[0] | q[1] | q[2]) != 0;
+               }
+            total += ina;
+            if (ina != 256) printf("{\"smallpass\":\"pass%d\",\"inarea\":%u}\n", qy * 4 + qx, ina);
+         }
+      }
+   if (!g_fake) {
+      printf("{\"smallpass\":\"total\",\"covered\":%u,\"want\":4096}\n", total);
+      CHECK(total == 4096, "64x64 target, sixteen 16x16 renderAreas: %u of 4096 px", total);
+   } else {
+      printf("{\"test\":\"smallpass\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
    return 1;
 }
@@ -4416,6 +4483,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("mpassload")) ok &= test_mpassload();
    if (ok && g_only && CASE_ON("mpasssubmit")) ok &= test_mpasssubmit();
    if (ok && g_only && CASE_ON("ctsidx")) ok &= test_ctsidx();
+   if (ok && g_only && CASE_ON("smallpass")) ok &= test_smallpass();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("robust2")) ok &= test_robust2();
