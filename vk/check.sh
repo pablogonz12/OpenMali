@@ -234,8 +234,9 @@ done
 for g in v10 v11 v13; do
    name=vfmt-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
    out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=$g timeout -k 5 120 "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only view_format 2>&1); rc=$?
-   GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" >/dev/null 2>&1
+   out2=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1); grc=$?
    if [ $rc -ne 0 ]; then echo "FAIL  view_format $g (test exit $rc)"; echo "$out" | tail -8 | sed 's/^/        /'; fail=1
+   elif [ $grc -ne 0 ]; then echo "FAIL  rules view_format $g"; echo "$out2" | head -20 | sed 's/^/        /'; fail=1
    elif out=$(python3 -I "$V/tests/vfmt-words.py" "$GDIR/$name.txt" 2>&1); then echo "ok    view_format $g ($out)"
    else echo "FAIL  view_format $g: $out"; fail=1; fi
 done

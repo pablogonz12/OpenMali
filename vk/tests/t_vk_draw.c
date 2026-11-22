@@ -32,6 +32,7 @@ static float g_pcfs[4] = {0.75f, 0.25f, 0.5f, 1.0f};   /* MODE_PUSHFS fragment c
 static VkFormat g_texfmt, g_texvfmt;   /* MODE_TEX source image / view format (0 = R8G8B8A8_UNORM; differs = MUTABLE_FORMAT) */
 static const float *g_clear_f;   /* clear the colour attachment to these four floats (SNORM / UNORM16 / float RAW targets) */
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
+static int g_hostread;  /* record the colour-write -> HOST_READ dependency: the test reads the image through its mapping */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
 static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
@@ -781,6 +782,15 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdClearAttachments(cb, g_clearzs && s->depth ? 2 : 1, cas, 1, &cr);
    }
    CmdEndRenderPass(cb);
+   /* the mapped colour image is read on the host after the fence wait: colour-attachment writes are not visible to the
+    * host by themselves and a fence wait is not a memory dependency (g_hostread: the view-format test reads pixels) */
+   if (g_hostread) {
+      VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+      VkDependencyInfo hd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &hb};
+      CmdPipelineBarrier2(cb, &hd);
+   }
    CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
    g_t_rec += now_us() - t_rec0;
    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
@@ -2665,20 +2675,28 @@ vfmt_run(const char *name, VkFormat imgfmt, VkFormat viewfmt, VkFormat texfmt, V
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    static const float grey[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+   static const float quarter[4] = {0.25f, 0.25f, 0.25f, 1.0f};   /* the draw's colour: differs from the clear, so a
+                                                                   * missing render-target write cannot pass as the clear */
    g_colfmt = imgfmt;
    g_vfmt = viewfmt;
    g_texfmt = texfmt;
    g_texvfmt = texvfmt;
    g_clear_f = grey;
-   memcpy(g_pcfs, grey, sizeof g_pcfs);
+   memcpy(g_pcfs, quarter, sizeof g_pcfs);
+   g_hostread = 1;
    if (texfmt) s.mode = MODE_TEX;
    int ok = scene_create(&s, 0);
    float one[1][4] = {{1, 0, 0, 0}};
    if (ok) ok = scene_draw(&s, 1, one, f);
+   g_hostread = 0;
    uint32_t got = 0;
    /* the CPU rasteriser renders on the fake backend (MALI_SOFT=1) but samples no textures */
    const int pixels = ok && (!g_fake || getenv("MALI_SOFT")) && !(texfmt && getenv("MALI_SOFT"));
    if (pixels) {
+      /* the allocation is HOST_VISIBLE (not necessarily HOST_COHERENT): invalidate before the host reads the mapping */
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0,
+                                 .size = VK_WHOLE_SIZE};
+      InvalidateMappedMemoryRanges(dev, 1, &mmr);
       got = px_at(&s, W / 2, H / 2) & 0xff;
       ok = got + 2 >= want && got <= want + 2;
    }
@@ -2700,12 +2718,12 @@ static int
 test_view_format(void)
 {
    int ok = 1;
-   /* UNORM image, SRGB view: 0.5 linear -> sRGB 188 (the bug renders 128) */
+   /* UNORM image, SRGB view: the 0.25 linear draw (clear stays 0.5 grey) -> sRGB 137 (the bug renders 64) */
    ok &= vfmt_run("view_srgb_over_unorm", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
-                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 188);
-   /* SRGB image, UNORM view: 0.5 stays 128 (the bug renders 188) */
+                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 137);
+   /* SRGB image, UNORM view: the 0.25 draw stays 64 (the bug renders 137) */
    ok &= vfmt_run("view_unorm_over_srgb", VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM,
-                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 128);
+                  VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 64);
    /* sampled: texel 128 through an SRGB view decodes to linear and lands as 55 in the UNORM target; a UNORM view gives 128 */
    ok &= vfmt_run("view_sample_srgb", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED,
                   VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, 55);
