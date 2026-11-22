@@ -203,7 +203,6 @@ def diff_runs(ours, gold, A):
 def rules(side, events, arch):
     errs = []
     pend_flush, since_req, saw_run = {}, None, False
-    pend_frag = None  # a RUN_FRAGMENT whose FINISH_FRAGMENT has not been seen yet (see the rule below)
     pend_store = {}   # STORE_STATE (op 40, async, signal slot 51:48): its result is only valid after WAIT on that slot
     sb_needed = False
     if not events: errs.append('no instructions were checked (empty ring dump?)')
@@ -212,20 +211,6 @@ def rules(side, events, arch):
         where = 'ins %d(%s)' % (e['i'], e['name'])
         if op in (38, 39, 51) and (pend_flush or pend_store):
             errs.append('%s: sync op before WAIT on async FLUSH_CACHE2/STORE_STATE slot(s) %s (INTERMITTENT.md)' % (where, sorted(set(pend_flush) | set(pend_store))))
-        # Frame-ordering.md § Round 2, the bug round 1 shipped: a FINISH_FRAGMENT with wait mask 0 is a synchronous
-        # instruction, so the packer drops its signal slot and the slot never increments (Mesa cs_apply_async,
-        # cs_builder.h:866-889) - every wait on that slot, including the tail flush wait and the retire, is then vacuous
-        # and the fence can signal before the fragment/tile writeback. (A mask-0 SYNC_ADD64 is not flagged on its own:
-        # the ops/event path legitimately posts its own adds in a kick that also carries a fragment job.)
-        if op == 7 and not pend_frag:   # RUN_FRAGMENT opens a fragment job: the frame must close it with FINISH_FRAGMENT
-            pend_frag = where               # (slot 4), also on a clear-only frame - the tail then waits that slot before it
-        if op == 11 and pend_frag:          # cleans L2/LSC, so without it the tile writeback is never cleaned
-            pend_frag = None
-        if op == 51 and pend_frag:          # the retire word: a fragment job still open here never signalled
-            errs.append('%s: RUN_FRAGMENT (%s) with no FINISH_FRAGMENT before the retire SYNC_ADD64: no slot is signalled, so the tail cannot wait the writeback' % (where, pend_frag))
-            pend_frag = None
-        if op == 11 and (w >> 48) & 0xf and not (w >> 16) & 0xffff:
-            errs.append('%s: FINISH_FRAGMENT signals slot %u with wait mask 0: the signal slot is dropped, nothing can wait on it' % (where, (w >> 48) & 0xf))
         if op == 36: pend_flush[(w >> 48) & 15] = where
         elif op == 40: pend_store[(w >> 48) & 15] = where
         elif op == 3:

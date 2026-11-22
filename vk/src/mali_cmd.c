@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "mali_apilog.h"
 #include "mali_cmd.h"
 #include "kbase.h"
 #include "mali_descriptor.h"
@@ -311,31 +310,9 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
    }
 }
 
-static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
-
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const VkBuffer *bufs, const VkDeviceSize *offs)
 {
-   /* MALI_API_LOG: dump what each binding feeds, so the exact vertex stream can be replayed */
-   {
-      static int bseq;
-      const char *dir = mali_apilog_dir();
-      if (dir) {
-         int id = __atomic_fetch_add(&bseq, 1, __ATOMIC_RELAXED);
-         for (uint32_t i2 = 0; i2 < n; i2++) {
-            struct vk_buffer *b2 = vk_buffer_from_handle(bufs[i2]);
-            if (!b2 || b2->size <= offs[i2]) continue;
-            uint32_t sz = (uint32_t)(b2->size - offs[i2]);
-            if (sz > 262144u) sz = 262144u;
-            const uint8_t *p2 = buffer_cpu(bufs[i2], offs[i2], sz);
-            if (!p2) continue;
-            char nm[64];
-            snprintf(nm, sizeof nm, "vb%d_%u.bin", id, first + i2);
-            mali_apilog_dump(nm, p2, sz);
-            mali_apilog("VertexBuffer bind=%d binding=%u offset=%llu size=%u file=%s", id, first + i2, (unsigned long long)offs[i2], sz, nm);
-         }
-      }
-   }
    CMD(h);
    for (uint32_t i = 0; i < n; i++) {
       unsigned b = first + i;
@@ -354,6 +331,7 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
    }
 }
 
+static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
 
 
 VKAPI_ATTR void VKAPI_CALL
@@ -637,8 +615,6 @@ discarded(const struct mali_cmd_buffer *cmd)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first, uint32_t first_inst)
 {
-   mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
-   mali_apilog("Draw cb=%p vcount=%u first=%u", (void *)h, vcount, first);
    CMD(h);
    if (!cmd->in_render || !cmd->have_gfx) {
       unsupported(cmd, "draw outside a rendering with a pipeline");
@@ -1052,8 +1028,6 @@ raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
-   mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
-   mali_apilog("BeginRendering cb=%p area=%d,%d %dx%d layer=%u", (void *)h, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount);
    CMD(h);
    struct mali_frame *f = &cmd->cur;
    struct mali_cmd_target t;
@@ -1309,7 +1283,6 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
-      f->preload_all = true;   /* box = the tile-aligned render area, draws clipped to the render area (tile_area) */
    }
    cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;
@@ -1337,7 +1310,6 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
-   mali_apilog("EndRendering cb=%p", (void *)h);
    CMD(h);
    if (!cmd->in_render) {
       unsupported(cmd, "EndRendering without a valid Begin");
@@ -1620,18 +1592,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       if (cmd->wrote_full)
          g_hw.bo_wrote(g_hw.user, NULL);
    }
-   bool host_write = false;
-   struct mali_device *dev = (struct mali_device *)cmd->vk.base.device;   /* vk_device is mali_device's first member */
-   if (dev) {
-      /* one atomic exchange: a flush on another thread between a load and a store would be lost, and the next submission
-       * would then skip the L2/LSC invalidate its host-written input needs */
-      host_write = atomic_exchange_explicit(&dev->host_write_pending, false, memory_order_acq_rel);
-      if (host_write)   /* given back below unless this submission really hands a frame carrying the flag to the GPU */
-         dev->host_write_owed = true;
-   }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
-      fr.host_write = host_write;
       /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
       bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
       if ((ind || poly_cpu) && g_hw.drain) {
@@ -1695,13 +1657,6 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          res = VK_ERROR_DEVICE_LOST;
    } else if (res != VK_SUCCESS && counted) {
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
-   }
-   /* a failure before submit_multi (indirect expansion, build, realloc) hands nothing to the GPU: the marker goes back, or
-    * the next successful submission would use the 0x002 head and read a stale clean L2 line for the host-written memory */
-   if (dev && dev->host_write_owed) {
-      if (res != VK_SUCCESS || !nall)
-         atomic_store_explicit(&dev->host_write_pending, true, memory_order_release);
-      dev->host_write_owed = false;
    }
    free(all);
    return res;

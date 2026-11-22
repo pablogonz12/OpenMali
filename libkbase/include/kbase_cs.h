@@ -60,13 +60,6 @@ static inline uint64_t kb_cs_sync_set32(unsigned addr_reg, unsigned data_reg, un
 { return kb_cs_sync(KB_CS_OP_SYNC_SET32, addr_reg, data_reg, scope, 0, 0); }
 static inline uint64_t kb_cs_sync_add64(unsigned addr_reg, unsigned data_reg, unsigned scope)
 { return kb_cs_sync(KB_CS_OP_SYNC_ADD64, addr_reg, data_reg, scope, 0, 0); }
-/* The retire word is what makes "this frame's GPU work is done" true: a SYNC_ADD64 with wait mask 0 runs immediately, so
- * the fence the CPU waits on would signal before the fragment writeback (and before the frame's other asynchronous jobs).
- * The drain is therefore a WAIT on every scoreboard slot followed by the ordinary kb_cs_sync_add64 - exactly the PanVK
- * finish_cs order (panfrost/vulkan/panvk_vX_cmd_buffer.c:109 cs_wait_slots(b, all_mask) right before SYNC_ADD64). It must
- * NOT be done with a wait mask on the add itself: a deferred instruction increments its own signal slot before waiting, so
- * a mask that contains that slot waits on itself forever (Mesa rejects exactly that, cs_builder.h). */
-#define KB_CS_RETIRE_DRAIN kb_cs_wait(0xffff)
 static inline uint64_t kb_cs_sync_set64(unsigned addr_reg, unsigned data_reg, unsigned scope)
 { return kb_cs_sync(KB_CS_OP_SYNC_SET64, addr_reg, data_reg, scope, 0, 0); }
 
@@ -166,14 +159,6 @@ static inline uint64_t kb_cs_load_multiple(unsigned first_reg, unsigned addr_reg
 { return kb_cs_raw(KB_CS_OP_LOAD_MULTIPLE, ((uint64_t)first_reg << 48) | ((uint64_t)addr_reg << 40) | ((uint64_t)(reg_mask & 0xffff) << 16) | (uint16_t)byte_off); }
 static inline uint64_t kb_cs_finish_fragment_heap(bool incr, unsigned first_chunk_reg, unsigned last_chunk_reg)
 { return kb_cs_raw(KB_CS_OP_FINISH_FRAGMENT, (incr ? 1u : 0u) | ((uint64_t)last_chunk_reg << 32) | ((uint64_t)first_chunk_reg << 40)); }
-/* The same, but signalling scoreboard `signal_slot` (bits 51:48) so the next instruction can wait on the fragment job
- * explicitly instead of assuming KB_CS_SLOT_LS (0) covers it, and waiting `wait_mask` first. */
-static inline uint64_t kb_cs_finish_fragment_heap_signal(bool incr, unsigned first_chunk_reg, unsigned last_chunk_reg,
-                                                        unsigned signal_slot, unsigned wait_mask)
-{
-	return kb_cs_raw(KB_CS_OP_FINISH_FRAGMENT, (incr ? 1u : 0u) | ((uint64_t)(signal_slot & 0xf) << 48) |
-	                 ((uint64_t)(wait_mask & 0xffff) << 16) | ((uint64_t)last_chunk_reg << 32) | ((uint64_t)first_chunk_reg << 40));
-}
 
 /* A deliberately undefined opcode (opcodes above 53 are unassigned in v10/v11); the CSF firmware reports CS_INVALID_INSTRUCTION. */
 static inline uint64_t kb_cs_invalid(void) { return kb_cs_raw(0xfe, 0x1234); }
