@@ -973,7 +973,8 @@ def render(res, args):
                                                    "dxvk-robustBufferAccess2", "dxvk-descriptorIndexing"]),
         ("D3D12 via vkd3d-proton", ["vkd3d-xfb-queries", "vkd3d-texel-offset-single",
                                     "vkd3d-uniform-texel-offset-single", "vkd3d-push-descriptor",
-                                    "vkd3d-robustness2-buffer", "vkd3d-null-descriptor",
+                                    "vkd3d-robustness2-buffer", "vkd3d-robustness2-image",
+                                    "vkd3d-null-descriptor",
                                     "vkd3d-shader-draw-parameters", "vkd3d-maintenance56"]),
     ]
     w("| level / route | gated by | met? | blocked rows (what to buy next) |")

@@ -1,7 +1,7 @@
 {
- "generated": "2026-11-22T02:03:53+00:00",
+ "generated": "2026-11-22T02:04:38+00:00",
  "generator": "tools/featuremap.py v1",
- "commit": "1a525fa179e1378f1f74be07fc7b1a29071912d3",
+ "commit": "fc55ca006be75e3ca8e802673d03ed38269cd182",
  "sources": [
   {
    "id": "vk.xml",
@@ -6044,6 +6044,64 @@
     "t_vk_feat"
    ],
    "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-vertex-divisor",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateDivisor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2224,
+    "match": "info->vertex_divisor_features.vertexAttributeInstanceRateDivisor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-vertex-divisor-zero",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateZeroDivisor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2225,
+    "match": "info->vertex_divisor_features.vertexAttributeInstanceRateZeroDivisor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
    "games_unlocked": 0,
    "caveats": []
   },

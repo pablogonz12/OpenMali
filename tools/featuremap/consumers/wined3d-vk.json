@@ -43,6 +43,26 @@
       "match": "info->features2.features.pipelineStatisticsQuery"
     },
     {
+      "id": "wined3d-vk-vertex-divisor",
+      "family": "feature",
+      "vk": "vertexAttributeInstanceRateDivisor",
+      "section": "VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2224,
+      "match": "info->vertex_divisor_features.vertexAttributeInstanceRateDivisor"
+    },
+    {
+      "id": "wined3d-vk-vertex-divisor-zero",
+      "family": "feature",
+      "vk": "vertexAttributeInstanceRateZeroDivisor",
+      "section": "VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2225,
+      "match": "info->vertex_divisor_features.vertexAttributeInstanceRateZeroDivisor"
+    },
+    {
       "id": "wined3d-vk-cull-distance",
       "family": "feature",
       "vk": "shaderCullDistance",
