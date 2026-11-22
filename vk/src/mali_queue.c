@@ -394,9 +394,17 @@ cs_follow(struct mali_hwctx *h, FILE *f, const char *tag, uint64_t va, unsigned 
       return;
    for (unsigned i = 0; i < words && *budget; i++) {
       uint64_t v = w[i];
-      if (v < 0x10000ull || (v >> 40) != 0)   /* GPU VAs on this SoC are 0x5f…/0x60…: top bits set, not a small int */
-         continue;
-      cs_follow(h, f, depth == 1 ? "  PTR2" : " PTR", v, depth == 1 ? 8 : 16, depth + 1, budget);
+      /* A CS word is opcode<<56 | payload, so the address is in the low 56 bits; a resource-table word is a plain
+       * pointer. Try the whole word, the 56-bit payload and the 48-bit payload, and follow the first one that maps. */
+      uint64_t cand[3] = { v, v & 0x00ffffffffffffffull, v & 0x0000ffffffffffffull };
+      for (unsigned c = 0; c < 3; c++) {
+         if (cand[c] < 0x100000000ull || cand[c] >= 0x0001000000000000ull)
+            continue;
+         if (!hw_va_cpu(h, cand[c], 8))
+            continue;
+         cs_follow(h, f, depth == 1 ? "  PTR2" : " PTR", cand[c], depth == 1 ? 8 : 16, depth + 1, budget);
+         break;
+      }
    }
 }
 
@@ -412,6 +420,7 @@ cs_dump(const uint64_t *cs, unsigned n, struct mali_hwctx *h, const char *why)
            (unsigned long long)h->geo.gpu_va);
    for (unsigned i = 0; i < n; i++)
       fprintf(f, "CS %03u %016llx\n", i, (unsigned long long)cs[i]);
+   fprintf(f, "CSDUMP note=following CS pointers masked to 56/48 bits, 24 regions\n");
    /* follow every CS word that looks like a GPU VA, one level deep */
    unsigned budget = 24;
    for (unsigned i = 0; i < n && budget; i++)
