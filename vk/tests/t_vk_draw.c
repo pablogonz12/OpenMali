@@ -1361,6 +1361,8 @@ test_two(int depth)
 /* >1 MiB UBO, bound and drawn. The map readback names a truncated map (real host memory on every backend, so
  * it runs on the fake backend too); the pixel is the bind-and-draw proof and needs hardware (the fake backend
  * renders nothing). A limit read would prove nothing: the case has to carry data past the 1 MiB mark. */
+static int near3(const uint8_t *p, int r, int g, int b, int tol);   /* defined below, after the share_* cases */
+
 static int
 test_ubo_big(void)
 {
@@ -1382,8 +1384,10 @@ test_ubo_big(void)
       uint32_t cov = count_cov(&s);
       const uint8_t *c = s.px + 128 * s.pitch + 128 * 4;
       CHECK(cov == 65536, "coverage %u: the full-screen quad did not cover the target", cov);
-      CHECK(c[0] == 128 && c[1] == 64 && c[2] == 255 && c[3] == 255,
-            "pixel %u,%u,%u,%u want 128,64,255,255 (0,0,0,0 = nothing drawn, opaque black = the UBO read clamped at 1 MiB, "
+      /* 0.5f -> 127 or 128 and 0.25f -> 63 or 64 are both correct conversions (Vulkan 1.3 fundamentals, UNORM
+       * conversion); the alpha stays exact, and black / the 255,0,0 sentinel still fail (CR thread, :1385). */
+      CHECK(near3(c, 128, 64, 255, 1),
+            "pixel %u,%u,%u,%u want 128,64,255,255 +/-1 (0,0,0,0 = nothing drawn, opaque black = the UBO read clamped at 1 MiB, "
             "255,0,0 = clamped to the first MiB's last word)", c[0], c[1], c[2], c[3]);
       printf("{\"test\":\"ubo_big\",\"ubo_bytes\":%u,\"colour_off\":%u,\"coverage\":%u,\"px\":\"%u,%u,%u,%u\",\"ok\":true}\n",
              (unsigned)UBO_BIG_BYTES, (unsigned)UBO_BIG_COLOUR_OFF, cov, c[0], c[1], c[2], c[3]);
