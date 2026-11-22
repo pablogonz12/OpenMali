@@ -3527,10 +3527,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
    if (ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");
+   if (ok && CASE_ON("bigmrt")) ok &= test_mrt_big("bigmrt");   /* last: its large allocations must not shift the other cases' BO ids */
    if (ok && CASE_ON("mrtmap")) ok &= test_mrt("mrtmap", 4);
    if (ok && CASE_ON("mrtmapo0")) ok &= test_mrt("mrtmapo0", 4);
    if (ok && CASE_ON("mrtmapo2")) ok &= test_mrt("mrtmapo2", 4);
-   if (ok && CASE_ON("bigmrt")) ok &= test_mrt_big("bigmrt");
    if (ok && CASE_ON("mrtmap1")) ok &= test_mrt("mrtmap1", 1);
    if (ok && CASE_ON("mrtmapb")) { g_mrtblend = 1; ok &= test_mrt("mrtmapb", 4); g_mrtblend = 0; }
    if (ok && CASE_ON("mrtmap32f")) { g_mrt32 = 1; ok &= test_mrt("mrtmap32f", 4); g_mrt32 = 0; }   /* permutation probe: prints the R byte each target received */   /* mixed formats, per-attachment blend and write mask */
