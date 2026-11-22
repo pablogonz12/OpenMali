@@ -658,6 +658,18 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       pan_nir_lower_mediump_io(nir);
 
       if (stage == MESA_SHADER_VERTEX) {
+         /* The compiler below (pan_compiler.c:286) decides writes_point_size - and therefore whether the vertex shader
+          * stores gl_PointSize into the varying FIFO for the tiler to read (pan_nir_lower_vs_outputs.c:91 tags it) - from
+          * nir->info.outputs_written, which is empty here because nir_shader_gather_info is never run in this flow (same
+          * reason the FS branch below records its outputs by hand). Without the bit the VS never writes a per-vertex point
+          * size and the tiler falls back to the fixed size, so every point draws 1 px whatever gl_PointSize says. */
+         nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+            nir_foreach_instr(ins, blk) {
+               if (ins->type != nir_instr_type_intrinsic || nir_instr_as_intrinsic(ins)->intrinsic != nir_intrinsic_store_output)
+                  continue;
+               if (nir_intrinsic_io_semantics(nir_instr_as_intrinsic(ins)).location == VARYING_SLOT_PSIZ)
+                  nir->info.outputs_written |= BITFIELD64_BIT(VARYING_SLOT_PSIZ);
+            }
          pan_varying_collect_formats(&vl, nir, arch);
          pan_build_varying_layout_compact(&vl, nir, arch);
          in.varying_layout = &vl;

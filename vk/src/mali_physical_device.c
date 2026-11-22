@@ -161,7 +161,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxCombinedClipAndCullDistances = 8,
       .timestampPeriod = gpu->ts_hz ? (float)(1e9 / (double)gpu->ts_hz) : 1.0f,
       .discreteQueuePriorities = 2,
-      .pointSizeRange = {1.0f, 1.0f},
+      /* largePoints: the VS writes the per-vertex size (gl_PointSize) into the varying FIFO and the tiler reads it, so the
+       * bounds are the hardware's, as PanVK reports them (panvk_vX_physical_device.c:846-851: {1.0, 1024.0} on v13,
+       * {0.125, 4095.9375} below; granularity 1/16 at :1027). t_vk_feat pointgrid covers it. */
+      .pointSizeRange = {gpu->arch_major >= 13 ? 1.0f : 0.125f, gpu->arch_major >= 13 ? 1024.0f : 4095.9375f},
+      .pointSizeGranularity = 1.0f / 16.0f,
       .lineWidthRange = {1.0f, 8.0f},
       .lineWidthGranularity = 0.125f,
       .standardSampleLocations = true,
@@ -504,7 +508,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .multiDrawIndirect = true,
       .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */
-      .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
+      .drawIndirectFirstInstance = true, .fullDrawIndexUint32 = true, .samplerAnisotropy = true, .wideLines = true, .largePoints = true, .shaderStorageImageExtendedFormats = true, .shaderStorageImageWriteWithoutFormat = true /* t_vk_feat storfmt_nf (hardware pixels; smoke) */, .samplerMirrorClampToEdge = true,
       .imageCubeArray = true,      /* t_vk_feat (all five) */
       .scalarBlockLayout = true, .uniformBufferStandardLayout = true,   /* t_vk_feat scalar / ubostd */
       .shaderZeroInitializeWorkgroupMemory = true,                      /* t_vk_feat zinit */
