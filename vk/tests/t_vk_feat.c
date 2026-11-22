@@ -2192,6 +2192,21 @@ test_smallpass(void)
 {
    struct tgt t;
    if (!tgt_create_wh(&t, 64, 64)) return 0;
+   /* the CTS's structure: the image is cleared once, then every pass LOADs */
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription spd = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &spd};
+   VkRenderPass rp2 = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp2, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = 64, .height = 64, .layers = 1};
+   VkFramebuffer fb2 = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb2) == VK_SUCCESS, "framebuffer (LOAD)");
    VkPipelineLayout lay;
    VkPipeline pipe;
    const float sm[4] = {1, 64, 0, 0};
@@ -2200,13 +2215,17 @@ test_smallpass(void)
    int okp = make_pipe(&t, "ptg_small.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
    g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
    if (!okp) return 0;
+   struct hbuf rb2 = {0};
+   if (!hbuf_create(&rb2, 64 * 64 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
    unsigned total = 0;
    for (int qy = 0; qy < 4; qy++)
       for (int qx = 0; qx < 4; qx++) {
          VkCommandBuffer cb = cb_begin(&t);
          CHECK(cb, "cmdbuf");
          VkClearValue cv = {.color = {{0, 0, 0, 0}}};
-         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t.rp, .framebuffer = t.fb,
+         int first = qx == 0 && qy == 0;
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
+                                     .framebuffer = first ? t.fb : fb2,
                                      .renderArea = {{qx * 16, qy * 16}, {16, 16}}, .clearValueCount = 1, .pClearValues = &cv};
          CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
          CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -2218,6 +2237,10 @@ test_smallpass(void)
          CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s4);
          CmdDraw(cb, 4096, 1, 0, 0);
          CmdEndRenderPass(cb);
+         /* exactly what the CTS does (collectBeforeSubmit=true): copy the WHOLE image inside the same command buffer,
+          * before the submit, and read that back */
+         VkBufferImageCopy rgn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 64, 1}};
+         CmdCopyImageToBuffer(cb, t.img, VK_IMAGE_LAYOUT_GENERAL, rb2.b, 1, &rgn);
          if (!cb_submit(&t, cb)) return 0;
          if (!g_fake) {
             unsigned ina = 0;
@@ -2227,15 +2250,24 @@ test_smallpass(void)
                   ina += (q[0] | q[1] | q[2]) != 0;
                }
             total += ina;
-            if (ina != 256) printf("{\"smallpass\":\"pass%d\",\"inarea\":%u}\n", qy * 4 + qx, ina);
+            VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb2.m, .offset = 0, .size = VK_WHOLE_SIZE};
+            InvalidateMappedMemoryRanges(dev, 1, &mr);
+            unsigned inrb = 0;
+            for (int k = 0; k < 64 * 64; k++) {
+               const uint8_t *q = rb2.p + (size_t)k * 4;
+               inrb += (q[0] | q[1] | q[2]) != 0;
+            }
+            printf("{\"smallpassload\":\"pass%d\",\"inarea\":%u,\"in_readback\":%u}\n", qy * 4 + qx, ina, inrb);
          }
       }
    if (!g_fake) {
-      printf("{\"smallpass\":\"total\",\"covered\":%u,\"want\":4096}\n", total);
+      printf("{\"smallpassload\":\"total\",\"covered\":%u,\"want\":4096}\n", total);
       CHECK(total == 4096, "64x64 target, sixteen 16x16 renderAreas: %u of 4096 px", total);
    } else {
       printf("{\"test\":\"smallpass\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
    }
+   DestroyFramebuffer(dev, fb2, NULL);
+   DestroyRenderPass(dev, rp2, NULL);
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);

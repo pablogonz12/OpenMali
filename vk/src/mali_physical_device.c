@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#include "mali_apilog.h"
 #include "mali_private.h"
 #include "mali_tf.h"
 #include "mali_queue.h"
@@ -10,6 +11,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,6 +216,13 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->driverID = VK_DRIVER_ID_MESA_PANVK;
    snprintf(p->driverName, sizeof(p->driverName), "mali-own");
    snprintf(p->driverInfo, sizeof(p->driverInfo), "mali-open %s (mali-own), not conformant", MALI_GIT_SHA);
+   /* MALI_API_LOG header: which driver this process really loaded (build id) and from where - so a result can never be
+    * attributed to the wrong .so (a stale glibc/bionic build, an old file in the deqp dir). */
+   {
+      Dl_info di;
+      const char *path = dladdr((void *)mali_apilog, &di) && di.dli_fname ? di.dli_fname : "?";
+      mali_apilog("Driver build=%s path=%s pid=%d", MALI_GIT_SHA, path, (int)getpid());
+   }
    /* conformanceVersion stays 0.0.0.0: we do not claim conformance. */
    p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
    p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
