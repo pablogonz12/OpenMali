@@ -499,8 +499,14 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * Measured, not assumed: t_vk_feat robustimg loads (1000,1000) and (-5,-5) of a cleared 64x64 R8 storage image and
        * reads back 0,0,0,255 while the in-bounds (3,3) load reads 127,0,0,255 (X8 G925 2026-11-22; the fake backends only
        * check the flag). The clamp is the extent the descriptor carries, so it is one bound for every coordinate; a 2D
-       * array layer or a mip level out of range is not separately measured. Writes stay undefined, as the feature says.
-       * robustImageAccess2 stays false (it also wants OOB stores dropped, and no DXVK requirement). */
+       * array layer or a mip level out of range is not separately measured.
+       * Writes: robustImageAccess requires an out-of-bounds image write or atomic to be DISCARDED (not "undefined" - that is
+       * the pre-robust rule), and that is what the lowering does: image_store/image_atomic go through
+       * nir_lower_robust_access in mali_descriptor_lower.c (robust_filter), whose image-store predicate wraps the access in
+       * an if on the coordinates, the same predication the buffer stores use. Not separately measured on the X8 the way the
+       * loads are; the pass is the one whose buffer half is proven there.
+       * robustImageAccess2 stays false (it also wants every OOB access - including atomics and loads of a null descriptor -
+       * to produce zero rather than being predicated, and there is no DXVK requirement for it). */
       .robustImageAccess = true,
       .robustBufferAccess2 = true,
       .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
