@@ -237,8 +237,13 @@ lower_load_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
       h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
    nir_def *size = i->intrinsic == nir_intrinsic_load_ubo ? nir_get_ubo_size(b, 32, h) : nir_get_ssbo_size(b, 32, h);
    const unsigned access = i->def.num_components * i->def.bit_size / 8;
-   nir_def *max_off = nir_iadd_imm(b, i->src[1].ssa, access - 1);
-   nir_def *valid = nir_ult(b, max_off, size);
+   nir_def *off = i->src[1].ssa;
+   if (off->bit_size < 32)
+      off = nir_u2u32(b, off);
+   nir_def *max_off = nir_iadd_imm(b, off, access - 1);
+   /* `off + access - 1` is a 32-bit sum and can wrap (offset 0xfffffff4, access 4 -> 3, which would pass the size
+    * test and run the very load this lowering exists to drop): the wrapped end is below the start, so require both */
+   nir_def *valid = nir_iand(b, nir_ult(b, max_off, size), nir_uge(b, max_off, off));
    nir_def *zero = nir_imm_zero(b, i->def.num_components, i->def.bit_size);
    nir_push_if(b, valid);
    nir_intrinsic_instr *cl = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &i->instr));
@@ -291,7 +296,9 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
    }
    /* after the waterfall: a divergent size query has become per-lane loads by now (PanVK runs it in the same place) */
    if (layout->robust_access) {
-      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_bounds, nir_metadata_control_flow, NULL);
+      /* this pass inserts an if and new blocks, so block indices and dominance are stale afterwards: Mesa passes
+       * nir_metadata_none for its own robustness pass (nir_lower_robust_access.c:335) */
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_bounds, nir_metadata_none, NULL);
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_size_query, nir_metadata_control_flow, NULL);
    }
    return true;
