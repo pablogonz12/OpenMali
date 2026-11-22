@@ -270,16 +270,21 @@ lower_store_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
    /* only the components the write mask actually writes: a masked store may start at a nonzero component */
    const unsigned wmask = nir_intrinsic_write_mask(i);
    const unsigned comp0 = wmask ? (unsigned)__builtin_ctz(wmask) : 0;
-   const unsigned ncomp = wmask ? (unsigned)__builtin_popcount(wmask) : nir_src_num_components(i->src[0]);
+   /* the span is lowest..highest written component: a sparse mask (0x5) leaves a gap that still occupies bytes, so
+    * counting the enabled components would underestimate what the store touches */
+   const unsigned hi = wmask ? 31u - (unsigned)__builtin_clz(wmask) : nir_src_num_components(i->src[0]) - 1;
    const unsigned esz = nir_src_bit_size(i->src[0]) / 8;
-   const unsigned access = ncomp * esz;
+   const unsigned access = (hi - comp0 + 1) * esz;
    nir_def *off = i->src[2].ssa;
    if (off->bit_size < 32)
       off = nir_u2u32(b, off);
+   nir_def *off0 = off;
    if (comp0)
       off = nir_iadd_imm(b, off, comp0 * esz);
    nir_def *max_off = nir_iadd_imm(b, off, access - 1);
-   nir_def *valid = nir_iand(b, nir_ult(b, max_off, size), nir_uge(b, max_off, off));
+   /* three wraps to reject: the component offset, the end offset, and an end below the start */
+   nir_def *valid = nir_iand(b, nir_ult(b, max_off, size),
+                             nir_iand(b, nir_uge(b, max_off, off), nir_uge(b, off, off0)));
    nir_push_if(b, valid);
    nir_intrinsic_instr *cl = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &i->instr));
    nir_builder_instr_insert(b, &cl->instr);
