@@ -604,7 +604,7 @@ test_descidx_oob(unsigned arch)
    memset(&pl, 0, sizeof pl);
    pl.set_count = 1;
    struct spv fs = load("didx.frag.spv");
-   struct mali_compiled plain, pb;
+   struct mali_compiled plain = {0}, pb = {0};
    char err[256] = "";
 
    /* without PARTIALLY_BOUND: plain handle arithmetic (nothing to select from) */
@@ -614,7 +614,8 @@ test_descidx_oob(unsigned arch)
    CHECK(mali_pipeline_layout_flatten(&pl, &fl) == VK_SUCCESS, "flatten");
    CHECK(fl.c.set[0].b[0].bflags == 0, "no flags by default");
    struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n, .layout = &fl.c, .cache_dir = "" };
-   CHECK(mali_compile(&o, &plain, err, sizeof err) == 0, "plain compile: %s", err);
+   const int ok_plain = mali_compile(&o, &plain, err, sizeof err) == 0;
+   CHECK(ok_plain, "plain compile: %s", err);
    vk_descriptor_set_layout_unref(&g_dev, &l0->vk);
 
    /* PARTIALLY_BOUND must reach the compiler and add the idx >= count -> Null Descriptor select */
@@ -630,12 +631,12 @@ test_descidx_oob(unsigned arch)
    CHECK(fl.c.set[0].b[0].bflags & MALI_DESC_BINDING_PARTIALLY_BOUND, "flatten keeps the flag");
    int r = mali_compile(&o, &pb, err, sizeof err);
    CHECK(r == 0, "partially-bound compile: %s", err);
-   if (r == 0) {
+   if (r == 0 && ok_plain) {   /* a failed compile leaves its result unset: comparing or freeing it reads nothing valid */
       CHECK(pb.bin_size != plain.bin_size || memcmp(pb.bin, plain.bin, plain.bin_size),
             "OOB -> null changes the output for a dynamic array index (count %u)", fl.c.set[0].b[0].count);
-      mali_compiled_free(&pb);
    }
-   mali_compiled_free(&plain);
+   if (r == 0) mali_compiled_free(&pb);
+   if (ok_plain) mali_compiled_free(&plain);
    free(fs.w);
    vk_descriptor_set_layout_unref(&g_dev, &l->vk);
 }

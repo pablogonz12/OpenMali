@@ -614,7 +614,18 @@ mali_dset_write(struct mali_dset *s, const VkWriteDescriptorSet *w)
       const struct mali_lbinding *b = &l->b[binding];
       if (b->type == MALI_DT_NONE) return;
       if (write_denied(s, binding)) { elem++; continue; }
-      if (getenv("MALI_DSET_DBG")) fprintf(stderr, "DSET write set=%p binding=%u elem=%u count=%u slot=%u stride=%u vh0=%p\n", (void*)s, binding, elem, w->descriptorCount, b->slot, b->stride, (void*)(uintptr_t)(w->pImageInfo ? (uintptr_t)w->pImageInfo[i].imageView : 0));
+      if (getenv("MALI_DSET_DBG")) {
+         /* pImageInfo is ignored for buffer/texel-buffer writes (valid usage): dereferencing it there reads a pointer
+          * the application never had to provide, and can crash the application this log is meant to help */
+         const bool img = w->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+                          w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+                          w->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                          w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
+                          w->descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+         fprintf(stderr, "DSET write set=%p binding=%u elem=%u count=%u slot=%u stride=%u vh0=%p\n", (void*)s, binding,
+                 elem, w->descriptorCount, b->slot, b->stride,
+                 (void*)(uintptr_t)(img && w->pImageInfo ? (uintptr_t)w->pImageInfo[i].imageView : 0));
+      }
       write_one(s, b, elem, w->descriptorType,
                 w->pImageInfo ? &w->pImageInfo[i] : NULL, w->pBufferInfo ? &w->pBufferInfo[i] : NULL,
                 w->pTexelBufferView ? &w->pTexelBufferView[i] : NULL);
