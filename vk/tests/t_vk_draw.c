@@ -2975,6 +2975,70 @@ out:
    return ok;
 }
 
+/* GS lane 2, step (ii) target — a REAL geometry shader: two triangles out per triangle in (shader/gs_amp2.geom).
+ * Assembly-mode amplification, i.e. exactly what lane 1's classifier must refuse and what the compute pre-pass exists
+ * for. Failing-first: with MALI_EXPERIMENTAL_GS=1 the pipeline is refused today, and the refusal now carries lane 2 step
+ * (ii)'s verdict (poly's four programs compiled by our backend, contents printed under MALI_PIPE_DBG). The pass
+ * condition, once step (iii) records the draw: the same pipeline with the geometry stage must paint strictly more pixels
+ * than without it, all of them from the second primitive it emits.
+ * Explicit --only row only (`check.sh` runs gs_passthrough/gs_reject, not this) until step (iii) makes it green. */
+static int
+test_gs_amplify(void)
+{
+   const char *gse = getenv("MALI_EXPERIMENTAL_GS");
+   if (!gse || strcmp(gse, "1")) {
+      printf("{\"test\":\"gs_amplify\",\"skipped\":\"MALI_EXPERIMENTAL_GS not set\",\"ok\":true}\n");
+      return 1;
+   }
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   g_gs = NULL;
+   if (!scene_create(&a, 0))
+      return 0;
+   g_gs = "gs_amp2.geom.spv";
+   if (!scene_create(&b, 0)) {   /* the refusal prints its reason under MALI_PIPE_DBG */
+      printf("{\"test\":\"gs_amplify\",\"ok\":false,\"pending\":\"GS pipeline refused: run with MALI_PIPE_DBG=1 for "
+             "lane 2 step (ii)'s compile report; the record path is step (iii)\"}\n");
+      g_gs = NULL;
+      scene_destroy(&a);
+      DestroyFence(dev, fence, NULL);
+      return 0;
+   }
+   int ok = 0;
+   if (g_fake) {
+      printf("{\"test\":\"gs_amplify\",\"skipped\":\"fake backend: pipelines only\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            if (memcmp(p, q, 4))
+               diff++;
+         }
+      printf("{\"test\":\"gs_amplify\",\"cov\":[%u,%u],\"diff_px\":%u,\"ok\":%s}\n", cov_a, cov_b, diff,
+             (cov_a == 8192 && cov_b > cov_a && diff > 0) ? "true" : "false");
+      ok = cov_a == 8192 && cov_b > cov_a && diff > 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_gs = NULL;
+   return ok;
+}
+
 /* Every geometry shader lane 1 does not accept must be refused at pipeline creation with VK_ERROR_FEATURE_NOT_PRESENT and
  * a name for why (the driver prints it under MALI_PIPE_DBG; check.sh greps each row's reason). The last row is the gate
  * itself: the same pass-through shader without MALI_EXPERIMENTAL_GS, which is the state every application sees. */
@@ -3226,6 +3290,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("gs_passthrough")) ok &= test_gs_passthrough();
    if (ok && g_only && CASE_ON("gs_reject")) ok &= test_gs_reject();
+   if (ok && g_only && CASE_ON("gs_amplify")) ok &= test_gs_amplify();
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();

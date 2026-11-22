@@ -15,6 +15,13 @@
 #include "vk_enum_to_str.h"
 #include "mali_msaa.h"
 #include "mali_gs.h"
+#include "mali_gs_poly.h"
+/* vk/tests/build-t_cmd.sh links this file without the poly archive (it has no GS pipelines to create): there the step-(ii)
+ * hook is simply absent (weak symbols resolve to 0), which is why every call below is guarded. */
+extern int mali_gs_poly_compile(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
+                                const struct mali_compile_opts *base, struct mali_gs_programs *out, char *err, size_t errsz) __attribute__((weak));
+extern void mali_gs_programs_free(struct mali_gs_programs *p) __attribute__((weak));
+extern const char *mali_gs_programs_report(const struct mali_gs_programs *p, char *buf, size_t n) __attribute__((weak));
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -177,9 +184,22 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       }
       if (!stage_spirv(gss, &gcode, &gwords) ||
           !mali_gs_passthrough(gcode, gwords, gss->pName, &gs_prims, why, sizeof why)) {
-         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         /* Lane 2 step (ii), mali_gs_poly.c: this is a *real* GS, so poly lowers the module and our backend compiles the
+          * four programs it emits (main/count compute, copy/pre_gs vertex). The draw path — arena, count and prefix-sum
+          * dispatches, the rast draw — is step (iii) and does not exist, so the pipeline is still refused; the refusal
+          * now carries the compile's verdict instead of only the classifier's, which is what t_vk_draw --only gs_amplify
+          * quotes and what step (iii) starts from. MALI_EXPERIMENTAL_GS=1 is required above: nothing here is advertised. */
+         struct mali_gs_programs gsp;
+         char gsmsg[384] = "", rep[288] = "";
+         struct mali_compile_opts go = {.arch = arch};   /* layout: step (iii) compiles with the pipeline's flat layout */
+         const int grc = (mali_gs_poly_compile && gcode && gwords)
+                            ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, &gsp, gsmsg, sizeof gsmsg) : -1;
          if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: geometry shader refused: %s\n", why);
+            fprintf(stderr, "mali_vk: geometry shader refused: %s | lane 2 step (ii): %s\n", why,
+                    grc ? gsmsg : (mali_gs_programs_report ? mali_gs_programs_report(&gsp, rep, sizeof rep) : "compiled"));
+         if (!grc && mali_gs_programs_free)
+            mali_gs_programs_free(&gsp);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
          goto fail;
       }
       if (getenv("MALI_PIPE_DBG"))
