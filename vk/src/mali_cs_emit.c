@@ -29,6 +29,15 @@
 #include "mali_event.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
+
+/* MALI_PIPE_DBG: a frame-build refusal fails the WHOLE command buffer at vkEndCommandBuffer (mali_cmd.c maps
+ * -ENOTSUP/-EINVAL to VK_ERROR_FEATURE_NOT_PRESENT), so the app never learns which state was refused. Name the
+ * site, the code and the reason here, where the decision is made. Diagnostic only: no behaviour change. */
+#define REFUSE(rc, why) do { \
+   if (getenv("MALI_PIPE_DBG")) \
+      fprintf(stderr, "mali_frame_build: REFUSE rc=%d at %s:%d (%s)\n", (rc), __FILE__, __LINE__, (why)); \
+   return (rc); } while (0)
+
 #define FAU_BYTES(words32) (((((size_t)(words32) + 1) / 2) * 8 + 63) & ~(size_t)63)
 
 struct cs {
@@ -269,16 +278,16 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    uint8_t *vsset;
 
    if (!vs || !fs || !vs->bin_size || !fs->bin_size)
-      return -EINVAL;
+      REFUSE(-EINVAL, "draw: missing stage or empty shader binary");
    if (d->indexed && d->index_size != 1 && d->index_size != 2 && d->index_size != 4)
-      return -EINVAL;
+      REFUSE(-EINVAL, "draw: index size not 1/2/4");
 
    unsigned nvb = 0;
    for (unsigned i = 0; i < g->nattr; i++)
       if (g->attr[i].binding >= nvb)
          nvb = g->attr[i].binding + 1;
    if (nvb > MALI_MAX_VB)
-      return -EINVAL;
+      REFUSE(-EINVAL, "draw: more vertex bindings than MALI_MAX_VB");
    unsigned vs_entries = KB_VS_ATTRS + 1 + (nvb ? nvb : 1);
    const unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;   /* SRT entries: driver set, user sets, (dynamic table at MALI_DYN_TABLE) */
    const unsigned res_alloc = (((nres + 3) & ~3u) * KB_RES_SIZE + 63u) & ~63u;   /* 64-aligned: the dynamic table follows it in the same block */
@@ -427,7 +436,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       bl[2] = 0;
       bl[3] = (uint32_t)g->blend_va;
    } else if (apply_blend(bl, &d->fx))
-      return -EINVAL;
+      REFUSE(-EINVAL, "draw: colour blend state not mappable");
    memcpy(bl_arena, blt, sizeof blt);
    o->bl23[0] = blt[2];
    o->bl23[1] = blt[3];
@@ -929,7 +938,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       while ((16u << shift) < cs->tls_size)
          shift++;
       if (!hw->tls || !env->tls_threads || !env->core_id_range)
-         return -ENOTSUP;
+         REFUSE(-ENOTSUP, "draw: TLS spill but no hw->tls / tls_threads / core_id_range");
       uint64_t total = (uint64_t)pot * env->tls_threads * env->core_id_range, va_tls = 0;
       void *tp = hw->tls(hw->user, (size_t)((total + 4095) & ~4095ull), &va_tls);
       if (!tp || (va_tls & 4095))
@@ -1062,8 +1071,12 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    int rc = 0;
    uint64_t va_smp = 0, va_tctx = 0, va_fbd = 0, va_tsd = 0;
 
-   if (f->nops)
-      return mali_ops_build(env, f->ops, f->nops, out, nout);
+   if (f->nops) {
+      int orc = mali_ops_build(env, f->ops, f->nops, out, nout);
+      if (orc)
+         REFUSE(orc, "ops frame: mali_ops_build rejected a barrier/event/query op");
+      return 0;
+   }
    if (hw->soft) {
       /* MALI_SOFT=1: render on the CPU instead of encoding a command stream. A frame the rasteriser cannot do is a hard
        * error (-ENOTSUP), never a silent no-op: the whole point of the harness is that nothing passes unnoticed.
@@ -1086,9 +1099,11 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    *out = NULL;
    *nout = 0;
    if (f->ncolour > 1)
-      return -ENOTSUP;   /* MRT frames exist for the software rasteriser only (maxColorAttachments = 1) */
-   if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
-      return -EINVAL;
+      REFUSE(-ENOTSUP, "frame: more than one colour attachment (MRT)");
+   if (env->arch != 10 && env->arch != 11 && env->arch != 13)
+      REFUSE(-EINVAL, "frame: arch is not 10/11/13");
+   if (!(f->has_colour || f->has_zs || f->has_st || f->width))
+      REFUSE(-EINVAL, "frame: no colour, no Z/S, no stencil, no width");
    memset(&c, 0, sizeof c);
    bool geometry = f->ndraws > 0;
 

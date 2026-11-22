@@ -1047,6 +1047,22 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
       if (ri->pColorAttachments[i].imageView) no_col = false;
    if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
+      if (getenv("MALI_PIPE_DBG")) {
+         /* MALI_PIPE_DBG: which shape of colour-attachment array was refused (diagnosis for the explicit-LOD class). */
+         unsigned views = 0;
+         for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
+            views += ri->pColorAttachments[i].imageView != VK_NULL_HANDLE;
+         fprintf(stderr, "mali_cmd: BeginRendering colorAttachmentCount=%u with_views=%u first_view=%s at %s:%d\n",
+                 ri->colorAttachmentCount, views,
+                 ri->colorAttachmentCount && ri->pColorAttachments[0].imageView ? "yes" : "no", __FILE__, __LINE__);
+         for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 4; i++) {
+            struct mali_cmd_target tt;
+            if (!ri->pColorAttachments[i].imageView || g_res.image_view(ri->pColorAttachments[i].imageView, &tt))
+               continue;
+            fprintf(stderr, "mali_cmd:   colour[%u] %ux%u samples=%u zs=%d va=%llx\n",
+                    i, tt.width, tt.height, tt.samples, (int)tt.is_zs, (unsigned long long)tt.va);
+         }
+      }
       unsupported(cmd, "need exactly one colour attachment");
       return;
    }
