@@ -35,8 +35,12 @@ if [ $build = 1 ]; then env -u LD_PRELOAD "$V/build.sh" >/dev/null || { echo "FA
 fail=0
 export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time dirty mask reuses state the old compares would not
 # Only our ICD, no implicit layers, so the result does not depend on the laptop's drivers.
-# Number of DXVK-required core/1.1-1.3 features still false (of 47); lower it only with a passing test for the new feature.
-DXVK_MISSING=3            # measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws
+# Number of DXVK-required core/1.1-1.3/robustness2 features still false (of 49); lower it only with a passing test for the new feature.
+# measured with t_dxvk_caps. sampleRateShading is advertised at 1 sample (t_vk_feat samplerate); MALI_EXPERIMENTAL_MSAA only adds 4x draws.
+# 2026-11-22 robustness2: the list grew 47 -> 49 because robustness2.robustBufferAccess2/nullDescriptor are DXVK 3.1.1
+# requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted; robustBufferAccess2 is advertised now (vk_feat robust2,
+# X4 6/6), so the honest count is 3/49 where main's 47-row list read 3.
+DXVK_MISSING=3
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
@@ -156,6 +160,11 @@ for g in v11 v13; do run "vk_info $g tf opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_B
 for g in v11 v13; do run "vk_feat tf_default $g opt-out" 0 MALI_EXPERIMENTAL_TF=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_default; done
 for g in v11 v13; do run "vk_feat tf_record $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_record; done
 for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_write; done
+# robustness2 (VK_EXT_robustness2 robustBufferAccess2, DXVK 3.1.1 device creation): every access in shader/robust2.comp is one
+# element past its descriptor. --robust2 enables the feature at device creation, so the pipeline carries the bounds-checked
+# size loads (get_ssbo_size/get_ubo_size -> descriptor dw1 via resource table 62); on the phone the loads must read 0,
+# the OOB store/atomic are discarded, and the null descriptor reads 0.
+for g in v10 v11 v13; do run "vk_feat robust2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only robust2 --robust2; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
 # tf_inactive is the guard that makes default-on safe: an XFB program drawn outside Begin/End runs the pipeline's second,
 # non-XFB vertex program. The case asserts the driver's own accounting (MALI_TF_DBG names the program and its address, and

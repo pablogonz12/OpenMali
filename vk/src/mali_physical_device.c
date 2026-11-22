@@ -127,6 +127,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDrawIndirectCount = 0xffff,   /* multiDrawIndirect: record_indirect/expand_indirect expand any drawCount x stride (t_vk_feat mdilimit); spec minimum with the feature is 2^16-1 */
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
+      /* robustness2 requires both alignment limits: 1 or 4 for storage, a 1..256 power of two for uniform. The bound is
+       * checked per access against the descriptor size, so every 4-byte-aligned access is covered; 0 would be illegal. */
+      .robustStorageBufferAccessSizeAlignment = 4,
+      .robustUniformBufferAccessSizeAlignment = 4,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
       .maxViewportDimensions = {4096, 4096},
       .viewportBoundsRange = {-8192.0f, 8191.0f},
@@ -424,7 +428,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
-      .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
+      .EXT_robustness2 = true,               /* nullDescriptor + robustBufferAccess2 (t_vk_feat nulld, robust2) */
       .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; dynamic LogicOp/patchControlPoints stay off (static logicOp runs through the blend shader) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
@@ -473,9 +477,17 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * (vk_device.c:211) rejects a device without it: zink could not create a device
        * ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). What it guarantees here: with the feature
        * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
-       * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
-       * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
+       * buffer/image indices and offsets before the backend sees them. */
       .robustBufferAccess = true,
+      /* VK_EXT_robustness2 (DXVK 3.1.1 requires robustBufferAccess2 at device creation, DXVK-GAP.md:11). The bound of an
+       * SSBO/UBO/texel buffer is dw1 of its 32-byte descriptor; lower_size_query turns the size query into a read of that word
+       * through resource table 62 (PanVK's panvk_vX_shader.c:607-630) and lower_load_bounds wraps every load in "in range ?
+       * load : 0", which is what robustness2 asks a load for (Mesa's own pass only rewrites a load's offset to the buffer start,
+       * an undefined value that suits robustBufferAccess but not robustness2). Stores/atomics come from nir_lower_robust_access;
+       * null descriptors are the all-zero slot (mali_descriptor.c:423), so they read 0 and drop writes. Probed by
+       * t_vk_feat robust2 (X4 G610 2026-11-22: 6/6). robustImageAccess2 stays false: it needs the OOB image value emulation
+       * (zenithblue patches 181/184) and DXVK does not require it. */
+      .robustBufferAccess2 = true,
       .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
       .textureCompressionBC = true,
