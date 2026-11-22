@@ -139,6 +139,28 @@ def run(cmd, env, **kw):
 
 def hx(v):
     return hex(v) if isinstance(v, int) else v
+def retire_norm(seq):
+    """Fold the DELIBERATE retire/fragment differences from notes/frame-ordering.md § Round 2 into one shape.
+
+    Our driver now defers FINISH_FRAGMENT (non-zero wait mask) so it can signal its own scoreboard slot (4) and waits that
+    slot before the tail flush; the hand-built reference keeps the synchronous form (mask 0, slot 0) plus the endpoint wait
+    the reference always had. The head cache flush became others-invalidate only (0x200) instead of L2/LSC clean+invalidate
+    (0x332), because a head L2 invalidate discards a previous frame's tile writeback. None of that is a register or draw
+    difference, so compare the instructions with those three fields folded and the two fragment-ordering waits dropped.
+    """
+    out = []
+    for w in seq:
+        op = (w >> 56) & 0xff
+        if op == 11:                                   # FINISH_FRAGMENT: fold wait mask (31:16) and signal slot (51:48)
+            w &= ~((0xffff << 16) | (0xf << 48))
+        if op == 36:                                     # FLUSH_CACHE2: compare the "others" field only
+            w = (w & ~0xfff) | (w & 0xf00)               # head flush is now others-invalidate only (0x200 vs 0x233)
+        if op == 3 and ((w >> 16) & 0xffff) in (0x0008, 0x0010):   # WAIT: the fragment-slot waits (bit 3 = endpoint, bit 4 = our new slot)
+            continue
+        out.append(w)
+    return out
+
+
 
 
 fails = []
@@ -158,8 +180,8 @@ for arch in (11, 13):
             fails.append('%s: no reference dump' % name)
             continue
         sa, sb = ds.load_ours(od), ds.load_ours(rd)
-        oa, qa = trace(sa, arch)
-        ob, qb = trace(sb, arch)
+        oa, qa = retire_norm(trace(sa, arch)[0]), trace(sa, arch)[1]
+        ob, qb = retire_norm(trace(sb, arch)[0]), trace(sb, arch)[1]
         nd = 0
         if BREAK:
             oa[0] ^= 1

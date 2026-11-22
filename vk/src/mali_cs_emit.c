@@ -767,12 +767,15 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
    M48(c, 44, 0);   /* FRAGMENT TEM_POINTER / ROW_STRIDE alias the IDVS depth clamps / viewport regs: zero */
    M32(c, 46, 0);
    E(c, kb_cs_run_fragment(0));
-   E(c, kb_cs_wait(1u << slot));
+   /* No WAIT 1<<slot here: it would consume the endpoint increment that FINISH_FRAGMENT's own wait mask needs, and a second
+    * waiter on that slot would then hang (notes/frame-ordering.md § Round 2, point 1). */
    if (geometry) {
       E(c, kb_cs_load_multiple(10, R->tctx_copy, 0xf, 40));
       E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
-      /* signal slot 4 (free: 0 = LS, 3 = endpoint jobs) so the tail flush can wait on the fragment job itself */
-      E(c, kb_cs_finish_fragment_heap_signal(true, 10, 12, MALI_SLOT_FRAGMENT, 0));
+      /* A non-zero WAIT MASK is what makes this a deferred op: the packer drops the signal slot of a synchronous instruction
+       * (Mesa cs_apply_async, cs_builder.h:866-889), so with mask 0 slot 4 never increments and the tail WAIT and the 0xffff
+       * retire are vacuous - exactly what Round 1 shipped. Wait the fragment run's endpoint slot, signal slot 4. */
+      E(c, kb_cs_finish_fragment_heap_signal(true, 10, 12, MALI_SLOT_FRAGMENT, 1u << slot));
    }
    E(c, kb_cs_req_res(0));
 }
@@ -902,8 +905,9 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    E(&c, kb_cs_nop());
    if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    {
-      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x332); 0 = none */
-      int hf = e ? (int)strtol(e, NULL, 16) : 0x332;
+      /* 0x002 = other-cache invalidate only, same rule as the graphics head (see there); MALI_CHF=<hex> overrides */
+      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x002); 0 = none */
+      int hf = e ? (int)strtol(e, NULL, 16) : 0x002;
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
@@ -1076,7 +1080,13 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    E(&c, kb_cs_nop());
    {
       static int hf = -1;
-      if (hf < 0) { const char *e = getenv("MALI_HF"); hf = e ? (int)strtol(e, NULL, 16) : 0x332; }
+      /* Other-cache invalidate only (0x002 = texture/RO-L1). The old 0x332 also CLEAN+INVALIDATED L2 and LSC at the head of
+       * every frame, which discards a previous frame's tile writeback still dirty in L2: that is why a render pass followed by
+       * an image read in the same submission returned only the newest area. PanVK clean+invalidates L2/LSC only for host writes
+       * (panfrost/vulkan/csf/panvk_vX_cmd_buffer.c:365-404, collect_cache_flush_info); a host write is not affected by this:
+       * our host-visible allocations are mapped uncached (MALI_MAP_UNCACHED in mali_memory.c / the backend's mmap), so the
+       * CPU's bytes are already in memory before the submit and need no device-side clean. MALI_HF=<hex> overrides for A/B. */
+      if (hf < 0) { const char *e = getenv("MALI_HF"); hf = e ? (int)strtol(e, NULL, 16) : 0x002; }
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
