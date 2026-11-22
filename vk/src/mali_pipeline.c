@@ -406,7 +406,9 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          /* the topology the draw will use is not knowable when the pipeline takes it dynamically, and a POINT/LINE
           * polygon rewrite turns one triangle into several primitives (the per-vertex flags would then be split) */
          const bool dyn_prim = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY);
-         const bool poly_rewrite = st.rs && st.rs->polygon_mode != VK_POLYGON_MODE_FILL;
+         /* a dynamic polygon mode is a rewrite too: mali_cmd.c applies POINT/LINE from the dynamic state at draw time */
+         const bool dyn_poly = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_RS_POLYGON_MODE);
+         const bool poly_rewrite = dyn_poly || (st.rs && st.rs->polygon_mode != VK_POLYGON_MODE_FILL);
          if (dyn_prim || poly_rewrite) {
             res = VK_ERROR_FEATURE_NOT_PRESENT;
             if (getenv("MALI_PIPE_DBG"))
