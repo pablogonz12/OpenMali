@@ -309,11 +309,27 @@ lower_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
    return true;
 }
 
+/* poly's tessellation blob (poly_nir_lower_tcs/lower_tes turn the tess stages into shaders that read one descriptor):
+ * the intrinsic yields the buffer handle, which is the driver's fixed slot in table 9. No app layout is involved, so this
+ * runs whatever the pipeline layout is — a tess shader has exactly one such buffer. */
+static bool
+lower_tess_param(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   (void)data;
+   if (intr->intrinsic != nir_intrinsic_load_tess_param_buffer_poly)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *h = nir_vec2(b, nir_imm_int(b, pan_res_handle(MALI_TESS_TABLE, MALI_TESS_PARAM_IDX)), nir_imm_int(b, 0));
+   nir_def_replace(&intr->def, h);
+   return true;
+}
+
 bool
 mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *layout, char *err, size_t errsz)
 {
    struct ctx c = { .l = layout, .err = err, .errsz = errsz };
    NIR_PASS(_, nir, nir_shader_instructions_pass, lower_instr, nir_metadata_control_flow, &c);
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_tess_param, nir_metadata_control_flow, NULL);
    if (c.failed)
       return false;
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo, MALI_DESC_BUFFER_ADDR_FORMAT);
