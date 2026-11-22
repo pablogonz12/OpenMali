@@ -647,6 +647,8 @@ test_sampler_words(void)
    CHECK(!(o.w[0] & (1u << 25)), "unnormalizedCoordinates clears Normalized Coordinates (panvk_vX_sampler.c:117)");
    CHECK(((o.w[0] >> 8) & 0xfu) == 9, "unnormalized: wrap R is CLAMP_TO_EDGE whatever addressModeW says (got %u)", (o.w[0] >> 8) & 0xfu);
    printf("  sampler words: 8 compare functions, nearest rounding, normalized/clamp bits%s\n", g_verbose ? "" : "");
+}
+
 /* ---- descriptor indexing shader side: an out-of-range index into a partially-bound array selects the null descriptor ---- */
 static void
 test_descidx_oob(unsigned arch)
