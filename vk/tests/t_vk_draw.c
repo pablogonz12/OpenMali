@@ -3112,7 +3112,10 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
-   if (ok && g_only && CASE_ON("msaa_load_stencil")) ok &= test_msaa_stencil_load("msaa_load_stencil", 5);
+   /* the row prints \`msaa_load_stencil_d24s8\` (the case adds the suffix): accept that name too, so --only with the
+    * name the test prints selects it */
+   if (ok && g_only && (CASE_ON("msaa_load_stencil") || CASE_ON("msaa_load_stencil_d24s8")))
+      ok &= test_msaa_stencil_load("msaa_load_stencil", 5);
    if (ok && g_only && CASE_ON("msaa_load_stencil_s8")) ok &= test_msaa_stencil_load("msaa_load_stencil", 6);
 
    DeviceWaitIdle(dev);
