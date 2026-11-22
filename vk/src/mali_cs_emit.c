@@ -1102,15 +1102,20 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    return 0;
 }
 
+void *
+mali_hw_poly_alloc(const struct mali_hw *hw, size_t size, size_t align, uint64_t *va)
+{
+   return hw->poly_alloc ? hw->poly_alloc(hw->user, size, align, va) : A(hw, size, align, va);
+}
+
 /* GS lane 2 step (iii): the build-time half of a geometry-shader draw. Allocates one arena per draw (header, poly's vertex and
  * geometry parameter blocks with the pull table, a zero count buffer, a scratch block, the vertex-output arena, the output index
  * buffer), writes the blocks, and resolves what the records could not know: the header descriptor every kernel and the copy
  * program read at table 9 index 31, and the rasterisation draw's index buffer VA. Runs before emit_pre_block and the draw loop.
- * The arena comes from the descriptor arena (hw->alloc), so one draw is capped at GS_ARENA_MAX; the per-queue poly heap of
- * compute-in-pass.md "Scratch" replaces this. */
+ * The arena comes from the poly heap (mali_hw_poly_alloc); one draw is capped at GS_ARENA_MAX. */
 extern void mali_gs_fill_params(void *, void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint64_t,
                                 uint64_t, uint64_t) __attribute__((weak));
-#define GS_ARENA_MAX (8u << 20)
+#define GS_ARENA_MAX (256u << 20)
 static int
 gs_prepare(const struct mali_hw *hw, const struct mali_frame *f)
 {
@@ -1128,7 +1133,7 @@ gs_prepare(const struct mali_hw *hw, const struct mali_frame *f)
       if (total > GS_ARENA_MAX)
          return -ENOMEM;
       uint64_t va = 0;
-      uint8_t *p = A(hw, (size_t)total, 64, &va);
+      uint8_t *p = mali_hw_poly_alloc(hw, (size_t)total, 64, &va);
       if (!p)
          return -ENOMEM;
       g->hdr_va = va;
