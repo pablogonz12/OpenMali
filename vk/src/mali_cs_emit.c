@@ -234,7 +234,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter.
     * A GPU-read indirect draw (`ind_va`) never reuses: its arguments are unknown at build, so the FAU block that carries
     * BaseVertex/BaseInstance is patched per draw by the command stream (emit_draw_regs) and must not be shared. */
-   const bool s1 = po && pd && !d->ind_va && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
+   const bool s1 = po && pd && !d->ind_va && !pd->ind_va && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) &&
+                   pd->first_instance == d->first_instance;
    /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
@@ -1147,7 +1148,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          memset(&dd, 0, sizeof dd);
          if ((rc = build_draw_descs(hw, f, dr, &dd, i ? &pv : NULL, i ? &dd_prev : NULL)))
             goto out;
-         const bool same_words = same_draw_words(have_dwp ? &dwp_prev : NULL, dr);
+         /* an indirect draw's FAU words are patched from the loaded arguments, and each draw gets its own FAU block, so the
+          * register group is never "the same words" for it - even two calls with the same buffer address */
+         const bool same_words = !dr->ind_va && same_draw_words(have_dwp ? &dwp_prev : NULL, dr);
          emit_draw_regs(&c, env, f, dr, &dd, va_tsd, va_tctx, same_words);
          dwp_of(&dwp_cur, dr);
          dwp_prev = dwp_cur;

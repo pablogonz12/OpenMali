@@ -1419,11 +1419,16 @@ test_indirect_gpu(void)
    if (!scene_create(&s, 0)) return 0;
    float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
    CHECK(!memcmp(s.argsp, "\0\0\0\0\0\0\0\0", 8), "the command buffer must still be zero at record time");
+   g_hostread = 1;   /* the coverage check below reads the colour image through its mapping: it needs the dependency */
    if (!scene_draw(&s, 1, rot, f)) return 0;
    /* the producer ran: the GPU wrote the command (texture and buffer writes reach a coherent mapping after the fence) */
    uint32_t cmd[4];
-   InvalidateMappedMemoryRanges(dev, 1, &(VkMappedMemoryRange){.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-                                                                .memory = s.argsmem, .offset = 0, .size = VK_WHOLE_SIZE});
+   {   /* both allocations are read here (the command buffer and, in report(), the colour image): invalidate both, since
+        * HOST_VISIBLE memory need not be coherent */
+      VkMappedMemoryRange mr[2] = {{.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.argsmem, .offset = 0, .size = VK_WHOLE_SIZE},
+                                    {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0, .size = VK_WHOLE_SIZE}};
+      InvalidateMappedMemoryRanges(dev, 2, mr);
+   }
    memcpy(cmd, s.argsp, sizeof cmd);
    if (!g_fake)
       CHECK(cmd[0] == 3 && cmd[1] == 1 && cmd[2] == 0 && cmd[3] == 0,

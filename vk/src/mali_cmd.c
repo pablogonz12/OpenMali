@@ -714,7 +714,12 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
     * indirect draw is the one that must NOT read it, because the mapping still holds what the host wrote even after a
     * compute job rewrote the descriptor. The shaderDrawParameters sysvals are not in this list: the FAU words they read are
     * patched from the loaded registers by the command stream (mali_cs_emit.c emit_indirect_args). */
-   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || n > MALI_IND_UNROLL_MAX ||
+   /* cmd->gfx.poly_mode is the pipeline's STATIC polygon mode; with VK_EXT_extended_dynamic_state3 the record-time value
+    * lives in the dynamic state, and LINE/POINT there also rewrites the draw into an index list at build time, which needs
+    * the arguments on the CPU */
+   const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   const bool dyn_poly = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_RS_POLYGON_MODE) && dyn->rs.polygon_mode != VK_POLYGON_MODE_FILL;
+   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || dyn_poly || n > MALI_IND_UNROLL_MAX ||
                          getenv("MALI_IND_CPU");   /* MALI_IND_CPU=1: control, the pre-rung-2 behaviour (read the mapping at submit) */
    const uint8_t *p = NULL;
    const uint32_t *cp = NULL;
