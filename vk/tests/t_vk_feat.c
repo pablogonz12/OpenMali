@@ -2135,8 +2135,8 @@ test_didx(void)
 static int
 test_didxvidx(void)
 {
-   /* part 2 puts the descriptor array back, so the row needs the same subfeatures didx does */
-   if (!g_didx) { printf("{\"test\":\"didxvidx\",\"skipped\":\"descriptor indexing not advertised\",\"ok\":true}\n"); return 1; }
+   /* parts 1/1b only use a flat int varying: they run without descriptor indexing (they are the varying
+    * diagnostic on a driver that lacks it); part 2 puts the array back and is gated on g_didx below */
    static const uint8_t col[4][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}};
    /* ---- part 1: flat int varying, no descriptors ---- */
    for (int k = 0; k < 4; k++) {
@@ -2199,6 +2199,10 @@ test_didxvidx(void)
       tgt_destroy(&t);
    }
    /* ---- part 2: the same varying indexes a descriptor array of sampled images ---- */
+   if (!g_didx) {
+      printf("{\"test\":\"didxvidx\",\"part2\":\"skipped\",\"why\":\"descriptor indexing not advertised\",\"ok\":true}\n");
+      return 1;
+   }
    for (int k = 0; k < 4; k++) {
       struct tgt t;
       if (!tgt_create(&t)) return 0;
