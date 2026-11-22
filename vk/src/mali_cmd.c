@@ -14,7 +14,6 @@
 
 #include "mali_cmd.h"
 #include "kbase.h"
-#include "kbase_draw.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
 #include "mali_image.h"
