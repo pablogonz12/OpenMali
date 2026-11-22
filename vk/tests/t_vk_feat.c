@@ -3250,10 +3250,25 @@ test_vsstore(void)
    CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
    CmdDraw(cb, 6, 1, 0, 0);
    CmdEndRenderPass(cb);
+   {   /* the shader writes the SSBO: make them visible to the host before the readback (a fence only says the
+        * submission finished), and invalidate if the allocation is not coherent */
+      VkBufferMemoryBarrier bb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = sb.b, .offset = 0,
+                                  .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &bb, 0, NULL);
+   }
    if (!cb_submit(&t, cb)) return 0;
    if (!g_fake) {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)InvalidateMappedMemoryRanges(dev, 1, &mmr);   /* ignored where the type is coherent */
+   }
+   if (!g_fake) {
       const uint32_t *b = (const uint32_t *)(const void *)sb.p;
-      CHECK(b[0] == 6, "vsstore: atomicAdd counter %u expected 6", b[0]);
+      /* the spec requires at least one vertex-shader execution per vertex and leaves more permitted, so the counter is
+       * accepted as any positive multiple of 6; the value says how many times the shader ran (see the PR body: 12 on the
+       * X8 is the IDVS position+varying split, which is why the feature stays false) */
+      CHECK(b[0] >= 6 && b[0] % 6 == 0, "vsstore: atomicAdd counter %u is not a positive multiple of 6", b[0]);
       CHECK(b[1] == 5, "vsstore: atomicMax %u expected 5", b[1]);
       for (uint32_t i = 0; i < 6; i++) CHECK(b[2 + i] == i + 1, "vsstore: data[%u] = %u expected %u", i, b[2 + i], i + 1);
       uint32_t seen = 0;
@@ -3262,7 +3277,8 @@ test_vsstore(void)
          seen |= 1u << b[10 + i];
       }
       CHECK(seen == 0x3f, "vsstore: the six atomicAdd returns are not 0..5 (0x%x)", seen);
-      printf("{\"test\":\"vsstore\",\"count\":%u,\"max\":%u,\"forced\":%s,\"ok\":true}\n", b[0], b[1], forced ? "true" : "false");
+      printf("{\"test\":\"vsstore\",\"count\":%u,\"vs_runs_per_vertex\":%u,\"max\":%u,\"forced\":%s,\"ok\":true}\n",
+             b[0], b[0] / 6, b[1], forced ? "true" : "false");
    } else printf("{\"test\":\"vsstore\",\"skipped\":\"pixels+memory: fake backend\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
