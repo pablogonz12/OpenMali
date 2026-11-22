@@ -204,6 +204,30 @@ for g in v11 v13; do
    run "vk_draw blitreplay $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only blitreplay
 done
 
+# Geometry shaders, lane 1 (notes/gs-design.md §4). A *provable* pass-through GS is drawn by the vertex program alone
+# (zero extra work); every other GS is refused at pipeline creation, and the feature bit is NOT advertised.
+# MALI_EXPERIMENTAL_GS=1 is the development gate these cases need -- and gs_limits asserts that even with it set,
+# VkPhysicalDeviceFeatures::geometryShader is false, which is the state every application sees (DXVK keeps refusing at
+# init). The refusal reasons are checked by name: a bare VK_ERROR_FEATURE_NOT_PRESENT is not evidence of a decision.
+for g in v11 v13; do
+   # both halves of the Required Limits rule: 0 for every maxGeometry* while the feature is unsupported (gate off),
+   # the would-be numbers while the development gate is on -- and geometryShader is false either way
+   run "vk_feat gs_limits $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_limits
+   run "vk_feat gs_limits $g gate off" 0 -u MALI_EXPERIMENTAL_GS MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_limits
+   run "vk_draw gs_passthrough $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_passthrough
+   run "vk_draw gs_reject $g" 0 MALI_EXPERIMENTAL_GS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_reject
+done
+out=$(MALI_EXPERIMENTAL_GS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only gs_reject 2>&1)
+gs_rc=$?   # a crash or a timeout must not read as "all six reasons printed"
+gs_n=0
+for r in "an output is computed, not copied from the input vertex" "max_vertices 6 is not 3" "control flow (opcode" \
+         "reads gl_PrimitiveID" "pass-through GS needs a triangle list topology" "geometryShader is not advertised"; do
+   echo "$out" | grep -qF "geometry shader refused: $r" && gs_n=$((gs_n+1))
+done
+if [ $gs_rc -ne 0 ]; then echo "FAIL  gs refusal diagnostic exited $gs_rc (want 0)"; echo "$out" | tail -5 | sed 's/^/        /'; fail=1
+elif [ $gs_n -eq 6 ]; then echo "ok    gs refusals name their reason (6/6)"
+else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "geometry shader refused" | sed 's/^/        /'; fail=1; fi
+
 # Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
 # colour attachment read back by vkCmdCopyImageToBuffer. The fake backend executes nothing, so this is the record-side gate
 # that keeps the client honest; the RADV reference run and the phone comparison are documented commands, not check.sh cases.

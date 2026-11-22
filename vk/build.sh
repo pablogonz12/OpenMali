@@ -70,7 +70,7 @@ SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
       $V/src/mali_format.c $V/src/mali_image.c $V/src/mali_buffer.c $V/src/mali_sampler.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c
-      $V/src/mali_compile.c $V/src/mali_resources.c
+      $V/src/mali_compile.c $V/src/mali_gs.c $V/src/mali_resources.c
       $V/src/mali_wsi.c $V/src/mali_meta.c $V/src/mali_bc.c $V/src/mali_meta_vk.c $V/src/mali_query.c $V/src/mali_query_core.c
       $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_blend.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $GEN/mali_entrypoints.c"
 # libkbase (own, MIT, libc only) is compiled in with the same flags as the rest, warnings not fatal.

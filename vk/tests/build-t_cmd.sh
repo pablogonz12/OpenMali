@@ -30,7 +30,7 @@ LDSYS=$(tr ' ' '\n' <<<"$LDLINE" | grep -E '^(/.*\.so(\.[0-9.]+)?|/usr/.*\.a|-l[
 CXX=$(cut -d' ' -f1 <<<"$LDLINE")
 
 ICD="mali_instance mali_physical_device mali_device mali_memory mali_dmabuf mali_sync mali_queue mali_fprof mali_backend_fake mali_backend_kbase
- mali_format mali_image mali_buffer mali_sampler mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_compile mali_resources mali_soft"
+ mali_format mali_image mali_buffer mali_sampler mali_descriptor mali_descriptor_lower mali_pipeline_layout mali_compile mali_gs mali_resources mali_soft"
 M8="mali_cs_emit mali_blend mali_render mali_cmd mali_pipeline mali_wsi mali_meta mali_bc mali_meta_vk mali_query mali_query_core mali_event mali_event_vk"
 W="-Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -I$GEN -I$V/src -I$KB/include"
 # Objects are rebuilt when a source/header is newer (the compile line is long; a full rebuild takes ~20 s on 4 cores).
