@@ -41,8 +41,8 @@ struct mali_hwctx {
    struct { uint64_t expected; size_t start; } fl[MALI_MAX_INFLIGHT];
    unsigned nfl;
    size_t cur_start;
-   struct mali_bo old_tls[8];     /* replaced TLS BOs: freed at teardown (in-flight / current frame may still use them) */
-   unsigned n_old_tls;
+   struct mali_bo *old_tls;       /* replaced TLS BOs: freed at teardown, never earlier (in-flight frames AND frames built but not yet submitted, e.g. two direct-draw frames of one command buffer, still hold their VA) */
+   unsigned n_old_tls, cap_old_tls;
    /* overflow descriptor memory: a frame that does not fit the rolling arena (even with every frame retired) takes extra BOs, freed once the
     * submission that used them has retired (tag = retire counter value, 0 = not yet submitted) */
    struct { struct mali_bo bo; uint64_t tag; } ovf[MALI_MAX_OVF];
@@ -329,16 +329,22 @@ hw_tls(void *u, size_t size, uint64_t *va)
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    if (!h->tls_live || h->tls.size < size) {
       struct mali_bo nb;
+      /* A replaced buffer is kept until teardown: a frame built earlier (not submitted yet, so hw_retire cannot wait for it) records its VA.
+       * Growing to at least twice the current size bounds the list to log2(max size) entries. */
+      if (h->tls_live && size < (size_t)h->tls.size * 2)
+         size = (size_t)h->tls.size * 2;
+      if (h->tls_live && h->n_old_tls == h->cap_old_tls) {
+         unsigned nc = h->cap_old_tls ? h->cap_old_tls * 2 : 8;
+         struct mali_bo *no = realloc(h->old_tls, nc * sizeof *no);
+         if (!no)
+            return NULL;
+         h->old_tls = no;
+         h->cap_old_tls = nc;
+      }
       if (be->bo_alloc(h->dev->kdev, size, 0, &nb))
          return NULL;
-      if (h->tls_live) {
-         if (h->n_old_tls < 8)
-            h->old_tls[h->n_old_tls++] = h->tls;   /* may still be in use by in-flight frames or earlier draws of this one */
-         else {
-            hw_retire(h, 0);
-            be->bo_free(h->dev->kdev, &h->tls);
-         }
-      }
+      if (h->tls_live)
+         h->old_tls[h->n_old_tls++] = h->tls;
       h->tls = nb;
       h->tls_live = true;
    }
@@ -441,6 +447,9 @@ mali_hw_finish(struct mali_device *dev)
       hw_wait(h, h->expected);
    for (unsigned i = 0; i < h->n_old_tls; i++)
       be->bo_free(dev->kdev, &h->old_tls[i]);
+   free(h->old_tls);
+   h->old_tls = NULL;
+   h->n_old_tls = h->cap_old_tls = 0;
    for (unsigned i = 0; i < h->n_ovf; i++)
       be->bo_free(dev->kdev, &h->ovf[i].bo);
    h->n_ovf = 0;
