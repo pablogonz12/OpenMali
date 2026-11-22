@@ -41,6 +41,8 @@ mali_CreateBuffer(VkDevice _dev, const VkBufferCreateInfo *ci, const VkAllocatio
 }
 
 /* THROWAWAY chardump: va -> cpu table of live buffers */
+void mali_cd_reg(struct mali_buffer *b);
+const uint8_t *mali_cd_lookup(uint64_t va, uint64_t *avail);
 #define CD_NB 65536
 static struct mali_buffer *g_cd_bufs[CD_NB];
 static unsigned g_cd_nb;
