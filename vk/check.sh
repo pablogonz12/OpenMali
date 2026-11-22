@@ -352,6 +352,9 @@ run "vk_info v10"     0 $F "$OUT/t_vk_info" $DL
 run "dxvk_caps v10"   0 $F "$OUT/t_dxvk_caps" $DL --expect-missing "$DXVK_MISSING"
 run "steam_caps v10"   0 $F "$OUT/t_steam_caps" $DL --expect-missing "$STEAM_MISSING" --expect-zink-missing "$ZINK_MISSING"
 run "vk_trace v10"    0 $F "$OUT/t_vk_trace" $DL
+# the trace handler observes and chains: a SIGSEGV the program fixes up (mprotect + return), a SIGBUS it longjmps out of, an
+# ignored SIGBUS and the no-handler (SIG_DFL) death path (FEX: replacing FEX's own SIGBUS handler killed the game)
+run "trace chain v10" 0 $F "$OUT/t_trace_chain" $DL
 run "angle_seq v10"   0 $F "$OUT/t_angle_seq" $DL
 run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
