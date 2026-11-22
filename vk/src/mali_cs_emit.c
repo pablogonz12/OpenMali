@@ -615,6 +615,27 @@ same_draw_words(const struct dwp *a, const struct mali_draw *b)
           a->index_bytes == b->index_bytes && a->index_size == b->index_size;
 }
 
+/* The frame's tiler bounding box. Only a LOAD frame widens it, to the render area rounded OUTWARD to whole tiles: the tiler
+ * writes back whole tiles, so a tile the render area only partly covers must be restored by the preload for the whole tile,
+ * or its other pixels are lost when it is written back. PanVK gets this for free: its tiling area is rounded
+ * (panfrost/lib/pan_fb.c:106 pan_fb_bbox_align, pan_fb.h:178 tiling_area_px contains render_area_px) and LOAD is the
+ * hardware per-tile load; we emulate LOAD with a preload draw, so the preload draw and this box have to match.
+ * Every other frame keeps the render area as its box. */
+static void
+tile_area(const struct mali_env *env, const struct mali_frame *f, int32_t out[4])
+{
+   (void)env;
+   int32_t x0 = f->area[0] < 0 ? 0 : f->area[0], y0 = f->area[1] < 0 ? 0 : f->area[1];
+   int32_t x1 = x0 + (f->area[2] > 1 ? f->area[2] : 1) - 1, y1 = y0 + (f->area[3] > 1 ? f->area[3] : 1) - 1;
+   if (f->preload_all) {
+      x0 &= ~31; y0 &= ~31;              /* 32x32 px tiles (our FBD/twin tile size) */
+      x1 |= 31; y1 |= 31;
+      if (f->width && x1 > (int32_t)f->width - 1) x1 = (int32_t)f->width - 1;
+      if (f->height && y1 > (int32_t)f->height - 1) y1 = (int32_t)f->height - 1;
+   }
+   out[0] = x0; out[1] = y0; out[2] = x1 - x0 + 1; out[3] = y1 - y0 + 1;
+}
+
 static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
                const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx, bool same_words)
@@ -663,9 +684,30 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    }
    unsigned vx = d->vp[0] < 0 ? 0 : (unsigned)d->vp[0], vy = d->vp[1] < 0 ? 0 : (unsigned)d->vp[1];
    unsigned vmx = vx + (d->vp[2] > 1 ? (unsigned)d->vp[2] : 1) - 1, vmy = vy + (d->vp[3] > 1 ? (unsigned)d->vp[3] : 1) - 1;
+   if (d->preload) {
+      int32_t ta[4];
+      tile_area(env, f, ta);   /* the preload's coverage is its viewport (a full-screen triangle) */
+      vx = (unsigned)ta[0]; vy = (unsigned)ta[1];
+      vmx = vx + (unsigned)ta[2] - 1; vmy = vy + (unsigned)ta[3] - 1;
+   }
    int32_t sx = d->sc[0] < 0 ? 0 : d->sc[0], sy = d->sc[1] < 0 ? 0 : d->sc[1];
-   uint64_t scis = kb_draw_scissor((unsigned)sx, (unsigned)sy, (unsigned)(sx + (d->sc[2] > 1 ? d->sc[2] : 1) - 1),
-                                   (unsigned)(sy + (d->sc[3] > 1 ? d->sc[3] : 1) - 1));
+   int32_t sw = d->sc[2] > 1 ? d->sc[2] : 1, sh = d->sc[3] > 1 ? d->sc[3] : 1;
+   if (d->preload) {
+      int32_t ta[4];
+      tile_area(env, f, ta);   /* the preload restores every pixel of the tiles the frame writes back */
+      sx = ta[0]; sy = ta[1]; sw = ta[2]; sh = ta[3];
+   } else if (f->preload_all && f->area[2] > 0 && f->area[3] > 0) {
+      /* the box is now wider than the render area (whole tiles): pixels outside the render area are not written by this pass */
+      int32_t ax1 = f->area[0] + f->area[2], ay1 = f->area[1] + f->area[3];
+      int32_t dx1 = sx + sw, dy1 = sy + sh;
+      sx = sx < f->area[0] ? f->area[0] : sx;
+      sy = sy < f->area[1] ? f->area[1] : sy;
+      dx1 = dx1 > ax1 ? ax1 : dx1;
+      dy1 = dy1 > ay1 ? ay1 : dy1;
+      sw = dx1 - sx; sh = dy1 - sy;
+      if (sw < 1 || sh < 1) { sx = sy = 0; sw = sh = 1; }
+   }
+   uint64_t scis = kb_draw_scissor((unsigned)sx, (unsigned)sy, (unsigned)(sx + sw - 1), (unsigned)(sy + sh - 1));
    uint32_t minz, maxz;
    memcpy(&minz, &d->vp[4], 4);
    memcpy(&maxz, &d->vp[5], 4);
@@ -754,8 +796,10 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
               uint64_t va_tctx, bool geometry)
 {
    unsigned slot = env->slot;
-   int x0 = f->area[0] < 0 ? 0 : f->area[0], y0 = f->area[1] < 0 ? 0 : f->area[1];
-   unsigned x1 = x0 + (f->area[2] > 1 ? f->area[2] : 1) - 1, y1 = y0 + (f->area[3] > 1 ? f->area[3] : 1) - 1;
+   int32_t ta[4];
+   tile_area(env, f, ta);
+   unsigned x0 = (unsigned)ta[0], y0 = (unsigned)ta[1];
+   unsigned x1 = (unsigned)(ta[0] + ta[2] - 1), y1 = (unsigned)(ta[1] + ta[3] - 1);
 
    E(c, kb_cs_req_res(KB_CS_RES_FRAGMENT));
    E(c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, slot));

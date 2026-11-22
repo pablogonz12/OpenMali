@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|pointgrid|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ptbisect|mpass|mpassload|mpasssubmit|ctsidx|smallpass|twotile|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|pointgrid|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -2126,6 +2126,675 @@ test_pointgrid(void)
    return 1;
 }
 
+/* ptbisect: which variable makes a large POINT_LIST draw lose vertices? One test per variant, counts
+ * 256/1024/4096/16384, all 1-px points on a 256x256 target: covered px must equal the vertex count.
+ *   base    positions from gl_VertexIndex, no varyings, no vertex buffer      (known good)
+ *   intvar  + an integer flat varying                                          (the CTS descriptorIndexing pattern)
+ *   attr    position and index from a 16-byte vertex buffer (ivec4 at location 1, the CTS layout)
+ *   attrpts same, TRIANGLE_LIST (2 tris per 4 vertices, just as a control)
+ * Run with --only ptbisect. */
+/* mpass: 16 render passes over ONE linear colour attachment, each with its own renderArea offset (16x16 quadrant,
+ * CLEAR) and the matching scissor, each drawing the same 4096 one-pixel points (64x64 grid) - the structure of
+ * dEQP-VK.descriptor_indexing's iterate(). Every quadrant must keep its own 256 points. */
+/* mpassload: the same 16 passes as mpass, but passes 2..16 use a LOAD render pass (the CTS's iterate() does exactly
+ * this: LOAD what the previous pass stored). Every quadrant must still hold its own 256 points. */
+/* ctsidx: the CTS descriptor_indexing shaders and vertex data, verbatim. The SPIR-V is what our driver handed to the
+ * Bifrost compiler for dEQP-VK.descriptor_indexing.sampled_image on the X8 (MALI_API_LOG dumped it); the vertex buffer is
+ * the case's own bytes (1638 of its 4096 vertices, the 64 KB dump cap) in the CTS layout: vec4 position @0, vec2 normalpos
+ * @16, ivec4 index @24, stride 40, binding 0. The descriptor set is ours (16 solid-colour images, one sampler).
+ * Coverage must equal the drawn vertex count; less is the shader/data, not the harness. */
+static int
+test_ctsidx(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   static const uint8_t col[16][4] = {{255,0,0,255},{0,255,0,255},{0,0,255,255},{255,255,0,255},{0,255,255,255},{255,0,255,255},
+                                      {128,0,0,255},{0,128,0,255},{0,0,128,255},{128,128,0,255},{0,128,128,255},{128,0,128,255},
+                                      {255,128,0,255},{128,255,0,255},{0,255,128,255},{128,0,255,255}};
+   struct tex x[16];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+   for (int i = 0; i < 16; i++)
+      if (!tex_create(&t, &x[i], &ici, VK_IMAGE_VIEW_TYPE_2D, 1, col[i], 4, &reg, 1, &si)) return 0;
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 16, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   /* exactly what the CTS creates: PARTIALLY_BOUND on the image array, and only the six indices its vertex data uses
+    * (2, 3, 5, 7, 11, 13 - the primes the enumerator writes) get a descriptor */
+   static const int primes[6] = {2, 3, 5, 7, 11, 13};
+   VkDescriptorBindingFlags bf[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, 0};
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bfi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = 2, .pBindingFlags = bf};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set = VK_NULL_HANDLE;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii[16];
+   for (int i = 0; i < 16; i++) ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   VkDescriptorImageInfo smpi = {x[0].smp, VK_NULL_HANDLE, 0};
+   for (int k = 0; k < 6; k++) {
+      VkWriteDescriptorSet w1 = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                                 .dstArrayElement = (uint32_t)primes[k], .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &ii[primes[k]]};
+      UpdateDescriptorSets(dev, 1, &w1, 0, NULL);
+   }
+   VkWriteDescriptorSet wsm = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &smpi};
+   UpdateDescriptorSets(dev, 1, &wsm, 0, NULL);
+   struct hbuf vb = {0};
+   if (!hbuf_create(&vb, 163840, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   FILE *vf = fopen("tests/data/cts_didx_vb.bin", "rb");
+   if (!vf) { printf("{\"fail\":\"open tests/data/cts_didx_vb.bin\"}\n"); return 0; }
+   size_t got = fread(vb.p, 1, 163840, vf);
+   fclose(vf);
+   const unsigned nv = (unsigned)(got / 40);
+   VkVertexInputBindingDescription vbd = {0, 40, VK_VERTEX_INPUT_RATE_VERTEX};
+   VkVertexInputAttributeDescription vad[3] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+                                               {1, 0, VK_FORMAT_R32G32_SFLOAT, 16},
+                                               {2, 0, VK_FORMAT_R32G32B32A32_SINT, 24}};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vbd,
+                                              .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = vad};
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   g_vi = &vi;
+   int okp = make_pipe(&t, "cts_didx.vert.spv", "cts_didx.frag.spv", dsl, 0, &lay, &pipe);
+   g_vi = NULL;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   /* the case's structure: 16 passes, each its own command buffer + submit + readback of its own renderArea */
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t.rp, .framebuffer = t.fb,
+                                     .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+         VkDeviceSize voff = 0;
+         CmdBindVertexBuffers(cb, 0, 1, &vb.b, &voff);
+         CmdDraw(cb, nv, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         if (!g_fake) {   /* this pass's own area, right after its submit */
+            unsigned ina = 0;
+            for (int y = qy * 64; y < qy * 64 + 64; y++)
+               for (int x = qx * 64; x < qx * 64 + 64; x++) {
+                  const uint8_t *q = pix(&t, x, y);
+                  ina += (q[0] | q[1] | q[2]) != 0;
+               }
+            printf("{\"ctsidx\":\"pass%d\",\"inarea\":%u}\n", qy * 4 + qx, ina);
+         }
+      }
+   if (!g_fake) {
+      unsigned nz = 0;
+      for (int y = 0; y < H; y++)
+         for (int xx = 0; xx < W; xx++) {
+            const uint8_t *q = pix(&t, xx, y);
+            nz += (q[0] | q[1] | q[2]) != 0;
+         }
+      printf("{\"ctsidx\":\"single-cb\",\"n\":%u,\"covered\":%u}\n", nv, nz);
+      CHECK(nz >= nv - nv / 8, "CTS shaders+data: %u vertices covered %u px", nv, nz);
+   } else {
+      printf("{\"test\":\"ctsidx\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   hbuf_destroy(&vb);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 16; i++) tex_destroy(&x[i]);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* twotile: the smallest form of the parked bug. Two LOAD passes in one command buffer, no copies recorded inside it:
+ * pass 1 draws in area A = (0,0,16,16) (tile 0,0), pass 2 in area B = (32,32,16,16) (a DIFFERENT 32x32 tile). Read the
+ * whole 64x64 image after the fence: does A survive pass 2? (2026-11-22, X8 G925 screen off: B 256, A 0 - A does not.) */
+static int
+test_twotile(void)
+{
+   struct tgt t;
+   if (!tgt_create_wh(&t, 64, 64)) return 0;
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription spd = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &spd};
+   VkRenderPass rp = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = 64, .height = 64, .layers = 1};
+   VkFramebuffer fb = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb) == VK_SUCCESS, "framebuffer (LOAD)");
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_small.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   const int areas[2][2] = {{0, 0}, {32, 32}};
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   for (int k = 0; k < 2; k++) {
+      VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                                  .renderArea = {{areas[k][0], areas[k][1]}, {16, 16}}, .clearValueCount = 1, .pClearValues = &cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      VkViewport vp = {0, 0, 64, 64, 0.0f, 1.0f};
+      CmdSetViewport(cb, 0, 1, &vp);
+      VkRect2D sc = {{areas[k][0], areas[k][1]}, {16, 16}};
+      CmdSetScissor(cb, 0, 1, &sc);
+      const float s4[4] = {1, 64, 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s4);
+      CmdDraw(cb, 4096, 1, 0, 0);
+      CmdEndRenderPass(cb);
+   }
+   if (!cb_submit(&t, cb)) return 0;   /* one submit, no copy inside the command buffer */
+   if (!g_fake) {
+      unsigned a = 0, b = 0;
+      for (int y = 0; y < 16; y++)
+         for (int x = 0; x < 16; x++) {
+            const uint8_t *q = t.px + (size_t)y * t.pitch + (size_t)x * 4;
+            a += (q[0] | q[1] | q[2]) != 0;
+            const uint8_t *r2 = t.px + (size_t)(32 + y) * t.pitch + (size_t)(32 + x) * 4;
+            b += (r2[0] | r2[1] | r2[2]) != 0;
+         }
+      printf("{\"twotile\":\"areas\",\"A\":%u,\"B\":%u,\"want\":256}\n", a, b);
+   } else {
+      printf("{\"test\":\"twotile\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* smallpass: the CTS's own geometry - a 64x64 target and sixteen 16x16 renderAreas, smaller than the 32x32 tile we use
+ * and not tile-aligned for half of them - each pass in its own command buffer with its own submit, 4096 one-pixel points
+ * (64x64 grid, positions from gl_VertexIndex scaled to 64x64). Every pass must keep the 256 points that fall in its area. */
+static int
+test_smallpass(void)
+{
+   struct tgt t;
+   if (!tgt_create_wh(&t, 64, 64)) return 0;
+   /* the CTS's structure: the image is cleared once, then every pass LOADs */
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription spd = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &spd};
+   VkRenderPass rp2 = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp2, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = 64, .height = 64, .layers = 1};
+   VkFramebuffer fb2 = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb2) == VK_SUCCESS, "framebuffer (LOAD)");
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   const float sm[4] = {1, 64, 0, 0};
+   (void)sm;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_small.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   struct hbuf rb2 = {0};
+   if (!hbuf_create(&rb2, 64 * 64 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   unsigned total = 0;
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         int first = qx == 0 && qy == 0;
+         /* MALI_SP_FULLAREA=1: renderArea is the whole image (scissor still limits the draw to this pass's 16x16), so the
+          * frame's bbox covers everything: separates "a sub-rect renderArea loses the rest of the image" from "the copy
+          * reads only part of it". */
+         /* MALI_SP_TAILFULL=1: only the last pass gets the whole-image renderArea (its bbox is then the whole image too). If
+          * the readback after it holds everything, the earlier passes' pixels were in memory all along and only the
+          * writeback/copy of a sub-rectangle frame is what loses them. */
+         int tailfull = getenv("MALI_SP_TAILFULL") && qx == 3 && qy == 3;
+         VkRect2D ra = (getenv("MALI_SP_FULLAREA") || tailfull) ? (VkRect2D){{0, 0}, {64, 64}} : (VkRect2D){{qx * 16, qy * 16}, {16, 16}};
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
+                                     .framebuffer = first ? t.fb : fb2,
+                                     .renderArea = ra, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, 64, 64, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 16, qy * 16}, {16, 16}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         const float s4[4] = {1, 64, 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s4);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         /* exactly what the CTS does (collectBeforeSubmit=true): copy the WHOLE image inside the same command buffer,
+          * before the submit, and read that back */
+         /* MALI_SP_LASTCOPY=1: copy only in the last pass, so the earlier passes are already submitted+fenced - tells an
+          * intra-submission ordering bug from a missing writeback. */
+         if (!getenv("MALI_SP_LASTCOPY") || (qx == 3 && qy == 3)) {
+            VkBufferImageCopy rgn = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 64, 1}};
+            CmdCopyImageToBuffer(cb, t.img, VK_IMAGE_LAYOUT_GENERAL, rb2.b, 1, &rgn);
+         }
+         if (!cb_submit(&t, cb)) return 0;
+         if (!g_fake) {
+            unsigned ina = 0;
+            for (int y = qy * 16; y < qy * 16 + 16; y++)
+               for (int x = qx * 16; x < qx * 16 + 16; x++) {
+                  const uint8_t *q = t.px + (size_t)y * t.pitch + (size_t)x * 4;
+                  ina += (q[0] | q[1] | q[2]) != 0;
+               }
+            total += ina;
+            VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb2.m, .offset = 0, .size = VK_WHOLE_SIZE};
+            InvalidateMappedMemoryRanges(dev, 1, &mr);
+            unsigned inrb = 0;
+            for (int k = 0; k < 64 * 64; k++) {
+               const uint8_t *q = rb2.p + (size_t)k * 4;
+               inrb += (q[0] | q[1] | q[2]) != 0;
+            }
+            unsigned whole = 0;
+            for (int k = 0; k < 64 * 64; k++) {
+               const uint8_t *q = t.px + (size_t)(k / 64) * t.pitch + (size_t)(k % 64) * 4;
+               whole += (q[0] | q[1] | q[2]) != 0;
+            }
+            printf("{\"smallpassload\":\"pass%d\",\"inarea\":%u,\"in_readback\":%u,\"image_whole\":%u}\n",
+                   qy * 4 + qx, ina, inrb, whole);
+            if (getenv("MALI_SP_MAP") && (qy * 4 + qx) == atoi(getenv("MALI_SP_MAP"))) {
+               for (int my = 0; my < 8; my++) {
+                  char row[9];
+                  for (int mx = 0; mx < 8; mx++) {
+                     unsigned any = 0;
+                     for (int y = my * 8; y < my * 8 + 8; y++)
+                        for (int x = mx * 8; x < mx * 8 + 8; x++) {
+                           const uint8_t *q = rb2.p + ((size_t)y * 64 + (size_t)x) * 4;
+                           any |= (q[0] | q[1] | q[2]) != 0;
+                        }
+                     row[mx] = any ? '#' : '.';
+                  }
+                  row[8] = 0;
+                  fprintf(stderr, "map %s\n", row);
+               }
+            }
+         }
+      }
+   if (!g_fake) {
+      printf("{\"smallpassload\":\"total\",\"covered\":%u,\"want\":4096}\n", total);
+      CHECK(total == 4096, "64x64 target, sixteen 16x16 renderAreas: %u of 4096 px", total);
+   } else {
+      printf("{\"test\":\"smallpass\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyFramebuffer(dev, fb2, NULL);
+   DestroyRenderPass(dev, rp2, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* mpasssubmit: the CTS's iterate() structure exactly - per pass: begin a command buffer, render the pass (LOAD after the
+ * first) into its own renderArea, end, submit + fence wait, then copy the WHOLE image to a buffer in its OWN submit, reset
+ * nothing but allocate fresh buffers (cb_begin), 16 times. Prints, per pass, how many pixels of that pass's area the
+ * readback saw, plus the final image's per-quadrant coverage. */
+static int
+test_mpasssubmit(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp2 = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp2, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb2 = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb2) == VK_SUCCESS, "framebuffer (LOAD)");
+   struct hbuf rb = {0};
+   if (!hbuf_create(&rb, (VkDeviceSize)W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) return 0;
+   /* descriptor array of 4 sampled images, sampled from the FS with an index that comes from a vertex attribute */
+   static const uint8_t col[4][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}};
+   struct tex x[4];
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+   VkBufferImageCopy reg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+   VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+   for (int i = 0; i < 4; i++)
+      if (!tex_create(&t, &x[i], &ici, VK_IMAGE_VIEW_TYPE_2D, 1, col[i], 4, &reg, 1, &si)) return 0;
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 4, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool dp = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set = VK_NULL_HANDLE;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii[4];
+   for (int i = 0; i < 4; i++) ii[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, x[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   VkDescriptorImageInfo smpi = {x[0].smp, VK_NULL_HANDLE, 0};
+   VkWriteDescriptorSet w[2] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 4,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &smpi}};
+   UpdateDescriptorSets(dev, 2, w, 0, NULL);
+   /* vertex buffer: position + index attribute, 4096 vertices */
+   struct hbuf vb = {0};
+   size_t vsz = (size_t)4096 * 32;
+   if (!hbuf_create(&vb, vsz, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+   float *pos = (float *)vb.p;
+   int32_t *idx = (int32_t *)((uint8_t *)vb.p + (size_t)4096 * 16);
+   for (int i = 0; i < 4096; i++) {
+      pos[i * 4 + 0] = (float)(i % 64) / 64.0f * 2.0f - 1.0f + 1.0f / 64.0f;
+      pos[i * 4 + 1] = (float)(i / 64) / 64.0f * 2.0f - 1.0f + 1.0f / 64.0f;
+      pos[i * 4 + 2] = 0.5f; pos[i * 4 + 3] = 1.0f;
+      idx[i * 4 + 0] = i & 3; idx[i * 4 + 1] = 0; idx[i * 4 + 2] = 0; idx[i * 4 + 3] = 0;
+   }
+   VkVertexInputBindingDescription vbd[2] = {{0, 16, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_VERTEX}};
+   VkVertexInputAttributeDescription vad[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SINT, 0}};
+   VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                              .vertexBindingDescriptionCount = 2, .pVertexBindingDescriptions = vbd,
+                                              .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = vad};
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   g_vi = &vi;
+   int okp = make_pipe(&t, "ptg_tex.vert.spv", "ptg_tex.frag.spv", dsl, 0, &lay, &pipe);
+   g_vi = NULL;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         int first = qx == 0 && qy == 0;
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         VkRenderPassBeginInfo rpb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
+                                      .framebuffer = first ? t.fb : fb2,
+                                      .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rpb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+         VkDeviceSize voff[2] = {0, (VkDeviceSize)4096 * 16};
+         VkBuffer vbuf[2] = {vb.b, vb.b};
+         CmdBindVertexBuffers(cb, 0, 2, vbuf, voff);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         /* readback in its own submit, exactly like the CTS */
+         VkCommandBuffer cb2 = cb_begin(&t);
+         CHECK(cb2, "cmdbuf (copy)");
+         /* the CTS copies only the pass's own renderArea, with an image offset, into a bigger buffer at a buffer offset
+          * (commandReadFrameBuffer): exercise exactly that - 64x64 sub-rect, row length W, offset into the big buffer */
+         VkBufferImageCopy rgn = {.bufferOffset = (VkDeviceSize)((qy * 64) * W + qx * 64) * 4,
+                                  .bufferRowLength = W, .bufferImageHeight = H,
+                                  .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                  .imageOffset = {qx * 64, qy * 64, 0}, .imageExtent = {64, 64, 1}};
+         CmdCopyImageToBuffer(cb2, t.img, VK_IMAGE_LAYOUT_GENERAL, rb.b, 1, &rgn);
+         if (!cb_submit(&t, cb2)) return 0;
+         if (!g_fake) {
+            VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+            InvalidateMappedMemoryRanges(dev, 1, &mr);
+            unsigned inarea = 0;
+            for (int y = qy * 64; y < qy * 64 + 64; y++)
+               for (int x = qx * 64; x < qx * 64 + 64; x++) {
+                  const uint8_t *q = rb.p + (size_t)y * W * 4 + (size_t)x * 4;
+                  inarea += (q[0] | q[1] | q[2]) != 0;
+               }
+            printf("{\"mpasssubmit\":\"pass%d\",\"inarea\":%u}\n", qy * 4 + qx, inarea);
+         }
+      }
+   if (!g_fake) {
+      VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      InvalidateMappedMemoryRanges(dev, 1, &mr);
+      unsigned quad[16] = {0}, nz = 0, asmquad[16] = {0}, asmnz = 0, diff = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *q = pix(&t, x, y);
+            const uint8_t *a = rb.p + (size_t)y * W * 4 + (size_t)x * 4;
+            if (q[0] | q[1] | q[2]) { nz++; quad[(y / 64) * 4 + x / 64]++; }
+            if (a[0] | a[1] | a[2]) { asmnz++; asmquad[(y / 64) * 4 + x / 64]++; }
+            diff += (q[0] != a[0]) || (q[1] != a[1]) || (q[2] != a[2]) || (q[3] != a[3]);
+         }
+      printf("{\"mpasssubmit\":\"assembled\",\"covered\":%u,\"vs_image_diff\":%u}\n", asmnz, diff);
+      for (int i = 0; i < 16; i++) if (asmquad[i] != quad[i]) printf("{\"mpasssubmit\":\"asmq%d\",\"assembled\":%u,\"image\":%u}\n", i, asmquad[i], quad[i]);
+      printf("{\"mpasssubmit\":\"total\",\"covered\":%u}\n", nz);
+      for (int i = 0; i < 16; i++) printf("{\"mpasssubmit\":\"q%d\",\"covered\":%u}\n", i, quad[i]);
+   } else {
+      printf("{\"test\":\"mpasssubmit\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   hbuf_destroy(&rb);
+   DestroyFramebuffer(dev, fb2, NULL);
+   DestroyRenderPass(dev, rp2, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_mpassload(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = VK_IMAGE_LAYOUT_GENERAL, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+   VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &cref};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &sp};
+   VkRenderPass rp2 = VK_NULL_HANDLE;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp2) == VK_SUCCESS, "render pass (LOAD)");
+   VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp2, .attachmentCount = 1,
+                                  .pAttachments = &t.view, .width = W, .height = H, .layers = 1};
+   VkFramebuffer fb2 = VK_NULL_HANDLE;
+   CHECK(CreateFramebuffer(dev, &fbi, NULL, &fb2) == VK_SUCCESS, "framebuffer (LOAD)");
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_base.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkCommandBuffer cb = cb_begin(&t);   /* one command buffer + submit per pass, like the CTS's iterate() */
+         CHECK(cb, "cmdbuf");
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         int first = qx == 0 && qy == 0;
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = first ? t.rp : rp2,
+                                     .framebuffer = first ? t.fb : fb2,
+                                     .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         const float ss[4] = {1, 64, 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ss);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+      }
+   if (!g_fake) {
+      unsigned quad[16] = {0}, nz = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = pix(&t, x, y);
+            if (p[0] | p[1] | p[2]) { nz++; quad[(y / 64) * 4 + x / 64]++; }
+         }
+      printf("{\"mpassload\":\"total\",\"covered\":%u}\n", nz);
+      for (int i = 0; i < 16; i++) printf("{\"mpassload\":\"q%d\",\"covered\":%u}\n", i, quad[i]);
+   } else {
+      printf("{\"test\":\"mpassload\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyFramebuffer(dev, fb2, NULL);
+   DestroyRenderPass(dev, rp2, NULL);
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_mpass(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+   int okp = make_pipe(&t, "ptg_base.vert.spv", "ptg_solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+   g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   if (!okp) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   for (int qy = 0; qy < 4; qy++)
+      for (int qx = 0; qx < 4; qx++) {
+         VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+         VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t.rp, .framebuffer = t.fb,
+                                     .renderArea = {{qx * 64, qy * 64}, {64, 64}}, .clearValueCount = 1, .pClearValues = &cv};
+         CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+         CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+         VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+         CmdSetViewport(cb, 0, 1, &vp);
+         VkRect2D sc = {{qx * 64, qy * 64}, {64, 64}};
+         CmdSetScissor(cb, 0, 1, &sc);
+         const float s[4] = {1, 64, 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+         CmdDraw(cb, 4096, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+      }
+   if (!g_fake) {
+      unsigned quad[16] = {0};
+      unsigned nz = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = pix(&t, x, y);
+            if (p[0] | p[1] | p[2]) { nz++; quad[(y / 64) * 4 + x / 64]++; }
+         }
+      printf("{\"mpass\":\"total\",\"covered\":%u}\n", nz);
+      for (int i = 0; i < 16; i++) printf("{\"mpass\":\"q%d\",\"covered\":%u}\n", i, quad[i]);
+   } else {
+      printf("{\"test\":\"mpass\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+static int
+test_ptbisect(void)
+{
+   static const unsigned counts[4] = {256, 1024, 4096, 16384};
+   static const int dims[4] = {16, 32, 64, 128};
+   for (int v = 0; v < 3; v++) {
+      for (int c = 0; c < 4; c++) {
+         struct tgt t;
+         if (!tgt_create(&t)) return 0;
+         struct hbuf vb = {0};
+         VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+         VkVertexInputBindingDescription vbd[2] = {{0, 16, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 16, VK_VERTEX_INPUT_RATE_VERTEX}};
+         VkVertexInputAttributeDescription vad[2] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}, {1, 1, VK_FORMAT_R32G32B32A32_SINT, 0}};
+         if (v == 2) {
+            int n = (int)counts[c];
+            size_t sz = (size_t)n * 32;
+            if (!hbuf_create(&vb, sz, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return 0;
+            float *pos = (float *)vb.p;
+            int32_t *idx = (int32_t *)((uint8_t *)vb.p + (size_t)n * 16);
+            for (int i = 0; i < n; i++) {
+               int d = dims[c];
+               pos[i * 4 + 0] = (float)(i % d) / (float)d * 2.0f - 1.0f + 1.0f / (float)d;
+               pos[i * 4 + 1] = (float)(i / d) / (float)d * 2.0f - 1.0f + 1.0f / (float)d;
+               pos[i * 4 + 2] = 0.5f; pos[i * 4 + 3] = 1.0f;
+               idx[i * 4 + 0] = i & 15; idx[i * 4 + 1] = 0; idx[i * 4 + 2] = 0; idx[i * 4 + 3] = 0;
+            }
+            vi.vertexBindingDescriptionCount = 2; vi.pVertexBindingDescriptions = vbd;
+            vi.vertexAttributeDescriptionCount = 2; vi.pVertexAttributeDescriptions = vad;
+         }
+         VkPipelineLayout lay;
+         VkPipeline pipe;
+         g_vi = (v == 2) ? &vi : NULL;
+         const char *vs = v == 0 ? "ptg_base.vert.spv" : v == 1 ? "ptg_intvar.vert.spv" : "ptg_attr.vert.spv";
+         const char *fs = v == 1 ? "ptg_intvar.frag.spv" : "ptg_solid.frag.spv";
+         g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+         int okp = make_pipe(&t, vs, fs, VK_NULL_HANDLE, 16, &lay, &pipe);
+         g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+         g_vi = NULL;
+         if (!okp) return 0;
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         begin_pass(cb, &t, pipe);
+         const float s[4] = {1, (float)dims[c], 0, 0};
+         CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+         if (v == 2) {
+            VkDeviceSize off[2] = {0, (VkDeviceSize)counts[c] * 16};
+            VkBuffer bufs[2] = {vb.b, vb.b};
+            CmdBindVertexBuffers(cb, 0, 2, bufs, off);
+         }
+         CmdDraw(cb, counts[c], 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         if (!g_fake) {
+            unsigned nz = 0;
+            for (int y = 0; y < H; y++)
+               for (int x = 0; x < W; x++) {
+                  const uint8_t *q = pix(&t, x, y);
+                  nz += (q[0] | q[1] | q[2]) != 0;
+               }
+            printf("{\"ptbisect\":\"%s\",\"count\":%u,\"covered\":%u}\n", v == 0 ? "base" : v == 1 ? "intvar" : "attr", counts[c], nz);
+         }
+         DestroyPipeline(dev, pipe, NULL);
+         DestroyPipelineLayout(dev, lay, NULL);
+         if (v == 2) hbuf_destroy(&vb);
+         tgt_destroy(&t);
+      }
+   }
+   if (g_fake) printf("{\"test\":\"ptbisect\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   return 1;
+}
+
 static int
 test_didx(void)
 {
@@ -4079,6 +4748,13 @@ main(int argc, char **argv)
    if (ok && CASE_ON("spec")) ok &= test_spec();
    if (ok && CASE_ON("maint5")) ok &= test_maint5();
    if (ok && CASE_ON("bda")) ok &= test_bda();
+   if (ok && g_only && CASE_ON("ptbisect")) ok &= test_ptbisect();
+   if (ok && g_only && CASE_ON("mpass")) ok &= test_mpass();
+   if (ok && g_only && CASE_ON("mpassload")) ok &= test_mpassload();
+   if (ok && g_only && CASE_ON("mpasssubmit")) ok &= test_mpasssubmit();
+   if (ok && g_only && CASE_ON("ctsidx")) ok &= test_ctsidx();
+   if (ok && g_only && CASE_ON("smallpass")) ok &= test_smallpass();
+   if (ok && g_only && CASE_ON("twotile")) ok &= test_twotile();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("quadsize")) ok &= test_quadsize();
    if (ok && CASE_ON("pointgrid")) ok &= test_pointgrid();

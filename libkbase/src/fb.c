@@ -62,10 +62,10 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	 * frame shader DCDs: unused (0). */
 	put(f, 8, 0, 16, p->width - 1);                          /* Width - 1 */
 	put(f, 8, 16, 16, p->height - 1);                        /* Height - 1 */
-	put(f, 9, 0, 16, 0);                                     /* Bound Min X */
-	put(f, 9, 16, 16, 0);                                    /* Bound Min Y */
-	put(f, 10, 0, 16, p->width - 1);                         /* Bound Max X (inclusive) */
-	put(f, 10, 16, 16, p->height - 1);                       /* Bound Max Y (inclusive) */
+	put(f, 9, 0, 16, p->bound_set ? p->bound_x0 : 0);        /* Bound Min X */
+	put(f, 9, 16, 16, p->bound_set ? p->bound_y0 : 0);       /* Bound Min Y */
+	put(f, 10, 0, 16, p->bound_set ? p->bound_x1 : p->width - 1);    /* Bound Max X (inclusive) */
+	put(f, 10, 16, 16, p->bound_set ? p->bound_y1 : p->height - 1);  /* Bound Max Y (inclusive) */
 	/* word 11 */
 	put(f, 11, 0, 3, p->samples_log2);                       /* Sample Count log2 */
 	put(f, 11, 3, 3, p->sample_pattern);                     /* Sample Pattern (0 single, 2 rotated 4x) */
@@ -75,7 +75,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
 	put(f, 11, 19, 4, 0);                                    /* Render Target Count - 1 */
 	put(f, 11, 24, 8, p->rt_internal && p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
-	put(f, 12, 29, 1, 1);                                    /* Empty Tile Write Enable (PanVK sets bits 31:28 of word 12) */
+	/* Empty Tile Write Enable (v13.xml:2321, 12:29) and Empty Tile Read Enable (12:28) stay OFF: they are part of the CRC /
+	 * Empty Tile Elimination state (CRC Read/Write Enable 12:30-31 are off here and we have no CRC or flush-id state), and
+	 * PanVK only enables them with it (panfrost/lib/pan_desc.c:1296-1310 pan_crc_has_empty_tile_elimination). Enabled
+	 * without that state, the tiler writes back tiles the frame never drew in, from an unloaded tile buffer. */
+	put(f, 12, 29, 1, 0);                                    /* Empty Tile Write Enable */
+	put(f, 12, 28, 1, 0);                                    /* Empty Tile Read Enable */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
 	put(f, 12, 16, 2, !zs ? 1 : p->zs_format == KB_ZS_D32F ? 2 : p->zs_format == KB_ZS_D24X8 ? 1 : 0);
 	if (ext) put(f, 12, 21, 1, 1);                           /* Has ZS CRC Extension */
@@ -86,7 +91,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 16, 4, 1);
 		put(x, 0, 20, 4, 2);
 		put(x, 0, 24, 2, 0);
-		put(x, 0, 31, 1, 1);
+		put(x, 0, 31, 1, !p->s_no_clean_tile_write);   /* Clean Tile Write Enable: only for a CLEAR loadOp (see kbase_fb.h) */
 		put(x, 12, 0, 32, (uint32_t)p->s_gpu_va);            /* Base */
 		put(x, 13, 0, 32, (uint32_t)(p->s_gpu_va >> 32));
 		put(x, 14, 0, 32, s_row);                            /* Row Stride */
@@ -99,7 +104,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
 		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
 		put(x, 0, 8, 2, 0);                                  /* MSAA single */
-		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
+		put(x, 0, 31, 1, !p->zs_no_clean_tile_write);         /* Clean Tile Write Enable: only for a CLEAR loadOp (see kbase_fb.h) */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */
