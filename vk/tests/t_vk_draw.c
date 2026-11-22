@@ -34,6 +34,7 @@ static const float *g_clear_f;   /* clear the colour attachment to these four fl
 static int g_nofs;      /* pipeline without a fragment stage (depth/stencil-only draw, no rasterizer discard) */
 static int g_hostread;  /* record the colour-write -> HOST_READ dependency: the test reads the image through its mapping */
 static int g_sparse;    /* vertex attributes at locations 0 and 2 (layout_skip): the skipped slot 1 is filled by the driver */
+static int g_onebuf;    /* attr_two_bindings: ONE VkBuffer bound twice (binding 0 at offset 0 = positions, binding 1 at offset 256 = flat red colour) */
 static int g_clearzs;   /* clearquad: the CmdClearAttachments after the draw also clears depth+stencil of the sub-rect */
 static int g_nocol;     /* render pass with a depth attachment only (no colour attachment) */
 static int g_dynstr;   /* dynamic VERTEX_INPUT_BINDING_STRIDE with a wrong static stride; the draw binds strides through CmdBindVertexBuffers2 */
@@ -393,9 +394,9 @@ scene_create(struct scene *s, int depth)
    static const float colr[44] = {1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1,
                                   1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1,
                                   0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1};
-   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = g_onebuf ? 512 : 256,
                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
-   for (int i = 0; i < 2; i++)
+   for (int i = 0; i < (g_onebuf ? 1 : 2); i++)
       CHECK(CreateBuffer(dev, &bi, NULL, &s->vb[i]) == VK_SUCCESS, "vertex buffer");
    GetBufferMemoryRequirements(dev, s->vb[0], &mr);
    VkDeviceSize stride = (mr.size + mr.alignment - 1) & ~(mr.alignment - 1);
@@ -404,11 +405,19 @@ scene_create(struct scene *s, int depth)
    CHECK(AllocateMemory(dev, &va, NULL, &s->vbmem) == VK_SUCCESS, "vb mem");
    uint8_t *vp;
    CHECK(MapMemory(dev, s->vbmem, 0, VK_WHOLE_SIZE, 0, (void **)&vp) == VK_SUCCESS, "map vb");
-   memcpy(vp, pos, sizeof pos);
-   memcpy(vp + stride, colr, sizeof colr);
+   if (g_onebuf) {
+      /* ONE buffer, two streams at the offsets scene_draw binds: [0, 256) = positions, [256, ...) = one flat red for all three vertices */
+      static const float red[12] = {1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1};
+      memcpy(vp, pos, 3 * 16);
+      memcpy(vp + 256, red, sizeof red);
+   } else {
+      memcpy(vp, pos, sizeof pos);
+      memcpy(vp + stride, colr, sizeof colr);
+   }
    UnmapMemory(dev, s->vbmem);
    CHECK(BindBufferMemory(dev, s->vb[0], s->vbmem, 0) == VK_SUCCESS, "bind vb0");
-   CHECK(BindBufferMemory(dev, s->vb[1], s->vbmem, stride) == VK_SUCCESS, "bind vb1");
+   if (!g_onebuf)
+      CHECK(BindBufferMemory(dev, s->vb[1], s->vbmem, stride) == VK_SUCCESS, "bind vb1");
 
    /* index buffer: u16 {0,1,2,2,1,3} at byte 0, u32 same at byte 16 */
    VkBufferCreateInfo ibi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 128,
@@ -694,8 +703,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       CmdSetBlendConstants(cb, g_fx.bc);
    }
    if (g_fx.dynpoly) CmdSetPolygonModeEXT_(cb, (VkPolygonMode)g_fx.poly);
-   VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
-   VkDeviceSize offs[2] = {0, 0};
+   VkBuffer vbs[2] = {s->vb[0], g_onebuf ? s->vb[0] : s->vb[1]};
+   VkDeviceSize offs[2] = {0, g_onebuf ? 256 : 0};
    if (g_st.on && g_st.dyn) {
       CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.cmask);
       CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, g_st.wmask);
@@ -1549,6 +1558,39 @@ px_at(struct scene *s, int x, int y)
    uint32_t v;
    memcpy(&v, s->px + y * s->pitch + x * g_colbpp, 4);
    return v;
+}
+
+/* H-A (notes/format-sweep.md): with ONE VkBuffer bound at two different offsets, does the attribute on binding 1 read
+ * binding 1's bytes? Binding 0 = offset 0 (the three positions), binding 1 = offset 256 (flat red for all three
+ * vertices); attribute 1 is the colour, so the centre pixel is red only if binding 1's descriptor kept its own VA.
+ * A packer that collapses the two bindings into one entry draws the positions as the colour (black). */
+static int
+test_attr_two_bindings(void)
+{
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_onebuf = 1;
+   int ok = scene_create(&s, 0);
+   float rot[1][4] = {{1, 0, 0, 0}};
+   if (ok) ok = scene_draw(&s, 1, rot, f);
+   g_onebuf = 0;
+   uint32_t got = 0;
+   const uint32_t want = 0xff0000ffu;   /* R=255 G=0 B=0 A=255 */
+   if (ok && !g_fake) {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0,
+                                 .size = VK_WHOLE_SIZE};
+      InvalidateMappedMemoryRanges(dev, 1, &mmr);
+      got = px_at(&s, W / 2, H / 2);
+      ok = got == want;
+      CHECK(ok, "attr_two_bindings: binding-1 attribute read %08x, want %08x (binding 0's stream?)", got, want);
+   }
+   printf("{\"test\":\"attr_two_bindings\",\"px\":\"%08x\",\"want\":\"%08x\",\"ok\":%s%s}\n", got, want, ok ? "true" : "false",
+          ok && g_fake ? ",\"skipped\":\"fake backend\"" : "");
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
 }
 
 struct st_case {
@@ -2906,6 +2948,7 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
    if (ok && CASE_ON("two")) ok &= test_two(0);
+   if (ok && g_only && CASE_ON("attr_two_bindings")) ok &= test_attr_two_bindings();   /* H-A: one VkBuffer bound at two offsets; explicit only (its frame is not in the goldens) */
    if (ok && CASE_ON("depth")) ok &= test_two(1);
    /* D16 / D32S8 depth attachments (the depth test result must match D32F) */
    if (ok && CASE_ON("load_depth")) ok &= test_load("load_depth", 0);

@@ -398,6 +398,21 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
       memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
    }
+   /* MALI_ATTR_DBG=1: the packed vertex attribute / buffer descriptors of every draw (which entry each attribute reads, and the
+    * VA each vertex binding starts at). Settles "two bindings on one VkBuffer read the other binding's bytes" on any backend. */
+   static int attr_dbg = -1;
+   if (attr_dbg < 0)
+      attr_dbg = getenv("MALI_ATTR_DBG") != NULL;
+   if (attr_dbg) {
+      fprintf(stderr, "mali_attr: set 0x%llx entries %u%s", (unsigned long long)o->vsset_va, vs_entries, s1 ? " (reused)\n" : "\n");
+      for (unsigned i = 0; i < g->nattr; i++)
+         fprintf(stderr, "mali_attr:   attr slot %u fmt %#x -> desc %u + offset %u stride %u\n", i, g->attr[i].pixfmt,
+                 KB_VS_ATTRS + 1 + g->attr[i].binding, g->attr[i].offset,
+                 g->dyn_stride && !g->attr[i].zero_div ? d->vb_stride[g->attr[i].binding] : g->attr[i].stride);
+      for (unsigned b = 0; b < nvb; b++)
+         fprintf(stderr, "mali_attr:   vbuf binding %u -> desc %u va 0x%llx size %u\n", b, KB_VS_ATTRS + 1 + b,
+                 (unsigned long long)d->vb_va[b], d->vb_size[b]);
+   }
    if (!s2) {
       /* resource table: entry 0 = driver set, 1.. = bound user sets, MALI_DYN_TABLE = the dynamic buffers (a table of its own); the entries between are never read */
       kb_draw_resource(vst, o->vsset_va, vs_entries * KB_DESC_SET_STRIDE, 1);
