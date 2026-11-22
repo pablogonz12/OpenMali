@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|quadsize|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|cull|quadsize|pointgrid|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -2073,6 +2073,53 @@ test_quadsize(void)
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
+/* pointgrid: 256 POINT_LIST vertices over a 16x16 grid. With the advertised pointSizeRange {1, 1} every point must cover
+ * exactly one pixel (256 of 65536) whatever gl_PointSize the shader writes. Before the fix the driver asked the tiler for a
+ * per-vertex point-size ARRAY it never filled, so the tiler read a NULL array and most points were dropped: 55 px on the
+ * X8 (G925). Run with --only pointgrid; pc.x is the gl_PointSize (1.0 and 4.0 are checked). */
+static int
+test_pointgrid(void)
+{
+   static const float sizes[3] = {1.0f, 4.0f, 16.0f};
+   static const int dims[2] = {16, 64};
+   for (int d = 0; d < 2; d++)
+   for (int k = 0; k < 3; k++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      g_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+      int okp = make_pipe(&t, "pointgrid.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 16, &lay, &pipe);
+      g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      if (!okp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      const float s[4] = {sizes[k], (float)dims[d], 0, 0};
+      CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+      CmdDraw(cb, (uint32_t)(dims[d] * dims[d]), 1, 0, 0);
+      CmdEndRenderPass(cb);
+      if (!cb_submit(&t, cb)) return 0;
+      if (!g_fake) {
+         unsigned nz = 0;
+         for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+               const uint8_t *q = pix(&t, x, y);
+               nz += (q[0] | q[1] | q[2]) != 0;
+            }
+         /* largePoints: a point of size s covers s x s px, so n points cover n * s^2 px. */
+         unsigned want = (unsigned)(dims[d] * dims[d]) * (unsigned)(sizes[k] * sizes[k]);
+         if (want > (unsigned)(W * H)) want = (unsigned)(W * H);   /* the target clips bigger points */
+         printf("{\"test\":\"pointgrid\",\"size\":%g,\"points\":%d,\"covered\":%u,\"want\":%u}\n", (double)sizes[k], dims[d] * dims[d], nz, want);
+         CHECK(nz + want / 8u + 32u >= want && nz <= want + want / 8u + 32u,
+               "%d points of gl_PointSize %g covered %u px, wanted about %u", dims[d] * dims[d], (double)sizes[k], nz, want);
+      } else {
+         printf("{\"test\":\"pointgrid\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+      }
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
    return 1;
 }
 
@@ -3705,7 +3752,7 @@ test_intdot(void)
             s8 += (int64_t)(int8_t)xb * (int8_t)yb;
             m8 += (int64_t)xb * (int8_t)yb;
          }
-         for (int k = 0; k < 2; k++) {
+         for (int k = 0; k < 3; k++) {
             uint32_t xh = (x >> (16 * k)) & 0xffff, yh = (y >> (16 * k)) & 0xffff;
             u16 += (int64_t)xh * yh;
             s16 += (int64_t)(int16_t)xh * (int16_t)yh;
@@ -4031,6 +4078,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("bda")) ok &= test_bda();
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("quadsize")) ok &= test_quadsize();
+   if (ok && CASE_ON("pointgrid")) ok &= test_pointgrid();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("robust2")) ok &= test_robust2();
