@@ -519,7 +519,7 @@ def smoke(a):
         draw_bin = b""
     draw_cases = [c for c in ONLY_DRAW if c.encode() + b"\0" in draw_bin] or ONLY_DRAW
     for n, extra in (("t_vk_draw", f"--loop {a.loop}"), ("t_vk_compute", "--loop 5"), ("t_vk_meta", ""), ("t_vk_feat", "")):
-        if not a.only:
+        if a.only is None:
             if n == "t_vk_feat":
                 runs.extend((n, f"--only {c}", c) for c in feat)
             else:
@@ -530,10 +530,10 @@ def smoke(a):
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
             if c in (draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
                 runs.append((n, f"{extra} --only {c}", c))
-    if a.only and not any(c for c in a.only.split(",")):
+    if a.only is not None and not any(c for c in a.only.split(",")):
         print("--only given with no case names; refusing to report an empty run as a pass", flush=True)
         return 2
-    if a.only:   # a requested case this route does not schedule must be reported, not silently skipped
+    if a.only is not None:   # a requested case this route does not schedule must be reported, not silently skipped
         ran = {oc for _, _, oc in runs if oc}
         missing = [c for c in a.only.split(",") if c and c not in ran]
         if missing:
@@ -584,7 +584,7 @@ def main():
     ap.add_argument("--sha", default="")
     ap.add_argument("--run", default="undim")
     ap.add_argument("--list")
-    ap.add_argument("--only", default="")
+    ap.add_argument("--only", default=None)   # None = the whole suite; "" is an explicit (empty) selection
     ap.add_argument("--out")
     ap.add_argument("--chunk", type=int, default=100)
     ap.add_argument("--wall", type=int, default=250)
@@ -603,11 +603,11 @@ def main():
     if not nodim:
         dim()
     try:
-        {"smoke": smoke, "daily": daily}[a.mode](a)
+        return {"smoke": smoke, "daily": daily}[a.mode](a)
     finally:
         if not nodim and not os.environ.get("SHELLROUTE_KEEP_DIM"):            # the idle sweep keeps the screen dark between chunks; farmd undims when it stops
             undim()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
