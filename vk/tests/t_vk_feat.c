@@ -2809,6 +2809,12 @@ test_samplecnt(void)
       if (r == VK_SUCCESS) {
          printf("{\"fail\":\"samplecnt %s: vkCreateImage accepted 4x although imageFormatProperties offered 0x%x\"}\n", q[i].n, ip.imageFormatProperties.sampleCounts);
          ok = 0;
+      } else if (r != VK_ERROR_FORMAT_NOT_SUPPORTED) {
+         /* any other error (out of memory, an invalid-handle mistake) is not the refusal this row is about: it must
+          * name the expected result, or a broken run would read as a pass */
+         printf("{\"fail\":\"samplecnt %s: vkCreateImage(4x) returned %d, want VK_ERROR_FORMAT_NOT_SUPPORTED (%d)\"}\n", q[i].n, r,
+                VK_ERROR_FORMAT_NOT_SUPPORTED);
+         ok = 0;
       }
    }
    printf("{\"test\":\"samplecnt\",\"limits\":{\"fbColor\":%u,\"fbDepth\":%u,\"fbStencil\":%u,\"fbNoAtt\":%u,\"smpColor\":%u,\"smpDepth\":%u,\"smpStencil\":%u,\"storage\":%u},\"ok\":%s}\n",
