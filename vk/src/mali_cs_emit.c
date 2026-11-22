@@ -1102,6 +1102,63 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    return 0;
 }
 
+/* GS lane 2 step (iii): the build-time half of a geometry-shader draw. Allocates one arena per draw (header, poly's vertex and
+ * geometry parameter blocks with the pull table, a zero count buffer, a scratch block, the vertex-output arena, the output index
+ * buffer), writes the blocks, and resolves what the records could not know: the header descriptor every kernel and the copy
+ * program read at table 9 index 31, and the rasterisation draw's index buffer VA. Runs before emit_pre_block and the draw loop.
+ * The arena comes from the descriptor arena (hw->alloc), so one draw is capped at GS_ARENA_MAX; the per-queue poly heap of
+ * compute-in-pass.md "Scratch" replaces this. */
+extern void mali_gs_fill_params(void *, void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint64_t,
+                                uint64_t, uint64_t) __attribute__((weak));
+#define GS_ARENA_MAX (8u << 20)
+static int
+gs_prepare(const struct mali_hw *hw, const struct mali_frame *f)
+{
+   for (unsigned i = 0; i < f->ndraws; i++) {
+      struct mali_gsdraw *g = f->draws[i].gs;
+      if (!g)
+         continue;
+      if (!mali_gs_fill_params)
+         return -ENOTSUP;
+      const unsigned pop = (unsigned)__builtin_popcountll(g->vs_outputs);
+      const uint64_t vs_bytes = (((uint64_t)g->nverts * g->ninst * pop * 16) + 63) & ~63ull;
+      const uint64_t idx_bytes = (((uint64_t)g->index_count * 4) + 63) & ~63ull;
+      const size_t off_vp = 64, off_gp = 448, off_cnt = 768, off_scr = 832, off_vs = 896;
+      const uint64_t total = off_vs + vs_bytes + idx_bytes;
+      if (total > GS_ARENA_MAX)
+         return -ENOMEM;
+      uint64_t va = 0;
+      uint8_t *p = A(hw, (size_t)total, 64, &va);
+      if (!p)
+         return -ENOMEM;
+      g->hdr_va = va;
+      g->index_va = va + off_vs + vs_bytes;
+      mali_gs_fill_params(p + off_vp, p + off_gp, g->max_indices, g->shape, g->count_words, g->nverts, g->ninst, g->vs_outputs,
+                          va + off_vs, g->index_va, va + off_cnt, va + off_scr);
+      /* the pull table behind the 64-byte vertex param block (mali_gs_poly.c MALI_GS_VP_EXTRA) */
+      uint32_t *ex = (uint32_t *)(p + off_vp + 64);
+      ex[0] = g->first_vertex;
+      ex[1] = g->first_instance;
+      for (unsigned k = 0; k < g->nattr; k++) {
+         uint8_t *e = (uint8_t *)ex + 16 + 16 * k;
+         memcpy(e, &g->attr[k].va, 8);
+         memcpy(e + 8, &g->attr[k].stride, 4);
+         memcpy(e + 12, &g->attr[k].inst, 4);
+      }
+      uint64_t hdr[4] = {0, va + off_vp, 0, va + off_gp};   /* tess, vertex params, vs_outputs (TCS only), geometry params */
+      memcpy(p, hdr, sizeof hdr);
+      memset(g->hdr_desc, 0, sizeof g->hdr_desc);
+      g->hdr_desc[0] = 9u | (1u << 4);   /* Buffer descriptor, size in bytes (mali_pack_buffer) */
+      g->hdr_desc[1] = 32;
+      g->hdr_desc[2] = (uint32_t)va;
+      g->hdr_desc[3] = (uint32_t)(va >> 32);
+   }
+   for (unsigned i = 0; i < f->npre; i++)
+      if (f->pre[i].gs)
+         memcpy(((struct mali_pre *)&f->pre[i])->d.dyn_desc[MALI_TESS_PARAM_IDX], f->pre[i].gs->hdr_desc, 32);
+   return 0;
+}
+
 /* The pre block (compute-in-pass.md): the per-draw kernels of a render pass (tessellation VS/TCS/tessellator, geometry-shader
  * count/prefix-sum/main) run at the head of the pass' own frame, before draw 0 - the Asahi `pre_gfx` form (hk_cmd_buffer.h:487-490).
  * Same queue, same endpoint slot, no new scoreboard slot: the only waits are `WAIT 1<<slot` after a wave's RUN_COMPUTEs and
@@ -1252,6 +1309,8 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
+   if ((rc = gs_prepare(hw, f)))
+      goto out;
    if (f->npre && (rc = emit_pre_block(&c, hw, f)))
       goto out;
    if (geometry) {
@@ -1543,6 +1602,10 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
    x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
    x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
    x->ind_stride = r->ind_stride; x->ind_va = r->ind_va; x->ind_nodrain = r->ind_nodrain; x->occ_mode = r->occ_mode;
+   if (r->gs) {   /* resolved by gs_prepare before the records are expanded */
+      x->index_va = r->gs->index_va;
+      memcpy(x->dyn_desc[MALI_TESS_PARAM_IDX], r->gs->hdr_desc, 32);
+   }
 }
 
 void

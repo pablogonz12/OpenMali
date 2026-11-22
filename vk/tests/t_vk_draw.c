@@ -3359,7 +3359,10 @@ test_gs_amplify(void)
    if (!scene_create(&a, 0))
       return 0;
    g_gs = "gs_amp2.geom.spv";
-   if (!scene_create(&b, 0)) {   /* the refusal prints its reason under MALI_PIPE_DBG */
+   setenv("MALI_GS_POLY_DRAW", "1", 1);   /* the poly draw path of lane 2 step (iii) */
+   const int b_ok = scene_create(&b, 0);
+   unsetenv("MALI_GS_POLY_DRAW");
+   if (!b_ok) {   /* the refusal prints its reason under MALI_PIPE_DBG */
       printf("{\"test\":\"gs_amplify\",\"ok\":false,\"pending\":\"GS pipeline refused: run with MALI_PIPE_DBG=1 for "
              "lane 2 step (ii)'s compile report; the record path is step (iii)\"}\n");
       g_gs = NULL;
@@ -3369,8 +3372,10 @@ test_gs_amplify(void)
    }
    int ok = 0;
    if (g_fake) {
-      printf("{\"test\":\"gs_amplify\",\"skipped\":\"fake backend: pipelines only\",\"ok\":true}\n");
-      ok = 1;
+      /* the fake backend executes nothing: it proves the record + frame build + command stream of the GS draw (pre block, arena,
+       * header descriptor) go through without an error; the pixel count is the device's job */
+      ok = scene_draw(&b, 1, rot, fence);
+      printf("{\"test\":\"gs_amplify\",\"skipped\":\"fake backend: record and build only\",\"ok\":%s}\n", ok ? "true" : "false");
       goto out;
    }
    if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
