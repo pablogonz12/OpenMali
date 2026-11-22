@@ -3472,6 +3472,10 @@ test_vsstore(void)
       /* The spec only requires at least one execution per vertex, but the driver's contract here is exactly one: the
        * position|attribute IDVS instance runs the store and the atomic, the per-tile varying instance skips them
        * (mali_compile.c lower_vs_side_effects). 12 was the bug of #372, so the count is exact. */
+      if (b[0] != 6) {   /* which vertex indices ran? data[i] = i+1 says lane i stored; oldc[i] = its atomicAdd return */
+         printf("{\"diag\":\"vsstore\",\"count\":%u,\"data\":[%u,%u,%u,%u,%u,%u,%u,%u],\"oldc\":[%u,%u,%u,%u,%u,%u,%u,%u]}\n", b[0],
+                b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], b[16], b[17]);
+      }
       CHECK(b[0] == 6, "vsstore: atomicAdd counter %u, expected exactly 6 (an IDVS instance repeated the VS side effect)", b[0]);
       CHECK(b[1] == 5, "vsstore: atomicMax %u expected 5", b[1]);
       {   /* the return values: the first atomicMax saw the initialized 3, every other one 5. A driver that updates maxi
