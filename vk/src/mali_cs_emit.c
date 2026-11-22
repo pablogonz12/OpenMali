@@ -26,6 +26,9 @@
 #include "kbase_fb.h"
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
+
+/* free scoreboard slot (0 = LS, 3 = endpoint jobs) for the fragment job's completion signal */
+#define MALI_SLOT_FRAGMENT 4
 #include "mali_event.h"
 #include "mali_blend.h"
 
