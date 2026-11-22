@@ -55,6 +55,112 @@ E(struct cs *c, uint64_t i)
    c->v[c->n++] = i;
 }
 
+/* ---- MALI_PROF=2: the CPU cost split, per draw ----
+ * One cached getenv, one branch per sample site when off. When on, each draw costs two extra clock reads (desc/emit) plus
+ * two for same_draw_words; the per-draw samples are kept to P2_MAXS (a 5 000-draw frame fits) and turned into p50/p95 by
+ * the report, so the numbers below the report line are the distribution, not an average. */
+#define P2_MAXS 16384
+static int g_p2 = -1;                          /* -1 unknown, 0 off, 1 on */
+static double g_p2_cat[MALI_P2_NCAT];
+static double g_p2_samp[MALI_P2_NCAT][P2_MAXS];
+static unsigned g_p2_n[MALI_P2_NCAT];
+static double g_p2_reuse_ns;                   /* same_draw_words + dwp_of for the current frame */
+static unsigned g_p2_same, g_p2_words;         /* draws that matched the previous one; CS words emitted */
+
+bool
+mali_prof2_on(void)
+{
+   if (g_p2 < 0) {
+      const char *e = getenv("MALI_PROF");
+      g_p2 = e && !strcmp(e, "2");
+   }
+   return g_p2;
+}
+
+double
+mali_prof2_now(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return (double)t.tv_sec * 1e9 + (double)t.tv_nsec;
+}
+
+void
+mali_prof2_sample(unsigned cat, double ns)
+{
+   if (cat >= MALI_P2_NCAT)
+      return;
+   g_p2_cat[cat] += ns;
+   if (g_p2_n[cat] < P2_MAXS)
+      g_p2_samp[cat][g_p2_n[cat]++] = ns;
+}
+
+void
+mali_prof2_take(double *desc_ns, double *emit_ns, double *reuse_ns, unsigned *nsame, unsigned *words)
+{
+   *desc_ns = g_p2_cat[MALI_P2_DESC];
+   *emit_ns = g_p2_cat[MALI_P2_EMIT];
+   *reuse_ns = g_p2_reuse_ns;
+   *nsame = g_p2_same;
+   *words = g_p2_words;
+}
+
+static int
+p2_cmp(const void *a, const void *b)
+{
+   double x = *(const double *)a, y = *(const double *)b;
+   return (x > y) - (x < y);
+}
+
+/* p-th percentile of a sample set, ns. Copies before sorting: the samples are kept for the next percentile. */
+static double
+p2_pct(const double *v, unsigned n, double p)
+{
+   if (!n)
+      return 0;
+   double *t = malloc(n * sizeof *t);
+   if (!t)
+      return 0;
+   memcpy(t, v, n * sizeof *t);
+   qsort(t, n, sizeof *t, p2_cmp);
+   unsigned i = (unsigned)(p / 100.0 * (double)(n - 1) + 0.5);
+   double r = t[i < n ? i : n - 1];
+   free(t);
+   return r;
+}
+
+void
+mali_prof2_report(unsigned nframes, unsigned ndraws, double rec_ns, double desc_ns, double emit_ns,
+                  double submit_ns, double reap_ns)
+{
+   if (!mali_prof2_on())
+      return;
+   const double nd = ndraws ? (double)ndraws : 1;
+   /* Cost of one clock read on this machine: with MALI_PROF=2 a draw pays ~6 of them, so subtract 6x this from the per-draw
+    * numbers to get the driver's own cost. Printed, not subtracted, so the raw samples above stay traceable. */
+   double p2_c0 = mali_prof2_now();
+   for (unsigned i = 0; i < 1000; i++)
+      mali_prof2_now();
+   const double clock_ns = (mali_prof2_now() - p2_c0) / 1001.0;
+   fprintf(stderr,
+           "PROF2 ndraws=%u nframes=%u | rec %.1fus (%.3f/d) desc %.1fus (%.3f/d) emit %.1fus (%.3f/d) submit %.1fus reap %.1fus "
+           "| total %.1fus (%.3f/d) | drec p50 %.0f p95 %.0f | desc p50 %.0f p95 %.0f | emit p50 %.0f p95 %.0f ns "
+           "| same %u/%u words %u (%.1f/d) reuse %.1fus clock %.1fns\n",
+           ndraws, nframes, rec_ns / 1e3, rec_ns / 1e3 / nd, desc_ns / 1e3, desc_ns / 1e3 / nd, emit_ns / 1e3,
+           emit_ns / 1e3 / nd, submit_ns / 1e3, reap_ns / 1e3, (rec_ns + desc_ns + emit_ns + submit_ns + reap_ns) / 1e3,
+           (rec_ns + desc_ns + emit_ns + submit_ns + reap_ns) / 1e3 / nd, p2_pct(g_p2_samp[MALI_P2_REC], g_p2_n[MALI_P2_REC], 50),
+           p2_pct(g_p2_samp[MALI_P2_REC], g_p2_n[MALI_P2_REC], 95), p2_pct(g_p2_samp[MALI_P2_DESC], g_p2_n[MALI_P2_DESC], 50),
+           p2_pct(g_p2_samp[MALI_P2_DESC], g_p2_n[MALI_P2_DESC], 95), p2_pct(g_p2_samp[MALI_P2_EMIT], g_p2_n[MALI_P2_EMIT], 50),
+           p2_pct(g_p2_samp[MALI_P2_EMIT], g_p2_n[MALI_P2_EMIT], 95), g_p2_same, ndraws, g_p2_words,
+           g_p2_words / nd, g_p2_reuse_ns / 1e3, clock_ns);
+   for (unsigned c = 0; c < MALI_P2_NCAT; c++) {
+      g_p2_cat[c] = 0;
+      g_p2_n[c] = 0;
+   }
+   g_p2_reuse_ns = 0;
+   g_p2_same = g_p2_words = 0;
+}
+
 static bool
 known(const struct cs *c, unsigned r, uint32_t v)
 {
@@ -1061,6 +1167,12 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    struct mali_draw mod;           /* polygonMode LINE/POINT draw rewritten to a list */
    int rc = 0;
    uint64_t va_smp = 0, va_tctx = 0, va_fbd = 0, va_tsd = 0;
+   const bool p2 = mali_prof2_on();   /* MALI_PROF=2: time the per-draw descriptor build, the reuse test and the CS emit */
+   if (p2) {
+      /* same/words accumulate over every frame of the command buffer: only the report resets them */
+      g_p2_cat[MALI_P2_DESC] = g_p2_cat[MALI_P2_EMIT] = 0;
+      g_p2_reuse_ns = 0;
+   }
 
    if (f->nops)
       return mali_ops_build(env, f->ops, f->nops, out, nout);
@@ -1156,13 +1268,23 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          /* zeroed like the array it replaces: build_draw_descs leaves the fields of a reused group to the previous draw, and
           * the blend words (bl23) are only written on the path that rebuilds them */
          memset(&dd, 0, sizeof dd);
+         double p2_d0 = p2 ? mali_prof2_now() : 0;
          if ((rc = build_draw_descs(hw, f, dr, &dd, i ? &pv : NULL, i ? &dd_prev : NULL)))
             goto out;
+         double p2_d1 = p2 ? mali_prof2_now() : 0;   /* MALI_PROF=2: descriptor/state blocks are done, the CS emit starts */
+         if (p2)
+            mali_prof2_sample(MALI_P2_DESC, p2_d1 - p2_d0);
+         double p2_r0 = p2 ? mali_prof2_now() : 0;
          const bool same_words = same_draw_words(have_dwp ? &dwp_prev : NULL, dr);
-         emit_draw_regs(&c, env, f, dr, &dd, va_tsd, va_tctx, same_words);
          dwp_of(&dwp_cur, dr);
          dwp_prev = dwp_cur;
          have_dwp = true;
+         if (p2) {
+            g_p2_reuse_ns += mali_prof2_now() - p2_r0;
+            g_p2_same += same_words;
+         }
+         const unsigned p2_w0 = c.n;
+         emit_draw_regs(&c, env, f, dr, &dd, va_tsd, va_tctx, same_words);
          if (i == 0) {
             M48(&c, R->heap, env->heap_ctx_va);
             E(&c, kb_cs_heap_set(R->heap));
@@ -1174,6 +1296,10 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          M64(&c, v13 ? KB13_IDVS_VERTEX_FAU : KB_IDVS_VERTEX_FAU, dd.vfau);
          M64(&c, v13 ? KB13_IDVS_FRAGMENT_FAU : KB_IDVS_FRAGMENT_FAU, dd.ffau);
          E(&c, v13 ? kb13_cs_run_idvs2(0, 0) : kb_cs_run_idvs());
+         if (p2) {
+            mali_prof2_sample(MALI_P2_EMIT, mali_prof2_now() - p2_d1);
+            g_p2_words += c.n - p2_w0;
+         }
          if (check_dirty())
             pv = *dr;
          else {

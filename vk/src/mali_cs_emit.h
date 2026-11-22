@@ -262,7 +262,28 @@ struct mali_frame {
     * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
    bool any_ind, poly_cpu;
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
+   /* MALI_PROF=2 only (mali_prof2_*): CPU time this frame's draws cost in mali_CmdDraw/DrawIndexed (0 otherwise) */
+   double p_rec_ns;
 };
+
+/* ---- MALI_PROF=2: where a frame's CPU time goes, per draw (instrumentation; off unless MALI_PROF=2) ----
+ * Categories: recording (mali_cmd.c: snapshot_draw + slot), descriptor/state blocks (build_draw_descs), command-stream
+ * emit (emit_draw_regs + registers), and the same_draw_words reuse test inside the emit phase. Submit is timed in
+ * mali_cmd_submit. MALI_PROF=2 also turns on the older MALI_PROF lines (they only print every 100-200 calls). */
+enum {
+   MALI_P2_REC = 0,  /* a draw's recording in mali_cmd.c */
+   MALI_P2_DESC,     /* build_draw_descs: descriptors, FAU, blend words */
+   MALI_P2_EMIT,     /* emit_draw_regs + FAU/heap/run words for one draw */
+   MALI_P2_NCAT
+};
+bool mali_prof2_on(void);                 /* MALI_PROF=2, cached (one getenv per process) */
+double mali_prof2_now(void);              /* CLOCK_MONOTONIC in ns */
+void mali_prof2_sample(unsigned cat, double ns);   /* one draw's cost in `cat` (kept for p50/p95) */
+/* Totals of the last mali_frame_build call (that call resets them). */
+void mali_prof2_take(double *desc_ns, double *emit_ns, double *reuse_ns, unsigned *nsame, unsigned *words);
+/* One line per submitted command buffer, then the per-draw samples are dropped. */
+void mali_prof2_report(unsigned nframes, unsigned ndraws, double rec_ns, double desc_ns, double emit_ns,
+                       double submit_ns, double reap_ns);
 
 struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
 /* Call once per committed record: keeps f->any_ind / f->poly_cpu / f->cur_pipe up to date (mali_cmd_submit's per-frame

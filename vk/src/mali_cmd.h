@@ -105,6 +105,7 @@ struct mali_cmd_buffer {
    struct mali_memory *wrote[MALI_CMD_WROTE_MAX];
    unsigned nwrote;
    bool wrote_full;
+   double p_bind_ns;   /* MALI_PROF=2 only: vkCmdBind* time since the last draw, charged to that draw by p2_draw_end */
 };
 
 static inline struct mali_cmd_buffer *

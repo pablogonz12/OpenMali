@@ -202,6 +202,8 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
       return;
    }
    struct mali_gfx_state ng;
+   const bool p2 = mali_prof2_on();
+   const double p2_t0 = p2 ? mali_prof2_now() : 0;
    memset(&ng, 0, sizeof ng);
    if (!g_res.pipeline || g_res.pipeline(p, &ng)) {
       cmd->have_gfx = false;
@@ -221,6 +223,8 @@ mali_CmdBindPipeline(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline p)
          vk_cmd_set_dynamic_graphics_state(&cmd->vk, pd);
    }
    cmd->have_gfx = true;
+   if (p2)
+      cmd->p_bind_ns += mali_prof2_now() - p2_t0;
 }
 
 void
@@ -263,6 +267,8 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
    CMD(h);
    VK_FROM_HANDLE(vk_pipeline_layout, pl, layout);
    uint32_t used = 0;
+   const bool p2 = mali_prof2_on();
+   const double p2_t0 = p2 ? mali_prof2_now() : 0;
    for (uint32_t i = 0; i < n; i++) {
       unsigned s = first + i;
       if (s >= MALI_CMD_SETS) {
@@ -308,12 +314,16 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          cmd->dirty |= MALI_D_BIND;
       }
    }
+   if (p2)
+      cmd->p_bind_ns += mali_prof2_now() - p2_t0;
 }
 
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const VkBuffer *bufs, const VkDeviceSize *offs)
 {
    CMD(h);
+   const bool p2 = mali_prof2_on();
+   const double p2_t0 = p2 ? mali_prof2_now() : 0;
    for (uint32_t i = 0; i < n; i++) {
       unsigned b = first + i;
       if (b >= MALI_MAX_VB) {
@@ -329,6 +339,8 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
          cmd->dirty |= MALI_D_BIND;
       }
    }
+   if (p2)
+      cmd->p_bind_ns += mali_prof2_now() - p2_t0;
 }
 
 static const uint8_t *buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need);
@@ -404,6 +416,18 @@ mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
 }
 
 /* ---- draws ---- */
+/* MALI_PROF=2: attribute this draw's recording — the draw call itself plus the binds since the previous draw — to it. */
+static inline void
+p2_draw_end(struct mali_cmd_buffer *cmd, bool on, double t0)
+{
+   if (!on)
+      return;
+   double ns = mali_prof2_now() - t0 + cmd->p_bind_ns;
+   cmd->p_bind_ns = 0;
+   cmd->cur.p_rec_ns += ns;
+   mali_prof2_sample(MALI_P2_REC, ns);
+}
+
 static bool
 snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
 {
@@ -631,6 +655,8 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
       unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
       return;
    }
+   const bool p2 = mali_prof2_on();
+   const double p2_t0 = p2 ? mali_prof2_now() : 0;
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
    if (!sl || !snapshot_draw(cmd, sl, vcount, icount, first, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -638,6 +664,7 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
    }
    cmd->cur.ndraws++;
    mali_frame_note_rec(&cmd->cur, sl);
+   p2_draw_end(cmd, p2, p2_t0);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -658,6 +685,8 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
       return;
    }
+   const bool p2 = mali_prof2_on();
+   const double p2_t0 = p2 ? mali_prof2_now() : 0;
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
    if (!sl || !snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -671,6 +700,7 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    sl->first_index = first;
    cmd->cur.ndraws++;
    mali_frame_note_rec(&cmd->cur, sl);
+   p2_draw_end(cmd, p2, p2_t0);
 }
 
 /* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
@@ -689,6 +719,8 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
 {
    CMD(h);
    struct mali_rec d;
+   const bool p2 = mali_prof2_on();
+   const double p2_t0 = p2 ? mali_prof2_now() : 0;
    if (!cmd->in_render || !cmd->have_gfx || (indexed && !cmd->ib_va)) {
       unsupported(cmd, "indirect draw outside a rendering, without a pipeline or index buffer");
       return;
@@ -727,6 +759,7 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
    d.ind_stride = stride;
    if (mali_frame_add_rec(&cmd->cur, &d))
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+   p2_draw_end(cmd, p2, p2_t0);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1578,8 +1611,15 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    uint64_t *all = NULL;
    unsigned nall = 0, capall = 0, counted = 0;
    VkResult res = VK_SUCCESS;
+   /* MALI_PROF=2: the per-frame CPU cost split (recording, descriptor build, CS emit, submit) of this command buffer */
+   const bool p2 = mali_prof2_on();
+   double p2_rec = 0, p2_desc = 0, p2_emit = 0, p2_submit = 0, p2_reap = 0;
+   unsigned p2_ndraws = 0, p2_frames = 0;
+   const double p2_r0 = p2 ? mali_prof2_now() : 0;
    if (g_hw.job_begin)
       g_hw.job_begin(g_hw.user);   /* once per command buffer: all its frames form one submission */
+   if (p2)
+      p2_reap = mali_prof2_now() - p2_r0;   /* reaping the previous submissions (hw_retire) happens here */
    /* M15: hand the GPU-write marks to the backend before the submission that performs them, so the fence wait
     * for it CSYNCs exactly these BOs. An unplaced write (wrote_full) asks for one full sweep. */
    if (g_hw.bo_wrote) {
@@ -1617,6 +1657,16 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       uint64_t *cs = NULL;
       unsigned n = 0;
       int rc = mali_frame_build(&g_hw, &fr, &cs, &n);
+      if (p2) {
+         double d, e, r;
+         unsigned same, words;
+         mali_prof2_take(&d, &e, &r, &same, &words);
+         p2_desc += d;
+         p2_emit += e;
+         p2_rec += fr.p_rec_ns;
+         p2_ndraws += fr.ndraws;
+         p2_frames++;
+      }
       if (ind)
          free(fr.draws);
       if (rc) {
@@ -1648,12 +1698,17 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();
+      const double p2_s0 = p2 ? mali_prof2_now() : 0;
       int rc = g_hw.submit_multi(g_hw.user, all, nall, counted);
+      if (p2)
+         p2_submit = mali_prof2_now() - p2_s0;
       if (rc)
          res = VK_ERROR_DEVICE_LOST;
    } else if (res != VK_SUCCESS && counted) {
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
    }
+   if (p2)
+      mali_prof2_report(p2_frames, p2_ndraws, p2_rec, p2_desc, p2_emit, p2_submit, p2_reap);
    free(all);
    return res;
 }
