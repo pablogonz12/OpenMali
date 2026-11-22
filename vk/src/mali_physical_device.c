@@ -63,7 +63,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxImageDimensionCube = MALI_MAX_DIM_2D,
       .maxImageArrayLayers = MALI_MAX_LAYERS,
       .maxTexelBufferElements = 65536,
-      .maxUniformBufferRange = 16384,
+      .maxUniformBufferRange = 65536,   /* GL_MAX_UNIFORM_BLOCK_SIZE's GL 4.x minimum, and what a Valhall UBO descriptor's size field
+                                         * carries. zink reads it straight into that GL limit (zink_screen.c:610-612). PanVK advertises
+                                         * 1 MiB on the same hardware (panvk_vX_physical_device.c:873); 64 KiB is the number a GL 4.x
+                                         * client requires and this driver can back with a single Buffer descriptor. */
       .maxStorageBufferRange = 1u << 27,
       .maxPushConstantsSize = 256,   /* 64 FAU words. Hardware: 64 FAU slots = 128 words (Mesa pan_compiler.h PAN_MAX_PUSH, all known
                                       * Bifrost/Valhall); PanVK advertises 256 on the same GPUs. VS/reserved words 0..9 leave 118
@@ -72,7 +75,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxSamplerAllocationCount = 4000,
       .bufferImageGranularity = 1,
       .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
-      .maxPerStageDescriptorSamplers = 16,
+      .maxPerStageDescriptorSamplers = 32,   /* zink caps GL_MAX_TEXTURE_IMAGE_UNITS at PIPE_MAX_SAMPLERS = 32
+                                        * (zink_screen.c:643-646: min(samplers, sampled_images, PIPE_MAX_SAMPLERS)), so 32 is the most
+                                        * that can become visible; the descriptor tables already index 2^20 per set. */
       .maxPerStageDescriptorUniformBuffers = ubo_count,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table
                                                      * and the SRT descriptor index is 24 bits (third_party/mesa compiler/pan_compiler.h:610-636;
                                                      * PanVK, "Hardware limit is 2^24 each of buffer, texture, and sampler descriptors",
@@ -80,9 +85,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
                                                      * maxPerStageResources = 128: a stage cannot reference more descriptors than that,
                                                      * so 128 is the honest per-stage UBO ceiling. 12 was the Vulkan 1.0 textbook minimum and
                                                      * made zink report 11 const buffers, one short of ARB_uniform_buffer_object. */
-      .maxPerStageDescriptorStorageBuffers = 4,
-      .maxPerStageDescriptorSampledImages = 16,
-      .maxPerStageDescriptorStorageImages = 4,
+      .maxPerStageDescriptorStorageBuffers = 8,   /* GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS is 8 from GL 4.3 (zink_screen.c:648-650
+                                                   * min()s this with PIPE_MAX_SHADER_BUFFERS); the sets already allow 24. */
+      .maxPerStageDescriptorSampledImages = 32,
+      .maxPerStageDescriptorStorageImages = 8,   /* GL_MAX_IMAGE_UNITS is 8 from GL 4.3 (zink_screen.c:671-674 min()s this with
+                                                 * ZINK_MAX_SHADER_IMAGES = 32); the sets already allow 24. */
       .maxPerStageDescriptorInputAttachments = 4,
       .maxPerStageResources = 128,
       .maxDescriptorSetSamplers = 96,
@@ -183,8 +190,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
       .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
-      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
-      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 8,
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 8, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
       .maxPerStageUpdateAfterBindResources = 500000,
       .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
       .maxDescriptorSetUpdateAfterBindUniformBuffers = ubo_set_count, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,

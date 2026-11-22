@@ -3498,6 +3498,98 @@ test_privdata(void)
 }
 
 /* fragmentStoresAndAtomics: see fsstore.frag. Checks the SSBO (stores + atomicAdd/atomicMax), and the storage image (copied back). */
+/* GL 4.0-4.5 limits zink derives straight from Vulkan limits, each asserted against the GL 4.5 core minimum and then
+ * exercised for real (a 64 KiB UBO, 32 combined image samplers, 8 storage buffers and 8 storage images in one set -
+ * that is where a self-imposed packing cap would show). zink lines: maxUniformBufferRange -> GL_MAX_UNIFORM_BLOCK_SIZE
+ * (zink_screen.c:610-612), per-stage samplers/sampled images -> GL_MAX_TEXTURE_IMAGE_UNITS (:643-646), storage buffers
+ * -> GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (:648-650), storage images -> GL_MAX_IMAGE_UNITS (:671-674). */
+static int
+test_gl43caps(void)
+{
+   const VkPhysicalDeviceLimits *L = &g_props.limits;
+   enum { NSAMP = 32, NSSBO = 8, NIMG = 8 };
+   CHECK(L->maxUniformBufferRange >= 65536, "maxUniformBufferRange %u < 65536 (GL_MAX_UNIFORM_BLOCK_SIZE, GL 4.x)",
+         L->maxUniformBufferRange);
+   CHECK(L->maxPerStageDescriptorSamplers >= NSAMP && L->maxPerStageDescriptorSampledImages >= NSAMP,
+         "per-stage samplers %u / sampled images %u < %d (GL_MAX_TEXTURE_IMAGE_UNITS)",
+         L->maxPerStageDescriptorSamplers, L->maxPerStageDescriptorSampledImages, NSAMP);
+   CHECK(L->maxPerStageDescriptorStorageBuffers >= NSSBO, "per-stage storage buffers %u < %d (GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, GL 4.3)",
+         L->maxPerStageDescriptorStorageBuffers, NSSBO);
+   CHECK(L->maxPerStageDescriptorStorageImages >= NIMG, "per-stage storage images %u < %d (GL_MAX_IMAGE_UNITS, GL 4.3)",
+         L->maxPerStageDescriptorStorageImages, NIMG);
+
+   struct hbuf ubo, ssbo;
+   CHECK(hbuf_create(&ubo, 65536, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT), "64 KiB uniform buffer");
+   CHECK(hbuf_create(&ssbo, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "storage buffer");
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 64, 64, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory imem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &imem) == VK_SUCCESS, "image memory");
+   CHECK(BindImageMemory(dev, img, imem, 0) == VK_SUCCESS, "bind image");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                               .format = VK_FORMAT_R8G8B8A8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "view");
+   VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+   VkSampler smp;
+   CHECK(CreateSampler(dev, &sci, NULL, &smp) == VK_SUCCESS, "sampler");
+
+   VkDescriptorSetLayoutBinding lb[4] = {
+      {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = NSAMP, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = NSSBO, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = NIMG, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 4, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl with 32 samplers + 8 SSBOs + 8 images");
+   VkDescriptorPoolSize ps[4] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, NSAMP},
+                                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NSSBO}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, NIMG}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 4, .pPoolSizes = ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+
+   VkDescriptorBufferInfo binfo = {ubo.b, 0, VK_WHOLE_SIZE};
+   VkDescriptorBufferInfo sinfo[NSSBO];
+   VkDescriptorImageInfo ii[NSAMP], si[NIMG];
+   for (int i = 0; i < NSAMP; i++)
+      ii[i] = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   for (int i = 0; i < NSSBO; i++)
+      sinfo[i] = (VkDescriptorBufferInfo){ssbo.b, 0, VK_WHOLE_SIZE};
+   for (int i = 0; i < NIMG; i++)
+      si[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &binfo},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = NSAMP,
+       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 2, .descriptorCount = NSSBO,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = sinfo},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 3, .descriptorCount = NIMG,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = si}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   printf("{\"test\":\"gl43caps\",\"uboRange\":%u,\"samplers\":%u,\"sampledImages\":%u,\"storageBuffers\":%u,"
+          "\"storageImages\":%u,\"set\":\"1 ubo(64K) + 32 samplers + 8 ssbo + 8 images\",\"ok\":true}\n",
+          L->maxUniformBufferRange, L->maxPerStageDescriptorSamplers, L->maxPerStageDescriptorSampledImages,
+          L->maxPerStageDescriptorStorageBuffers, L->maxPerStageDescriptorStorageImages);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroySampler(dev, smp, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, imem, NULL);
+   return 1;
+}
+
 static int
 test_fsstore(void)
 {
@@ -4219,6 +4311,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
+   if (ok && CASE_ON("gl43caps")) ok &= test_gl43caps();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
