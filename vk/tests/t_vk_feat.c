@@ -2046,6 +2046,8 @@ static int
 test_pointgrid(void)
 {
    static const float sizes[3] = {1.0f, 4.0f, 16.0f};
+   static const int dims[2] = {16, 64};
+   for (int d = 0; d < 2; d++)
    for (int k = 0; k < 3; k++) {
       struct tgt t;
       if (!tgt_create(&t)) return 0;
@@ -2058,9 +2060,9 @@ test_pointgrid(void)
       VkCommandBuffer cb = cb_begin(&t);
       CHECK(cb, "cmdbuf");
       begin_pass(cb, &t, pipe);
-      const float s[4] = {sizes[k], 0, 0, 0};
+      const float s[4] = {sizes[k], (float)dims[d], 0, 0};
       CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
-      CmdDraw(cb, 256, 1, 0, 0);
+      CmdDraw(cb, (uint32_t)(dims[d] * dims[d]), 1, 0, 0);
       CmdEndRenderPass(cb);
       if (!cb_submit(&t, cb)) return 0;
       if (!g_fake) {
@@ -2070,13 +2072,12 @@ test_pointgrid(void)
                const uint8_t *q = pix(&t, x, y);
                nz += (q[0] | q[1] | q[2]) != 0;
             }
-         printf("{\"test\":\"pointgrid\",\"size\":%g,\"points\":256,\"covered\":%u}\n", (double)sizes[k], nz);
-         /* both sizes must give 1 px per point: the advertised pointSizeRange is {1, 1} (mali_physical_device.c:148) and
-          * mali_cs_emit.c sizes a point draw from that fixed value, so a larger gl_PointSize is clamped by contract. */
-         /* largePoints: a point of size s covers s x s px, so 256 points cover 256 * s^2 (256 / 4096 / 65536 here). */
-         unsigned want = 256u * (unsigned)(sizes[k] * sizes[k]);
+         /* largePoints: a point of size s covers s x s px, so n points cover n * s^2 px. */
+         unsigned want = (unsigned)(dims[d] * dims[d]) * (unsigned)(sizes[k] * sizes[k]);
+         if (want > (unsigned)(W * H)) want = (unsigned)(W * H);   /* the target clips bigger points */
+         printf("{\"test\":\"pointgrid\",\"size\":%g,\"points\":%d,\"covered\":%u,\"want\":%u}\n", (double)sizes[k], dims[d] * dims[d], nz, want);
          CHECK(nz + want / 8u + 32u >= want && nz <= want + want / 8u + 32u,
-               "256 points of gl_PointSize %g covered %u px, wanted about %u", (double)sizes[k], nz, want);
+               "%d points of gl_PointSize %g covered %u px, wanted about %u", dims[d] * dims[d], (double)sizes[k], nz, want);
       } else {
          printf("{\"test\":\"pointgrid\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
       }
