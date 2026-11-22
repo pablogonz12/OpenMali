@@ -716,7 +716,21 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
    }
 }
 
-/* Every submission is serialised by the queue (a frame is built and retired before the next one), so barriers have nothing to do. */
+/* Nothing to do here, and the reason is NOT that the queue serialises submissions (one submission carries every frame of the
+ * command buffer, and the GPU runs them back to back). What makes a barrier's ordering observable is the retire rule
+ * instead: the end-of-command-buffer retire word is only added after every scoreboard slot of the frame has drained
+ * (mali_cs_emit.c, kb_cs_wait(0xffff) + kb_cs_sync_add64), and the head of every frame invalidates the other caches (0x002)
+ * after waiting them; a frame that follows a host write additionally cleans+invalidates L2 and LSC (0x332, see
+ * mali_cmd.c's host_write_pending), which is what a reader of an earlier frame's writes needs.
+ * The rule covers the frame paths that use it: a draw/compute frame is built by mali_cs_emit.c (graphics) or build_compute,
+ * and ends with that drain. An event/timestamp ops frame (mali_ops_build, mali_event.c) posts its own SYNC_ADD64 without a
+ * scoreboard drain and carries no rendering work, so the guarantee above is not a claim about ops frames.
+ * Keep that invariant if you touch either side.
+ *
+ * Limitation, stated so it is not mistaken for a guarantee: this covers the dependencies between frames. A barrier between
+ * two draws *within* one frame (a render-pass self-dependency, e.g. sampling an attachment written earlier in the same pass)
+ * is NOT implemented - the retire drain runs after both draws, and the frame head runs before them, so neither orders them.
+ * Such a pipeline needs the real barrier (or a frame split) and is refused by nothing today; see notes/frame-ordering.md. */
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *info)
 {

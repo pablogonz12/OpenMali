@@ -505,6 +505,11 @@ mali_hw_init(struct mali_device *dev)
                        getenv("MALI_HEAP_INIT") ? (uint32_t)atoi(getenv("MALI_HEAP_INIT")) : 4, 64, &h->heap))
       goto fail;
    h->heap_live = true;
+   if (getenv("MALI_HEAP_DBG"))
+      fprintf(stderr, "mali_heap: create chunk=%u initial=%u max=64 -> chunk_size=%u ctx_va=0x%llx first_chunk=0x%llx\n",
+              getenv("MALI_HEAP_CHUNK") ? (unsigned)atoi(getenv("MALI_HEAP_CHUNK")) : (unsigned)HEAP_CHUNK,
+              getenv("MALI_HEAP_INIT") ? (unsigned)atoi(getenv("MALI_HEAP_INIT")) : 4u,
+              h->heap.chunk_size, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    h->ar.bo.cpu = h->arena.cpu;
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;

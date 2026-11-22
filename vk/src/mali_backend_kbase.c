@@ -114,12 +114,18 @@ kbase_probe(struct mali_gpu_info *out)
    return 0;
 }
 
+/* arch major of this process's device (10, 11 or 13): read by the BO flag policy in kbase_bo_alloc */
+static unsigned g_karch = 11;
+
 static int
 kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
 {
    struct mali_kdev *k = calloc(1, sizeof(*k));
    if (!k)
       return -ENOMEM;
+   /* arch for the flag decisions below (the same value mali_queue.c gives libkbase's kb_v10 at hw init, but known from the
+    * first allocation on) */
+   g_karch = gpu->arch_major >= 12 ? 13 : gpu->arch_major == 10 ? 10 : 11;
 
    int r = kb_open(&k->ctx, NULL);
    if (r != 0) {
@@ -378,8 +384,24 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
    } else if (flags & MALI_BO_EXEC) {
       r = kb_bo_alloc(k->ctx, size, KB_BO_GPU_RD | KB_BO_GPU_EX, bo);
    } else {
-      r = kb_bo_alloc(k->ctx, size,
-                      KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) | ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0), bo);
+      uint32_t kflags = KB_BO_GPU_RD | KB_BO_GPU_WR | ((flags & MALI_BO_CACHED) ? KB_BO_CPU_CACHED : 0) |
+                        ((flags & MALI_BO_NOCOH) ? KB_BO_NOCOH : 0);
+      /* Host-visible device memory (memory type 0 is HOST_VISIBLE|HOST_COHERENT) is written by the CPU with no flush at all;
+       * a GPU-cached mapping would then let a clean L2 line serve the stale bytes (a CPU DC CIVAC does not touch the GPU's
+       * L2). Such BOs bypass the GPU cache, so the read is always the memory the CPU wrote - for flushed and unflushed
+       * writes alike. MALI_BO_HOSTLAZY marks VkDeviceMemory (driver-internal BOs do not carry it). */
+      /* Arch gated: with BASE_MEM_UNCACHED_GPU set, every GPU access to the BO must use an uncached path. On Mali-G610
+       * (arch 10, DDK r32p1) the tiler's fragment writeback of a render target does not, and the GPU raises
+       * GPU_CACHEABILITY_FAULT (kernel log: "mali_vk: FATAL event: group 0 FATAL: GPU_CACHEABILITY_FAULT") the moment a
+       * native (non-exported) VkDeviceMemory image is bound as an attachment - X4, gamescope, 3/3 aborts, while the same
+       * build without this line starts. Keep main's flags on arch 10 and only bypass the GPU cache where the GPU reads what
+       * the CPU wrote, on arch 11 and 13. MALI_NOGPUUNCACHED=1 forces it off everywhere, MALI_GPUUNCACHED=1 forces it on,
+       * for an A/B on either phone. */
+      const char *unc = getenv("MALI_NOGPUUNCACHED") ? "0" : getenv("MALI_GPUUNCACHED") ? "1" : NULL;
+      const bool uncached_ok = unc ? unc[0] != '0' : g_karch != 10;
+      if ((flags & MALI_BO_HOSTLAZY) && !(flags & MALI_BO_CACHED) && uncached_ok)
+         kflags |= KB_BO_GPU_UNCACHED;
+      r = kb_bo_alloc(k->ctx, size, kflags, bo);
    }
    if (r != 0) {
       free(bo);

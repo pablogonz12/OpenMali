@@ -26,6 +26,9 @@
 #include "kbase_fb.h"
 #include "kbase_samples.h"
 #include "mali_cs_emit.h"
+
+/* free scoreboard slot (0 = LS, 3 = endpoint jobs) for the fragment job's completion signal */
+#define MALI_SLOT_FRAGMENT 4
 #include "mali_event.h"
 #include "mali_blend.h"
 
@@ -759,16 +762,26 @@ emit_fragment(struct cs *c, const struct mali_env *env, const struct mali_frame 
    M48(c, 40, kb_fb_pointer_ex(va_fbd, 1, f->has_zs || f->has_st));
    M32(c, 42, kb_fb_bbox_min(x0, y0));
    M32(c, 43, kb_fb_bbox_max(x1, y1));
-   if (geometry)
-      M48(c, R->tctx_copy, va_tctx);
+   /* Both paths: the FINISH_FRAGMENT below reads its heap chunk words through this register, and a clear-only frame has no
+    * tiler context of its own (zeroed), but the register must still point at it - an unset register is whatever the previous
+    * frame left, i.e. a stale tiler context or a garbage address. */
+   M48(c, R->tctx_copy, va_tctx);
    M48(c, 44, 0);   /* FRAGMENT TEM_POINTER / ROW_STRIDE alias the IDVS depth clamps / viewport regs: zero */
    M32(c, 46, 0);
    E(c, kb_cs_run_fragment(0));
-   E(c, kb_cs_wait(1u << slot));
-   if (geometry) {
+   /* No WAIT 1<<slot here: it would consume the endpoint increment that FINISH_FRAGMENT's own wait mask needs, and a second
+    * waiter on that slot would then hang (notes/frame-ordering.md § Round 2, point 1). */
+   {
+      /* Not only for geometry frames: slot 4 is incremented by FINISH_FRAGMENT alone, and the tail waits that slot before it
+       * cleans L2/LSC - so a clear-only frame needs it too, or its tile writeback is never cleaned and a host read after the
+       * fence can see a stale attachment. With no tiler the heap chunk words in the tiler context are zero (A() zeroes the
+       * block), i.e. the instruction submits no chunks. */
       E(c, kb_cs_load_multiple(10, R->tctx_copy, 0xf, 40));
       E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
-      E(c, kb_cs_finish_fragment_heap(true, 10, 12));
+      /* A non-zero WAIT MASK is what makes this a deferred op: the packer drops the signal slot of a synchronous instruction
+       * (Mesa cs_apply_async, cs_builder.h:866-889), so with mask 0 slot 4 never increments and the tail WAIT and the 0xffff
+       * retire are vacuous - exactly what Round 1 shipped. Wait the fragment run's endpoint slot, signal slot 4. */
+      E(c, kb_cs_finish_fragment_heap_signal(true, 10, 12, MALI_SLOT_FRAGMENT, 1u << slot));
    }
    E(c, kb_cs_req_res(0));
 }
@@ -898,13 +911,22 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    E(&c, kb_cs_nop());
    if (getenv("MALI_ZR")) for (unsigned r = 0; r < (unsigned)atoi(getenv("MALI_ZR")); r++) if (r != R->flush_id) M32(&c, r, 0);
    {
-      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x332); 0 = none */
-      int hf = e ? (int)strtol(e, NULL, 16) : 0x332;
+      /* 0x002 = other-cache invalidate only, same rule as the graphics head (see there: a frame after a host write needs the
+       * L2/LSC invalidate, f->host_write). MALI_CHF=<hex> overrides (0 = no flush) */
+      const char *e = getenv("MALI_CHF");   /* compute head flush A/B (hex l2/lsc/other nibbles, default 0x002 / 0x332) */
+      int hf = e ? (int)strtol(e, NULL, 16) : (f->host_write ? 0x332 : 0x002);
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      /* This job READS memory an earlier frame of the same submission may have written (the CTS's copy, a render->sample or
+       * render->compute chain, a LOAD preload). Waiting only the LS slot lets the read run before the previous frame's tiler
+       * and fragment (tile writeback) have finished, so a sub-rectangle render followed by an image read returned only the
+       * current area. Wait every slot: frames do not overlap here, so this is the stall the fence already implies.
+       * MALI_NOHEADWAIT=1 disables it for A/B. */
+      if (!getenv("MALI_NOHEADWAIT"))
+         E(&c, kb_cs_wait((1u << KB_CS_SLOT_LS) | (1u << env->slot) | (1u << MALI_SLOT_FRAGMENT)));
    }
    M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
    M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
@@ -977,6 +999,10 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
+   /* same rule as the graphics retire: the fence must not signal before this frame's asynchronous jobs have drained. Drain
+    * with a separate WAIT (never a wait mask on the add itself: it would include the add's own signal slot and never
+    * complete), and only on slots this frame signals - a WAIT on a slot nothing ever increments does not complete. */
+   E(&c, kb_cs_wait((1u << KB_CS_SLOT_LS) | (1u << env->slot)));
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    if (c.err) {
       free(c.v);
@@ -1063,8 +1089,16 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    /* head: flush stale descriptor lines, WAIT for it (async), then registers */
    E(&c, kb_cs_nop());
    {
-      static int hf = -1;
-      if (hf < 0) { const char *e = getenv("MALI_HF"); hf = e ? (int)strtol(e, NULL, 16) : 0x332; }
+      /* Other-cache invalidate only (0x002 = texture/RO-L1) is the default. A frame after a host write (f->host_write) keeps
+       * the old 0x332 CLEAN+INVALIDATE of L2 and LSC instead: the CPU bytes are in memory, but a clean L2 line for that address
+       * is stale and only an invalidate drops it. Cleaning+invalidating L2 at the head of every frame was the bug: it discards
+       * a previous frame's tile writeback still dirty in L2, so a render pass followed by an image read in the same submission
+       * returned only the newest area (PanVK clean+invalidates L2/LSC only for host writes,
+       * panfrost/vulkan/csf/panvk_vX_cmd_buffer.c:365-404 collect_cache_flush_info). MALI_HF=<hex> overrides for A/B; only
+       * that override is cached, the default is recomputed for every frame from its own f->host_write. */
+      static int hf_env = -2;
+      if (hf_env == -2) { const char *e = getenv("MALI_HF"); hf_env = e ? (int)strtol(e, NULL, 16) : -1; }
+      const int hf = hf_env >= 0 ? hf_env : (f->host_write ? 0x332 : 0x002);
       if (hf) {
          M32(&c, R->flush_id, 0);
          E(&c, kb_cs_flush_cache2((hf >> 8) & 3, (hf >> 4) & 3, hf & 3, R->flush_id));
@@ -1127,13 +1161,25 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_COMPLETED));
    }
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
-   if (geometry && !getenv("MALI_NOTF")) {
+   if (!getenv("MALI_NOTF")) {
       M32(&c, R->flush_id, 0);
+      /* Wait the job that actually ran: slot 4 is only incremented by FINISH_FRAGMENT, which is emitted for a frame with
+       * geometry. A clear-only frame (no draws) has no FINISH_FRAGMENT - waiting slot 4 there never completes, which is the
+       * device loss a real compositor workload sees (its clear-only and WSI blit submits). Such a frame's fragment job is
+       * tracked by the endpoint slot RUN_FRAGMENT increments. */
+      E(&c, kb_cs_wait(geometry ? (1u << MALI_SLOT_FRAGMENT) : (1u << env->slot)));
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
    M48(&c, R->sync_addr, env->sync_va);
    M48(&c, R->sync_val, 1);
+   /* The retire word is what the CPU's fence waits on, so it must only change once EVERY asynchronous job of this frame has
+    * completed - the tiler, the fragment (tile writeback) and the cache flushes. An add with wait mask 0 (the old
+    * kb_cs_sync_add64 alone) ran immediately, i.e. every fence signalled before the fragment writeback: a readback or a
+    * reused buffer read after the fence could see stale data. The drain is a separate WAIT on every scoreboard slot and
+    * then the add, the PanVK finish_cs order (panvk_vX_cmd_buffer.c:109 cs_wait_slots(b, all_mask) before SYNC_ADD64);
+    * putting 0xffff in the add's own wait mask would make it wait on its own signal slot and never complete. */
+   E(&c, kb_cs_wait((1u << KB_CS_SLOT_LS) | (1u << env->slot) | (geometry ? (1u << MALI_SLOT_FRAGMENT) : 0u)));
    E(&c, kb_cs_sync_add64(R->sync_addr, R->sync_val, KB_CS_SCOPE_SYSTEM));
    rc = c.err;
 out:
