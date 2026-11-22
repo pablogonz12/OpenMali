@@ -575,18 +575,11 @@ build_cases(void)
          c->uvs[0] = sc, c->uvs[1] = sc, c->uvs[2] = off, c->uvs[3] = off;
          c->col0[0] = (float)l;
       }
-   /* mipmapMode LINEAR at LOD 0.5 with texture B: both levels hold the same colour at a texel centre, so the exact
-    * level-blend weight cannot change the expectation */
-   {
-      struct scase *c = newcase(G_SAMP, "s_mipblend_lin_lod0.5");
-      c->img = I_BLK;
-      c->shader = SH_TEXLOD;
-      c->s.mm = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-      c->tu0 = 8, c->tustep = 16, c->tv0 = 8, c->tvstep = 16;   /* T0 = 2px+1: the middle of a 2x2 block */
-      c->tu0_1 = 4, c->tv0_1 = 4, c->tustep_1 = 8;             /* T1 = px+0.5: a level-1 texel centre */
-      c->uvs[0] = 2.0f, c->uvs[1] = 2.0f;
-      c->col0[0] = 0.5f;
-   }
+   /* No fractional-LOD row here on purpose. The one that was here sampled a texture whose levels hold the same
+    * colour at the sampled texel centre with the CPU reference at w1 = 0, so a driver that ignored linear mip
+    * filtering and picked either level produced the same colour: the row could not fail. A real one needs two
+    * distinct level colours plus w1 = 4 (the I_FLAT mips are red/green), and that expectation has to be
+    * established on a phone (M/notes/state-sweep.md), not guessed on the host. */
    /* anisotropy (implicit LOD, flat mips red/green/blue): 2:1 footprint. Without aniso the LOD follows the long axis
     * (log2 2 = 1 -> green); with maxAnisotropy >= the ratio it follows the short axis (0 -> red). Both are far from a
     * mip boundary, so the driver's 4-bit mip precision cannot decide the colour. The expected colour is exact on
