@@ -532,6 +532,19 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
          if (!img->bc && vl->d.levels >= 9 && v->vd.format == 57 && vl->d.extent.width == 256) {
             c->nlv = vl->d.levels > 10 ? 10 : vl->d.levels;
             c->mbase = (const uint8_t *)img->mem->bo.cpu + img->mem_off + vl->plane[0].offset + (uint64_t)v->vd.base_layer * vl->plane[0].array_stride;
+            { static uint64_t mk_[256]; static unsigned nmk; uint64_t kk = c->imgh * 1000 + g_cd_present / 20; unsigned q;
+              for (q = 0; q < nmk; q++) if (mk_[q] == kk) break;
+              if (q == nmk && nmk < 256) {
+                 mk_[nmk++] = kk;
+                 for (unsigned L = 0; L < c->nlv; L++) {
+                    const struct mali_slice *ms = &vl->plane[0].slice[L];
+                    unsigned lw = 256 >> L ? 256 >> L : 1;
+                    if (ms->offset + ms->size + (uint64_t)(c->mbase - (const uint8_t *)img->mem->bo.cpu) > img->mem->bo.size) continue;
+                    char p[512]; snprintf(p, sizeof p, "%s/mip_%llx_p%u_L%u_%ux%u_s%u.raw", cd_dir(), (unsigned long long)c->imgh, g_cd_present, L, lw, lw, ms->row_stride);
+                    FILE *o = fopen(p, "wb"); if (o) { fwrite(c->mbase + ms->offset, 1, ms->size, o); fclose(o); }
+                 }
+                 mali_cd_printf("MIPDUMP img=0x%llx present=%u levels=%u set=%u slot=%u view=0x%llx\n", (unsigned long long)c->imgh, g_cd_present, c->nlv, s, (unsigned)(e[i].key - 1), (unsigned long long)e[i].view);
+              } }
             for (unsigned k = 0; k < c->nlv; k++) { c->lvoff[k] = vl->plane[0].slice[k].offset; c->lvsz[k] = vl->plane[0].slice[k].size; c->lvrow[k] = vl->plane[0].slice[k].row_stride; }
          }
          c->levels = vl->d.levels; c->layers = vl->d.layers; c->bc = img->bc; c->set = s; c->slot = e[i].key - 1; c->type = e[i].type; c->view = e[i].view;
@@ -568,25 +581,12 @@ mali_cd_flush(void)
       }
       for (unsigned i = 0; i < r->nimg; i++) {
          struct cd_img *c = &r->img[i];
-         if (c->nlv) {
-            static uint64_t mk_[256]; static unsigned nmk; uint64_t kk = c->imgh * 1000 + g_cd_present / 20; unsigned q;
-            for (q = 0; q < nmk; q++) if (mk_[q] == kk) break;
-            if (q == nmk && nmk < 256) {
-               mk_[nmk++] = kk;
-               for (unsigned L = 0; L < c->nlv; L++) {
-                  unsigned lw = 256 >> L ? 256 >> L : 1;
-                  char p[512]; snprintf(p, sizeof p, "%s/mip_%llx_p%u_L%u_%ux%u_s%u.raw", cd_dir(), (unsigned long long)c->imgh, g_cd_present, L, lw, lw, c->lvrow[L]);
-                  FILE *o = fopen(p, "wb"); if (o) { fwrite(c->mbase + c->lvoff[L], 1, c->lvsz[L], o); fclose(o); }
-               }
-               fprintf(f, "  MIPDUMP img=0x%llx present=%u levels=%u (draw #%u)\n", (unsigned long long)c->imgh, g_cd_present, c->nlv, r->seq);
-            }
-         }
          unsigned k; for (k = 0; k < g_cd_nseen; k++) if (g_cd_seen[k] == c->p) break;
          char nm[96]; snprintf(nm, sizeof nm, "img%u_%ux%u_f%u_b%u_s%u.raw", k, c->w, c->h, c->fmt, c->bs, c->row);
          if (k == g_cd_nseen && g_cd_nseen < 4096) {
             g_cd_seen[g_cd_nseen++] = c->p;
             char p[512]; snprintf(p, sizeof p, "%s/%s", cd_dir(), nm);
-            FILE *o = fopen(p, "wb"); if (o) { fwrite(c->p, 1, c->size, o); fclose(o); }
+            (void)p;
          }
          fprintf(f, "  IMG set=%u slot=%u type=%u view=0x%llx vfmt=%u ifmt=%u bc=%u %ux%u lv=%u/%u ly=%u/%u row=%u bs=%u shadow_base=%llu plane_off=%llu slice_off=%llu size=%llu file=%s\n",
                  c->set, c->slot, c->type, (unsigned long long)c->view, c->fmt, c->ifmt, c->bc, c->w, c->h, c->level, c->levels, c->layer, c->layers, c->row, c->bs,
