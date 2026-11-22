@@ -309,6 +309,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, fillModeNonSolid),         /* t_vk_draw --only poly */
          offsetof(VkPhysicalDeviceFeatures, multiViewport),            /* t_vk_draw --only multivp */
          offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
+         offsetof(VkPhysicalDeviceFeatures, largePoints),               /* t_vk_feat pointgrid (1, 4 and 16 px points, X8) */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageExtendedFormats), /* t_vk_feat storfmt */
          offsetof(VkPhysicalDeviceFeatures, shaderStorageImageWriteWithoutFormat), /* t_vk_feat storfmt_nf */
          offsetof(VkPhysicalDeviceFeatures, logicOp),                  /* t_vk_draw --only fx_logic_* */

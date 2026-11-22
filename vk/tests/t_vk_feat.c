@@ -2045,8 +2045,8 @@ test_bda(void)
 static int
 test_pointgrid(void)
 {
-   static const float sizes[2] = {1.0f, 4.0f};
-   for (int k = 0; k < 2; k++) {
+   static const float sizes[3] = {1.0f, 4.0f, 16.0f};
+   for (int k = 0; k < 3; k++) {
       struct tgt t;
       if (!tgt_create(&t)) return 0;
       VkPipelineLayout lay;
@@ -2073,9 +2073,10 @@ test_pointgrid(void)
          printf("{\"test\":\"pointgrid\",\"size\":%g,\"points\":256,\"covered\":%u}\n", (double)sizes[k], nz);
          /* both sizes must give 1 px per point: the advertised pointSizeRange is {1, 1} (mali_physical_device.c:148) and
           * mali_cs_emit.c sizes a point draw from that fixed value, so a larger gl_PointSize is clamped by contract. */
-         /* One pixel per point at both sizes: the size is clamped to the advertised pointSizeRange {1, 1}
-          * (mali_physical_device.c). Widening it needs the per-vertex size to reach the tiler - see the commit message. */
-         CHECK(nz >= 240 && nz <= 320, "256 points of gl_PointSize %g covered %u px, wanted 256", (double)sizes[k], nz);
+         /* largePoints: a point of size s covers s x s px, so 256 points cover 256 * s^2 (256 / 4096 / 65536 here). */
+         unsigned want = 256u * (unsigned)(sizes[k] * sizes[k]);
+         CHECK(nz + want / 8u + 32u >= want && nz <= want + want / 8u + 32u,
+               "256 points of gl_PointSize %g covered %u px, wanted about %u", (double)sizes[k], nz, want);
       } else {
          printf("{\"test\":\"pointgrid\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
       }
@@ -3657,7 +3658,7 @@ test_intdot(void)
             s8 += (int64_t)(int8_t)xb * (int8_t)yb;
             m8 += (int64_t)xb * (int8_t)yb;
          }
-         for (int k = 0; k < 2; k++) {
+         for (int k = 0; k < 3; k++) {
             uint32_t xh = (x >> (16 * k)) & 0xffff, yh = (y >> (16 * k)) & 0xffff;
             u16 += (int64_t)xh * yh;
             s16 += (int64_t)(int16_t)xh * (int16_t)yh;
