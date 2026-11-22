@@ -1285,8 +1285,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->hmask = tl >= 10 ? 0xfeu : 0xffu;   /* the tiler's smallest bin is 16x16; 8x8/4x4 keep it (the FBD sets the tile) */
       if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
          const int want = atoi(getenv("MALI_TILE_LOG2"));
-         if (want < 2 || want > 12) {   /* a bigger tile overflows the colour total and the allocation loops forever */
-            unsupported(cmd, "MALI_TILE_LOG2 out of range (2..12)");
+         if (want < 2 || want > 12 || ((1u << want) * bpp_tot) > 4096u) {
+            /* out of range, or a tile whose colour total does not fit the 4 KiB budget the descriptors assume */
+            unsupported(cmd, "MALI_TILE_LOG2 does not fit the tile colour budget (2..12, (1<<n)*bpp <= 4096)");
             return;
          }
          f->tile_log2 = (unsigned)want;

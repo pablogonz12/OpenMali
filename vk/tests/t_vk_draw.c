@@ -3769,11 +3769,17 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("sets8")) ok &= test_quad("sets8", MODE_SETS8);   /* explicit only: the 8-set layout is not in the goldens */
    if (ok && CASE_ON("descupd")) ok &= test_quad("descupd", MODE_DESCUPD);
    if (ok && CASE_ON("texture")) ok &= test_quad("texture", MODE_TEX);
-   /* the MRT cases build vertex+fragment pipelines only: a --gs request would be silently ignored, so refuse it */
-   if (ok && g_gs && (CASE_ON("mrt2") || CASE_ON("mrt4") || CASE_ON("mrtmix") || CASE_ON("mrtmap") || CASE_ON("bigmrt"))) {
-      printf("{\"fail\":\"--gs %s given, but the MRT cases do not bind a geometry shader\"}\n", g_gs);
-      g_fail = 1;
-      return 0;
+   /* the MRT cases build vertex+fragment pipelines only: a --gs request would be silently ignored, so refuse it
+    * for every MRT dispatch name, and fail the process (not just g_fail) */
+   if (ok && g_gs) {
+      static const char *const mrt_names[] = {"mrt2", "mrt4", "mrtmix", "mrtmap", "mrtmapo0", "mrtmapo2",
+                                              "mrtmap1", "mrtmapb", "mrtmap32f", "bigmrt"};
+      for (unsigned i = 0; i < sizeof mrt_names / sizeof *mrt_names; i++)
+         if (CASE_ON(mrt_names[i])) {
+            printf("{\"fail\":\"--gs %s given, but %s does not bind a geometry shader\"}\n", g_gs, mrt_names[i]);
+            g_fail = 1;
+            return 1;
+         }
    }
    if (ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
