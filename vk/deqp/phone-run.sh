@@ -9,10 +9,10 @@
 set -euo pipefail
 M=${M:-$HOME/.config/opencode/mali-orchestrator/bin}
 V=$(cd "$(dirname "$0")/.." && pwd)          # vk/
-phone=""; list=""; chunk=500; cto=60; deqp="${DEQP_VK:-$V/deqp/build/deqp-vk}"; out="${OUT:-$HOME/.cache/mali-orchestrator/deqp-phone}"; dry=0
+phone=""; list=""; chunk=500; cto=60; deqp="${DEQP_VK:-$V/deqp/build/deqp-vk}"; out="${OUT:-$HOME/.cache/mali-orchestrator/deqp-phone}"; dry=0; covdb=0
 while [ $# -gt 0 ]; do case "$1" in
   --chunk) chunk=$2; shift 2;; --case-timeout) cto=$2; shift 2;; --deqp) deqp=$2; shift 2;;
-  --out) out=$2; shift 2;; --dry-run) dry=1; shift;;
+  --out) out=$2; shift 2;; --dry-run) dry=1; shift;; --covdb) covdb=1; shift;;
   -*) echo "unknown option $1" >&2; exit 2;;
   *) if [ -z "$phone" ]; then phone=$1; elif [ -z "$list" ]; then list=$1; else echo "extra arg $1" >&2; exit 2; fi; shift;;
 esac; done
@@ -52,8 +52,15 @@ for ((i=0; i<n; i+=chunk)); do
     p=$(grep -c 'StatusCode="Pass"' "$run/chunk-$k.qpa" || true); f=$(grep -c 'StatusCode="Fail"' "$run/chunk-$k.qpa" || true)
     l=$(grep -c 'StatusCode="DeviceLost"' "$run/chunk-$k.qpa" || true)
     pass=$((pass+p)); fail=$((fail+f)); lost=$((lost+l)); echo "   pass=$p fail=$f lost=$l"
+    # one TSV row per case for covdb (vk/deqp/tools/covdb import: case<TAB>status)
+    awk '/beginTestCaseResult/{sub(/^.*beginTestCaseResult /,""); c=$0} /StatusCode=/{s=$0; sub(/^.*StatusCode="/,"",s); sub(/".*$/,"",s); if(c!=""){print c"\t"s; c=""}}' \
+        "$run/chunk-$k.qpa" >> "$run/results.tsv" 2>/dev/null || true
   else echo "   no .qpa pulled"; fi
 done
 sum="$run/summary.txt"; { echo "list=$list cases=$n pass=$pass fail=$fail lost=$lost chunk=$chunk out=$run"; } | tee "$sum"
 echo "results: $run/chunk-*.qpa  summary: $sum"
+if [ "$covdb" = 1 ] && [ -s "$run/results.tsv" ] && [ -x "$V/deqp/tools/covdb" ]; then
+  "$V/deqp/tools/covdb" import --phone "$phone" --tool phone-run --notes "$(basename "$list")" "$run/results.tsv" \
+    && echo "covdb: imported $run/results.tsv" || echo "covdb import failed (kept $run/results.tsv)" >&2
+fi
 [ "$fail" = 0 ] && [ "$lost" = 0 ]
