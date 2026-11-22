@@ -580,11 +580,10 @@ test_compile(unsigned arch)
       o.layout = &fl.c;
       int r2 = mali_compile(&o, &cn, err, sizeof err);
       CHECK(r2 == 0, "default (robust off) compute still compiles: %s", err);
-      if (r1 == 0 && r2 == 0) {   /* a failed compile leaves cr/cn unset: comparing or freeing them reads nothing valid */
+      if (r1 == 0 && r2 == 0)   /* a failed compile leaves its result unset: freeing it reads nothing valid */
          CHECK(cr.bin_size != cn.bin_size || memcmp(cr.bin, cn.bin, cr.bin_size), "robust access must change the code (bounds-checked loads)");
-         mali_compiled_free(&cr);
-         mali_compiled_free(&cn);
-      }
+      if (r1 == 0) mali_compiled_free(&cr);   /* each success frees independently: one failure must not leak the other */
+      if (r2 == 0) mali_compiled_free(&cn);
    }
    /* without layout the old descriptor-free path still compiles the plain shaders */
    free(fs.w); free(cs.w);

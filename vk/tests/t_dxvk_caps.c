@@ -99,7 +99,7 @@ main(int argc, char **argv)
       V(13, shaderDemoteToHelperInvocation), V(13, shaderZeroInitializeWorkgroupMemory),
       V(13, subgroupSizeControl), V(13, synchronization2),
 #undef V
-      /* VK_EXT_robustness2: DXVK 3.1.1 requires resilientBufferAccess2 at device creation (DXVK-GAP.md:11). Not part of
+      /* VK_EXT_robustness2: DXVK 3.1.1 requires robustBufferAccess2 at device creation (DXVK-GAP.md:11). Not part of
        * f11/f12/f13, so it is listed by hand; this row is why DXVK_MISSING counts it. */
       {"robustness2.robustBufferAccess2", fr2.robustBufferAccess2},
       {"robustness2.nullDescriptor", fr2.nullDescriptor},

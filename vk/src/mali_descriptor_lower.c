@@ -202,8 +202,7 @@ robust_filter(const nir_intrinsic_instr *i, const void *d)
     * rewrite_offset), which returns the buffer's first element - legal for robustBufferAccess's undefined-value rule, wrong for
     * robustness2, where an out-of-bounds read must give zero (CTS zero-pads the reference data to
     * robust{Uniform,Storage}BufferAccessSizeAlignment, vktRobustnessExtsTests.cpp:1049-1057). lower_load_bounds below does them. */
-   switch (i->intrinsic) {   /* writes/atomics/original image intrinsics only */
-   case nir_intrinsic_store_ssbo:
+   switch (i->intrinsic) {   /* atomics/original image intrinsics only: stores are bounded by lower_store_bounds */
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
    case nir_intrinsic_image_load:
@@ -255,6 +254,40 @@ lower_load_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
    return true;
 }
 
+/* robustness2 buffer stores: Mesa's pass accepts the store when "offset + access_size - 1 < size", and that sum is 32-bit.
+ * With scalarBlockLayout a vec4 may sit at a 4-byte-aligned offset, so offset 0xfffffff4 + 15 wraps to 3, the store passes
+ * the test and writes past the descriptor. Same shape as lower_load_bounds, with the wrap made impossible. */
+static bool
+lower_store_bounds(nir_builder *b, nir_intrinsic_instr *i, void *d)
+{
+   if (i->intrinsic != nir_intrinsic_store_ssbo)
+      return false;
+   b->cursor = nir_before_instr(&i->instr);
+   nir_def *h = i->src[1].ssa;
+   if (h->num_components != 1)
+      h = nir_iadd(b, nir_channel(b, h, 0), nir_channel(b, h, 1));
+   nir_def *size = nir_get_ssbo_size(b, 32, h);
+   /* only the components the write mask actually writes: a masked store may start at a nonzero component */
+   const unsigned wmask = nir_intrinsic_write_mask(i);
+   const unsigned comp0 = wmask ? (unsigned)__builtin_ctz(wmask) : 0;
+   const unsigned ncomp = wmask ? (unsigned)__builtin_popcount(wmask) : nir_src_num_components(i->src[0]);
+   const unsigned esz = nir_src_bit_size(i->src[0]) / 8;
+   const unsigned access = ncomp * esz;
+   nir_def *off = i->src[2].ssa;
+   if (off->bit_size < 32)
+      off = nir_u2u32(b, off);
+   if (comp0)
+      off = nir_iadd_imm(b, off, comp0 * esz);
+   nir_def *max_off = nir_iadd_imm(b, off, access - 1);
+   nir_def *valid = nir_iand(b, nir_ult(b, max_off, size), nir_uge(b, max_off, off));
+   nir_push_if(b, valid);
+   nir_intrinsic_instr *cl = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &i->instr));
+   nir_builder_instr_insert(b, &cl->instr);
+   nir_pop_if(b, NULL);
+   nir_instr_remove(&i->instr);
+   return true;
+}
+
 static bool
 lower_size_query(nir_builder *b, nir_intrinsic_instr *i, void *d)
 {
@@ -299,6 +332,7 @@ mali_nir_lower_descriptors(nir_shader *nir, const struct mali_compile_layout *la
       /* this pass inserts an if and new blocks, so block indices and dominance are stale afterwards: Mesa passes
        * nir_metadata_none for its own robustness pass (nir_lower_robust_access.c:335) */
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_load_bounds, nir_metadata_none, NULL);
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_store_bounds, nir_metadata_none, NULL);
    }
    /* get_ssbo_size/get_ubo_size exist in SPIR-V whether or not robust access is on, and Valhall has no such
     * instruction at all: the size query has to be lowered for every shader, not only the robust ones */
