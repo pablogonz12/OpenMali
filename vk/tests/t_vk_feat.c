@@ -4202,7 +4202,8 @@ main(int argc, char **argv)
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderIntegerDotProduct = f13.shaderIntegerDotProduct, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderIntegerDotProduct = f13.shaderIntegerDotProduct, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock,
+                                            .robustImageAccess = f13.robustImageAccess};   /* the robustimg case enables what it tests */
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
