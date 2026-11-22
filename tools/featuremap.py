@@ -842,6 +842,11 @@ def table_for(rows, extra_cols=()):
     return out
 
 
+def _dump_time(caps):
+    mt = [os.path.getmtime(c.real) for c in caps.values() if os.path.exists(c.real)]
+    return datetime.datetime.fromtimestamp(max(mt)).strftime("%Y-%m-%d %H:%M") if mt else "no caps dump"
+
+
 def render(res, args):
     lock, rows = res["lock"], res["rows"]
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -897,9 +902,7 @@ def render(res, args):
     w("Our own data: " + ", ".join("`%s` (%s)" % (c.path.replace("~/.config/", "M/"),
                                                  c.api or "no apiVersion")
                                   for c in res["caps"].values()) +
-      " (dumped %s); bridge `%s`%s." % (datetime.datetime.fromtimestamp(
-          max(os.path.getmtime(c.real) for c in res["caps"].values() if os.path.exists(c.real)))
-          .strftime("%Y-%m-%d %H:%M"), res["bridge"].path
+      " (dumped %s); bridge `%s`%s." % (_dump_time(res["caps"]), res["bridge"].path
                             if res["bridge"].present else "-",
                             "" if res["bridge"].present else " (absent: bridge column empty)"))
     w("")
