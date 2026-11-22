@@ -269,6 +269,8 @@ struct mali_frame {
     * feedback: those need a drain, a GPU-read draw does not); poly_cpu = some record's effective pipeline is polygonMode
     * LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
    bool any_ind, any_ind_cpu, poly_cpu;
+   unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
+                            * at 1); CmdClearAttachments only clears that one */
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
 };
 
