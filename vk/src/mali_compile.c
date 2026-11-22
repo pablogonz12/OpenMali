@@ -706,12 +706,34 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
+   /* pan_nir_lower_noperspective_vs (bifrost_nir.c:884) returns immediately unless info.outputs_written names
+    * gl_Position (pan_nir_lower_noperspective.c:129). This driver never runs nir_shader_gather_info (the FS branch
+    * below works around the same gap), so that bit was empty: the pass never inserted the "mask ? v * w : v" and the
+    * mask inlined next had nothing to select. Set exactly the bit the guard reads, from the lowered POS store. */
+   if (stage == MESA_SHADER_VERTEX) {
+      nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+         nir_foreach_instr(ins, blk) {
+            if (ins->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *it = nir_instr_as_intrinsic(ins);
+            if (it->intrinsic == nir_intrinsic_store_output &&
+                nir_intrinsic_io_semantics(it).location == VARYING_SLOT_POS)
+               nir->info.outputs_written |= BITFIELD64_BIT(VARYING_SLOT_POS);
+         }
+   }
    pan_postprocess_nir(nir, &in, &info);
    /* pan_postprocess_nir -> bifrost_nir.c:884 has just wrapped every non-special output store in
     * "mask ? v * w : v" (pan_nir_lower_noperspective.c:68) with the mask loaded from the sysval; inline the FS's
     * bitfield before lower_sysvals (which has no answer for this sysval) and before the backend emits IDVS words. */
-   uint32_t nv_mask = 0;
+   uint32_t nv_mask = 0, nv_loads = 0;
    if (stage == MESA_SHADER_VERTEX) {
+      /* One sysval load per output store the pass wrapped: it is the multiplier this inline selects, so 0 means the
+       * pass still bailed (that is what a missing outputs_written POS bit did) even with the mask right. */
+      nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+         nir_foreach_instr(ins, blk)
+            if (ins->type == nir_instr_type_intrinsic &&
+                nir_instr_as_intrinsic(ins)->intrinsic == nir_intrinsic_load_noperspective_varyings_pan)
+               nv_loads++;
       if (o->fs_spirv && o->fs_spirv_words &&
           fs_noperspective_mask(arch, o, &nv_mask, err, errsz)) {
          ralloc_free(nir);   /* err already names the reason */
@@ -722,9 +744,9 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       nv_mask = info.varyings.noperspective;
    }
    if (getenv("MALI_INTERP_DBG"))
-      fprintf(stderr, "mali_interp: stage=%s mask=%08x inlined=%d\n",
+      fprintf(stderr, "mali_interp: stage=%s mask=%08x inlined=%d sel=%u\n",
               stage == MESA_SHADER_VERTEX ? "VS" : stage == MESA_SHADER_FRAGMENT ? "FS" : "CS", nv_mask,
-              stage == MESA_SHADER_VERTEX && o->fs_spirv ? 1 : 0);
+              stage == MESA_SHADER_VERTEX && o->fs_spirv ? 1 : 0, nv_loads);
    bool can_merge = stage == MESA_SHADER_COMPUTE && arch >= 9 && !getenv("MALI_NO_MERGE") && valhall_can_merge_workgroups(nir);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_sysvals, nir_metadata_control_flow, NULL);
    in.fau.reserved = fau_reserved;

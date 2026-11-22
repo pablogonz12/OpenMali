@@ -120,9 +120,11 @@ for g in v10 v11 v13; do run "vk_interp $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g
 # noperspective (the 12 hardware FAILs in notes/interp-sweep.md): the VS must inline the FS's bitfield, not 0. Assert on
 # the compiled stages, since the fake backend rasterises nothing: MALI_INTERP_DBG prints the mask each stage compiled with,
 # and both must be 1 (varying location 0 of t_interp's noperspective shaders) - a VS with 0 renders c/w on the phone.
+# sel=1 is the backend's own "mask ? v * w : v" select around the output store: with the mask 0 the multiply exists but is
+# not selected, so a VS that passes this line emits the multiply on the phone (12/12, notes/interp-sweep.md).
 # MALI_SHADER_CACHE= : the rows above already cached these modules, and a cache hit compiles nothing to print.
 out=$(MALI_BACKEND=fake MALI_FAKE_GPU=v10 MALI_INTERP_DBG=1 MALI_SHADER_CACHE= "$OUT/t_interp" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only noperspective 2>&1)
-if echo "$out" | grep -q 'mali_interp: stage=VS mask=00000001 inlined=1' &&
+if echo "$out" | grep -q 'mali_interp: stage=VS mask=00000001 inlined=1 sel=1' &&
    echo "$out" | grep -q 'mali_interp: stage=FS mask=00000001'; then
    echo "ok    vk_interp noperspective mask v10"
 else
