@@ -3662,6 +3662,11 @@ test_gl43caps(void)
          L->maxPerStageDescriptorSamplers, L->maxPerStageDescriptorSampledImages, NSAMP);
    CHECK(L->maxPerStageDescriptorStorageBuffers >= NSSBO, "per-stage storage buffers %u < %d (GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, GL 4.3)",
          L->maxPerStageDescriptorStorageBuffers, NSSBO);
+   /* GLSL 4.30 compute: st gates ARB_compute_shader on max_threads_per_block >= 1024 (st_extensions.c:1743), and zink
+    * feeds it maxComputeWorkGroupInvocations (zink_screen.c:700-702). */
+   CHECK(L->maxComputeWorkGroupInvocations >= 1024 && L->maxComputeWorkGroupSize[0] >= 1024,
+         "compute work-group %u invocations / size[0] %u < 1024 (GLSL 4.30 compute)", L->maxComputeWorkGroupInvocations,
+         L->maxComputeWorkGroupSize[0]);
    CHECK(L->maxPerStageDescriptorStorageImages >= NIMG, "per-stage storage images %u < %d (GL_MAX_IMAGE_UNITS, GL 4.3)",
          L->maxPerStageDescriptorStorageImages, NIMG);
 
@@ -3725,9 +3730,9 @@ test_gl43caps(void)
        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = si}};
    UpdateDescriptorSets(dev, 4, w, 0, NULL);
    printf("{\"test\":\"gl43caps\",\"uboRange\":%u,\"samplers\":%u,\"sampledImages\":%u,\"storageBuffers\":%u,"
-          "\"storageImages\":%u,\"set\":\"1 ubo(64K) + 32 samplers + 8 ssbo + 8 images\",\"ok\":true}\n",
+          "\"storageImages\":%u,\"computeInvocations\":%u,\"set\":\"1 ubo(64K) + 32 samplers + 8 ssbo + 8 images\",\"ok\":true}\n",
           L->maxUniformBufferRange, L->maxPerStageDescriptorSamplers, L->maxPerStageDescriptorSampledImages,
-          L->maxPerStageDescriptorStorageBuffers, L->maxPerStageDescriptorStorageImages);
+          L->maxPerStageDescriptorStorageBuffers, L->maxPerStageDescriptorStorageImages, L->maxComputeWorkGroupInvocations);
    DestroyDescriptorPool(dev, pool, NULL);
    DestroyDescriptorSetLayout(dev, dsl, NULL);
    DestroySampler(dev, smp, NULL);

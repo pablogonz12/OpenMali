@@ -129,8 +129,13 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxFragmentCombinedOutputResources = 4,
       .maxComputeSharedMemorySize = 16384,
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
-      .maxComputeWorkGroupInvocations = 128,
-      .maxComputeWorkGroupSize = {128, 128, 64},
+      /* 1024: the CMF (G615, arch 11) ran a 1024-invocation workgroup with 4 KiB of shared memory and 10 barrier rounds
+       * (t_vk_compute --only scan1024: {"test":"scan1024","groups":4,"ok":true}) and a 1024-wide dispatch overall, so
+       * GLSL 4.30 compute (ARB_compute_shader gates on >= 1024) works here. PanVK reports the GPU's
+       * max_threads_per_wg in the same three fields (panvk_vX_physical_device.c:969-973), which is 1024 on this part.
+       * X4 (G610, arch 10) runs the same bundle: if that fails, this goes back to 128. */
+      .maxComputeWorkGroupInvocations = 1024,
+      .maxComputeWorkGroupSize = {1024, 1024, 1024},   /* PanVK: the same max_threads_per_wg in all three (panvk_vX_physical_device.c:971-973); the product is what the invocations limit caps */
       .subPixelPrecisionBits = 4,
       .subTexelPrecisionBits = 4,
       .mipmapPrecisionBits = 4,
