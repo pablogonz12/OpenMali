@@ -367,7 +367,12 @@ main(int argc, char **argv)
       PFN_vkDestroyInstance hDI = hinst ? (PFN_vkDestroyInstance)gipa(hinst, "vkDestroyInstance") : NULL;
       uint32_t hn = 1;
       VkPhysicalDevice hpd = NULL;
-      if (hEPD) hEPD(hinst, &hn, &hpd);
+      /* Without a device the device-creation CHECK below is skipped and the case would "pass" without ever resolving
+       * vkSetHdrMetadataEXT: a missing enumerator, a failed enumeration or count 0 is a test failure (CR thread,
+       * vk/tests/t_steam_caps.c:370). The instance is still destroyed at the end of this block. */
+      const VkResult hen = hEPD ? hEPD(hinst, &hn, &hpd) : VK_ERROR_INITIALIZATION_FAILED;
+      CHECK(hen == VK_SUCCESS && hn >= 1 && hpd,
+            "enumerate physical devices for the hdr case: result %d count %u device %p", (int)hen, hn, (void *)hpd);
       const char *hx[] = {"VK_KHR_swapchain", "VK_EXT_hdr_metadata"};
       VkDeviceQueueCreateInfo hq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
       VkDeviceCreateInfo hdi = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &hq,
