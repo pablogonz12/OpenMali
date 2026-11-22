@@ -469,7 +469,7 @@ apilog_att(struct mali_cmd_buffer *cmd, unsigned i, bool depth, const VkRenderin
 /* ===== THROWAWAY chardump (notes/character-replay.md): MALI_CHARDUMP=<dir> ===== */
 #include <sys/stat.h>
 struct cd_img { const uint8_t *p; uint64_t size; uint32_t row, w, h, fmt, ifmt, bs, level, layer, levels, layers, bc, set, slot, type; uint64_t view, shadow_base, plane_off, slice_off; char file[64]; };
-struct cd_rec { uint32_t seq, count, inst, first, indexed, nimg, vbsz[4]; uint64_t pipe, vbva[4]; const uint8_t *vbp[4]; uint32_t vbstride[4]; struct cd_img img[40]; };
+struct cd_rec { uint8_t vbd[4][1024]; uint32_t seq, count, inst, first, indexed, nimg, vbsz[4]; uint64_t pipe, vbva[4]; const uint8_t *vbp[4]; uint32_t vbstride[4]; struct cd_img img[40]; };
 static const char *cd_dir(void) { static const char *d; static int init; if (!init) { init = 1; d = getenv("MALI_CHARDUMP"); if (d && !*d) d = NULL; if (d) mkdir(d, 0777); } return d; }
 #define CD_MAXREC 700
 static struct cd_rec *g_cd_pend; static unsigned g_cd_npend, g_cd_total;
@@ -526,7 +526,11 @@ cd_record(struct mali_cmd_buffer *cmd, uint32_t count, uint32_t inst, uint32_t f
    for (unsigned i = 0; i < g_cd_nkeys; i++) if (g_cd_keys[i] == key) return;
    g_cd_keys[g_cd_nkeys++] = key;
    r.seq = ++g_cd_total; r.count = count; r.inst = inst; r.first = first; r.indexed = indexed; r.pipe = cmd->cd_pipe;
-   for (unsigned b = 0; b < 4; b++) { r.vbp[b] = cmd->cd_vb[b]; r.vbsz[b] = cmd->vb_size[b]; r.vbva[b] = cmd->vb_va[b]; r.vbstride[b] = cmd->vb_stride[b]; }
+   for (unsigned b = 0; b < 4; b++) {
+      uint64_t av = 0; const uint8_t *p = cmd->vb_va[b] ? mali_cd_lookup(cmd->vb_va[b], &av) : NULL;
+      r.vbsz[b] = cmd->vb_size[b]; r.vbva[b] = cmd->vb_va[b]; r.vbstride[b] = cmd->vb_stride[b];
+      if (p) { uint64_t n = av < 1024 ? av : 1024; if (n > cmd->vb_size[b]) n = cmd->vb_size[b]; memcpy(r.vbd[b], p, n); r.vbp[b] = r.vbd[b]; r.vbsz[b] = (uint32_t)n; r.vbstride[b] = cmd->vb_stride[b]; }
+   }
    g_cd_pend = realloc(g_cd_pend, (g_cd_npend + 1) * sizeof r);
    if (g_cd_pend) g_cd_pend[g_cd_npend++] = r;
 }
@@ -543,7 +547,7 @@ mali_cd_flush(void)
          if (!r->vbp[b] || !r->vbsz[b]) continue;
          uint32_t nb = r->vbsz[b] < 1024 ? r->vbsz[b] : 1024;
          char p[512]; snprintf(p, sizeof p, "%s/d%u_vb%u.bin", cd_dir(), r->seq, b);
-         FILE *o = fopen(p, "wb"); if (o) { fwrite(r->vbp[b], 1, nb, o); fclose(o); }
+         FILE *o = fopen(p, "wb"); if (o) { fwrite(r->vbd[b], 1, nb, o); fclose(o); }
          fprintf(f, "  VB%u va=0x%llx size=%u stride=%u dumped=%u file=d%u_vb%u.bin\n", b, (unsigned long long)r->vbva[b], r->vbsz[b], r->vbstride[b], nb, r->seq, b);
       }
       for (unsigned i = 0; i < r->nimg; i++) {

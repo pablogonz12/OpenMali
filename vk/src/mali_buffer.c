@@ -40,12 +40,41 @@ mali_CreateBuffer(VkDevice _dev, const VkBufferCreateInfo *ci, const VkAllocatio
    return VK_SUCCESS;
 }
 
+/* THROWAWAY chardump: va -> cpu table of live buffers */
+#define CD_NB 65536
+static struct mali_buffer *g_cd_bufs[CD_NB];
+static unsigned g_cd_nb;
+void
+mali_cd_reg(struct mali_buffer *b)
+{
+   static int on = -1;
+   if (on < 0) on = getenv("MALI_CHARDUMP") ? 1 : 0;
+   if (!on) return;
+   unsigned i;
+   for (i = 0; i < g_cd_nb; i++) if (g_cd_bufs[i] == b || !g_cd_bufs[i]) break;
+   if (i == g_cd_nb) { if (g_cd_nb >= CD_NB) return; g_cd_nb++; }
+   g_cd_bufs[i] = b;
+}
+const uint8_t *
+mali_cd_lookup(uint64_t va, uint64_t *avail)
+{
+   for (unsigned i = 0; i < g_cd_nb; i++) {
+      struct mali_buffer *b = g_cd_bufs[i];
+      if (!b || !b->mem || !b->mem->bo.cpu || !b->vk.device_address) continue;
+      if (va >= b->vk.device_address && va < b->vk.device_address + b->vk.size) {
+         *avail = b->vk.device_address + b->vk.size - va;
+         return (const uint8_t *)b->mem->bo.cpu + b->mem_off + (va - b->vk.device_address);
+      }
+   }
+   return NULL;
+}
 VKAPI_ATTR void VKAPI_CALL
 mali_DestroyBuffer(VkDevice _dev, VkBuffer h, const VkAllocationCallbacks *alloc)
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_buffer, b, h);
    if (!b) return;
+   for (unsigned i = 0; i < g_cd_nb; i++) if (g_cd_bufs[i] == b) g_cd_bufs[i] = NULL;
    vk_buffer_destroy(&dev->vk, alloc, &b->vk);
 }
 
@@ -80,6 +109,7 @@ mali_BindBufferMemory2(VkDevice _dev, uint32_t n, const VkBindBufferMemoryInfo *
       if ((buf->vk.usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) && mali_device_pdev(dev)->backend->bo_host_touch)
          mali_device_pdev(dev)->backend->bo_host_touch(NULL, &mem->bo);
       buf->vk.device_address = mem->bo.gpu_va + b[i].memoryOffset;
+      mali_cd_reg(buf);
    }
    return VK_SUCCESS;
 }
