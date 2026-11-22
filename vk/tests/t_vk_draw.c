@@ -91,6 +91,9 @@ static VkSampleCountFlags g_fbcounts;   /* limits.framebufferColorSampleCounts *
 static const char *g_only, *g_spv = "shader";
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (the cases gate on the driver's advertised counts, not on MALI_EXPERIMENTAL_MSAA) */
 static int g_msaa_store;   /* g_msaa: storeOp STORE on the 4x attachment (samples stored, resolve in a separate pass) instead of DONT_CARE (hardware Average) */
+static int g_msds;   /* g_msaa: the depth/stencil attachment is 4x as well (msaa_load_stencil: the CMF/CEF shape, zink LOADs a multisampled stencil) */
+static int g_nocolour_load;   /* g_load: the LOAD pass clears colour instead of loading it (the msaa stencil mask is read through a CLEAR colour pass) */
+static struct st_state g_st2;  /* second pipeline (s->pipe2) for the LOAD pass: reads the stencil mask the first pass stored */
 
 /* MODE_SHAREIDX stays BELOW MODE_PUSHFS: the >= MODE_PUSHFS test means "the full-screen indexed quad", and that branch must not bind
  * an index buffer of its own before the share_idx draws (the point of that case is the exact index-buffer register sequence). */
@@ -296,7 +299,7 @@ scene_create(struct scene *s, int depth)
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
    CHECK(CreateImageView(dev, &vi, NULL, &s->colv) == VK_SUCCESS, "colour view");
 
-   VkImageView atts[2] = {s->colv, VK_NULL_HANDLE};
+   VkImageView atts[3] = {s->colv, VK_NULL_HANDLE, VK_NULL_HANDLE};   /* [2] only with g_msds: 4x depth/stencil next to the 4x colour and its resolve */
    if (g_msaa) {
       VkImageCreateInfo mi = ii;
       mi.samples = VK_SAMPLE_COUNT_4_BIT;
@@ -318,6 +321,7 @@ scene_create(struct scene *s, int depth)
       VkImageCreateInfo di = ii;
       di.format = g_depfmt;
       di.tiling = VK_IMAGE_TILING_OPTIMAL;
+      di.samples = g_msds ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;
       di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
       CHECK(CreateImage(dev, &di, NULL, &s->dep) == VK_SUCCESS, "depth image");
       GetImageMemoryRequirements(dev, s->dep, &mr);
@@ -332,10 +336,12 @@ scene_create(struct scene *s, int depth)
       dv.subresourceRange.aspectMask = g_depfmt == VK_FORMAT_D32_SFLOAT_S8_UINT || g_depfmt == VK_FORMAT_D24_UNORM_S8_UINT ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) :
                                         g_depfmt == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
       CHECK(CreateImageView(dev, &dv, NULL, &s->depv) == VK_SUCCESS, "depth view");
-      atts[1] = s->depv;
+      atts[g_msds ? 2 : 1] = s->depv;   /* g_msds: attachment 1 is the colour resolve target */
    }
 
-   VkAttachmentDescription ad[2] = {
+   const int datt_i = g_nocol ? 0 : g_msds ? 2 : 1;   /* the depth/stencil attachment's index */
+   const int natt = g_nocol ? 1 : g_msds ? 3 : depth || g_msaa ? 2 : 1;
+   VkAttachmentDescription ad[3] = {
       {.format = colvfmt, .samples = VK_SAMPLE_COUNT_1_BIT,
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -344,6 +350,7 @@ scene_create(struct scene *s, int depth)
        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .stencilLoadOp = g_st.on ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
+   const VkAttachmentDescription datt = ad[1];   /* the plain depth/stencil description, before [1] is reused as the resolve target */
    if (g_msaa) {
       ad[0].samples = VK_SAMPLE_COUNT_4_BIT;
       ad[0].storeOp = g_msaa_store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -353,35 +360,45 @@ scene_create(struct scene *s, int depth)
       ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
       ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
       ad[1].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+      if (g_msds) {   /* the 4x depth/stencil is a THIRD attachment: attachment 1 stays the single-sample resolve target */
+         ad[2] = datt;
+         ad[2].samples = VK_SAMPLE_COUNT_4_BIT;
+      }
    }
    if (g_nocol)
       ad[0] = ad[1];   /* the depth attachment becomes attachment 0; the colour image is created but not attached */
    VkAttachmentReference cref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
    VkAttachmentReference rref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-   VkAttachmentReference dref = {g_nocol ? 0 : 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+   VkAttachmentReference dref = {datt_i, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
    VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = g_nocol ? 0 : 1,
                               .pColorAttachments = g_nocol ? NULL : &cref, .pResolveAttachments = g_msaa ? &rref : NULL,
                               .pDepthStencilAttachment = depth ? &dref : NULL};
-   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = g_nocol ? 1 : depth || g_msaa ? 2 : 1,
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = natt,
                                  .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp};
    if (g_load) {
-      ad[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-      if (g_st.on) ad[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+      ad[datt_i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      if (g_st.on) ad[datt_i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
    }
    CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp) == VK_SUCCESS, "render pass");
    if (g_load) {
       /* the second pass over the same attachments: LOAD everything the first one stored */
-      ad[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-      ad[0].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
-      ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-      ad[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-      if (g_st.on) ad[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      if (!g_nocolour_load) {
+         ad[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+         ad[0].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      }
+      if (g_msds) {   /* the resolve target is written by the deferred MSAA resolve of pass 1 */
+         ad[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+         ad[1].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      }
+      ad[datt_i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      ad[datt_i].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      if (g_st.on) ad[datt_i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
       CHECK(CreateRenderPass(dev, &rpi, NULL, &s->rp2) == VK_SUCCESS, "render pass (LOAD)");
    }
    if (g_nocol)
       atts[0] = atts[1];
    VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = s->rp,
-                                  .attachmentCount = g_nocol ? 1 : depth || g_msaa ? 2 : 1, .pAttachments = atts, .width = W, .height = H,
+                                  .attachmentCount = natt, .pAttachments = atts, .width = W, .height = H,
                                   .layers = 1};
    CHECK(CreateFramebuffer(dev, &fbi, NULL, &s->fb) == VK_SUCCESS, "framebuffer");
 
@@ -589,6 +606,19 @@ scene_create(struct scene *s, int depth)
       r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe2);
       CHECK(r == VK_SUCCESS, "graphics pipeline 2 = %d", r);
    }
+   if (g_st2.on) {
+      /* the LOAD pass reads the stencil mask pass 1 wrote: EQUAL <ref> with KEEP and write mask 0, so it only tests */
+      VkPipelineDepthStencilStateCreateInfo ds2 = dss;
+      VkStencilOpState f2 = {.failOp = g_st2.fail, .passOp = g_st2.pass, .depthFailOp = g_st2.dfail, .compareOp = g_st2.cmp_f,
+                             .compareMask = g_st2.cmask, .writeMask = g_st2.wmask, .reference = g_st2.ref};
+      ds2.front = f2;
+      ds2.back = f2;
+      ds2.depthTestEnable = ds2.depthWriteEnable = VK_FALSE;
+      ds2.stencilTestEnable = VK_TRUE;
+      gp.pDepthStencilState = &ds2;
+      r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, &s->pipe2);
+      CHECK(r == VK_SUCCESS, "graphics pipeline 2 (stencil read) = %d", r);
+   }
 
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
@@ -650,7 +680,9 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
    CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    const int lop = g_fx.on && g_fx.logic;   /* logic-op cases need a nonzero destination: (51,102,153,204) */
-   VkClearValue cv[2] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}}, {.depthStencil = {1.0f, g_st.clear}}};
+   VkClearValue cv[3] = {{.color = {{lop ? 0.2f : 0, lop ? 0.4f : 0, lop ? 0.6f : 0, lop ? 0.8f : 0}}},
+                         {.depthStencil = {1.0f, g_st.clear}},
+                         {.depthStencil = {1.0f, g_st.clear}}};   /* [2]: the 4x depth/stencil attachment (g_msds) */
    if (g_clear_f)
       memcpy(cv[0].color.float32, g_clear_f, 16);
    if (g_nocol)
@@ -659,9 +691,10 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
       cv[0].color.uint32[0] = 200, cv[0].color.uint32[1] = 100, cv[0].color.uint32[2] = 50, cv[0].color.uint32[3] = 7;
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->second ? s->rp2 : s->rp,
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
-                               .clearValueCount = g_nocol ? 1 : s->depth ? 2 : 1, .pClearValues = cv};
+                               .clearValueCount = g_nocol ? 1 : g_msds ? 3 : s->depth ? 2 : 1,
+                               .pClearValues = cv};
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
-   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->second && g_st2.on && s->pipe2 ? s->pipe2 : s->pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
    VkRect2D sc = {{0, 0}, {W, H}};
    if (s->mode == MODE_SCISSOR) sc.extent.width = W / 2;   /* left half only */
@@ -1687,7 +1720,8 @@ test_stencil(VkFormat fmt)
 }
 
 /* loadOp LOAD: pass 1 (CLEAR) draws A, pass 2 (LOAD) draws B; the result must equal one pass drawing A then B.
- * kind: 0 depth (g_depfmt), 1 stencil (D32S8, INCR_AND_CLAMP/EQUAL 0, so B is rejected where A overlaps), 2 colour (g_colfmt, no depth). */
+ * kind: 0 depth (g_depfmt), 1 stencil (D32S8, INCR_AND_CLAMP/EQUAL 0, so B is rejected where A overlaps), 2 colour (g_colfmt, no depth),
+ * 5/6 the same two-pass shape with a 4x D24S8 / S8 attachment (multisampled stencil LOAD: pass 2 LOADs the samples pass 1 stored). */
 static int
 test_load(const char *name, int kind)
 {
@@ -1696,8 +1730,8 @@ test_load(const char *name, int kind)
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
    VkFormat save = g_depfmt;
-   if (kind == 1 || kind == 3 || kind == 4) {
-      g_depfmt = VK_FORMAT_D32_SFLOAT_S8_UINT;
+   if (kind == 1 || kind == 3 || kind == 4 || kind == 5 || kind == 6) {
+      g_depfmt = kind == 5 ? VK_FORMAT_D24_UNORM_S8_UINT : kind == 6 ? VK_FORMAT_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
       g_st = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
                                .pass = kind == 3 ? VK_STENCIL_OP_INVERT : kind == 4 ? VK_STENCIL_OP_DECREMENT_AND_WRAP : VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = 0xff, .ref = 0, .clear = 0};
    }
@@ -1958,6 +1992,86 @@ test_msaa_load(const char *name)
    int ok = ok_main && ok_rt;
    g_msaa = 0;
    g_msaa_store = 0;
+   return ok;
+}
+
+/* Multisampled stencil loadOp LOAD (the CMF/CEF shape: zink starts a 4x pass with stencilLoadOp LOAD). The STENCIL
+ * attachment carries a PER-SAMPLE pattern out of pass 1 - draw A with stencil EQUAL 0 / INCREMENT_AND_CLAMP, so every
+ * sample A covers becomes 1 and the AA samples at its edge differ from each other - and pass 2 starts with
+ * stencilLoadOp=LOAD and draws the SAME triangle with stencil EQUAL 1 / KEEP, i.e. colour lands exactly on the samples
+ * pass 1 marked. The mask therefore arrives in the resolved colour, and the control is the same triangle drawn once
+ * without a mask. A preload that restores one sample plane into all four (or restores nothing) changes the edge
+ * sample count or leaves the pass empty: both fail. Colour uses the hardware Average resolve (storeOp DONT_CARE, the
+ * path msaa_resolve4 proves on the device) and never the deferred store+resolve, which reads 0 on the X4.
+ * kind 5 = D24S8 (depth and stencil LOAD together), 6 = S8 (stencil LOAD only, the exact call that was refused). */
+static int
+test_msaa_stencil_load(const char *name, int kind)
+{
+   if (!(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {   /* the driver's advertised count, not the env: see test_msaa */
+      printf("{\"test\":\"%s\",\"skipped\":\"4x MSAA not advertised by the driver\",\"ok\":true}\n", name);
+      return 1;
+   }
+   struct scene s = {.mode = MODE_TRI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkFormat save = g_depfmt;
+   const char *sfx = kind == 6 ? "_s8" : "_d24s8";
+   g_depfmt = kind == 6 ? VK_FORMAT_S8_UINT : VK_FORMAT_D24_UNORM_S8_UINT;
+   g_msaa = 1;
+   g_msds = 1;
+   float A[1][4] = {{1, 0, 0, 0}};
+   /* control: one pass, colour CLEAR, stencil CLEAR, A drawn under the same marking state */
+   g_st = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
+                            .pass = VK_STENCIL_OP_INCREMENT_AND_CLAMP, .cmask = 0xff, .wmask = 0xff, .ref = 0};
+   int ok = scene_create(&s, 1);
+   uint32_t cov_ref = 0, cov_got = 0, px_ref = 0, px_got = 0;
+   if (ok) ok = scene_draw(&s, 1, A, f);
+   if (ok) { cov_ref = count_cov(&s); px_ref = px_at(&s, 128, 128); }
+   scene_destroy(&s);
+   /* the first scene's handles are dead: clear them, or a failed control skips scene_create() below and the second
+    * scene_destroy() would free them again (and pass 2 would read a dangling s.mode) */
+   memset(&s, 0, sizeof s);
+   s.mode = MODE_TRI;
+   /* pass 1 marks (EQUAL 0 -> INCREMENT), pass 2 LOADs and reads (EQUAL 1 -> KEEP, no write) */
+   g_load = 1;
+   g_nocolour_load = 1;
+   g_st2 = (struct st_state){.on = 1, .cmp_f = VK_COMPARE_OP_EQUAL, .cmp_b = VK_COMPARE_OP_EQUAL, .fail = VK_STENCIL_OP_KEEP,
+                             .pass = VK_STENCIL_OP_KEEP, .cmask = 0xff, .wmask = 0, .ref = 1};
+   int have2 = 0;
+   if (ok) ok = have2 = scene_create(&s, 1);
+   g_load = 0;
+   g_nocolour_load = 0;
+   if (ok) ok = scene_draw(&s, 1, A, f);          /* pass 1: stencil CLEAR, A marks the samples it covers */
+   s.second = 1;
+   if (ok) ok = scene_draw(&s, 1, A, f);          /* pass 2: stencil LOAD, the mask must let exactly those samples through */
+   s.second = 0;
+   if (ok) { cov_got = count_cov(&s); px_got = px_at(&s, 128, 128); }
+   g_st2 = (struct st_state){0};
+   g_st = (struct st_state){0};
+   g_msds = 0;
+   g_msaa = 0;
+   g_depfmt = save;
+   if (ok) {
+      if (g_fake) {
+         printf("{\"test\":\"%s%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name, sfx);
+      } else {
+         CHECK(px_ref != 0, "%s%s: control centre 00000000 (test is blind)", name, sfx);
+         ok = px_got == px_ref && cov_got == cov_ref;
+         if (!ok)
+            printf("{\"fail\":\"%s%s: multisampled stencil LOAD %s; px control %08x loaded %08x, cov control %u loaded %u\"}\n",
+                   name, sfx, cov_got == 0 ? "restored no sample at all (every sample tested away)" :
+                   cov_got < cov_ref ? "lost samples at the AA edges (one sample plane spread over all four?)" :
+                   cov_got > cov_ref ? "over-restored (more samples passed than the control)" : "samples right, colour differs",
+                   px_ref, px_got, cov_ref, cov_got);
+         CHECK(ok, "%s%s: stencil-mask coverage %u vs control %u (px %08x vs %08x)", name, sfx, cov_got, cov_ref, px_got, px_ref);
+         printf("{\"test\":\"%s%s\",\"cov\":%u,\"cov_control\":%u,\"px\":\"%08x\",\"ok\":%s}\n",
+                name, sfx, cov_got, cov_ref, px_got, ok ? "true" : "false");
+      }
+   }
+   if (have2)
+      scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
    return ok;
 }
 
@@ -2998,6 +3112,11 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("view_format")) ok &= test_view_format();   /* explicit only: mutable-format views, not in the goldens */
    if (ok && g_only && CASE_ON("msaa_load_roundtrip")) ok &= load_roundtrip("msaa_load_roundtrip");
    if (ok && g_only && CASE_ON("msaa_load_resolve")) ok &= test_msaa_load("msaa_load_resolve");
+   /* the row prints \`msaa_load_stencil_d24s8\` (the case adds the suffix): accept that name too, so --only with the
+    * name the test prints selects it */
+   if (ok && g_only && (CASE_ON("msaa_load_stencil") || CASE_ON("msaa_load_stencil_d24s8")))
+      ok &= test_msaa_stencil_load("msaa_load_stencil", 5);
+   if (ok && g_only && CASE_ON("msaa_load_stencil_s8")) ok &= test_msaa_stencil_load("msaa_load_stencil", 6);
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

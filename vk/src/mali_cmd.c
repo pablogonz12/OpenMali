@@ -1191,10 +1191,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       if (is_load_op(da->loadOp)) {
-         if ((t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) || t.samples > 1) {
+         if (t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) {
             char why[160];
             snprintf(why, sizeof why, "depth loadOp LOAD of %s (%u samples), supported: D32_SFLOAT, D24_UNORM_S8_UINT, "
-                     "D16_UNORM, single-sampled only",
+                     "D16_UNORM",
                      t.zs_format == 1 ? "D32_SFLOAT" : t.zs_format == 2 ? "D24_UNORM_S8_UINT" :
                      t.zs_format == 3 ? "D16_UNORM" : "an unknown depth format", t.samples);
             unsupported(cmd, why);
@@ -1203,8 +1203,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          zload = true;
          zsrc.va[0] = t.va;
          zsrc.row[0] = t.row_stride;
-         zsrc.bytes[0] = t.row_stride * t.height;
+         /* every sample plane, not just sample 0: the per-sample variant reads gl_SampleID * surface_stride on */
+         zsrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
          zsrc.arg = t.zs_format == 3 ? 1 : t.zs_format == 2 ? 2 : 0;   /* preload_zs.frag: 0 D32F, 1 D16, 2 D24 */
+         /* multisampled: the per-sample variant reads sample gl_SampleID's plane (surface_stride bytes further on) */
+         zsrc.samples = t.samples > 1 ? t.samples : 0;
+         zsrc.sample_stride = t.samples > 1 ? t.surface_stride : 0;
       }
       f->has_zs = true;
       if (no_col) {
@@ -1236,14 +1240,14 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       if (is_load_op(sa->loadOp)) {
-         if (t.samples > 1) {
-            unsupported(cmd, "stencil loadOp LOAD (single-sampled only)");
-            return;
-         }
          sload = true;
          zsrc.va[1] = t.s_va;
          zsrc.row[1] = t.s_row_stride;
-         zsrc.bytes[1] = t.s_row_stride * t.height;
+         zsrc.bytes[1] = t.s_row_stride * t.height * (t.samples > 1 ? t.samples : 1);   /* all sample planes (see bytes[0]) */
+         /* multisampled (the zink/CEF shape): each sample reads its own S8 plane before the pass' draws stencil-test
+          * against it. Preloaded per sample like the multisampled colour LOAD; nothing here is sample-0 only. */
+         zsrc.samples = t.samples > 1 ? t.samples : 0;
+         zsrc.sample_stride = t.samples > 1 ? t.surface_stride : 0;
       }
       f->has_st = true;
       if (no_col) {
