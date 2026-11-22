@@ -306,9 +306,23 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       /* logicOp (static state; zink uses it statically as extendedDynamicState2LogicOp is not advertised): colour logic op in the blend shader */
       /* a logic op can only change the output when colour output 0 is written and attachment 0 is writable; otherwise the pipeline is
        * accepted without a blend shader and the draw-time check (gfx.logic_inert) lets it through */
-      const bool logic_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
-                               st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
-                               (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      /* a write-masked RT0 makes the logic op inert only when no OTHER attachment writes: the later attachments keep their
+       * own blend state and would silently skip the logic operation (the blend shader writes RT0 alone) */
+      bool other_writes = false;
+      if (st.rp && st.rp->color_attachment_count > 1) {
+         other_writes = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS);
+         for (unsigned i = 1; !other_writes && i < st.rp->color_attachment_count && i < 4; i++)
+            /* the shader must write that output too: a depth-only FS with two bound attachments writes no colour, so
+             * the logic op is still inert there and the pipeline must stay accepted */
+            other_writes = st.rp->color_attachment_formats[i] != VK_FORMAT_UNDEFINED && (a[i].write_mask & 0xf) != 0 &&
+                           (p->fs.fs_colour_mask & (1u << i));
+      }
+      const bool rt0_inert = !p->fs.fs_blend0_type || !st.rp || st.rp->color_attachment_count < 1 ||
+                             st.rp->color_attachment_formats[0] == VK_FORMAT_UNDEFINED ||
+                             (!BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_WRITE_MASKS) && !(a->write_mask & 0xf));
+      /* a later writer keeps the logic op live: the blend shader writes RT0 alone, so it must be requested and then
+       * refused at draw time, never silently dropped */
+      const bool logic_inert = rt0_inert && !other_writes;
       const bool logic = st.cb->logic_op_enable && !logic_inert;
       p->gfx.logic_inert = st.cb->logic_op_enable && logic_inert;
       if (logic)
