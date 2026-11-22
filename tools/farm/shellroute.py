@@ -18,6 +18,7 @@ G = "/data/local/tmp/g"                    # staged once (DEVICE-<phone>.md): sy
 V = "/data/local/tmp/farm"                 # per-run smoke dirs
 ONLY_DRAW = "many_draws share triangle two depth rot idx16 idx32 scissor viewport multivp clearatt ring pushfs ubo descupd texture mrt2 mrt4".split()
 ONLY_META = "buf fill img copyimg blit clearc cleard resolve event ts".split()
+DRAW_ALIAS = {"rot": ("triangle",), "ring": ("ring3",)}   # selector -> result records its scene prints instead
 ONLY_FEAT = ["storfmt_nf", "ycbcr", "spec", "linerast", "divisor"]               # t_vk_feat cases of the smoke set (Steam-session features); linerast/divisor: pixel tests of the line-rasterization and vertex-divisor patches (skip until advertised); same list as FEAT in vk/tests/valguest.sh
 PASSLIKE = {"Pass", "QualityWarning", "CompatibilityWarning"}
 SERIAL = os.environ.get("ANDROID_SERIAL", "")
@@ -533,7 +534,10 @@ def smoke(a):
                 runs.append((n, "--only many_draws", "many_draws"))   # 3k/10k/50k draws in one frame (arena overflow, was DEVICE_LOST)
             continue
         for c in a.only.split(","):                                  # --only: one run per case this binary knows, binaries without a match are skipped
-            if c in (draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META):
+            # each binary owns its own case list: the compute binary has no meta case (a --only buf run must not be
+            # scheduled there, or it would exit 0 with no record and the not-run check would fail a passing run)
+            owned = draw_cases if n == "t_vk_draw" else feat if n == "t_vk_feat" else ONLY_META if n == "t_vk_meta" else []
+            if c in owned:
                 runs.append((n, f"{extra} --only {c}", c))
     if a.only is not None:   # a requested case this route does not schedule must be reported, not silently skipped
         ran = {oc for _, _, oc in runs if oc}
@@ -573,9 +577,14 @@ def smoke(a):
             print("verdict: memory_cap rc=134 in %s: the smoke run hit its memory bound; shard smaller" % n, flush=True)
             sys.exit(83)
         ok = ok and r == 0
-        if oc and ('"test":"%s"' % oc) not in log:   # --env MALI_SKIP_CASES=<case> (and a feature-gated skip) prints no record
-            print(json.dumps({"test": "schedule", "not_run": oc, "ok": False}), flush=True)
-            ok = False
+        if oc:   # --env MALI_SKIP_CASES=<case> (and a feature-gated skip) prints no record: the case did not run
+            names = re.findall(r'\{"test":"([a-z0-9_]+)"', log)
+            # a few selectors run a scene that reports its own names (rot -> triangle/triangle_loop, ring -> ring3,
+            # share -> share_push...); the run counts only if some record belongs to the selector
+            alt = DRAW_ALIAS.get(oc, ())
+            if not any(nm == oc or nm.startswith(oc) or any(nm.startswith(a) for a in alt) for nm in names):
+                print(json.dumps({"test": "schedule", "not_run": oc, "ok": False}), flush=True)
+                ok = False
         print('{"test":"%s","rc":%d,"fail_lines":%d,"pass_lines":%d}' % (n, r, len(fl), log.count('"pass":true')), flush=True)
     print('{"test":"summary","ok":%s}' % ("true" if ok else "false"), flush=True)
     print(f"SO_ON_PHONE {d}/libvulkan_mali.so", flush=True)

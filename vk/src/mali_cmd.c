@@ -14,6 +14,7 @@
 
 #include "mali_cmd.h"
 #include "kbase.h"
+#include "kbase_fb.h"
 #include "mali_descriptor.h"
 #include "mali_meta_vk.h"
 #include "mali_image.h"
@@ -54,6 +55,31 @@ unsupported(struct mali_cmd_buffer *cmd, const char *what)
    if (getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+/* The tile buffer this GPU actually has, in bytes per tile, and the share of it a colour tile may use.
+ * PanVK's per-model sizes (third_party/mesa/src/panfrost/model/pan_model.c, MODEL_TB_SIZES) are
+ *    G610 (arch 10) 32768 / 16384,  G615 (arch 11) 32768 / 16384,  G925 (arch 13) 65536 / 65536,
+ * and pan_query_optimal_tib_size() (pan_props.h:47-56) halves the colour size for pipelining:
+ * "On V5, as well as V7 and later, we can disable pipelining to gain some extra tib memory", so half is the
+ * budget one tile may take. The FBD then holds tile_size = budget >> log2(bytes_per_pixel) (pan_select_tile_size,
+ * pan_desc.c:618-660). Sizing this by hand as "16 KiB" (and then by a 4 KiB measured cap) shrank every frame to
+ * 32x32 or less: RGBA8 went 64x64 (the driver's own default, mali_queue.c env.tile_log2 = 12) to 32x32, and an
+ * HDR RGBA16F frame to 16x16 -- 4x the tiles and the 18-20 % the CMF bisect measured (M/notes/cmf-next14.md). */
+static void
+tile_budget(unsigned *cbudget, unsigned *zbudget)
+{
+   const unsigned arch = g_hw_set ? g_hw.env.arch : 11;
+   unsigned c, z;
+   switch (arch) {
+   case 10: c = 32768; z = 16384; break;   /* G610 (pan_model.c:95) */
+   case 13: c = 65536; z = 65536; break;   /* G925 (pan_model.c:127) */
+   default: c = 32768; z = 16384; break;   /* G615 (pan_model.c:116) */
+   }
+   if (getenv("MALI_TILE_BUDGET"))
+      c = (unsigned)atoi(getenv("MALI_TILE_BUDGET"));
+   *cbudget = c;
+   *zbudget = z;
 }
 
 /* M15: record a GPU write against this command buffer so the platform layer only CSYNCs BOs that changed
@@ -1254,40 +1280,44 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             memcpy(x->clear_color, cx->clearValue.color.float32, sizeof x->clear_color);
          bpp += tx.rt ? tx.rt->alloc : 4u;
       }
-      /* Tile-buffer budget: 16 KiB. PanVK shrinks the effective tile as the colour bytes per pixel grow
-       * (pan_select_tile_size, third_party/mesa/src/panfrost/lib/pan_desc.c:618-626: tile_size = budget >> log2(bpp))
-       * and derives the tiler's smallest bin from that tile (pan_choose_hierarchy_mask, pan_tiler.c:300: the mask is
-       * log2(w/16) | log2(h/16)<<6). 32x32 holds up to 16 B/px, 16x16 up to 64 B/px, which is all four advertised
-       * colour attachments can ask for (4 x RGBA32F). Shrink rather than refuse. */
-      /* Budget: PanVK uses pan_query_optimal_tib_size() = tib_size / 2 for pipelining (pan_props.h:47-56), i.e.
-       * 8 KiB on this part, and then tile_size = budget >> log2(bytes_per_pixel) (pan_desc.c:626). So 32x32 holds
-       * 8 B/px, 16x16 holds 32 B/px, 8x8 holds 128 B/px. */
-      unsigned bpp_tot = bpp * (f->samples > 1 ? 4u : 1u);
-      /* 16 KiB: 32x32 holds up to 16 B/px, 16x16 up to 64 B/px. NOT smaller: on arch 10 the tiler context
-       * (kb_draw_tiler_ctx, libkbase/src/draw.c:57) has no effective-tile field -- only v13's has one
-       * (kb_v13_tiler_ctx, draw_v13.c:9) -- so shrinking the FBD tile below the tiler's bins makes geometry and
-       * fragments disagree (measured: 16 bpp at 16x16 draws almost nothing).
-       * Measured tile colour-buffer limit with several targets on G615: every RT slot must end below 4 KiB
-       * (2xRGBA8 at 16x16 = 2 KiB works, 4xRGBA8 = 4 KiB works, 20 B/px = 5 KiB leaves the last target reading
-       * slot 0), so the total is capped at 4096 bytes per tile. */
-      /* Square tiles only (the FBD field is log2 of the tile's PIXEL count, so an odd log2 is not a square): 32x32,
-       * 16x16, 8x8, 4x4. Measured on G615 (X4): 2xRGBA8 (8 B/px) and 4xRGBA8 (16 B/px) at 32x32 collapse to the last
-       * fragment output, while the same frames at 16x16 are per-RT exact, so 32x32 is only usable up to a 4 KiB colour
-       * total; 16x16 carries up to 8 KiB (PanVK's pan_select_tile_size budget is 2x that, pan_desc.c:618-660). */
-      unsigned tl = 10;
-      while (tl > 4 && ((1u << tl) * bpp_tot) > 4096u)
+      /* Effective tile: as large as this GPU's tile buffer allows, shrunk in square steps (the FBD field is log2
+       * of the tile's PIXEL count, so an odd log2 is not a square). 64x64 is what the driver uses when it does not
+       * shrink at all (mali_queue.c env.tile_log2 = 12), so it is the ceiling. */
+      unsigned cbudget, zbudget;
+      tile_budget(&cbudget, &zbudget);
+      if (f->ncolour > 1 && (g_hw_set ? g_hw.env.arch : 11) == 10) {
+         /* Arch 10 exception, measured on G610 (X4): with several targets our per-RT tile slots must end below
+          * 4 KiB of tile colour (2xRGBA8 at 32x32 = 8 KiB collapsed to the last fragment output; the same frames
+          * are per-RT exact at 16x16). Single-target frames are unaffected -- they run at 64x64 on this part. */
+         if (cbudget > 4096)
+            cbudget = 4096;
+      }
+      unsigned zpp = 0;
+      if (ri->pDepthAttachment && ri->pDepthAttachment->imageView) {
+         struct mali_cmd_target zt;
+         if (!g_res.image_view(ri->pDepthAttachment->imageView, &zt) && zt.zs_format)
+            zpp = zt.zs_format == KB_ZS_D16 ? 2u : 4u;
+      }
+      const unsigned spp = f->samples > 1 ? f->samples : 1u;
+      unsigned bpp_tot = bpp * spp, zpp_tot = zpp * spp;
+      unsigned tl = 12;
+      while (tl > 4 && ((1u << tl) * bpp_tot) > cbudget)
          tl -= 2;
-      if (((1u << tl) * bpp_tot) > 4096u) {
-         unsupported(cmd, "colour attachments exceed the 4 KiB tile colour buffer even at 4x4");
+      while (tl > 4 && zpp_tot && ((1u << tl) * zpp_tot) > zbudget)
+         tl -= 2;
+      if (((1u << tl) * bpp_tot) > cbudget || (zpp_tot && ((1u << tl) * zpp_tot) > zbudget)) {
+         unsupported(cmd, "colour/depth attachments exceed the tile buffer even at 4x4");
          return;
       }
       f->tile_log2 = tl;
       f->hmask = tl >= 10 ? 0xfeu : 0xffu;   /* the tiler's smallest bin is 16x16; 8x8/4x4 keep it (the FBD sets the tile) */
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_cmd: tile %ux%u (%u B/px colour + %u depth, %u samples, budget %u colour/%u depth, %u targets)\n",
+                 1u << (tl / 2), 1u << (tl / 2), bpp_tot, zpp_tot, spp, cbudget, zbudget, f->ncolour);
       if (getenv("MALI_TILE_LOG2")) {   /* experiment knob: force the effective tile (log2 pixels) and a matching mask */
          const int want = atoi(getenv("MALI_TILE_LOG2"));
-         if (want < 2 || want > 12 || ((1u << want) * bpp_tot) > 4096u) {
-            /* out of range, or a tile whose colour total does not fit the 4 KiB budget the descriptors assume */
-            unsupported(cmd, "MALI_TILE_LOG2 does not fit the tile colour budget (2..12, (1<<n)*bpp <= 4096)");
+         if (want < 2 || want > 12 || ((1u << want) * bpp_tot) > cbudget) {
+            unsupported(cmd, "MALI_TILE_LOG2 does not fit the tile colour budget (2..12, (1<<n)*bpp <= budget)");
             return;
          }
          f->tile_log2 = (unsigned)want;

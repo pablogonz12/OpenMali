@@ -2384,6 +2384,93 @@ out:
    return ok;
 }
 
+
+/* Tile-size probe: one clear-only multi-target pass per shape, so MALI_PIPE_DBG prints the effective tile the
+ * driver picks for that many bytes per pixel (the rule only shrinks frames with more than one colour target).
+ * Pixels are not checked -- the printed tile is the output. */
+static int
+test_tile_fmts(const char *name)
+{
+   static const struct { VkFormat c; unsigned n; const char *what; } cfg[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM,      2, "2xrgba8 8B/px"},
+      {VK_FORMAT_R16G16B16A16_SFLOAT, 2, "2xrgba16f 16B/px"},
+      {VK_FORMAT_R8G8B8A8_UNORM,      4, "4xrgba8 16B/px"},
+      {VK_FORMAT_R32G32B32A32_SFLOAT, 2, "2xrgba32f 32B/px"},
+   };
+   const unsigned w = 64, h = 64;
+   for (unsigned k = 0; k < sizeof cfg / sizeof cfg[0] && !g_fail; k++) {
+      VkImage im[4] = {0};
+      VkDeviceMemory mem[4] = {0};
+      VkImageView iv[4] = {0};
+      VkAttachmentDescription ad[4];
+      VkAttachmentReference ar[4];
+      VkRenderPass rp = VK_NULL_HANDLE;
+      VkFramebuffer fb = VK_NULL_HANDLE;
+      VkCommandPool pool = VK_NULL_HANDLE;
+      VkFence fence = VK_NULL_HANDLE;
+      VkCommandBuffer cb = VK_NULL_HANDLE;
+      for (unsigned i = 0; i < cfg[k].n; i++) {
+         VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                 .format = cfg[k].c, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_LINEAR,
+                                 .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+         if (CreateImage(dev, &ii, NULL, &im[i]) != VK_SUCCESS) { g_fail = 1; break; }
+         VkMemoryRequirements mr;
+         GetImageMemoryRequirements(dev, im[i], &mr);
+         int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+         if (mt < 0) { g_fail = 1; break; }
+         VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)mt};
+         if (AllocateMemory(dev, &ai, NULL, &mem[i]) != VK_SUCCESS || BindImageMemory(dev, im[i], mem[i], 0) != VK_SUCCESS) { g_fail = 1; break; }
+         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im[i], .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                     .format = cfg[k].c, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+         if (CreateImageView(dev, &vi, NULL, &iv[i]) != VK_SUCCESS) { g_fail = 1; break; }
+         ad[i] = (VkAttachmentDescription){.format = cfg[k].c, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                          .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                          .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED, .finalLayout = VK_IMAGE_LAYOUT_GENERAL};
+         ar[i] = (VkAttachmentReference){i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+      }
+      if (g_fail)
+         break;
+      VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = cfg[k].n,
+                                 .pColorAttachments = ar};
+      VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = cfg[k].n,
+                                    .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp};
+      if (CreateRenderPass(dev, &rpi, NULL, &rp) != VK_SUCCESS) { g_fail = 1; break; }
+      VkFramebufferCreateInfo fbi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp,
+                                     .attachmentCount = cfg[k].n, .pAttachments = iv, .width = w, .height = h, .layers = 1};
+      if (CreateFramebuffer(dev, &fbi, NULL, &fb) != VK_SUCCESS) { g_fail = 1; break; }
+      VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      VkClearValue cvv[4];
+      memset(cvv, 0, sizeof cvv);
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                                  .renderArea = {{0, 0}, {w, h}}, .clearValueCount = cfg[k].n, .pClearValues = cvv};
+      if (CreateCommandPool(dev, &pci, NULL, &pool) != VK_SUCCESS) { g_fail = 1; break; }
+      cai.commandPool = pool;
+      if (AllocateCommandBuffers(dev, &cai, &cb) != VK_SUCCESS || BeginCommandBuffer(cb, &bi) != VK_SUCCESS) { g_fail = 1; break; }
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdEndRenderPass(cb);
+      if (EndCommandBuffer(cb) != VK_SUCCESS || CreateFence(dev, &fi, NULL, &fence) != VK_SUCCESS) { g_fail = 1; break; }
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      if (QueueSubmit(queue, 1, &si, fence) != VK_SUCCESS || WaitForFences(dev, 1, &fence, VK_TRUE, 10000000000ull) != VK_SUCCESS) { g_fail = 1; break; }
+      printf("{\"test\":\"%s\",\"shape\":\"%s\",\"ok\":true}\n", name, cfg[k].what);
+      DeviceWaitIdle(dev);
+      if (fence) DestroyFence(dev, fence, NULL);
+      if (pool) DestroyCommandPool(dev, pool, NULL);
+      if (fb) DestroyFramebuffer(dev, fb, NULL);
+      if (rp) DestroyRenderPass(dev, rp, NULL);
+      for (unsigned i = 0; i < cfg[k].n; i++) {
+         if (iv[i]) DestroyImageView(dev, iv[i], NULL);
+         if (im[i]) DestroyImage(dev, im[i], NULL);
+         if (mem[i]) FreeMemory(dev, mem[i], NULL);
+      }
+   }
+   return !g_fail;
+}
+
 /* rasterizer discard: draws produce nothing (both stages present, or a vertex-only pipeline); the next pipeline draws normally */
 static int
 test_discard(const char *name, int mode)
@@ -3792,7 +3879,7 @@ main(int argc, char **argv)
    int mrt_ok = 1;
    if (ok && g_gs) {
       for (unsigned i = 0; i < sizeof mrt_names / sizeof *mrt_names; i++)
-         if (g_only && CASE_ON(mrt_names[i])) {
+         if (g_only && !strcmp(g_only, mrt_names[i])) {   /* the selection itself, not CASE_ON: a skip list must not hide it */
             printf("{\"fail\":\"--gs %s given, but %s does not bind a geometry shader\"}\n", g_gs, mrt_names[i]);
             g_fail = 1;
             return 1;
@@ -3805,6 +3892,7 @@ main(int argc, char **argv)
    if (ok && mrt_ok && CASE_ON("mrt2")) ok &= test_mrt("mrt2", 2);   /* last: its allocations must not shift the older cases' goldens */
    if (ok && mrt_ok && CASE_ON("mrt4")) ok &= test_mrt("mrt4", 4);
    if (ok && mrt_ok && CASE_ON("mrtmix")) ok &= test_mrt_mixed("mrtmix");
+   if (ok && CASE_ON("tilefmts")) ok &= test_tile_fmts("tilefmts");
    if (ok && mrt_ok && CASE_ON("bigmrt")) ok &= test_mrt_big("bigmrt");   /* last: its large allocations must not shift the other cases' BO ids */
    if (ok && mrt_ok && CASE_ON("mrtmap")) ok &= test_mrt("mrtmap", 4);
    if (ok && mrt_ok && CASE_ON("mrtmapo0")) ok &= test_mrt("mrtmapo0", 4);
